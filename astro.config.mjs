@@ -2,6 +2,7 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import starlightFullViewMode from 'starlight-fullview-mode';
+import starlightLinksValidator from 'starlight-links-validator';
 
 // https://astro.build/config
 export default defineConfig({
@@ -9,7 +10,7 @@ export default defineConfig({
 		starlight({
 			title: 'React SaaS Course',
 			customCss: ['./src/styles/custom.css'],
-			plugins: [starlightFullViewMode({})],
+			plugins: [starlightFullViewMode({}), starlightLinksValidator()],
 			sidebar: [
 				{
 					label: 'Demos',
