@@ -44,3 +44,5 @@ Progress in `localStorage`. No accounts, no backend.
 ## Working style
 
 Mid-prototype. No speculative abstractions, helpers, or components. Build the simplest thing, ship a few lessons, then let real friction argue for factoring.
+
+Author is new to Astro and Starlight. When making changes, briefly explain what you did and why — name the Astro/Starlight concepts in play (frontmatter fields, content collections, components, config keys, plugins) so the work doubles as learning.
