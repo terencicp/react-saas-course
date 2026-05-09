@@ -1,0 +1,171 @@
+---
+// Code block with hover tooltips on specific tokens.
+// Drop a fenced code block in the slot — Expressive Code highlights it first,
+// then the runtime walks the rendered DOM and wraps every occurrence of each
+// `tooltips` key with a dashed-underline span that shows the tip on hover.
+interface Props {
+  tooltips: Record<string, string>;
+}
+const { tooltips } = Astro.props;
+---
+
+<div class="ct-host" data-tooltips={JSON.stringify(tooltips)}>
+  <slot />
+</div>
+
+<style is:global>
+  .ct-host .expressive-code { margin: 0; }
+
+  .ct-mark {
+    cursor: help;
+    border-bottom: 1px dashed var(--sl-color-gray-3);
+    padding: 0 1px;
+    margin: 0 -1px;
+    border-radius: 2px;
+    transition: background-color 0.12s, border-color 0.12s;
+  }
+  .ct-mark:hover {
+    background: color-mix(in srgb, var(--sl-color-accent) 22%, transparent);
+    border-bottom-color: var(--sl-color-accent);
+  }
+
+  .ct-tip {
+    position: fixed;
+    top: 0;
+    left: 0;
+    background: #1f2937;
+    color: #f3f4f6;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    padding: 7px 10px;
+    border-radius: 6px;
+    font: 12px / 1.55 var(--sl-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    white-space: pre-wrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s;
+    z-index: 1000;
+    max-width: min(420px, calc(100vw - 24px));
+    width: max-content;
+  }
+  .ct-tip.is-visible { opacity: 1; }
+</style>
+
+<script>
+  import { computePosition, flip, shift, offset } from '@floating-ui/dom';
+
+  // Wrap the first un-wrapped occurrence of `needle` inside `root` with
+  // <span class="ct-mark" data-tip="…">. Returns false when no more matches.
+  // The match may span multiple text nodes — Expressive Code splits e.g.
+  // `"admin"` into three sibling spans (open-quote, inner, close-quote).
+  function wrapMatch(root: HTMLElement, needle: string, tip: string): boolean {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode(n) {
+        return (n as Text).parentElement?.closest('.ct-mark')
+          ? NodeFilter.FILTER_REJECT
+          : NodeFilter.FILTER_ACCEPT;
+      },
+    });
+    const entries: { node: Text; start: number }[] = [];
+    let flat = '';
+    let n: Node | null;
+    while ((n = walker.nextNode())) {
+      entries.push({ node: n as Text, start: flat.length });
+      flat += (n as Text).nodeValue || '';
+    }
+
+    // Word-boundary check for identifier-shaped needles, so `state` doesn't
+    // match inside `useState`.
+    const isIdent = /^[A-Za-z0-9_$]+$/.test(needle);
+    const wordChar = /[A-Za-z0-9_$]/;
+    let from = 0;
+    let start = -1;
+    while (from <= flat.length) {
+      const idx = flat.indexOf(needle, from);
+      if (idx < 0) return false;
+      if (isIdent) {
+        const before = idx > 0 ? flat[idx - 1] : '';
+        const after = flat[idx + needle.length] || '';
+        if (wordChar.test(before) || wordChar.test(after)) {
+          from = idx + 1;
+          continue;
+        }
+      }
+      start = idx;
+      break;
+    }
+    if (start < 0) return false;
+
+    const end = start + needle.length;
+    const startEntry = entries.find((e) => e.start <= start && start < e.start + e.node.length)!;
+    const endEntry = [...entries].reverse().find((e) => e.start < end && end <= e.start + e.node.length)!;
+
+    const range = document.createRange();
+    range.setStart(startEntry.node, start - startEntry.start);
+    range.setEnd(endEntry.node, end - endEntry.start);
+
+    const span = document.createElement('span');
+    span.className = 'ct-mark';
+    span.dataset.tip = tip;
+    span.appendChild(range.extractContents());
+    range.insertNode(span);
+    return true;
+  }
+
+  // One shared tooltip element for the whole page, positioned with Floating UI.
+  let tip: HTMLElement | null = null;
+  let activeMark: HTMLElement | null = null;
+
+  function ensureTip(): HTMLElement {
+    if (!tip) {
+      tip = document.createElement('div');
+      tip.className = 'ct-tip';
+      tip.setAttribute('role', 'tooltip');
+      document.body.appendChild(tip);
+    }
+    return tip;
+  }
+
+  async function showTooltip(mark: HTMLElement) {
+    activeMark = mark;
+    const t = ensureTip();
+    t.textContent = mark.dataset.tip || '';
+    t.classList.add('is-visible');
+    const { x, y } = await computePosition(mark, t, {
+      placement: 'top',
+      strategy: 'fixed',
+      middleware: [offset(8), flip(), shift({ padding: 8 })],
+    });
+    if (activeMark === mark) {
+      t.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
+    }
+  }
+
+  function hideTooltip() {
+    activeMark = null;
+    tip?.classList.remove('is-visible');
+  }
+
+  document.querySelectorAll<HTMLElement>('.ct-host').forEach((host) => {
+    let tooltips: Record<string, string> = {};
+    try {
+      tooltips = JSON.parse(host.dataset.tooltips || '{}');
+    } catch {}
+    const keys = Object.keys(tooltips);
+    if (!keys.length) return;
+
+    // Longest needles first so a short key doesn't claim the prefix of a longer one.
+    keys.sort((a, b) => b.length - a.length);
+    for (const k of keys) {
+      while (wrapMatch(host, k, tooltips[k])) {}
+    }
+
+    host.querySelectorAll<HTMLElement>('.ct-mark').forEach((el) => {
+      el.tabIndex = 0;
+      el.addEventListener('mouseenter', () => showTooltip(el));
+      el.addEventListener('mouseleave', hideTooltip);
+      el.addEventListener('focus', () => showTooltip(el));
+      el.addEventListener('blur', hideTooltip);
+    });
+  });
+</script>
