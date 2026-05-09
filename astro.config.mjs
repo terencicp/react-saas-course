@@ -13,6 +13,23 @@ export default defineConfig({
 			title: 'React SaaS Course',
 			customCss: ['./src/styles/custom.css'],
 			plugins: [starlightFullViewMode({}), starlightLinksValidator()],
+			head: [
+				{
+					tag: 'script',
+					content: `(function () {
+	var path = location.pathname;
+	var isRoot = path === '/' || path === '/index.html';
+	if (isRoot) {
+		var last = localStorage.getItem('lastLesson');
+		if (last && last.charAt(0) === '/' && last.charAt(1) !== '/' && last !== path) {
+			location.replace(last);
+		}
+	} else {
+		try { localStorage.setItem('lastLesson', path); } catch (e) {}
+	}
+})();`,
+				},
+			],
 			sidebar: [
 				{
 					label: 'Demos',
