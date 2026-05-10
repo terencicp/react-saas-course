@@ -19,14 +19,30 @@ export default defineConfig({
 					content: `(function () {
 	var path = location.pathname;
 	var isRoot = path === '/' || path === '/index.html';
+	// Synchronous redirect from / — runs before paint, no flash.
 	if (isRoot) {
 		var last = localStorage.getItem('lastLesson');
 		if (last && last.charAt(0) === '/' && last.charAt(1) !== '/' && last !== path) {
 			location.replace(last);
+			return;
 		}
-	} else {
-		try { localStorage.setItem('lastLesson', path); } catch (e) {}
 	}
+	// Defer save/heal until <title> is parsed so we can detect 404 pages.
+	document.addEventListener('DOMContentLoaded', function () {
+		var is404 = /^404\\b/.test(document.title);
+		if (is404) {
+			// If the saved lesson is what landed us on this 404, clear it
+			// and bounce home so we don't strand the user on a dead page.
+			if (localStorage.getItem('lastLesson') === path) {
+				localStorage.removeItem('lastLesson');
+				location.replace('/');
+			}
+			return;
+		}
+		if (!isRoot) {
+			try { localStorage.setItem('lastLesson', path); } catch (e) {}
+		}
+	});
 })();`,
 				},
 			],
