@@ -8,7 +8,7 @@ export class OllamaError extends Error {
   }
 }
 
-export async function* streamPrompt(prompt: string): AsyncGenerator<string, void, void> {
+async function chat(prompt: string, stream: boolean): Promise<Response> {
   let res: Response;
   try {
     res = await fetch(`${ENDPOINT}/api/chat`, {
@@ -17,7 +17,7 @@ export async function* streamPrompt(prompt: string): AsyncGenerator<string, void
       body: JSON.stringify({
         model: MODEL,
         messages: [{ role: 'user', content: prompt }],
-        stream: true,
+        stream,
         think: false,
       }),
     });
@@ -46,8 +46,12 @@ export async function* streamPrompt(prompt: string): AsyncGenerator<string, void
   if (!res.body) {
     throw new OllamaError('Ollama returned an empty response body.');
   }
+  return res;
+}
 
-  const reader = res.body.getReader();
+export async function* streamPrompt(prompt: string): AsyncGenerator<string, void, void> {
+  const res = await chat(prompt, true);
+  const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
 
@@ -79,4 +83,18 @@ export async function* streamPrompt(prompt: string): AsyncGenerator<string, void
       { cause },
     );
   }
+}
+
+export async function runPrompt(prompt: string): Promise<string> {
+  const res = await chat(prompt, false);
+  let body: { message?: { content?: string }; error?: string };
+  try {
+    body = await res.json();
+  } catch (cause) {
+    throw new OllamaError('Ollama returned a malformed JSON response.', { cause });
+  }
+  if (body?.error) {
+    throw new OllamaError(`Ollama error: ${body.error}`);
+  }
+  return body?.message?.content ?? '';
 }

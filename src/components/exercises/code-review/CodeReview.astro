@@ -43,11 +43,15 @@ const useTabs = (slotHtml.match(/<starlight-tab-item\b/g)?.length ?? 0) > 1;
 
   <div class="cr-actions">
     <button type="button" class="cr-submit">Submit review</button>
+    <span class="cr-status" hidden></span>
     <span class="cr-target"></span>
   </div>
 
   <div class="cr-feedback" hidden>
-    <div class="cr-feedback-head"><span class="cr-feedback-title"></span></div>
+    <div class="cr-feedback-head">
+      <span class="cr-feedback-title"></span>
+      <span class="cr-feedback-mode"></span>
+    </div>
     <div class="cr-feedback-body">
       <div class="cr-overall" hidden><div class="cr-why-slot"></div></div>
       <ul class="cr-issue-list"></ul>
@@ -216,6 +220,8 @@ const useTabs = (slotHtml.match(/<starlight-tab-item\b/g)?.length ?? 0) > 1;
   }
   .cr-submit:hover:not(:disabled) { opacity: 0.9; }
   .cr-submit:disabled { opacity: 0.4; cursor: not-allowed; }
+  .cr-status { font-size: 13px; color: var(--cr-muted); font-style: italic; }
+  .cr-status[hidden] { display: none; }
   .cr-target { margin-left: auto; font-size: 13px; color: var(--cr-muted); }
 
   /* Reveal panel */
@@ -228,10 +234,19 @@ const useTabs = (slotHtml.match(/<starlight-tab-item\b/g)?.length ?? 0) > 1;
   }
   .cr-feedback[hidden] { display: none; }
   .cr-feedback-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     padding: 10px 14px;
     border-bottom: 1px solid var(--cr-border);
     font-size: 14px;
     font-weight: 600;
+  }
+  .cr-feedback-mode {
+    margin-left: auto;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--cr-muted);
   }
   .cr-feedback-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
   .cr-overall { color: var(--cr-text); font-size: 14px; font-style: italic; }
@@ -285,8 +300,48 @@ const useTabs = (slotHtml.match(/<starlight-tab-item\b/g)?.length ?? 0) > 1;
 </style>
 
 <script>
+  import { runPrompt } from '../../../lib/ollama';
+
   type Issue = { file: string; line: number; noteHtml: string };
   type Comment = { id: number; text: string };
+
+  const stripHtml = (html: string): string => {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = html;
+    return (tmp.textContent ?? '').trim().replace(/\s+/g, ' ');
+  };
+
+  async function gradeWithAI(
+    items: { issue: Issue; text: string }[],
+  ): Promise<boolean[]> {
+    const itemsBlock = items
+      .map(
+        (it, i) =>
+          `[${i}] ${it.issue.file}:${it.issue.line}\n` +
+          `RUBRIC: ${stripHtml(it.issue.noteHtml)}\n` +
+          `STUDENT: ${it.text}`,
+      )
+      .join('\n\n');
+
+    const prompt =
+      `Grade each item: does the STUDENT comment identify the same defect as the RUBRIC? ` +
+      `Wording differences are fine; superficial or empty comments fail.\n\n` +
+      `Reply with ONLY a JSON array, no prose, no code fences, in this exact shape:\n` +
+      `[{"i":0,"pass":true},{"i":1,"pass":false}]\n\n` +
+      `ITEMS:\n${itemsBlock}`;
+
+    const raw = await runPrompt(prompt);
+    const m = raw.match(/\[[\s\S]*\]/);
+    if (!m) throw new Error('No JSON array in model response.');
+    const parsed = JSON.parse(m[0]) as { i?: number; pass?: boolean }[];
+    const out = items.map(() => false);
+    for (const v of parsed) {
+      if (typeof v?.i === 'number' && v.i >= 0 && v.i < items.length) {
+        out[v.i] = !!v.pass;
+      }
+    }
+    return out;
+  }
 
   const el = <K extends keyof HTMLElementTagNameMap>(
     tag: K,
@@ -469,19 +524,61 @@ const useTabs = (slotHtml.match(/<starlight-tab-item\b/g)?.length ?? 0) > 1;
       };
     }
 
-    submitBtn.addEventListener('click', () => {
+    const statusEl = card.querySelector<HTMLElement>('.cr-status')!;
+    const modeEl = card.querySelector<HTMLElement>('.cr-feedback-mode')!;
+
+    submitBtn.addEventListener('click', async () => {
       if (card.dataset.state) return;
       // Discard any open composer drafts; saved comments are already in `threads`.
       card.querySelectorAll<HTMLElement>('.cr-composer').forEach((c) => c.remove());
 
+      // Only grade plants that received an on-line comment. Everything else
+      // stays false by default per spec.
+      const candidates: { issue: Issue; text: string }[] = [];
+      issues.forEach((issue) => {
+        const cs = threads.get(key(issue.file, issue.line)) ?? [];
+        if (cs.length > 0) {
+          candidates.push({ issue, text: cs.map((c) => c.text).join('\n\n') });
+        }
+      });
+
+      let verdicts: boolean[] = candidates.map(() => false);
+      let mode: 'comments' | 'lines' = 'lines';
+
+      if (candidates.length > 0) {
+        // Lock interactions while the model thinks. `pending` triggers the
+        // same CSS gates as a finalized state (no new composers, no edits).
+        card.dataset.state = 'pending';
+        submitBtn.disabled = true;
+        statusEl.textContent = 'Reviewing answer…';
+        statusEl.hidden = false;
+
+        try {
+          verdicts = await gradeWithAI(candidates);
+          mode = 'comments';
+        } catch {
+          // Ollama unreachable / malformed JSON: fall back to line-only grading.
+          verdicts = candidates.map(() => true);
+          mode = 'lines';
+        }
+
+        statusEl.hidden = true;
+        statusEl.textContent = '';
+      }
+
+      const passByIssueIdx = new Map<number, boolean>();
+      candidates.forEach((c, i) => {
+        passByIssueIdx.set(issues.indexOf(c.issue), verdicts[i]);
+      });
+
       issueList.innerHTML = '';
       let caught = 0;
-      issues.forEach((issue) => {
-        const has = (threads.get(key(issue.file, issue.line))?.length ?? 0) > 0;
-        if (has) caught++;
+      issues.forEach((issue, idx) => {
+        const pass = passByIssueIdx.get(idx) ?? false;
+        if (pass) caught++;
 
         const row = el('li', 'cr-issue-row');
-        row.dataset.status = has ? 'caught' : 'missed';
+        row.dataset.status = pass ? 'caught' : 'missed';
 
         const status = el('span', 'cr-issue-status');
         status.setAttribute('aria-hidden', 'true');
@@ -498,6 +595,7 @@ const useTabs = (slotHtml.match(/<starlight-tab-item\b/g)?.length ?? 0) > 1;
       card.dataset.state = caught === issues.length && issues.length > 0 ? 'correct' : 'partial';
       card.querySelector<HTMLElement>('.cr-feedback-title')!.textContent =
         `${caught} of ${issues.length} caught`;
+      modeEl.textContent = mode === 'comments' ? 'Comments graded' : 'Lines graded';
       feedback.hidden = false;
       submitBtn.disabled = true;
       submitBtn.textContent = 'Submitted';
