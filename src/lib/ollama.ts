@@ -1,41 +1,82 @@
 export const ENDPOINT = 'http://localhost:11434';
 export const MODEL = 'qwen3.5:9b';
 
+export class OllamaError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'OllamaError';
+  }
+}
+
 export async function* streamPrompt(prompt: string): AsyncGenerator<string, void, void> {
-  const res = await fetch(`${ENDPOINT}/api/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: MODEL,
-      messages: [{ role: 'user', content: prompt }],
-      stream: true,
-      think: false,
-    }),
-  });
-  if (!res.ok || !res.body) {
-    const body = await res.text();
-    throw new Error(`HTTP ${res.status} ${res.statusText}\n${body}`);
+  let res: Response;
+  try {
+    res = await fetch(`${ENDPOINT}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: MODEL,
+        messages: [{ role: 'user', content: prompt }],
+        stream: true,
+        think: false,
+      }),
+    });
+  } catch (cause) {
+    throw new OllamaError(
+      `Could not reach Ollama at ${ENDPOINT}. ` +
+        `Make sure it's running, qwen3.5:9b is installed, and ` +
+        `the request is not blocked by CORS.`,
+      { cause },
+    );
+  }
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    if (res.status === 404 && /model .* not found/i.test(body)) {
+      throw new OllamaError(
+        `Model \`${MODEL}\` is not available on the Ollama server. ` +
+          `Pull it first with \`ollama pull ${MODEL}\`.`,
+      );
+    }
+    throw new OllamaError(
+      `Ollama returned ${res.status} ${res.statusText}.` + (body ? `\n${body}` : ''),
+    );
+  }
+
+  if (!res.body) {
+    throw new OllamaError('Ollama returned an empty response body.');
   }
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
 
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
-    let nl: number;
-    while ((nl = buffer.indexOf('\n')) !== -1) {
-      const line = buffer.slice(0, nl).trim();
-      buffer = buffer.slice(nl + 1);
-      if (!line) continue;
-      let chunk: { message?: { content?: string }; done?: boolean };
-      try { chunk = JSON.parse(line); } catch { continue; }
-      const piece = chunk?.message?.content;
-      if (piece) yield piece;
-      if (chunk?.done) return;
+      let nl: number;
+      while ((nl = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        if (!line) continue;
+        let chunk: { message?: { content?: string }; done?: boolean; error?: string };
+        try { chunk = JSON.parse(line); } catch { continue; }
+        if (chunk?.error) {
+          throw new OllamaError(`Ollama error: ${chunk.error}`);
+        }
+        const piece = chunk?.message?.content;
+        if (piece) yield piece;
+        if (chunk?.done) return;
+      }
     }
+  } catch (cause) {
+    if (cause instanceof OllamaError) throw cause;
+    throw new OllamaError(
+      `The connection to Ollama was interrupted while streaming the response.`,
+      { cause },
+    );
   }
 }
