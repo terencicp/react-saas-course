@@ -1,7 +1,8 @@
-// Wraps `astro dev` and restarts it whenever a NEW content file appears under
-// src/content/docs/. Astro's docsLoader() doesn't pick up new entries via HMR
-// (rendering throws UnknownContentCollectionError until the server restarts);
-// edits to existing files HMR fine, so we listen for `add` events only.
+// Wraps `astro dev` and restarts it whenever a content file is added or
+// deleted under src/content/docs/. Astro's docsLoader() doesn't reconcile
+// these changes via HMR — adds throw UnknownContentCollectionError, and
+// deletes leave stale entries in .astro/content-modules.mjs that fail to
+// load. Edits to existing files HMR fine, so we only listen for add/unlink.
 
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -69,6 +70,10 @@ chokidar
   .on('add', (file) => {
     if (!isContentFile(file)) return;
     scheduleRestart(`new content file: ${file}`);
+  })
+  .on('unlink', (file) => {
+    if (!isContentFile(file)) return;
+    scheduleRestart(`deleted content file: ${file}`);
   });
 
 for (const sig of ['SIGINT', 'SIGTERM']) {
