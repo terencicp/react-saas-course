@@ -7,6 +7,15 @@ import starlightLinksValidator from 'starlight-links-validator';
 
 // https://astro.build/config
 export default defineConfig({
+	// PGlite ships its Postgres WASM and a ~5 MB filesystem data blob as
+	// package-internal assets; Vite's dep optimizer mangles those paths and
+	// the FS bundle ends up being served as HTML. Exclude PGlite from the
+	// optimizer so its own asset resolution kicks in.
+	vite: {
+		optimizeDeps: {
+			exclude: ['@electric-sql/pglite'],
+		},
+	},
 	integrations: [
 		mermaid({ autoTheme: true }),
 		starlight({

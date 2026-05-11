@@ -1,0 +1,454 @@
+---
+// PGlite-backed SQL live-coding widget. CodeMirror editor + a Postgres database
+// running in WebAssembly. The seed (DDL + INSERTs) is re-applied before every
+// run so state is deterministic per click.
+//
+// MDX usage:
+//   <SQLCoding
+//     seed={`CREATE TABLE users (id int, name text);
+//            INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob');`}
+//     starter={`SELECT name FROM users WHERE id = 1;`}
+//     expectedRows={[{ name: 'Alice' }]}
+//     instructions="Return Alice's name."
+//   />
+//
+// Without `expectedRows` the card is a pure sandbox — run any query, see the
+// rows come back. With `expectedRows`, the criteria checklist below the result
+// table flips ✓ when the rows match (subset match per column, so `SELECT *`
+// doesn't fail a query whose lesson only pinned a couple of fields).
+type ExpectedRow = Record<string, unknown>;
+type Props = {
+    /** SQL the student starts with. */
+    starter: string;
+    /** DDL + INSERTs run before every query. */
+    seed: string;
+    instructions?: string;
+    /**
+     * Cap, in pixels, on the editor's height. The editor auto-sizes to its
+     * starter; this only kicks in for longer queries, after which the editor
+     * scrolls.
+     */
+    maxHeight?: number;
+    /**
+     * Rows the student's query must return. Each entry is matched as a subset
+     * (only the keys present in the expected row are compared). Omit for a
+     * pure-sandbox card with no pass/fail.
+     */
+    expectedRows?: ExpectedRow[];
+    /** Whether row order matters in the comparison. Defaults to true. */
+    ordered?: boolean;
+    /** Hide the seed/schema panel above the editor. Defaults to false. */
+    hideSeed?: boolean;
+};
+const {
+    starter,
+    seed,
+    instructions,
+    maxHeight = 320,
+    expectedRows,
+    ordered = true,
+    hideSeed = false,
+} = Astro.props as Props;
+
+const expectedRowsJSON = expectedRows ? JSON.stringify(expectedRows) : "";
+const hasCriteria = !!expectedRows && expectedRows.length > 0;
+---
+
+<div
+    class="sc-card not-content"
+    data-seed={seed}
+    data-expected-rows={expectedRowsJSON}
+    data-ordered={String(ordered)}
+>
+    {instructions && <p class="sc-instructions">{instructions}</p>}
+
+    {
+        !hideSeed && (
+            <details class="sc-schema">
+                <summary>View schema &amp; data</summary>
+                {/* `<pre>` preserves every byte of whitespace it contains, so
+                    the seed text is interpolated as a direct child with no
+                    surrounding indentation or newlines — otherwise the JSX
+                    formatter pads the seed with a leading-indent tab and
+                    blank lines top and bottom. No `<code>` wrapper: it adds
+                    no styling here that `<pre>` doesn't already provide. */}
+                <pre class="sc-schema-body">{seed}</pre>
+            </details>
+        )
+    }
+
+    <div
+        class="sc-editor"
+        style={`--sc-max-h:${maxHeight}px`}
+        data-starter={starter}
+    >
+    </div>
+
+    <div class="sc-toolbar">
+        <button class="sc-run" type="button">Run query</button>
+        {
+            hasCriteria && (
+                <button class="sc-feedback-btn" type="button">
+                    Feedback
+                </button>
+            )
+        }
+        <button class="sc-reset" type="button">Reset</button>
+        <span class="sc-status" aria-live="polite"></span>
+    </div>
+
+    {
+        hasCriteria && (
+            <ul class="sc-criteria" hidden>
+                <li class="sc-criterion" data-kind="rows" data-met="false">
+                    <span class="sc-criterion-icon" aria-hidden="true" />
+                    <span class="sc-criterion-text">
+                        {`Query returns the ${expectedRows!.length} expected row${expectedRows!.length === 1 ? "" : "s"} ${ordered ? "in order" : "(any order)"}`}
+                    </span>
+                </li>
+            </ul>
+        )
+    }
+
+    <div class="sc-result" hidden></div>
+    <pre class="sc-error" hidden></pre>
+
+    {
+        hasCriteria && (
+            <div class="sc-feedback" hidden>
+                <div class="sc-feedback-head">
+                    <span class="sc-feedback-title">AI feedback</span>
+                </div>
+                <div class="sc-feedback-stream" />
+            </div>
+        )
+    }
+</div>
+
+<style is:global>
+    .sc-card {
+        --sc-surface: var(--sl-color-bg-nav);
+        --sc-text: var(--sl-color-white);
+        --sc-muted: var(--sl-color-gray-3);
+        --sc-accent: var(--sl-color-accent);
+        --sc-border: var(--sl-color-gray-5);
+        --sc-hover: var(--sl-color-gray-6);
+        --sc-pass: #16a34a;
+        --sc-pass-bg: rgba(22, 163, 74, 0.12);
+        --sc-fail: #dc2626;
+        --sc-fail-bg: rgba(220, 38, 38, 0.12);
+
+        color: var(--sc-text);
+        background: var(--sc-surface);
+        border: 1px solid var(--sc-border);
+        border-radius: 12px;
+        padding: 18px 20px;
+        margin-bottom: 16px;
+    }
+    .sc-card * {
+        box-sizing: border-box;
+    }
+
+    .sc-instructions {
+        margin: 0 0 14px;
+        color: var(--sc-text);
+        font-size: 1rem;
+        line-height: 1.55;
+    }
+
+    .sc-schema {
+        margin: 0 0 12px;
+        border: 1px solid var(--sc-border);
+        border-radius: 8px;
+        background: rgba(127, 127, 127, 0.05);
+    }
+    .sc-schema > summary {
+        cursor: pointer;
+        padding: 8px 12px;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--sc-muted);
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        list-style: none;
+    }
+    .sc-schema > summary::-webkit-details-marker {
+        display: none;
+    }
+    .sc-schema > summary::before {
+        content: "▸";
+        display: inline-block;
+        margin-right: 6px;
+        transition: transform 0.15s;
+    }
+    .sc-schema[open] > summary::before {
+        transform: rotate(90deg);
+    }
+    .sc-schema-body {
+        margin: 0;
+        padding: 8px 12px 12px;
+        background: transparent;
+        font-family:
+            ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 12.5px;
+        color: var(--sc-text);
+        white-space: pre-wrap;
+        word-break: break-word;
+        overflow-x: auto;
+        border-top: 1px solid var(--sc-border);
+    }
+    .sc-schema-body code {
+        background: transparent;
+        padding: 0;
+        font-family: inherit;
+        font-size: inherit;
+    }
+
+    .sc-editor {
+        border: 1px solid var(--sc-border);
+        border-radius: 8px;
+        overflow: hidden;
+        margin-bottom: 12px;
+    }
+    .sc-editor .cm-editor {
+        height: auto;
+        min-height: 64px;
+        max-height: var(--sc-max-h, 320px);
+    }
+    .sc-editor .cm-scroller {
+        font-family:
+            ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 13.5px;
+        overflow: auto;
+    }
+
+    .sc-toolbar {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+    }
+    .sc-toolbar button {
+        font: inherit;
+        font-weight: 500;
+        padding: 8px 16px;
+        border-radius: 8px;
+        border: 1px solid var(--sc-border);
+        cursor: pointer;
+        background: var(--sc-hover);
+        color: var(--sc-text);
+        transition: opacity 0.15s;
+    }
+    .sc-toolbar button:hover:not(:disabled) {
+        opacity: 0.85;
+    }
+    .sc-toolbar button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+    .sc-toolbar .sc-run {
+        background: var(--sc-accent);
+        color: white;
+        border-color: transparent;
+    }
+    .sc-status {
+        margin-left: auto;
+        font-size: 13px;
+        color: var(--sc-muted);
+    }
+    .sc-status[data-state="running"] {
+        color: var(--sc-accent);
+    }
+    .sc-status[data-state="error"] {
+        color: var(--sc-fail);
+    }
+
+    .sc-criteria {
+        list-style: none;
+        padding: 10px 12px;
+        margin: 12px 0 0;
+        border: 1px dashed var(--sc-border);
+        border-radius: 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        font-size: 13px;
+        background: rgba(127, 127, 127, 0.05);
+    }
+    /* Explicit override of `[hidden]` because `display: flex` above clobbers
+     the user-agent `[hidden] { display: none }` declaration. */
+    .sc-criteria[hidden] {
+        display: none;
+    }
+    .sc-criterion {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 10px;
+        align-items: center;
+        color: var(--sc-muted);
+        line-height: 1.5;
+    }
+    .sc-criterion[data-met="true"] {
+        color: var(--sc-pass);
+    }
+    /* Red ✗ state — only ever visible after a run (the whole checklist is
+     hidden before the first Run click), so this doubles as "ran and failed"
+     without needing a separate "not yet" state. */
+    .sc-criterion[data-met="false"] {
+        color: var(--sc-fail);
+    }
+    .sc-criterion-icon {
+        display: inline-flex;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        align-items: center;
+        justify-content: center;
+        font-size: 13px;
+        font-weight: 800;
+        color: white;
+        border: 1.5px solid currentColor;
+        flex-shrink: 0;
+    }
+    .sc-criterion[data-met="true"] .sc-criterion-icon {
+        background: var(--sc-pass);
+        border-color: var(--sc-pass);
+    }
+    .sc-criterion[data-met="true"] .sc-criterion-icon::before {
+        content: "\2713";
+    }
+    .sc-criterion[data-met="false"] .sc-criterion-icon {
+        background: var(--sc-fail);
+        border-color: var(--sc-fail);
+    }
+    .sc-criterion[data-met="false"] .sc-criterion-icon::before {
+        content: "\2715";
+    }
+
+    /* Result table — sits between the toolbar (or criteria) and any errors.
+     Wrap is overflow-x:auto so wide schemas (many columns) don't blow out the
+     card; the table itself wants to fit its content. */
+    .sc-result {
+        margin-top: 12px;
+    }
+    .sc-result[hidden] {
+        display: none;
+    }
+    /* Result table — themed via Starlight tokens so it flips with light/dark
+     mode. The wrap uses `--sl-color-bg` (page background) so the table reads
+     as a "data viewport" sitting on a surface distinct from the card itself. */
+    .sc-result-tablewrap {
+        border: 1px solid var(--sc-border);
+        border-radius: 8px;
+        overflow-x: auto;
+        background: var(--sl-color-bg);
+    }
+    .sc-result-table {
+        border-collapse: collapse;
+        width: 100%;
+        font-family:
+            ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 12.5px;
+        color: var(--sc-text);
+    }
+    .sc-result-table th,
+    .sc-result-table td {
+        padding: 6px 12px;
+        text-align: left;
+        border-bottom: 1px solid var(--sc-border);
+        white-space: nowrap;
+    }
+    .sc-result-table th {
+        background: var(--sc-surface);
+        color: var(--sc-muted);
+        font-weight: 600;
+        font-size: 11px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        position: sticky;
+        top: 0;
+    }
+    .sc-result-table tr:last-child td {
+        border-bottom: none;
+    }
+    /* Neutral tint so hover is visible on both light and dark surfaces. */
+    .sc-result-table tr:hover td {
+        background: rgba(127, 127, 127, 0.06);
+    }
+    .sc-cell-null {
+        color: var(--sc-muted);
+        font-style: italic;
+    }
+    .sc-result-summary {
+        margin-top: 6px;
+        font-size: 11.5px;
+        color: var(--sc-muted);
+        font-family:
+            ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    .sc-error {
+        margin: 12px 0 0;
+        padding: 10px 12px;
+        background: var(--sc-fail-bg);
+        color: var(--sc-fail);
+        border-radius: 8px;
+        font-family:
+            ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 12.5px;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+    .sc-error[hidden] {
+        display: none;
+    }
+
+    .sc-feedback {
+        margin-top: 12px;
+        padding: 12px 14px;
+        background: rgba(127, 127, 127, 0.08);
+        border-left: 3px solid var(--sc-accent);
+        border-radius: 4px;
+        font-size: 14px;
+        color: var(--sc-text);
+        line-height: 1.55;
+    }
+    .sc-feedback[hidden] {
+        display: none;
+    }
+    .sc-feedback-head {
+        margin-bottom: 6px;
+    }
+    .sc-feedback-title {
+        font-weight: 700;
+        font-size: 14px;
+    }
+    .sc-card[data-feedback-state="pending"] .sc-feedback-title::after {
+        content: "";
+        display: inline-block;
+        width: 6px;
+        height: 6px;
+        margin-left: 6px;
+        border-radius: 50%;
+        background: currentColor;
+        animation: sc-pulse 1.2s infinite ease-in-out;
+        vertical-align: middle;
+    }
+    @keyframes sc-pulse {
+        0%,
+        100% {
+            opacity: 0.3;
+        }
+        50% {
+            opacity: 1;
+        }
+    }
+    .sc-feedback-stream {
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        min-height: 1.4em;
+    }
+</style>
+
+<script>
+    import "./bootstrap";
+</script>
