@@ -129,6 +129,36 @@ const useTabs = (slotHtml.match(/<starlight-tab-item\b/g)?.length ?? 0) > 1;
   .cr-card[data-state] .cr-file .expressive-code .ec-line { cursor: default; }
   .cr-card[data-state] .cr-file .expressive-code .ec-line:hover { background: transparent; }
 
+  /* Inject line numbers via a CSS counter so the indices in the reveal panel
+     ("users.ts:11") line up with what the student sees in the diff. EC uses
+     `.code::before` for its +/- diff markers (with position: absolute), so
+     we attach our gutter to `.ec-line::before` and make the line a flex row
+     to keep both pseudo-elements out of each other's way. The ins/del
+     background sits on `.ec-line` and naturally spans behind our gutter. */
+  .cr-file .expressive-code pre > code { counter-reset: cr-line; }
+  .cr-file .expressive-code .ec-line {
+    counter-increment: cr-line;
+    display: flex;
+    align-items: baseline;
+  }
+  .cr-file .expressive-code .ec-line::before {
+    content: counter(cr-line);
+    flex: 0 0 auto;
+    width: 2.25rem;
+    padding-right: 0.75rem;
+    text-align: right;
+    color: var(--cr-muted);
+    opacity: 0.6;
+    user-select: none;
+  }
+  /* Extra left padding inside `.code` so EC's absolute-positioned +/- marker
+     (at left: 0) has breathing room before the code text starts. */
+  .cr-file .expressive-code .ec-line > .code {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding-left: 1.5rem;
+  }
+
   /* Comment threads */
   .cr-thread {
     background: var(--cr-thread-bg);
@@ -144,7 +174,7 @@ const useTabs = (slotHtml.match(/<starlight-tab-item\b/g)?.length ?? 0) > 1;
     border: 1px solid var(--cr-border);
     border-radius: 6px;
     background: var(--cr-surface);
-    padding: 8px 10px;
+    padding: 8px 14px;
   }
   .cr-comment-text {
     white-space: pre-wrap;
@@ -175,7 +205,7 @@ const useTabs = (slotHtml.match(/<starlight-tab-item\b/g)?.length ?? 0) > 1;
     border: 1px solid var(--cr-border);
     border-radius: 6px;
     background: var(--cr-surface);
-    padding: 8px;
+    padding: 8px 14px;
   }
   .cr-composer textarea {
     width: 100%;
@@ -286,6 +316,14 @@ const useTabs = (slotHtml.match(/<starlight-tab-item\b/g)?.length ?? 0) > 1;
   .cr-issue-row[data-status='missed'] .cr-issue-status { background: var(--cr-wrong); }
   .cr-issue-row[data-status='missed'] .cr-issue-status::before { content: '\2715'; }
   .cr-issue-loc { font: 13px var(--cr-mono); color: var(--cr-muted); }
+  /* When the LLM graded the comment as caught, the student already nailed
+     it — no need to read the senior reveal underneath. The reveal still
+     shows for missed rows (so the student sees what they should have said)
+     and for caught rows under line-only fallback (where the LLM didn't
+     actually verify the comment's substance). */
+  .cr-card[data-mode='comments'] .cr-issue-row[data-status='caught'] .cr-issue-note {
+    display: none;
+  }
   .cr-issue-note { margin: 0; color: var(--cr-text); }
   .cr-issue-note > :first-child { margin-top: 0; }
   .cr-issue-note > :last-child { margin-bottom: 0; }
@@ -302,7 +340,7 @@ const useTabs = (slotHtml.match(/<starlight-tab-item\b/g)?.length ?? 0) > 1;
 <script>
   import { runPrompt } from '../../../lib/ollama';
 
-  type Issue = { file: string; line: number; noteHtml: string };
+  type Issue = { file: string; line: number; kernel: string; noteHtml: string };
   type Comment = { id: number; text: string };
 
   const stripHtml = (html: string): string => {
@@ -311,34 +349,78 @@ const useTabs = (slotHtml.match(/<starlight-tab-item\b/g)?.length ?? 0) > 1;
     return (tmp.textContent ?? '').trim().replace(/\s+/g, ' ');
   };
 
+  // Build a snippet around the target line so the grader can ground its
+  // judgement in the actual code, not just the rubric phrase. Models reject
+  // off-topic comments much more confidently when they can see the line.
+  function codeWindow(
+    codeByLine: Map<string, string>,
+    file: string,
+    line: number,
+    radius = 1,
+  ): string {
+    const out: string[] = [];
+    for (let l = line - radius; l <= line + radius; l++) {
+      const code = codeByLine.get(`${file}:${l}`);
+      if (code == null) continue;
+      const marker = l === line ? '>' : ' ';
+      out.push(`${marker} ${l.toString().padStart(3)} | ${code}`);
+    }
+    return out.join('\n');
+  }
+
   async function gradeWithAI(
     items: { issue: Issue; text: string }[],
+    codeByLine: Map<string, string>,
   ): Promise<boolean[]> {
     const itemsBlock = items
-      .map(
-        (it, i) =>
-          `[${i}] ${it.issue.file}:${it.issue.line}\n` +
-          `RUBRIC: ${stripHtml(it.issue.noteHtml)}\n` +
-          `STUDENT: ${it.text}`,
-      )
+      .map((it, i) => {
+        const win = codeWindow(codeByLine, it.issue.file, it.issue.line);
+        return (
+          `[${i}] DEFECT: ${it.issue.kernel}\n` +
+          `CODE at ${it.issue.file}:${it.issue.line}:\n${win}\n` +
+          `STUDENT: ${it.text}`
+        );
+      })
       .join('\n\n');
 
     const prompt =
-      `Grade each item: does the STUDENT comment identify the same defect as the RUBRIC? ` +
-      `Wording differences are fine; superficial or empty comments fail.\n\n` +
+      `You are grading code review comments by developers reviewing a ` +
+      `teammate's PR. A passing comment must specifically identify the ` +
+      `DEFECT — by naming what's wrong, the missing piece, the wrong ` +
+      `value, or the failure mode. Wording can be informal and short; a ` +
+      `fix or principle is nice but not required. Comments that are vague ` +
+      `gestures ("this looks off", "missing something", "fix this"), or ` +
+      `that just restate the line, do NOT pass.\n\n` +
+      `Score each item on a 0–10 scale:\n` +
+      `  0–2 = no signal, off-topic, gibberish, or about a different defect\n` +
+      `  3–4 = vague gesture near the defect but doesn't pinpoint it\n` +
+      `  5–6 = specifically identifies the defect, even if brief or informal\n` +
+      `  7–8 = identifies the defect AND adds a fix, principle, or failure mode\n` +
+      `  9–10 = senior-quality reviewer comment\n\n` +
+      `Pass threshold: score >= 4.\n\n` +
+      `Examples:\n` +
+      `  DEFECT: missing tenant-scope filter\n` +
+      `  STUDENT: "this query doesn't scope to the current tenant — needs whereUserCanAccess so other tenants' rows aren't returned" → 8\n` +
+      `  STUDENT: "this query doesn't scope to the current tenant" → 6\n` +
+      `  STUDENT: "needs whereUserCanAccess" → 5\n` +
+      `  STUDENT: "missing scope" → 4\n` +
+      `  STUDENT: "looks fishy" → 2\n` +
+      `  STUDENT: "rename this to fetchUsers" → 0\n\n` +
       `Reply with ONLY a JSON array, no prose, no code fences, in this exact shape:\n` +
-      `[{"i":0,"pass":true},{"i":1,"pass":false}]\n\n` +
+      `[{"i":0,"score":6},{"i":1,"score":3}]\n\n` +
       `ITEMS:\n${itemsBlock}`;
 
-    const raw = await runPrompt(prompt);
+    const raw = await runPrompt(prompt, { temperature: 0 });
     const m = raw.match(/\[[\s\S]*\]/);
     if (!m) throw new Error('No JSON array in model response.');
-    const parsed = JSON.parse(m[0]) as { i?: number; pass?: boolean }[];
+    const parsed = JSON.parse(m[0]) as { i?: number; score?: number; pass?: boolean }[];
     const out = items.map(() => false);
     for (const v of parsed) {
-      if (typeof v?.i === 'number' && v.i >= 0 && v.i < items.length) {
-        out[v.i] = !!v.pass;
-      }
+      if (typeof v?.i !== 'number' || v.i < 0 || v.i >= items.length) continue;
+      // Prefer the numeric score (>=4 passes), but accept `pass` for models
+      // that ignore the 0–10 instruction and revert to a boolean.
+      if (typeof v.score === 'number') out[v.i] = v.score >= 4;
+      else if (typeof v.pass === 'boolean') out[v.i] = v.pass;
     }
     return out;
   }
@@ -370,12 +452,16 @@ const useTabs = (slotHtml.match(/<starlight-tab-item\b/g)?.length ?? 0) > 1;
     const issueList = card.querySelector<HTMLElement>('.cr-issue-list')!;
     const overall = card.querySelector<HTMLElement>('.cr-overall')!;
 
-    // Harvest <ReviewIssue> declarations into JS state.
+    // Harvest <ReviewIssue> declarations into JS state. `kernel` is the
+    // short rubric phrase the grader will match against; if absent, fall
+    // back to the flattened reveal text so older usages keep working.
     const issues: Issue[] = [];
     body.querySelectorAll<HTMLElement>('.cr-issue').forEach((i) => {
+      const kernel = i.dataset.kernel?.trim();
       issues.push({
         file: i.dataset.file ?? '',
         line: Number(i.dataset.line ?? '0'),
+        kernel: kernel && kernel.length > 0 ? kernel : stripHtml(i.innerHTML),
         noteHtml: i.innerHTML,
       });
       i.remove();
@@ -398,10 +484,18 @@ const useTabs = (slotHtml.match(/<starlight-tab-item\b/g)?.length ?? 0) > 1;
     let nextId = 1;
     const key = (file: string, line: number) => `${file}:${line}`;
 
+    // Cache the rendered text of each file:line so the grader can ground
+    // its judgement on the actual code, not just the kernel phrase.
+    const codeByLine = new Map<string, string>();
+
     body.querySelectorAll<HTMLElement>('.cr-file').forEach((fileEl) => {
       const file = fileEl.dataset.file ?? '';
       fileEl.querySelectorAll<HTMLElement>('.expressive-code .ec-line').forEach((lineEl, idx) => {
         const line = idx + 1;
+        // expressive-code wraps the rendered code in `.code`; fall back to
+        // the line element if the inner wrapper isn't present.
+        const codeEl = lineEl.querySelector<HTMLElement>('.code') ?? lineEl;
+        codeByLine.set(key(file, line), (codeEl.textContent ?? '').replace(/\s+$/, ''));
         lineEl.addEventListener('click', (e) => {
           // Defensive: a click inside a thread shouldn't open a new composer.
           if ((e.target as HTMLElement).closest('.cr-thread')) return;
@@ -554,7 +648,7 @@ const useTabs = (slotHtml.match(/<starlight-tab-item\b/g)?.length ?? 0) > 1;
         statusEl.hidden = false;
 
         try {
-          verdicts = await gradeWithAI(candidates);
+          verdicts = await gradeWithAI(candidates, codeByLine);
           mode = 'comments';
         } catch {
           // Ollama unreachable / malformed JSON: fall back to line-only grading.
@@ -593,6 +687,7 @@ const useTabs = (slotHtml.match(/<starlight-tab-item\b/g)?.length ?? 0) > 1;
       });
 
       card.dataset.state = caught === issues.length && issues.length > 0 ? 'correct' : 'partial';
+      card.dataset.mode = mode;
       card.querySelector<HTMLElement>('.cr-feedback-title')!.textContent =
         `${caught} of ${issues.length} caught`;
       modeEl.textContent = mode === 'comments' ? 'Comments graded' : 'Lines graded';

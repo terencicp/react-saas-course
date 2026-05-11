@@ -8,7 +8,13 @@ export class OllamaError extends Error {
   }
 }
 
-async function chat(prompt: string, stream: boolean): Promise<Response> {
+export type OllamaOptions = { temperature?: number };
+
+async function chat(
+  prompt: string,
+  stream: boolean,
+  options?: OllamaOptions,
+): Promise<Response> {
   let res: Response;
   try {
     res = await fetch(`${ENDPOINT}/api/chat`, {
@@ -19,6 +25,7 @@ async function chat(prompt: string, stream: boolean): Promise<Response> {
         messages: [{ role: 'user', content: prompt }],
         stream,
         think: false,
+        ...(options ? { options } : {}),
       }),
     });
   } catch (cause) {
@@ -49,8 +56,11 @@ async function chat(prompt: string, stream: boolean): Promise<Response> {
   return res;
 }
 
-export async function* streamPrompt(prompt: string): AsyncGenerator<string, void, void> {
-  const res = await chat(prompt, true);
+export async function* streamPrompt(
+  prompt: string,
+  options?: OllamaOptions,
+): AsyncGenerator<string, void, void> {
+  const res = await chat(prompt, true, options);
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -85,8 +95,8 @@ export async function* streamPrompt(prompt: string): AsyncGenerator<string, void
   }
 }
 
-export async function runPrompt(prompt: string): Promise<string> {
-  const res = await chat(prompt, false);
+export async function runPrompt(prompt: string, options?: OllamaOptions): Promise<string> {
+  const res = await chat(prompt, false, options);
   let body: { message?: { content?: string }; error?: string };
   try {
     body = await res.json();
