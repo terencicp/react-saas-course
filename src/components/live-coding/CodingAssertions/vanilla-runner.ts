@@ -174,7 +174,7 @@ export function setupVanillaRunner(
 
     const resultsEl = card.querySelector<HTMLElement>('.lc-results')!;
     const timer = window.setTimeout(() => {
-      upsertResult(resultsEl, 'Test run timed out (5s) — possible infinite loop.', 'error');
+      upsertResult(resultsEl, 'Test run timed out (5s), incorrect syntax or infinite loop.', 'error');
       cleanup();
     }, VANILLA_TIMEOUT_MS);
 

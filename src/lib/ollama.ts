@@ -95,6 +95,18 @@ export async function* streamPrompt(
   }
 }
 
+// Lightweight health probe — used by UI to decide whether features that
+// depend on the local model should be offered at all. Resolves true if the
+// Ollama server responds, false on any network / non-2xx error. Never throws.
+export async function pingOllama(): Promise<boolean> {
+  try {
+    const res = await fetch(`${ENDPOINT}/api/tags`);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export async function runPrompt(prompt: string, options?: OllamaOptions): Promise<string> {
   const res = await chat(prompt, false, options);
   let body: { message?: { content?: string }; error?: string };
