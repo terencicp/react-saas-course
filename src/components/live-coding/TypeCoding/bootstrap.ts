@@ -11,18 +11,33 @@ import { javascript } from '@codemirror/lang-javascript';
 import { oneDark } from '@codemirror/theme-one-dark';
 
 import type { Diagnostic, TypeQuery } from './type-checker';
+import { streamPrompt, OllamaError, pingOllama } from '../../../lib/ollama';
 
 const DEBOUNCE_MS = 300;
+
+// Single probe shared across every card on the page — Ollama either reachable
+// or not, no point hitting `/api/tags` once per widget.
+const ollamaReady = pingOllama();
 
 document.querySelectorAll<HTMLElement>('.tc-card').forEach((card) => {
   const editorEl = card.querySelector<HTMLElement>('.tc-editor')!;
   const resetBtn = card.querySelector<HTMLButtonElement>('.tc-reset')!;
+  const feedbackBtn = card.querySelector<HTMLButtonElement>('.tc-feedback-btn')!;
+  const feedbackEl = card.querySelector<HTMLElement>('.tc-feedback')!;
+  const feedbackStream = card.querySelector<HTMLElement>('.tc-feedback-stream')!;
   const bootEl = card.querySelector<HTMLElement>('.tc-boot')!;
   const diagnosticsEl = card.querySelector<HTMLElement>('.tc-diagnostics')!;
   const queriesWrap = card.querySelector<HTMLElement>('.tc-queries')!;
   const queriesList = card.querySelector<HTMLElement>('.tc-queries-list')!;
   const criteriaEl = card.querySelector<HTMLElement>('.tc-criteria');
+  const instructionsEl = card.querySelector<HTMLElement>('.tc-instructions');
+  const instructions = instructionsEl?.textContent?.trim() ?? '';
   const starter = editorEl.dataset.starter ?? '';
+
+  // Latest type-checker output, kept around so the feedback prompt can include
+  // the same errors/queries the student is looking at without re-running tsc.
+  let latestDiagnostics: Diagnostic[] = [];
+  let latestQueries: TypeQuery[] = [];
 
   const view = new EditorView({
     state: EditorState.create({
@@ -36,7 +51,10 @@ document.querySelectorAll<HTMLElement>('.tc-card').forEach((card) => {
         oneDark,
         keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
         EditorView.updateListener.of((u) => {
-          if (u.docChanged) scheduleCheck();
+          if (u.docChanged) {
+            scheduleCheck();
+            updateFeedbackEnabled();
+          }
         }),
       ],
     }),
@@ -45,6 +63,79 @@ document.querySelectorAll<HTMLElement>('.tc-card').forEach((card) => {
 
   resetBtn.addEventListener('click', () => {
     view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: starter } });
+    // Wipe any AI feedback too — restoring the starter means the previous
+    // hint no longer matches the code on screen.
+    feedbackEl.hidden = true;
+    feedbackStream.textContent = '';
+  });
+
+  // The button is hidden entirely while either gate is open: (1) Ollama still
+  // being probed or unreachable, (2) student hasn't edited the starter yet so
+  // there's nothing to give feedback on. Once both gates close it appears.
+  // During a live stream we keep it visible but `disabled` (handled inside
+  // the click handler) so the chip doesn't pop out from under the cursor mid-
+  // response; the helper here is the single source of truth otherwise.
+  let ollamaOk = false;
+  let streaming = false;
+  function updateFeedbackEnabled(): void {
+    if (streaming) return;
+    const codeChanged = view.state.doc.toString() !== starter;
+    feedbackBtn.hidden = !(ollamaOk && codeChanged);
+  }
+  feedbackBtn.hidden = true;
+  ollamaReady.then((ok) => { ollamaOk = ok; updateFeedbackEnabled(); });
+
+  function collectDiagnostics(): string {
+    if (latestDiagnostics.length === 0) return '(none)';
+    return latestDiagnostics
+      .map((d) => `- ${d.line}:${d.column} [${d.category}] ${d.message}`)
+      .join('\n');
+  }
+
+  function collectQueries(): string {
+    if (latestQueries.length === 0) return '(none)';
+    return latestQueries
+      .map((q) => `- line ${q.line - 1}: ${q.type}`)
+      .join('\n');
+  }
+
+  function buildFeedbackPrompt(): string {
+    return (
+      `You are an AI tutor helping a student who is stuck on a TypeScript ` +
+      `typing exercise. Give a short, encouraging hint that nudges them ` +
+      `forward — do NOT give the full solution.\n\n` +
+      (instructions ? `INSTRUCTIONS:\n${instructions}\n\n` : '') +
+      `STUDENT'S CURRENT CODE:\n${view.state.doc.toString()}\n\n` +
+      `CURRENT TYPE ERRORS:\n${collectDiagnostics()}\n\n` +
+      `CURRENT RESOLVED TYPE QUERIES (\`^?\`):\n${collectQueries()}\n\n` +
+      `Reply with 1–2 short sentences (under 30 words total) addressed to the ` +
+      `student in second person. Be terse: point at the single thing to check ` +
+      `next, no warm-up phrases, no restating what they did. ` +
+      `No code blocks, no headers, no preamble.`
+    );
+  }
+
+  feedbackBtn.addEventListener('click', async () => {
+    streaming = true;
+    feedbackBtn.disabled = true;
+    feedbackEl.hidden = false;
+    card.dataset.feedbackState = 'pending';
+    feedbackStream.textContent = '';
+    try {
+      for await (const chunk of streamPrompt(buildFeedbackPrompt(), { temperature: 0.3 })) {
+        feedbackStream.textContent = (feedbackStream.textContent ?? '') + chunk;
+      }
+    } catch (err) {
+      feedbackStream.textContent =
+        err instanceof OllamaError
+          ? err.message
+          : 'Could not reach the AI tutor. Please try again.';
+      ollamaOk = false;
+    } finally {
+      delete card.dataset.feedbackState;
+      streaming = false;
+      updateFeedbackEnabled();
+    }
   });
 
   let timer: number | null = null;
@@ -61,6 +152,8 @@ document.querySelectorAll<HTMLElement>('.tc-card').forEach((card) => {
     try {
       const { checkCode } = await import('./type-checker');
       const { diagnostics, queries } = await checkCode(code);
+      latestDiagnostics = diagnostics;
+      latestQueries = queries;
       renderQueries(queries);
 
       // Walk the criteria checklist, flip each item's met state per its kind,
