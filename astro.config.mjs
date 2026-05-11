@@ -11,9 +11,17 @@ export default defineConfig({
 	// package-internal assets; Vite's dep optimizer mangles those paths and
 	// the FS bundle ends up being served as HTML. Exclude PGlite from the
 	// optimizer so its own asset resolution kicks in.
+	//
+	// `worker.format: 'es'` is needed for the DrizzleCoding component — its
+	// worker imports drizzle-orm which Rollup code-splits across multiple
+	// chunks, and Vite's default IIFE worker format can't represent that
+	// graph. ES-module workers can.
 	vite: {
 		optimizeDeps: {
 			exclude: ['@electric-sql/pglite'],
+		},
+		worker: {
+			format: 'es',
 		},
 	},
 	integrations: [
