@@ -1,0 +1,410 @@
+---
+// Hybrid live-coding widget for Zod 4. Combines TypeCoding's type-only checker
+// (Twoslash `^?` queries + diagnostics) with a sandboxed runtime that imports
+// real zod from esm.sh and runs the student's schema against a fixtures table.
+//
+// The senior pitch for Zod is "one declaration produces both the static type
+// AND the runtime contract" — showing the inferred type update alongside the
+// per-fixture pass/fail in the same card lands that lesson without splitting
+// it across two widgets.
+//
+// MDX usage:
+//   <ZodCoding
+//     schemaName="UserSchema"
+//     starter={`import { z } from 'zod';
+//
+// export const UserSchema = z.object({
+//   name: z.string(),
+//   age: z.number(),
+// });
+//
+// type User = z.infer<typeof UserSchema>;
+// //   ^?
+// `}
+//     instructions="…"
+//     fixtures={[
+//       { name: 'valid user', input: { name: 'Ada', age: 30 }, expect: 'pass' },
+//       { name: 'missing name', input: { age: 30 }, expect: 'fail', errorContains: 'name' },
+//     ]}
+//   />
+//
+// No pass/fail checklist on top: in Zod the runtime and the type follow from
+// one declaration, so a fixture passing implies the type took the right
+// shape — the table is the lesson's signal. Pure type-shape exercises that
+// don't involve runtime validation (`satisfies`, branded types, `as const`)
+// belong in TypeCoding, not here. The `^?` query panel below the editor
+// still renders the inferred type as informational context for building
+// intuition.
+
+type Fixture = {
+  /** Short label rendered in the results table. */
+  name: string;
+  /** Value passed to `schema.safeParse(input)`. */
+  input: unknown;
+  /** Whether the schema should accept (`pass`) or reject (`fail`) this input. */
+  expect: 'pass' | 'fail';
+  /** When `expect === 'fail'`, optional substring the Zod error must contain. */
+  errorContains?: string;
+};
+type Props = {
+  starter: string;
+  /** Name of the const the lesson is testing — the harness looks this up after the student code runs. */
+  schemaName: string;
+  instructions?: string;
+  fixtures?: Fixture[];
+  /**
+   * Cap, in pixels, on the editor's height. The editor auto-sizes to its
+   * starter; this only kicks in for code longer than the cap.
+   */
+  maxHeight?: number;
+};
+const {
+  starter,
+  schemaName,
+  instructions,
+  fixtures = [],
+  maxHeight = 360,
+} = Astro.props as Props;
+
+// Pretty-print fixture inputs for the static (no-JS) view. Keep it short —
+// the runner will replace this with live pass/fail status once hydrated.
+const fixturesJson = JSON.stringify(fixtures);
+function previewInput(input: unknown): string {
+  try {
+    const s = JSON.stringify(input);
+    if (s == null) return 'undefined';
+    return s.length > 60 ? s.slice(0, 57) + '…' : s;
+  } catch {
+    return String(input);
+  }
+}
+---
+
+<div class="zc-card not-content" data-schema-name={schemaName} data-fixtures={fixturesJson}>
+  {instructions && <p class="zc-instructions">{instructions}</p>}
+  <div class="zc-editor" style={`--zc-max-h:${maxHeight}px`} data-starter={starter}>
+    <span class="zc-boot" aria-live="polite">Booting type-checker…</span>
+    <button class="zc-feedback-btn" type="button">Feedback</button>
+    <button class="zc-reset" type="button">Reset</button>
+  </div>
+  <div class="zc-queries" hidden>
+    <ul class="zc-queries-list"></ul>
+  </div>
+  {fixtures.length > 0 && (
+    <div class="zc-fixtures">
+      <div class="zc-fixtures-head">
+        <span class="zc-fixtures-title">Test scenarios</span>
+        <span class="zc-fixtures-status" aria-live="polite">idle</span>
+      </div>
+      <table class="zc-fixtures-table">
+        <thead>
+          <tr>
+            <th class="zc-col-status"></th>
+            <th class="zc-col-name">Scenario</th>
+            <th class="zc-col-input">Input</th>
+            <th class="zc-col-expect">Expect</th>
+          </tr>
+        </thead>
+        <tbody>
+          {fixtures.map((f) => (
+            <tr class="zc-fixture-row" data-fixture-name={f.name} data-status="pending">
+              <td class="zc-col-status"><span class="zc-fixture-icon" aria-hidden="true"></span></td>
+              <td class="zc-col-name">{f.name}</td>
+              <td class="zc-col-input"><code>{previewInput(f.input)}</code></td>
+              <td class="zc-col-expect">{f.expect}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )}
+  <div class="zc-feedback" hidden>
+    <div class="zc-feedback-head">
+      <span class="zc-feedback-title">AI feedback</span>
+    </div>
+    <div class="zc-feedback-stream"></div>
+  </div>
+</div>
+
+<style is:global>
+  .zc-card {
+    --zc-surface: var(--sl-color-bg-nav);
+    --zc-text: var(--sl-color-white);
+    --zc-muted: var(--sl-color-gray-3);
+    --zc-accent: var(--sl-color-accent);
+    --zc-border: var(--sl-color-gray-5);
+    --zc-hover: var(--sl-color-gray-6);
+    --zc-pass: #16a34a;
+    --zc-pass-bg: rgba(22, 163, 74, 0.12);
+    --zc-fail: #dc2626;
+    --zc-fail-bg: rgba(220, 38, 38, 0.12);
+    --zc-warn: #d97706;
+    --zc-warn-bg: rgba(217, 119, 6, 0.12);
+
+    color: var(--zc-text);
+    background: var(--zc-surface);
+    border: 1px solid var(--zc-border);
+    border-radius: 12px;
+    padding: 18px 20px;
+    margin-bottom: 16px;
+  }
+  .zc-card * { box-sizing: border-box; }
+
+  .zc-instructions {
+    margin: 0 0 14px;
+    color: var(--zc-text);
+    font-size: 1rem;
+    line-height: 1.55;
+  }
+
+  /* Editor — mirrors TypeCoding's geometry (chips bracketing the corners). */
+  .zc-editor {
+    position: relative;
+    border: 1px solid var(--zc-border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .zc-editor .cm-editor {
+    height: auto;
+    min-height: 64px;
+    max-height: var(--zc-max-h, 360px);
+  }
+  .zc-editor .cm-scroller {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 13.5px;
+    overflow: auto;
+  }
+
+  .zc-reset,
+  .zc-feedback-btn {
+    position: absolute;
+    z-index: 2;
+    font: inherit;
+    font-size: 11px;
+    font-weight: 500;
+    padding: 3px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--zc-border);
+    cursor: pointer;
+    background: var(--zc-surface);
+    color: var(--zc-muted);
+    opacity: 0.45;
+    transition: opacity 0.15s, color 0.15s;
+  }
+  .zc-reset { bottom: 8px; right: 8px; }
+  .zc-feedback-btn { top: 8px; right: 8px; }
+  .zc-reset:hover,
+  .zc-reset:focus-visible,
+  .zc-feedback-btn:hover:not(:disabled),
+  .zc-feedback-btn:focus-visible:not(:disabled) {
+    opacity: 1;
+    color: var(--zc-text);
+  }
+  .zc-feedback-btn:disabled { cursor: not-allowed; opacity: 0.25; }
+
+  .zc-boot {
+    position: absolute;
+    bottom: 8px;
+    left: 8px;
+    z-index: 2;
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 6px;
+    background: var(--zc-surface);
+    color: var(--zc-muted);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    opacity: 0.85;
+  }
+  .zc-boot::before {
+    content: '';
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--zc-accent);
+    animation: zc-pulse 1.2s infinite ease-in-out;
+  }
+  .zc-boot[hidden] { display: none; }
+  @keyframes zc-pulse {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 1; }
+  }
+
+  /* Type queries panel — sits under the editor, deliberately quiet. Same
+     gutter-aligned geometry as TypeCoding. */
+  .zc-queries { margin-top: 8px; padding-left: 1px; }
+  .zc-queries[hidden] { display: none; }
+  .zc-queries-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .zc-query {
+    display: grid;
+    grid-template-columns: 25px 1fr;
+    gap: 0;
+    padding: 2px 0;
+    align-items: baseline;
+  }
+  .zc-query-loc {
+    font-size: 11.5px;
+    color: var(--zc-muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    white-space: nowrap;
+    opacity: 0.7;
+    text-align: right;
+    padding-right: 8px;
+    box-sizing: border-box;
+  }
+  .zc-query-type {
+    background: transparent;
+    color: var(--zc-muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 13px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  /* Fixtures table — the runtime half of the lesson. Each row's icon and
+     "Actual" cell flip live as the iframe posts results back. */
+  .zc-fixtures {
+    margin-top: 14px;
+    border: 1px solid var(--zc-border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .zc-fixtures-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    background: rgba(127, 127, 127, 0.06);
+    border-bottom: 1px solid var(--zc-border);
+  }
+  .zc-fixtures-title {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--zc-muted);
+  }
+  .zc-fixtures-status {
+    font-size: 11.5px;
+    color: var(--zc-muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+  .zc-fixtures-status[data-state='running'] { color: var(--zc-accent); }
+  .zc-fixtures-status[data-state='ok'] { color: var(--zc-pass); }
+  .zc-fixtures-status[data-state='fail'] { color: var(--zc-fail); }
+  .zc-fixtures-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  .zc-fixtures-table th,
+  .zc-fixtures-table td {
+    padding: 8px 12px;
+    text-align: left;
+    border-bottom: 1px solid var(--zc-border);
+    vertical-align: top;
+  }
+  .zc-fixtures-table tr:last-child td { border-bottom: 0; }
+  .zc-fixtures-table th {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--zc-muted);
+    background: rgba(127, 127, 127, 0.03);
+  }
+  .zc-col-status { width: 28px; }
+  .zc-col-expect { width: 80px; white-space: nowrap; }
+  .zc-fixtures-table code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 12px;
+    color: var(--zc-text);
+    word-break: break-all;
+  }
+  .zc-fixture-icon {
+    display: inline-flex;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 800;
+    color: white;
+    border: 1.5px solid var(--zc-muted);
+  }
+  .zc-fixture-row[data-status='ok'] .zc-fixture-icon {
+    background: var(--zc-pass);
+    border-color: var(--zc-pass);
+  }
+  .zc-fixture-row[data-status='ok'] .zc-fixture-icon::before { content: '\2713'; }
+  .zc-fixture-row[data-status='bad'] .zc-fixture-icon {
+    background: var(--zc-fail);
+    border-color: var(--zc-fail);
+  }
+  .zc-fixture-row[data-status='bad'] .zc-fixture-icon::before { content: '\2715'; }
+  .zc-fixture-row[data-status='ok'] { background: var(--zc-pass-bg); }
+  .zc-fixture-row[data-status='bad'] { background: var(--zc-fail-bg); }
+
+  /* Runner iframe — kept off-screen but in the DOM so the postMessage path
+     stays alive. */
+  .zc-card iframe.zc-runner-iframe {
+    width: 1px;
+    height: 1px;
+    position: absolute;
+    left: -9999px;
+    border: 0;
+  }
+
+  /* AI feedback panel — grey left stripe to read as ancillary commentary,
+     not a status signal like the red error band. */
+  .zc-feedback {
+    margin-top: 12px;
+    padding: 10px 12px;
+    background: rgba(127, 127, 127, 0.08);
+    border-left: 3px solid var(--zc-border);
+    border-radius: 4px;
+    font-size: 13px;
+    color: var(--zc-text);
+    line-height: 1.55;
+  }
+  .zc-feedback[hidden] { display: none; }
+  .zc-feedback-head { margin-bottom: 6px; }
+  .zc-feedback-title {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--zc-muted);
+  }
+  .zc-card[data-feedback-state='pending'] .zc-feedback-title::after {
+    content: '';
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-left: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: zc-pulse 1.2s infinite ease-in-out;
+    vertical-align: middle;
+  }
+  .zc-feedback-stream {
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    min-height: 1.4em;
+  }
+
+</style>
+
+<script>
+  import './bootstrap';
+</script>
