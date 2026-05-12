@@ -1,0 +1,434 @@
+---
+// React live-coding widget. CodeMirror editor + a same-origin `srcdoc` iframe
+// rendering the student's component. TSX → JS via esbuild-wasm; React 19 from
+// esm.sh via an in-iframe import map; Tailwind v4 from the Play CDN.
+//
+// MDX usage:
+//   <ReactCoding
+//     instructions="Build a primary button."
+//     starter={`export function App() { return <button>Save</button>; }`}
+//     tests={`test('renders Save', () => { expect(document.querySelector('button')?.textContent).toBe('Save'); });`}
+//   />
+//
+// Assertion surface (in-iframe runner, see bootstrap.ts):
+//   `test(name, fn)`, `expect(x).{toBe, toEqual, toBeNull, toBeUndefined,
+//   toBeTruthy, toBeFalsy, toContain, toMatch}`, plus `.not.*` on each.
+//   Inside `fn` the rendered DOM is live — query it with `document.querySelector`.
+
+interface Props {
+    /** TSX the student edits. Must export a component named `App`. */
+    starter: string;
+    instructions?: string;
+    /** Optional jest-style tests run against the rendered DOM. */
+    tests?: string;
+    /** Editor max-height cap in px. Auto-sizes shorter starters. */
+    maxHeight?: number;
+    /** Wire Tailwind v4 Play CDN into the iframe. Defaults to true. */
+    tailwind?: boolean;
+    /** Hide the preview pane. Use for exercises where the visual doesn't
+     *  change (e.g. accessible-form attributes). The iframe still runs;
+     *  tests still execute against it. */
+    hidePreview?: boolean;
+    /** Auto-rebuild on edit, with a short debounce. Right for visual /
+     *  utility-class exercises where tight iteration earns its weight.
+     *  Wrong for fix-the-bug and render-model exercises where the
+     *  click-Run-to-commit ritual is part of the pedagogy. */
+    live?: boolean;
+}
+
+const {
+    starter,
+    instructions,
+    tests,
+    maxHeight = 320,
+    tailwind = true,
+    hidePreview = false,
+    live = false,
+} = Astro.props as Props;
+
+const hasTests = !!tests && tests.trim().length > 0;
+// Short starters (≤3 lines) don't have vertical room for the diagonal chip
+// layout — the top and bottom chips would overlap. Fall back to a single
+// side-by-side group in the top-right when the editor is short.
+const compactChips = live && starter.trim().split('\n').length <= 3;
+---
+
+<div
+    class="rc-card not-content"
+    data-tailwind={String(tailwind)}
+    data-hide-preview={String(hidePreview)}
+    data-live={String(live)}
+>
+    {instructions && <p class="rc-instructions">{instructions}</p>}
+
+    <div
+        class="rc-editor"
+        style={`--rc-max-h:${maxHeight}px`}
+        data-starter={starter}
+        data-compact-chips={String(compactChips)}
+    >
+        {
+            live && (
+                <div class="rc-chip-group">
+                    {hasTests && (
+                        <button class="rc-feedback-btn rc-chip" type="button">Feedback</button>
+                    )}
+                    <button class="rc-reset rc-chip" type="button">Reset</button>
+                </div>
+            )
+        }
+    </div>
+
+    {
+        !live && (
+            <div class="rc-toolbar">
+                <button class="rc-run" type="button" disabled>Run</button>
+                {hasTests && <button class="rc-feedback-btn" type="button">Feedback</button>}
+                <button class="rc-reset" type="button">Reset</button>
+            </div>
+        )
+    }
+
+    {
+        hasTests && (
+            <div class="rc-feedback" hidden>
+                <button class="rc-feedback-close" type="button" aria-label="Close feedback">×</button>
+                <div class="rc-feedback-head">
+                    <span class="rc-feedback-title">AI feedback</span>
+                </div>
+                <div class="rc-feedback-stream" />
+            </div>
+        )
+    }
+
+    <div class="rc-preview-wrap">
+        <div class="rc-preview-label">
+            <span>Preview</span>
+            {live && <span class="rc-live-chip" aria-label="Live updates enabled">LIVE</span>}
+        </div>
+        <iframe class="rc-preview" title="Live preview"></iframe>
+    </div>
+
+    {hasTests && <ul class="rc-results" data-tests={tests}></ul>}
+    <pre class="rc-error" hidden></pre>
+</div>
+
+<style is:global>
+    .rc-card {
+        --rc-surface: var(--sl-color-bg-nav);
+        --rc-text: var(--sl-color-white);
+        --rc-muted: var(--sl-color-gray-3);
+        --rc-accent: var(--sl-color-accent);
+        --rc-border: var(--sl-color-gray-5);
+        --rc-hover: var(--sl-color-gray-6);
+        --rc-pass: #16a34a;
+        --rc-pass-bg: rgba(22, 163, 74, 0.12);
+        --rc-fail: #dc2626;
+        --rc-fail-bg: rgba(220, 38, 38, 0.12);
+
+        color: var(--rc-text);
+        background: var(--rc-surface);
+        border: 1px solid var(--rc-border);
+        border-radius: 12px;
+        padding: 18px 20px;
+        margin-bottom: 16px;
+    }
+    .rc-card * { box-sizing: border-box; }
+
+    .rc-instructions {
+        margin: 0 0 14px;
+        color: var(--rc-text);
+        font-size: 1rem;
+        line-height: 1.55;
+    }
+
+    .rc-editor {
+        position: relative;
+        border: 1px solid var(--rc-border);
+        border-radius: 8px;
+        overflow: hidden;
+        margin-bottom: 12px;
+    }
+    /* In live mode the toolbar is gone — Feedback and Reset ride inside the
+       editor as muted chips (full opacity on hover). Mirrors the TypeCoding
+       pattern. Layout switches based on starter length:
+         • tall editors (>3 lines) → diagonal: Feedback top-right, Reset
+           bottom-right, so the chips don't crowd one corner
+         • short editors (≤3 lines) → side-by-side at top-right, because the
+           diagonal can't fit without the chips overlapping each other
+       The wrapping `.rc-chip-group` is absolute-positioned; flex direction
+       and span change between modes. */
+    .rc-chip-group {
+        position: absolute;
+        right: 8px;
+        top: 8px;
+        z-index: 2;
+        display: flex;
+        gap: 6px;
+    }
+    /* Default: diagonal — column spanning full editor height, Feedback at
+       top (natural flex-start), Reset pushed to bottom via auto-margin so
+       it works whether or not Feedback is present. */
+    .rc-editor:not([data-compact-chips="true"]) .rc-chip-group {
+        bottom: 8px;
+        flex-direction: column;
+        align-items: flex-end;
+    }
+    .rc-editor:not([data-compact-chips="true"]) .rc-chip-group .rc-reset {
+        margin-top: auto;
+    }
+    /* Compact: row, top-right, side-by-side. */
+    .rc-editor[data-compact-chips="true"] .rc-chip-group {
+        flex-direction: row;
+    }
+
+    .rc-chip {
+        font: inherit;
+        font-size: 11px;
+        font-weight: 500;
+        padding: 3px 10px;
+        border-radius: 6px;
+        border: 1px solid var(--rc-border);
+        cursor: pointer;
+        background: var(--rc-surface);
+        color: var(--rc-muted);
+        opacity: 0.45;
+        transition: opacity 0.15s, color 0.15s;
+    }
+    .rc-chip:hover:not(:disabled),
+    .rc-chip:focus-visible:not(:disabled) {
+        opacity: 1;
+        color: var(--rc-text);
+    }
+    .rc-chip:disabled { cursor: not-allowed; opacity: 0.25; }
+    .rc-editor .cm-editor {
+        height: auto;
+        min-height: 64px;
+        max-height: var(--rc-max-h, 320px);
+    }
+    .rc-editor .cm-scroller {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 13.5px;
+        overflow: auto;
+    }
+
+    .rc-toolbar {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 12px;
+    }
+    .rc-toolbar button {
+        font: inherit;
+        font-weight: 500;
+        padding: 8px 16px;
+        border-radius: 8px;
+        border: 1px solid var(--rc-border);
+        cursor: pointer;
+        background: var(--rc-hover);
+        color: var(--rc-text);
+        transition: opacity 0.15s;
+    }
+    .rc-toolbar button:hover:not(:disabled) { opacity: 0.85; }
+    .rc-toolbar button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .rc-toolbar .rc-run {
+        background: var(--rc-accent);
+        color: white;
+        border-color: transparent;
+    }
+
+    .rc-preview-wrap {
+        border: 1px solid var(--rc-border);
+        border-radius: 8px;
+        overflow: hidden;
+        background: #ffffff;
+    }
+    /* When the lesson author opts out of the visible preview (e.g. accessible-
+       form exercises where the visual doesn't change), the iframe stays in the
+       DOM and still runs — it's just hidden. */
+    .rc-card[data-hide-preview="true"] .rc-preview-wrap { display: none; }
+    .rc-card[data-hide-preview="true"] .rc-preview {
+        position: absolute; left: -9999px; width: 1px; height: 1px; border: 0;
+    }
+    .rc-preview-label {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        font-size: 10.5px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--rc-muted);
+        background: var(--rc-surface);
+        padding: 6px 12px;
+        border-bottom: 1px solid var(--rc-border);
+    }
+    /* Recording-style "LIVE" indicator — sits at the right of the preview
+       label, with a pulsing green dot. Signals "this rebuilds as you type."
+       Pulse honours prefers-reduced-motion. */
+    .rc-live-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        color: var(--rc-pass);
+    }
+    .rc-live-chip::before {
+        content: '';
+        display: inline-block;
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: currentColor;
+        animation: rc-live-pulse 2s infinite ease-in-out;
+    }
+    @keyframes rc-live-pulse {
+        0%, 100% { opacity: 0.35; }
+        50% { opacity: 1; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .rc-live-chip::before { animation: none; opacity: 1; }
+    }
+    .rc-preview {
+        display: block;
+        width: 100%;
+        /* Initial height — the iframe's ResizeObserver posts the body's
+           scrollHeight to bootstrap.ts, which adjusts `style.height` to fit
+           the rendered content. min-height stops empty content from
+           collapsing to a sliver.
+           No transition: animating height interacts with the ResizeObserver
+           feedback loop (intermediate sizes trigger fresh observer fires)
+           and the iframe ends up snapping back to its starting height. */
+        height: 56px;
+        min-height: 56px;
+        border: 0;
+        background: #ffffff;
+    }
+
+    .rc-results {
+        list-style: none;
+        padding: 0;
+        margin: 12px 0 0;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+    }
+    .rc-results:empty { display: none; }
+    .rc-result {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 8px 12px;
+        border-radius: 6px;
+        font-size: 14px;
+        line-height: 1.5;
+    }
+    .rc-result-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        color: white;
+        font-size: 11px;
+        font-weight: 800;
+        flex-shrink: 0;
+        margin-top: 1px;
+    }
+    .rc-result[data-status="pass"] { background: var(--rc-pass-bg); color: var(--rc-pass); }
+    .rc-result[data-status="pass"] .rc-result-icon { background: var(--rc-pass); }
+    .rc-result[data-status="pass"] .rc-result-icon::before { content: "\2713"; }
+    .rc-result[data-status="fail"],
+    .rc-result[data-status="error"] { background: var(--rc-fail-bg); color: var(--rc-fail); }
+    .rc-result[data-status="fail"] .rc-result-icon,
+    .rc-result[data-status="error"] .rc-result-icon { background: var(--rc-fail); }
+    .rc-result[data-status="fail"] .rc-result-icon::before { content: "\2715"; }
+    .rc-result[data-status="error"] .rc-result-icon::before { content: "!"; }
+    .rc-result-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+    .rc-result-name { font-weight: 500; }
+    .rc-result-error {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 12.5px;
+        opacity: 0.9;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+    /* Failed assertions show just the test name + the red ✕. The diagnostic
+       lives in the DOM (so the AI feedback prompt sees it) but isn't visible
+       to the student — they're meant to use AI Feedback if they're stuck.
+       `error` status (runtime crash / parse failure) keeps its message: the
+       AI can't always recover from those without the context. */
+    .rc-result[data-status="fail"] .rc-result-error { display: none; }
+
+    .rc-error {
+        margin: 12px 0 0;
+        padding: 10px 12px;
+        background: var(--rc-fail-bg);
+        color: var(--rc-fail);
+        border-radius: 8px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 12.5px;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+    .rc-error[hidden] { display: none; }
+
+    .rc-feedback {
+        position: relative;
+        margin-bottom: 12px;
+        /* Reserve right-padding so long feedback streams don't run under
+           the absolute-positioned X close button. */
+        padding: 12px 36px 12px 14px;
+        background: rgba(127, 127, 127, 0.08);
+        border-left: 3px solid var(--rc-accent);
+        border-radius: 4px;
+        font-size: 14px;
+        color: var(--rc-text);
+        line-height: 1.55;
+    }
+    .rc-feedback[hidden] { display: none; }
+    .rc-feedback-head { margin-bottom: 6px; }
+    .rc-feedback-title { font-weight: 700; font-size: 14px; }
+    /* X close button — pinned to the panel's top-right corner. */
+    .rc-feedback-close {
+        position: absolute;
+        top: 4px;
+        right: 6px;
+        background: transparent;
+        border: 0;
+        color: var(--rc-muted);
+        font-size: 18px;
+        line-height: 1;
+        padding: 2px 6px;
+        cursor: pointer;
+        border-radius: 4px;
+    }
+    .rc-feedback-close:hover { color: var(--rc-text); background: var(--rc-hover); }
+    .rc-card[data-feedback-state="pending"] .rc-feedback-title::after {
+        content: "";
+        display: inline-block;
+        width: 6px;
+        height: 6px;
+        margin-left: 6px;
+        border-radius: 50%;
+        background: currentColor;
+        animation: rc-pulse 1.2s infinite ease-in-out;
+        vertical-align: middle;
+    }
+    @keyframes rc-pulse {
+        0%, 100% { opacity: 0.3; }
+        50% { opacity: 1; }
+    }
+    .rc-feedback-stream {
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        min-height: 1.4em;
+    }
+</style>
+
+<script>
+    import "./bootstrap";
+</script>
