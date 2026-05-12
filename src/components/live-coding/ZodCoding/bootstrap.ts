@@ -153,8 +153,9 @@ document.querySelectorAll<HTMLElement>('.zc-card').forEach((card) => {
   const feedbackStream = card.querySelector<HTMLElement>('.zc-feedback-stream')!;
   const bootEl = card.querySelector<HTMLElement>('.zc-boot')!;
   const instructionsEl = card.querySelector<HTMLElement>('.zc-instructions');
-  const fixturesStatusEl = card.querySelector<HTMLElement>('.zc-fixtures-status');
   const fixturesBodyEl = card.querySelector<HTMLElement>('.zc-fixtures-table tbody');
+  const harnessErrorRowEl = card.querySelector<HTMLElement>('.zc-harness-error-row');
+  const harnessErrorCellEl = card.querySelector<HTMLElement>('.zc-harness-error-cell');
 
   const instructions = instructionsEl?.textContent?.trim() ?? '';
   const starter = editorEl.dataset.starter ?? '';
@@ -338,9 +339,7 @@ document.querySelectorAll<HTMLElement>('.zc-card').forEach((card) => {
   }
 
   function startParseRun(code: string, token: number) {
-    if (!fixturesStatusEl || !fixturesBodyEl) return;
-    fixturesStatusEl.textContent = 'running…';
-    fixturesStatusEl.dataset.state = 'running';
+    if (!fixturesBodyEl) return;
     resetFixtureRows();
     const incoming: FixtureResult[] = [];
     latestHarnessError = null;
@@ -385,6 +384,9 @@ document.querySelectorAll<HTMLElement>('.zc-card').forEach((card) => {
     fixturesBodyEl.querySelectorAll<HTMLElement>('.zc-fixture-row').forEach((row) => {
       row.dataset.status = 'pending';
     });
+    // Hide any prior harness-error banner — a fresh run starts clean.
+    if (harnessErrorRowEl) harnessErrorRowEl.hidden = true;
+    if (harnessErrorCellEl) harnessErrorCellEl.textContent = '';
   }
 
   function updateFixtureRow(r: FixtureResult) {
@@ -400,19 +402,20 @@ document.querySelectorAll<HTMLElement>('.zc-card').forEach((card) => {
     if (row) row.dataset.status = r.ok ? 'ok' : 'bad';
   }
 
-  function finalizeFixtures(results: FixtureResult[]) {
-    if (!fixturesStatusEl) return;
-    const total = fixtures.length;
-    const okCount = results.filter((r) => r.ok).length;
-    const allOk = okCount === total && results.length === total;
-    fixturesStatusEl.textContent = `${okCount} / ${total} passing`;
-    fixturesStatusEl.dataset.state = allOk ? 'ok' : 'fail';
+  function finalizeFixtures(_results: FixtureResult[]) {
+    // Nothing to do — the per-row icons are the only result-state signal
+    // now that the rollup pill and "running…" indicator are gone.
   }
 
   function markFixturesHarnessFailure(msg: string) {
-    if (!fixturesStatusEl || !fixturesBodyEl) return;
-    fixturesStatusEl.textContent = msg;
-    fixturesStatusEl.dataset.state = 'fail';
+    if (!fixturesBodyEl) return;
+    // Surface the harness error in the dedicated top-of-tbody row. Per-row
+    // icons also flip to red so the failure reads from two angles: "the
+    // schema is broken (red rows)" and "here's why (banner)".
+    if (harnessErrorRowEl && harnessErrorCellEl) {
+      harnessErrorCellEl.textContent = msg;
+      harnessErrorRowEl.hidden = false;
+    }
     fixturesBodyEl.querySelectorAll<HTMLElement>('.zc-fixture-row').forEach((row) => {
       row.dataset.status = 'bad';
     });
