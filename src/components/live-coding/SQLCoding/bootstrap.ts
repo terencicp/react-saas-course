@@ -219,7 +219,7 @@ document.querySelectorAll<HTMLElement>('.sc-card').forEach((card) => {
     });
   }
 
-  // Feedback wiring — same shape as the AssertCoding card. Gate: Ollama
+  // Feedback wiring — same shape as the ScriptCoding card. Gate: Ollama
   // reachable AND the student has edited the starter (no point asking for
   // feedback on code you haven't touched). Sandbox cards skip this entirely.
   let ollamaOk = false;

@@ -191,7 +191,7 @@ document.querySelectorAll<HTMLElement>('.dc-card').forEach((card) => {
     });
   }
 
-  // Feedback wiring — same shape as SQLCoding/AssertCoding. Gated on Ollama
+  // Feedback wiring — same shape as SQLCoding/ScriptCoding. Gated on Ollama
   // reachable AND the student having edited the starter.
   let ollamaOk = false;
   let streaming = false;

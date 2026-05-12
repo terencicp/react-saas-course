@@ -55,7 +55,7 @@ function buildParseSrcdoc(studentCode: string, schemaName: string, fixtures: Fix
   let safeStudent = stripTypes(studentCode);
 
   // Defang `</script>` inside student code so it can't terminate the module
-  // script tag below — same defense AssertCoding's vanilla runner uses.
+  // script tag below — same defense ScriptCoding's vanilla runner uses.
   const closeRe = new RegExp('<' + '/script>', 'gi');
   safeStudent = safeStudent.replace(closeRe, '<\\/script>');
 
