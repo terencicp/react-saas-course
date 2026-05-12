@@ -36,7 +36,13 @@ async function initCard(card: HTMLElement): Promise<void> {
     const resetBtn = card.querySelector<HTMLButtonElement>('.rc-reset')!;
     const resultsEl = card.querySelector<HTMLElement>('.rc-results');
     const errorEl = card.querySelector<HTMLElement>('.rc-error')!;
-    const iframe = card.querySelector<HTMLIFrameElement>('.rc-preview')!;
+    // Two iframes when target-match mode is on. The first `.rc-preview` (no
+    // `.rc-preview-target` class) is always the student's; the optional
+    // `.rc-preview-target` is the reference output. Selecting student via
+    // `:not(.rc-preview-target)` keeps it unambiguous in either mode.
+    const iframe = card.querySelector<HTMLIFrameElement>('.rc-preview:not(.rc-preview-target)')!;
+    const targetIframe = card.querySelector<HTMLIFrameElement>('.rc-preview-target');
+    const targetSrc = targetIframe?.dataset.targetSrc ?? '';
     const feedbackBtn = card.querySelector<HTMLButtonElement>('.rc-feedback-btn');
     const feedbackEl = card.querySelector<HTMLElement>('.rc-feedback');
     const feedbackStream = card.querySelector<HTMLElement>('.rc-feedback-stream');
@@ -138,43 +144,79 @@ createRoot(document.getElementById('root')!).render(<App />);
         }
     }
 
-    await rebuild();
+    await Promise.all([rebuild(), buildTarget()]);
+
+    // Build the reference iframe once. Preview-only — no tests, no runtime-
+    // tests module. A bundle failure here is a lesson-author bug; surface it
+    // in the error pane so it's never silent.
+    async function buildTarget(): Promise<void> {
+        if (!targetIframe || !targetSrc) return;
+        try {
+            const files: Record<string, string> = {
+                '/App.tsx': targetSrc,
+                '/index.tsx': `import { createRoot } from 'react-dom/client';
+import { App } from './App';
+createRoot(document.getElementById('root')!).render(<App />);
+`,
+            };
+            const { code } = await bundle(files, '/index.tsx');
+            targetIframe.srcdoc = buildIframeHTML({ bundledJs: code, tailwind });
+        } catch (err) {
+            const message = err instanceof Error ? (err.message || String(err)) : String(err);
+            errorEl.hidden = false;
+            errorEl.textContent = `Target render failed: ${message}`;
+        }
+    }
 
     // Parent-side listener. Same-origin means `e.source === iframe.contentWindow`
     // identifies the right card on multi-card pages — no per-card id needed.
+    // In target-match mode the target iframe also posts `resize` / `runtime-
+    // error` messages; route by source so each iframe sizes itself and so the
+    // student's tests-* lifecycle stays unconfused by the target.
     window.addEventListener('message', (e: MessageEvent) => {
-        if (e.source !== iframe.contentWindow) return;
+        const isStudent = e.source === iframe.contentWindow;
+        const isTarget = !!targetIframe && e.source === targetIframe.contentWindow;
+        if (!isStudent && !isTarget) return;
         const data = e.data;
         if (!data || typeof data !== 'object' || typeof data.rcType !== 'string') return;
 
         switch (data.rcType) {
-            case 'tests-ready':
-                if (!running && runBtn) runBtn.disabled = false;
-                break;
-            case 'tests-begin':
-                clearResults();
-                break;
-            case 'test-result':
-                appendResult(data.name, data.status, data.error);
-                break;
-            case 'tests-end':
-                running = false;
-                if (runBtn) runBtn.disabled = false;
-                break;
-            case 'runtime-error':
-                errorEl.hidden = false;
-                errorEl.textContent = data.stack || data.message || 'Runtime error';
-                running = false;
-                if (runBtn) runBtn.disabled = false;
-                break;
             case 'resize':
-                // Auto-fit the preview iframe to the content rendered inside.
+                // Auto-fit each iframe to its rendered content.
                 // Cap at 600px so a runaway render can't take over the page.
                 // Idempotent — skip re-setting if unchanged so we don't kick
                 // the iframe's ResizeObserver back into a feedback loop.
                 if (typeof data.height === 'number') {
+                    const which = isStudent ? iframe : targetIframe!;
                     const next = Math.min(Math.max(data.height, 56), 600) + 'px';
-                    if (iframe.style.height !== next) iframe.style.height = next;
+                    if (which.style.height !== next) which.style.height = next;
+                }
+                break;
+            case 'runtime-error': {
+                const prefix = isTarget ? 'Target runtime error: ' : '';
+                errorEl.hidden = false;
+                errorEl.textContent = prefix + (data.stack || data.message || 'Runtime error');
+                if (isStudent) {
+                    running = false;
+                    if (runBtn) runBtn.disabled = false;
+                }
+                break;
+            }
+            // The remaining lifecycle events only originate from the student
+            // iframe — the target has no runtime-tests module.
+            case 'tests-ready':
+                if (isStudent && !running && runBtn) runBtn.disabled = false;
+                break;
+            case 'tests-begin':
+                if (isStudent) clearResults();
+                break;
+            case 'test-result':
+                if (isStudent) appendResult(data.name, data.status, data.error);
+                break;
+            case 'tests-end':
+                if (isStudent) {
+                    running = false;
+                    if (runBtn) runBtn.disabled = false;
                 }
                 break;
         }
@@ -278,18 +320,27 @@ createRoot(document.getElementById('root')!).render(<App />);
     }
 
     function buildFeedbackPrompt(): string {
-        return (
+        const sections: string[] = [
             `You are an AI tutor helping a student who is stuck on a React coding exercise.\n` +
-            `Give a short, encouraging hint that nudges them forward — do NOT give the full solution.\n\n` +
-            (instructions ? `INSTRUCTIONS:\n${instructions}\n\n` : '') +
-            `TESTS:\n${tests}\n\n` +
-            `STUDENT'S CURRENT CODE:\n${getCode()}\n\n` +
-            `CURRENT TEST RESULTS:\n${collectResults()}\n\n` +
+            `Give a short, encouraging hint that nudges them forward — do NOT give the full solution.\n`,
+        ];
+        if (instructions) sections.push(`INSTRUCTIONS:\n${instructions}\n`);
+        if (targetSrc) {
+            sections.push(
+                `TARGET CODE (the reference output the student should visually match — ` +
+                `compare against the student's current code to spot what's missing):\n${targetSrc}\n`
+            );
+        }
+        if (hasTests) sections.push(`TESTS:\n${tests}\n`);
+        sections.push(`STUDENT'S CURRENT CODE:\n${getCode()}\n`);
+        if (hasTests) sections.push(`CURRENT TEST RESULTS:\n${collectResults()}\n`);
+        sections.push(
             `Reply with 1–2 short sentences (under 30 words total) addressed to the ` +
             `student in second person. Be terse: point at the single thing to check ` +
             `next, no warm-up phrases, no restating what they did. ` +
             `No code blocks, no headers, no preamble.`
         );
+        return sections.join('\n');
     }
 
     feedbackClose?.addEventListener('click', () => {
