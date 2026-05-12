@@ -4,8 +4,9 @@
 // `^?` queries, AND per-fixture pass/fail so the AI tutor's hint can address
 // whichever side the student is stuck on.
 
-import { EditorView, keymap, lineNumbers } from '@codemirror/view';
-import { EditorState } from '@codemirror/state';
+import { EditorView, keymap, lineNumbers, Decoration, WidgetType, hoverTooltip } from '@codemirror/view';
+import type { DecorationSet, Tooltip } from '@codemirror/view';
+import { EditorState, StateField, StateEffect } from '@codemirror/state';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { bracketMatching, indentOnInput } from '@codemirror/language';
 import { javascript } from '@codemirror/lang-javascript';
@@ -14,6 +15,128 @@ import { oneDark } from '@codemirror/theme-one-dark';
 import type { Diagnostic, TypeQuery } from './type-checker';
 import type { Fixture, FixtureResult } from './parse-runner';
 import { streamPrompt, OllamaError, pingOllama } from '../../../lib/ollama';
+
+// ─── Hover-driven type-query reveal ───────────────────────────────────
+// The lesson author still writes `// ^?` in the starter code (so authoring
+// matches the Twoslash convention students will see in VS Code), but at
+// render time we:
+//   1. HIDE the `^?` marker line with a block-level replace decoration
+//   2. UNDERLINE the symbol on the line above at the `^` column with a
+//      mark decoration carrying the resolved type as a data attribute
+//   3. SHOW a tooltip with that type on hover, via CodeMirror's built-in
+//      hoverTooltip extension — styled to match the CodeTooltips widget
+//
+// Net effect: the editor looks clean (no `^?` line eating vertical space),
+// and the inferred type stays one hover away — same UX as VS Code Twoslash.
+
+// Empty 0-height widget — collapses the `^?` line entirely when used as
+// the replacement for a block decoration. Without `display: contents`
+// CodeMirror leaves an empty .cm-line in place; the explicit 0-height
+// styling makes the collapse visible.
+class HiddenLineWidget extends WidgetType {
+  toDOM(): HTMLElement {
+    const el = document.createElement('span');
+    el.style.cssText = 'display: none';
+    return el;
+  }
+  ignoreEvent(): boolean { return true; }
+}
+
+const setQueriesEffect = StateEffect.define<TypeQuery[]>();
+
+// Computes both decoration kinds (hide marker line + mark symbol above)
+// for the current snapshot of queries. Returns ranges already sorted by
+// `from` so `Decoration.set` is happy.
+function buildQueryDecorations(doc: { lines: number; line(n: number): { from: number; to: number; text: string; length: number } }, queries: TypeQuery[]) {
+  const ranges: Array<{ from: number; to: number; deco: Decoration }> = [];
+  for (const q of queries) {
+    if (q.line < 1 || q.line > doc.lines) continue;
+    const markerLine = doc.line(q.line);
+    // 1. Hide the marker line itself. Extending the replace through the
+    //    trailing newline (`+1`) collapses the line completely; without
+    //    that, a blank line remains.
+    ranges.push({
+      from: markerLine.from,
+      to: markerLine.to + 1,
+      deco: Decoration.replace({ block: true, widget: new HiddenLineWidget() }),
+    });
+    // 2. Underline the symbol on the previous line at the `^` column. If
+    //    the caret points at an identifier, span the whole identifier
+    //    (so "Profile" gets underlined, not just one letter). If it
+    //    points at a non-identifier character, fall back to a single-char
+    //    span so the hover still works.
+    if (q.line > 1) {
+      const caretCol = Math.max(0, markerLine.text.indexOf('^'));
+      const targetLine = doc.line(q.line - 1);
+      const text = targetLine.text;
+      const local = Math.min(caretCol, text.length);
+      const isIdent = (ch: string) => /[A-Za-z0-9_$]/.test(ch);
+      let start = local;
+      while (start > 0 && isIdent(text[start - 1])) start--;
+      let end = local;
+      if (end < text.length && isIdent(text[end])) {
+        while (end < text.length && isIdent(text[end])) end++;
+      } else {
+        end = Math.min(local + 1, text.length);
+      }
+      if (end > start) {
+        ranges.push({
+          from: targetLine.from + start,
+          to: targetLine.from + end,
+          deco: Decoration.mark({
+            class: 'cm-query-mark',
+            attributes: { 'data-type': q.type },
+          }),
+        });
+      }
+    }
+  }
+  ranges.sort((a, b) => a.from - b.from || a.to - b.to);
+  return ranges;
+}
+
+const queryDecorationsField = StateField.define<DecorationSet>({
+  create(): DecorationSet { return Decoration.none; },
+  update(decos, tr): DecorationSet {
+    decos = decos.map(tr.changes);
+    for (const e of tr.effects) {
+      if (e.is(setQueriesEffect)) {
+        const ranges = buildQueryDecorations(tr.newDoc, e.value);
+        decos = Decoration.set(ranges.map(r => r.deco.range(r.from, r.to)), true);
+      }
+    }
+    return decos;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
+
+// Hover tooltip — when the cursor lands on a `.cm-query-mark`, surface
+// the type it carries. CodeMirror handles positioning, hover delay, and
+// dismiss-on-leave for us.
+const queryHoverTooltip = hoverTooltip((view, pos): Tooltip | null => {
+  const decos = view.state.field(queryDecorationsField);
+  let found: { from: number; to: number; type: string } | null = null;
+  decos.between(pos, pos + 1, (from, to, deco) => {
+    const typeText = (deco.spec.attributes as Record<string, string> | undefined)?.['data-type'];
+    if (typeText) {
+      found = { from, to, type: typeText };
+      return false;
+    }
+  });
+  if (!found) return null;
+  const hit = found as { from: number; to: number; type: string };
+  return {
+    pos: hit.from,
+    end: hit.to,
+    above: true,
+    create() {
+      const dom = document.createElement('div');
+      dom.className = 'zc-cm-tip';
+      dom.textContent = hit.type;
+      return { dom };
+    },
+  };
+});
 
 // Slightly longer than TypeCoding's 300ms — the runtime side spins up an
 // iframe, so debouncing more aggressively keeps a fast typer from queuing
@@ -29,8 +152,6 @@ document.querySelectorAll<HTMLElement>('.zc-card').forEach((card) => {
   const feedbackEl = card.querySelector<HTMLElement>('.zc-feedback')!;
   const feedbackStream = card.querySelector<HTMLElement>('.zc-feedback-stream')!;
   const bootEl = card.querySelector<HTMLElement>('.zc-boot')!;
-  const queriesWrap = card.querySelector<HTMLElement>('.zc-queries')!;
-  const queriesList = card.querySelector<HTMLElement>('.zc-queries-list')!;
   const instructionsEl = card.querySelector<HTMLElement>('.zc-instructions');
   const fixturesStatusEl = card.querySelector<HTMLElement>('.zc-fixtures-status');
   const fixturesBodyEl = card.querySelector<HTMLElement>('.zc-fixtures-table tbody');
@@ -58,6 +179,8 @@ document.querySelectorAll<HTMLElement>('.zc-card').forEach((card) => {
         javascript({ typescript: true }),
         oneDark,
         keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
+        queryDecorationsField,
+        queryHoverTooltip,
         EditorView.updateListener.of((u) => {
           if (u.docChanged) {
             scheduleCheck();
@@ -205,7 +328,11 @@ document.querySelectorAll<HTMLElement>('.zc-card').forEach((card) => {
       // a hint (the tutor sees what the student doesn't).
       latestDiagnostics = diagnostics;
       latestQueries = queries;
-      renderQueries(queries);
+      // Push the resolved types into the editor: the StateField listening
+      // for this effect rebuilds the decoration set, hiding each `^?` line
+      // and underlining the symbol on the line above. Hover that symbol to
+      // see the type as a CodeMirror tooltip.
+      view.dispatch({ effects: setQueriesEffect.of(queries) });
       bootEl.hidden = true;
     }
   }
@@ -289,27 +416,6 @@ document.querySelectorAll<HTMLElement>('.zc-card').forEach((card) => {
     fixturesBodyEl.querySelectorAll<HTMLElement>('.zc-fixture-row').forEach((row) => {
       row.dataset.status = 'bad';
     });
-  }
-
-  function renderQueries(items: TypeQuery[]) {
-    queriesList.innerHTML = '';
-    if (items.length === 0) {
-      queriesWrap.hidden = true;
-      return;
-    }
-    queriesWrap.hidden = false;
-    for (const q of items) {
-      const li = document.createElement('li');
-      li.className = 'zc-query';
-      const loc = document.createElement('span');
-      loc.className = 'zc-query-loc';
-      loc.textContent = String(q.line - 1);
-      const type = document.createElement('code');
-      type.className = 'zc-query-type';
-      type.textContent = q.type;
-      li.append(loc, type);
-      queriesList.appendChild(li);
-    }
   }
 
   scheduleCheck();
