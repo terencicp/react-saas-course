@@ -13,7 +13,7 @@ export async function setupSandpackRunner(
   runBtn: HTMLButtonElement,
   statusEl: HTMLElement,
 ) {
-  const iframe = card.querySelector<HTMLIFrameElement>('iframe.lc-runner-iframe')!;
+  const iframe = card.querySelector<HTMLIFrameElement>('iframe.lc-script-runner-iframe')!;
   const resultsEl = card.querySelector<HTMLElement>('.lc-results')!;
 
   function setStatus(text: string, state: SandpackStatus) {

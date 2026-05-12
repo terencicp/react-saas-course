@@ -1,109 +1,82 @@
 // Per-card bootstrap. Mounts CodeMirror (JSX/TS), bundles the student's TSX
 // locally via esbuild-wasm, and renders the result into a same-origin `srcdoc`
 // iframe. When tests are attached, an in-iframe runner posts results back over
-// `window.postMessage`. Multi-card pages route by `e.source === iframe.contentWindow`.
-//
-// Lifecycle:
-//   • initCard → bundle + write srcdoc (initial, passive)
-//   • Run click → re-bundle with `autoRun: true`; the new runtime fires
-//     `_run()` automatically as soon as the iframe loads
-//   • iframe → parent: `tests-ready`, `tests-begin`, `test-result`,
-//     `tests-end`, `runtime-error`
-
-import { EditorView, keymap, lineNumbers } from '@codemirror/view';
-import { EditorState } from '@codemirror/state';
-import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
-import { bracketMatching, indentOnInput } from '@codemirror/language';
-import { javascript } from '@codemirror/lang-javascript';
-import { oneDark } from '@codemirror/theme-one-dark';
+// `window.postMessage`. Multi-card pages route by source iframe.
 
 import { bundle, ensureEsbuild } from './bundler';
-import { streamPrompt, OllamaError, pingOllama } from '../../../lib/ollama';
+import { createEditor } from '../_shared/editor';
+import { getCardRefs } from '../_shared/refs';
+import { setError } from '../_shared/status';
+import { wireFeedback } from '../_shared/feedback-loop';
+import {
+    appendTestResult,
+    clearTestResults,
+    collectTestResults,
+} from '../_shared/iframe-harness';
 
-const ollamaReady = pingOllama();
 // Warm esbuild-wasm in the background as soon as any ReactCoding card is on
 // the page — by the time the user clicks Run, the wasm is loaded.
-void ensureEsbuild().catch(() => { /* surfaced per-card on actual use */ });
+void ensureEsbuild().catch(() => {
+    /* surfaced per-card on actual use */
+});
 
-document.querySelectorAll<HTMLElement>('.rc-card').forEach((card) => {
+document.querySelectorAll<HTMLElement>('.lc-react').forEach((card) => {
     void initCard(card);
 });
 
 async function initCard(card: HTMLElement): Promise<void> {
-    const editorEl = card.querySelector<HTMLElement>('.rc-editor')!;
-    // Run button is absent in live mode (the editor auto-rebuilds on edit).
-    const runBtn = card.querySelector<HTMLButtonElement>('.rc-run');
-    const resetBtn = card.querySelector<HTMLButtonElement>('.rc-reset')!;
-    const resultsEl = card.querySelector<HTMLElement>('.rc-results');
-    const errorEl = card.querySelector<HTMLElement>('.rc-error')!;
-    // Two iframes when target-match mode is on. The first `.rc-preview` (no
-    // `.rc-preview-target` class) is always the student's; the optional
-    // `.rc-preview-target` is the reference output. Selecting student via
-    // `:not(.rc-preview-target)` keeps it unambiguous in either mode.
-    const iframe = card.querySelector<HTMLIFrameElement>('.rc-preview:not(.rc-preview-target)')!;
-    const targetIframe = card.querySelector<HTMLIFrameElement>('.rc-preview-target');
-    const targetSrc = targetIframe?.dataset.targetSrc ?? '';
-    const feedbackBtn = card.querySelector<HTMLButtonElement>('.rc-feedback-btn');
-    const feedbackEl = card.querySelector<HTMLElement>('.rc-feedback');
-    const feedbackStream = card.querySelector<HTMLElement>('.rc-feedback-stream');
-    const feedbackClose = card.querySelector<HTMLButtonElement>('.rc-feedback-close');
-    const instructionsEl = card.querySelector<HTMLElement>('.rc-instructions');
-    const instructions = instructionsEl?.textContent?.trim() ?? '';
+    const refs = getCardRefs(card);
+    // Two iframes when target-match mode is on. The first `.lc-rc-preview`
+    // without `.lc-rc-preview-target` is always the student's; the optional
+    // `.lc-rc-preview-target` is the reference output.
+    const iframe = card.querySelector<HTMLIFrameElement>(
+        '.lc-rc-preview:not(.lc-rc-preview-target)',
+    )!;
+    const targetIframe = card.querySelector<HTMLIFrameElement>(
+        '.lc-rc-preview-target',
+    );
+    const targetSrc = card.dataset.targetSrc ?? '';
+    const resultsEl = card.querySelector<HTMLElement>('.lc-results');
 
-    const starter = editorEl.dataset.starter ?? '';
-    const tests = resultsEl?.dataset.tests ?? '';
+    const starter = card.dataset.starter ?? '';
+    const tests = card.dataset.tests ?? '';
     const hasTests = tests.trim().length > 0;
     const tailwind = card.dataset.tailwind !== 'false';
     const live = card.dataset.live === 'true';
 
-    // Debounce timer for live-update cards. 400ms is the "after typing
-    // settles" sweet spot — short enough to feel live, long enough that
-    // we don't bundle on every keystroke.
+    // 400ms is the "after typing settles" sweet spot — short enough to feel
+    // live, long enough not to bundle on every keystroke.
     let liveDebounce: ReturnType<typeof setTimeout> | null = null;
 
-    const view = new EditorView({
-        state: EditorState.create({
-            doc: starter,
-            extensions: [
-                lineNumbers(),
-                history(),
-                bracketMatching(),
-                indentOnInput(),
-                javascript({ jsx: true, typescript: true }),
-                oneDark,
-                keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
-                EditorView.updateListener.of((u) => {
-                    if (!u.docChanged) return;
-                    if (feedbackBtn) updateFeedbackEnabled();
-                    if (live) {
-                        if (liveDebounce) clearTimeout(liveDebounce);
-                        liveDebounce = setTimeout(() => {
-                            // Every live build is post-initial — runtime
-                            // auto-runs tests if any.
-                            initialBuild = false;
-                            void rebuild({ live: true });
-                        }, 400);
-                    }
-                }),
-            ],
-        }),
-        parent: editorEl,
+    const view = createEditor({
+        parent: refs.editor,
+        doc: starter,
+        lang: 'tsx',
+        onDocChange: () => {
+            feedback.refreshGate();
+            if (live) {
+                if (liveDebounce) clearTimeout(liveDebounce);
+                liveDebounce = setTimeout(() => {
+                    // Every live build is post-initial — runtime auto-runs
+                    // tests if any.
+                    initialBuild = false;
+                    void rebuild({ live: true });
+                }, 400);
+            }
+        },
     });
 
     const getCode = () => view.state.doc.toString();
 
-    // Initial build is passive (runtime loads, posts tests-ready, then
-    // waits). Every subsequent build is in response to a Run click, so the
-    // new runtime auto-runs as soon as it loads.
+    // Initial build is passive (runtime loads, posts tests-ready, then waits).
+    // Every subsequent build is in response to a Run click, so the new
+    // runtime auto-runs as soon as it loads.
     let initialBuild = true;
     let running = false;
 
     // esbuild's `jsx: 'automatic'` injects the right `react/jsx-runtime`
-    // imports — no need for the student to write `import React`.
-    //
-    // When tests are present, the runtime-tests module owns the #root mount
-    // (so test-driven `document.querySelector` lands on exactly one App
-    // instance, and the runtime can swap in fresh mounts per test).
+    // imports — no need for the student to write `import React`. When tests
+    // are present, the runtime-tests module owns the #root mount.
     const indexTSX = hasTests
         ? `import './runtime-tests';\n`
         : `import { createRoot } from 'react-dom/client';
@@ -127,28 +100,24 @@ createRoot(document.getElementById('root')!).render(<App />);
             const files = buildFiles();
             const { code } = await bundle(files, '/index.tsx');
             iframe.srcdoc = buildIframeHTML({ bundledJs: code, tailwind });
-            // For preview-only cards there's no tests-ready message — the
+            // For preview-only cards there's no tests-ready signal — the
             // bundle landing is the readiness signal.
-            if (!hasTests && runBtn) runBtn.disabled = false;
+            if (!hasTests && refs.runBtn) refs.runBtn.disabled = false;
         } catch (err) {
             // On live (mid-keystroke) rebuilds, swallow parse errors and
-            // leave the last successful preview in place — the student is
-            // probably still typing. The error pane is for explicit-Run
-            // failures where the student wants the diagnostic.
+            // leave the last successful preview in place. The error pane is
+            // for explicit-Run failures.
             if (opts.live) return;
-            const message = err instanceof Error ? (err.message || String(err)) : String(err);
-            errorEl.hidden = false;
-            errorEl.textContent = message;
+            const message =
+                err instanceof Error ? err.message || String(err) : String(err);
+            setError(refs.errorPane, message);
             running = false;
-            if (runBtn) runBtn.disabled = false;
+            if (refs.runBtn) refs.runBtn.disabled = false;
         }
     }
 
     await Promise.all([rebuild(), buildTarget()]);
 
-    // Build the reference iframe once. Preview-only — no tests, no runtime-
-    // tests module. A bundle failure here is a lesson-author bug; surface it
-    // in the error pane so it's never silent.
     async function buildTarget(): Promise<void> {
         if (!targetIframe || !targetSrc) return;
         try {
@@ -162,17 +131,14 @@ createRoot(document.getElementById('root')!).render(<App />);
             const { code } = await bundle(files, '/index.tsx');
             targetIframe.srcdoc = buildIframeHTML({ bundledJs: code, tailwind });
         } catch (err) {
-            const message = err instanceof Error ? (err.message || String(err)) : String(err);
-            errorEl.hidden = false;
-            errorEl.textContent = `Target render failed: ${message}`;
+            const message =
+                err instanceof Error ? err.message || String(err) : String(err);
+            setError(refs.errorPane, `Target render failed: ${message}`);
         }
     }
 
-    // Parent-side listener. Same-origin means `e.source === iframe.contentWindow`
-    // identifies the right card on multi-card pages — no per-card id needed.
-    // In target-match mode the target iframe also posts `resize` / `runtime-
-    // error` messages; route by source so each iframe sizes itself and so the
-    // student's tests-* lifecycle stays unconfused by the target.
+    // Same-origin means `e.source === iframe.contentWindow` identifies the
+    // right card on multi-card pages — no per-card id needed.
     window.addEventListener('message', (e: MessageEvent) => {
         const isStudent = e.source === iframe.contentWindow;
         const isTarget = !!targetIframe && e.source === targetIframe.contentWindow;
@@ -182,10 +148,6 @@ createRoot(document.getElementById('root')!).render(<App />);
 
         switch (data.rcType) {
             case 'resize':
-                // Auto-fit each iframe to its rendered content.
-                // Cap at 600px so a runaway render can't take over the page.
-                // Idempotent — skip re-setting if unchanged so we don't kick
-                // the iframe's ResizeObserver back into a feedback loop.
                 if (typeof data.height === 'number') {
                     const which = isStudent ? iframe : targetIframe!;
                     const next = Math.min(Math.max(data.height, 56), 600) + 'px';
@@ -194,191 +156,97 @@ createRoot(document.getElementById('root')!).render(<App />);
                 break;
             case 'runtime-error': {
                 const prefix = isTarget ? 'Target runtime error: ' : '';
-                errorEl.hidden = false;
-                errorEl.textContent = prefix + (data.stack || data.message || 'Runtime error');
+                setError(refs.errorPane, prefix + (data.stack || data.message || 'Runtime error'));
                 if (isStudent) {
                     running = false;
-                    if (runBtn) runBtn.disabled = false;
+                    if (refs.runBtn) refs.runBtn.disabled = false;
                 }
                 break;
             }
-            // The remaining lifecycle events only originate from the student
+            // Remaining lifecycle events only originate from the student
             // iframe — the target has no runtime-tests module.
             case 'tests-ready':
-                if (isStudent && !running && runBtn) runBtn.disabled = false;
+                if (isStudent && !running && refs.runBtn) refs.runBtn.disabled = false;
                 break;
             case 'tests-begin':
-                if (isStudent) clearResults();
+                if (isStudent) clearTestResults(resultsEl);
                 break;
             case 'test-result':
-                if (isStudent) appendResult(data.name, data.status, data.error);
+                if (isStudent) {
+                    appendTestResult(resultsEl, data.name, data.status, data.error);
+                }
                 break;
             case 'tests-end':
                 if (isStudent) {
                     running = false;
-                    if (runBtn) runBtn.disabled = false;
+                    if (refs.runBtn) refs.runBtn.disabled = false;
                 }
                 break;
         }
     });
 
-    runBtn?.addEventListener('click', () => {
-        if (liveDebounce) { clearTimeout(liveDebounce); liveDebounce = null; }
-        errorEl.hidden = true;
-        errorEl.textContent = '';
+    refs.runBtn?.addEventListener('click', () => {
+        if (liveDebounce) {
+            clearTimeout(liveDebounce);
+            liveDebounce = null;
+        }
+        setError(refs.errorPane, null);
         running = hasTests;
-        runBtn.disabled = true;
-        initialBuild = false; // next build emits an auto-running runtime
+        refs.runBtn!.disabled = true;
+        initialBuild = false;
         void rebuild();
     });
 
-    resetBtn.addEventListener('click', () => {
-        if (liveDebounce) { clearTimeout(liveDebounce); liveDebounce = null; }
-        view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: starter } });
-        clearResults();
-        errorEl.hidden = true;
-        errorEl.textContent = '';
-        if (feedbackEl) feedbackEl.hidden = true;
-        if (feedbackStream) feedbackStream.textContent = '';
-    });
-
-    // ---------- result rendering ----------
-
-    function clearResults(): void {
-        if (resultsEl) resultsEl.innerHTML = '';
-    }
-
-    function appendResult(name: string, status: 'pass' | 'fail' | 'error', error?: string): void {
-        if (!resultsEl) return;
-        const li = document.createElement('li');
-        li.className = 'rc-result';
-        li.dataset.status = status;
-        const nameEl = document.createElement('span');
-        nameEl.className = 'rc-result-name';
-        nameEl.textContent = name;
-        const body = document.createElement('div');
-        body.className = 'rc-result-body';
-        body.appendChild(nameEl);
-        if (error && status !== 'pass') {
-            const pre = document.createElement('pre');
-            pre.className = 'rc-result-error';
-            pre.textContent = error;
-            body.appendChild(pre);
+    refs.resetBtn.addEventListener('click', () => {
+        if (liveDebounce) {
+            clearTimeout(liveDebounce);
+            liveDebounce = null;
         }
-        const icon = document.createElement('span');
-        icon.className = 'rc-result-icon';
-        icon.setAttribute('aria-hidden', 'true');
-        li.appendChild(icon);
-        li.appendChild(body);
-        resultsEl.appendChild(li);
-    }
-
-    // ---------- feedback (Ollama) ----------
-
-    let ollamaOk = false;
-    let streaming = false;
-    // Feedback availability: hidden in live mode (chip floats inside the
-    // editor; if it can't do anything it shouldn't take space), disabled in
-    // toolbar mode (it's one of three buttons in a row — disappearing would
-    // leave a gap).
-    function updateFeedbackEnabled(): void {
-        if (!feedbackBtn) return;
-        const codeChanged = getCode() !== starter;
-        const unavailable = streaming || !(ollamaOk && codeChanged);
-        if (live) {
-            feedbackBtn.hidden = unavailable;
-        } else {
-            feedbackBtn.disabled = unavailable;
-            feedbackBtn.title = !ollamaOk
-                ? 'AI tutor unavailable — Ollama is not reachable.'
-                : !codeChanged
-                  ? 'Edit the code first, then ask for feedback.'
-                  : '';
-        }
-    }
-    if (feedbackBtn) {
-        if (live) feedbackBtn.hidden = true;
-        else feedbackBtn.disabled = true;
-        ollamaReady.then((ok) => {
-            ollamaOk = ok;
-            updateFeedbackEnabled();
+        view.dispatch({
+            changes: { from: 0, to: view.state.doc.length, insert: starter },
         });
-    }
-
-    function collectResults(): string {
-        if (!resultsEl) return '(no tests configured)';
-        const items = resultsEl.querySelectorAll<HTMLElement>('.rc-result');
-        if (items.length === 0) return '(tests have not been run yet)';
-        return Array.from(items)
-            .map((li) => {
-                const name = li.querySelector('.rc-result-name')?.textContent ?? '';
-                const status = li.dataset.status ?? '';
-                const err = li.querySelector('.rc-result-error')?.textContent ?? '';
-                return `- ${name} [${status}]${err ? `: ${err}` : ''}`;
-            })
-            .join('\n');
-    }
-
-    function buildFeedbackPrompt(): string {
-        const sections: string[] = [
-            `You are an AI tutor helping a student who is stuck on a React coding exercise.\n` +
-            `Give a short, encouraging hint that nudges them forward — do NOT give the full solution.\n`,
-        ];
-        if (instructions) sections.push(`INSTRUCTIONS:\n${instructions}\n`);
-        if (targetSrc) {
-            sections.push(
-                `TARGET CODE (the reference output the student should visually match — ` +
-                `compare against the student's current code to spot what's missing):\n${targetSrc}\n`
-            );
-        }
-        if (hasTests) sections.push(`TESTS:\n${tests}\n`);
-        sections.push(`STUDENT'S CURRENT CODE:\n${getCode()}\n`);
-        if (hasTests) sections.push(`CURRENT TEST RESULTS:\n${collectResults()}\n`);
-        sections.push(
-            `Reply with 1–2 short sentences (under 30 words total) addressed to the ` +
-            `student in second person. Be terse: point at the single thing to check ` +
-            `next, no warm-up phrases, no restating what they did. ` +
-            `No code blocks, no headers, no preamble.`
-        );
-        return sections.join('\n');
-    }
-
-    feedbackClose?.addEventListener('click', () => {
-        if (feedbackEl) feedbackEl.hidden = true;
+        clearTestResults(resultsEl);
+        setError(refs.errorPane, null);
+        if (refs.feedbackPanel) refs.feedbackPanel.hidden = true;
+        if (refs.feedbackStream) refs.feedbackStream.textContent = '';
     });
 
-    if (feedbackBtn && feedbackEl && feedbackStream) {
-        feedbackBtn.addEventListener('click', async () => {
-            streaming = true;
-            if (live) feedbackBtn.hidden = true;
-            else feedbackBtn.disabled = true;
-            feedbackEl.hidden = false;
-            card.dataset.feedbackState = 'pending';
-            feedbackStream.textContent = '';
-            try {
-                for await (const chunk of streamPrompt(buildFeedbackPrompt(), { temperature: 0.3 })) {
-                    feedbackStream.textContent = (feedbackStream.textContent ?? '') + chunk;
-                }
-            } catch (err) {
-                feedbackStream.textContent =
-                    err instanceof OllamaError
-                        ? err.message
-                        : 'Could not reach the AI tutor. Please try again.';
-                ollamaOk = false;
-            } finally {
-                delete card.dataset.feedbackState;
-                streaming = false;
-                updateFeedbackEnabled();
+    const feedback = wireFeedback({
+        card,
+        button: refs.feedbackBtn,
+        panel: refs.feedbackPanel,
+        stream: refs.feedbackStream,
+        closeBtn: refs.feedbackClose,
+        unavailableBehavior: live ? 'hide' : 'disable',
+        isDirty: () => getCode() !== starter,
+        buildPrompt: () => {
+            const sections: string[] = [
+                `You are an AI tutor helping a student who is stuck on a React coding exercise.\n` +
+                    `Give a short, encouraging hint that nudges them forward — do NOT give the full solution.\n`,
+            ];
+            if (refs.instructions) sections.push(`INSTRUCTIONS:\n${refs.instructions}\n`);
+            if (targetSrc) {
+                sections.push(
+                    `TARGET CODE (the reference output the student should visually match — ` +
+                        `compare against the student's current code to spot what's missing):\n${targetSrc}\n`,
+                );
             }
-        });
-    }
+            if (hasTests) sections.push(`TESTS:\n${tests}\n`);
+            sections.push(`STUDENT'S CURRENT CODE:\n${getCode()}\n`);
+            if (hasTests) sections.push(`CURRENT TEST RESULTS:\n${collectTestResults(resultsEl)}\n`);
+            sections.push(
+                `Reply with 1–2 short sentences (under 30 words total) addressed to the ` +
+                    `student in second person. Be terse: point at the single thing to check ` +
+                    `next, no warm-up phrases, no restating what they did. ` +
+                    `No code blocks, no headers, no preamble.`,
+            );
+            return sections.join('\n');
+        },
+    });
 }
 
 // ---------- iframe scaffolding ----------
 
-// Pinned React version. esm.sh resolves the bare-specifier imports the bundle
-// leaves in place. `?dev` gives the dev React build — useful warnings in the
-// console while learning.
 const REACT_CDN = 'https://esm.sh/react@19.2.0?dev';
 const REACT_DOM_CLIENT_CDN = 'https://esm.sh/react-dom@19.2.0/client?dev';
 const REACT_DOM_CDN = 'https://esm.sh/react-dom@19.2.0?dev';
@@ -415,8 +283,7 @@ ${tailwindScript}
   window.addEventListener('unhandledrejection', (e) =>
     postErr(String(e.reason), e.reason && e.reason.stack));
   // Auto-size: post the body height whenever it changes so the parent can
-  // shrink/grow the iframe to fit. Saves the lesson author from picking a
-  // previewHeight, and makes the preview pane proportional to the App.
+  // shrink/grow the iframe to fit.
   const postHeight = () =>
     window.parent.postMessage({ rcType: 'resize', height: document.documentElement.scrollHeight }, '*');
   new ResizeObserver(postHeight).observe(document.documentElement);
@@ -553,8 +420,6 @@ async function _run() {
       for (const fn of _after) await fn();
       _post({ rcType: 'test-result', name: t.name, status: 'pass' });
     } catch (err) {
-      // \`.name\` not \`instanceof _ExpectError\` — class transpilation can
-      // break \`instanceof\` across boundaries; the name we set always survives.
       const isExpect = !!err && (err as any).name === 'ExpectError';
       _post({
         rcType: 'test-result',

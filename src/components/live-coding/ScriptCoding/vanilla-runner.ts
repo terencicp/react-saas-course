@@ -163,10 +163,10 @@ export function setupVanillaRunner(
     beginResults(card);
     runBtn.disabled = true;
 
-    const old = card.querySelector('iframe.lc-runner-iframe');
+    const old = card.querySelector('iframe.lc-script-runner-iframe');
     if (old) old.remove();
     const iframe = document.createElement('iframe');
-    iframe.className = 'lc-runner-iframe';
+    iframe.className = 'lc-script-runner-iframe';
     iframe.style.display = 'none';
     iframe.sandbox.add('allow-scripts');
     iframe.srcdoc = buildVanillaSrcdoc(getCode(), tests);
