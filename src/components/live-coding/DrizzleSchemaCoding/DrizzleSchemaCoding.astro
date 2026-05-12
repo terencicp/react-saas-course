@@ -1,0 +1,405 @@
+---
+// PGlite-backed Drizzle SCHEMA-DESIGN live-coding widget. The student writes
+// a Drizzle pgTable schema; the grader walks every top-level pgTable with
+// `getTableConfig` and compares it against the lesson author's declared
+// `requirements` (which tables, which columns, which constraints). Optional
+// `probes` are SQL INSERTs that the schema is expected to accept or reject —
+// the constraint-firing tests that prove the schema means what it says.
+//
+// Sibling to DrizzleCoding (which is query-graded; this one is schema-graded).
+// Shares the schema-emit logic so DDL emission stays consistent across widgets.
+//
+// MDX usage:
+//   <DrizzleSchemaCoding
+//     instructions="Model users with org-scoped slug uniqueness."
+//     starter={`export const users = pgTable('users', {
+//       id: integer('id').primaryKey(),
+//       // …complete this
+//     });`}
+//     requirements={[
+//       {
+//         name: 'users',
+//         columns: [
+//           { name: 'id',    type: 'integer', primaryKey: true },
+//           { name: 'orgId', type: 'integer', notNull: true, references: { table: 'orgs', column: 'id' } },
+//           { name: 'slug',  type: 'text',    notNull: true },
+//         ],
+//         uniques: [['orgId', 'slug']],
+//       },
+//     ]}
+//     probes={[
+//       {
+//         description: 'Inserting (orgId=1, slug="x") twice is rejected',
+//         sql: `INSERT INTO users (id, "orgId", slug) VALUES (1, 1, 'x'), (2, 1, 'x');`,
+//         mustSucceed: false,
+//       },
+//     ]}
+//   />
+//
+// Without `requirements` the widget is a pure schema sandbox — run any
+// schema, see the introspected tables come back in the panel below.
+
+import type { TableRequirement } from './requirement-check';
+import type { ProbeSpec } from './schema-runtime';
+
+interface Props {
+    /** Starter TS the student edits — a partial Drizzle schema. */
+    starter: string;
+    instructions?: string;
+    /** Editor max-height cap in px. Auto-sizes shorter starters. */
+    maxHeight?: number;
+    /** What the student's schema must define. Omit for a pure sandbox. */
+    requirements?: TableRequirement[];
+    /** Optional SQL probes that test the schema's constraints. */
+    probes?: ProbeSpec[];
+    /** Optional auxiliary SQL applied after the student's DDL, before probes
+     * (extensions, seed rows the probes assume). Usually empty. */
+    seedSQL?: string;
+}
+const {
+    starter,
+    instructions,
+    maxHeight = 360,
+    requirements,
+    probes,
+    seedSQL = "",
+} = Astro.props as Props;
+
+const requirementsJSON = requirements ? JSON.stringify(requirements) : "";
+const probesJSON = probes ? JSON.stringify(probes) : "";
+const hasRequirements = !!requirements && requirements.length > 0;
+const hasProbes = !!probes && probes.length > 0;
+const hasCriteria = hasRequirements || hasProbes;
+---
+
+<div
+    class="dsc-card not-content"
+    data-requirements={requirementsJSON}
+    data-probes={probesJSON}
+    data-seed={seedSQL}
+>
+    {instructions && <p class="dsc-instructions">{instructions}</p>}
+
+    <div
+        class="dsc-editor"
+        style={`--dsc-max-h:${maxHeight}px`}
+        data-starter={starter}
+    >
+    </div>
+
+    <div class="dsc-toolbar">
+        <button class="dsc-run" type="button">Check schema</button>
+        {
+            hasCriteria && (
+                <button class="dsc-feedback-btn" type="button">
+                    Feedback
+                </button>
+            )
+        }
+        <button class="dsc-reset" type="button">Reset</button>
+        <span class="dsc-status" aria-live="polite"></span>
+    </div>
+
+    {hasCriteria && <ul class="dsc-criteria" hidden></ul>}
+
+    <details class="dsc-introspection" hidden open={!hasCriteria}>
+        <summary>What your schema produced</summary>
+        <div class="dsc-introspection-body"></div>
+    </details>
+    <pre class="dsc-error" hidden></pre>
+
+    {
+        hasCriteria && (
+            <div class="dsc-feedback" hidden>
+                <div class="dsc-feedback-head">
+                    <span class="dsc-feedback-title">AI feedback</span>
+                </div>
+                <div class="dsc-feedback-stream" />
+            </div>
+        )
+    }
+</div>
+
+<style is:global>
+    .dsc-card {
+        --dsc-surface: var(--sl-color-bg-nav);
+        --dsc-text: var(--sl-color-white);
+        --dsc-muted: var(--sl-color-gray-3);
+        --dsc-accent: var(--sl-color-accent);
+        --dsc-border: var(--sl-color-gray-5);
+        --dsc-hover: var(--sl-color-gray-6);
+        --dsc-pass: #16a34a;
+        --dsc-pass-bg: rgba(22, 163, 74, 0.12);
+        --dsc-fail: #dc2626;
+        --dsc-fail-bg: rgba(220, 38, 38, 0.12);
+
+        color: var(--dsc-text);
+        background: var(--dsc-surface);
+        border: 1px solid var(--dsc-border);
+        border-radius: 12px;
+        padding: 18px 20px;
+        margin-bottom: 16px;
+    }
+    .dsc-card * {
+        box-sizing: border-box;
+    }
+
+    .dsc-instructions {
+        margin: 0 0 14px;
+        color: var(--dsc-text);
+        font-size: 1rem;
+        line-height: 1.55;
+    }
+
+    .dsc-editor {
+        border: 1px solid var(--dsc-border);
+        border-radius: 8px;
+        overflow: hidden;
+        margin-bottom: 12px;
+    }
+    .dsc-editor .cm-editor {
+        height: auto;
+        min-height: 64px;
+        max-height: var(--dsc-max-h, 360px);
+    }
+    .dsc-editor .cm-scroller {
+        font-family:
+            ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 13.5px;
+        overflow: auto;
+    }
+
+    .dsc-toolbar {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+    }
+    .dsc-toolbar button {
+        font: inherit;
+        font-weight: 500;
+        padding: 8px 16px;
+        border-radius: 8px;
+        border: 1px solid var(--dsc-border);
+        cursor: pointer;
+        background: var(--dsc-hover);
+        color: var(--dsc-text);
+        transition: opacity 0.15s;
+    }
+    .dsc-toolbar button:hover:not(:disabled) {
+        opacity: 0.85;
+    }
+    .dsc-toolbar button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+    .dsc-toolbar .dsc-run {
+        background: var(--dsc-accent);
+        color: white;
+        border-color: transparent;
+    }
+    .dsc-status {
+        margin-left: auto;
+        font-size: 13px;
+        color: var(--dsc-muted);
+    }
+    .dsc-status[data-state="running"] {
+        color: var(--dsc-accent);
+    }
+    .dsc-status[data-state="error"] {
+        color: var(--dsc-fail);
+    }
+
+    .dsc-criteria {
+        list-style: none;
+        padding: 10px 12px;
+        margin: 12px 0 0;
+        border: 1px dashed var(--dsc-border);
+        border-radius: 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        font-size: 13px;
+        background: rgba(127, 127, 127, 0.05);
+    }
+    .dsc-criteria[hidden] {
+        display: none;
+    }
+    .dsc-criterion {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 10px;
+        align-items: start;
+        color: var(--dsc-muted);
+        line-height: 1.5;
+    }
+    .dsc-criterion[data-met="true"] {
+        color: var(--dsc-pass);
+    }
+    .dsc-criterion[data-met="false"] {
+        color: var(--dsc-fail);
+    }
+    .dsc-criterion-icon {
+        display: inline-flex;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        align-items: center;
+        justify-content: center;
+        font-size: 13px;
+        font-weight: 800;
+        color: white;
+        border: 1.5px solid currentColor;
+        flex-shrink: 0;
+        margin-top: 2px;
+    }
+    .dsc-criterion[data-met="true"] .dsc-criterion-icon {
+        background: var(--dsc-pass);
+        border-color: var(--dsc-pass);
+    }
+    .dsc-criterion[data-met="true"] .dsc-criterion-icon::before {
+        content: "\2713";
+    }
+    .dsc-criterion[data-met="false"] .dsc-criterion-icon {
+        background: var(--dsc-fail);
+        border-color: var(--dsc-fail);
+    }
+    .dsc-criterion[data-met="false"] .dsc-criterion-icon::before {
+        content: "\2715";
+    }
+    .dsc-criterion-text code {
+        font-size: 12.5px;
+    }
+    .dsc-criterion-reason {
+        display: block;
+        margin-top: 2px;
+        color: var(--dsc-muted);
+        font-size: 12px;
+    }
+
+    .dsc-introspection {
+        margin-top: 12px;
+        border: 1px solid var(--dsc-border);
+        border-radius: 8px;
+        background: rgba(127, 127, 127, 0.05);
+    }
+    .dsc-introspection[hidden] {
+        display: none;
+    }
+    .dsc-introspection > summary {
+        cursor: pointer;
+        padding: 8px 12px;
+        font-size: 10.5px;
+        font-weight: 700;
+        color: var(--dsc-muted);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        list-style: none;
+    }
+    .dsc-introspection > summary::-webkit-details-marker {
+        display: none;
+    }
+    .dsc-introspection > summary::before {
+        content: "▸";
+        display: inline-block;
+        margin-right: 6px;
+        transition: transform 0.15s;
+    }
+    .dsc-introspection[open] > summary::before {
+        transform: rotate(90deg);
+    }
+    .dsc-introspection-body {
+        padding: 4px 12px 10px;
+    }
+    .dsc-introspection-empty {
+        color: var(--dsc-muted);
+        font-size: 12.5px;
+        padding: 6px 10px;
+        border: 1px dashed var(--dsc-border);
+        border-radius: 6px;
+    }
+    .dsc-introspection-body pre {
+        margin: 0;
+        padding: 10px 12px;
+        background: var(--sl-color-bg);
+        border: 1px solid var(--dsc-border);
+        border-radius: 6px;
+        font-family:
+            ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 12px;
+        color: var(--dsc-text);
+        white-space: pre-wrap;
+        overflow-x: auto;
+    }
+    .dsc-introspection-table {
+        margin-bottom: 8px;
+    }
+    .dsc-introspection-table:last-child {
+        margin-bottom: 0;
+    }
+
+    .dsc-error {
+        margin: 12px 0 0;
+        padding: 10px 12px;
+        background: var(--dsc-fail-bg);
+        color: var(--dsc-fail);
+        border-radius: 8px;
+        font-family:
+            ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 12.5px;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+    .dsc-error[hidden] {
+        display: none;
+    }
+
+    .dsc-feedback {
+        margin-top: 12px;
+        padding: 12px 14px;
+        background: rgba(127, 127, 127, 0.08);
+        border-left: 3px solid var(--dsc-accent);
+        border-radius: 4px;
+        font-size: 14px;
+        color: var(--dsc-text);
+        line-height: 1.55;
+    }
+    .dsc-feedback[hidden] {
+        display: none;
+    }
+    .dsc-feedback-head {
+        margin-bottom: 6px;
+    }
+    .dsc-feedback-title {
+        font-weight: 700;
+        font-size: 14px;
+    }
+    .dsc-card[data-feedback-state="pending"] .dsc-feedback-title::after {
+        content: "";
+        display: inline-block;
+        width: 6px;
+        height: 6px;
+        margin-left: 6px;
+        border-radius: 50%;
+        background: currentColor;
+        animation: dsc-pulse 1.2s infinite ease-in-out;
+        vertical-align: middle;
+    }
+    @keyframes dsc-pulse {
+        0%,
+        100% {
+            opacity: 0.3;
+        }
+        50% {
+            opacity: 1;
+        }
+    }
+    .dsc-feedback-stream {
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        min-height: 1.4em;
+    }
+</style>
+
+<script>
+    import "./bootstrap";
+</script>
