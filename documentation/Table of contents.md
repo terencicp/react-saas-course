@@ -87,10 +87,10 @@
 - 2.5.8 Quizz
 
 ### Chapter 2.6 — Modules and the module graph
-- 2.6.1 ESM — named/default exports, dynamic `import()`, side-effecting imports, the bare-specifier model
-- 2.6.2 The module graph mental model — evaluation order, live bindings, ESM/CJS interop; the senior anchor for why a server-only import in a `"use client"` file fails at runtime, not compile time
-- 2.6.3 Top-level `await` — module-init use cases (env validation, DB setup); the cost of blocking downstream module evaluation
-- 2.6.4 Module augmentation — extending Better Auth `Session`, Drizzle relations, `next-intl` message types; distinct from `.d.ts` for untyped deps
+- 2.6.1 ESM exports, imports, and the bare-specifier model — named/default/side-effecting/dynamic export forms, the matching import surface under `verbatimModuleSyntax`, `node_modules` resolution and the `package.json` `exports` field
+- 2.6.2 The module graph: evaluation order, live bindings, dynamic import, and the server/client boundary — depth-first walk and cycle handling, live-binding semantics vs. CJS copy, dynamic `import()` as a deferred edge, `"use client"` as a client-subgraph root, `import 'server-only'`/`'client-only'` poisoning
+- 2.6.3 Top-level await and module-init patterns — the canonical `env.ts` shape, the cost of async modules propagating upward, the senior call between top-level await and lazy init
+- 2.6.4 Module augmentation: extending third-party types — `declare module` in `.d.ts` files, the canonical sites (Better Auth `Session`, Drizzle relations, `next-intl` messages), tying branded IDs to a third-party session shape at the source
 - 2.6.5 Quizz
 
 ### Chapter 2.7 — Async semantics
