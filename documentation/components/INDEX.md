@@ -8,7 +8,7 @@ API reference for the pre-built Astro components used in lessons, grouped by cat
 
 | Choice | Use when… | Doc |
 | --- | --- | --- |
-| `Code` | Default for any code. Expressive Code. | [code-blocks.md](./starlight/code-blocks.md) |
+| `Code` | Default for any code or code output. Expressive Code. Can be combined with Tabs to for multiple code blocks that logically grouped together. | [code.md](./starlight/code.md) |
 | `Card`, `CardGrid` | Grouping a small set of related items in a responsive grid; each tile has a title, optional icon, and free-form body. | [cards.md](./starlight/cards.md) |
 | `LinkCard` | A single clickable tile that points elsewhere — external resource, related lesson, follow-up reading. Combine with `CardGrid` for a row of related links. | [link-cards.md](./starlight/link-cards.md) |
 | `Aside` | Setting a paragraph apart from prose as a note, tip, caution, danger. | [asides.md](./starlight/asides.md) |
@@ -28,7 +28,7 @@ Embed code in lessons.
 | --- | --- | --- |
 | `CodeTooltips` | Hover tooltips on chosen substrings inside a single code block. Useful for short inline definitions. | [code-tooltips.md](./code/code-tooltips.md) |
 | `AnnotatedCode` | Stepped walkthrough of a single code block, with parts of the code highlighted, each step has its own text explaing the highlighted code.  Use when one code block is complex and you need to focus student's attention on specific parts of the code at a time. | [annotated-code.md](./code/annotated-code.md) |
-| `CodeVariants` | Tabbed comparison of two or more versions of the same code, each tab contains text explaining that variant. | [code-variants.md](./code/code-variants.md) |
+| `CodeVariants` | Tabbed comparison of two or more versions of the same code, each tab contains text explaining that variant. Useful to show the incorrect and correct version of the code. | [code-variants.md](./code/code-variants.md) |
 
 ---
 
@@ -89,6 +89,7 @@ Lesson UI elements.
 | --- | --- | --- |
 | `SandboxCallout` | Expandable container, lazy loading. Embedding an interactive code sandbox for optional free exploration. | [sandbox-callout.md](./ui/sandbox-callout.md) |
 | `VideoCallout` | Expandable container, lazy loading. Embedding a YouTube video as supplementary material. | [video-callout.md](./ui/video-callout.md) |
+| `Term` | Inline word or phrase in prose with a dashed underline and a hover/focus tooltip showing a short definition. | [term.md](./ui/term.md) |
 
 ---
 
