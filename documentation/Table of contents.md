@@ -136,7 +136,7 @@
 - 3.3.4 Quizz
 
 ### Chapter 3.4 — Cookies and the trust model (light)
-- 3.4.1 Cookies — `Secure`, `HttpOnly`, `SameSite`, expiration, scope (the conceptual frame; auth wires later)
+- 3.4.1 Cookies: attributes, scope, and the senior defaults — `HttpOnly`, `Secure`, `SameSite`, `Path`/`Domain`, the `__Host-` prefix, expiration, and the 2026 third-party-cookie reality (the conceptual frame; auth wires later)
 - 3.4.2 Quizz
 
 ### Chapter 3.5 — The DOM and event substrate
