@@ -101,8 +101,8 @@
 - 2.7.5 Quizz
 
 ### Chapter 2.8 — Errors as a first-class concern
-- 2.8.1 Error handling — `try`/`catch`/`finally`, throwing, subclassing `Error`, `Error.cause`
-- 2.8.2 `unknown` in catch bindings (TS strict default) — narrowing with `instanceof Error` or a Zod schema; why the language can't promise an `Error`
+- 2.8.1 `try`/`catch`/`finally` and the throw-vs-return decision — synchronous and async mechanics, the "only throw `Error`" rule, expected failures as `Result<T, E>` values vs. unexpected failures as throws the framework boundary catches
+- 2.8.2 `unknown` in catch, custom errors, and `Error.cause` — narrowing `unknown` with `instanceof Error` and `ensureError`; custom `Error` subclasses with literal `name` discriminants; `Error.cause` for re-wrap and chain walking; the `error.name` fallback for `AbortError`/`TimeoutError` and cross-realm `instanceof`
 - 2.8.3 Quizz
 
 ### Chapter 2.9 — Practical odds and ends
