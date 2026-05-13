@@ -77,15 +77,14 @@
 - 2.4.9 Quizz
 
 ### Chapter 2.5 — TypeScript moves that prevent bug classes
-- 2.5.1 Architectural Principle #7 introduced — TypeScript for the moves that prevent bug classes, not as syntax
-- 2.5.2 Discriminated unions for state shapes — making impossible states unrepresentable
-- 2.5.3 Flow state machines — multi-step processes modeled as states + transitions + per-state invariants; canonical examples (optimistic-mutation triplet, upload state, subscription state) seeded here, cashed in at the call sites in later units
-- 2.5.4 Type predicates, assertion functions, `assertNever` — exhaustiveness as compile-time safety
-- 2.5.5 Branded types for IDs — `userId` and `orgId` stop being interchangeable strings
-- 2.5.6 `keyof`, `typeof`, indexed access types
-- 2.5.7 Utility types — `Partial`, `Pick`, `Omit`, `Record`, `Readonly`, `Required`, `NonNullable`, `ReturnType`, `Parameters`, `Awaited`
-- 2.5.8 Generics — basic, with constraints, with defaults (introduced alongside the array methods that need them)
-- 2.5.9 Quizz
+- 2.5.1 Discriminated unions and Architectural Principle #7 — making impossible states unrepresentable; the principle introduced — TypeScript for the moves that prevent bug classes, not as syntax
+- 2.5.2 Flow state machines — multi-step processes modeled as states + transitions + per-state invariants; canonical examples (optimistic-mutation triplet, upload state, subscription state) seeded here, cashed in at the call sites in later units
+- 2.5.3 Type predicates, assertion functions, and `assertNever` — exhaustiveness as compile-time safety
+- 2.5.4 Branded types for IDs — `userId` and `orgId` stop being interchangeable strings
+- 2.5.5 `keyof`, `typeof`, and indexed access types — derive types from values, never duplicate
+- 2.5.6 Utility types — the daily-reach surface (`Partial`, `Pick`, `Omit`, `Record`, `Readonly`, `Required`, `NonNullable`, `Extract`, `Exclude`, `ReturnType`, `Parameters`, `Awaited`)
+- 2.5.7 Generics — basics, constraints, defaults
+- 2.5.8 Quizz
 
 ### Chapter 2.6 — Modules and the module graph
 - 2.6.1 ESM — named/default exports, dynamic `import()`, side-effecting imports, the bare-specifier model
