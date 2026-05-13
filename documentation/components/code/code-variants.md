@@ -54,6 +54,8 @@ Standard Expressive Code meta. Mix freely:
 
 Each pane's fence can be wrapped in `<div data-mark-color="…">` to re-tint that pane's `{line}` / `"token"` / `/regex/` marks. Five colors: `green`, `red`, `blue`, `orange`, `violet`. Same hook used by `<AnnotatedStep color="…">`; see [Colored marks](../starlight/code.md#colored-marks--data-mark-color-wrapper) for the full story and how to add colors. Blank lines around the inner fence are required so MDX parses it as markdown.
 
+The wrapper is layout-transparent — the EC frame still sits flush with the card edges, and the prose underneath keeps its divider. The pane CSS keys off `:has(> .expressive-code)` to recognize the wrapper, so a `<div data-mark-color>` wrapping a fence is treated the same as a bare fence for layout. If you add a second wrapper around the fence for some other reason, mirror that selector or it'll get treated as prose (1rem of side padding, indented from the card edge).
+
 ````mdx
 <CodeVariants>
   <CodeVariant label="useState">
