@@ -173,13 +173,13 @@
 - 4.1.7 Quizz
 
 ### Chapter 4.2 — Tailwind as the CSS surface, where it touches React
-- 4.2.1 Tailwind utility-first thinking; modifiers; variants; arbitrary values
-- 4.2.2 Tailwind v4 specifics — CSS-first config via `@theme`, custom utilities via `@utility`, container queries via `@container`
-- 4.2.3 Tailwind class composition — `clsx` + `tailwind-merge` packaged as the `cn()` helper; how composition resolves conflicts; the failure shape of naive concatenation across CVA variants
-- 4.2.4 Tailwind state and structural variants — `group-*`, `peer-*`, `data-[state=...]:`, `aria-*:`, `has-*`, `not-*`, `*:`
-- 4.2.5 Wiring dark mode through Tailwind's `dark:` variant
-- 4.2.6 `next-themes` — React-side dark mode wiring, system mode, FOUC-free hydration, theme persistence
-- 4.2.7 Quizz
+- 4.2.1 Utility-first thinking, variants, and arbitrary values
+- 4.2.2 Tailwind v4 CSS-first config: `@theme`, `@utility`, `@container`
+- 4.2.3 Class composition with `cn()` (`clsx` + `tailwind-merge`)
+- 4.2.4 State and structural variants: `data-*`, `aria-*`, `group`, `peer`, `has`
+- 4.2.5 The `dark:` variant and the semantic-token model
+- 4.2.6 `next-themes`: React-side theme wiring without FOUC
+- 4.2.7 Quiz
 
 ### Chapter 4.3 — The cascade, inheritance, and design tokens
 - 4.3.1 The cascade and specificity — named explicitly with `@layer` and `!important`
