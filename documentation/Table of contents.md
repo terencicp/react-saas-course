@@ -66,18 +66,15 @@
 - 2.3.7 Quizz
 
 ### Chapter 2.4 — TypeScript: typing the values you already know
-- 2.4.1 Primitive types and literal types; `unknown` vs. `any` vs. `never` vs. `void`
-- 2.4.2 `type` vs. `interface`
-- 2.4.3 Per-field modifiers on object types — `?` for optional, `readonly` per field; the array-level `readonly` and `Readonly<T>` cousin
-- 2.4.4 Tuples and readonly tuples
-- 2.4.5 Index signatures (`{ [k: string]: T }`) and `Record<K, T>` — where they diverge on excess-property checks and narrowing
-- 2.4.6 Unions and intersections
-- 2.4.7 Narrowing — control-flow, `typeof`/`instanceof` guards; `as` and the non-null `!` assertions, and when to avoid both
-- 2.4.8 `as const`
-- 2.4.9 The `satisfies` operator — keeping autocomplete without losing inference
-- 2.4.10 Inference vs. annotations — when to let the compiler infer (return types, locals), when to annotate (parameters, exported APIs); the cost of over-annotating from JSDoc-era habits
-- 2.4.11 Type-only imports and exports
-- 2.4.12 Quizz
+- 2.4.1 Primitives, literal types, and the four corners — `unknown` vs. `any` vs. `never` vs. `void`
+- 2.4.2 `type` vs. `interface` and per-field modifiers — `?`, `readonly`, the array-level `readonly` and `Readonly<T>` cousin
+- 2.4.3 Tuples and readonly tuples — labeled positions, the `useState` shape, when an object beats a tuple
+- 2.4.4 Index signatures and `Record<K, T>` — open-keyed records vs. finite-keyed completeness, and the `noUncheckedIndexedAccess` divergence
+- 2.4.5 Unions and intersections — the composition operators, with the discriminated-union shape seeded for Chapter 2.5
+- 2.4.6 Narrowing without `as` and `!` — control-flow, `typeof`/`instanceof`/`in`/`Array.isArray` guards, and the three legitimate triggers for the assertion escape hatches
+- 2.4.7 `as const` and `satisfies` — keeping literal types narrow and validating against contracts without widening
+- 2.4.8 Inference, annotations, and type-only imports — annotate the boundaries, infer the locals, route types through `import type`
+- 2.4.9 Quizz
 
 ### Chapter 2.5 — TypeScript moves that prevent bug classes
 - 2.5.1 Architectural Principle #7 introduced — TypeScript for the moves that prevent bug classes, not as syntax
