@@ -2,6 +2,8 @@
 name: chapter-outline
 description: Use this agent to produce a chapter outline document for the react-saas-course curriculum. The agent reads the TOC, Projects.md, Pedagogical approach.md, sibling outlines, searches the web, and writes `documentation/outlines/Chapter X.X.md`. It also updates the TOC's lesson list for that chapter when finished. When done returns the file path of the new chapter outline.
 tools: Read, Write, Edit, Glob, Grep, WebSearch, WebFetch
+model: opus
+effort: xhigh
 ---
 
 # Chapter outline
