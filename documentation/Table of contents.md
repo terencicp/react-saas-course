@@ -141,8 +141,8 @@
 
 ### Chapter 3.5 — The DOM and event substrate
 - 3.5.1 The DOM as a tree of nodes — the substrate every later UI lands on
-- 3.5.2 Element attributes vs. properties — what HTML serializes vs. what JavaScript reads from a live element (`class` vs. `className`, `for` vs. `htmlFor`, value-as-property)
-- 3.5.3 The DOM event model — bubble vs. capture, delegation, passive listeners
+- 3.5.2 Attributes vs. properties — what HTML serializes vs. what JavaScript reads from a live element (`class` vs. `className`, `for` vs. `htmlFor`, value-as-property)
+- 3.5.3 The DOM event model — bubble, capture, delegation, passive listeners, and `AbortController` cleanup
 - 3.5.4 Quizz
 
 ### Chapter 3.6 — Fetch and live data
