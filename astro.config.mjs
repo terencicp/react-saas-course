@@ -4,6 +4,8 @@ import starlight from '@astrojs/starlight';
 import mermaid from 'astro-mermaid';
 import starlightFullViewMode from 'starlight-fullview-mode';
 import starlightLinksValidator from 'starlight-links-validator';
+import { pluginLineNumbers } from '@expressive-code/plugin-line-numbers';
+import { pluginCollapsibleSections } from '@expressive-code/plugin-collapsible-sections';
 
 // https://astro.build/config
 export default defineConfig({
@@ -30,6 +32,11 @@ export default defineConfig({
 			title: 'React SaaS Course',
 			customCss: ['./src/styles/custom.css'],
 			plugins: [starlightFullViewMode({}), starlightLinksValidator()],
+			expressiveCode: {
+				plugins: [pluginLineNumbers(), pluginCollapsibleSections()],
+				// Line numbers default OFF — opt in per block with `showLineNumbers`.
+				defaultProps: { showLineNumbers: false },
+			},
 			head: [
 				{
 					tag: 'script',
