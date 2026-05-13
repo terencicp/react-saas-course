@@ -106,9 +106,9 @@
 - 2.8.3 Quizz
 
 ### Chapter 2.9 — Practical odds and ends
-- 2.9.1 JSON — parsing, stringifying, the serialization gotchas (`Date`, `undefined`, `BigInt`)
-- 2.9.2 Classes (light) — where they show up: custom `Error` subclasses, the rare adapter wrapping a class-based SDK; why everything else stays as functions
-- 2.9.3 `Date`'s known problems and the senior pivot to `Temporal` for arithmetic — Stage 4 / ES2026 (March 2026), unflagged in Node 26 (May 2026); polyfilled (`temporal-polyfill` or `@js-temporal/polyfill`) on the Node 24 LTS line still in production use; full treatment in Chapter 18.1
+- 2.9.1 JSON at the wire boundary — `JSON.parse`/`JSON.stringify`, the serialization gotchas (`Date`, `undefined`, `BigInt`, `NaN`/`Infinity`), the parse-to-`unknown`-then-validate-with-Zod discipline (full schema authoring in Unit 7.1)
+- 2.9.2 Classes, narrowly: where they still earn their weight — the three sites (custom `Error` subclasses, adapters wrapping a class-based SDK, the rare custom domain class with identity and state); the minimum class surface (constructor, `readonly`/`#field`, the arrow-field method, the static factory); why everything else stays as functions
+- 2.9.3 `Date`'s problems and the Temporal pivot — `Date`'s known design issues (zero-indexed months, mutability, timezone as second-class, the `Invalid Date` sentinel), Temporal as the 2026 senior reach (Stage 4 / ES2026 March 2026, unflagged in Node 26 May 2026), `temporal-polyfill` on the Node 24 LTS line; full timezone/storage/formatting treatment in Chapter 18.1
 - 2.9.4 Quizz
 
 ---
