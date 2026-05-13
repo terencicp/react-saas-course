@@ -62,6 +62,8 @@ Code samples carry the same posture as the prose: direct, minimal, opinionated. 
 
 **Grain.** One TOC bullet = one lesson, less than 1h student time.
 
+**Scope**. Cover only what a senior shipping production SaaS on this stack in 2026 reaches for with  regularity, and nothing else. The essentials get full treatment — signature, the decisions around them, the failure modes that bite in production. The long tail gets a one-line mention or gets cut. Length is not the constraint; a lesson that runs long because the topic is load-bearing is correctly scoped, and every paragraph earns its place. The failure mode is the lesson that surveys an API end-to-end: the student loses the signal of what matters and stops trusting the cut. Prerequisites are never re-taught — a one-line frame and a link to the lesson that owns the topic.
+
 **Six archetypes** — descriptive shapes, used as a thinking framework, not as blueprint:
 
 - *Mechanics* — specific syntax/API. Code example + inline watch-out + quick exercise. Sandbox often.
