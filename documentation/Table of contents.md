@@ -57,12 +57,12 @@
 - 2.2.8 Quizz
 
 ### Chapter 2.3 — Objects, arrays, and collections
-- 2.3.1 Objects — property access, computed keys, shorthand, spread; `Object.keys`/`values`/`entries`/`fromEntries`
-- 2.3.2 Arrays — index access, `length` semantics, `at`
-- 2.3.3 The common array methods — `map`, `filter`, `reduce`, `find`, `some`, `every`, `flatMap`
-- 2.3.4 Set, Map, WeakSet, WeakMap — when each earns its weight; the modern Set methods — `intersection`, `union`, `difference`, `symmetricDifference`, `isSubsetOf`, `isSupersetOf`, `isDisjointFrom` (ES2025, available in Node 22+, kills the lodash reach)
-- 2.3.5 Iteration protocol; `for...of`; iterator helpers (`Iterator.prototype.map`/`filter`/`take`/`drop`/`flatMap`/`toArray`) as the lazy alternative to materializing through an array first
-- 2.3.6 Regex — modern flavor: named groups, lookaheads, the Unicode flag
+- 2.3.1 Objects: access, construction, and the static `Object.*` helpers — property access, computed keys, shorthand, spread; `Object.keys`/`values`/`entries`/`fromEntries`; `Object.groupBy`
+- 2.3.2 Arrays: indexing, length, and the immutable update reflex — index access under `noUncheckedIndexedAccess`, `.at`, `length` semantics; the non-mutating update family (`.toSorted`, `.toReversed`, `.toSpliced`, `.with`)
+- 2.3.3 The array method surface a senior reaches for — `map`, `filter` with type predicates, `reduce`, `find`/`findLast`, `some`/`every`, `flatMap`; when to drop out of the chain
+- 2.3.4 Set, Map, WeakSet, WeakMap, and the modern Set methods — when each earns its weight; `Map.groupBy`; the ES2025 Set composition methods (`intersection`, `union`, `difference`, `symmetricDifference`, `isSubsetOf`, `isSupersetOf`, `isDisjointFrom`) that kill the lodash reach
+- 2.3.5 Iteration, `for...of`, and iterator helpers — the iteration protocol; `for...of`; iterator helpers (`Iterator.prototype.map`/`filter`/`take`/`drop`/`flatMap`/`toArray`/`reduce`) as the lazy alternative to materializing through an array first
+- 2.3.6 Regex: the modern flavor — named capture groups, lookaheads and lookbehinds, the `u` and `v` Unicode flags, property escapes; `.matchAll` and the boundary where parsers replace regex
 - 2.3.7 Quizz
 
 ### Chapter 2.4 — TypeScript: typing the values you already know
