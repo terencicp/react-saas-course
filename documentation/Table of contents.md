@@ -47,12 +47,14 @@
 - 2.1.7 Quizz
 
 ### Chapter 2.2 — Functions, naming, and control flow
-- 2.2.1 Functions — declarations, expressions, arrow functions; parameters, defaults, rest, spread (TS-typed throughout)
-- 2.2.2 Architectural Principle #4 introduced — name things for intent, not implementation; recurring beat thereafter at every later naming-matters moment (action names, schema fields, components, table names, file co-location)
-- 2.2.3 Closures — lexical capture, with the senior anchor for the module/server-client boundary already named
-- 2.2.4 Optional chaining, nullish coalescing, logical assignment
-- 2.2.5 Destructuring — object, array, defaults, rename, rest
-- 2.2.6 Quizz
+- 2.2.1 Function forms and when each earns its weight — declarations, expressions, arrow functions; arrow-`const` as the 2026 default, `function` as the conditional for hoisting, named recursion, type-guard narrowing
+- 2.2.2 Parameters, defaults, rest, and spread — the two-positional-parameter rule, the options-object pattern, `undefined`-vs-`null` default firing, rest and spread at the call site (TS-typed throughout)
+- 2.2.3 Naming for intent (Architectural Principle #4 introduced) — name things for intent, not implementation; the four naming surfaces (variables, functions, parameters, types) and the three bad-name classes; recurring beat thereafter at every later naming-matters moment (action names, schema fields, components, table names, file co-location)
+- 2.2.4 Control flow that stays flat — `if` / `else if` / `else`, guard clauses and early returns, ternaries, `switch` with `noFallthroughCasesInSwitch` and `assertNever` exhaustiveness, the lookup-map alternative, the loop forms (`for...of` default)
+- 2.2.5 Optional chaining, nullish coalescing, logical assignment — `?.` at each link, `??` over `||` for defaults (the `0` / `''` / `false` trap), `??=` for lazy initialization
+- 2.2.6 Destructuring — object, array, rename, defaults, rest; the parameter-destructure form, the destructure-then-rebuild pattern for explicit field forwarding
+- 2.2.7 Closures and the boundary they explain later — lexical capture by reference, with the senior anchors for Server Actions, `useEffect` cleanups, and route-handler factories already named
+- 2.2.8 Quizz
 
 ### Chapter 2.3 — Objects, arrays, and collections
 - 2.3.1 Objects — property access, computed keys, shorthand, spread; `Object.keys`/`values`/`entries`/`fromEntries`
