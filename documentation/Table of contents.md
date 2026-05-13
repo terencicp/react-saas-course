@@ -38,12 +38,12 @@
 > Re-teach the JS surface a returning dev needs at adult depth, with the type system woven through it from the first lesson — and seed the naming-for-intent discipline that recurs everywhere.
 
 ### Chapter 2.1 — Values, references, and equality
-- 2.1.1 Primitives vs. objects; values vs. references — what assignment actually does
-- 2.1.2 Equality semantics — `===`, `Object.is`, NaN behavior
-- 2.1.3 Numbers and floating-point precision
-- 2.1.4 Strings and Unicode — code points vs. code units; the common string-method surface
-- 2.1.5 Template literals and tagged templates
-- 2.1.6 Variables — `let`/`const`, scope, the TDZ
+- 2.1.1 Values, references, and what assignment actually does — primitives vs. objects, shared references, `structuredClone` as the deep-copy reach
+- 2.1.2 Equality semantics — `===` as the default, `Object.is` for `NaN` and signed zero, `Number.isNaN` over the coercing global, why `==` is never the senior's first reach
+- 2.1.3 Numbers, BigInt, and money — IEEE 754 at the depth that bites, the cents-as-integers rule, the `Number.is*` family, when `BigInt` earns its weight
+- 2.1.4 Strings, Unicode, and the length problem — code units vs. code points vs. graphemes, `Intl.Segmenter` for user-perceived counts, the common string-method surface, `normalize` for visually-identical inputs
+- 2.1.5 Template literals and tagged templates — the senior default for interpolation and multi-line, tagged templates as the conditional with `sql\`...\`` as the canonical case
+- 2.1.6 Variables — `let`, `const`, scope, and the TDZ — what `const` prevents vs. what it doesn't, block scope, the Temporal Dead Zone as structural enforcement
 - 2.1.7 Quizz
 
 ### Chapter 2.2 — Functions, naming, and control flow
