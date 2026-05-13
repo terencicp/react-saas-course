@@ -43,6 +43,7 @@
 - 2.1.4 Strings and Unicode — code points vs. code units; the common string-method surface
 - 2.1.5 Template literals and tagged templates
 - 2.1.6 Variables — `let`/`const`, scope, the TDZ
+- 2.1.7 Quizz
 
 ### Chapter 2.2 — Functions, naming, and control flow
 - 2.2.1 Functions — declarations, expressions, arrow functions; parameters, defaults, rest, spread (TS-typed throughout)
@@ -50,6 +51,7 @@
 - 2.2.3 Closures — lexical capture, with the senior anchor for the module/server-client boundary already named
 - 2.2.4 Optional chaining, nullish coalescing, logical assignment
 - 2.2.5 Destructuring — object, array, defaults, rename, rest
+- 2.2.6 Quizz
 
 ### Chapter 2.3 — Objects, arrays, and collections
 - 2.3.1 Objects — property access, computed keys, shorthand, spread; `Object.keys`/`values`/`entries`/`fromEntries`
@@ -58,6 +60,7 @@
 - 2.3.4 Set, Map, WeakSet, WeakMap — when each earns its weight; the modern Set methods — `intersection`, `union`, `difference`, `symmetricDifference`, `isSubsetOf`, `isSupersetOf`, `isDisjointFrom` (ES2025, available in Node 22+, kills the lodash reach)
 - 2.3.5 Iteration protocol; `for...of`; iterator helpers (`Iterator.prototype.map`/`filter`/`take`/`drop`/`flatMap`/`toArray`) as the lazy alternative to materializing through an array first
 - 2.3.6 Regex — modern flavor: named groups, lookaheads, the Unicode flag
+- 2.3.7 Quizz
 
 ### Chapter 2.4 — TypeScript: typing the values you already know
 - 2.4.1 Primitive types and literal types; `unknown` vs. `any` vs. `never` vs. `void`
@@ -71,6 +74,7 @@
 - 2.4.9 The `satisfies` operator — keeping autocomplete without losing inference
 - 2.4.10 Inference vs. annotations — when to let the compiler infer (return types, locals), when to annotate (parameters, exported APIs); the cost of over-annotating from JSDoc-era habits
 - 2.4.11 Type-only imports and exports
+- 2.4.12 Quizz
 
 ### Chapter 2.5 — TypeScript moves that prevent bug classes
 - 2.5.1 Architectural Principle #7 introduced — TypeScript for the moves that prevent bug classes, not as syntax
@@ -81,27 +85,32 @@
 - 2.5.6 `keyof`, `typeof`, indexed access types
 - 2.5.7 Utility types — `Partial`, `Pick`, `Omit`, `Record`, `Readonly`, `Required`, `NonNullable`, `ReturnType`, `Parameters`, `Awaited`
 - 2.5.8 Generics — basic, with constraints, with defaults (introduced alongside the array methods that need them)
+- 2.5.9 Quizz
 
 ### Chapter 2.6 — Modules and the module graph
 - 2.6.1 ESM — named/default exports, dynamic `import()`, side-effecting imports, the bare-specifier model
 - 2.6.2 The module graph mental model — evaluation order, live bindings, ESM/CJS interop; the senior anchor for why a server-only import in a `"use client"` file fails at runtime, not compile time
 - 2.6.3 Top-level `await` — module-init use cases (env validation, DB setup); the cost of blocking downstream module evaluation
 - 2.6.4 Module augmentation — extending Better Auth `Session`, Drizzle relations, `next-intl` message types; distinct from `.d.ts` for untyped deps
+- 2.6.5 Quizz
 
 ### Chapter 2.7 — Async semantics
 - 2.7.1 The event loop and the microtask queue — the runtime model under every async API
 - 2.7.2 Promises — `.then`/`.catch`/`.finally`, `Promise.all`/`allSettled`/`any`/`race`, `Promise.withResolvers` as the modern replacement for the deferred-pattern boilerplate
 - 2.7.3 `async`/`await` — sequential vs. parallel, the N+1 trap inside `.map()`, `for await...of`
 - 2.7.4 AbortController and AbortSignal — fetch cancellation, request timeouts, async cleanup, the parameter shape every modern web API accepts
+- 2.7.5 Quizz
 
 ### Chapter 2.8 — Errors as a first-class concern
 - 2.8.1 Error handling — `try`/`catch`/`finally`, throwing, subclassing `Error`, `Error.cause`
 - 2.8.2 `unknown` in catch bindings (TS strict default) — narrowing with `instanceof Error` or a Zod schema; why the language can't promise an `Error`
+- 2.8.3 Quizz
 
 ### Chapter 2.9 — Practical odds and ends
 - 2.9.1 JSON — parsing, stringifying, the serialization gotchas (`Date`, `undefined`, `BigInt`)
 - 2.9.2 Classes (light) — where they show up: custom `Error` subclasses, the rare adapter wrapping a class-based SDK; why everything else stays as functions
 - 2.9.3 `Date`'s known problems and the senior pivot to `Temporal` for arithmetic — Stage 4 / ES2026 (March 2026), unflagged in Node 26 (May 2026); polyfilled (`temporal-polyfill` or `@js-temporal/polyfill`) on the Node 24 LTS line still in production use; full treatment in Chapter 18.1
+- 2.9.4 Quizz
 
 ---
 
@@ -112,35 +121,42 @@
 ### Chapter 3.1 — How a request becomes a page
 - 3.1.1 The browser request lifecycle — URL bar to pixels, the frame SSR and hydration will land into
 - 3.1.2 HTTPS and certificates at the depth that bites in development
+- 3.1.3 Quizz
 
 ### Chapter 3.2 — HTTP at the depth a SaaS engineer needs
 - 3.2.1 HTTP method semantics and idempotency (GET, POST, PUT, PATCH, DELETE) — the senior anchor for designing safe-to-retry endpoints
 - 3.2.2 HTTP status codes — the 2xx/3xx/4xx/5xx subset that bites in SaaS, plus 409, 422, 429
 - 3.2.3 HTTP headers — content negotiation, caching, auth, custom headers
+- 3.2.4 Quizz
 
 ### Chapter 3.3 — URLs, origins, and security boundaries
 - 3.3.1 The URL spec — origin, pathname, search, hash, percent-encoding; `URLSearchParams`
 - 3.3.2 Same-origin policy
 - 3.3.3 CORS — preflights, credentials, common failure modes
+- 3.3.4 Quizz
 
 ### Chapter 3.4 — Cookies and the trust model (light)
 - 3.4.1 Cookies — `Secure`, `HttpOnly`, `SameSite`, expiration, scope (the conceptual frame; auth wires later)
+- 3.4.2 Quizz
 
 ### Chapter 3.5 — The DOM and event substrate
 - 3.5.1 The DOM as a tree of nodes — the substrate every later UI lands on
 - 3.5.2 Element attributes vs. properties — what HTML serializes vs. what JavaScript reads from a live element (`class` vs. `className`, `for` vs. `htmlFor`, value-as-property)
 - 3.5.3 The DOM event model — bubble vs. capture, delegation, passive listeners
+- 3.5.4 Quizz
 
 ### Chapter 3.6 — Fetch and live data
 - 3.6.1 The Fetch API — Request, Response, Headers, FormData, ReadableStream
 - 3.6.2 Streaming responses, SSE, chunked transfer
+- 3.6.3 Quizz
 
 ### Chapter 3.7 — Browser platform APIs the SaaS UI reaches for
 - 3.7.1 Web Crypto random primitives — `randomUUID`, `getRandomValues`
 - 3.7.2 Web Crypto HMAC — `subtle` for sign/verify, with constant-time comparison as the timing-attack mitigation (load-bearing for invitations, magic-link, webhook signatures)
 - 3.7.3 Clipboard API — `navigator.clipboard.writeText`/`readText`, secure-context constraints (load-bearing for copy-invite-link, copy-API-key, copy-webhook-secret)
-- 3.7.4 Blob, File, `URL.createObjectURL` — the file-upload primitives (closed in Chapter 13.2 with R2)
+- 3.7.4 Blob, File, `URL.createObjectURL` — the file-upload primitives (closed in Chapter 13.3 with R2)
 - 3.7.5 localStorage / sessionStorage (light — theme preference, transient state)
+- 3.7.6 Quizz
 
 ---
 
@@ -156,6 +172,7 @@
 - 4.1.5 HTML forms surface — `<form>`, `<input>` types, `<label htmlFor>`, `<fieldset>`, `<legend>`, `<button type>`
 - 4.1.6 HTML data attributes and `aria-*`
 - 4.1.7 HTML `<table>` — when actually right
+- 4.1.8 Quizz
 
 ### Chapter 4.2 — Tailwind as the CSS surface, where it touches React
 - 4.2.1 Tailwind utility-first thinking; modifiers; variants; arbitrary values
@@ -164,12 +181,14 @@
 - 4.2.4 Tailwind state and structural variants — `group-*`, `peer-*`, `data-[state=...]:`, `aria-*:`, `has-*`, `not-*`, `*:`
 - 4.2.5 Wiring dark mode through Tailwind's `dark:` variant
 - 4.2.6 `next-themes` — React-side dark mode wiring, system mode, FOUC-free hydration, theme persistence
+- 4.2.7 Quizz
 
 ### Chapter 4.3 — The cascade, inheritance, and design tokens
 - 4.3.1 The cascade and specificity — named explicitly with `@layer` and `!important`
 - 4.3.2 CSS inheritance and what does/doesn't inherit
 - 4.3.3 Tailwind Preflight — the implicit base reset; what it strips; naming the magic, when to lean in vs. override
 - 4.3.4 CSS custom properties; how Tailwind theme tokens compile to them; design tokens as semantic names
+- 4.3.5 Quizz
 
 ### Chapter 4.4 — Layout and sizing
 - 4.4.1 CSS box model and `box-sizing` (at Tailwind spacing utilities)
@@ -182,6 +201,7 @@
 - 4.4.8 CSS overflow and scroll containers — `overflow` modes, `overscroll-behavior`, the iOS scroll-chain bug, scroll containment for sticky headers and dialogs
 - 4.4.9 CSS stacking context, z-index
 - 4.4.10 CSS logical properties — `margin-inline`, `padding-block`
+- 4.4.11 Quizz
 
 ### Chapter 4.5 — Typography, color, motion, responsive
 - 4.5.1 CSS typography — font, line-height, letter-spacing
@@ -191,6 +211,7 @@
 - 4.5.5 Tailwind animation system — `animate-*`, custom `@keyframes` via `@theme`, `tw-animate-css` as the dependency shadcn dialog/sheet/accordion expect
 - 4.5.6 CSS media queries and the responsive design model (at Tailwind responsive variants)
 - 4.5.7 CSS container queries (at Tailwind `@container`)
+- 4.5.8 Quizz
 
 ### Chapter 4.6 — Components and composition
 - 4.6.1 Components and composition — props, children, slots
@@ -198,6 +219,7 @@
 - 4.6.3 Polymorphic components — Radix `Slot` keeping types intact through `asChild`; `class-variance-authority` + `VariantProps` so variants live in one place
 - 4.6.4 Refs in React 19 — the prop-passing model (no more `forwardRef`)
 - 4.6.5 Portals — modals, toasts, anchored popovers
+- 4.6.6 Quizz
 
 ### Chapter 4.7 — The render model
 - 4.7.1 The render model — what triggers re-render, reference identity in props
@@ -206,6 +228,7 @@
 - 4.7.4 State as a snapshot — render is a snapshot of state; the updater form `setX(prev => ...)` under React 19 automatic batching
 - 4.7.5 Resetting state with `key` — component identity as a state-reset; the canonical "form fields stuck on the previous record" fix
 - 4.7.6 JSX synthetic events — capture vs. bubble (callback to the DOM events introduced in Chapter 3.5)
+- 4.7.7 Quizz
 
 ### Chapter 4.8 — Hooks: state and refs
 - 4.8.1 `useState` — basics
@@ -215,6 +238,7 @@
 - 4.8.5 `useReducer` — when state has multiple transitions
 - 4.8.6 `useRef` — DOM access and instance values
 - 4.8.7 `useId` — stable IDs across SSR/hydration
+- 4.8.8 Quizz
 
 ### Chapter 4.9 — Hooks: effects and external systems
 - 4.9.1 Strict Mode — the dev-mode contract; double-invocation as the impurity-surfacing mechanism that makes effect rules bite
@@ -224,11 +248,13 @@
 - 4.9.5 `useTransition` and `useDeferredValue` — marking updates as low-priority
 - 4.9.6 `use()` — unwrapping promises and contexts
 - 4.9.7 The rules of hooks — named explicitly per "explicit over magic"; the lint rule
+- 4.9.8 Quizz
 
 ### Chapter 4.10 — Custom hooks and what to stop hand-tuning
 - 4.10.1 Custom hooks — extracting reusable behavior, the `use*` naming convention, when a custom hook earns its weight
 - 4.10.2 The React Compiler — what it auto-memoizes and how to enable it (`reactCompiler: true` in `next.config.ts`, `babel-plugin-react-compiler` installed); stable in Next 16 but not default-on, named explicitly per "explicit over magic"
 - 4.10.3 When manual memoization still earns its weight — the narrow cases for `memo` / `useMemo` / `useCallback`; what to stop hand-tuning, including `useMemo` everywhere and premature `dynamic()`
+- 4.10.4 Quizz
 
 ### Chapter 4.11 — shadcn/ui and the accessibility baseline
 - 4.11.1 shadcn/ui — copy-paste model, slot composition, theming, when to fork; the registry and namespace model
@@ -236,6 +262,15 @@
 - 4.11.3 ARIA basics — roles, labels, live regions, the "first rule of ARIA"
 - 4.11.4 Focus management and tab order — modals, route changes, post-submission
 - 4.11.5 Empty/loading/error state UI patterns at the component level — the trio every list view, card, and widget needs
+- 4.11.6 Quizz
+
+### Chapter 4.12 — Project: themed product surface
+- 4.12.1 Project brief
+- 4.12.2 Starter walkthrough — what the scaffold ships, what's stubbed
+- 4.12.3 Build it — header, hero, and the feature grid with CVA variants
+- 4.12.4 Build it — pricing table, footer, and the theme toggle without FOUC
+- 4.12.5 Build it — mobile nav drawer with the `useLockBodyScroll` custom hook and focus trap
+- 4.12.6 Verify — Lighthouse a11y, keyboard-only nav, no-FOUC reload, responsive reflow at 360/768/1280, drawer scroll lock + focus trap + `Esc` close
 
 ---
 
@@ -254,6 +289,7 @@
 - 5.1.8 Intercepting routes — `(.)`, `(..)`, `(..)(..)`, `(...)` markers; soft-navigation interception for the "modal or side-panel that has a real URL" pattern; the always-paired non-intercepting `page.tsx` that shadows the intercepted route on direct visits, refresh, and `Cmd+click`; the senior anchor for why a state-driven modal loses URL persistence, refreshability, and shareability
 - 5.1.9 `<Link>` and the navigation model
 - 5.1.10 `redirect`, `notFound`, `permanentRedirect`
+- 5.1.11 Quizz
 
 ### Chapter 5.2 — The server / client boundary
 - 5.2.1 Server Components — fundamentals, async components, server-side data fetching
@@ -264,12 +300,14 @@
 - 5.2.6 Server Component → Client Component prop serialization — what crosses the RSC wire, common failure shapes (Map, Set, class instances, functions)
 - 5.2.7 Structured clone — what it can/can't carry across boundaries
 - 5.2.8 Hydration — what it is, hydration mismatches, common causes (`Date.now`, random IDs, locale)
+- 5.2.9 Quizz
 
 ### Chapter 5.3 — Async UI primitives
 - 5.3.1 Suspense as a declarative loading contract
 - 5.3.2 Streaming and Suspense at the route boundary
 - 5.3.3 `loading.tsx`, `error.tsx`, `not-found.tsx` — the platform's async-UI primitives; `error.tsx` wraps React's underlying class-based Error Boundary mechanism, named once where it bites (the file-convention is the form learners will write)
 - 5.3.4 `global-error.tsx` — the root-layout error boundary that catches what `error.tsx` can't
+- 5.3.5 Quizz
 
 ### Chapter 5.4 — Rendering and caching in Next.js 16
 - 5.4.1 Static vs. dynamic rendering — under Cache Components (`cacheComponents: true`), every route is dynamic by default in Next.js 16; per-component opt-in via `use cache`
@@ -280,6 +318,7 @@
 - 5.4.6 `updateTag`, `revalidateTag`, `revalidatePath`, `router.refresh` — the post-mutation decision tree; `updateTag` (Server-Action-only, immediate expiry) when the user expects to see their change right after a redirect or navigation; `revalidateTag` (stale-while-revalidate, also usable in route handlers) for webhooks, scheduled jobs, and admin mutations where a brief stale read is fine
 - 5.4.7 Route segment config — `dynamic`, `revalidate`, `runtime` under Cache Components
 - 5.4.8 Async Request APIs in Next.js 16 — `params`, `searchParams`, `cookies()`, `headers()`, `draftMode()` return Promises; `await` them in Server Components, unwrap with `React.use()` in Client Components; `connection()` as the explicit dynamic opt-in
+- 5.4.9 Quizz
 
 ### Chapter 5.5 — Server-side reads, middleware, and URL state
 - 5.5.1 `cookies()`, `headers()` — server-side reads; the dynamic-rendering implication
@@ -287,6 +326,7 @@
 - 5.5.3 Rewrites and redirects in `proxy.ts`
 - 5.5.4 `searchParams` and route params — the URL-state pattern (foundation for SaaS pattern #7)
 - 5.5.5 Client-side navigation hooks — `useRouter`, `usePathname`, `useSearchParams`, `useParams` from `next/navigation`; when to read URL state on the server vs. on the client
+- 5.5.6 Quizz
 
 ### Chapter 5.6 — The Next.js project surface
 - 5.6.1 `next.config.ts` orientation — the typed config; what kinds of settings live here (image config, redirects/rewrites, security headers, server-external packages)
@@ -300,6 +340,15 @@
 - 5.6.9 Metadata API — `generateMetadata`, OG/Twitter, dynamic OG images
 - 5.6.10 SEO file conventions — `robots.ts`, `sitemap.ts`, `favicon.ico`, `icon.{ext}`, `apple-icon.{ext}`, `opengraph-image.{ext}`, `twitter-image.{ext}`; `generateViewport`
 - 5.6.11 `generateStaticParams` — SSG for dynamic routes
+- 5.6.12 Quizz
+
+### Chapter 5.7 — Project: list-plus-detail with parallel routes
+- 5.7.1 Project brief
+- 5.7.2 Starter walkthrough — App Router scaffold, in-memory invoice fixture, typed server functions
+- 5.7.3 Build it — the two parallel slots with `default.tsx` fallbacks and the server-side `?status=` filter from `searchParams`
+- 5.7.4 Build it — the intercepting modal route and its paired non-intercepting `page.tsx`
+- 5.7.5 Build it — Suspense boundaries with slot-specific skeletons
+- 5.7.6 Verify — direct visit, soft nav, refresh, `Cmd+click`, and `?status=paid` survives reload
 
 ---
 
@@ -312,6 +361,7 @@
 - 6.1.2 The local development database — Docker Postgres or a Neon dev branch; the senior call (offline-capable but drifts from prod vs. matches prod exactly but needs connectivity)
 - 6.1.3 Neon — branching per preview deploy, scale-to-zero, HTTP driver
 - 6.1.4 Connection pooling on the Neon serverless driver
+- 6.1.5 Quizz
 
 ### Chapter 6.2 — Defining schema with Drizzle
 - 6.2.1 Architectural Principle #2 introduced — the schema is the source of truth
@@ -323,6 +373,7 @@
 - 6.2.7 UNIQUE and CHECK constraints
 - 6.2.8 Many-to-many junction tables
 - 6.2.9 `$inferSelect` / `$inferInsert` as the canonical row types
+- 6.2.10 Quizz
 
 ### Chapter 6.3 — Querying and mutating
 - 6.3.1 Drizzle queries — select, insert, update, delete; where, orderBy, limit/offset; SQL injection handled by Drizzle's parameterization (named explicitly so learners know why)
@@ -335,16 +386,27 @@
 - 6.3.8 Full-text search in Postgres (light, brief)
 - 6.3.9 JSONB columns and querying — when to reach for JSONB vs. a real column
 - 6.3.10 When to drop to raw SQL via `` sql`` `` and what it costs
+- 6.3.11 Quizz
 
 ### Chapter 6.4 — Performance and integrity
 - 6.4.1 Indexes — B-tree, partial, composite, expression, unique; when to add them
 - 6.4.2 The N+1 query problem at the Drizzle layer (foreshadowed for the RSC waterfall lesson in Chapter 20.3)
 - 6.4.3 EXPLAIN ANALYZE — reading a query plan
 - 6.4.4 Transactions and isolation levels (read committed, repeatable read, serializable)
+- 6.4.5 Quizz
 
 ### Chapter 6.5 — Migrations and the seed workflow
 - 6.5.1 Drizzle Kit — generating migrations, applying them, the studio
 - 6.5.2 Database seeding for dev and test
+- 6.5.3 Quizz
+
+### Chapter 6.6 — Project: org-scoped schema and queries
+- 6.6.1 Project brief
+- 6.6.2 Starter walkthrough — empty `db/schema.ts`, Drizzle Kit config, Docker Postgres
+- 6.6.3 Build it — the schema and the generated migration
+- 6.6.4 Build it — the seed script with two orgs and 50+ invoices each
+- 6.6.5 Build it — paginated list query and the single-round-trip detail query
+- 6.6.6 Verify — inspector page, idempotent seed, `EXPLAIN ANALYZE` on the detail query
 
 ---
 
@@ -361,6 +423,7 @@
 - 7.1.6 Parsing vs. safe-parsing
 - 7.1.7 The unified `error` param — replacing v3's separate `message` / `invalid_type_error` / `required_error`
 - 7.1.8 drizzle-zod — `createSelectSchema`, `createInsertSchema` (now lives inside the drizzle-orm repo, same API surface)
+- 7.1.9 Quizz
 
 ### Chapter 7.2 — Server Actions
 - 7.2.1 Server Actions — definition and invocation from the client
@@ -373,6 +436,7 @@
 - 7.2.8 `revalidatePath` after a mutation — the basic move at the first server action; the full decision tree was covered in Chapter 5.4
 - 7.2.9 Wrapping a server action in a Drizzle transaction — when multi-step mutations need atomicity; the `db.transaction(async (tx) => …)` shape; revisits the transactions thread from Chapter 6.4
 - 7.2.10 Idempotency keys foreshadowed at the action layer — why double-clicks and dropped connections need a unique-on-key constraint; full pattern in Chapter 12.1
+- 7.2.11 Quizz
 
 ### Chapter 7.3 — The native React 19 / Next.js 16 form pattern
 - 7.3.1 Forms basics — controlled vs. uncontrolled, why uncontrolled fits the React 19 server-action pattern
@@ -383,18 +447,30 @@
 - 7.3.6 Optimistic UI with `useOptimistic`
 - 7.3.7 Constraint Validation API — `required`, `pattern`, `minLength`, `inputmode`, `autocomplete`, `ValidityState`, `setCustomValidity`; senior call of which checks happen in the browser before submit vs. in the Zod parse on the server
 - 7.3.8 Progressive enhancement and what you get for free
+- 7.3.9 Quizz
 
 ### Chapter 7.4 — When the platform isn't enough — RHF (conditional)
 - 7.4.1 When React Hook Form earns its weight — the threshold past the native pattern: change/blur-triggered validation, dynamic field arrays, multi-step wizards spanning many components, optimistic UX with fine-grained pending states
 - 7.4.2 React Hook Form — `register`, `control`, the resolver model
 - 7.4.3 RHF + Zod resolver — keeping the same Zod schema honest on both sides of the wire
 - 7.4.4 RHF in our app — wiring it into the project where the trigger is met
+- 7.4.5 Quizz
 
 ### Chapter 7.5 — Route handlers and API contracts
 - 7.5.1 Route handlers — `route.ts`; when to reach for them vs. server actions
 - 7.5.2 Designing API contracts with Zod — request and response shapes
 - 7.5.3 Applying HTTP semantics to your own endpoints — methods, status codes, the idempotency rule made operational
 - 7.5.4 Filtering, sorting, search at the API boundary
+- 7.5.5 Quizz
+
+### Chapter 7.6 — Project: CRUD via Server Actions
+- 7.6.1 Project brief
+- 7.6.2 Starter walkthrough — Unit 6 schema, shadcn `<Form>` primitives, page shell
+- 7.6.3 Build it — Zod schemas and the three Server Actions returning the canonical Result
+- 7.6.4 Build it — form components with `useActionState` and inline field errors driven by the Result
+- 7.6.5 Build it — `useOptimistic` on create with rollback on action failure
+- 7.6.6 Build it — the delete confirmation wrapped in a Drizzle transaction
+- 7.6.7 Verify — JS-disabled flow, invalid-data field errors, optimistic rollback on failure
 
 ---
 
@@ -407,11 +483,19 @@
 - 8.1.2 DKIM, SPF, DMARC — what to set up before sending
 - 8.1.3 Transactional vs. marketing email
 - 8.1.4 Email bounces and complaints — the `email_suppressions` table and the never-re-send-to-suppressed discipline; the webhook handler that populates it lands in Chapter 12.1
+- 8.1.5 Quizz
 
 ### Chapter 8.2 — Composing email
 - 8.2.1 React Email — components and templating (closes the loop with JSX)
 - 8.2.2 Previewing email locally — React Email's dev server, the iteration loop before any send-from-staging
 - 8.2.3 Plain-text fallbacks and accessibility in HTML email
+- 8.2.4 Quizz
+
+### Chapter 8.3 — Project: transactional email send
+- 8.3.1 Project brief — verified domain, the Resend setup, the suppression read
+- 8.3.2 Build it — `lib/email.ts`, the env entries, and the suppression read
+- 8.3.3 Build it — the Server Action that composes and sends the welcome email
+- 8.3.4 Verify — real-inbox arrival on the student's verified domain, DKIM/SPF pass, suppression path returns `{ ok: false }` without calling Resend
 
 ---
 
@@ -423,12 +507,14 @@
 - 9.1.1 Authentication vs. authorization made explicit
 - 9.1.2 Sessions, tokens, cookies — the conceptual model lifted into a working auth flow
 - 9.1.3 The OAuth 2.0 authorization-code flow with PKCE — the protocol Better Auth abstracts
+- 9.1.4 Quizz
 
 ### Chapter 9.2 — Better Auth setup
 - 9.2.1 Better Auth Drizzle adapter and the tables it owns
 - 9.2.2 The session table and why it earns its weight
 - 9.2.3 Session strategies — server-stored sessions vs. JWTs, revocation, multi-device sessions
 - 9.2.4 Session reads in middleware, layouts, and server actions
+- 9.2.5 Quizz
 
 ### Chapter 9.3 — Sign-in flows
 - 9.3.1 Email + password sign-up — the verification-gated flow
@@ -440,12 +526,22 @@
 - 9.3.7 Passkeys / WebAuthn — registration and assertion at Better Auth's level
 - 9.3.8 OAuth providers in Better Auth — redirect URIs, scopes, the callback route, the accounts table, provider-specific quirks
 - 9.3.9 Account linking — multiple identities pointing at one user record
+- 9.3.10 Quizz
 
 ### Chapter 9.4 — Auth at request time and account management
 - 9.4.1 Auth gating in `proxy.ts` — session reads, redirect-to-sign-in, the protected-routes pattern
 - 9.4.2 Credential changes — change password, change email (with verification)
 - 9.4.3 Session management — list active sessions, revoke individual sessions
 - 9.4.4 Browser security defaults in this stack — CSRF (same-site cookies as the default mitigation) and XSS (handled by React's escaping; what `dangerouslySetInnerHTML` opts out of)
+- 9.4.5 Quizz
+
+### Chapter 9.5 — Project: email+password auth with verification
+- 9.5.1 Project brief
+- 9.5.2 Starter walkthrough — Better Auth instance skeleton, migrations, Unit 8 send
+- 9.5.3 Build it — Better Auth instance config and first sign-up working (unverified)
+- 9.5.4 Build it — email-verification template, send through Unit 8, and the token-handling callback
+- 9.5.5 Build it — `proxy.ts` matcher, session reads in the layout, and the sign-out action
+- 9.5.6 Verify — sign-up → verify → sign-in → protected route → sign-out cycle
 
 ---
 
@@ -459,6 +555,7 @@
 - 10.1.3 When Row-Level Security earns its weight — the threshold past application-layer scoping: the highest-stakes data classes where one missed scope is unacceptable; Postgres RLS as the power-tool tenancy enforcer (named, not defaulted)
 - 10.1.4 RLS primitives — Postgres policies, `current_setting`, session-variable wiring from Drizzle/Neon
 - 10.1.5 RLS in our app — applying it to the data class where the trigger is met
+- 10.1.6 Quizz
 
 ### Chapter 10.2 — RBAC and the audit trail at the action boundary
 - 10.2.1 RBAC — owner / admin / member as the year-1 default
@@ -466,6 +563,7 @@
 - 10.2.3 The same authz discipline at the route handler boundary — `authedAction` ported to `route.ts` so the missing-call class stays structurally hard at every untrusted-input seam
 - 10.2.4 Member management — listing, roles, removal, leave-org, ownership transfer
 - 10.2.5 The `audit_logs` table — append-only, never updated, never deleted; what role-changes, ownership transfers, and exports must record (revisited under the security baseline in Unit 17)
+- 10.2.6 Quizz
 
 ### Chapter 10.3 — Invitations and seat management (SaaS pattern #3)
 - 10.3.1 The invitations table — token, email, role, expiry, `acceptedAt`
@@ -473,6 +571,16 @@
 - 10.3.3 Re-invites — handling a fresh invite when one already exists
 - 10.3.4 Invitee already has an account — resolving the token to an existing user
 - 10.3.5 Inviter losing seat before acceptance — what happens to pending invitations
+- 10.3.6 Quizz
+
+### Chapter 10.4 — Project: org, RBAC, and invitations
+- 10.4.1 Project brief
+- 10.4.2 Starter walkthrough — Unit 9 auth, Unit 8 send, the existing schema
+- 10.4.3 Build it — `organizations` + `org_members` schema and migration
+- 10.4.4 Build it — `invitations` + `audit_logs` schema and migration
+- 10.4.5 Build it — the `authedAction(role, schema, fn)` wrapper and the `tenantDb(orgId)` helper
+- 10.4.6 Build it — the invite send and accept actions, with audit-log writes
+- 10.4.7 Verify — role refusal, invite accept across email sessions, audit panel updates
 
 ---
 
@@ -484,11 +592,21 @@
 - 11.1.1 URL-state list views — pagination, filter, sort, search
 - 11.1.2 Filtering, sorting, search in the URL — what belongs vs. transient state
 - 11.1.3 Pagination as URL state — encoding cursor or offset in `searchParams`, the share-and-refresh consequences (mechanics covered in Chapter 6.3)
+- 11.1.4 Quizz
 
 ### Chapter 11.2 — Soft delete, archive, and concurrency
 - 11.2.1 Soft delete, archive, restore — `deletedAt`; archive as a distinct user-facing state (SaaS pattern #9)
 - 11.2.2 Base query helpers that make missing `deletedAt IS NULL` filters impossible
 - 11.2.3 Optimistic concurrency control — version columns or `updatedAt` preconditions; HTTP 409 on conflict; when last-write-wins is fine
+- 11.2.4 Quizz
+
+### Chapter 11.3 — Project: URL-state list with soft delete and concurrency
+- 11.3.1 Project brief
+- 11.3.2 Starter walkthrough — Unit 7 CRUD surface, `deletedAt` + `version` already in schema
+- 11.3.3 Build it — lift filter, sort, and cursor to `searchParams`
+- 11.3.4 Build it — the base-query helper, soft-delete action, restore action
+- 11.3.5 Build it — the `version` precondition on update and the 409 surface
+- 11.3.6 Verify — share-and-refresh URL, soft-deleted visibility toggle, two-tab 409 race
 
 ---
 
@@ -504,6 +622,7 @@
 - 12.1.5 Idempotency as a unifying discipline — the unique-on-key DB constraint pattern, consolidated for webhooks, server actions, and retried jobs
 - 12.1.6 Stripe CLI for local webhook testing — `stripe listen` as the local-development corollary
 - 12.1.7 Resend bounce/complaint webhooks — the same ingestion shape applied to email deliverability; populating `email_suppressions` from the idempotent handler pattern (closes the loop with Chapter 8.1)
+- 12.1.8 Quizz
 
 ### Chapter 12.2 — Stripe billing (SaaS pattern #4)
 - 12.2.1 Stripe — products, prices, customers, subscriptions
@@ -513,6 +632,16 @@
 - 12.2.5 Trial / past-due / cancelled as first-class statuses, not boolean flags
 - 12.2.6 The thin internal billing interface (`billing.upgrade`, `billing.openPortal`, `billing.requirePlan`) — the billing carve-out to Architectural Principle #5
 - 12.2.7 When an SDK adapter earns its weight — only the two named carve-outs (the authz wrapper from Chapter 10.2, the billing interface above); Resend, Trigger.dev, and R2 are explicitly NOT wrapped, because their swap cost doesn't justify the tax
+- 12.2.8 Quizz
+
+### Chapter 12.3 — Project: Stripe webhook to plan entitlements
+- 12.3.1 Project brief
+- 12.3.2 Starter walkthrough — Stripe test mode, the CLI, `pnpm seed:stripe` for products, route handler stub
+- 12.3.3 Build it — signature verification with constant-time compare
+- 12.3.4 Build it — the outer transaction and `processed_events` dedup
+- 12.3.5 Build it — the three event handlers and the derived `plan_entitlements` row
+- 12.3.6 Build it — the `billing.upgrade` / `openPortal` / `requirePlan` interface and the inspector portal button
+- 12.3.7 Verify — `stripe trigger` lands once, replay doesn't mutate twice, portal opens, signature tampering returns 400
 
 ---
 
@@ -528,13 +657,32 @@
 - 13.1.5 Waitpoints — the v4 primitive that blocks runs until conditions are met; callback-URL completion for third-party hand-offs, timeouts, human-in-the-loop pauses; one waitpoint can block many runs and one run can wait on many waitpoints
 - 13.1.6 The durable-execution model — retries with backoff, `wait.for` / `wait.until`, idempotency at every trigger and wait (`idempotencyKey`, `idempotencyKeyTTL`), run priority as a queue-ordering offset
 - 13.1.7 Trigger.dev in our app — where the workload genuinely demands durability
+- 13.1.8 Quizz
 
-### Chapter 13.2 — Object storage (conditional)
-- 13.2.1 When object storage earns its weight — most SaaS have no user-uploaded files; the trigger conditions (avatars, documents, generated assets) and why R2 (not S3, not UploadThing) for SaaS unit economics
-- 13.2.2 Cloudflare R2 — buckets, the S3-compatible API, the Workers/Vercel-side configuration
-- 13.2.3 Presigned URLs for direct browser uploads (closes the Blob/File primitives thread from Chapter 3.7)
-- 13.2.4 File metadata in Postgres alongside the object reference
-- 13.2.5 R2 in our app — wiring uploads when the product calls for them
+### Chapter 13.2 — Project: Trigger.dev durable export job
+- 13.2.1 Project brief
+- 13.2.2 Starter walkthrough — Trigger.dev v4 project, the cloud link, the local dev CLI for the kill/resume verification, the empty task file, the pre-built `ExportReadyEmail.tsx` template
+- 13.2.3 Build it — the `schemaTask` with payload schema and the code-defined queue declaration
+- 13.2.4 Build it — paginate the export with `wait.for` between pages and idempotency keys per page
+- 13.2.5 Build it — the final send-email step rendering `ExportReadyEmail` and calling the Unit 8 send
+- 13.2.6 Verify — visible run progress, mid-run local-worker kill resumes, parallel triggers per org serialize
+
+### Chapter 13.3 — Object storage (conditional)
+- 13.3.1 When object storage earns its weight — most SaaS have no user-uploaded files; the trigger conditions (avatars, documents, generated assets) and why R2 (not S3, not UploadThing) for SaaS unit economics
+- 13.3.2 Cloudflare R2 — buckets, the S3-compatible API, the Workers/Vercel-side configuration
+- 13.3.3 Presigned URLs for direct browser uploads (closes the Blob/File primitives thread from Chapter 3.7)
+- 13.3.4 File metadata in Postgres alongside the object reference
+- 13.3.5 R2 in our app — wiring uploads when the product calls for them
+- 13.3.6 Quizz
+
+### Chapter 13.4 — Project: presigned R2 upload
+- 13.4.1 Project brief
+- 13.4.2 Starter walkthrough — R2 bucket, credentials env, S3-compatible SDK, upload page shell
+- 13.4.3 Build it — the `presignedPut` server action and the env entries
+- 13.4.4 Build it — the client-side direct-to-R2 upload and the `file_metadata` migration + save
+- 13.4.5 Build it — the `Files` list page rendering rows with fresh presigned GET URLs
+- 13.4.6 Build it — wire back to the Unit 13a export job so it uploads the CSV to R2 and the email carries the presigned download link
+- 13.4.7 Verify — file lands in R2, metadata matches, download works after the GET URL window, Unit 13a job emails a working R2 link
 
 ---
 
@@ -548,6 +696,15 @@
 - 14.1.3 `user_notification_preferences` checked once in the dispatcher, never at the call site
 - 14.1.4 Dedup / coalesce on rapid duplicate events
 - 14.1.5 Notifiable vs. logged events — what counts as user-facing vs. audit-only
+- 14.1.6 Quizz
+
+### Chapter 14.2 — Project: notification dispatcher
+- 14.2.1 Project brief
+- 14.2.2 Starter walkthrough — Unit 8 send, Unit 10 schema, a seeded invitation row
+- 14.2.3 Build it — the `notifiable_events` registry and the dispatcher with the 60-second dedup window keyed by `(event_type, subject_id)`
+- 14.2.4 Build it — the email channel send, the in-app inbox writer, and the `user_notification_preferences` read
+- 14.2.5 Build it — wire three call sites (invite sent, role changed, billing past-due)
+- 14.2.6 Verify — pref toggle, rapid-fire dedup, default-on for missing pref
 
 ---
 
@@ -558,12 +715,28 @@
 ### Chapter 15.1 — Cache decisions as architecture (SaaS pattern #8)
 - 15.1.1 Cache decisions as architecture — which routes are statically cacheable vs. always-dynamic in a SaaS; when to reach for `cacheTag` so a single mutation can invalidate exactly the right caches
 - 15.1.2 Cache invalidation after a mutation — `updateTag`, `revalidateTag`, `revalidatePath`, `router.refresh` decision tree applied to worked SaaS cases (list view post-edit, post-purchase, post-membership-change); the `updateTag`-vs-`revalidateTag` call (immediate expiry for user-driven mutations vs. stale-while-revalidate for background ones) made operational on real flows; revisits Chapter 5.4
+- 15.1.3 Quizz
 
-### Chapter 15.2 — Rate limiting and shared session-shaped data (Upstash)
-- 15.2.1 Edge controls (light) for basic rate limiting before launch
-- 15.2.2 When Upstash Redis becomes part of the baseline — pre-launch demos can lean on Vercel/Cloudflare edge controls; the moment the project ships to a public URL, `@upstash/ratelimit` on auth endpoints is non-negotiable; distributed cache and shared session storage as the further reasons it earns its weight
-- 15.2.3 Upstash Redis primitives — rate limiting on abusable endpoints (sign-up, sign-in, password reset, public APIs)
-- 15.2.4 Upstash in our app — wiring `@upstash/ratelimit` on the auth endpoints
+### Chapter 15.2 — Project: cacheTag-driven invalidation
+- 15.2.1 Project brief
+- 15.2.2 Starter walkthrough — Unit 11 list, stub Trigger.dev summary job
+- 15.2.3 Build it — annotate the list with `use cache`, lay down the cache-tag scheme, and emit `fetchedAt` from inside each cached function
+- 15.2.4 Build it — call `updateTag` from the edit action and `revalidateTag` from the background job
+- 15.2.5 Verify — `fetchedAt` stays stable across cache hits, refreshes after `updateTag`, and refreshes only on the next visit after `revalidateTag`
+
+### Chapter 15.3 — Rate limiting and shared session-shaped data (Upstash)
+- 15.3.1 Edge controls (light) for basic rate limiting before launch
+- 15.3.2 When Upstash Redis becomes part of the baseline — pre-launch demos can lean on Vercel/Cloudflare edge controls; the moment the project ships to a public URL, `@upstash/ratelimit` on auth endpoints is non-negotiable; distributed cache and shared session storage as the further reasons it earns its weight
+- 15.3.3 Upstash Redis primitives — rate limiting on abusable endpoints (sign-up, sign-in, password reset, public APIs)
+- 15.3.4 Upstash in our app — wiring `@upstash/ratelimit` on the auth endpoints
+- 15.3.5 Quizz
+
+### Chapter 15.4 — Project: Upstash rate limit on auth endpoints
+- 15.4.1 Project brief
+- 15.4.2 Starter walkthrough — Unit 9 auth flows, the Upstash Redis project
+- 15.4.3 Build it — declare the three sliding-window limiters (sign-in, sign-up, reset)
+- 15.4.4 Build it — wrap sign-in with per-IP and per-email keys; wrap sign-up and reset; emit `RateLimit-*` headers
+- 15.4.5 Verify — 11th request returns 429 with headers, window resets release tokens, Upstash dashboard shows the keys
 
 ---
 
@@ -576,11 +749,29 @@
 - 16.1.2 TanStack Query primitives — queries, mutations, optimistic updates, infinite queries
 - 16.1.3 TanStack Query in the App Router — `QueryClientProvider`, `HydrationBoundary`; hydrating server-fetched data into the client cache
 - 16.1.4 TanStack Query in our app — the screen where the trigger is met
+- 16.1.5 Quizz
 
-### Chapter 16.2 — Zustand (conditional)
-- 16.2.1 When Zustand earns its weight — the threshold past `useState` and URL state: genuinely shared client state across deeply nested components (multi-step wizards, global UI flags, cart-style stores); client-only, never in server components
-- 16.2.2 Zustand primitives — global client state; slices
-- 16.2.3 Zustand in our app — the wizard or shared-flag case where the trigger is met
+### Chapter 16.2 — Project: TanStack Query on optimistic comments
+- 16.2.1 Project brief
+- 16.2.2 Starter walkthrough — Unit 11 invoices, the comments route handlers, seeded comments
+- 16.2.3 Build it — `QueryClientProvider` + `HydrationBoundary` for SSR-hydrated initial data
+- 16.2.4 Build it — `useInfiniteQuery` for the thread with cursor paging and the polling interval
+- 16.2.5 Build it — `useMutation` with optimistic add and rollback on `onError`
+- 16.2.6 Verify — cross-session arrival within the poll window, optimistic visibility, forced 500 rollback
+
+### Chapter 16.3 — Zustand (conditional)
+- 16.3.1 When Zustand earns its weight — the threshold past `useState` and URL state: genuinely shared client state across deeply nested components (multi-step wizards, global UI flags, cart-style stores); client-only, never in server components
+- 16.3.2 Zustand primitives — global client state; slices
+- 16.3.3 Zustand in our app — the wizard or shared-flag case where the trigger is met
+- 16.3.4 Quizz
+
+### Chapter 16.4 — Project: Zustand for a multi-step wizard
+- 16.4.1 Project brief
+- 16.4.2 Starter walkthrough — four route segments, per-step Zod schemas
+- 16.4.3 Build it — the Zustand store with per-step slices and a typed selector surface
+- 16.4.4 Build it — wire each step's form to the store and the Next-gate validation
+- 16.4.5 Build it — the final submit action, the success-reset, and back/forward navigation
+- 16.4.6 Verify — back/forward preserves, refresh loses (the senior call), no double-submit on step 4
 
 ---
 
@@ -592,16 +783,25 @@
 - 17.1.1 Errors fail closed — anything that looks like authorization (`requireRole`, paywall checks, tenancy filters) refuses by default; an exception inside the check is treated as a refusal, not an allow
 - 17.1.2 User-message vs. operator-message split — what reaches the user is operator-safe to read aloud (no internal IDs, no stack traces, no "DB constraint X failed"); diagnostic detail goes to Sentry and the audit log
 - 17.1.3 The two commitments revisited at the seams — where each commitment lands in `authedAction`, billing, and webhook code
+- 17.1.4 Quizz
 
 ### Chapter 17.2 — The security baseline
 - 17.2.1 Security headers — CSP, HSTS, X-Frame-Options, Referrer-Policy — set in `next.config.ts`
-- 17.2.2 Rate limiting on abusable endpoints (revisit; Upstash now in place from Chapter 15.2)
+- 17.2.2 Rate limiting on abusable endpoints (revisit; Upstash now in place from Chapter 15.3)
 - 17.2.3 Audit logs as discipline — what to log, what not to (revisits the table introduced at RBAC)
 - 17.2.4 GDPR posture — retention timers, deletion-on-request that actually works
 - 17.2.5 Cookie consent gate — single source of truth for analytics opt-in; gates PostHog events, session replay, and any non-essential third-party
 - 17.2.6 Secrets management — env vars, never in code, never in client bundles
 - 17.2.7 Type-safe environment variables (revisit; in place from Chapter 1.3) — confirming the `@t3-oss/env-nextjs` discipline as part of the security baseline audit
 - 17.2.8 Dep hygiene — `pnpm audit`, "is this maintained" check, lockfile committed
+- 17.2.9 Quizz
+
+### Chapter 17.3 — Project: error and security baseline audit
+- 17.3.1 Audit brief — the eight categories, the rule-location-consequence-fix template
+- 17.3.2 Audit target walkthrough — the seeded codebase, the running app, one modeled finding end-to-end
+- 17.3.3 Audit it — error discipline pass (fail-closed checks, user/operator message split, `dangerouslySetInnerHTML`)
+- 17.3.4 Audit it — security baseline pass (headers, rate limits, audit-log gaps, secrets, GDPR posture, dep hygiene)
+- 17.3.5 Verify — match findings against the published answer key, quantify any misses
 
 ---
 
@@ -615,6 +815,7 @@
 - 18.1.3 The user's timezone in their profile, not derived per-request
 - 18.1.4 DST transitions and recurring jobs
 - 18.1.5 Date arithmetic with Temporal — never hand-rolled month math; native and unflagged from Node 26 (May 2026), `temporal-polyfill` (FullCalendar, ~20KB) or `@js-temporal/polyfill` (TC39 champions, full-spec) on the Node 24 LTS line that most production SaaS still runs on
+- 18.1.6 Quizz
 
 ### Chapter 18.2 — Internationalization (SaaS pattern #14)
 - 18.2.1 The i18n discipline — translation keys with interpolation, never string concatenation
@@ -623,6 +824,15 @@
 - 18.2.4 Locale negotiation — profile preference + `Accept-Language`
 - 18.2.5 next-intl — the 2026 Next.js i18n library and how it implements the discipline
 - 18.2.6 i18n SEO — `hreflang` tags, per-locale sitemap entries, canonical URLs, locale-aware OG images
+- 18.2.7 Quizz
+
+### Chapter 18.3 — Project: localized, tz-aware list view
+- 18.3.1 Project brief
+- 18.3.2 Starter walkthrough — Unit 11 list, profile `locale` + `timezone` columns, `next-intl` installed
+- 18.3.3 Build it — `next-intl` config, locale negotiation in the layout, and three message catalogs with ICU plurals
+- 18.3.4 Build it — date rendering with Temporal in profile tz and currency via `Intl.NumberFormat`
+- 18.3.5 Build it — `alternates.languages` metadata and per-locale sitemap entries
+- 18.3.6 Verify — locale switch reflow, DST-spanning render, `hreflang` tags in source
 
 ---
 
@@ -635,6 +845,7 @@
 - 19.1.2 The shape of the suite — most tests unit, fewer integration, very few E2E; the honeycomb shape for a Next.js SaaS
 - 19.1.3 Coverage philosophy — what to chase, what not to; 100% coverage as theatre
 - 19.1.4 The shape of a single test — Arrange / Act / Assert, one behavior per test, descriptive name; behavior over implementation as the rule that survives a refactor
+- 19.1.5 Quizz
 
 ### Chapter 19.2 — Unit tests for `/lib`
 - 19.2.1 Unit tests for pure logic in `/lib`
@@ -643,6 +854,7 @@
 - 19.2.4 Type-level testing with `expectTypeOf` / `assertType` — guarding the moves from Principle #7
 - 19.2.5 Testing async code — the forgotten-`await` trap, fake timers with promises
 - 19.2.6 Testing the unhappy path — `expect(...).toThrow`, expected-failure assertions, error-result shape
+- 19.2.7 Quizz
 
 ### Chapter 19.3 — Integration tests at the seams
 - 19.3.1 Integration tests against a real test Postgres with transaction-rollback per test
@@ -653,17 +865,28 @@
 - 19.3.6 Webhook handler testing — fixture payloads, signature verification in test mode, idempotency replay assertions against `processed_events`
 - 19.3.7 Testing a Server Action end-to-end — stub session/`cookies()`, run Zod parse, exercise the `authedAction` wrapper, assert the Postgres mutation, assert the typed return
 - 19.3.8 Test isolation and ordering — no shared state, no run-order dependency, the cost of flake
+- 19.3.9 Quizz
 
 ### Chapter 19.4 — Component tests (conditional)
 - 19.4.1 When React Testing Library earns its weight — bulk-testing presentational components has poor cost-benefit; reach for it on shared component libraries, complex stateful components, and critical UX paths
 - 19.4.2 React Testing Library — setup and the basics
 - 19.4.3 RTL query philosophy — by role, by label, by text; `getByTestId` as last resort; what "behavior" means at the component level
 - 19.4.4 RTL in our app — the components where the trigger is met
+- 19.4.5 Quizz
 
 ### Chapter 19.5 — E2E (conditional)
 - 19.5.1 When Playwright earns its weight — not a coverage tool; reach for it only on the 20–30 paths where failure costs real money (auth, checkout, Stripe-touching flows); many SaaS skip E2E entirely in their first year
 - 19.5.2 Playwright primitives — running it on auth, checkout, money paths
 - 19.5.3 Playwright in our app — the money paths that pay back the runtime cost
+- 19.5.4 Quizz
+
+### Chapter 19.6 — Project: integration + E2E tests for the Stripe checkout flow
+- 19.6.1 Project brief
+- 19.6.2 Starter walkthrough — Vitest config, MSW handlers, auth fixture factory, test-DB lifecycle
+- 19.6.3 Build it — happy-path integration test against real test Postgres with transaction rollback
+- 19.6.4 Build it — duplicate-event idempotency test and signature-tampered rejection test
+- 19.6.5 Build it — Playwright money-path test (sign-in → Stripe Checkout test card → plan updated)
+- 19.6.6 Verify — suite green twice in a row; deliberate handler mutations fail the expected tests only
 
 ---
 
@@ -677,12 +900,14 @@
 - 20.1.3 The "log inputs you'd want at 3am" rule and the PII/secrets exclusion
 - 20.1.4 Vercel Log Drains — shipping logs to a searchable destination; reading production logs in anger
 - 20.1.5 Debugging server-side Next.js — `node --inspect`, attaching from VS Code, the server-action-failed-and-I-can't-tell-why workflow; how structured logs and Sentry breadcrumbs interleave with a live debugger
+- 20.1.6 Quizz
 
 ### Chapter 20.2 — Product analytics
 - 20.2.1 Vercel Analytics — what it covers without configuration (the default)
 - 20.2.2 When PostHog earns its weight — the threshold past Vercel Analytics: event-level product analytics, feature flags for gradual rollouts, session replay for UX debugging, experiments; folding 4–5 separate tools into one platform as the minimum-stack philosophy in action
 - 20.2.3 PostHog primitives — events, feature flags, session replay, experiments
 - 20.2.4 PostHog in our app — wiring it gated by the cookie consent gate from Unit 17
+- 20.2.5 Quizz
 
 ### Chapter 20.3 — Performance vigilance (SaaS pattern #15)
 - 20.3.1 The Core Web Vitals — LCP, INP, CLS, what each measures, how to move each
@@ -692,6 +917,15 @@
 - 20.3.5 Lighthouse passes on the marketing page and one critical authenticated screen pre-launch
 - 20.3.6 RSC waterfalls — sequential parent-then-child awaits compounding latency; the `Promise.all` rewrite (the RSC-side cousin of N+1)
 - 20.3.7 Database query performance — index hits, N+1 (revisit; the Drizzle thread cashes in)
+- 20.3.8 Quizz
+
+### Chapter 20.4 — Project: observability and performance audit
+- 20.4.1 Project brief — Sentry + PostHog wiring plus the seeded performance findings
+- 20.4.2 Audit target walkthrough — the seeded codebase, one modeled finding
+- 20.4.3 Wire it — Sentry with source maps, release tagging, and breadcrumbs
+- 20.4.4 Wire it — PostHog events gated by the cookie consent gate
+- 20.4.5 Audit it — performance pass (RSC waterfall, barrel import, missing `priority`, N+1, bundle analyzer)
+- 20.4.6 Verify — Sentry captures a deliberate throw, PostHog records post-consent, bundle before/after attached, findings match the seeded list
 
 ---
 
@@ -704,11 +938,13 @@
 - 21.1.2 Git for recovery and history shaping — cherry-pick, bisect, reflog, interactive rebase
 - 21.1.3 Pull requests as the unit of change — small, reviewable, reversible
 - 21.1.4 Branch protection rules that prevent direct pushes to main
+- 21.1.5 Quizz
 
 ### Chapter 21.2 — CI on GitHub Actions
 - 21.2.1 GitHub Actions — workflows, jobs, steps, secrets, cached deps
 - 21.2.2 The CI baseline — type-check, lint, test, build
 - 21.2.3 Supplementary CI checks — `pnpm audit` for dep hygiene, `markdown-link-check` on docs
+- 21.2.4 Quizz
 
 ### Chapter 21.3 — Vercel deployment and going live
 - 21.3.1 The Vercel deployment model — what gets pushed where on each git push
@@ -720,11 +956,21 @@
 - 21.3.7 Environment management — dev / preview / prod, secret scoping
 - 21.3.8 Production rollbacks — promoting a previous deployment when something on `main` breaks production
 - 21.3.9 The launch checklist — env validation green, error monitoring wired, rate limits live, audit logs writing, security headers set
+- 21.3.10 Quizz
 
 ### Chapter 21.4 — Schema migrations against a live app (SaaS pattern #11)
 - 21.4.1 The expand → migrate → contract cadence
 - 21.4.2 Which migrations actually need it (renames, type changes, NOT NULL on existing, drops still referenced mid-deploy)
 - 21.4.3 Testing a migration against the Neon preview branch before merge — what to run, what to look at; the failure modes the three-step cadence is designed to catch
+- 21.4.4 Quizz
+
+### Chapter 21.5 — Project: deploy and a live expand-migrate-contract migration
+- 21.5.1 Project brief — the migration class that demands the cadence; the rollback expectation
+- 21.5.2 First deploy — connecting the repo to Vercel, the first production URL, environment scoping
+- 21.5.3 PR 1 (Expand) — add the FK column nullable, ship to preview, verify production keeps working
+- 21.5.4 PR 2 (Migrate) — backfill and dual-write, ship to preview, verify production keeps working
+- 21.5.5 PR 3 (Contract) — drop the old text column, make the FK non-null, ship
+- 21.5.6 Rollback rehearsal — promote the previous deployment, document the steps
 
 ---
 
@@ -739,15 +985,25 @@
 - 22.1.4 The course's opinionated picks worth an ADR — Drizzle over Prisma, Better Auth over Clerk, Biome over ESLint+Prettier, Cloudflare R2 over S3, Node runtime not edge, native forms before RHF
 - 22.1.5 Docs live next to the truth — the schema file IS the data-model doc
 - 22.1.6 Diataxis vocabulary — tutorial / how-to / reference / explanation
+- 22.1.7 Quizz
 
 ### Chapter 22.2 — Comments, TSDoc, and team discipline
 - 22.2.1 TSDoc on public surfaces, not on internals
 - 22.2.2 Comments answer why, not what; never deleted in a refactor
 - 22.2.3 Docs ship with the PR — or they're already wrong
+- 22.2.4 Quizz
 
 ### Chapter 22.3 — Code review
 - 22.3.1 What a senior reviewer looks for — mapping reviews to the architectural principles (#1–#7) and SaaS patterns (#1–#15)
 - 22.3.2 How to leave a good review comment — suggesting vs. blocking, the language of disagreement
+- 22.3.3 Quizz
+
+### Chapter 22.4 — Project: PR review and one ADR
+- 22.4.1 Project brief — the seeded PR diff, the principles/patterns cheatsheet, the Nygard template
+- 22.4.2 Audit target walkthrough — read the diff once, model one review comment end-to-end
+- 22.4.3 Review it — five line-level comments on the seeded issues; distinguish suggesting from blocking
+- 22.4.4 Write it — the ADR for the one decision in the diff, all three Nygard sections, named after the decision
+- 22.4.5 Verify — comments map to seeded issues; ADR has a real `Decision` line, not a hedged one
 
 ---
 
@@ -759,14 +1015,25 @@
 - 23.1.1 When the Vercel AI SDK earns its weight — most 2026 SaaS still ship without LLM features; the trigger is any LLM-backed product surface (chat, generation, classification, agentic flows); the AI SDK as the de-facto Next.js LLM integration
 - 23.1.2 Cost and rate-limit thinking when LLM calls are user-facing — token accounting, per-user quotas, abuse mitigation
 - 23.1.3 Provider abstraction and the AI SDK's role in keeping vendor-swap cheap
+- 23.1.4 Quizz
 
 ### Chapter 23.2 — Generating text and structured output
 - 23.2.1 AI SDK Core — `streamText` and `generateText`; the message shape and conversation primitives
 - 23.2.2 Structured output — `generateObject` and `streamObject` with Zod schemas
 - 23.2.3 AI SDK UI hooks — `useChat`, `useCompletion` under v5's transport-based architecture; the `UIMessage` `parts` array as the message-state-of-truth (replaces v4's flat `.content`); `sendMessage` / `regenerate` (renamed from v4's `append` / `reload`); manually managed input state (no longer auto-managed by the hook); streaming response patterns and progressive rendering (text deltas, partial objects)
+- 23.2.4 Quizz
 
 ### Chapter 23.3 — Tools, agents, and generative UI
 - 23.3.1 Tool calling — defining tools with Zod, the execution loop, multi-step under v5's `stopWhen` parameter with built-in stop conditions (`stepCountIs(n)`, `hasToolCall(name)`, `isLoopFinished()`) — replaces v4's client-side `maxSteps`; the agentic loop, tool-result handling
 - 23.3.2 Generative UI with `ai/rsc` — `streamUI`, server-rendered tool components, `useUIState` / `useAIState`
 - 23.3.3 Embeddings and vector search (light) — when retrieval-augmented features earn their weight
 - 23.3.4 AI SDK in our app — wiring an LLM-backed surface where the trigger is met
+- 23.3.5 Quizz
+
+### Chapter 23.4 — Project: LLM-backed invoice Q&A with tool calling
+- 23.4.1 Project brief
+- 23.4.2 Starter walkthrough — Unit 10/11 surface, AI SDK installed, provider key
+- 23.4.3 Build it — the route handler with `streamText` and the agentic loop via `stopWhen(stepCountIs(5))`
+- 23.4.4 Build it — the `getInvoiceStats` tool with Zod and org-scoped authz inside the tool, plus the daily-quota check
+- 23.4.5 Build it — wire `useChat` to render the `UIMessage` `parts` array and the token-usage panel
+- 23.4.6 Verify — grounded answers cite real Drizzle numbers; forged `orgId` refused; 11th question hits the quota
