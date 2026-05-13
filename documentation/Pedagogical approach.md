@@ -103,4 +103,4 @@ Most chapters will have a final quizz to let the student self-assess its recall.
 
 ## 8. Small focused projects
 
-At the end of *select* units or chapters, a **small focused projects** (1–2 hours, single sitting) let the student apply the unit's concepts in a realistic workflow. Projects are independent. No monolithic capstone.
+At the end of *select* units or chapters, a **small focused projects** (1–2 hours, single sitting) let the student apply the unit's concepts in a realistic workflow. Projects are independent. No monolithic capstone. Starters and solutions ship from a separate `react-saas-course-projects` monorepo.
