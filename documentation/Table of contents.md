@@ -25,11 +25,11 @@
 - 1.3.3 Browser DevTools: the four panels you actually use — Elements (live DOM and cascade), Network (open before the action, throttle, copy-as-fetch), Console (REPL, `$0`, `console.table`), and Application (cookies, storage, service workers); React DevTools installed here for its first call in Unit 4
 
 ### Chapter 1.4 — The first project scaffold
-- 1.4.1 Cloning the course's starter Next.js + TS + Drizzle scaffold; the dev server, the build/start cycle
-- 1.4.2 AGENTS.md introduced at first project setup — the briefing file the next contributor (human or agent) reads on day one; what earns a place, what doesn't (full treatment in Chapter 22.1)
-- 1.4.3 tsconfig.json strictness floor — `strict`, `noUncheckedIndexedAccess`, `isolatedModules`, paths
-- 1.4.4 Framework-set tsconfig flags Next.js owns — `target`/`lib`, `module`/`moduleResolution`, the transpiler-alignment trio (`verbatimModuleSyntax`, `isolatedModules`, `esModuleInterop`)
-- 1.4.5 Type-safe environment variables (`@t3-oss/env-nextjs`) — Zod-validated env at build time; a missing or misnamed `DATABASE_URL` fails before deploy, not at first request in production; non-negotiable from the first stack-setup lesson (revisited under the security baseline in Chapter 17.2)
+- 1.4.1 Cloning the starter and the dev/build cycle — `degit` the course's pinned Next.js 16 + TS + Drizzle scaffold, read the file tree end to end, run `pnpm dev` and `pnpm build` (Turbopack on both by default in Next.js 16), commit the toolchain decisions from Chapters 1.2–1.3 into a real codebase
+- 1.4.2 AGENTS.md as the next contributor's briefing — the file the next human or coding agent reads on day one; what earns a place (thesis, pinned stack, layout, commands, conventions), what doesn't (aspirational prose, duplicated rules, hand-maintained file lists); full doctrine in Chapter 22.1
+- 1.4.3 The strictness floor the project owns in tsconfig.json — `strict`, `noUncheckedIndexedAccess`, `noFallthroughCasesInSwitch`, `noImplicitOverride`, `forceConsistentCasingInFileNames`, path aliases; each flag named by the bug class it catches, `exactOptionalPropertyTypes` parked as the conditional
+- 1.4.4 The compatibility flags Next.js owns in tsconfig.json — `target`/`lib`, `module`/`moduleResolution: "bundler"`, the transpiler-alignment trio (`verbatimModuleSyntax`, `isolatedModules`, `esModuleInterop`), `jsx: "preserve"`, `noEmit`, the Next.js plugin; the rule "if you're tempted to edit a flag in this lesson, you're probably wrong"
+- 1.4.5 Type-safe environment variables with `@t3-oss/env-nextjs` — Zod 4-validated env at build time so a missing or misnamed `DATABASE_URL` fails before deploy, not at first request in production; the `server`/`client` split, the `NEXT_PUBLIC_*` convention, the `.env.example` → `.env.local` pattern, `SKIP_ENV_VALIDATION` as a deliberate escape hatch; non-negotiable from the first scaffold (revisited under the security baseline in Chapter 17.2)
 
 ---
 
