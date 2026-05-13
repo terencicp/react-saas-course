@@ -151,12 +151,11 @@
 - 3.6.3 Quizz
 
 ### Chapter 3.7 — Browser platform APIs the SaaS UI reaches for
-- 3.7.1 Web Crypto random primitives — `randomUUID`, `getRandomValues`
-- 3.7.2 Web Crypto HMAC — `subtle` for sign/verify, with constant-time comparison as the timing-attack mitigation (load-bearing for invitations, magic-link, webhook signatures)
-- 3.7.3 Clipboard API — `navigator.clipboard.writeText`/`readText`, secure-context constraints (load-bearing for copy-invite-link, copy-API-key, copy-webhook-secret)
-- 3.7.4 Blob, File, `URL.createObjectURL` — the file-upload primitives (closed in Chapter 13.3 with R2)
-- 3.7.5 localStorage / sessionStorage (light — theme preference, transient state)
-- 3.7.6 Quizz
+- 3.7.1 Web Crypto: random IDs and HMAC signatures — `crypto.randomUUID`, `crypto.getRandomValues`, and `crypto.subtle` for HMAC sign/verify with constant-time comparison as the timing-attack mitigation (load-bearing for invitations, magic-link tokens, webhook signatures)
+- 3.7.2 The Clipboard API: copy and paste from web pages — `navigator.clipboard.writeText`/`readText`, secure-context plus transient-user-activation constraints, the canonical "Copy" button shape (load-bearing for copy-invite-link, copy-API-key, copy-webhook-secret)
+- 3.7.3 Blob, File, and `URL.createObjectURL`: the upload primitives — file picker, MIME-type / size validation, preview through `blob:` URLs with `revokeObjectURL` cleanup, foreshadowing the R2 presigned-PUT in Chapter 13.3
+- 3.7.4 Web Storage: localStorage and sessionStorage, lightly — the cookie / URL state / server state / `localStorage` / `useState` decision; SSR safety, what `localStorage` is not for (auth, PII, large or expiring values)
+- 3.7.5 Quizz
 
 ---
 
