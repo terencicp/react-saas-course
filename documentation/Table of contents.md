@@ -146,8 +146,8 @@
 - 3.5.4 Quizz
 
 ### Chapter 3.6 — Fetch and live data
-- 3.6.1 The Fetch API — Request, Response, Headers, FormData, ReadableStream
-- 3.6.2 Streaming responses, SSE, chunked transfer
+- 3.6.1 Fetch fundamentals — Request, Response, Headers, FormData
+- 3.6.2 Streaming responses — ReadableStream, chunked transfer, and Server-Sent Events
 - 3.6.3 Quizz
 
 ### Chapter 3.7 — Browser platform APIs the SaaS UI reaches for
