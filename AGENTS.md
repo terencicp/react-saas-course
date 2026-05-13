@@ -16,4 +16,4 @@ A web development course for junior-to-mid devs with some web experience. Ships 
 
 Read any of these only if required by your current task:
 
-- `agents/content/Table of contents.md` — canonical curriculum, the source of truth for what gets taught and in what order.
+- `documentation/content/Table of contents.md` — canonical curriculum, the source of truth for what gets taught and in what order.
