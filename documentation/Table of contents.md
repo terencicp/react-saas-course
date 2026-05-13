@@ -124,9 +124,9 @@
 - 3.1.4 Quizz
 
 ### Chapter 3.2 — HTTP at the depth a SaaS engineer needs
-- 3.2.1 HTTP method semantics and idempotency (GET, POST, PUT, PATCH, DELETE) — the senior anchor for designing safe-to-retry endpoints
-- 3.2.2 HTTP status codes — the 2xx/3xx/4xx/5xx subset that bites in SaaS, plus 409, 422, 429
-- 3.2.3 HTTP headers — content negotiation, caching, auth, custom headers
+- 3.2.1 Methods and idempotency: the safe-to-retry contract — GET, POST, PUT, PATCH, DELETE semantics; idempotency as the retry anchor; the `Idempotency-Key` header pattern
+- 3.2.2 Status codes: the response contract — the 2xx/3xx/4xx/5xx subset that bites in SaaS (200, 201, 202, 204; 301, 302, 303, 307; 400, 401, 403, 404, 409, 422, 429; 500, 502, 503, 504) and RFC 9457 Problem Details as the 2026 error-body shape
+- 3.2.3 Headers: content, caching, auth, and the metadata channel — content negotiation, `Cache-Control` directives, `Authorization` schemes, rate-limit signaling, custom-header conventions
 - 3.2.4 Quizz
 
 ### Chapter 3.3 — URLs, origins, and security boundaries
