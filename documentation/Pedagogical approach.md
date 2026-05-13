@@ -23,7 +23,42 @@ Six filters operationalize the pillars; if a draft fails any, rewrite.
 - **Principles and patterns inline, never bundled.** Introduced at the moment the lesson would teach them.
 - **Verify 2026 facts before stating them.** Versions, defaults, library status get a fresh web search.
 
-## 3. Lesson architecture
+## 3. Voice and prose style
+
+The prose sounds like a senior engineer explaining something to a peer — direct, opinionated, assumes competence.
+
+**Address.** "You" and imperatives. Use "we" only in shared-reasoning passages. 
+**Stance.** When real alternatives exist, state the default first and plainly, then name credible alternatives in a line or two with the condition that would flip the choice.
+**Hedging.** Assert defaults. Hedge only where the truth is conditional (*"if the table fits in memory…"*). Cut filler hedges: "might want to," "probably," "I think," "you could potentially."
+**Personality.** No humor. The prose is warm by being clear and respectful of the reader's time, not by being witty.
+**Headings.** Never use title case, use sentence case.
+**Lists vs. prose.** Prose by default. Lists only when items are genuinely parallel and order or scanning matters.
+**Pitfalls.** State the failure mode and the consequence. No alarmism, no scare quotes, no *"be careful!"*.
+**Cliché blacklist.** Strike on sight: "Let's dive in," "In this lesson we will," "As you can see," "It's important to note,", "Great job!", "Awesome!", and exclamation marks outside code.
+**Spelling and punctuation.** American English.
+
+## 4. Code sample conventions
+
+Code samples carry the same posture as the prose: direct, minimal, opinionated. The default is the smallest snippet that makes the point.
+
+**Length and completeness.** Default to the smallest snippet that makes the point. Strip imports, types, and surrounding structure when they aren't load-bearing for the lesson. Show full structure only when structure itself is the lesson (Setup/wiring, Pattern). Use collapsible sections on EC code blocks to hide irrelevant parts of the code that shouldn't be ommited.
+**Imports.** Show on first occurrence per lesson. On subsequent snippets in the same lesson, drop silently when context makes it obvious or use collapsible sections.
+**File boundaries.** Label multi-file blocks with the filename as a code-block title. Leave single-file blocks unlabeled.
+**Variable naming.** Semantic, drawn from whatever domain fits the lesson. Never `foo`/`bar`/`baz`/`myVariable`.
+**Example domain.** Pick the entities that best fit each lesson — todos for simple state, invoices for relational data, posts for feeds.
+**TypeScript.** Inference-led. Annotate function parameters and return types; let TypeScript infer locals. Annotate explicitly only when inference would be wrong, when the signature is the lesson, or when narrowing is the point. Never `any` — use `unknown` if typing forces it.
+**In-code comments.** Rare. Allowed for annotations that would exist in production. No pedagogical narration inside the block — that belongs in surrounding prose. To call attention to a fragment of code, highlight it.
+**Error handling.** Default to the happy path so samples stay short. Where a senior would handle failure modes in production, name them in surrounding prose (*"in production you'd also validate X and reject Y"*) rather than padding the snippet. Show full error handling only when errors are the lesson.
+**Async style.** `async/await` uniformly. Use `.then` chains only when teaching Promises directly.
+**Wrong-then-right.** Show the broken version when the failure mode *is* the lesson — Pattern archetype especially. Mark before/after clearly. Never leave wrong code on the page without the fix immediately following.
+**Highlighting changes.** When a block evolves across a lesson, show the full revised block and mark changed lines with a side annotation (`// new`, `// changed`). Don't show diff hunks.
+**Runnability.** Every block runs as-is given the lesson's established imports, unless the prose explicitly flags it as pseudo-code or illustrative.
+**Output.** Show output in an adjacent labeled block, not as inline, except for single-value output.
+**Formatting.** Single quotes. Trailing commas. Semicolons on.
+**Function form.** Arrow functions for components, callbacks, and inline use. `function` declarations only when hoisting is required.
+**Terminal commands.** Separate code blocks. No `$` prefix.
+
+## 5. Lesson architecture
 
 **Grain.** One TOC bullet = one lesson, less than 1h student time.
 
@@ -40,11 +75,11 @@ Six filters operationalize the pillars; if a draft fails any, rewrite.
 
 1. **Title** — can rephrase the TOC bullet for the page header.
 2. **Introduction** — state the lesson's goal, why it matters, connect it to what learner already know,  preview the practical skill or project built by the end, motivate the topic with a concrete problem. Keep it warm and brief.
-3. **Body** — h2/h3 where there are distinct subtopics; teaching prose with code, watch-outs, exercises, inline concept checks, and videos all placed *where they belong*, never at the end.
+3. **Body** — h2/h3 where there are distinct subtopics; teaching prose with code, exercises, and videos all placed *where they belong*, never at the end.
 4. **External exercises** (optional LinkCards) — links to the external practice repo.
 5. **Learning resources** (optional LinkCards) — Udemy section link, official docs, supplementary video.
 
-## 4. Content decision rules
+## 6. Content decision rules
 
 **Exercises.** Default to including exercises. Students retain by doing, not by reading, and immediate practice catches misunderstandings before they compound. The question is which form. Live coding exercises with tests or goals are the strongest form they let the student practice the new syntax *and* confirm understanding in one step; use them as often as the material warrants. When live coding doesn't fit we can use other interactive exercises. Both kinds should be short and fun — they keep momentum, not break it. Place exercises where they belong in the flow, never collected at the end.
 
@@ -62,10 +97,10 @@ Six filters operationalize the pillars; if a draft fails any, rewrite.
 
 **External exercises.** Link to external online exercises when directly relevant.
 
-## 5. Quizzes
+## 7. Quizzes
 
 Most chapters will have a final quizz to let the student self-assess its recall.
 
-## 6. Small focused projects
+## 8. Small focused projects
 
 At the end of *select* units or chapters, a **small focused projects** (1–2 hours, single sitting) let the student apply the unit's concepts in a realistic workflow. Projects are independent. No monolithic capstone.
