@@ -20,9 +20,9 @@
 - 1.2.4 Running TypeScript: native strip-types, tsx, and tsc — native stripping (stable since Node 25.2.0, backported to 24.12 and 22.18) as the default for backend scripts and CLIs; `tsx` past the named trigger (path aliases, JSX, decorators, downleveling) since native stripping ignores `tsconfig.json`; `tsc → .js` reserved for library publishing and `tsc --noEmit` for CI type-checking
 
 ### Chapter 1.3 — Editor and code-quality tools
-- 1.3.1 VS Code setup — the small extension set that pays off, and why minimum-stack thinking applies to the editor too
-- 1.3.2 Biome — lint and format in one tool, single config;
-- 1.3.3 Browser DevTools — Elements, Network, Console, Application — for both building and debugging
+- 1.3.1 VS Code, the workspace settings the repo owns — the minimum-viable extension set with a senior reason each, `.editorconfig`, and the `.vscode/` files (`extensions.json`, `settings.json`) checked into version control as team artifacts rather than personal preference
+- 1.3.2 Biome: one tool, one config, format and lint — Biome as the 2026 default over ESLint+Prettier (single Rust binary, 10–25x faster, domains that auto-enable per dependency), the `next lint` removal in Next.js 16, the minimum-viable `biome.json` wired to `.editorconfig`, the four daily scripts (`format`, `lint`, `check`, `check:ci`), and the safe-vs-unsafe fix distinction
+- 1.3.3 Browser DevTools: the four panels you actually use — Elements (live DOM and cascade), Network (open before the action, throttle, copy-as-fetch), Console (REPL, `$0`, `console.table`), and Application (cookies, storage, service workers); React DevTools installed here for its first call in Unit 4
 
 ### Chapter 1.4 — The first project scaffold
 - 1.4.1 Cloning the course's starter Next.js + TS + Drizzle scaffold; the dev server, the build/start cycle
