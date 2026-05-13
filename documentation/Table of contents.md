@@ -7,7 +7,11 @@
 > Pin a working machine and scaffold the first project — the practical floor every later unit assumes.
 
 ### Chapter 1.1 — Introduction
-- 1.1.1 The course's two pillars — senior-mindset over syntax, minimum viable 2026 stack — and how every later choice (defaults vs. conditionals, what we skip, what's taught from scratch) flows from them. The shape of the prerequisites — what we don't re-baseline (you've shipped before) and what we do re-teach properly (closures, the cascade, modules, async, HTTP method semantics, the React render model); rusty-but-returning, not new. How lessons are structured — defaults vs. conditionals, "name the trigger" before introducing any conditional power tool, principles introduced inline at the moment they're most legibly demonstrated
+- 1.1.1 Who this course is for and what you'll be able to ship — the returning-developer reader, the production-code-review bar, the time shape, and a self-check before committing
+- 1.1.2 The two pillars — senior-mindset over syntax and the minimum viable 2026 stack as operational filters, plus the deliberate silence on AI in lesson material
+- 1.1.3 The 2026 stack at a glance — a one-page map of every load-bearing tool, grouped by role, with the senior reason each wins (or the trigger that would flip it), pinned to May 2026
+- 1.1.4 Prerequisites — what's assumed without ceremony, what's re-taught properly (closures, the cascade, modules, async, HTTP semantics, the React render model) and where, what's deliberately cut, plus a returning-dev litmus self-assessment
+- 1.1.5 How a lesson works and how to use this course — defaults vs. conditionals, "name the trigger" before any power tool, principles inline, lesson anatomy, quizzes, the project repo and `degit` fetch, the hosted-service accounts (and the one cheap domain) needed later
 
 ### Chapter 1.2 — Runtime and package manager
 - 1.2.1 Pinning Node and the broader toolchain with mise so every contributor and CI box runs identical versions
