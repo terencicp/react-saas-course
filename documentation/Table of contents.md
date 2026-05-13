@@ -164,14 +164,13 @@
 > Teach the React render model, hooks, and Tailwind as one cohesive UI layer — components and the cascade learn together because they ship together.
 
 ### Chapter 4.1 — JSX and HTML semantics through JSX
-- 4.1.1 JSX as HTML — `className`, event props, fragments, conditional rendering, lists with keys; void elements and self-closing in JSX
-- 4.1.2 HTML at the Next.js root layout — document structure (`html`, `head`, `body`, `meta`)
-- 4.1.3 HTML semantic elements (`header`, `nav`, `main`, `article`, `section`, `aside`, `footer`) and heading hierarchy — why screen readers care
-- 4.1.4 Buttons vs. links; `<button type="submit">` defaults; `<a target/rel>`; lists
-- 4.1.5 HTML forms surface — `<form>`, `<input>` types, `<label htmlFor>`, `<fieldset>`, `<legend>`, `<button type>`
-- 4.1.6 HTML data attributes and `aria-*`
-- 4.1.7 HTML `<table>` — when actually right
-- 4.1.8 Quizz
+- 4.1.1 JSX as HTML through React's lens — `className`, event props, fragments, conditional rendering, lists with keys; void elements and self-closing in JSX
+- 4.1.2 The Next.js root layout — document structure (`html`, `head`, `body`, `meta`), the metadata API, and the Server Component default
+- 4.1.3 Semantic landmarks and the heading hierarchy — `header`, `nav`, `main`, `article`, `section`, `aside`, `footer`, and the h1–h6 outline
+- 4.1.4 Buttons, links, and lists — `<button type>` defaults, `<a target rel>` security, `<Link>` vs. `<a>`, `<ul>`/`<ol>` semantics
+- 4.1.5 Forms: the element contract — `<form>`, `<input>` types, `<label htmlFor>`, `<fieldset>`, `<legend>`, `name` as the `FormData` key
+- 4.1.6 Data attributes, ARIA basics, and tables — `data-*` for script hooks, `aria-*` for assistive-tech signals, `<table>` when the data is actually tabular
+- 4.1.7 Quizz
 
 ### Chapter 4.2 — Tailwind as the CSS surface, where it touches React
 - 4.2.1 Tailwind utility-first thinking; modifiers; variants; arbitrary values
