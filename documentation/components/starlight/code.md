@@ -51,7 +51,7 @@ The comment is **stripped** from the rendered code once it becomes the title.
 
 ### Terminal frame
 
-Automatic for shell languages (`bash`, `sh`, `zsh`, `powershell`, etc.). Optional title:
+Use to show code output. Automatic for shell languages (`bash`, `sh`, `zsh`, `powershell`, etc.). Optional title:
 
 ````md
 ```bash title="Install dependencies"
