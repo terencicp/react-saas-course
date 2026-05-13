@@ -147,6 +147,27 @@ const [a, b] = await Promise.all([fa(), fb()]);
 
 `lang="ts"` keeps TypeScript syntax highlighting on top of the diff markers. Leading whitespace after `+`/`-` is preserved correctly.
 
+### Colored marks — `data-mark-color="…"` wrapper
+
+The neutral mark on `{lines}`, `"tokens"`, and `/regex/` is a soft grey by default. Wrap any fenced block in `<div data-mark-color="…">` to re-tint **every** mark inside it.
+
+````mdx
+<div data-mark-color="green">
+
+```ts {2} "useState"
+import { useState } from 'react';
+const [count, setCount] = useState(0);
+```
+
+</div>
+````
+
+Five colors: `green`, `red`, `blue`, `orange`, `violet`. Dark and light themes each have their own stops so the highlight stays legible against either background.
+
+The mechanism is a generic CSS hook in `src/styles/custom.css` — paired variables `--mark-{color}-bg` / `--mark-{color}-brd`, bound to Expressive Code's `--ec-tm-markBg` / `--ec-tm-markBrdCol` via a `[data-mark-color='…'] .expressive-code` selector. The same hook powers `<AnnotatedStep color="…">` and `<CodeVariant>` panes (wrap the inner fence the same way). To add or rename a color, edit the variable block in `custom.css` — no per-component CSS to update.
+
+Blank lines around the fence inside the wrapper are required so MDX still parses the fence as markdown.
+
 ## Word wrap
 
 For long lines you don't want to scroll horizontally, use when lines are more than 90 characters:
@@ -246,4 +267,6 @@ Key props: `code` (required), `lang`, `title`, `frame`, `mark`, `ins`, `del`, `w
 ```ts collapse={1-5}                               ← collapse lines 1–5
 ```ts collapse={1-5, 10-12}                        ← multiple collapse ranges
 ```ts {1-3} "token" ins={5} title="src/foo.ts"     ← combine freely
-````
+```
+
+<div data-mark-color="green">                       ← retint every mark inside (green|red|blue|orange|violet)`

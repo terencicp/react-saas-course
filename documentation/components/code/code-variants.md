@@ -50,6 +50,36 @@ Standard Expressive Code meta. Mix freely:
 
 `del=` and `ins=` are especially useful for before/after framing.
 
+### Per-pane mark color
+
+Each pane's fence can be wrapped in `<div data-mark-color="…">` to re-tint that pane's `{line}` / `"token"` / `/regex/` marks. Five colors: `green`, `red`, `blue`, `orange`, `violet`. Same hook used by `<AnnotatedStep color="…">`; see [Colored marks](../starlight/code.md#colored-marks--data-mark-color-wrapper) for the full story and how to add colors. Blank lines around the inner fence are required so MDX parses it as markdown.
+
+````mdx
+<CodeVariants>
+  <CodeVariant label="useState">
+    <div data-mark-color="green">
+
+    ```ts {2}
+    const [count, setCount] = useState(0);
+    ```
+
+    </div>
+    **Local, ephemeral.** Component-scoped state, forgotten on unmount.
+  </CodeVariant>
+
+  <CodeVariant label="Zustand">
+    <div data-mark-color="orange">
+
+    ```ts {1}
+    const count = useCounterStore((s) => s.count);
+    ```
+
+    </div>
+    **Global, selector-based.** State lives outside React.
+  </CodeVariant>
+</CodeVariants>
+````
+
 ## Constraints & gotchas
 
 - Two or more variants per `<CodeVariants>`.
