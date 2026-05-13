@@ -182,11 +182,11 @@
 - 4.2.7 Quiz
 
 ### Chapter 4.3 — The cascade, inheritance, and design tokens
-- 4.3.1 The cascade and specificity — named explicitly with `@layer` and `!important`
-- 4.3.2 CSS inheritance and what does/doesn't inherit
-- 4.3.3 Tailwind Preflight — the implicit base reset; what it strips; naming the magic, when to lean in vs. override
-- 4.3.4 CSS custom properties; how Tailwind theme tokens compile to them; design tokens as semantic names
-- 4.3.5 Quizz
+- 4.3.1 Cascade resolution: layers, specificity, and the `!` modifier
+- 4.3.2 Inheritance and which properties flow through the tree
+- 4.3.3 Preflight: naming Tailwind's base reset
+- 4.3.4 CSS custom properties as the design-token substrate
+- 4.3.5 Chapter quiz
 
 ### Chapter 4.4 — Layout and sizing
 - 4.4.1 CSS box model and `box-sizing` (at Tailwind spacing utilities)
