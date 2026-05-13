@@ -2,33 +2,30 @@
 
 ---
 
-## Unit 0 - Introduction
-
-- 0.0.1 The course's two pillars — senior-mindset over syntax, minimum viable 2026 stack — and how every later choice (defaults vs. conditionals, what we skip, what's taught from scratch) flows from them. The shape of the prerequisites — what we don't re-baseline (you've shipped before) and what we do re-teach properly (closures, the cascade, modules, async, HTTP method semantics, the React render model); rusty-but-returning, not new. How lessons are structured — defaults vs. conditionals, "name the trigger" before introducing any conditional power tool, principles introduced inline at the moment they're most legibly demonstrated
-
----
-
 ## Unit 1 — Setup and the Toolchain
 
 > Pin a working machine and scaffold the first project — the practical floor every later unit assumes.
 
-### Chapter 1.1 — Runtime and package manager
-- 1.1.1 Pinning Node and the broader toolchain with mise so every contributor and CI box runs identical versions
-- 1.1.2 pnpm as the package manager — install, scripts, the lockfile, why monorepo-friendly compatibility wins over Bun in 2026
-- 1.1.3 Lockfile commits and what they prevent — `pnpm-lock.yaml` belongs in version control and never in `.gitignore`
-- 1.1.4 Native TypeScript execution in 2026 — Node ≥ 22.18 strips types by default (no flag, stabilized in v25.2.0), legitimate for backend services, internal tools, CLIs, and dev scripts; `tsx` reached for when `tsconfig.json` features matter (path aliases, downleveling) since native stripping ignores tsconfig; `tsc → .js` reserved for CI and library publishing
+### Chapter 1.1 — Introduction
+- 1.1.1 The course's two pillars — senior-mindset over syntax, minimum viable 2026 stack — and how every later choice (defaults vs. conditionals, what we skip, what's taught from scratch) flows from them. The shape of the prerequisites — what we don't re-baseline (you've shipped before) and what we do re-teach properly (closures, the cascade, modules, async, HTTP method semantics, the React render model); rusty-but-returning, not new. How lessons are structured — defaults vs. conditionals, "name the trigger" before introducing any conditional power tool, principles introduced inline at the moment they're most legibly demonstrated
 
-### Chapter 1.2 — Editor and code-quality tools
-- 1.2.1 VS Code setup — the small extension set that pays off, and why minimum-stack thinking applies to the editor too
-- 1.2.2 Biome — lint and format in one tool, single config;
-- 1.2.3 Browser DevTools — Elements, Network, Console, Application — for both building and debugging
+### Chapter 1.2 — Runtime and package manager
+- 1.2.1 Pinning Node and the broader toolchain with mise so every contributor and CI box runs identical versions
+- 1.2.2 pnpm as the package manager — install, scripts, the lockfile, why monorepo-friendly compatibility wins over Bun in 2026
+- 1.2.3 Lockfile commits and what they prevent — `pnpm-lock.yaml` belongs in version control and never in `.gitignore`
+- 1.2.4 Native TypeScript execution in 2026 — Node ≥ 22.18 strips types by default (no flag, stabilized in v25.2.0), legitimate for backend services, internal tools, CLIs, and dev scripts; `tsx` reached for when `tsconfig.json` features matter (path aliases, downleveling) since native stripping ignores tsconfig; `tsc → .js` reserved for CI and library publishing
 
-### Chapter 1.3 — The first project scaffold
-- 1.3.1 Cloning the course's starter Next.js + TS + Drizzle scaffold; the dev server, the build/start cycle
-- 1.3.2 AGENTS.md introduced at first project setup — the briefing file the next contributor (human or agent) reads on day one; what earns a place, what doesn't (full treatment in Chapter 22.1)
-- 1.3.3 tsconfig.json strictness floor — `strict`, `noUncheckedIndexedAccess`, `isolatedModules`, paths
-- 1.3.4 Framework-set tsconfig flags Next.js owns — `target`/`lib`, `module`/`moduleResolution`, the transpiler-alignment trio (`verbatimModuleSyntax`, `isolatedModules`, `esModuleInterop`)
-- 1.3.5 Type-safe environment variables (`@t3-oss/env-nextjs`) — Zod-validated env at build time; a missing or misnamed `DATABASE_URL` fails before deploy, not at first request in production; non-negotiable from the first stack-setup lesson (revisited under the security baseline in Chapter 17.2)
+### Chapter 1.3 — Editor and code-quality tools
+- 1.3.1 VS Code setup — the small extension set that pays off, and why minimum-stack thinking applies to the editor too
+- 1.3.2 Biome — lint and format in one tool, single config;
+- 1.3.3 Browser DevTools — Elements, Network, Console, Application — for both building and debugging
+
+### Chapter 1.4 — The first project scaffold
+- 1.4.1 Cloning the course's starter Next.js + TS + Drizzle scaffold; the dev server, the build/start cycle
+- 1.4.2 AGENTS.md introduced at first project setup — the briefing file the next contributor (human or agent) reads on day one; what earns a place, what doesn't (full treatment in Chapter 22.1)
+- 1.4.3 tsconfig.json strictness floor — `strict`, `noUncheckedIndexedAccess`, `isolatedModules`, paths
+- 1.4.4 Framework-set tsconfig flags Next.js owns — `target`/`lib`, `module`/`moduleResolution`, the transpiler-alignment trio (`verbatimModuleSyntax`, `isolatedModules`, `esModuleInterop`)
+- 1.4.5 Type-safe environment variables (`@t3-oss/env-nextjs`) — Zod-validated env at build time; a missing or misnamed `DATABASE_URL` fails before deploy, not at first request in production; non-negotiable from the first stack-setup lesson (revisited under the security baseline in Chapter 17.2)
 
 ---
 
@@ -792,7 +789,7 @@
 - 17.2.4 GDPR posture — retention timers, deletion-on-request that actually works
 - 17.2.5 Cookie consent gate — single source of truth for analytics opt-in; gates PostHog events, session replay, and any non-essential third-party
 - 17.2.6 Secrets management — env vars, never in code, never in client bundles
-- 17.2.7 Type-safe environment variables (revisit; in place from Chapter 1.3) — confirming the `@t3-oss/env-nextjs` discipline as part of the security baseline audit
+- 17.2.7 Type-safe environment variables (revisit; in place from Chapter 1.4) — confirming the `@t3-oss/env-nextjs` discipline as part of the security baseline audit
 - 17.2.8 Dep hygiene — `pnpm audit`, "is this maintained" check, lockfile committed
 - 17.2.9 Quizz
 
@@ -979,7 +976,7 @@
 > Documentation is part of shipping — make it durable, keep it next to the truth, and review code through the principles and patterns the course taught.
 
 ### Chapter 22.1 — Documentation that lives next to code
-- 22.1.1 AGENTS.md — what earns a place, what doesn't (introduced at first project setup in Chapter 1.3; full treatment here)
+- 22.1.1 AGENTS.md — what earns a place, what doesn't (introduced at first project setup in Chapter 1.4; full treatment here)
 - 22.1.2 README discipline — first contact only, link out from there
 - 22.1.3 ADRs in `/docs/adr/` — Michael Nygard template (Context / Decision / Consequences); one decision per file; write the ADR as the decision is being made, not after
 - 22.1.4 The course's opinionated picks worth an ADR — Drizzle over Prisma, Better Auth over Clerk, Biome over ESLint+Prettier, Cloudflare R2 over S3, Node runtime not edge, native forms before RHF
