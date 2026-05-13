@@ -26,7 +26,7 @@ Consider how topics are covered by the whole course in the TOC to avoid unnecess
 
 Then brainstorm the topics to cover in the chapter, and write an introduction section "Chapter framing", explaining what the chapter is for and what threads must run through every lesson, so individual lessons are coherent.
 
-Then for each lesson make a bullet list of topics to cover, with a brief description of each, considering anything that needs to be taught that the TOC does not mention; Make sure to search online to make sure you cover relevant 2026 tech and best practices and you are not missing anything that should be covered. Add another section "What this lesson does not cover" to help define the scope clearly. Then write a pedagogical approach section per lesson based on the Pedagogical approach.md guidelines, but considering what the course needs to be successful. Also estimate time for the student to complete the lesson.
+Then for each lesson make a bullet list of topics to cover, with a brief description of each, considering anything that needs to be taught that the TOC does not mention; Make sure to search online to make sure you cover relevant 2026 tech and best practices and you are not missing anything that should be covered (but do not list your sources in the outline document). Add another section "What this lesson does not cover" to help define the scope clearly. Then write a pedagogical approach section per lesson based on the Pedagogical approach.md guidelines, but considering what the course needs to be successful. Also estimate time for the student to complete the lesson.
 
 If the lesson is a Quizz (and not in unit 1) just write a list of the top 10 topics that should be quizzed, no specific questions.
 
