@@ -130,9 +130,9 @@
 - 3.2.4 Quizz
 
 ### Chapter 3.3 — URLs, origins, and security boundaries
-- 3.3.1 The URL spec — origin, pathname, search, hash, percent-encoding; `URLSearchParams`
-- 3.3.2 Same-origin policy
-- 3.3.3 CORS — preflights, credentials, common failure modes
+- 3.3.1 The URL spec: anatomy, parsing, and `URLSearchParams`
+- 3.3.2 The same-origin policy: the browser's default trust boundary
+- 3.3.3 CORS: preflights, credentials, and the failure modes
 - 3.3.4 Quizz
 
 ### Chapter 3.4 — Cookies and the trust model (light)
