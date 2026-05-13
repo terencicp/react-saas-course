@@ -55,7 +55,7 @@ When reconsidering the lesson slicing from Projects.md, the rule is: each lesson
 
 After, review each lesson and reconsider if any of them should be merged, split or the order changed; considering lessons should be kept as small and atomic as possible. After that choose a proper title for each lesson according to its content.
 
-Finally review the document again and rewrite the document to improve any issues you find.
+Then review the document again and rewrite the document to improve any issues you find (This is a internal temporary review no not create a review or issues section in the document).
 
 Finally update the table of contents chapter with the new lessons and titles and update the lesson  titles in the new document.
 
