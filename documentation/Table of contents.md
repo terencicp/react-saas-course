@@ -94,10 +94,10 @@
 - 2.6.5 Quizz
 
 ### Chapter 2.7 — Async semantics
-- 2.7.1 The event loop and the microtask queue — the runtime model under every async API
-- 2.7.2 Promises — `.then`/`.catch`/`.finally`, `Promise.all`/`allSettled`/`any`/`race`, `Promise.withResolvers` as the modern replacement for the deferred-pattern boilerplate
-- 2.7.3 `async`/`await` — sequential vs. parallel, the N+1 trap inside `.map()`, `for await...of`
-- 2.7.4 AbortController and AbortSignal — fetch cancellation, request timeouts, async cleanup, the parameter shape every modern web API accepts
+- 2.7.1 The event loop and the microtask queue — the runtime model under every async API: call stack, microtask drain rule, macrotask tick, `await` as microtask-paced
+- 2.7.2 Promises: the combinator surface and modern construction — `.then`/`.catch`/`.finally`, `Promise.all`/`allSettled`/`any`/`race` with senior triggers per combinator, `Promise.withResolvers` as the modern replacement for the deferred-pattern boilerplate
+- 2.7.3 `async`/`await`: sequential vs. parallel, the N+1 trap, async iteration — the dependency-check reflex, `Promise.all` over independent operations, the N+1 trap inside `.map()`, `for await...of` for streams and paginated APIs
+- 2.7.4 `AbortController`, `AbortSignal`, and structured cancellation — fetch cancellation, `AbortSignal.timeout`, `AbortSignal.any` for composing user-cancel and timeout, the `{ signal }` parameter shape every modern web API speaks
 - 2.7.5 Quizz
 
 ### Chapter 2.8 — Errors as a first-class concern
