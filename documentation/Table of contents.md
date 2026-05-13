@@ -14,10 +14,10 @@
 - 1.1.5 How a lesson works and how to use this course — defaults vs. conditionals, "name the trigger" before any power tool, principles inline, lesson anatomy, quizzes, the project repo and `degit` fetch, the hosted-service accounts (and the one cheap domain) needed later
 
 ### Chapter 1.2 — Runtime and package manager
-- 1.2.1 Pinning Node and the broader toolchain with mise so every contributor and CI box runs identical versions
-- 1.2.2 pnpm as the package manager — install, scripts, the lockfile, why monorepo-friendly compatibility wins over Bun in 2026
-- 1.2.3 Lockfile commits and what they prevent — `pnpm-lock.yaml` belongs in version control and never in `.gitignore`
-- 1.2.4 Native TypeScript execution in 2026 — Node ≥ 22.18 strips types by default (no flag, stabilized in v25.2.0), legitimate for backend services, internal tools, CLIs, and dev scripts; `tsx` reached for when `tsconfig.json` features matter (path aliases, downleveling) since native stripping ignores tsconfig; `tsc → .js` reserved for CI and library publishing
+- 1.2.1 Pinning the toolchain with mise — Node 24 LTS and the broader polyglot toolchain pinned per-repo so every contributor and CI box runs identical versions; nvm/Volta dismissed with the trigger that would flip the choice
+- 1.2.2 pnpm: install, scripts, and self-managed versions — pnpm pinned through mise, the post-Corepack `packageManager` flow, the minimum viable `package.json` and `.npmrc`, the four daily commands, and the one-line dismissal of Bun
+- 1.2.3 The lockfile as a contract — what `pnpm-lock.yaml` records, what committing it prevents (and never in `.gitignore`), `--frozen-lockfile` in CI, merge-conflict handling, and the `only-allow pnpm` preinstall guard
+- 1.2.4 Running TypeScript: native strip-types, tsx, and tsc — native stripping (stable since Node 25.2.0, backported to 24.12 and 22.18) as the default for backend scripts and CLIs; `tsx` past the named trigger (path aliases, JSX, decorators, downleveling) since native stripping ignores `tsconfig.json`; `tsc → .js` reserved for library publishing and `tsc --noEmit` for CI type-checking
 
 ### Chapter 1.3 — Editor and code-quality tools
 - 1.3.1 VS Code setup — the small extension set that pays off, and why minimum-stack thinking applies to the editor too
