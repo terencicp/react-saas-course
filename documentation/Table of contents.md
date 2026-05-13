@@ -118,9 +118,10 @@
 > Cover the request lifecycle, the DOM substrate, and the browser APIs every later pattern reaches for — at the depth a SaaS engineer needs, no deeper.
 
 ### Chapter 3.1 — How a request becomes a page
-- 3.1.1 The browser request lifecycle — URL bar to pixels, the frame SSR and hydration will land into
-- 3.1.2 HTTPS and certificates at the depth that bites in development
-- 3.1.3 Quizz
+- 3.1.1 URL bar to first byte — DNS, transport, and the request: the four-step network leg, the 2026 protocol stack (HTTP/3 over QUIC, HTTP/2 fallback), reading the DevTools Network waterfall
+- 3.1.2 First byte to pixels — parsing, painting, and hydration: the browser pipeline (DOM, CSSOM, render tree, paint), CSR vs. SSR vs. streaming SSR, hydration as the seam Unit 4 and Unit 5 will land on
+- 3.1.3 HTTPS and certificates — the dev-time leak: the TLS 1.3 handshake at the depth that matters, the cert chain, `mkcert` as the local-CA bridge, the secure-context-required APIs that won't fire on `http://`
+- 3.1.4 Quizz
 
 ### Chapter 3.2 — HTTP at the depth a SaaS engineer needs
 - 3.2.1 HTTP method semantics and idempotency (GET, POST, PUT, PATCH, DELETE) — the senior anchor for designing safe-to-retry endpoints
