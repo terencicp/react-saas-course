@@ -673,12 +673,11 @@
 > A centralized dispatcher for in-app inbox + email + future channels — events fire once, preferences are checked once, and call sites stay free of channel-specific code.
 
 ### Chapter 14.1 — Notifications as a centralized layer (SaaS pattern #10)
-- 14.1.1 The `notifiable_events` table; the dispatcher
-- 14.1.2 Channel-specific sends — email via Resend; in-app inbox via DB rows
-- 14.1.3 `user_notification_preferences` checked once in the dispatcher, never at the call site
-- 14.1.4 Dedup / coalesce on rapid duplicate events
-- 14.1.5 Notifiable vs. logged events — what counts as user-facing vs. audit-only
-- 14.1.6 Quizz
+- 14.1.1 The dispatcher seam and the notifiable-vs-logged line — the `notifiable_events` registry, the dispatcher contract, and the user-facing-vs-audit-only distinction
+- 14.1.2 The two channels — email via Resend and the in-app inbox via DB rows, with the uniform channel-function signature and the independence rule
+- 14.1.3 Preferences resolved once, default-on for missing rows — `user_notification_preferences` checked inside the dispatcher with the critical-channel override
+- 14.1.4 Dedup and coalesce on rapid duplicates — the 60-second window keyed by `(event_type, dedup_key, recipient_user_id)`
+- 14.1.5 Chapter quiz
 
 ### Chapter 14.2 — Project: notification dispatcher
 - 14.2.1 Project brief
