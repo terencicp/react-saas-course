@@ -237,14 +237,15 @@
 - 4.8.7 Chapter quiz
 
 ### Chapter 4.9 — Hooks: effects and external systems
-- 4.9.1 Strict Mode — the dev-mode contract; double-invocation as the impurity-surfacing mechanism that makes effect rules bite
-- 4.9.2 `useEffect` — the rules and the much narrower role in 2026
-- 4.9.3 You might not need an effect — derived values, event-handler logic, parent-driven resets
-- 4.9.4 `useContext` and the perf footgun
-- 4.9.5 `useTransition` and `useDeferredValue` — marking updates as low-priority
-- 4.9.6 `use()` — unwrapping promises and contexts
-- 4.9.7 The rules of hooks — named explicitly per "explicit over magic"; the lint rule
-- 4.9.8 Quizz
+- 4.9.1 Strict Mode as the dev-time correctness contract — double-invocation as the impurity- and missing-cleanup-surfacing mechanism
+- 4.9.2 `useEffect`: synchronizing with external systems — the cleanup-and-resync model, dependency rules, and the narrowed 2026 role
+- 4.9.3 `useEffectEvent` for non-reactive logic inside effects — the reactive/non-reactive seam (React 19.2, stable)
+- 4.9.4 You might not need an effect — the five-quadrant audit and the canonical anti-patterns
+- 4.9.5 `useContext` and the re-render cost — split-context, state/dispatch split, stable provider values
+- 4.9.6 `useTransition` and `useDeferredValue` for concurrent updates — urgency over speed; wrap-setter vs. wrap-value
+- 4.9.7 `use()` for promises and contexts — the Server-to-Client streaming primitive and the conditional-call exception
+- 4.9.8 The rules of hooks and the lint rule — the indexed-slot mechanic and the ESLint surface
+- 4.9.9 Chapter quiz
 
 ### Chapter 4.10 — Custom hooks and what to stop hand-tuning
 - 4.10.1 Custom hooks — extracting reusable behavior, the `use*` naming convention, when a custom hook earns its weight
