@@ -487,10 +487,10 @@
 > Wire identity onto the data backplane: sessions, sign-in flows, and the request-time reads that downstream patterns lean on.
 
 ### Chapter 9.1 — Auth concepts
-- 9.1.1 Authentication vs. authorization
+- 9.1.1 Authentication versus authorization
 - 9.1.2 Sessions, tokens, and the cookie that carries them
 - 9.1.3 OAuth 2.1 and the authorization-code flow with PKCE
-- 9.1.4 Quizz
+- 9.1.4 Chapter quiz
 
 ### Chapter 9.2 — Better Auth setup
 - 9.2.1 Better Auth Drizzle adapter and the tables it owns
