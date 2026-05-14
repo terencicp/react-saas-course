@@ -959,13 +959,11 @@
 > Documentation is part of shipping — make it durable, keep it next to the truth, and review code through the principles and patterns the course taught.
 
 ### Chapter 22.1 — Documentation that lives next to code
-- 22.1.1 AGENTS.md — what earns a place, what doesn't (introduced at first project setup in Chapter 1.4; full treatment here)
-- 22.1.2 README discipline — first contact only, link out from there
-- 22.1.3 ADRs in `/docs/adr/` — Michael Nygard template (Context / Decision / Consequences); one decision per file; write the ADR as the decision is being made, not after
-- 22.1.4 The course's opinionated picks worth an ADR — Drizzle over Prisma, Better Auth over Clerk, Biome over ESLint+Prettier, Cloudflare R2 over S3, Node runtime not edge, native forms before RHF
-- 22.1.5 Docs live next to the truth — the schema file IS the data-model doc
-- 22.1.6 Diataxis vocabulary — tutorial / how-to / reference / explanation
-- 22.1.7 Quizz
+- 22.1.1 Diataxis as the documentation vocabulary — tutorial / how-to / reference / explanation, and which artifact in a SaaS repo owns each
+- 22.1.2 README discipline and docs that live next to the truth — first-contact-only README; the schema file, env.ts, and Server Actions as their own reference docs
+- 22.1.3 AGENTS.md as the conventions surface — what earns a place, the canonical sections, and the boundary against README and ADRs (introduced at first project setup in Chapter 1.4; full treatment here)
+- 22.1.4 ADRs and the decisions worth recording — Michael Nygard template (Context / Decision / Consequences); one decision per file; write the ADR as the decision is being made; worked examples on the course's opinionated picks (Drizzle, Better Auth, Biome, R2, Node runtime, native forms)
+- 22.1.5 Quizz
 
 ### Chapter 22.2 — Comments, TSDoc, and team discipline
 - 22.2.1 TSDoc on public surfaces, not on internals
