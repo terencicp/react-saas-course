@@ -837,15 +837,15 @@
 - 19.2.7 Chapter quiz
 
 ### Chapter 19.3 — Integration tests at the seams
-- 19.3.1 Integration tests against a real test Postgres with transaction-rollback per test
-- 19.3.2 Test database lifecycle — `drizzle-kit migrate` against the test DB, per-worker isolation in Vitest, Neon branch-per-CI-run as the conditional move
-- 19.3.3 Shared auth fixtures for "signed-in user with role X in org Y"
-- 19.3.4 Mocking the network at the boundary, not the function
-- 19.3.5 MSW (Mock Service Worker) as the network-boundary mock — handlers per test, the request-level seam
-- 19.3.6 Webhook handler testing — fixture payloads, signature verification in test mode, idempotency replay assertions against `processed_events`
-- 19.3.7 Testing a Server Action end-to-end — stub session/`cookies()`, run Zod parse, exercise the `authedAction` wrapper, assert the Postgres mutation, assert the typed return
-- 19.3.8 Test isolation and ordering — no shared state, no run-order dependency, the cost of flake
-- 19.3.9 Quizz
+- 19.3.1 Integration tests against a real test Postgres
+- 19.3.2 Test database lifecycle and per-worker isolation
+- 19.3.3 Auth fixtures for signed-in user with role and org
+- 19.3.4 Mock at the network boundary, not the function
+- 19.3.5 MSW handlers, matchers, and per-test overrides
+- 19.3.6 Webhook handler testing: signatures and idempotency
+- 19.3.7 Testing Server Actions end-to-end
+- 19.3.8 Test isolation, ordering, and the cost of flake
+- 19.3.9 Chapter quiz
 
 ### Chapter 19.4 — Component tests (conditional)
 - 19.4.1 When React Testing Library earns its weight — bulk-testing presentational components has poor cost-benefit; reach for it on shared component libraries, complex stateful components, and critical UX paths
