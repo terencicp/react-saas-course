@@ -16,6 +16,10 @@ The goal of this doc is to be the bridge between the TOC and the Initial lesson 
 
 Consider the TOC a canonical list for Units and Chapters but not for lessons. Your first task is to consider if the TOC chapter subdivision in lessons is appropriate, if not rewrite the lesson structure for the chapter. Read a single one of the other chapter's outlines at most if necessary.
 
+Chapters can have two forms: Regular lessons and Projects, follow the instructions in each section, then follow the instructions in the Finally section.
+
+## Regular lessons
+
 Read 'documentation/Table of contents.md' and 'documentation/Pedagogical approach.md'.
 
 Consider how topics are covered by the whole course in the TOC to avoid unnecessary repetition of concepts.
@@ -25,6 +29,29 @@ Then brainstorm the topics to cover in the chapter (scope: cover only what senio
 Then for each lesson make a bullet list of topics to cover, with a brief description of each, considering anything that needs to be taught that the TOC does not mention; Make sure to search online to make sure you cover relevant 2026 tech and best practices and you are not missing anything that should be covered (but do not list your sources in the outline document). Code block examples are not allowed in this outline document, short inline snippets are acceptable. Add another section "What this lesson does not cover" to help define the scope clearly. 
 
 If the lesson is a Quizz (and not in unit 1) just write a list of the top 10 topics that should be quizzed, no specific questions.
+
+## Projects
+
+Read "documentation/Projects.md".
+
+Write a Chapter framing section that locks down what every lesson in this chapter will share:
+
+- The dependency carry-in resolved to specific files and schema fragments from prior project chapters.
+- The starter's file tree with stubs marked.
+- The reference-solution signatures lessons will display (function names, schemas, env entries — so lessons don't invent variants).
+- The inspector page spec (controls and observation panels the verify lessons depend on, if necessary).
+- The verify recipe mapped clause-by-clause to the project's "Done when".
+- Every concept in Concepts demonstrated resolved to the lesson ID where it was taught.
+
+Then for each lesson write:
+
+- The codebase state at entry and at exit. Every build slice must close on a runnable state.
+- The senior calls or watch-outs to surface.
+- An estimated student time.
+
+When reconsidering the lesson slicing from Projects.md, the rule is: each lesson ends in a state the student can run.
+
+## Finally
 
 After, review each lesson and reconsider if any of them should be merged, split or the order changed; considering lessons should be kept as small and atomic as possible.
 
