@@ -883,11 +883,13 @@
 - 20.1.6 Quizz
 
 ### Chapter 20.2 — Product analytics
-- 20.2.1 Vercel Analytics — what it covers without configuration (the default)
-- 20.2.2 When PostHog earns its weight — the threshold past Vercel Analytics: event-level product analytics, feature flags for gradual rollouts, session replay for UX debugging, experiments; folding 4–5 separate tools into one platform as the minimum-stack philosophy in action
-- 20.2.3 PostHog primitives — events, feature flags, session replay, experiments
-- 20.2.4 PostHog in our app — wiring it gated by the cookie consent gate from Unit 17
-- 20.2.5 Quizz
+- 20.2.1 Vercel Web Analytics and Speed Insights: the default — cookieless, no consent gate needed, ships before any heavier analytics decision; what each covers and what's out of scope
+- 20.2.2 When PostHog earns its weight — the threshold past Vercel Analytics: event-level product analytics, feature flags for gradual rollouts, session replay for UX debugging, experiments; folding 4–5 separate tools into one platform as the minimum-stack philosophy in action; PostHog Cloud EU as the GDPR default
+- 20.2.3 PostHog wiring through the consent gate — `@posthog/next` install, App Router provider shape, consent-gated dynamic import, `opt_out_capturing_by_default` safety floor, the `/ingest/[...path]` proxy route, the `defaults` pin
+- 20.2.4 Events, properties, and the identify handshake — Object-Action snake_case past-tense taxonomy, the typed `track()` helper and event dictionary, person vs. event vs. super-properties, `identify` / `reset` / group analytics, autocapture trade-off
+- 20.2.5 Feature flags, gradual rollouts, and experiments — boolean / multivariate / JSON payload, server-side bootstrap via `bootstrapFlags`, the flash-of-default failure, kill switches vs. rollouts vs. experiments, stale-flag audit, the pre-declared primary metric discipline
+- 20.2.6 Session replay and the privacy masking discipline — mask vs. block, default input masking, the `ph-no-capture` class and masking catalog, network/console capture, sampling, the replay-to-bug-fix workflow, the 30-minute privacy review
+- 20.2.7 Chapter quiz
 
 ### Chapter 20.3 — Performance vigilance (SaaS pattern #15)
 - 20.3.1 The Core Web Vitals — LCP, INP, CLS, what each measures, how to move each
