@@ -211,12 +211,12 @@
 - 4.5.8 Chapter quiz
 
 ### Chapter 4.6 — Components and composition
-- 4.6.1 Components and composition — props, children, slots
-- 4.6.2 Composition patterns — children-as-API, slot props
-- 4.6.3 Polymorphic components — Radix `Slot` keeping types intact through `asChild`; `class-variance-authority` + `VariantProps` so variants live in one place
-- 4.6.4 Refs in React 19 — the prop-passing model (no more `forwardRef`)
-- 4.6.5 Portals — modals, toasts, anchored popovers
-- 4.6.6 Quizz
+- 4.6.1 Components, props, and the typed contract — destructured props, `type Props` over `interface`, `ComponentProps<'tag'>` and `ComponentProps<typeof Component>` for native-attribute inheritance and wrapper typing, variant unions over boolean props, `className` plus `...rest` as the styling discipline, default values via destructuring
+- 4.6.2 `children`, composition patterns, and the named-slot reach — `ReactNode` as the universal slot type, compound components (the shadcn `<Card><CardHeader>...</CardHeader></Card>` shape) as the 2026 default, prop-as-slot for one named region, render-prop and `Children.toArray` as recognition-level patterns, fragments and the conditional-render `0`-falsy trap
+- 4.6.3 Polymorphic components with `Slot`, `asChild`, and `cva` — `@radix-ui/react-slot` merging classes/props/refs onto the consumer's child, `class-variance-authority` for the variant table, `VariantProps<typeof variants>` for typing, `compoundVariants` for combination tweaks, the canonical shadcn Button template, the generic `as` prop named once and rejected
+- 4.6.4 Refs as a prop in React 19 — destructuring `ref` from props (no more `forwardRef`), ref types (`Ref<T>`, `RefObject<T>`), ref callbacks with the React 19 cleanup return, merging multiple refs onto one node, `useImperativeHandle` as the rare escape valve, the legacy migration path
+- 4.6.5 Portals: modals, toasts, and anchored overlays — `createPortal` as the layout escape, the three canonical reaches (modals, toasts, anchored popovers), the SSR `document` guard, the accessible-modal contract (focus trap, scroll lock, `Esc`), the native `<dialog>` element and CSS anchor positioning as the platform alternatives, event bubbling through the React tree not the DOM tree
+- 4.6.6 Chapter quiz
 
 ### Chapter 4.7 — The render model
 - 4.7.1 The render model — what triggers re-render, reference identity in props
