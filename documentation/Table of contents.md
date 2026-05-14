@@ -766,15 +766,15 @@
 - 17.1.4 Chapter quiz
 
 ### Chapter 17.2 — The security baseline
-- 17.2.1 Security headers — CSP, HSTS, X-Frame-Options, Referrer-Policy — set in `next.config.ts`
-- 17.2.2 Rate limiting on abusable endpoints (revisit; Upstash now in place from Chapter 15.3)
-- 17.2.3 Audit logs as discipline — what to log, what not to (revisits the table introduced at RBAC)
-- 17.2.4 GDPR posture — retention timers, deletion-on-request that actually works
-- 17.2.5 Cookie consent gate — single source of truth for analytics opt-in; gates PostHog events, session replay, and any non-essential third-party
-- 17.2.6 Secrets management — env vars, never in code, never in client bundles
-- 17.2.7 Type-safe environment variables (revisit; in place from Chapter 1.4) — confirming the `@t3-oss/env-nextjs` discipline as part of the security baseline audit
-- 17.2.8 Dep hygiene — `pnpm audit`, "is this maintained" check, lockfile committed
-- 17.2.9 Quizz
+- 17.2.1 Security headers in `next.config.ts` — HSTS, CSP with per-request nonce and `'strict-dynamic'`, `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`, `frame-ancestors`; static set in `next.config.ts`, dynamic CSP nonce in `proxy.ts`; the static-page trade-off; report-only rollout
+- 17.2.2 Rate-limit coverage across abusable endpoints — the seven categories, the three triggers that make a limiter mandatory, key strategy per category, the coverage matrix; revisits Upstash from Chapter 15.3 through the security-baseline lens
+- 17.2.3 Audit logs as discipline — the canonical six-category event set, what's forbidden, fields per entry, PII redaction in payload, append-only defense in depth, the three audiences (customer admin, platform operator, compliance); revisits 10.2.5
+- 17.2.4 GDPR posture: retention timers and deletion-on-request — per-table retention catalog driven by a daily Trigger.dev job, R2 lifecycle for blobs; the async deletion job (validate, audit, enqueue, complete); the three deletion shapes (hard, soft, anonymize); third-party deletion calls; legal retention carve-out
+- 17.2.5 The cookie consent gate — essential vs. non-essential, the four-state machine, the single `useConsent()` source of truth, PostHog's `opt_out_capturing_by_default` plus dynamic SDK import, the three-button banner with equal-weight Accept/Reject, the load-bearing rule that nothing fires pre-consent
+- 17.2.6 Secrets management — never in code, never `NEXT_PUBLIC_*` for secrets, three environments / three sets, Vercel "sensitive" flag, rotation on event with the "Vercel-before-provider" order, the canonical leak audit; the April 2026 Vercel incident
+- 17.2.7 Type-safe environment variables: baseline audit — four invariants (every access through typed `env`, server/client split, `.env.example` parity, `SKIP_ENV_VALIDATION` only in legitimate places); the one-page env audit deliverable; revisits 1.4.5
+- 17.2.8 Dep hygiene and supply-chain defaults — pnpm 11+ `minimumReleaseAge: 1440` and `blockExoticSubdeps`, post-install allow-list, `pnpm audit --prod`, lockfile committed and CI `--frozen-lockfile`, Renovate / Dependabot, the "is this maintained" three-question check
+- 17.2.9 Chapter quiz
 
 ### Chapter 17.3 — Project: error and security baseline audit
 - 17.3.1 Audit brief — the eight categories, the rule-location-consequence-fix template
