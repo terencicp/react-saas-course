@@ -430,12 +430,13 @@
 - 7.3.7 Progressive enhancement and what falls out for free — what works without JS, what doesn't, the disciplines that keep it working, the manual JS-disabled test
 - 7.3.8 Quizz
 
-### Chapter 7.4 — When the platform isn't enough — RHF (conditional)
-- 7.4.1 When React Hook Form earns its weight — the threshold past the native pattern: change/blur-triggered validation, dynamic field arrays, multi-step wizards spanning many components, optimistic UX with fine-grained pending states
-- 7.4.2 React Hook Form — `register`, `control`, the resolver model
-- 7.4.3 RHF + Zod resolver — keeping the same Zod schema honest on both sides of the wire
-- 7.4.4 RHF in our app — wiring it into the project where the trigger is met
-- 7.4.5 Quizz
+### Chapter 7.4 — When the platform isn't enough: React Hook Form (conditional)
+- 7.4.1 When React Hook Form earns its weight — the four triggers past the native pattern: per-field validation timing, dynamic field arrays, multi-step wizards spanning components, controlled UI library inputs; the form-library landscape (Conform, TanStack Form) named once
+- 7.4.2 RHF fundamentals — `useForm`, `register` for native inputs, `Controller`/`useController` for UI library inputs, `handleSubmit`, the `formState` read-side, the shadcn `<Form>` wrapper consuming the RHF instance
+- 7.4.3 `zodResolver` — one schema for both sides of the wire; the `z.input` vs `z.output` type bridge; `FormData` vs typed-object action call shape; mapping server-returned `fieldErrors` back into RHF
+- 7.4.4 `useFieldArray` — dynamic lists of fields; `append`/`remove`/`move`/`replace`; `field.id` versus the domain ID; per-row error access; the action's insert/update/delete diff inside a transaction
+- 7.4.5 Multi-step wizards with `FormProvider` — one `useForm` at the root, `useFormContext` per step, `trigger(fieldNames)` plus schema `.pick()` for per-step validation, `shouldUnregister: false` for back-navigation, the PE casualty named
+- 7.4.6 Quizz
 
 ### Chapter 7.5 — Route handlers and API contracts
 - 7.5.1 Route handlers — `route.ts`; when to reach for them vs. server actions
