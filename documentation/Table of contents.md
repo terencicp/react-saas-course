@@ -263,11 +263,11 @@
 
 ### Chapter 4.12 — Project: themed product surface
 - 4.12.1 Project brief
-- 4.12.2 Starter walkthrough — what the scaffold ships, what's stubbed
-- 4.12.3 Build it — header, hero, and the feature grid with CVA variants
-- 4.12.4 Build it — pricing table, footer, and the theme toggle without FOUC
-- 4.12.5 Build it — mobile nav drawer with the `useLockBodyScroll` custom hook and focus trap
-- 4.12.6 Verify — Lighthouse a11y, keyboard-only nav, no-FOUC reload, responsive reflow at 360/768/1280, drawer scroll lock + focus trap + `Esc` close
+- 4.12.2 Starter walkthrough
+- 4.12.3 Header, hero, and the feature grid with CVA variants
+- 4.12.4 Pricing table, footer, and the theme toggle without FOUC
+- 4.12.5 Mobile nav drawer with `useLockBodyScroll` and focus trap
+- 4.12.6 Verify
 
 ---
 
