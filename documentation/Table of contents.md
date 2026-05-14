@@ -228,14 +228,13 @@
 - 4.7.7 Chapter quiz
 
 ### Chapter 4.8 — Hooks: state and refs
-- 4.8.1 `useState` — basics
-- 4.8.2 Lazy initial state — `useState(() => expensiveCompute())`
-- 4.8.3 Derived state — compute during render rather than mirroring; the "syncing with an effect" anti-pattern
-- 4.8.4 Lifting state up — when state belongs higher; weighed against colocating at the leaf and pushing into the URL
-- 4.8.5 `useReducer` — when state has multiple transitions
-- 4.8.6 `useRef` — DOM access and instance values
-- 4.8.7 `useId` — stable IDs across SSR/hydration
-- 4.8.8 Quizz
+- 4.8.1 `useState` — the surface, the bailout rule, and lazy initial state for non-trivial initial computations
+- 4.8.2 Derived state — compute in render; the canonical "mirror a prop into state and sync with an effect" anti-pattern and its three fixes (derive, lift, `key`-reset)
+- 4.8.3 Where state lives — the four homes (local, lifted, URL, server), the colocate-then-lift reflex, `nuqs` as the URL-state reach
+- 4.8.4 `useReducer` — the threshold for multi-transition state, discriminated-union actions, the reducer purity contract, async-lives-in-the-handler
+- 4.8.5 `useRef` — DOM access and instance values; the state-vs-ref rule (does the JSX read it?); the don't-read-or-write-in-render rule; refs and the React Compiler
+- 4.8.6 `useId` — stable IDs across SSR for ARIA wiring; the position-in-the-tree derivation; the not-for-list-keys rule
+- 4.8.7 Chapter quiz
 
 ### Chapter 4.9 — Hooks: effects and external systems
 - 4.9.1 Strict Mode — the dev-mode contract; double-invocation as the impurity-surfacing mechanism that makes effect rules bite
@@ -346,11 +345,11 @@
 > Model the data backplane: the relational model, Drizzle as the data-access layer, and the schema as the single source of truth that every later layer derives from.
 
 ### Chapter 6.1 — The relational model and the data backplane
-- 6.1.1 The relational model — tables, rows, columns, why normalization
-- 6.1.2 The local development database — Docker Postgres or a Neon dev branch; the senior call (offline-capable but drifts from prod vs. matches prod exactly but needs connectivity)
-- 6.1.3 Neon — branching per preview deploy, scale-to-zero, HTTP driver
-- 6.1.4 Connection pooling on the Neon serverless driver
-- 6.1.5 Quizz
+- 6.1.1 The relational model: tables, rows, columns, and normalization
+- 6.1.2 The local development database: Docker Postgres vs. Neon dev branch
+- 6.1.3 Neon: branching per preview deploy and scale-to-zero
+- 6.1.4 The Neon serverless driver and connection pooling
+- 6.1.5 Chapter quiz
 
 ### Chapter 6.2 — Defining schema with Drizzle
 - 6.2.1 Architectural Principle #2 introduced — the schema is the source of truth
