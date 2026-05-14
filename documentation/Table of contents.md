@@ -383,9 +383,10 @@
 - 6.4.5 Chapter quiz
 
 ### Chapter 6.5 — Migrations and the seed workflow
-- 6.5.1 Drizzle Kit — generating migrations, applying them, the studio
-- 6.5.2 Database seeding for dev and test
-- 6.5.3 Quizz
+- 6.5.1 Drizzle Kit: config, generate, migrate, and the studio
+- 6.5.2 Migrations in production: hand-edits, push vs. generate, and the zero-downtime discipline
+- 6.5.3 Seeding with drizzle-seed: dev fixtures and test factories
+- 6.5.4 Chapter quiz
 
 ### Chapter 6.6 — Project: org-scoped schema and queries
 - 6.6.1 Project brief
