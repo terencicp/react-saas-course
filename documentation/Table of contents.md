@@ -790,12 +790,12 @@
 > Store time canonically, render it locally, and treat translation as a discipline before it's a feature.
 
 ### Chapter 18.1 — Time, dates, and timezones (SaaS pattern #13)
-- 18.1.1 UTC in Postgres (`timestamptz`); local at the edge (consolidates the earlier Temporal thread)
-- 18.1.2 Date-only values modeled as `date`, not midnight timestamps
-- 18.1.3 The user's timezone in their profile, not derived per-request
-- 18.1.4 DST transitions and recurring jobs
-- 18.1.5 Date arithmetic with Temporal — never hand-rolled month math; native and unflagged from Node 26 (May 2026), `temporal-polyfill` (FullCalendar, ~20KB) or `@js-temporal/polyfill` (TC39 champions, full-spec) on the Node 24 LTS line that most production SaaS still runs on
-- 18.1.6 Quizz
+- 18.1.1 UTC in Postgres `timestamptz`; Temporal at the domain edge — the three-layer storage / domain / edge split; the `Temporal.Instant` codec in `lib/temporal.ts`; ISO 8601 strings as the universal wire format; `Date` only at the third-party seam
+- 18.1.2 Date-only values: the `date` type, not midnight `timestamptz` — calendar-day semantics belong in Postgres `date` and `Temporal.PlainDate`; the second codec; the canonical midnight-UTC anti-pattern and its three failure modes
+- 18.1.3 The user's timezone in their profile, not derived per-request — `users.timeZone` as an IANA identifier; seeded from the browser at sign-up, validated via `Intl.supportedValuesOf('timeZone')`, read from the session, passed explicitly to every formatter; the `Intl.DateTimeFormat()` no-argument bug on Vercel
+- 18.1.4 DST transitions and recurring jobs — named IANA tz for user-facing wall-clock jobs (Trigger.dev `schedules.task` with `{ cron: { pattern, timezone } }`), UTC for internal cadence jobs; the spring-forward gap and fall-back repeat; recompute the fire instant at fire time
+- 18.1.5 Date arithmetic with Temporal — the type catalog (`Instant` / `ZonedDateTime` / `PlainDate` / `Duration`), `add` / `subtract` / `since` / `until` / `with` / `round`, month-end clamping with `overflow: 'reject'` as opt-out, the six anti-patterns the senior never writes; native and unflagged from Node 26 (May 2026), `temporal-polyfill` (FullCalendar, ~20KB) or `@js-temporal/polyfill` on the Node 24 LTS line
+- 18.1.6 Chapter quiz
 
 ### Chapter 18.2 — Internationalization (SaaS pattern #14)
 - 18.2.1 The i18n discipline — translation keys with interpolation, never string concatenation
