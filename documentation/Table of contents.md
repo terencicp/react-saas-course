@@ -705,11 +705,10 @@
 - 15.2.5 Verify
 
 ### Chapter 15.3 — Rate limiting and shared session-shaped data (Upstash)
-- 15.3.1 Edge controls (light) for basic rate limiting before launch
-- 15.3.2 When Upstash Redis becomes part of the baseline — pre-launch demos can lean on Vercel/Cloudflare edge controls; the moment the project ships to a public URL, `@upstash/ratelimit` on auth endpoints is non-negotiable; distributed cache and shared session storage as the further reasons it earns its weight
-- 15.3.3 Upstash Redis primitives — rate limiting on abusable endpoints (sign-up, sign-in, password reset, public APIs)
-- 15.3.4 Upstash in our app — wiring `@upstash/ratelimit` on the auth endpoints
-- 15.3.5 Quizz
+- 15.3.1 When edge controls are enough and when Upstash earns its weight — pre-launch Vercel/Cloudflare edge controls for crude IP-shaped abuse; the public-URL-with-email+password trigger that flips application-level `@upstash/ratelimit` from optional to non-negotiable; the three further workloads (cross-process cache, shared session-shaped tokens, dispatcher pub/sub later) Upstash earns as upside; the fail-open-on-auth policy
+- 15.3.2 Upstash Redis and `@upstash/ratelimit` primitives — the connectionless HTTP/REST client, module-scope limiter declaration, the three algorithms (sliding window default, token bucket, fixed window), the `limit(key)` return shape, the RFC-shape `RateLimit-*` headers, key design and the `pending` analytics flush
+- 15.3.3 Wiring `@upstash/ratelimit` on the auth endpoints — three module-scope limiters (sign-in, sign-up, reset); the dual-keying rule on sign-in (per-IP **and** per-email as two independent gates); the seam inside the action (gate first, work second); the user-safe 429 body and the operator-honest structured log; the fail-open fallback; replacing Better Auth's built-in limiter with the application-level pattern
+- 15.3.4 Quizz
 
 ### Chapter 15.4 — Project: Upstash rate limit on auth endpoints
 - 15.4.1 Project brief
