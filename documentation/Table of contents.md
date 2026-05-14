@@ -439,10 +439,10 @@
 - 7.4.6 Quizz
 
 ### Chapter 7.5 — Route handlers and API contracts
-- 7.5.1 Route handlers — `route.ts`; when to reach for them vs. server actions
-- 7.5.2 Designing API contracts with Zod — request and response shapes
-- 7.5.3 Applying HTTP semantics to your own endpoints — methods, status codes, the idempotency rule made operational
-- 7.5.4 Filtering, sorting, search at the API boundary
+- 7.5.1 When a route handler earns its weight — the five triggers past the Server Action envelope (non-React callers, webhooks, GETs, streaming/large bodies, custom HTTP semantics), the `route.ts` shape, the dynamic-by-default caching, the "do not invent a parallel router" anchor
+- 7.5.2 Designing the request/response contract with Zod — the four input sources (path params, headers, query, body) parsed in cheapest-first order, response schemas as contract, RFC 9457 Problem Details as the canonical error shape, schemas-as-OpenAPI named once
+- 7.5.3 HTTP semantics applied to your own endpoints — method-by-intent (GET/POST/PUT/PATCH/DELETE), the status-code table the reviewer enforces (400 vs. 422, 404 over 403 on tenant leaks, 409 for conflicts), the `Idempotency-Key` header operationalized
+- 7.5.4 Filter, sort, search, paginate at the API boundary — the query-schema shape, the prefix-form sort convention, opaque base64 cursors, the `{ data, pageInfo }` envelope, the shared `where`-builder pure function consumed by both the handler and the in-app Server Component
 - 7.5.5 Quizz
 
 ### Chapter 7.6 — Project: CRUD via Server Actions
