@@ -598,14 +598,12 @@
 > Ingest webhooks idempotently and derive plan entitlements from Stripe — the async-and-money seam where careless code becomes expensive in production.
 
 ### Chapter 12.1 — Webhook ingestion (SaaS pattern #5)
-- 12.1.1 Webhook ingestion — signature verification at the route handler boundary, with constant-time comparison as the timing-attack mitigation (closes the Web Crypto thread from Chapter 3.7)
-- 12.1.2 The `processed_events` table to dedupe replays
-- 12.1.3 Outer transaction so partial state never lands
-- 12.1.4 Out-of-order events; the redirect-vs-webhook race
-- 12.1.5 Idempotency as a unifying discipline — the unique-on-key DB constraint pattern, consolidated for webhooks, server actions, and retried jobs
-- 12.1.6 Stripe CLI for local webhook testing — `stripe listen` as the local-development corollary
-- 12.1.7 Resend bounce/complaint webhooks — the same ingestion shape applied to email deliverability; populating `email_suppressions` from the idempotent handler pattern (closes the loop with Chapter 8.1)
-- 12.1.8 Quizz
+- 12.1.1 Signature verification at the route handler boundary — raw body via `request.text()`, HMAC over `${t}.${rawBody}`, constant-time compare, timestamp tolerance, 400 with RFC 9457 on failure; closes the Web Crypto thread from 3.7.1; `stripe listen` and `stripe trigger` as the local loop
+- 12.1.2 Dedup and the outer transaction — `processed_events` with composite `UNIQUE(provider, eventId)`, `INSERT ... ON CONFLICT DO NOTHING` as both check and claim, dedup INSERT and business work in one transaction so partial state never lands
+- 12.1.3 Out-of-order events and the redirect-versus-webhook race — `event.created` and a `last_event_at` predicate in the UPDATE WHERE; "the webhook is the only writer," the success page reads-and-polls via `router.refresh()`
+- 12.1.4 Idempotency as a unifying discipline — the unique-on-key DB constraint pattern consolidated across webhooks (`event.id`), Server Actions (form-supplied UUID), and retried jobs (stable run ID); the `Idempotency-Key` HTTP header for public route handlers
+- 12.1.5 Applying the pattern: Resend bounce and complaint webhooks — Svix-flavored signature verification, `email.bounced` and `email.complained` populating `email_suppressions` (closes the loop with 8.1.4), the `bypassSuppression` carve-out for critical transactional flows
+- 12.1.6 Quizz
 
 ### Chapter 12.2 — Stripe billing (SaaS pattern #4)
 - 12.2.1 Stripe — products, prices, customers, subscriptions
