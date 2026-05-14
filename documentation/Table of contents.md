@@ -914,11 +914,11 @@
 > The shipping discipline: the version-control habits that make change reversible, the CI baseline that makes regressions structural, and the migration cadence that keeps live deploys safe.
 
 ### Chapter 21.1 — Git and version control
-- 21.1.1 Git fundamentals and the trunk-based workflow — the four objects (commit, branch, staging area, remote), rebase-locally / squash-merge-on-PR as the 2026 team-style default, `git pull --rebase` as everyday hygiene, the global-config one-time setup, branch and commit-message conventions, `.gitignore` / `.gitattributes` as repo artifacts, `--force-with-lease` over `--force`
-- 21.1.2 Recovery and history shaping — `reflog` as the safety net, `bisect` (and `bisect run`) for regression hunting, `cherry-pick` for surgical movement and `revert` for shared-history undo, `rebase -i` with `--autosquash` and `git commit --fixup=<sha>` for shaping history before push, `amend` / `stash` / `restore` / `switch`, the conflict resolution flow, the recovery muscle-memory scenarios
-- 21.1.3 Pull requests as the unit of change — small / reviewable / reversible, the six-section PR description template, draft PRs, the review-yourself-first reflex, the 60-second and 30-minute review passes, fixup-commit-and-squash-merge as the everyday loop, CODEOWNERS for automatic reviewer routing, the `gh` CLI named, the GitHub merge-mode repo settings, the PR-to-deploy story forward referenced
-- 21.1.4 Branch protection and structural enforcement — GitHub rulesets as the 2026 default (vs. legacy branch protection rules), the six-rule minimum-viable `main` ruleset (require PR + 1 approval + dismiss-stale + code-owner review + required status checks + linear history), senior-reach rules (signed commits, required deployments, bypass actors with audit), the CODEOWNERS file, layered rulesets, required-status-check name-string discipline, the `.github/` directory as the repo's policy surface
-- 21.1.5 Chapter quiz
+- 21.1.1 Git fundamentals — branches, commits, the staging area, rebase vs. merge as a team-style choice
+- 21.1.2 Git for recovery and history shaping — cherry-pick, bisect, reflog, interactive rebase
+- 21.1.3 Pull requests as the unit of change — small, reviewable, reversible
+- 21.1.4 Branch protection rules that prevent direct pushes to main
+- 21.1.5 Quizz
 
 ### Chapter 21.2 — CI on GitHub Actions
 - 21.2.1 GitHub Actions — workflows, jobs, steps, secrets, cached deps
