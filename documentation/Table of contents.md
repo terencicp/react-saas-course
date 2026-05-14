@@ -540,12 +540,12 @@
 - 10.1.5 Chapter quiz
 
 ### Chapter 10.2 — RBAC and the audit trail at the action boundary
-- 10.2.1 RBAC — owner / admin / member as the year-1 default
-- 10.2.2 The `authedAction(role, schema, fn)` wrapper — RBAC at the server-action boundary (SaaS pattern #2; the authz carve-out to Architectural Principle #5)
-- 10.2.3 The same authz discipline at the route handler boundary — `authedAction` ported to `route.ts` so the missing-call class stays structurally hard at every untrusted-input seam
-- 10.2.4 Member management — listing, roles, removal, leave-org, ownership transfer
-- 10.2.5 The `audit_logs` table — append-only, never updated, never deleted; what role-changes, ownership transfers, and exports must record (revisited under the security baseline in Unit 17)
-- 10.2.6 Quizz
+- 10.2.1 The three-role RBAC model — owner / admin / member as the year-1 default, the authority gradient, the single-owner invariant, `roleAtLeast` and `requireOrgUser` returning `{ user, orgId, role }`
+- 10.2.2 The `authedAction(role, schema, fn)` wrapper at the Server Action boundary (SaaS pattern #2; the authz carve-out to Architectural Principle #5) — the four wrapper steps, the `ctx = { user, orgId, role, db = tenantDb(orgId) }` payload, the `Result` return contract
+- 10.2.3 `authedAction` ported to the route handler boundary — `authedRoute(role, schema, fn)` so the missing-call class stays structurally hard at every untrusted-input seam; HTTP status map (401 / 403 / 422 / 404), RFC 9457 Problem Details; sharing the business function across both seams via `/lib`
+- 10.2.4 Member management — listing, role change, removal, leave-org, ownership transfer; the single-owner invariant in the helper, the multi-row transaction shape, the session-after-removal behavior
+- 10.2.5 The `audit_logs` table — append-only by contract, by RLS policy denying UPDATE/DELETE, and by application discipline; `logAudit(tx, event)` whose signature forces a transaction; the canonical event set; what gets audited and what doesn't (revisited under the security baseline in Unit 17)
+- 10.2.6 Chapter quiz
 
 ### Chapter 10.3 — Invitations and seat management (SaaS pattern #3)
 - 10.3.1 The invitations table — token, email, role, expiry, `acceptedAt`
