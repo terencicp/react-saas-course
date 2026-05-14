@@ -276,17 +276,13 @@
 > Wire React into the App Router, name the server/client boundary, and learn the rendering and caching model that every later SaaS pattern relies on.
 
 ### Chapter 5.1 — The first project — file structure and routing
-- 5.1.1 Scaffolding the first Next.js 16 project — `pnpm create next-app`, the generated tree, what each top-level file does
-- 5.1.2 Architectural Principle #1 introduced — co-locate by feature, not by layer; the `app/` directory as the canonical shape
-- 5.1.3 File-system routing — `app/`, `page.tsx`
-- 5.1.4 Layouts and nested layouts; the layout/page render boundary
-- 5.1.5 Dynamic route segments; catch-all and optional catch-all
-- 5.1.6 Route groups
-- 5.1.7 Parallel routes — named slots (`@slot`) rendered alongside `children` in a layout, each route segment owning its own loading and error boundary; the canonical use case is a list-plus-detail surface where both live under the same URL; `default.tsx` for the unmatched-slot fallback that prevents a 404 on direct navigation; how parallel slots stream independently when paired with Suspense (revisited in 5.3.2)
-- 5.1.8 Intercepting routes — `(.)`, `(..)`, `(..)(..)`, `(...)` markers; soft-navigation interception for the "modal or side-panel that has a real URL" pattern; the always-paired non-intercepting `page.tsx` that shadows the intercepted route on direct visits, refresh, and `Cmd+click`; the senior anchor for why a state-driven modal loses URL persistence, refreshability, and shareability
-- 5.1.9 `<Link>` and the navigation model
-- 5.1.10 `redirect`, `notFound`, `permanentRedirect`
-- 5.1.11 Quizz
+- 5.1.1 The App Router project: file tree, `page.tsx`, and co-location — `pnpm create next-app` named for recognition only (the course pins a starter); the canonical `app/` shape; `page.tsx` as the route leaf; Architectural Principle #1 introduced — co-locate by feature, not by layer; private folders (`_components/`, `_lib/`) as the senior form for non-routable colocation
+- 5.1.2 Layouts, nested layouts, and route groups — `layout.tsx` as the shell every nested route renders inside; layouts compose down the tree; the layout/page render boundary (layouts stay mounted, pages re-mount); `template.tsx` named once for the remount-on-navigation case; route groups (`(folder)`) for organization without URL impact and for shared-layout-without-URL-prefix patterns
+- 5.1.3 Dynamic segments and catch-all routes — `[param]` for single dynamic segments; `params` as a Promise in Next.js 16 (awaited in Server Components, unwrapped with `React.use()` in Client Components); catch-all `[...slug]` for genuinely variable-depth URLs; optional catch-all `[[...slug]]` for "match parent and all children"; validating `params` with Zod; `generateStaticParams` named once as the build-time SSG hook (Chapter 5.6.11)
+- 5.1.4 Navigation: `<Link>`, `redirect`, `notFound`, `permanentRedirect` — `<Link>` for in-app soft navigation with intelligent prefetching (static on viewport, dynamic on hover); `useRouter().push` for programmatic navigation from Client Components (full surface in 5.5.5); `redirect()` (307) for server-side temporary; `permanentRedirect()` (308) for permanent URL moves with the SEO threshold; `notFound()` for "resource doesn't exist" signals; `<a>` reserved for external links
+- 5.1.5 Parallel routes and slots — named slots (`@slot`) rendered alongside `children` in a layout, each owning its own loading, error, and not-found boundary; the canonical list-plus-detail surface where both live under the same URL; `default.tsx` per slot for the unmatched-slot fallback that prevents a 404 on direct navigation; how parallel slots stream independently when paired with Suspense (revisited in 5.3.2)
+- 5.1.6 Intercepting routes and the modal-with-real-URL pattern — `(.)`, `(..)`, `(..)(..)`, `(...)` prefixes; soft-navigation interception for the "modal or side-panel that has a real URL" pattern; the always-paired non-intercepting `page.tsx` that shadows the intercepted route on direct visits, refresh, and `Cmd+click`; closing the modal as a navigation, not a state toggle; the senior anchor for why a state-driven modal loses URL persistence, refreshability, and shareability
+- 5.1.7 Quizz
 
 ### Chapter 5.2 — The server / client boundary
 - 5.2.1 Server Components — fundamentals, async components, server-side data fetching
