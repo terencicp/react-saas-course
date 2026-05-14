@@ -515,9 +515,8 @@
 - 9.4.1 The protected-routes gate in `proxy.ts`
 - 9.4.2 Credential changes and the elevation tier
 - 9.4.3 Session management across devices
-- 9.4.4 Account deletion with verification and cascading revocation
-- 9.4.5 Browser security defaults: what the stack ships, what would undo them
-- 9.4.6 Chapter quiz
+- 9.4.4 Browser security defaults: what the stack ships, what would undo them
+- 9.4.5 Chapter quiz
 
 ### Chapter 9.5 — Project: email+password auth with verification
 - 9.5.1 Project brief

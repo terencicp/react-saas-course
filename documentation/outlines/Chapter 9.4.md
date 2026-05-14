@@ -2,9 +2,9 @@
 
 ## Chapter framing
 
-Chapter 9.3 closed the sign-in surface — every flow that mints a session. Chapter 9.4 covers the rest of the session's life: how the request-time gate decides who reaches a protected route, how a signed-in user changes the credentials that signed them in, how the user (and the system) audit and revoke sessions across devices, how the user deletes the account on demand with the verification ceremony the 2026 baseline expects, and what browser-security defaults the stack already buys without extra code. The student leaves with a production-shaped `proxy.ts` gate, a `/settings/security` surface that handles credential mutation through Better Auth's APIs at the senior elevation tier, an active-sessions list with per-row revocation, a delete-account flow with verification + cascading revocation + retention discipline, and a clear-eyed read on what CSRF/XSS mitigations React + Next.js + Better Auth already encode.
+Chapter 9.3 closed the sign-in surface — every flow that mints a session. Chapter 9.4 covers the rest of the session's life: how the request-time gate decides who reaches a protected route, how a signed-in user changes the credentials that signed them in, how the user (and the system) audit and revoke sessions across devices, and what browser-security defaults the stack already buys without extra code. The student leaves with a production-shaped `proxy.ts` gate, a `/settings/security` surface that handles credential mutation through Better Auth's APIs at the senior elevation tier, an active-sessions list with per-row revocation, and a clear-eyed read on what CSRF/XSS mitigations React + Next.js + Better Auth already encode.
 
-Threads that run through every lesson. The proxy is for redirects on cookie-presence; real authorization decisions live downstream at the action boundary (the 5.5.2 rule honored). Every credential-mutation endpoint is elevated — `freshAge` from 9.2.3 is the senior tier and current-password / re-authentication prompts close the gap when the session is stale. Session revocation is non-negotiable on every credential change (password reset already does it from 9.3.4; password change and email change repeat the discipline; account deletion is the maximal case). Enumeration discipline from 9.3 carries forward — change-email returns the same response shape whether the new email is taken. The send side of any new email (change-email confirmation, "new device signed in", delete-account verification, post-change notice) still flows through the Unit 8 pipeline. The `verification` table from 9.2.2 keeps doing the same job — change-email tokens, delete-account tokens, all hashed at rest, all one-time-use, each in its own `identifier` namespace. Browser-security defaults are framed as "what the stack already ships, what would undo them" — the lesson teaches the structural defense and the one footgun (`dangerouslySetInnerHTML`), not a survey of headers. Full CSP / security-header configuration is Chapter 17.3's territory and named once. Five teaching lessons plus a quiz.
+Threads that run through every lesson. The proxy is for redirects on cookie-presence; real authorization decisions live downstream at the action boundary (the 5.5.2 rule honored). Every credential-mutation endpoint is elevated — `freshAge` from 9.2.3 is the senior tier and current-password / re-authentication prompts close the gap when the session is stale. Session revocation is non-negotiable on every credential change (password reset already does it from 9.3.4; password change and email change repeat the discipline). Enumeration discipline from 9.3 carries forward — change-email returns the same response shape whether the new email is taken. The send side of any new email (change-email confirmation, "new device signed in") still flows through the Unit 8 pipeline. Browser-security defaults are framed as "what the stack already ships, what would undo them" — the lesson teaches the structural defense and the one footgun (`dangerouslySetInnerHTML`), not a survey of headers. Full CSP / security-header configuration is Chapter 17.3's territory and named once. Four teaching lessons plus a quiz.
 
 ---
 
@@ -99,70 +99,7 @@ Estimated student time: 35 to 45 minutes. Mechanics + pattern hybrid; the active
 
 ---
 
-## Lesson 9.4.4 — Account deletion with verification and cascading revocation
-
-Topics to cover:
-
-- **The senior question.** A user wants to delete their account. The 2026 baseline (GDPR Article 17, CCPA, every other right-to-erasure regime) makes "I want my account gone" a product obligation, not a feature. Three failure modes the senior closes: a stolen cookie clicking "delete" silently nukes the legitimate user; the cascade leaves dangling rows in tables that referenced the user (audit logs, billing records, content in shared spaces); the verification ceremony differs between password-account and OAuth-only users and the implementation collapses one path. Configure Better Auth's `user.deletion`, wire the verification email, ship the destructive-confirmation UI, name the retention discipline.
-- **What `user.deletion` ships.** Disabled by default in the library. Three configuration knobs:
-  - `enabled: true` — turns the surface on. Library exposes `authClient.deleteUser(...)` and the `/api/auth/delete-user/callback` route.
-  - `sendDeleteAccountVerification: async ({ user, url, token })` — the callback the library invokes when verification is needed. Wire to send through the Unit 8 pipeline with a `DeleteAccountTemplate` React Email template (one CTA, expiry note, "if you didn't request this, ignore" line).
-  - `beforeDelete: async (user)` / `afterDelete: async (user)` — hooks for app-owned work that must precede or follow the cascade (archival, audit-log row, downstream cleanup).
-- **The two verification paths.**
-  - *Password account.* `authClient.deleteUser({ password })`. Library verifies the password against `account.password` in constant time. On success, fires the cascade immediately — no email round-trip. The password *is* the fresh proof of intent. Senior default for any user with a `'credential'` row.
-  - *No-password account (OAuth-only / magic-link-only).* `authClient.deleteUser({})` with no password. Library generates a CSPRNG token, stores hashed in a `verification` row keyed by `delete-account:<userId>`, invokes `sendDeleteAccountVerification`. User receives email with link to `/api/auth/delete-user/callback?token=...`. Click hits the library route, hashes incoming token, validates expiry and uniqueness, fires the cascade. The email click is the proof of intent.
-  - Library picks the path automatically based on whether the call carries a password and whether a `'credential'` account exists.
-- **The fresh-session requirement at this endpoint.** Library checks `freshAge` (9.2.3) on `deleteUser` — a session older than the window is refused unless the password is supplied (password path proves freshness directly). The reason: an attacker holding a stale-but-valid cookie can't delete without either re-authenticating or supplying the password. The elevation tier from 9.1.1 / 9.4.2 made operational on the maximum-blast-radius action.
-- **What cascades when the delete fires.** In order:
-  1. `beforeDelete(user)` runs — the senior archival hook. App code copies what must survive (audit-log identity snapshot, billing reference) into tables that don't FK-cascade from `user.id`.
-  2. Every `session` row for the user is deleted (`ON DELETE CASCADE` on `session.userId` from 9.2.2).
-  3. Every `account` row for the user is deleted — credential hashes, OAuth provider links, all gone.
-  4. Every `verification` row keyed by the user's email or user ID.
-  5. Plugin-owned rows tied to the user — `passkey` (9.3.7), `twoFactor` (9.3.6), `member` (Unit 10), `invitation` (Unit 10) — each plugin declares its own cascade.
-  6. The `user` row itself.
-  7. `afterDelete(user)` runs — analytics, third-party cleanup, anything that needs the user's identity but doesn't block deletion.
-- **What the app retains, by senior call.** The cascade is the *easy* half; the retention decisions are the senior half.
-  - *Audit-log rows* (Chapter 10.2.5) — append-only, referenced by `user.id` as a string, *never* FK-cascaded. The user is gone; the audit trail remains with the string ID dangling. Reason: audit history outlives the actor.
-  - *Billing records* (Unit 12) — Stripe customers, invoices, payment ledger. Tax law typically requires 7-year retention. The `stripeCustomerId` lives on a side table or is denormalized; deletion nulls the link, the financial trail remains.
-  - *Content in shared spaces* — a post in an org, a comment on someone else's invoice. Product decision: keep with author anonymized ("Deleted user"), or hard-delete. The schema is decided in Unit 6 / Unit 10; this lesson surfaces the decision, not the wire.
-  - *Personal PII the law requires erased* — direct messages, private notes, anything the regulator calls "personal data." Cascade-delete or scrub at `beforeDelete`. GDPR's right-to-erasure is for *personal* data; business records have their own retention allowance.
-  The senior framing: the schema's cascade vs. nullify vs. no-relationship choices from Chapter 6 decide what cascades; this lesson is the moment those decisions get exercised.
-- **The `beforeDelete` hook in practice.** Three patterns the year-1 SaaS needs:
-  - Write the `audit_logs` row recording the deletion (`actor`, `action: 'account.deleted'`, `targetUserId`, `timestamp`) before the user row is gone — so the audit query can still find context. Chapter 10.2 owns the schema; this lesson names the hook as the write point.
-  - Copy the user's `stripeCustomerId` to a `deleted_users_billing` side table so Unit 12's webhook handlers still resolve the customer after deletion.
-  - Anonymize the user's authored content — `UPDATE posts SET author_label = 'Deleted user', author_id = NULL WHERE author_id = <userId>`.
-  - Refuse the delete with a thrown error if the user is the last owner of an org (Unit 10) — "transfer ownership first." Library propagates the throw as a rejected `deleteUser` Result.
-- **The destructive-confirmation UI.** Below change-password / change-email / sessions on `/settings/security`, a "Danger zone" block visually separated (border, color, divider). The "Delete account" button opens a modal with:
-  - The irreversibility statement ("permanently delete your account, all your data, and sign out every device — this cannot be undone").
-  - A type-to-confirm input that requires the user's email — friction defense against muscle-memory clicks and accidental keyboard activation.
-  - The password field (password accounts) or the "we'll email you to confirm" copy (OAuth-only).
-  - A final "Delete my account" button, disabled until the confirm input matches and the password (if applicable) is non-empty.
-  Senior reflex: never ship single-click destructive actions; the type-to-confirm friction is the structural defense against the borrowed-laptop / stolen-cookie cases.
-- **The post-delete redirect and UX.** Password path: the cascade revoked the current session, the cookie is invalid, the proxy's next read returns null, redirect to `/sign-in` — but the senior UX intercepts this with a public `/account-deleted` page that confirms "your account has been deleted on [date]" and surfaces a "contact us" link for support inquiries. Email-verification path: the user clicks the link from email, lands on the library's callback route which fires the cascade, then redirects to the same `/account-deleted` page.
-- **The notification email.** Distinct from the verification email. Verification *confirms intent*; notification *confirms completion*. Send the post-delete notification to the user's email (the address that was on file before the delete) immediately after `afterDelete` returns — "your account was deleted on [date]; if this wasn't you, contact support immediately." Senior baseline; not strictly required but standard 2026 practice. Skip when the verification email *is* the notification (i.e., the OAuth path where the click confirms the action — but even then, a separate confirmation reduces support load).
-- **OAuth provider deletion considerations.** Removing the `account` row that links to Google/GitHub doesn't tell the provider — Google still has the user, the user just can't sign into this app with Google anymore. Two senior reaches:
-  - If the app holds provider access/refresh tokens for ongoing API use (rare in pure-login flows from 9.3.8), call the provider's token-revocation endpoint in `beforeDelete` so the tokens stop working at the source.
-  - For OAuth-only accounts going through the email-verification path, the verification email is sent to `user.email` (the address Google/GitHub reported at sign-in). If the user's provider email has changed since (and `user.email` is stale), the verification email goes to the wrong address. The senior reflex: surface "we'll email confirmation to ada@acme.com — change your email first if this isn't current" copy in the modal.
-- **Org-owner caveat — named for Unit 10.** A user who owns an organization can't be cleanly deleted while the org has data — the cascade would orphan the org or leak it. `beforeDelete` refuses with a typed error; the UX surfaces "transfer ownership first" with a link to the org-ownership transfer flow (Chapter 10.2.4). For year-1 SaaS without orgs yet, ignore; once Unit 10 lands, the hook is mandatory.
-- **The `verification` table at this surface.** Same table from 9.2.2, namespace `delete-account:<userId>`. Hashed CSPRNG token, library-default expiry (1 hour), single-use, row deletes on consumption. The pattern from 9.3.3 (verify-email) and 9.4.2 (change-email) reused yet again — one table, three flows.
-- **Watch-outs.** Enabling `deleteUser` without wiring `sendDeleteAccountVerification` for OAuth users — the email-verification path silently fails; FK-cascading `audit_logs` from `user.id` (the audit history vanishes with the actor, defeats the audit purpose); shipping a single-click destructive button without the type-to-confirm friction (the borrowed-laptop disaster scenario); putting the archival in `afterDelete` instead of `beforeDelete` (the user row is gone, the archival can't read the data it needs); allowing the delete to land while the session is stale and the user is OAuth-only (the `freshAge` check is the only proof of intent on that path); calling a raw schema `DELETE FROM users WHERE id = ?` from a custom Server Action instead of `auth.api.deleteUser` (bypasses every library defense and every plugin's cascade); not sending the post-delete notification (silent destruction is a takeover-detection failure if the legitimate user wasn't the one who clicked); logging the verification token in URL analytics; cascading `stripeCustomerId` from `user` (loses the billing trail tax law requires); ignoring the org-owner case (orphaned org in Unit 10).
-
-What this lesson does not cover:
-
-- The `audit_logs` table schema and append-only discipline (Chapter 10.2.5).
-- Stripe customer-record retention patterns and the side-table shape (Unit 12.2).
-- Organization ownership transfer (Chapter 10.2.4).
-- The full data-lifecycle / right-to-erasure compliance surface (Chapter 21).
-- GDPR Article 17 / CCPA in legal depth (out of scope; the engineering shape is here).
-- React Email template anatomy (Chapter 8.2).
-- The `verification` table mechanics (9.2.2, 9.3.3).
-- Soft-delete vs. hard-delete strategy at the data-class level (Chapter 11 / Chapter 21).
-
-Estimated student time: 35 to 45 minutes. Pattern + decision hybrid; a sequence diagram for the two-path delete flow (password-immediate vs. email-verification) earns its weight, and a small table mapping "what cascades / what's retained / why" is the load-bearing reference for the cascade-vs-retention decision.
-
----
-
-## Lesson 9.4.5 — Browser security defaults: what the stack ships, what would undo them
+## Lesson 9.4.4 — Browser security defaults: what the stack ships, what would undo them
 
 Topics to cover:
 
@@ -197,17 +134,17 @@ Estimated student time: 35 to 45 minutes. Concept + pattern hybrid; the "default
 
 ---
 
-## Lesson 9.4.6 — Chapter quiz
+## Lesson 9.4.5 — Chapter quiz
 
 Top 10 topics to quiz:
 
-- The two-layer gate — proxy.ts for cookie-presence redirects only, layout/action for the validating read and authz; why DB reads in the proxy break under prefetch; `getSessionCookie` vs `auth.api.getSession` and where each belongs.
+- The two-layer gate — proxy.ts for cookie-presence redirects only, layout/action for the validating read and authz; why DB reads in the proxy break under prefetch.
 - The matcher patterns — allowlist vs matchall-minus-public; the `?next=` round-trip with open-redirect closure; the inverse gate that bounces signed-in users away from `/sign-in`.
+- `getSessionCookie` (cookie-only optimistic check) vs `auth.api.getSession` (validating read); why each lives where it does in the request lifecycle.
 - The elevation tier — `freshAge` for non-credential destructive actions, current-password prompt for credential changes, the `'requires-re-authentication'` Result branch and its UX.
 - `changePassword` with `revokeOtherSessions: true` as the non-negotiable senior default; the OAuth-only-user / no `'credential'` row edge.
 - `changeEmail` verifies on the *current* address; why; the `verification` namespace reused; the "your email was changed" notification email through Unit 8.
 - The active-sessions list — `auth.api.listSessions`, per-row device/location parsing, current-session detection, and the cookie-cache staleness window on revoke.
 - `revokeSession` / `revokeOtherSessions` / `revokeSessions` — what each deletes, which the credential-change flow auto-triggers, which is the "sign out everywhere including here" button.
-- Account deletion — the two-path verification (password-immediate vs. OAuth-email-link), the `beforeDelete` archival pattern, the cascade vs. retention decision matrix (audit logs, billing, shared content), the type-to-confirm UI friction.
 - CSRF in this stack — `SameSite=Lax` plus the Server Actions origin check as the structural defense; what `SameSite=None` would undo; when a cross-origin endpoint earns a CSRF token.
 - XSS in this stack — React 19's auto-escaping as the default, `dangerouslySetInnerHTML` as the one bypass; the `DOMPurify` allowlist shape; `HttpOnly` on the session cookie and the "no tokens in localStorage" rule; CSP as the second layer (full config in 17.3).
