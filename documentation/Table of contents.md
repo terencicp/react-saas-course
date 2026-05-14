@@ -745,13 +745,13 @@
 - 16.3.3 The trigger in our app — the customer-onboarding wizard — the four-step routed wizard, the three-trigger check, the four-slice store shape, per-step Zod gates, the Server-Action submit boundary, back/forward preserves vs. refresh loses, reset at submit-success and org-switch
 - 16.3.4 Chapter quiz
 
-### Chapter 16.4 — Project: Zustand for a multi-step wizard
+### Chapter 16.4 — Project: routed multi-step wizard with Zustand
 - 16.4.1 Project brief
-- 16.4.2 Starter walkthrough — four route segments, per-step Zod schemas
-- 16.4.3 Build it — the Zustand store with per-step slices and a typed selector surface
-- 16.4.4 Build it — wire each step's form to the store and the Next-gate validation
-- 16.4.5 Build it — the final submit action, the success-reset, and back/forward navigation
-- 16.4.6 Verify — back/forward preserves, refresh loses (the senior call), no double-submit on step 4
+- 16.4.2 Starter walkthrough — four route segments, per-step Zod schemas, inspector debug flags
+- 16.4.3 Store, slices, provider, and the typed hook
+- 16.4.4 Form wiring, atomic selectors, and the Next-gate
+- 16.4.5 Review, submit action, success-reset, and the double-submit guard
+- 16.4.6 Verify — back/forward preserves, refresh loses (the senior call), no double-submit, atomic re-render scoping, per-request store
 
 ---
 
