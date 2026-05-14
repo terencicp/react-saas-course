@@ -631,13 +631,13 @@
 > Run scheduled and durable jobs when the platform default isn't enough, and handle uploads when the product genuinely needs them.
 
 ### Chapter 13.1 — Background work — defaults and Trigger.dev
-- 13.1.1 Inline async work in Server Actions — short, sync-friendly mutations
-- 13.1.2 Vercel Cron — scheduled jobs default
-- 13.1.3 When Trigger.dev earns its weight — the threshold past inline async + Vercel Cron: workloads that demand durability (multi-step flows that must survive failures, retries with backoff, fan-out, jobs that exceed Vercel function time limits, event-driven flows that span steps)
-- 13.1.4 Trigger.dev v4 primitives — `task` and `schemaTask` (Zod-validated payloads), runs, code-defined queues (declared in code before deployment, not at trigger time as in v3), concurrency limits, schedules (cron and dynamic)
-- 13.1.5 Waitpoints — the v4 primitive that blocks runs until conditions are met; callback-URL completion for third-party hand-offs, timeouts, human-in-the-loop pauses; one waitpoint can block many runs and one run can wait on many waitpoints
-- 13.1.6 The durable-execution model — retries with backoff, `wait.for` / `wait.until`, idempotency at every trigger and wait (`idempotencyKey`, `idempotencyKeyTTL`), run priority as a queue-ordering offset
-- 13.1.7 Trigger.dev in our app — where the workload genuinely demands durability
+- 13.1.1 Inline async work and `after()` in Server Actions — the 0-tier and 0.5-tier defaults, the thresholds that break them
+- 13.1.2 Vercel Cron — scheduled jobs by default; `CRON_SECRET`, at-least-once delivery, time-budget threshold
+- 13.1.3 When Trigger.dev earns its weight — the five trigger conditions (past function time, multi-step orchestration with intermediate state, automatic retries with backoff, fan-out, event-driven / human-in-the-loop pauses), the 2026 alternatives, the decision tree
+- 13.1.4 Trigger.dev v4 primitives — tasks, schemaTask, queues, schedules; `task` / `schemaTask` (Zod-validated payloads), `tasks.trigger` vs `tasks.triggerAndWait`, code-defined queues (the v3-to-v4 break), per-tenant dynamic queues, static and dynamic schedules
+- 13.1.5 Durable execution — retries, waits, idempotency; checkpoints at step boundaries, exponential backoff with jitter, `AbortTaskRunError`, `wait.for` / `wait.until`, `idempotencyKey` and `idempotencyKeyTTL` on every trigger and wait, cross-step keys, `runs.cancel` and `ctx.run.abortSignal`
+- 13.1.6 Waitpoints — external callbacks, timeouts, human-in-the-loop; `wait.forToken` with `publicAccessToken` URL completion, `wait.completeToken`, mandatory timeouts, multi-token aggregation, run metadata for live progress
+- 13.1.7 Trigger.dev in our app — picking the workloads; the three Trigger.dev-bound jobs (CSV export, Stripe reconciliation, notification dispatcher) and the four that stay on platform default, deploy ordering, env surface
 - 13.1.8 Quizz
 
 ### Chapter 13.2 — Project: Trigger.dev durable export job
