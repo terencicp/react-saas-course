@@ -777,11 +777,11 @@
 - 17.2.9 Chapter quiz
 
 ### Chapter 17.3 — Project: error and security baseline audit
-- 17.3.1 Audit brief — the eight categories, the rule-location-consequence-fix template
-- 17.3.2 Audit target walkthrough — the seeded codebase, the running app, one modeled finding end-to-end
-- 17.3.3 Audit it — error discipline pass (fail-closed checks, user/operator message split, `dangerouslySetInnerHTML`)
-- 17.3.4 Audit it — security baseline pass (headers, rate limits, audit-log gaps, secrets, GDPR posture, dep hygiene)
-- 17.3.5 Verify — match findings against the published answer key, quantify any misses
+- 17.3.1 Project brief — the eight audit categories and the rule-location-consequence-fix template
+- 17.3.2 Audit target walkthrough and one modeled finding end-to-end
+- 17.3.3 Audit pass — error discipline (fail-closed, user/operator message split, `dangerouslySetInnerHTML`)
+- 17.3.4 Audit pass — security baseline (headers, rate limits, audit-log gaps, secrets, GDPR posture, dep hygiene)
+- 17.3.5 Verify — self-grade against the published answer key
 
 ---
 
