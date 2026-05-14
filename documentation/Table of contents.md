@@ -189,17 +189,16 @@
 - 4.3.5 Chapter quiz
 
 ### Chapter 4.4 — Layout and sizing
-- 4.4.1 CSS box model and `box-sizing` (at Tailwind spacing utilities)
-- 4.4.2 CSS display modes — block, inline, inline-block, flex, grid
-- 4.4.3 CSS flexbox model — main axis, cross axis, justify and align (at Tailwind utilities)
-- 4.4.4 CSS grid — the model, named lines, `grid-template-areas` (at Tailwind utilities)
-- 4.4.5 Sizing — `width`/`height`, `min-*`/`max-*`, `size-*`, `aspect-ratio`; intrinsic vs. extrinsic sizing
-- 4.4.6 Spacing inside containers — `gap` as the senior default; `space-x`/`space-y`; `divide-x`/`divide-y`; gap-vs-margin as a decision
-- 4.4.7 CSS position — static, relative, absolute, sticky, fixed
-- 4.4.8 CSS overflow and scroll containers — `overflow` modes, `overscroll-behavior`, the iOS scroll-chain bug, scroll containment for sticky headers and dialogs
-- 4.4.9 CSS stacking context, z-index
-- 4.4.10 CSS logical properties — `margin-inline`, `padding-block`
-- 4.4.11 Quizz
+- 4.4.1 The box model, `box-sizing`, and the inline/block axis — content/padding/border/margin, `border-box` as the Preflight default, the Tailwind `--spacing` scale, and logical properties (`ps-*`/`pe-*`/`ms-*`/`me-*` and the new `inset-s-*`/`inset-e-*`/`inset-bs-*`/`inset-be-*` family) as the RTL-aware form
+- 4.4.2 Display modes: block, inline, flex, grid, contents — the choice of layout primitive, `inline-flex` for icon-and-label clusters, `display: contents` for semantic wrappers that shouldn't disrupt layout, the `display: none` / `visibility: hidden` / `aria-hidden` decision tree
+- 4.4.3 Flexbox: the 1D layout primitive — main and cross axes, `flex-1` and `shrink-0`, `justify-*` vs. `items-*`, `gap` as the spacing default, the `min-w-0` companion fix, the five canonical layouts
+- 4.4.4 Grid: the 2D layout primitive — tracks, the `fr` unit, `repeat(auto-fit, minmax(...))` for responsive without breakpoints, `grid-template-areas` for page shells, `subgrid` for nested alignment, `place-items-*`
+- 4.4.5 Sizing: width, height, min/max, viewport units, aspect-ratio — `size-*` (the v4 width-and-height shortcut), the `vh`/`dvh`/`svh`/`lvh` family (with `min-h-dvh` as the mobile reflex), `aspect-ratio` for media containers, intrinsic vs. extrinsic sizing, `clamp()` for fluid sizing
+- 4.4.6 Spacing inside containers: `gap` as the senior default — `space-x`/`space-y` as legacy, `divide-x`/`divide-y` for visible separators between items, the gap-vs-margin decision
+- 4.4.7 Position and the inset utilities — static, relative, absolute, sticky, fixed; the containing-block rules; the `inset-*` family; CSS anchor positioning (Baseline 2026) as a forward reference for popovers
+- 4.4.8 Overflow and scroll containers — overflow modes, `overscroll-behavior` for the iOS scroll-chain bug, `scrollbar-gutter: stable`, sticky-inside-overflow, the page-scroll vs. app-shell-scroll decision, scroll-snap for carousels
+- 4.4.9 Stacking context and z-index — what creates a stacking context (`opacity < 1`, `transform`, `filter`, `position: fixed/sticky`, `isolation: isolate`, etc.), the canonical trapped-modal bug, the fix is portal-to-body or `isolation: isolate`, z-index tier conventions
+- 4.4.10 Chapter quiz
 
 ### Chapter 4.5 — Typography, color, motion, responsive
 - 4.5.1 CSS typography — font, line-height, letter-spacing
