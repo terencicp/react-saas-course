@@ -548,12 +548,12 @@
 - 10.2.6 Chapter quiz
 
 ### Chapter 10.3 — Invitations and seat management (SaaS pattern #3)
-- 10.3.1 The invitations table — token, email, role, expiry, `acceptedAt`
-- 10.3.2 Email-bound handshake; the signed accept link — token scope and expiry
-- 10.3.3 Re-invites — handling a fresh invite when one already exists
-- 10.3.4 Invitee already has an account — resolving the token to an existing user
-- 10.3.5 Inviter losing seat before acceptance — what happens to pending invitations
-- 10.3.6 Quizz
+- 10.3.1 The invitation table and the seat lifecycle — Better Auth's `invitation` table plus `tokenHash` / `acceptedAt`, the `pending` → `accepted` / `canceled` state machine, the seven-day expiry as a security primitive, the partial unique index on `(orgId, lower(email))` where `status = 'pending'`
+- 10.3.2 Sending an invitation — the signed accept link — `sendInvitationAction` with 32-byte Web Crypto token, SHA-256 hash at rest, HMAC-signed URL, Resend send *after* the DB transaction commits, `'invitation.sent'` audit event
+- 10.3.3 Accepting an invitation across arrival shapes — the four arrival shapes (signed-in same email, signed-in different email, signed-out with account, signed-out without account), the verify order, the explicit Accept-button consent gate, auto-`emailVerified` for invite-sourced signups, active-org switch on accept
+- 10.3.4 Managing pending invitations — list, resend, revoke, re-invite — the pending-invites list filtered on expiry, `resendInvitationAction` with token rotation, `revokeInvitationAction` setting `status = 'canceled'`, catching the unique-pending constraint as `'already-invited'`
+- 10.3.5 Edge cases — orphan invites, email mismatch, expiry, races — the inviter-removed-before-accept senior call (honor the invite), the strict email-mismatch refusal, the double-click race against the `WHERE status='pending'` filter, the already-a-member short-circuit
+- 10.3.6 Chapter quiz
 
 ### Chapter 10.4 — Project: org, RBAC, and invitations
 - 10.4.1 Project brief
