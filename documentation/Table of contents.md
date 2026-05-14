@@ -992,10 +992,10 @@
 > When the product genuinely calls for an LLM-backed surface — the SDK that makes the integration durable across providers.
 
 ### Chapter 23.1 — When AI features earn their weight
-- 23.1.1 When the Vercel AI SDK earns its weight — most 2026 SaaS still ship without LLM features; the trigger is any LLM-backed product surface (chat, generation, classification, agentic flows); the AI SDK as the de-facto Next.js LLM integration
-- 23.1.2 Cost and rate-limit thinking when LLM calls are user-facing — token accounting, per-user quotas, abuse mitigation
-- 23.1.3 Provider abstraction and the AI SDK's role in keeping vendor-swap cheap
-- 23.1.4 Quizz
+- 23.1.1 When the Vercel AI SDK earns its weight — most 2026 SaaS still ship without LLM features; the four product triggers (open-ended Q&A grounded in app data, generation of structured artifacts, classification/extraction over unstructured text, agentic workflows); the AI SDK as the de-facto Next.js LLM integration; v5-vs-v4 signposts
+- 23.1.2 Cost and rate-limit thinking when LLM calls are user-facing — token accounting (pre-call estimate + post-call `usage` read), per-user quotas plus rate limits at the `authedRoute` seam (Upstash from Chapter 15.3), `maxOutputTokens`, the seven abuse shapes and their structural mitigations, the `llm.call.completed` audit event
+- 23.1.3 Provider abstraction and keeping vendor swap cheap — the `lib/llm/models.ts` named-handle discipline (`fastModel`/`smartModel`, not `gpt4oForChat`), the AI Gateway as production default (failover, observability, BYOK), the three triggers that flip the gateway on, the embedding-portability trap, structured output (`generateObject`) as the more swap-friendly shape
+- 23.1.4 Chapter quiz
 
 ### Chapter 23.2 — Generating text and structured output
 - 23.2.1 AI SDK Core — `streamText` and `generateText`; the message shape and conversation primitives
