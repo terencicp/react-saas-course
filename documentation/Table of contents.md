@@ -967,7 +967,7 @@
 
 ### Chapter 22.2 — Comments, TSDoc, and team discipline
 - 22.2.1 TSDoc on public surfaces, not on internals
-- 22.2.2 Comments answer why, not what
+- 22.2.2 Comments answer why, not what; never deleted in a refactor
 - 22.2.3 Docs ship with the PR — or they're already wrong
 - 22.2.4 Quizz
 
