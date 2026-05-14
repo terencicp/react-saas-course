@@ -681,11 +681,11 @@
 
 ### Chapter 14.2 — Project: notification dispatcher
 - 14.2.1 Project brief
-- 14.2.2 Starter walkthrough — Unit 8 send, Unit 10 schema, a seeded invitation row
-- 14.2.3 Build it — the `notifiable_events` registry and the dispatcher with the 60-second dedup window keyed by `(event_type, subject_id)`
-- 14.2.4 Build it — the email channel send, the in-app inbox writer, and the `user_notification_preferences` read
-- 14.2.5 Build it — wire three call sites (invite sent, role changed, billing past-due)
-- 14.2.6 Verify — pref toggle, rapid-fire dedup, default-on for missing pref
+- 14.2.2 Starter walkthrough
+- 14.2.3 The registry, the dispatcher, and dedup
+- 14.2.4 The two channels and the prefs read
+- 14.2.5 Wire three call sites
+- 14.2.6 Verify
 
 ---
 
