@@ -821,10 +821,10 @@
 > Test behavior, not implementation; concentrate on the seams where bugs actually cost money.
 
 ### Chapter 19.1 — The shape of a test suite
-- 19.1.1 Vitest setup and the test runner model
-- 19.1.2 The shape of the suite — most tests unit, fewer integration, very few E2E; the honeycomb shape for a Next.js SaaS
-- 19.1.3 Coverage philosophy — what to chase, what not to; 100% coverage as theatre
-- 19.1.4 The shape of a single test — Arrange / Act / Assert, one behavior per test, descriptive name; behavior over implementation as the rule that survives a refactor
+- 19.1.1 Vitest setup and the runner model
+- 19.1.2 The honeycomb shape for a Next.js SaaS
+- 19.1.3 Coverage as a diagnostic, not a target
+- 19.1.4 One behavior per test; behavior over implementation
 - 19.1.5 Quizz
 
 ### Chapter 19.2 — Unit tests for `/lib`
