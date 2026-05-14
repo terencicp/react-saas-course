@@ -979,11 +979,11 @@
 - 22.3.3 Quizz
 
 ### Chapter 22.4 — Project: PR review and one ADR
-- 22.4.1 Project brief — the seeded PR, the cheatsheet, and the Nygard template
-- 22.4.2 Audit target walkthrough and one modeled review comment
-- 22.4.3 Review it — four more line-level comments distinguishing suggesting from blocking
-- 22.4.4 Write it — the ADR for the diff's cache decision
-- 22.4.5 Verify — self-grade against the published rubric
+- 22.4.1 Project brief — the seeded PR diff, the principles/patterns cheatsheet, the Nygard template
+- 22.4.2 Audit target walkthrough — read the diff once, model one review comment end-to-end
+- 22.4.3 Review it — five line-level comments on the seeded issues; distinguish suggesting from blocking
+- 22.4.4 Write it — the ADR for the one decision in the diff, all three Nygard sections, named after the decision
+- 22.4.5 Verify — comments map to seeded issues; ADR has a real `Decision` line, not a hedged one
 
 ---
 
