@@ -725,9 +725,9 @@
 
 ### Chapter 16.1 — TanStack Query (conditional)
 - 16.1.1 When TanStack Query earns its weight — the threshold past Server Components / Server Actions: real-time UI (polling/frequent refetches), complex client-side caching across views, optimistic mutations with rollback, infinite scroll with cache reuse
-- 16.1.2 TanStack Query primitives — queries, mutations, optimistic updates, infinite queries
-- 16.1.3 TanStack Query in the App Router — `QueryClientProvider`, `HydrationBoundary`; hydrating server-fetched data into the client cache
-- 16.1.4 TanStack Query in our app — the screen where the trigger is met
+- 16.1.2 Queries, mutations, optimistic updates, infinite queries — `useQuery`/`useMutation` lifecycle, query keys as the cache contract, the v5 optimistic-via-variables vs. cache-update decision, `useInfiniteQuery` with `maxPages`, `refetchInterval` for polling
+- 16.1.3 Wiring TanStack Query into the App Router — `QueryClientProvider` in a Client Component, the per-request `getQueryClient()` helper via React `cache()`, `<HydrationBoundary>` for SSR-hydrated initial data, the two-system invalidation reality, the org-switch `queryClient.clear()` discipline
+- 16.1.4 The trigger in our app — the per-invoice comment thread — running the four-trigger check on a concrete screen; the read/write split between `useInfiniteQuery` and the Server Action; the framing for the 16.2 project
 - 16.1.5 Quizz
 
 ### Chapter 16.2 — Project: TanStack Query on optimistic comments
