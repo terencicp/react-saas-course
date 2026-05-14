@@ -583,10 +583,10 @@
 - 11.1.5 Chapter quiz
 
 ### Chapter 11.2 — Soft delete, archive, and concurrency
-- 11.2.1 Soft delete, archive, restore — `deletedAt`; archive as a distinct user-facing state (SaaS pattern #9)
-- 11.2.2 Base query helpers that make missing `deletedAt IS NULL` filters impossible
-- 11.2.3 Optimistic concurrency control — version columns or `updatedAt` preconditions; HTTP 409 on conflict; when last-write-wins is fine
-- 11.2.4 Quizz
+- 11.2.1 Soft delete, archive, and restore — `deletedAt` and `archivedAt`, the three Server Actions, partial unique and composite indexes; archive as a distinct user-facing state (SaaS pattern #9)
+- 11.2.2 The base-query helper — `active()`, `archived()`, `includingDeleted()` composed on top of `tenantDb` so missing `deletedAt IS NULL` is structurally impossible
+- 11.2.3 Optimistic concurrency control — the `version` column precondition, the 409 Server Action Result, the React 19 refresh-and-retry surface; `updatedAt` as the alternative; when last-write-wins is correct
+- 11.2.4 Chapter quiz
 
 ### Chapter 11.3 — Project: URL-state list with soft delete and concurrency
 - 11.3.1 Project brief
