@@ -421,15 +421,14 @@
 - 7.2.6 Quizz
 
 ### Chapter 7.3 — The native React 19 / Next.js 16 form pattern
-- 7.3.1 Forms basics — controlled vs. uncontrolled, why uncontrolled fits the React 19 server-action pattern
-- 7.3.2 `FormData` and the form/input contract — load-bearing for server actions
-- 7.3.3 `<form action={serverAction}>` as the default form pattern
-- 7.3.4 `useActionState` — pending state and result
-- 7.3.5 `useFormStatus` — nested pending state
-- 7.3.6 Optimistic UI with `useOptimistic`
-- 7.3.7 Constraint Validation API — `required`, `pattern`, `minLength`, `inputmode`, `autocomplete`, `ValidityState`, `setCustomValidity`; senior call of which checks happen in the browser before submit vs. in the Zod parse on the server
-- 7.3.8 Progressive enhancement and what you get for free
-- 7.3.9 Quizz
+- 7.3.1 Uncontrolled inputs and the `FormData` contract — controlled vs. uncontrolled, the `name` attribute as the schema contract, `defaultValue` not `value`, why uncontrolled fits the server-action pattern
+- 7.3.2 `<form action={serverAction}>` as the default — the React 19 form primitive, the submit lifecycle, the automatic reset on success, `formAction` per button, when Next.js's `<Form>` earns its weight
+- 7.3.3 `useActionState` — pending state and the latest result — the three returns, the action signature change, the canonical form-component shape, field-error rendering from the `Result` tree
+- 7.3.4 `useFormStatus` — nested pending state and the `<SubmitButton>` pattern
+- 7.3.5 `useOptimistic` — immediate UI updates with rollback — when optimism earns its weight, the implicit rollback, the pairing with `useActionState`, the client-generated UUID pattern
+- 7.3.6 The Constraint Validation API for cheap client-side checks — `required`, `pattern`, `type`, `inputmode`, `autocomplete`, `ValidityState`, `setCustomValidity`, the `:user-invalid` pseudo, the line that separates these checks from the Zod schema on the server, the shadcn form layout primitives
+- 7.3.7 Progressive enhancement and what falls out for free — what works without JS, what doesn't, the disciplines that keep it working, the manual JS-disabled test
+- 7.3.8 Quizz
 
 ### Chapter 7.4 — When the platform isn't enough — RHF (conditional)
 - 7.4.1 When React Hook Form earns its weight — the threshold past the native pattern: change/blur-triggered validation, dynamic field arrays, multi-step wizards spanning many components, optimistic UX with fine-grained pending states
