@@ -72,7 +72,7 @@ Each project is a chapter at the end of its unit, broken into 3–7 lesson-sized
 
 **Estimated time.** 2–3h.
 
-**Chapter 6.6 — Project: org-scoped schema and queries.**
+**Chapter 6.6 — Project: the org-scoped invoicing data layer.**
 
 - 6.6.1 Project brief
 - 6.6.2 Starter walkthrough — empty `db/schema.ts`, Drizzle Kit config, Docker Postgres
@@ -123,12 +123,13 @@ Each project is a chapter at the end of its unit, broken into 3–7 lesson-sized
 
 **Estimated time.** 1.5–2h.
 
-**Chapter 8.3 — Project: transactional email send.**
+**Chapter 8.3 — Project: the welcome email send path.**
 
-- 8.3.1 Project brief — verified domain, the Resend setup, the suppression read
-- 8.3.2 Build it — `lib/email.ts`, the env entries, and the suppression read
-- 8.3.3 Build it — the Server Action that composes and sends the welcome email
-- 8.3.4 Verify — real-inbox arrival on the student's verified domain, DKIM/SPF pass, suppression path returns `{ ok: false }` without calling Resend
+- 8.3.1 Project brief — scope cuts and the cheap real-domain prerequisite
+- 8.3.2 Starter tour and the verified-domain ceremony — Resend + SPF/DKIM/DMARC against the student's own registrar
+- 8.3.3 Build it — env entries, the `lib/suppressions.ts` helper, and the `lib/email.ts` send wrapper
+- 8.3.4 Build it — the `<WelcomeEmail />` React Email template and the `sendWelcomeEmail` Server Action
+- 8.3.5 Verify the send path clause by clause — real-inbox arrival, DKIM/SPF/DMARC headers, plain-text fallback, suppression short-circuit, idempotency-key retry, env fail-closed
 
 ---
 
@@ -171,15 +172,16 @@ Each project is a chapter at the end of its unit, broken into 3–7 lesson-sized
 
 **Estimated time.** 3–3.5h.
 
-**Chapter 10.4 — Project: org, RBAC, and invitations.**
+**Chapter 10.4 — Project: org, RBAC, and invitations end-to-end.**
 
-- 10.4.1 Project brief
-- 10.4.2 Starter walkthrough — Unit 9 auth, Unit 8 send, the existing schema
-- 10.4.3 Build it — `organizations` + `org_members` schema and migration
-- 10.4.4 Build it — `invitations` + `audit_logs` schema and migration
-- 10.4.5 Build it — the `authedAction(role, schema, fn)` wrapper and the `tenantDb(orgId)` helper
-- 10.4.6 Build it — the invite send and accept actions, with audit-log writes
-- 10.4.7 Verify — role refusal, invite accept across email sessions, audit panel updates
+- 10.4.1 Project brief and finished screenshot — multi-tenant SaaS build, inspector verification surface, scope cuts
+- 10.4.2 Tour the starter and the broken inspector — provided files, stubbed modules, the Better Auth CLI flow
+- 10.4.3 Build it — install the `organization()` plugin, regenerate the auth schema, ship `roleAtLeast` and `requireOrgUser`
+- 10.4.4 Build it — `audit_logs` schema with RLS deny-write policies, the `withTenant` wrapper, the transaction-required `logAudit(tx, event)`
+- 10.4.5 Build it — the typed `tenantDb(orgId)` facade, the `authedAction(role, schema, fn)` wrapper, and the role-change action
+- 10.4.6 Build it — send an invitation with a 32-byte token, SHA-256 hash at rest, HMAC-signed accept URL, and after-commit email send
+- 10.4.7 Build it — accept the invitation across the four arrival shapes with verify-order signature → row → hash → expiry → status checks
+- 10.4.8 Verify — RBAC refusals, `psql` UPDATE/DELETE refusals on `audit_logs`, cross-tenant probes, full invite handshake on a real inbox
 
 ---
 
@@ -197,7 +199,7 @@ Each project is a chapter at the end of its unit, broken into 3–7 lesson-sized
 
 **Estimated time.** 2–3h.
 
-**Chapter 11.3 — Project: URL-state list with soft delete and concurrency.**
+**Chapter 11.3 — Project: The production list view.**
 
 - 11.3.1 Project brief
 - 11.3.2 Starter walkthrough — Unit 7 CRUD surface, `deletedAt` + `version` already in schema
@@ -222,7 +224,7 @@ Each project is a chapter at the end of its unit, broken into 3–7 lesson-sized
 
 **Estimated time.** 3–3.5h.
 
-**Chapter 12.3 — Project: Stripe webhook to plan entitlements.**
+**Chapter 12.3 — Project: From Stripe webhook to plan entitlement.**
 
 - 12.3.1 Project brief
 - 12.3.2 Starter walkthrough — Stripe test mode, the CLI, `pnpm seed:stripe` for products, route handler stub
@@ -248,7 +250,7 @@ Each project is a chapter at the end of its unit, broken into 3–7 lesson-sized
 
 **Estimated time.** 2.5–3h.
 
-**Chapter 13.2 — Project: Trigger.dev durable export job.**
+**Chapter 13.2 — Project: Durable CSV export with Trigger.dev.**
 
 - 13.2.1 Project brief
 - 13.2.2 Starter walkthrough — Trigger.dev v4 project, the cloud link, the local dev CLI for the kill/resume verification, the empty task file, the pre-built `ExportReadyEmail.tsx` template
@@ -324,7 +326,7 @@ Each project is a chapter at the end of its unit, broken into 3–7 lesson-sized
 
 **Estimated time.** 1.5–2h.
 
-**Chapter 15.2 — Project: cacheTag-driven invalidation.**
+**Chapter 15.2 — Project: caching the invoices list with tag-driven invalidation.**
 
 - 15.2.1 Project brief
 - 15.2.2 Starter walkthrough — Unit 11 list, stub Trigger.dev summary job
@@ -348,7 +350,7 @@ Each project is a chapter at the end of its unit, broken into 3–7 lesson-sized
 
 **Estimated time.** 1.5–2h.
 
-**Chapter 15.4 — Project: Upstash rate limit on auth endpoints.**
+**Chapter 15.4 — Project: Upstash rate limits on the auth surface.**
 
 - 15.4.1 Project brief
 - 15.4.2 Starter walkthrough — Unit 9 auth flows, the Upstash Redis project
@@ -397,7 +399,7 @@ Each project is a chapter at the end of its unit, broken into 3–7 lesson-sized
 
 **Estimated time.** 2–2.5h.
 
-**Chapter 16.4 — Project: Zustand for a multi-step wizard.**
+**Chapter 16.4 — Project: routed customer wizard with Zustand.**
 
 - 16.4.1 Project brief
 - 16.4.2 Starter walkthrough — four route segments, per-step Zod schemas
@@ -422,7 +424,7 @@ Each project is a chapter at the end of its unit, broken into 3–7 lesson-sized
 
 **Estimated time.** 2.5–3h.
 
-**Chapter 17.3 — Project: error and security baseline audit.**
+**Chapter 17.3 — Project: the pre-launch audit pass.**
 
 - 17.3.1 Audit brief — the eight categories, the rule-location-consequence-fix template
 - 17.3.2 Audit target walkthrough — the seeded codebase, the running app, one modeled finding end-to-end
@@ -446,7 +448,7 @@ Each project is a chapter at the end of its unit, broken into 3–7 lesson-sized
 
 **Estimated time.** 2.5–3h.
 
-**Chapter 18.3 — Project: localized, tz-aware list view.**
+**Chapter 18.3 — Project: tri-locale invoices list.**
 
 - 18.3.1 Project brief
 - 18.3.2 Starter walkthrough — Unit 11 list, profile `locale` + `timezone` columns, `next-intl` installed
@@ -471,7 +473,7 @@ Each project is a chapter at the end of its unit, broken into 3–7 lesson-sized
 
 **Estimated time.** 2.5–3h.
 
-**Chapter 19.6 — Project: integration + E2E tests for the Stripe checkout flow.**
+**Chapter 19.6 — Project: testing the Stripe webhook and Checkout money path.**
 
 - 19.6.1 Project brief
 - 19.6.2 Starter walkthrough — Vitest config, MSW handlers, auth fixture factory, test-DB lifecycle
@@ -496,7 +498,7 @@ Each project is a chapter at the end of its unit, broken into 3–7 lesson-sized
 
 **Estimated time.** 2.5–3h.
 
-**Chapter 20.4 — Project: observability and performance audit.**
+**Chapter 20.4 — Project: wire observability, audit performance.**
 
 - 20.4.1 Project brief — Sentry + PostHog wiring plus the seeded performance findings
 - 20.4.2 Audit target walkthrough — the seeded codebase, one modeled finding
@@ -521,7 +523,7 @@ Each project is a chapter at the end of its unit, broken into 3–7 lesson-sized
 
 **Estimated time.** 3h (can be sliced across two sittings).
 
-**Chapter 21.5 — Project: deploy and a live expand-migrate-contract migration.**
+**Chapter 21.5 — Project: ship to production, then live-migrate the schema.**
 
 - 21.5.1 Project brief — the migration class that demands the cadence; the rollback expectation
 - 21.5.2 First deploy — connecting the repo to Vercel, the first production URL, environment scoping
@@ -546,7 +548,7 @@ Each project is a chapter at the end of its unit, broken into 3–7 lesson-sized
 
 **Estimated time.** 2–2.5h.
 
-**Chapter 22.4 — Project: PR review and one ADR.**
+**Chapter 22.4 — Project: Review a PR, write the ADR.**
 
 - 22.4.1 Project brief — the seeded PR diff, the principles/patterns cheatsheet, the Nygard template
 - 22.4.2 Audit target walkthrough — read the diff once, model one review comment end-to-end
@@ -570,7 +572,7 @@ Each project is a chapter at the end of its unit, broken into 3–7 lesson-sized
 
 **Estimated time.** 2.5–3h.
 
-**Chapter 23.4 — Project: LLM-backed invoice Q&A with tool calling.**
+**Chapter 23.4 — Project: Ask-your-invoices chat with tool calling.**
 
 - 23.4.1 Project brief
 - 23.4.2 Starter walkthrough — Unit 10/11 surface, AI SDK installed, provider key
