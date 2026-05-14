@@ -413,17 +413,12 @@
 - 7.1.8 Quizz
 
 ### Chapter 7.2 — Server Actions
-- 7.2.1 Server Actions — definition and invocation from the client
-- 7.2.2 The canonical Server Action Result return shape — `{ ok: true; data: T } | { ok: false; error: { userMessage; code } }` (ties Principle #7 to SaaS pattern #6)
-- 7.2.3 `throw` vs. `Result` — the error-model decision now that the canonical Result shape exists; throw at the edge, return Result inside server actions and lib helpers where the caller branches on the failure shape
-- 7.2.4 Server-side Zod validation as the boundary discipline
-- 7.2.5 The serializable-args constraint for Server Actions
-- 7.2.6 Architectural Principle #3 introduced — pure functions in `/lib`, side effects at named boundaries; the server-action / route-handler / job seam
-- 7.2.7 Architectural Principle #5 introduced — use the framework's conventions, don't invent parallel ones; the temptation to roll a tRPC-style call wrapper named ahead
-- 7.2.8 `revalidatePath` after a mutation — the basic move at the first server action; the full decision tree was covered in Chapter 5.4
-- 7.2.9 Wrapping a server action in a Drizzle transaction — when multi-step mutations need atomicity; the `db.transaction(async (tx) => …)` shape; revisits the transactions thread from Chapter 6.4
-- 7.2.10 Idempotency keys foreshadowed at the action layer — why double-clicks and dropped connections need a unique-on-key constraint; full pattern in Chapter 12.1
-- 7.2.11 Quizz
+- 7.2.1 Defining and invoking a Server Action — `"use server"` at the file or inline, the call-site shapes (`<form action>`, `useActionState`, direct invoke), the serializable-args contract for inputs and return values, what gets stripped from the client bundle
+- 7.2.2 Validation as the entry discipline — the five-seam action shape (parse, authorize, mutate, revalidate, return); `safeParse` on `Object.fromEntries(formData)` as the first line of every action; the `drizzle-zod`-plus-refinement source for the input schema; why server-side validation isn't optional even with constraint-API client validation
+- 7.2.3 The Result return shape and the throw-versus-Result decision — the canonical `{ ok: true; data } | { ok: false; error: { code, userMessage, fieldErrors? } }` (ties Principle #7 to SaaS pattern #6); the `ok` and `err` helpers; throw at the framework edge (`notFound`, `redirect`, unrecoverable), return Result wherever the form branches on the failure; mapping known database errors to typed codes
+- 7.2.4 Architectural principles around the action seam — Principle #3 introduced (pure functions in `/lib`, side effects at named boundaries; the server-action / route-handler / job seam) and the directory shape the chapter writes from; Principle #5 introduced (use the framework's conventions, don't invent a tRPC-style call wrapper); the auth-and-billing carve-outs named ahead for 10.2 and 12.2
+- 7.2.5 After the mutation — revalidation, transactions, and idempotency foreshadowed — `revalidatePath` as the basic move (full decision tree in 5.4.6); wrapping multi-step mutations in `db.transaction(async (tx) => …)` and the no-external-calls-inside-the-transaction rule; the idempotency-key slot foreshadowed for 12.1
+- 7.2.6 Quizz
 
 ### Chapter 7.3 — The native React 19 / Next.js 16 form pattern
 - 7.3.1 Forms basics — controlled vs. uncontrolled, why uncontrolled fits the React 19 server-action pattern
