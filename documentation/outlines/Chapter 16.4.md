@@ -1,4 +1,4 @@
-# Chapter 16.4 — Project: routed multi-step wizard with Zustand
+# Chapter 16.4 — Project: routed customer wizard with Zustand
 
 ## Chapter framing
 
@@ -146,6 +146,8 @@ Student writes only `types.ts`, the four slice files, `store.ts`, `store-provide
 
 ## Lesson 16.4.1 — Project brief
 
+Frames the four-step routed customer wizard you will build on top of the 11.3 customers surface, states the "Done when" clauses, and calls out the two structural decisions (shared-layout provider, vanilla `createStore`) that prevent the canonical bugs.
+
 Goals:
 
 - Frame the build: take the 11.3 customers surface and add a four-step routed wizard at `/customers/new/step-1` through `step-4`. Each step has its own route segment; a shared `WizardStoreProvider` on the layout pins a Zustand store across the four navigations. Four slices (contact / billing / preferences / meta). Each step writes via atomic selectors; Next gates on the current slice's Zod validity; step 4 reviews three slices and submits via a Server Action that re-parses the composite payload server-side. On success, the store resets and the router pushes to the new customer's detail page. Show one screenshot of step 4's review screen.
@@ -168,7 +170,9 @@ Estimated student time: 10 to 15 minutes.
 
 ---
 
-## Lesson 16.4.2 — Starter walkthrough
+## Lesson 16.4.2 — Tour the starter
+
+Walks the file tree, the per-step Zod schemas, the four route segments, the progress and footer shells, and the inspector page with its debug flags so you know exactly which eight files you will fill in.
 
 Goals:
 
@@ -197,7 +201,9 @@ Estimated student time: 15 to 25 minutes.
 
 ---
 
-## Lesson 16.4.3 — Store, slices, provider, and the typed hook
+## Lesson 16.4.3 — Build the store skeleton
+
+Defines the four-slice `WizardState`, writes the typed slice factories, composes them through a vanilla `createStore` factory, mounts the `useRef`-pinned provider on the shared layout, and exposes the typed `useWizardStore<T>(selector)` hook.
 
 Goals:
 
@@ -227,7 +233,9 @@ Estimated student time: 60 to 75 minutes. The chapter's heaviest mechanics lesso
 
 ---
 
-## Lesson 16.4.4 — Form wiring, atomic selectors, and the Next-gate
+## Lesson 16.4.4 — Wire the forms and the Next-gate
+
+Binds every step-1/2/3 field through atomic selectors and slice setters, renders inline Zod errors, and wires the footer so Next gates on the current slice's `safeParse` and advances both store and URL together.
 
 Goals:
 
@@ -256,7 +264,9 @@ Estimated student time: 50 to 65 minutes.
 
 ---
 
-## Lesson 16.4.5 — Review, submit action, success-reset, and the double-submit guard
+## Lesson 16.4.5 — Submit, reset, and guard
+
+Builds the composite-payload Server Action with audit log, reads the three slices on step 4 through `useShallow`, and wires the submit button with `useTransition` for the pending guard, success-reset, and redirect.
 
 Goals:
 
@@ -296,7 +306,9 @@ Estimated student time: 50 to 65 minutes.
 
 ---
 
-## Lesson 16.4.6 — Verify
+## Lesson 16.4.6 — Verify clause by clause
+
+Walks every "Done when" clause through the inspector — back/forward preserves, refresh loses by design, atomic re-render scoping, per-request store isolation, action-failure keeps the draft, double-submit fires once — with deliberate flag flips to demo each canonical bug.
 
 Goals:
 

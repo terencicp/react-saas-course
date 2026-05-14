@@ -1,4 +1,4 @@
-# Chapter 3.4 — Cookies and the trust model (light)
+# Chapter 3.4 — Cookies and the trust model
 
 ## Chapter framing
 
@@ -25,7 +25,9 @@ This chapter ships short code snippets — a `Set-Cookie` header line, a small N
 
 ---
 
-## Lesson 3.4.1 — Cookies: attributes, scope, and the senior defaults
+## Lesson 3.4.1 — Set-Cookie attributes and the senior default
+
+Reads the `Set-Cookie` header attribute by attribute — `HttpOnly`, `Secure`, `SameSite`, `Path`, `Domain`, `Max-Age`, the `__Host-` prefix, and the `Partitioned` (CHIPS) attribute — names the senior default (`HttpOnly; Secure; SameSite=Lax; Path=/`), maps each attribute to the failure mode it prevents, and threads the Next.js `cookies()` helper and the 2026 third-party-cookie reality.
 
 Topics to cover:
 
@@ -157,7 +159,7 @@ Estimated student time: 50 to 60 minutes. Load-bearing for Unit 9, Chapter 17.2,
 
 ---
 
-## Lesson 3.4.2 — Quiz
+## Lesson 3.4.2 — Quizz
 
 Top ten topics to quiz:
 

@@ -8,7 +8,9 @@ Threads that run through every lesson: Drizzle's query builder parameterizes by 
 
 ---
 
-## Lesson 6.3.1 — Select, insert, update, delete; where, orderBy, limit; parameterization
+## Lesson 6.3.1 — CRUD and the four chain methods
+
+Teaches `db.select`/`insert`/`update`/`delete` with `where`, `orderBy`, `limit`, `offset`, the operator helpers, the missing-`where` failure mode, and Drizzle's automatic parameterization.
 
 Topics to cover:
 
@@ -41,7 +43,9 @@ Estimated student time: 45 to 55 minutes. Load-bearing for every later lesson in
 
 ---
 
-## Lesson 6.3.2 — Joins: inner, left, right, full
+## Lesson 6.3.2 — Joining tables
+
+Teaches `innerJoin`, `leftJoin`, `rightJoin`, and `fullJoin`, labeled vs. flat selections, left-join nullability, self-joins via `alias`, and many-to-many through a junction table.
 
 Topics to cover:
 
@@ -68,7 +72,9 @@ Estimated student time: 40 to 50 minutes. Load-bearing for 6.3.4 (aggregations) 
 
 ---
 
-## Lesson 6.3.3 — The relational query API for nested reads
+## Lesson 6.3.3 — Nested reads with the relational API
+
+Teaches `db.query.<table>.findMany` and `findFirst`, the `with` traversal option, nested `with` with column projection, filtering joined rows, and why this API is N+1-safe by construction.
 
 Topics to cover:
 
@@ -96,7 +102,9 @@ Estimated student time: 45 to 55 minutes. Load-bearing for every nested read in 
 
 ---
 
-## Lesson 6.3.4 — Aggregations: count, sum, GROUP BY, HAVING
+## Lesson 6.3.4 — Aggregations and grouping
+
+Teaches `count`, `sum`, `avg`, `min`, `max`, and their distinct variants alongside `groupBy`, `having`, filtered aggregates with `FILTER (WHERE …)`, and `selectDistinctOn`.
 
 Topics to cover:
 
@@ -123,7 +131,9 @@ Estimated student time: 40 to 50 minutes. Load-bearing for dashboard queries and
 
 ---
 
-## Lesson 6.3.5 — Upserts with ON CONFLICT and RETURNING
+## Lesson 6.3.5 — Upserts and RETURNING
+
+Teaches `onConflictDoUpdate` and `onConflictDoNothing`, the `target` constraint requirement, the `excluded` pseudo-table, conditional `targetWhere`/`setWhere`, and `.returning()` as the round-trip eliminator.
 
 Topics to cover:
 
@@ -151,7 +161,9 @@ Estimated student time: 40 to 50 minutes. Load-bearing for webhook handlers, use
 
 ---
 
-## Lesson 6.3.6 — Pagination: cursor by default, offset when small
+## Lesson 6.3.6 — Cursor pagination
+
+Teaches when offset is enough, the cursor model with a mandatory tiebreaker, opaque base64 cursor encoding and validation, the fetch-n+1 has-next-page trick, and the composite index cursors depend on.
 
 Topics to cover:
 
@@ -183,7 +195,9 @@ Estimated student time: 50 to 60 minutes. Load-bearing for every list view in Un
 
 ---
 
-## Lesson 6.3.7 — Subqueries, CTEs, and when to layer the query
+## Lesson 6.3.7 — Subqueries and CTEs
+
+Teaches inline subqueries in `where` and `from`, `db.$with` and `$withRecursive` for CTEs, `exists`/`notExists`, window functions like `row_number()`, and the readability call between layered SQL and app-code passes.
 
 Topics to cover:
 
@@ -210,7 +224,9 @@ Estimated student time: 45 to 55 minutes. Load-bearing for the project's report-
 
 ---
 
-## Lesson 6.3.8 — Light Postgres full-text search
+## Lesson 6.3.8 — Full-text search in Postgres
+
+Teaches the `tsvector`/`tsquery` model, a generated `tsvector` column, `websearch_to_tsquery` for user input, `ts_rank` ordering with `ts_headline`, and the volume threshold where external search earns its weight.
 
 Topics to cover:
 
@@ -239,7 +255,9 @@ Estimated student time: 40 to 50 minutes. Load-bearing for search affordances in
 
 ---
 
-## Lesson 6.3.9 — JSONB columns and querying
+## Lesson 6.3.9 — JSONB columns
+
+Teaches when to reach for `jsonb` vs. real columns, `$type<...>` claims, the `->`/`->>` accessors, `@>` containment and key-existence operators, partial updates via `||` and `jsonb_set`, and the promote-to-column trigger.
 
 Topics to cover:
 
@@ -269,7 +287,9 @@ Estimated student time: 40 to 50 minutes. Load-bearing for the webhook lessons i
 
 ---
 
-## Lesson 6.3.10 — When to drop to raw SQL via `sql\`\``
+## Lesson 6.3.10 — The raw SQL escape hatch
+
+Teaches the `sql\`\`` tagged template with implicit parameterization, embedding raw fragments inside the builder, typing with `sql<T>`, `db.execute` for one-offs, and `sql.raw` reserved for fixed-string identifier interpolation.
 
 Topics to cover:
 
@@ -297,7 +317,7 @@ Estimated student time: 30 to 40 minutes. Reference / decision lesson — short 
 
 ---
 
-## Lesson 6.3.11 — Chapter quiz
+## Lesson 6.3.11 — Quizz
 
 Top 10 topics to quiz:
 

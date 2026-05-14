@@ -1,4 +1,4 @@
-# Chapter 22.2 — Comments, TSDoc, and team discipline
+# Chapter 22.2 — Docs that live in the code
 
 ## Chapter framing
 
@@ -8,7 +8,8 @@ Threads through every lesson: TSDoc is reference documentation in code form — 
 
 ---
 
-## Lesson 22.2.1 — TSDoc on public surfaces, not on internals
+## Lesson 22.2.1 — TSDoc the public surface
+Learn which declarations earn a TSDoc block, the minimal 2026 tag set, the first-sentence-is-the-hover writing posture, and the link-don't-duplicate reflex.
 
 Topics to cover:
 
@@ -50,7 +51,8 @@ Estimated student time: 35 to 45 minutes. The chapter's longest lesson — the *
 
 ---
 
-## Lesson 22.2.2 — Comments answer why, not what
+## Lesson 22.2.2 — Comment the why, not the what
+Learn the why-not-what rule for inline comments, the four kinds that earn their place, the negative space to avoid, and the reflex to carry comments through refactors or promote them to structural enforcement.
 
 Topics to cover:
 
@@ -87,7 +89,8 @@ Estimated student time: 30 to 40 minutes. A *Pattern* lesson — the cut is the 
 
 ---
 
-## Lesson 22.2.3 — Docs ship with the PR — or they're already wrong
+## Lesson 22.2.3 — Docs ship in the PR, or they're already wrong
+Learn the five-artifact reflex at PR-open time, the reviewer's doc checklist, the PR-template scaffolding, and the boundary where automation catches mechanical drift but review catches semantic drift.
 
 Topics to cover:
 
@@ -129,7 +132,7 @@ Estimated student time: 30 to 40 minutes. A *Pattern* lesson — the five-artifa
 
 ---
 
-## Lesson 22.2.4 — Chapter quiz
+## Lesson 22.2.4 — Quizz
 
 Top 10 topics to quiz:
 

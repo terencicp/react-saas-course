@@ -8,7 +8,9 @@ Threads through every lesson. **Errors and logs are two surfaces of one incident
 
 ---
 
-## Lesson 20.1.1 — Sentry: error capture, source maps, releases, breadcrumbs
+## Lesson 20.1.1 — Sentry: capture, releases, breadcrumbs
+
+Install Sentry for Next.js with the wizard, wire `onRequestError` and manual `captureException` in handled-error seams, tag events with releases and user context, and add domain breadcrumbs.
 
 Topics to cover:
 
@@ -45,7 +47,9 @@ Estimated student time: 50 to 60 minutes. The chapter's largest lesson; the wiza
 
 ---
 
-## Lesson 20.1.2 — Structured logs and request correlation IDs
+## Lesson 20.1.2 — Structured logs with correlation IDs
+
+Set up `pino` with a fixed JSON key set, thread a per-request `requestId` through AsyncLocalStorage, and emit child loggers from every server-side seam.
 
 Topics to cover:
 
@@ -80,7 +84,9 @@ Estimated student time: 45 to 55 minutes. Mechanics-and-pattern lesson; the `log
 
 ---
 
-## Lesson 20.1.3 — What to log: the 3am rule and the PII exclusion
+## Lesson 20.1.3 — The 3am rule and PII exclusion
+
+Decide what each seam logs for incident reconstruction and enforce a structural redaction config that keeps passwords, tokens, headers, and GDPR-class PII out of the log stream.
 
 Topics to cover:
 
@@ -112,7 +118,9 @@ Estimated student time: 35 to 45 minutes. Pattern-and-decision lesson; the redac
 
 ---
 
-## Lesson 20.1.4 — Vercel Drains: shipping logs to a queryable destination
+## Lesson 20.1.4 — Shipping logs with Vercel Drains
+
+Wire a Vercel Drain to Axiom, verify indexed fields, and walk the Sentry-to-logs pivot that resolves a real production incident by `requestId`.
 
 Topics to cover:
 
@@ -145,7 +153,9 @@ Estimated student time: 35 to 45 minutes. Setup-and-walkthrough lesson; the post
 
 ---
 
-## Lesson 20.1.5 — Debugging server-side Next.js with the inspector
+## Lesson 20.1.5 — Server-side debugging with the inspector
+
+Launch `next dev --inspect`, attach VS Code, and use breakpoints, conditional breakpoints, and logpoints to resolve a failing server action that logs and Sentry alone couldn't crack.
 
 Topics to cover:
 
@@ -181,7 +191,7 @@ Estimated student time: 40 to 50 minutes. Setup-and-pattern lesson; the modeled 
 
 ---
 
-## Lesson 20.1.6 — Chapter quiz
+## Lesson 20.1.6 — Quizz
 
 Top 10 topics to quiz:
 

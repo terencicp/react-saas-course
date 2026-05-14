@@ -26,6 +26,8 @@ This chapter ships terminal commands and small `.toml` / `.json` / `.ts` snippet
 
 ## Lesson 1.2.1 — Pinning the toolchain with mise
 
+Install mise, pin Node 24 LTS in a `.mise.toml`, and make the runtime a property of the repo rather than the machine.
+
 Topics to cover:
 
 - The senior question: what does pinning the runtime prevent. Two failure modes named concretely — the CI box that runs a different Node minor than the developer's laptop and quietly tree-shakes a feature out, and the new contributor whose system Node is two majors behind and breaks half the dev scripts on `pnpm install`. Pinning makes the runtime a property of the repo, not the machine.
@@ -50,7 +52,9 @@ Estimated student time: 20 to 25 minutes.
 
 ---
 
-## Lesson 1.2.2 — pnpm: install, scripts, and self-managed versions
+## Lesson 1.2.2 — pnpm and the post-Corepack package.json
+
+Install pnpm through mise, write the minimum viable `package.json` with `packageManager` and `.npmrc`, and learn the four daily pnpm commands.
 
 Topics to cover:
 
@@ -79,6 +83,8 @@ Estimated student time: 25 to 30 minutes.
 
 ## Lesson 1.2.3 — The lockfile as a contract
 
+Commit `pnpm-lock.yaml` as the deterministic resolution record, enforce `--frozen-lockfile` in CI, and guard against mixed package managers with `only-allow pnpm`.
+
 Topics to cover:
 
 - What `pnpm-lock.yaml` is. The resolved, fully-pinned graph of every transitive dependency at the exact version, integrity hash, and resolution path. Distinct from `package.json`, which only declares the top-level intent and the version ranges; the lockfile records the actual decision.
@@ -103,7 +109,9 @@ Estimated student time: 20 to 25 minutes.
 
 ---
 
-## Lesson 1.2.4 — Running TypeScript: native strip-types, tsx, and tsc
+## Lesson 1.2.4 — Three ways to run a .ts file
+
+Partition `.ts` execution into native strip-types as the default, `tsx` past a named trigger (path aliases, JSX, decorators), and `tsc` reserved for library publishing or `--noEmit` type-checking.
 
 Topics to cover:
 

@@ -1,4 +1,4 @@
-# Chapter 4.9 — Hooks: effects and external systems
+# Chapter 4.9 — Effects, context, and concurrent hooks
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ Several threads run through every lesson. **Effects synchronize with the outside
 
 ---
 
-## Lesson 4.9.1 — Strict Mode as the dev-time correctness contract
+## Lesson 4.9.1 — Strict Mode is the messenger
+
+How `<StrictMode>` double-invokes renders, initializers, and the effect lifecycle in dev so impurity and missing cleanups surface before production.
 
 Topics to cover:
 
@@ -41,7 +43,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.9.2 — `useEffect`: synchronizing with external systems
+## Lesson 4.9.2 — `useEffect` as synchronization
+
+The `useEffect` signature, the setup/cleanup/resync lifecycle, the four canonical cleanup pairings, abort and ignore-flag race patterns, and the dependency-array contract.
 
 Topics to cover:
 
@@ -79,7 +83,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.9.3 — `useEffectEvent` for non-reactive logic inside effects
+## Lesson 4.9.3 — `useEffectEvent` and the non-reactive seam
+
+How `useEffectEvent` lets an effect read latest props and state without re-running, the reactive vs. non-reactive distinction, and the call-site restrictions that make it safe.
 
 Topics to cover:
 
@@ -109,7 +115,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.9.4 — You might not need an effect
+## Lesson 4.9.4 — You probably don't need an effect
+
+The five-quadrant audit (derive, handle, server, cache, sync) and the catalog of effect anti-patterns paired with their correctly shaped replacements.
 
 Topics to cover:
 
@@ -146,7 +154,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.9.5 — `useContext` and the re-render cost
+## Lesson 4.9.5 — `useContext` without the re-render storm
+
+`useContext` as propagation primitive, the every-consumer-re-renders footgun, and the three mitigations: split contexts, separate state from dispatch, and stable provider values.
 
 Topics to cover:
 
@@ -183,7 +193,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.9.6 — `useTransition` and `useDeferredValue` for concurrent updates
+## Lesson 4.9.6 — Marking updates as non-urgent
+
+`useTransition` and `useDeferredValue` as priority markers (not speed boosts), the wrap-the-setter vs. wrap-the-value cut, async transitions, and the Suspense interaction that keeps old UI visible.
 
 Topics to cover:
 
@@ -223,7 +235,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.9.7 — `use()` for promises and contexts
+## Lesson 4.9.7 — Reading promises with `use()`
+
+The `use()` primitive for unwrapping promises into Suspense and reading context conditionally, the stable-promise rule, and the Server-to-Client streaming pattern that replaces effect-based fetching.
 
 Topics to cover:
 
@@ -260,7 +274,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.9.8 — The rules of hooks and the lint rule
+## Lesson 4.9.8 — Rules of hooks and the lint that enforces them
+
+Why hooks must run at the top level in the same order every render (the indexed-slot mechanic), the `use*` naming contract, and the two ESLint rules that enforce structure and dependencies.
 
 Topics to cover:
 
@@ -296,7 +312,7 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.9.9 — Chapter quiz
+## Lesson 4.9.9 — Quizz
 
 Top 10 topics to quiz:
 

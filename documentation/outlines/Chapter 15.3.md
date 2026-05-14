@@ -1,4 +1,4 @@
-# Chapter 15.3 — Rate limiting and shared session-shaped data (Upstash)
+# Chapter 15.3 — Rate limiting with Upstash Redis
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ Threads that run through every lesson: rate limiting is the security baseline's 
 
 ---
 
-## Lesson 15.3.1 — When edge controls are enough and when Upstash earns its weight
+## Lesson 15.3.1 — Two layers: edge WAF and application limiter
+
+Teaches the layering of Vercel WAF (per-IP edge controls) and `@upstash/ratelimit` (per-key application controls), the public-URL-with-auth trigger that makes Upstash non-negotiable, why Upstash Redis is the 2026 default, and the fail-open-on-auth policy.
 
 Topics to cover:
 
@@ -39,7 +41,9 @@ Estimated student time: 40 to 50 minutes. The chapter's threshold lesson — eve
 
 ---
 
-## Lesson 15.3.2 — Upstash Redis and `@upstash/ratelimit` primitives
+## Lesson 15.3.2 — The `@upstash/ratelimit` API surface
+
+Teaches the connectionless `Redis.fromEnv()` client, the module-scope `Ratelimit` declaration with prefix and analytics, the three algorithms (sliding window default, token bucket, fixed window), the `limit(key)` return shape, key design, and the `pending` analytics flush via `waitUntil`.
 
 Topics to cover:
 
@@ -71,7 +75,9 @@ Estimated student time: 45 to 55 minutes. The mechanics lesson — every primiti
 
 ---
 
-## Lesson 15.3.3 — Wiring `@upstash/ratelimit` on the auth endpoints
+## Lesson 15.3.3 — Dual-keying the auth endpoints
+
+Teaches the three module-scope limiters for sign-in, sign-up, and password reset, the per-IP-and-per-email dual-keying rule that defeats credential stuffing without lockout, the gate-first-work-second seam inside the action, the RFC-shape `RateLimit-*` headers, the user-safe 429 body, and the fail-open `safeLimit` wrapper.
 
 Topics to cover:
 
@@ -105,7 +111,7 @@ Estimated student time: 55 to 70 minutes. The chapter's heaviest lesson — the 
 
 ---
 
-## Lesson 15.3.4 — Chapter quiz
+## Lesson 15.3.4 — Quizz
 
 Top 10 topics to quiz:
 

@@ -1,4 +1,4 @@
-# Chapter 22.3 — Code review
+# Chapter 22.3 — The review surface
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ Threads through every lesson: the review's job is to defend the architectural pr
 
 ---
 
-## Lesson 22.3.1 — What a senior reviewer looks for
+## Lesson 22.3.1 — Where the eyes go first
+
+The five-layer review stack a senior runs top-down on every diff, and the principle-and-pattern map that turns the diff into a small set of checks instead of a line-by-line crawl.
 
 Topics to cover:
 
@@ -66,7 +68,9 @@ Estimated student time: 50 to 60 minutes. The chapter's load-bearing lesson — 
 
 ---
 
-## Lesson 22.3.2 — How to leave a good review comment
+## Lesson 22.3.2 — The comment that lands
+
+The four-part comment anatomy, the five severity labels (`blocking:`, `suggestion:`, `question:`, `nit:`, `praise:`), the blocking-vs.-suggesting cut, and the language of disagreement that keeps reviews actionable.
 
 Topics to cover:
 
@@ -107,7 +111,7 @@ Estimated student time: 40 to 50 minutes. A *Pattern* lesson — the comment ana
 
 ---
 
-## Lesson 22.3.3 — Chapter quiz
+## Lesson 22.3.3 — Quizz
 
 Top 10 topics to quiz:
 

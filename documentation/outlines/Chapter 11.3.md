@@ -1,4 +1,4 @@
-# Chapter 11.3 — Project: URL-state list with soft delete and concurrency
+# Chapter 11.3 — Project: The production list view
 
 ## Chapter framing
 
@@ -131,7 +131,9 @@ The inspector is provided in full; the student writes only the actions and parse
 
 ---
 
-## Lesson 11.3.1 — Project brief
+## Lesson 11.3.1 — The list view every SaaS ships
+
+Frames the project goal — turning the Unit 7 invoice CRUD into a URL-state list with soft delete, archive, restore, and optimistic concurrency — and names the "Done when" verifications, scope cuts, and senior payoff.
 
 Goals:
 
@@ -154,7 +156,9 @@ Estimated student time: 10 to 15 minutes.
 
 ---
 
-## Lesson 11.3.2 — Starter walkthrough
+## Lesson 11.3.2 — Tour the starter
+
+Walks the stub vs. provided file tree, the lifecycle columns and partial indexes in the schema, the seeded archived and soft-deleted rows, the inspector verification surface, and the `tenantDb` plus `authedAction` helpers the project leans on.
 
 Goals:
 
@@ -177,7 +181,9 @@ Estimated student time: 20 to 25 minutes.
 
 ---
 
-## Lesson 11.3.3 — Lift filter, sort, search, and cursor to the URL
+## Lesson 11.3.3 — Move every control to the URL
+
+Builds the `nuqs` parsers and `searchParamsCache`, wires the Server Component page and the toolbar Client Component, refactors `listInvoices` to the parsed shape, adds active-filter chips, cursor pagination, and the deferred-search rhythm with the cursor-reset invariant.
 
 Goals:
 
@@ -204,7 +210,9 @@ Estimated student time: 50 to 65 minutes.
 
 ---
 
-## Lesson 11.3.4 — The scoped query helper and the lifecycle actions
+## Lesson 11.3.4 — Scoped reads, archive, restore, delete
+
+Implements `invoiceScope(orgId)` with `active()` / `archived()` / `includingDeleted()` on top of `tenantDb`, routes `listInvoices` on the `view` param with RBAC gating, and ships the `archiveInvoice`, `restoreInvoice`, and `softDeleteInvoice` Server Actions with audit-log writes inside the same transaction.
 
 Goals:
 
@@ -235,7 +243,9 @@ Estimated student time: 60 to 80 minutes.
 
 ---
 
-## Lesson 11.3.5 — The version precondition and the 409 surface
+## Lesson 11.3.5 — Two tabs, one winner
+
+Adds the `version` precondition to `updateInvoice`, returns the 409 Result with a `current` payload on zero rows, wires the hidden version field and `<ConflictBanner>` into the edit form with "Use latest" and admin-gated "Overwrite anyway", and surfaces lifecycle-action conflicts as toasts.
 
 Goals:
 
@@ -263,7 +273,9 @@ Estimated student time: 55 to 70 minutes.
 
 ---
 
-## Lesson 11.3.6 — Verify
+## Lesson 11.3.6 — Run the failure modes
+
+Walks every "Done when" clause — share-and-refresh, cursor reset, search responsiveness, archive and restore, soft-delete with RBAC, partial unique index recovery, two-tab 409, optimistic rollback, cross-tenant probe, index-plan check — and points forward to notifications, cache invalidation, audit-log hardening, and integration tests.
 
 Goals:
 

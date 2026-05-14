@@ -108,6 +108,8 @@ This project uses production-shaped surfaces, not an inspector dashboard — the
 
 ## Lesson 7.6.1 — Project brief
 
+The scope, the five "Done when" clauses, the deferred-to-later-units carve-outs, and the senior payoff of installing the canonical Server Action shape on a real CRUD surface.
+
 Goals:
 
 - Frame the CRUD surface as the canonical SaaS mutation flow: every later unit (auth gates in 10, soft delete in 11, billing-gated mutations in 12) layers on top of this exact shape. The chapter ships create / read / update / delete against the Unit 6 invoices schema and nothing more.
@@ -129,7 +131,9 @@ Estimated student time: 10 to 15 minutes.
 
 ---
 
-## Lesson 7.6.2 — Starter walkthrough
+## Lesson 7.6.2 — Reading the starter
+
+A tour of the provided files (`Result<T>`, the auth stub, the page shells, the shadcn `<Form>` primitives) and the TODO stubs the student will fill across the chapter.
 
 Goals:
 
@@ -153,7 +157,9 @@ Estimated student time: 15 to 20 minutes.
 
 ---
 
-## Lesson 7.6.3 — Mutation schemas and the three Server Actions
+## Lesson 7.6.3 — Schemas and actions: parse, mutate, revalidate, return
+
+Authoring the three `createInsertSchema`-derived mutation schemas and the create/update/delete actions in the canonical five-seam shape with `safeParse`, `Result`, tenant-scoped `where` clauses, and `revalidatePath`.
 
 Goals:
 
@@ -184,7 +190,9 @@ Estimated student time: 30 to 40 minutes.
 
 ---
 
-## Lesson 7.6.4 — Forms, inline field errors, and the `<SubmitButton>`
+## Lesson 7.6.4 — Wiring the forms to the actions
+
+Building the create, edit, and delete client forms with `useActionState`, uncontrolled inputs mirroring schema constraints, the reusable `<SubmitButton>` and `<FieldError>` components, and a shadcn `<Dialog>` delete with a no-JS fallback.
 
 Goals:
 
@@ -211,7 +219,9 @@ Estimated student time: 40 to 55 minutes.
 
 ---
 
-## Lesson 7.6.5 — `useOptimistic` on create with implicit rollback
+## Lesson 7.6.5 — Optimistic create with a client-generated UUID
+
+Adding `useOptimistic` to the invoice list, a UUIDv7 hidden input that reconciles the optimistic and persisted rows by key, and a `?fail=1` debug branch to observe the implicit rollback.
 
 Goals:
 
@@ -246,7 +256,9 @@ Estimated student time: 25 to 35 minutes.
 
 ---
 
-## Lesson 7.6.6 — Wrapping the delete in a Drizzle transaction
+## Lesson 7.6.6 — Delete inside a Drizzle transaction
+
+Refactoring `deleteInvoice` to a `db.transaction` block that holds the shape for later audit-log and notification extensions, with the "no external calls inside the tx" rule and a URL-param success toast.
 
 Goals:
 
@@ -276,7 +288,9 @@ Estimated student time: 20 to 30 minutes.
 
 ---
 
-## Lesson 7.6.7 — Verify
+## Lesson 7.6.7 — Verify and forward-reference
+
+Walking each "Done when" clause as a test (JS-disabled submit, field errors, conflict path, optimistic rollback, transactional delete, revalidation) and naming the Units 8–15 layers that will extend each discipline.
 
 Goals:
 

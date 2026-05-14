@@ -1,4 +1,4 @@
-# Chapter 3.7 — Browser platform APIs the SaaS UI reaches for
+# Chapter 3.7 — Browser capability APIs the SaaS UI reaches for
 
 ## Chapter framing
 
@@ -25,6 +25,8 @@ The chapter ordering follows the dependency. Web Crypto comes first because it's
 ---
 
 ## Lesson 3.7.1 — Web Crypto: random IDs and HMAC signatures
+
+Installs the `crypto` global's three surfaces — `randomUUID`, `getRandomValues`, and the asynchronous `subtle` HMAC sign / verify pair — with constant-time comparison as the timing-attack mitigation for any signature check.
 
 Topics to cover:
 
@@ -163,7 +165,9 @@ Estimated student time: 55 to 70 minutes. Load-bearing for Chapter 9.3 (Better A
 
 ---
 
-## Lesson 3.7.2 — The Clipboard API: copy and paste from web pages
+## Lesson 3.7.2 — The Clipboard API: the Copy button surface
+
+Installs `navigator.clipboard.writeText` as the senior copy reach, the secure-context-plus-user-activation constraints, and the canonical "Copy" button shape with `'use client'`, `try/catch`, feedback state, and `aria-label`.
 
 Topics to cover:
 
@@ -278,6 +282,8 @@ Estimated student time: 30 to 40 minutes. Load-bearing for Chapter 10.3 (copy in
 ---
 
 ## Lesson 3.7.3 — Blob, File, and URL.createObjectURL: the upload primitives
+
+Installs the three binary primitives every file-upload UI builds on — `Blob`, `File`, and `URL.createObjectURL` with `revokeObjectURL` cleanup — and foreshadows the R2 presigned-PUT flow from pick to preview to direct upload.
 
 Topics to cover:
 
@@ -405,7 +411,9 @@ Estimated student time: 40 to 50 minutes. Load-bearing for Chapter 13.3 (R2 cond
 
 ---
 
-## Lesson 3.7.4 — Web Storage: localStorage and sessionStorage, lightly
+## Lesson 3.7.4 — Web Storage: where localStorage earns its weight
+
+Installs the `localStorage` and `sessionStorage` API surface, the SSR safety dance under Next.js 16, and the cookie / URL state / server state / `localStorage` / `useState` decision tree with what `localStorage` is explicitly not for.
 
 Topics to cover:
 
@@ -528,7 +536,7 @@ Estimated student time: 35 to 45 minutes. Load-bearing for Chapter 4.2.6 (`next-
 
 ---
 
-## Lesson 3.7.5 — Quiz
+## Lesson 3.7.5 — Quizz
 
 Top ten topics to quiz:
 

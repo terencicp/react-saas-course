@@ -1,4 +1,4 @@
-# Chapter 9.4 — Auth at request time and account management
+# Chapter 9.4 — The signed-in session: gates, credentials, devices, defenses
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ Threads that run through every lesson. The proxy is for redirects on cookie-pres
 
 ---
 
-## Lesson 9.4.1 — The protected-routes gate in `proxy.ts`
+## Lesson 9.4.1 — The two-layer gate in `proxy.ts`
+
+Teaches the production-shaped protected-routes proxy — cookie-presence-only checks with `getSessionCookie`, matcher design (allowlist vs matchall-minus-public), the `?next=` round-trip with open-redirect closure, the inverse gate that bounces signed-in users off `/sign-in`, and the rule that keeps authorization decisions at the action boundary rather than the proxy.
 
 Topics to cover:
 
@@ -37,7 +39,9 @@ Estimated student time: 35 to 45 minutes. Pattern + decision hybrid; the matcher
 
 ---
 
-## Lesson 9.4.2 — Credential changes and the elevation tier
+## Lesson 9.4.2 — Changing the password and the email
+
+Teaches the `/settings/security` credential-mutation surface — `changePassword` with `revokeOtherSessions: true` as the senior default, `changeEmail` verified on the current address with notices to both, the current-password prompt vs `freshAge` elevation distinction, the `'requires-re-authentication'` Result branch, and the OAuth-only-user edge with no `'credential'` row.
 
 Topics to cover:
 
@@ -69,7 +73,9 @@ Estimated student time: 40 to 50 minutes. Pattern + mechanics hybrid; the elevat
 
 ---
 
-## Lesson 9.4.3 — Session management across devices
+## Lesson 9.4.3 — Active sessions and revoke-across-devices
+
+Teaches the `/settings/security/sessions` audit surface — `listSessions` with per-row device/location parsing and current-session detection, the `revokeSession` / `revokeOtherSessions` / `revokeSessions` trio with the right copy for each button, the cookie-cache staleness window on revoke, and the "new device signed in" notification that turns the list into real takeover detection.
 
 Topics to cover:
 
@@ -99,7 +105,9 @@ Estimated student time: 35 to 45 minutes. Mechanics + pattern hybrid; the active
 
 ---
 
-## Lesson 9.4.4 — Browser security defaults: what the stack ships, what would undo them
+## Lesson 9.4.4 — CSRF and XSS: the defaults and the footguns
+
+Teaches the structural browser-security defenses the 2026 stack already ships — `SameSite=Lax` plus the Server Actions origin check for CSRF, React 19's auto-escaping plus `HttpOnly` cookies for XSS — paired with the one footgun per category (`SameSite=None`, `dangerouslySetInnerHTML`), the `DOMPurify` sanitization shape, and CSP / full security headers named as Chapter 17.3's territory.
 
 Topics to cover:
 
@@ -134,7 +142,7 @@ Estimated student time: 35 to 45 minutes. Concept + pattern hybrid; the "default
 
 ---
 
-## Lesson 9.4.5 — Chapter quiz
+## Lesson 9.4.5 — Quizz
 
 Top 10 topics to quiz:
 

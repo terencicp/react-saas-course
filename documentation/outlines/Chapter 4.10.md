@@ -1,4 +1,4 @@
-# Chapter 4.10 — Custom hooks and what to stop hand-tuning
+# Chapter 4.10 — Custom hooks and the compiler-era memoization cut
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ Several threads run through every lesson. **Custom hooks are about composition, 
 
 ---
 
-## Lesson 4.10.1 — Custom hooks: extracting reusable behavior
+## Lesson 4.10.1 — Extracting custom hooks
+
+The `use*` naming contract, the share-code-not-state rule, the three-condition extraction threshold, canonical hook shapes and generics, and the 2026 catalog of useful custom hooks.
 
 Topics to cover:
 
@@ -56,6 +58,8 @@ What this lesson does not cover:
 
 ## Lesson 4.10.2 — The React Compiler
 
+What the compiler auto-memoizes, how to enable it in Next.js 16 (`reactCompiler: true` plus `babel-plugin-react-compiler`), the annotation mode for incremental adoption, the `'use no memo'` escape hatch, and how to verify it via the DevTools `Memo` badge.
+
 Topics to cover:
 
 - **The senior question.** A 2024 React codebase carries `useMemo` and `useCallback` on every value and callback, `React.memo` on every leaf component, and still re-renders too much because the wrapping has gaps. The React Compiler — stable in React 19 and Next.js 16 as of late 2025 — analyzes components and auto-inserts memoization at the boundaries that actually matter. The lesson installs it, lands what it does, and frames the mental shift: memoization is no longer something the engineer writes.
@@ -93,7 +97,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.10.3 — Manual memoization, the narrow cases that remain
+## Lesson 4.10.3 — Memoization as escape hatch
+
+The four narrow cases where `useMemo` / `useCallback` / `React.memo` still earn their weight, the 2020-era reflexes to stop (blanket memoization, premature `dynamic()`, blanket `<Suspense>`), and the measure-then-memoize workflow with comment discipline.
 
 Topics to cover:
 
@@ -139,7 +145,7 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.10.4 — Chapter quiz
+## Lesson 4.10.4 — Quizz
 
 Top 10 topics to quiz:
 

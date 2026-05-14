@@ -8,7 +8,9 @@ Threads through every lesson. **The unit under test is a `/lib` export, not a fr
 
 ---
 
-## Lesson 19.2.1 — Unit tests for pure logic in `/lib`
+## Lesson 19.2.1 — Pure-function tests, the daily shape
+
+Teaches the `name.ts` / `name.test.ts` colocation rule, AAA in three lines, matcher selection by value shape, sparing `describe` nesting, and why `/lib` tests need no mocks or `beforeEach`.
 
 Topics to cover:
 
@@ -42,7 +44,9 @@ Estimated student time: 40 to 50 minutes. The chapter's foundation lesson; later
 
 ---
 
-## Lesson 19.2.2 — Test fixtures and factories
+## Lesson 19.2.2 — Factories over shared fixtures
+
+Teaches the `buildEntity(overrides)` factory pattern returning fresh instances with valid defaults, where factories live, when to use static JSON for external payloads, and how factories differ from fixtures and seeds.
 
 Topics to cover:
 
@@ -74,7 +78,9 @@ Estimated student time: 35 to 45 minutes. Pattern lesson; the factory shape recu
 
 ---
 
-## Lesson 19.2.3 — Determinism: time, randomness, and IDs
+## Lesson 19.2.3 — Pinning time, IDs, and randomness
+
+Teaches the `lib/clock.ts`, `lib/ids.ts`, and `lib/random.ts` seams, `vi.useFakeTimers` setup and teardown, Temporal's decoupled clock, frozen-instant conventions, and the spy-versus-mock decision.
 
 Topics to cover:
 
@@ -107,7 +113,9 @@ Estimated student time: 40 to 50 minutes. Pattern lesson; the clock / IDs / RNG 
 
 ---
 
-## Lesson 19.2.4 — Type-level testing with `expectTypeOf`
+## Lesson 19.2.4 — Type-level tests with `expectTypeOf`
+
+Teaches `expectTypeOf` and `assertType` in `*.test-d.ts` files run by `vitest --typecheck`, and how to pin discriminated unions, branded IDs, generic inference, and `Result` contracts at compile time.
 
 Topics to cover:
 
@@ -140,7 +148,9 @@ Estimated student time: 35 to 45 minutes. Mechanics-and-pattern lesson; the type
 
 ---
 
-## Lesson 19.2.5 — Testing async code
+## Lesson 19.2.5 — Async tests without the forgotten-`await` trap
+
+Teaches `await expect(p).resolves` as the canonical async form, `expect.assertions(n)` for branchy paths, the `*Async` fake-timer variants for microtask flushing, and the Vitest 4 awaited-assertion contract.
 
 Topics to cover:
 
@@ -175,7 +185,9 @@ Estimated student time: 40 to 50 minutes. Mechanics lesson; every async test in 
 
 ---
 
-## Lesson 19.2.6 — Testing the unhappy path
+## Lesson 19.2.6 — Asserting the unhappy path
+
+Teaches the two-path rule, `toThrow(ClassName)` and structured-code matching over message strings, `toMatchObject` and custom matchers for `Result.err`, Zod issue inspection, and `Error.cause` chain assertions.
 
 Topics to cover:
 
@@ -208,7 +220,7 @@ Estimated student time: 35 to 45 minutes. Pattern lesson closing the chapter; pa
 
 ---
 
-## Lesson 19.2.7 — Chapter quiz
+## Lesson 19.2.7 — Quizz
 
 Top 10 topics to quiz:
 

@@ -1,4 +1,4 @@
-# Chapter 20.2 — Product analytics
+# Chapter 20.2 — Product analytics: traffic, events, flags, replay
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ Threads through every lesson. **The default is Vercel Web Analytics plus Speed I
 
 ---
 
-## Lesson 20.2.1 — Vercel Web Analytics and Speed Insights: the default
+## Lesson 20.2.1 — The cookieless floor: Vercel Analytics and Speed Insights
+
+Install Vercel Web Analytics and Speed Insights as the cookieless default that ships before any event taxonomy decision, covering traffic, top pages, and Core Web Vitals without a consent banner.
 
 Topics to cover:
 
@@ -37,6 +39,8 @@ Estimated student time: 25 to 35 minutes. The shortest lesson in the chapter; se
 
 ## Lesson 20.2.2 — When PostHog earns its weight
 
+Name the four needs (events, flags, replay, experiments) that cross the threshold past Vercel Analytics, and pick PostHog Cloud EU as the one-platform answer over the four-vendor alternative.
+
 Topics to cover:
 
 - **The senior question.** The marketing site has Vercel Web Analytics; traffic is flowing; the product team wants to know whether the new onboarding flow improved trial-to-paid conversion, the engineering team wants to roll out the new billing UI to 10% of orgs first, and support has three users this week claiming the dashboard "just broke" with no console error. None of these questions are answerable from Vercel Web Analytics. The reach is event-level product analytics with identified users, feature flags for gradual rollouts, and session replay for the bugs that don't throw. The lesson installs the decision: which platform, why one platform.
@@ -62,7 +66,9 @@ Estimated student time: 30 to 40 minutes. Decision archetype; the threshold and 
 
 ---
 
-## Lesson 20.2.3 — PostHog wiring through the consent gate
+## Lesson 20.2.3 — Wiring PostHog through the consent gate
+
+Wire `@posthog/next` end-to-end in the App Router with a consent-gated dynamic import, the `/ingest` proxy route, `opt_out_capturing_by_default` as the safety floor, and a verified pre- and post-consent test.
 
 Topics to cover:
 
@@ -94,6 +100,8 @@ Estimated student time: 45 to 55 minutes. Setup-and-wiring lesson; the consent-g
 
 ## Lesson 20.2.4 — Events, properties, and the identify handshake
 
+Install the Object-Action event taxonomy, a typed `track()` helper backed by an event dictionary, the person/event/super-property split, and the `identify`/`reset` handshake that stitches anonymous to known users and orgs.
+
 Topics to cover:
 
 - **The senior question.** The SDK is wired (Lesson 20.2.3). What events does the team fire, what properties travel on them, when does anonymous become identified, and how does the team avoid the six-month-later state where no one remembers what `clicked_thing` meant or which property carried the plan. The lesson installs the event taxonomy discipline and the identify handshake — the two contracts that govern every reach.
@@ -122,7 +130,9 @@ Estimated student time: 45 to 55 minutes. Pattern-and-decision lesson; the typed
 
 ---
 
-## Lesson 20.2.5 — Feature flags, gradual rollouts, and experiments
+## Lesson 20.2.5 — Flags, rollouts, and experiments on one primitive
+
+Ship feature flags as kill switches, percentage rollouts, and metric-driven A/B experiments, with server-side `bootstrapFlags` to kill the flash-of-default-variant and a stale-flag deletion discipline.
 
 Topics to cover:
 
@@ -154,7 +164,9 @@ Estimated student time: 50 to 60 minutes. The chapter's largest lesson; flags pl
 
 ---
 
-## Lesson 20.2.6 — Session replay and the privacy masking discipline
+## Lesson 20.2.6 — Session replay with masking by default
+
+Turn on PostHog session replay with the mask-vs-block masking catalog, sampling discipline, consent-gated start, and a replay-to-bug-fix workflow for the UX bugs that throw no error.
 
 Topics to cover:
 
@@ -185,7 +197,7 @@ Estimated student time: 35 to 45 minutes. Pattern-and-decision lesson; the maski
 
 ---
 
-## Lesson 20.2.7 — Chapter quiz
+## Lesson 20.2.7 — Quizz
 
 Top 10 topics to quiz:
 

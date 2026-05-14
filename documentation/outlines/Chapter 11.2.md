@@ -8,7 +8,9 @@ Threads that run through every lesson: soft-delete is a database mechanism for r
 
 ---
 
-## Lesson 11.2.1 — Soft delete, archive, and restore
+## Lesson 11.2.1 — Two timestamps, three actions
+
+Teaches the soft-delete-vs-archive distinction, the `deletedAt`/`archivedAt` schema with partial unique and composite indexes, and the `softDelete`/`archive`/`restore` Server Actions that drive the lifecycle.
 
 Topics to cover:
 
@@ -43,7 +45,9 @@ Estimated student time: 45 to 55 minutes. The lifecycle vocabulary and the schem
 
 ---
 
-## Lesson 11.2.2 — The base-query helper
+## Lesson 11.2.2 — Making the missing filter impossible
+
+Teaches the base-query helper that composes on top of `tenantDb` to expose `active()`, `archived()`, and `includingDeleted()` so every read carries the lifecycle and tenancy filters by construction.
 
 Topics to cover:
 
@@ -75,7 +79,9 @@ Estimated student time: 35 to 45 minutes. The lesson is short because the API su
 
 ---
 
-## Lesson 11.2.3 — Optimistic concurrency control
+## Lesson 11.2.3 — Version columns and the honest 409
+
+Teaches version-based optimistic concurrency, the Drizzle UPDATE precondition that turns a race into a typed 409 Result, and the React 19 refresh-and-retry surface built on `useActionState` and `useOptimistic`.
 
 Topics to cover:
 
@@ -110,7 +116,7 @@ Estimated student time: 50 to 60 minutes. The most senior-mindset lesson of the 
 
 ---
 
-## Lesson 11.2.4 — Chapter quiz
+## Lesson 11.2.4 — Quizz
 
 Top 10 topics to quiz:
 

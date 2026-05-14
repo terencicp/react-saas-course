@@ -1,4 +1,4 @@
-# Chapter 7.3 — The native React 19 / Next.js 16 form pattern
+# Chapter 7.3 — Forms the platform way
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ The threads that must run through every lesson. The form is a Client Component b
 
 ---
 
-## Lesson 7.3.1 — Uncontrolled inputs and the FormData contract
+## Lesson 7.3.1 — Uncontrolled inputs, FormData contract
+
+Teaches uncontrolled inputs with `defaultValue`, the `name` attribute as the schema contract, and how `FormData` round-trips between the form and the Server Action without per-field state.
 
 Topics to cover:
 
@@ -44,7 +46,9 @@ Estimated student time: 35 to 45 minutes. Concept archetype. The reflex installe
 
 ---
 
-## Lesson 7.3.2 — `<form action={serverAction}>` as the default
+## Lesson 7.3.2 — Wiring the action prop
+
+Teaches the `<form action={serverAction}>` primitive, the submit lifecycle, the automatic reset on success, `formAction` per-button overrides, and when Next.js's `<Form>` earns its weight.
 
 Topics to cover:
 
@@ -75,7 +79,9 @@ Estimated student time: 30 to 40 minutes. Setup/wiring archetype. The lesson whe
 
 ---
 
-## Lesson 7.3.3 — `useActionState`: pending state and the latest result
+## Lesson 7.3.3 — useActionState, pending and result
+
+Teaches the `useActionState` hook's three returns, the `(prevState, formData)` action signature, the canonical form-component shape, and field-error rendering from the `Result` tree.
 
 Topics to cover:
 
@@ -114,7 +120,9 @@ Estimated student time: 45 to 55 minutes. Mechanics archetype. The hook is the c
 
 ---
 
-## Lesson 7.3.4 — `useFormStatus`: nested pending state
+## Lesson 7.3.4 — useFormStatus and the SubmitButton
+
+Teaches the `useFormStatus` hook for descendant pending state, the difference from `useActionState.isPending`, and the reusable `<SubmitButton>` component pattern.
 
 Topics to cover:
 
@@ -148,7 +156,9 @@ Estimated student time: 20 to 30 minutes. Mechanics archetype. Short lesson; the
 
 ---
 
-## Lesson 7.3.5 — `useOptimistic`: immediate UI updates with rollback
+## Lesson 7.3.5 — useOptimistic with implicit rollback
+
+Teaches the threshold for optimism, the `useOptimistic` hook's reducer shape, React's implicit rollback on failure, the pairing with `useActionState`, and the client-generated UUID pattern.
 
 Topics to cover:
 
@@ -190,7 +200,9 @@ Estimated student time: 35 to 45 minutes. Decision archetype around the trigger,
 
 ---
 
-## Lesson 7.3.6 — The Constraint Validation API for cheap client-side checks
+## Lesson 7.3.6 — Constraint Validation, the cheap layer
+
+Teaches the platform's Constraint Validation API (`required`, `pattern`, `type`, `inputmode`, `autocomplete`, `ValidityState`, `setCustomValidity`, `:user-invalid`), the line that separates it from the Zod schema, and the shadcn form layout primitives.
 
 Topics to cover:
 
@@ -230,7 +242,9 @@ Estimated student time: 30 to 40 minutes. Mechanics archetype. The lesson that c
 
 ---
 
-## Lesson 7.3.7 — Progressive enhancement and what falls out for free
+## Lesson 7.3.7 — Progressive enhancement for free
+
+Teaches what works without JS (action prop, constraint API, redirect, revalidate) and what doesn't, the five disciplines that preserve PE, and the manual JS-disabled test at feature-launch.
 
 Topics to cover:
 
@@ -275,7 +289,7 @@ Estimated student time: 25 to 35 minutes. Concept archetype. Short closer; the l
 
 ---
 
-## Lesson 7.3.8 — Chapter quiz
+## Lesson 7.3.8 — Quizz
 
 Top 10 topics to quiz:
 

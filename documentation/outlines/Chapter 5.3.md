@@ -1,4 +1,4 @@
-# Chapter 5.3 — Async UI primitives
+# Chapter 5.3 — Loading, errors, and the four async files
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ Threads that run through every lesson: Suspense is a declarative contract — "r
 
 ---
 
-## Lesson 5.3.1 — Suspense as a declarative loading contract
+## Lesson 5.3.1 — Suspense, the fallback contract
+
+What the user sees while a Server Component awaits: `<Suspense fallback>` as React's declarative loading boundary, the two suspending shapes (async Server Components and `React.use()` on a streamed Promise), the unit-of-UX rule for placement, nested-boundary composition, and the `key` prop for re-suspending on param change.
 
 Topics to cover:
 
@@ -40,7 +42,9 @@ Estimated student time: 50 to 65 minutes. Load-bearing for every async UI in the
 
 ---
 
-## Lesson 5.3.2 — Streaming at the route boundary
+## Lesson 5.3.2 — Streaming a page in chunks
+
+How the App Router flushes the shell first and resolved boundaries later: chunked HTTP transport, parallel data fetching with one Suspense boundary per independent read, `Promise.all` versus parallel boundaries, and the above-the-fold and sequential-await anti-patterns that defeat streaming.
 
 Topics to cover:
 
@@ -72,7 +76,9 @@ Estimated student time: 45 to 60 minutes. Load-bearing for every page with more 
 
 ---
 
-## Lesson 5.3.3 — `loading.tsx`, `error.tsx`, and `not-found.tsx`
+## Lesson 5.3.3 — The three segment files
+
+The file conventions that wrap a route segment in Suspense, an Error Boundary, and a 404 surface: `loading.tsx` as Server-Component fallback, `error.tsx` as a `"use client"` boundary with `error` and `reset` props, `not-found.tsx` paired with `notFound()` from `next/navigation`, and their composition around `page.tsx`.
 
 Topics to cover:
 
@@ -107,7 +113,9 @@ Estimated student time: 55 to 70 minutes. Load-bearing for every route in the co
 
 ---
 
-## Lesson 5.3.4 — `global-error.tsx`
+## Lesson 5.3.4 — Catching the root layout
+
+`global-error.tsx` as the only boundary above the root layout: why `error.tsx` cannot catch its own layout, the file's `"use client"` requirement, its responsibility for `<html>` and `<body>`, its production-only behavior, and the styling and monitoring constraints of a page that must not itself fail.
 
 Topics to cover:
 
@@ -137,7 +145,7 @@ Estimated student time: 30 to 40 minutes. Load-bearing for production resilience
 
 ---
 
-## Lesson 5.3.5 — Chapter quiz
+## Lesson 5.3.5 — Quizz
 
 Top 10 topics to quiz:
 

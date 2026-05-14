@@ -8,7 +8,9 @@ Several threads run through every lesson. `box-sizing: border-box` is the univer
 
 ---
 
-## Lesson 4.4.1 — The box model, `box-sizing`, and the inline/block axis
+## Lesson 4.4.1 — The box model and the inline/block axis
+
+How the four boxes compose under `border-box`, the Tailwind `--spacing` scale, margin collapse as a smell, logical `ps-*`/`pe-*`/`inset-s-*` utilities, and `mx-auto` as the one centering case where margin still earns its weight.
 
 Topics to cover:
 
@@ -38,7 +40,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.4.2 — Display modes: block, inline, flex, grid, contents
+## Lesson 4.4.2 — Display modes and the hide decision tree
+
+The choice between `block`, `inline`, `inline-block`, `flex`, `grid`, and `contents` as layout primitives, plus the `display: none` / `visibility: hidden` / `aria-hidden` decision tree for the three ways to hide an element.
 
 Topics to cover:
 
@@ -68,7 +72,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.4.3 — Flexbox: the 1D layout primitive
+## Lesson 4.4.3 — Flexbox, the 1D primitive
+
+The flex container's main and cross axes, the `flex-1` / `flex-auto` / `flex-none` / `shrink-0` item sizing forms, `justify-*` vs. `items-*` alignment, `gap` as the spacing default, the `min-w-0` companion fix, and the five canonical layouts a senior reaches for.
 
 Topics to cover:
 
@@ -100,7 +106,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.4.4 — Grid: the 2D layout primitive
+## Lesson 4.4.4 — Grid, the 2D primitive
+
+Explicit tracks, the `fr` unit, `repeat(auto-fit, minmax(...))` for responsive without breakpoints, `grid-template-areas` for page shells, `subgrid` for nested alignment, `place-items-*` shorthands, item placement, and the flex-vs-grid decision.
 
 Topics to cover:
 
@@ -135,7 +143,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.4.5 — Sizing: width, height, min/max, viewport units, aspect-ratio
+## Lesson 4.4.5 — Sizing, viewport units, and aspect-ratio
+
+The `w-*` / `h-*` / `size-*` / `min-*` / `max-*` sizing primitives, the `vh` / `dvh` / `svh` / `lvh` viewport-unit family with `min-h-dvh` as the iOS reflex, `aspect-ratio` for zero-CLS media containers, intrinsic vs. extrinsic sizing, and `clamp()` for fluid sizes without breakpoints.
 
 Topics to cover:
 
@@ -170,7 +180,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.4.6 — Spacing inside containers: `gap` as the senior default
+## Lesson 4.4.6 — Gap, the universal spacing default
+
+Why `gap` replaces sibling-margin tricks and `space-x` / `space-y` inside flex and grid containers, the gap-vs-margin decision, `divide-x` / `divide-y` for visible hairlines between items, and the padding / gap / margin parallel.
 
 Topics to cover:
 
@@ -202,7 +214,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.4.7 — Position and the inset utilities
+## Lesson 4.4.7 — Position and inset utilities
+
+The five `position` modes (`static`, `relative`, `absolute`, `sticky`, `fixed`), containing-block rules with the `relative` parent reflex for `absolute` children, the physical and logical `inset-*` family, canonical layouts for badges / sticky headers / toasts / drawers, and CSS anchor positioning plus the Popover API as forward references.
 
 Topics to cover:
 
@@ -234,6 +248,8 @@ What this lesson does not cover:
 ---
 
 ## Lesson 4.4.8 — Overflow and scroll containers
+
+The overflow modes (`visible` / `hidden` / `clip` / `auto` / `scroll`), `overscroll-behavior` for the iOS scroll-chain and pull-to-refresh bugs, `scrollbar-gutter: stable` for layout stability, sticky-inside-overflow, the page-scroll vs. app-shell-scroll decision, and `scroll-snap-*` as the modern carousel primitive.
 
 Topics to cover:
 
@@ -268,6 +284,8 @@ What this lesson does not cover:
 
 ## Lesson 4.4.9 — Stacking context and z-index
 
+How z-index is scoped to its stacking context, the trigger list (`opacity < 1`, `transform`, `filter`, `position: fixed/sticky`, `isolation: isolate`, and friends), the canonical trapped-modal bug, the three fixes (portal to `<body>`, `isolation: isolate`, restructure the DOM), and z-index tier conventions.
+
 Topics to cover:
 
 - **The senior question.** A modal with `z-50` containing a tooltip with `z-100` renders the tooltip behind the modal backdrop, even though `100 > 50`. The 2026 answer names the *stacking context* — `z-index` is scoped to a stacking context, and any of `opacity < 1`, `transform`, `filter`, `position: fixed/sticky`, `isolation: isolate`, or several other properties on an ancestor creates a new stacking context that traps every descendant's z-index inside. The lesson installs the model, the canonical bugs, and the senior fixes (portals to escape; `isolation: isolate` to scope deliberately; numeric z-index conventions to keep the layering legible).
@@ -299,7 +317,7 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.4.10 — Chapter quiz
+## Lesson 4.4.10 — Quizz
 
 Top 10 topics to quiz:
 

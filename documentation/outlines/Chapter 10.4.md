@@ -1,4 +1,4 @@
-# Chapter 10.4 — Project: org, RBAC, and invitations
+# Chapter 10.4 — Project: org, RBAC, and invitations end-to-end
 
 ## Chapter framing
 
@@ -148,7 +148,9 @@ A single Server Component at `/inspector` is the verification surface. Provided 
 
 ---
 
-## Lesson 10.4.1 — Project brief
+## Lesson 10.4.1 — Brief and finished screenshot
+
+Framing of the multi-tenant SaaS build, the inspector verification surface, the "Done when" list, the explicit scope cuts, and the starter `degit`.
 
 Goals:
 
@@ -173,7 +175,9 @@ Estimated student time: 15 to 20 minutes.
 
 ---
 
-## Lesson 10.4.2 — Starter walkthrough
+## Lesson 10.4.2 — Tour the starter and the broken inspector
+
+Tour of the provided files, the stubbed modules, the seed script, the Better Auth CLI flow, and the inspector page that throws until `requireOrgUser` exists.
 
 Goals:
 
@@ -199,7 +203,9 @@ Estimated student time: 20 to 30 minutes.
 
 ---
 
-## Lesson 10.4.3 — Wire the organization plugin and `requireOrgUser`
+## Lesson 10.4.3 — Install the organization plugin and `requireOrgUser`
+
+Adding the `organization()` plugin with custom invitation fields, the `session.create` hook that seeds `activeOrganizationId`, regenerating the auth schema, and shipping `roleAtLeast` plus `requireOrgUser`.
 
 Goals:
 
@@ -225,7 +231,9 @@ Estimated student time: 35 to 45 minutes.
 
 ---
 
-## Lesson 10.4.4 — `auditLogs` table with RLS deny-write policies
+## Lesson 10.4.4 — `audit_logs` with RLS deny-write policies
+
+Defining the `auditLogs` table and its indexes, declaring tenant SELECT / INSERT and deny UPDATE / DELETE `pgPolicy` rules, and shipping `withTenant` plus the transaction-required `logAudit(tx, event)` signature.
 
 Goals:
 
@@ -256,6 +264,8 @@ Estimated student time: 40 to 50 minutes.
 ---
 
 ## Lesson 10.4.5 — `tenantDb`, `authedAction`, and the role-change action
+
+Building the typed `tenantDb(orgId)` facade, the four-step `authedAction(role, schema, fn)` wrapper, and the `changeMemberRoleAction` that refuses owner targets, refuses last-owner demotion, and audits in-transaction.
 
 Goals:
 
@@ -292,7 +302,9 @@ Estimated student time: 55 to 70 minutes.
 
 ---
 
-## Lesson 10.4.6 — Invite send with the signed accept URL
+## Lesson 10.4.6 — Send an invitation with a signed accept URL
+
+Generating the 32-byte token, hashing at rest, HMAC-signing the URL, writing the row plus the `invitation.sent` audit event in one transaction, sending the React Email after commit, and translating the partial-unique-index collision into `already-invited`.
 
 Goals:
 
@@ -327,7 +339,9 @@ Estimated student time: 50 to 65 minutes.
 
 ---
 
-## Lesson 10.4.7 — Accept-invite page and the accept action
+## Lesson 10.4.7 — Accept the invitation across four arrival shapes
+
+Server-Component accept page that verifies signature → row → hash → expiry → status and branches on session and email, plus the `acceptInvitationAction` that joins, switches active org, auto-verifies email, and audits inside one transaction.
 
 Goals:
 
@@ -379,7 +393,9 @@ Estimated student time: 55 to 70 minutes.
 
 ---
 
-## Lesson 10.4.8 — Verify
+## Lesson 10.4.8 — Verify RBAC, append-only, and cross-tenant probes
+
+Clause-by-clause rehearsal of the "Done when" list — RBAC refusals, `psql` UPDATE / DELETE refusals on `audit_logs`, cross-tenant probes through both `tenantDb` and the unwrapped client, and the full invite handshake on a real inbox.
 
 Goals:
 

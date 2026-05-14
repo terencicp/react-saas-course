@@ -1,4 +1,4 @@
-# Chapter 14.1 — Notifications as a centralized layer (SaaS pattern #10)
+# Chapter 14.1 — The notification dispatcher (SaaS pattern #10)
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ Threads that run through every lesson: the dispatcher is the only place that kno
 
 ---
 
-## Lesson 14.1.1 — The dispatcher seam and the notifiable-vs-logged line
+## Lesson 14.1.1 — One seam, many channels
+
+The dispatcher pattern, the `notifiable_events` registry, the dispatcher's contract, and the line between user-facing notifications and operator-facing audit logs.
 
 Topics to cover:
 
@@ -41,7 +43,9 @@ Estimated student time: 45 to 55 minutes. The chapter's center of gravity — ev
 
 ---
 
-## Lesson 14.1.2 — The two channels — email and the in-app inbox
+## Lesson 14.1.2 — Email and inbox, independent channels
+
+The uniform channel-function signature, the email send via the Unit 8 wrapper, the in-app inbox row written at dispatch, and the rule that one channel's failure never kills the other.
 
 Topics to cover:
 
@@ -73,7 +77,9 @@ Estimated student time: 40 to 50 minutes. The two channel functions and the rule
 
 ---
 
-## Lesson 14.1.3 — Preferences resolved once, default-on for missing rows
+## Lesson 14.1.3 — Preferences, read once, default-on
+
+The category-grained `user_notification_preferences` schema, the default-on rule for missing rows, the critical-channel override, and the one-place read inside the dispatcher.
 
 Topics to cover:
 
@@ -106,7 +112,9 @@ Estimated student time: 40 to 50 minutes. Preferences are where the dispatcher p
 
 ---
 
-## Lesson 14.1.4 — Dedup and coalesce on rapid duplicates
+## Lesson 14.1.4 — Dedup the rapid duplicates
+
+The 60-second window in `notification_dedup` keyed by `(event_type, dedup_key, recipient_user_id)`, registry-defined dedup keys, the dedup-vs-coalesce line, and where the check sits inside the dispatcher flow.
 
 Topics to cover:
 
@@ -138,7 +146,7 @@ Estimated student time: 35 to 45 minutes. The smallest of the four teaching less
 
 ---
 
-## Lesson 14.1.5 — Chapter quiz
+## Lesson 14.1.5 — Quizz
 
 Top 10 topics to quiz:
 

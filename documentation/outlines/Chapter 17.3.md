@@ -1,4 +1,4 @@
-# Chapter 17.3 — Project: error and security baseline audit
+# Chapter 17.3 — Project: the pre-launch audit pass
 
 ## Chapter framing
 
@@ -85,7 +85,9 @@ A short illustrative snippet is allowed when the fix is structural — no full d
 
 ---
 
-## Lesson 17.3.1 — Project brief — the eight audit categories and the rule-location-consequence-fix template
+## Lesson 17.3.1 — Eight categories, one template
+
+Teaches the audit's coverage contract — the eight categories drawn from 17.1 and 17.2, the rule-location-consequence-fix template, the read-only scope, and the honor-system answer-key tag.
 
 Goals:
 
@@ -113,7 +115,9 @@ Estimated student time: 15 to 20 minutes.
 
 ---
 
-## Lesson 17.3.2 — Audit target walkthrough and one modeled finding end-to-end
+## Lesson 17.3.2 — Tour the target, model finding one
+
+Teaches the audit target's file tree and canonical helpers, the running-app reading rhythm, and walks the fail-closed finding in `lib/admin/transferOwnership.ts` end-to-end as the reference shape.
 
 Goals:
 
@@ -138,7 +142,9 @@ Estimated student time: 35 to 45 minutes.
 
 ---
 
-## Lesson 17.3.3 — Audit pass — error discipline (fail-closed, user/operator message split, `dangerouslySetInnerHTML`)
+## Lesson 17.3.3 — Error-discipline pass
+
+Teaches the grep-driven audit of the three error-discipline categories — fail-closed bypasses, the user-vs-operator message split, and `dangerouslySetInnerHTML` plus adjacent XSS sinks — and surfaces findings one, two, and three.
 
 Goals:
 
@@ -165,7 +171,9 @@ Estimated student time: 60 to 75 minutes.
 
 ---
 
-## Lesson 17.3.4 — Audit pass — security baseline (headers, rate limits, audit-log gaps, secrets, GDPR posture, dep hygiene)
+## Lesson 17.3.4 — Security-baseline pass
+
+Teaches the curl-and-grep audit of the five remaining categories — security headers, rate-limit coverage, audit-log gaps, secrets and env validation with GDPR deletion, and pnpm 11+ supply-chain defaults — and surfaces findings four through eight plus the two bonus senior-reach findings.
 
 Goals:
 
@@ -196,7 +204,9 @@ Estimated student time: 90 to 110 minutes.
 
 ---
 
-## Lesson 17.3.5 — Verify — self-grade against the published answer key
+## Lesson 17.3.5 — Commit, then self-grade
+
+Teaches the irreversible-commit-then-peek discipline, the clause-by-clause comparison against the `v1.0-answer-key` tag, the partial-credit scoring rule (rule and location are the floor, fix detail is the senior reach), and the forward references into Units 19 through 22.
 
 Goals:
 

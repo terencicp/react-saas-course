@@ -8,7 +8,9 @@ Several threads run through every lesson. **The render model is the rule the Rea
 
 ---
 
-## Lesson 4.7.1 — Render triggers and reference identity
+## Lesson 4.7.1 — What triggers a render
+
+Render as a function call re-run, the three triggers (own state, parent, context), `Object.is` on props, inline literals as identity churn, and the React Compiler retiring most manual memoization.
 
 Topics to cover:
 
@@ -41,7 +43,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.7.2 — Reconciliation, keys, and component identity
+## Lesson 4.7.2 — Reconciliation and the `key` prop
+
+How React diffs trees by element type, identifies siblings by position, uses `key` as explicit identity, and why index-as-key breaks reorderable lists.
 
 Topics to cover:
 
@@ -78,7 +82,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.7.3 — Keeping components pure
+## Lesson 4.7.3 — The purity contract
+
+Render as a pure function of props and state, the no-mutation and no-side-effect rules, why concurrent rendering and the React Compiler depend on it, and the DevTools badge as your audit signal.
 
 Topics to cover:
 
@@ -113,7 +119,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.7.4 — State as a snapshot and the updater form
+## Lesson 4.7.4 — State is a snapshot
+
+Each render closing over its own state, the `setCount(count + 1)` bug, the updater form for sequential updates, React 19 automatic batching, `flushSync` as the opt-out, and immutable updates that avoid the `Object.is` bailout.
 
 Topics to cover:
 
@@ -150,7 +158,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.7.5 — Resetting state with the `key` prop
+## Lesson 4.7.5 — Remounting with `key`
+
+Using a `key` change to discard local state on identity switches, the canonical record-bound form fix, the animation-replay and button-bump variants, and when to lift or derive state instead.
 
 Topics to cover:
 
@@ -186,7 +196,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.7.6 — JSX synthetic events
+## Lesson 4.7.6 — Synthetic events
+
+The `SyntheticEvent` wrapper, delegation at the React root, typed handlers parameterized by element, `e.currentTarget` over `e.target`, `e.key` and modifiers for keyboard input, and pointer events as the unified mouse/touch/pen primitive.
 
 Topics to cover:
 
@@ -227,7 +239,7 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.7.7 — Chapter quiz
+## Lesson 4.7.7 — Quizz
 
 Top 10 topics to quiz:
 

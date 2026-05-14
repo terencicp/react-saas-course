@@ -8,7 +8,9 @@ Threads that run through every lesson. Vitest is **the** runner — Jest is name
 
 ---
 
-## Lesson 19.1.1 — Vitest setup and the runner model
+## Lesson 19.1.1 — Picking Vitest and wiring the runner
+
+Installs Vitest as the 2026 runner, walks `vitest.config.ts` with `globals: false` and `vite-tsconfig-paths`, and splits node from jsdom suites via test-projects.
 
 Topics to cover:
 
@@ -46,6 +48,8 @@ Estimated student time: 35 to 45 minutes. Setup-and-wiring lesson; the rest of t
 
 ## Lesson 19.1.2 — The honeycomb shape for a Next.js SaaS
 
+Names the honeycomb over the pyramid and trophy, sets integration at the seams as the center of gravity, and gates component and E2E tests behind triggers.
+
 Topics to cover:
 
 - **The senior question.** A Next.js 16 SaaS has roughly four bug layers: pure logic in `/lib` (validators, mappers, error-code mapper, Temporal codecs); the seams where the framework, the database, the auth layer, and third-party APIs meet (Server Actions, route handlers, webhook receivers, Drizzle queries, the rate limiter); presentational and interactive components; end-to-end money paths (auth, checkout). The classic test-pyramid prescription is "many unit tests, fewer integration, very few E2E" — right for a backend with deep business logic, wrong for this codebase. The framework owns most orchestration; bugs cluster at the boundaries. The right shape is the **honeycomb**: a meaningful slab of integration tests at the seams, a wide base of unit tests for pure logic, thin component and E2E layers gated by trigger.
@@ -82,6 +86,8 @@ Estimated student time: 35 to 45 minutes. Decision lesson; the unit references t
 
 ## Lesson 19.1.3 — Coverage as a diagnostic, not a target
 
+Reads branch over line, sets per-directory thresholds on `/lib` and the seams, and adds the absence-of-tests audit via `coverage.all: true`.
+
 Topics to cover:
 
 - **The senior question.** The coverage report says 87% lines, 72% branches. Two reads diverge. The naive read sets a CI gate at "≥80% lines" and chases the missing 13%; the senior read asks **which files and which lines** — because the percentage hides the worse failure mode where the seams (webhook receiver, `authedAction` wrapper, cross-tenant filter) sit at 40% and trivial getters sit at 100%. The lesson installs coverage as a **diagnostic instrument** for finding under-tested seams, not a CI threshold to optimize against. **100% coverage is the canonical theatre metric** the senior reads as a smell; the reach is per-directory thresholds on the load-bearing surface, no thresholds on the framework-mediated surface, and an absence-of-tests audit.
@@ -115,7 +121,9 @@ Estimated student time: 35 to 45 minutes. Decision lesson on coverage discipline
 
 ---
 
-## Lesson 19.1.4 — One behavior per test; behavior over implementation
+## Lesson 19.1.4 — Arrange, act, assert one behavior
+
+Installs the AAA shape with descriptive `it('<outcome> when <conditions>')` names and the rule that asserts the contract the caller observes, not private helpers.
 
 Topics to cover:
 
@@ -153,7 +161,7 @@ Estimated student time: 40 to 50 minutes. Pattern lesson — every test in the u
 
 ---
 
-## Lesson 19.1.5 — Chapter quiz
+## Lesson 19.1.5 — Quizz
 
 Top 10 topics to quiz:
 

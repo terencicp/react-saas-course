@@ -8,7 +8,9 @@ Threads through every lesson: the **AI SDK is the canonical Next.js integration*
 
 ---
 
-## Lesson 23.1.1 — When the Vercel AI SDK earns its weight
+## Lesson 23.1.1 — The four triggers that justify an LLM surface
+
+The four product shapes that make an LLM-backed feature the right tool, the anti-triggers that don't, and why the AI SDK is the canonical 2026 Next.js integration.
 
 Topics to cover:
 
@@ -49,7 +51,9 @@ Estimated student time: 30 to 40 minutes. The chapter's load-bearing decision le
 
 ---
 
-## Lesson 23.1.2 — Cost and rate-limit thinking when LLM calls are user-facing
+## Lesson 23.1.2 — Bounding spend before the surface goes public
+
+The cost-and-quota discipline for user-facing LLM calls — output-token caps, pre- and post-call accounting, per-user daily quotas, sliding-window rate limits, and the seven abuse shapes a senior structurally mitigates.
 
 Topics to cover:
 
@@ -91,7 +95,9 @@ Estimated student time: 35 to 45 minutes. The chapter's production-discipline le
 
 ---
 
-## Lesson 23.1.3 — Provider abstraction and keeping vendor swap cheap
+## Lesson 23.1.3 — One-line model swaps and the AI Gateway
+
+The provider-abstraction discipline that keeps vendor swap cheap — role-named handles in `lib/llm/models.ts`, the AI Gateway as the senior production default, failover, and the embedding-portability trap.
 
 Topics to cover:
 
@@ -129,7 +135,7 @@ Estimated student time: 30 to 40 minutes. The chapter's vendor-durability lesson
 
 ---
 
-## Lesson 23.1.4 — Chapter quiz
+## Lesson 23.1.4 — Quizz
 
 Top 10 topics to quiz:
 

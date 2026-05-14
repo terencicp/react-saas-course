@@ -1,4 +1,4 @@
-# Chapter 12.2 — Stripe billing (SaaS pattern #4)
+# Chapter 12.2 — Stripe billing and plan entitlements
 
 ## Chapter framing
 
@@ -9,6 +9,8 @@ Threads that run through every lesson: Stripe is the source of truth for billing
 ---
 
 ## Lesson 12.2.1 — The Stripe object graph
+
+Teaches the four-object Stripe model (Products, Prices, Customers, Subscriptions) the rest of the chapter assumes, including `lookup_key` over hardcoded IDs, metadata as the carry-channel for `organization_id`, and the test-vs-live mode discipline.
 
 Topics to cover:
 
@@ -38,7 +40,9 @@ Estimated student time: 35 to 45 minutes. The vocabulary lesson — every later 
 
 ---
 
-## Lesson 12.2.2 — Stripe Checkout sessions
+## Lesson 12.2.2 — Starting subscriptions with Checkout
+
+Teaches the Server Action that creates a hosted Checkout session, lazy Stripe Customer creation per organization, trials via `subscription_data`, and the success-page polling that waits for the webhook to land the entitlement.
 
 Topics to cover:
 
@@ -72,7 +76,9 @@ Estimated student time: 45 to 55 minutes. The "money in" lesson — the one path
 
 ---
 
-## Lesson 12.2.3 — The Stripe customer portal
+## Lesson 12.2.3 — Managing subscriptions with the Portal
+
+Teaches the hosted Customer Portal as the default for plan changes, period-end cancellation, payment-method updates, and invoice history, plus deep-link flows and the rule that the return URL is a navigation hint, not state-change proof.
 
 Topics to cover:
 
@@ -105,6 +111,8 @@ Estimated student time: 35 to 45 minutes. The "money managed" lesson — the scr
 
 ## Lesson 12.2.4 — Plan entitlements as a derived view
 
+Teaches the `plan_entitlements` schema, the one-row-per-org projection of Stripe state, the single-writer rule (only the webhook writes it), and the `getEntitlement` read helper that every request-path gate calls instead of touching Stripe.
+
 Topics to cover:
 
 - **The senior question.** The application needs to answer "can this user do this?" on every request — render the Pro features, gate the export endpoint, count seats, throw on quota. Calling `stripe.subscriptions.retrieve(...)` per request is wrong (latency, rate limits, single point of failure). Mirroring the full Stripe subscription schema is wrong (drift, schema churn). What's the minimum durable, query-fast representation the application reads on the hot path, and where does it get updated from? The lesson lands `plan_entitlements` as a derived view, written exclusively by the webhook, read on every request.
@@ -136,7 +144,9 @@ Estimated student time: 40 to 50 minutes. The schema that the rest of the applic
 
 ---
 
-## Lesson 12.2.5 — Subscription status as first-class application state
+## Lesson 12.2.5 — Subscription status as first-class state
+
+Teaches the Stripe status enum (`trialing`, `active`, `past_due`, `canceled`, `incomplete`, `unpaid`), the `hasActiveAccess` decision table, grace-period banners over instant lockout, and the `cancel_at_period_end` winding-down state.
 
 Topics to cover:
 
@@ -169,6 +179,8 @@ Estimated student time: 40 to 50 minutes. The lesson that makes the application 
 
 ## Lesson 12.2.6 — The thin billing interface
 
+Teaches the `billing.*` carve-out to Architectural Principle #5 — `upgrade`, `openPortal`, and `requirePlan` as the three methods, `requirePlan` as the load-bearing server-side gate, and `/lib/billing/` as the only place the Stripe SDK is imported.
+
 Topics to cover:
 
 - **The senior question.** Chapter 7.2.4 introduced Architectural Principle #5: use the framework's conventions, don't invent a tRPC-style call wrapper. Server Actions are the default at the action seam; route handlers at the untrusted-input seam. Yet two surfaces earn an interface: the `authedAction` authz wrapper (10.2.2) and now a `billing.*` interface around Stripe. Why does billing earn the carve-out, what does the interface look like, and where exactly is the boundary between "use the framework directly" and "wrap it"? The lesson lands the billing interface and pins the rule that explains both carve-outs.
@@ -198,7 +210,9 @@ Estimated student time: 40 to 50 minutes. The architecture lesson — names the 
 
 ---
 
-## Lesson 12.2.7 — When an SDK adapter does and does not earn its weight
+## Lesson 12.2.7 — When an SDK adapter earns its weight
+
+Teaches the three-test threshold for wrapping an SDK (read-hostile shape, real swap cost, discipline to centralize), and applies it to show why auth and billing earn interfaces while Resend, Trigger.dev, and R2 only earn helpers.
 
 Topics to cover:
 
@@ -237,7 +251,7 @@ Estimated student time: 30 to 40 minutes. The decision lesson — names the rule
 
 ---
 
-## Lesson 12.2.8 — Chapter quiz
+## Lesson 12.2.8 — Quizz
 
 Top 10 topics to quiz:
 

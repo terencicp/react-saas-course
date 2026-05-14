@@ -1,4 +1,4 @@
-# Chapter 9.1 — Auth concepts
+# Chapter 9.1 — The auth mental model
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ Threads that must run through every lesson: terminology is precise — *authenti
 
 ---
 
-## Lesson 9.1.1 — Authentication versus authorization
+## Lesson 9.1.1 — Authn, authz, and the 401/403 split
+
+Distinguishes authentication from authorization, places each check at its proper boundary in the request lifecycle, and catalogues the misframes (identification-vs-authentication, signed-in-vs-allowed, paid-vs-authorized) that produce the 401-versus-403 bugs seniors must recognize.
 
 Topics to cover:
 
@@ -38,7 +40,9 @@ Estimated student time: 25 to 35 minutes. Concept-archetype lesson — vocabular
 
 ---
 
-## Lesson 9.1.2 — Sessions, tokens, and the cookie that carries them
+## Lesson 9.1.2 — Sessions versus JWTs, and the cookie that carries them
+
+Compares server-stored opaque sessions against signed JWTs with revocation as the load-bearing trade, then specifies the `__Host-` cookie defaults, the session row's load-bearing columns, and the issue/refresh/revoke/expire lifecycle that the rest of Unit 9 assumes.
 
 Topics to cover:
 
@@ -89,7 +93,9 @@ Estimated student time: 35 to 45 minutes. Concept-archetype lesson; a comparison
 
 ---
 
-## Lesson 9.1.3 — OAuth 2.1 and the authorization-code flow with PKCE
+## Lesson 9.1.3 — OAuth 2.1, PKCE, and the code-for-tokens exchange
+
+Walks the eight-step authorization-code-with-PKCE flow end-to-end — verifier/challenge derivation, `state` for CSRF, exact-match redirect URIs, the token exchange, `id_token` verification against JWKS — and names the OAuth-2.1 hardenings that make the 2026 social-login button legible.
 
 Topics to cover:
 
@@ -148,7 +154,7 @@ Estimated student time: 45 to 55 minutes. Concept-archetype, the densest of the 
 
 ---
 
-## Lesson 9.1.4 — Chapter quiz
+## Lesson 9.1.4 — Quizz
 
 Top 10 topics to quiz:
 

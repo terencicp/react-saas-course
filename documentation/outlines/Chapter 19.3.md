@@ -8,7 +8,9 @@ Threads through every lesson. **The integration project is a separate Vitest pro
 
 ---
 
-## Lesson 19.3.1 — Integration tests against a real test Postgres
+## Lesson 19.3.1 — Transaction rollback against real Postgres
+
+Teaches the `withRollback` wrapper, the `tx` seam threaded through production code, and why integration tests run against a real test Postgres instead of mocking Drizzle.
 
 Topics to cover:
 
@@ -40,7 +42,9 @@ Estimated student time: 45 to 55 minutes. Foundational pattern; every later less
 
 ---
 
-## Lesson 19.3.2 — Test database lifecycle and per-worker isolation
+## Lesson 19.3.2 — One database per worker
+
+Teaches the `VITEST_POOL_ID`-keyed database scheme, `globalSetup` vs. per-worker `setupFiles`, fsync-off tuning, and Neon branch-per-CI-run as the conditional move.
 
 Topics to cover:
 
@@ -72,7 +76,9 @@ Estimated student time: 45 to 55 minutes. Setup-and-wiring lesson; the pattern i
 
 ---
 
-## Lesson 19.3.3 — Auth fixtures for signed-in user with role and org
+## Lesson 19.3.3 — The signedInAs fixture
+
+Teaches a single-call auth fixture that inserts user, org, and session inside `tx`, stubs `cookies()` and `auth()`, and parameterizes role, plan, and tenant for every Server Action and route-handler test.
 
 Topics to cover:
 
@@ -103,7 +109,9 @@ Estimated student time: 40 to 50 minutes. Pattern lesson; the fixture is used by
 
 ---
 
-## Lesson 19.3.4 — Mock at the network boundary, not the function
+## Lesson 19.3.4 — Mock the wire, not the SDK
+
+Teaches why mocking at `fetch` keeps SDK serialization, signing, retry, and parsing under test, and where the "mock what you don't own, roll back what you do" line sits.
 
 Topics to cover:
 
@@ -133,7 +141,9 @@ Estimated student time: 30 to 40 minutes. Decision lesson; sets the threshold th
 
 ---
 
-## Lesson 19.3.5 — MSW handlers, matchers, and per-test overrides
+## Lesson 19.3.5 — MSW mechanics in practice
+
+Teaches the MSW v2 `setupServer` + `http.*` API, default handlers per third party, per-test overrides via `server.use`, sequenced responses with `{ once: true }`, and capturing requests for after-the-fact assertions.
 
 Topics to cover:
 
@@ -166,7 +176,9 @@ Estimated student time: 45 to 55 minutes. Mechanics lesson; MSW is the day-one r
 
 ---
 
-## Lesson 19.3.6 — Webhook handler testing: signatures and idempotency
+## Lesson 19.3.6 — Webhook receivers under test
+
+Teaches end-to-end testing of a Stripe webhook handler by signing raw-body bytes and covering the valid, invalid, expired, replayed, malformed, and unhandled-type paths against a real `processed_events` table inside `tx`.
 
 Topics to cover:
 
@@ -199,7 +211,9 @@ Estimated student time: 50 to 60 minutes. Pattern lesson; the longest in the cha
 
 ---
 
-## Lesson 19.3.7 — Testing Server Actions end-to-end
+## Lesson 19.3.7 — Server Actions through the full wrapper
+
+Teaches calling exported actions with auth fixtures, real `tx`, and MSW handlers; asserting `Result.ok`/`Result.err`, DB rows, `revalidatePath`, and `NEXT_REDIRECT` across happy, validation-fail, unauth, forbid, and plan-gated branches.
 
 Topics to cover:
 
@@ -234,7 +248,9 @@ Estimated student time: 50 to 60 minutes. Pattern lesson; the action-test shape 
 
 ---
 
-## Lesson 19.3.8 — Test isolation, ordering, and the cost of flake
+## Lesson 19.3.8 — Flake has a structural cause
+
+Teaches the nine flake taxa (DB leak, timer leak, MSW leak, mock-impl leak, real clock, unawaited promise, random data, port collision, order dependency), why `--retry` hides bugs, and how `--shuffle` and `--repeat` quantify and locate them.
 
 Topics to cover:
 
@@ -268,7 +284,7 @@ Estimated student time: 30 to 40 minutes. Pattern lesson closing the chapter; th
 
 ---
 
-## Lesson 19.3.9 — Chapter quiz
+## Lesson 19.3.9 — Quizz
 
 Top 10 topics to quiz:
 

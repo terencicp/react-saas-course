@@ -1,4 +1,4 @@
-# Chapter 3.6 — Fetch and live data
+# Chapter 3.6 — Fetch and live streams
 
 ## Chapter framing
 
@@ -30,7 +30,9 @@ The chapter ordering follows the dependency. Fetch fundamentals come first becau
 
 ---
 
-## Lesson 3.6.1 — Fetch fundamentals: Request, Response, Headers, FormData
+## Lesson 3.6.1 — The universal HTTP client
+
+Write any `fetch` call with the senior shape — `Request`, `Response`, `Headers`, `FormData`, the body consumer methods, `AbortSignal.timeout`, the `if (!response.ok)` branch, and the Zod parse on the success path.
 
 Topics to cover:
 
@@ -226,7 +228,9 @@ Estimated student time: 50 to 65 minutes. Load-bearing for Lesson 3.6.2, every l
 
 ---
 
-## Lesson 3.6.2 — Streaming responses: ReadableStream, chunked transfer, and Server-Sent Events
+## Lesson 3.6.2 — Streaming progress with SSE
+
+Read response bodies as `ReadableStream` chunks, emit Server-Sent Events from a Next.js Route Handler, consume them with `EventSource` or `fetch`, and pick between SSE, WebSockets, and polling.
 
 Topics to cover:
 
@@ -435,7 +439,7 @@ Estimated student time: 55 to 70 minutes. Load-bearing for the LLM streaming sur
 
 ---
 
-## Lesson 3.6.3 — Quiz
+## Lesson 3.6.3 — Quizz
 
 Top ten topics to quiz:
 

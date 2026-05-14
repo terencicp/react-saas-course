@@ -119,7 +119,9 @@ src/
 
 ---
 
-## Lesson 13.4.1 — Project brief
+## Lesson 13.4.1 — Brief and Done-when
+
+Frames the runnable upload surface, locks the "Done when" clauses (5 MB lands, list downloads, 11-minute-later refresh still works, export emails a real R2 link), and names the scope cuts (no transforms, no multipart, no virus scan, no soft-delete UI).
 
 Goals:
 
@@ -143,7 +145,9 @@ Estimated student time: 20 to 30 minutes.
 
 ---
 
-## Lesson 13.4.2 — Starter walkthrough
+## Lesson 13.4.2 — Tour the starter
+
+Walks the provided pieces (singleton `lib/r2.ts`, pure `buildObjectKey` keyed off the validated content type, `UploadError` codes, idempotent CORS script) and identifies the five `lib/files/` TODOs plus the two `app/files/` TODOs the student will fill in.
 
 Goals:
 
@@ -166,7 +170,9 @@ Estimated student time: 20 to 30 minutes.
 
 ---
 
-## Lesson 13.4.3 — The `presignedPut` Server Action
+## Lesson 13.4.3 — Sign the PUT, no DB write
+
+Builds the `presignedPut` Server Action with Zod-validated input, server-generated `uploadId`, a server-constructed `objectKey`, and a 5-minute signed `PutObjectCommand`, verified end-to-end by `curl`-PUTting bytes straight to R2.
 
 Goals:
 
@@ -195,7 +201,9 @@ Estimated student time: 45 to 60 minutes.
 
 ---
 
-## Lesson 13.4.4 — The browser direct-to-R2 upload, the migration, and `finalizeUpload`
+## Lesson 13.4.4 — Browser PUT, HEAD, then insert
+
+Lands the `file_metadata` migration, the `finalizeUpload` action that HEADs the object for true size and content-type before inserting the row inside a `tenantDb` transaction, and the XHR-driven client form that streams bytes direct to R2 with a live progress bar.
 
 Goals:
 
@@ -224,7 +232,9 @@ Estimated student time: 75 to 90 minutes. The chapter's heaviest lesson — migr
 
 ---
 
-## Lesson 13.4.5 — The `Files` list with fresh presigned GETs
+## Lesson 13.4.5 — Fresh-per-render GETs
+
+Writes `getFileDownloadUrl`, `listFiles`, and the un-cached `/files` server component that signs a new GET per row per render, then proves the discipline by watching a copied URL die at 11 minutes while a refreshed page keeps working.
 
 Goals:
 
@@ -249,7 +259,9 @@ Estimated student time: 50 to 65 minutes.
 
 ---
 
-## Lesson 13.4.6 — Retrofit the 13.2 export with R2
+## Lesson 13.4.6 — Real `downloadUrl` for the export
+
+Retrofits the 13.2 export task to do a server-side `PutObjectCommand` under the `org/<id>/exports/` prefix, hand a fresh `getSignedGetForKey` URL to the email, and rely on the lifecycle rule for cleanup with no `file_metadata` row written.
 
 Goals:
 
@@ -275,6 +287,8 @@ Estimated student time: 45 to 60 minutes.
 ---
 
 ## Lesson 13.4.7 — Verify
+
+Walks each "Done when" clause as a runnable check — the 11-minute URL-death proof, function-side byte-pipe inspection, cross-org GET denial, `SIZE_MISMATCH` from a lying client, CORS preflight on a non-allowed host, and the exports-have-no-row SQL.
 
 Goals:
 

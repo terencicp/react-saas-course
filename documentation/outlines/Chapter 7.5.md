@@ -8,7 +8,9 @@ The threads that must run through every lesson. The route handler is a public en
 
 ---
 
-## Lesson 7.5.1 — When a route handler earns its weight
+## Lesson 7.5.1 — When to reach past Server Actions
+
+The five triggers that flip a mutation from Server Action to `route.ts`, the route-handler file shape, and the dynamic-by-default caching posture.
 
 Topics to cover:
 
@@ -43,7 +45,9 @@ Estimated student time: 35 to 45 minutes. Decision archetype. The lesson the stu
 
 ---
 
-## Lesson 7.5.2 — Designing the request/response contract with Zod
+## Lesson 7.5.2 — Wire contracts as Zod schemas
+
+Authoring `Params`/`Headers`/`Query`/`Body` schemas parsed in cheapest-first order, typed response schemas, and RFC 9457 Problem Details as the canonical error shape.
 
 Topics to cover:
 
@@ -78,7 +82,9 @@ Estimated student time: 45 to 55 minutes. Pattern archetype. The lesson the proj
 
 ---
 
-## Lesson 7.5.3 — HTTP semantics applied to your own endpoints
+## Lesson 7.5.3 — Methods, status codes, and idempotency
+
+Method-by-intent (GET/POST/PUT/PATCH/DELETE), the status-code table a reviewer enforces (400 vs. 422, 404 over 403 on tenant scope, 409 on conflict), and operationalizing the `Idempotency-Key` header.
 
 Topics to cover:
 
@@ -134,7 +140,9 @@ Estimated student time: 50 to 60 minutes. Decision archetype. The lesson runs lo
 
 ---
 
-## Lesson 7.5.4 — Filter, sort, search, paginate at the API boundary
+## Lesson 7.5.4 — List endpoints: filter, sort, search, paginate
+
+The query-schema shape, the prefix-form sort convention, opaque base64 cursors with `{ data, pageInfo }` envelope, and the shared `where`-builder pure function consumed by both the handler and the in-app Server Component.
 
 Topics to cover:
 
@@ -181,7 +189,7 @@ Estimated student time: 45 to 55 minutes. Mechanics archetype with a pattern thr
 
 ---
 
-## Lesson 7.5.5 — Chapter quiz
+## Lesson 7.5.5 — Quizz
 
 Top 10 topics to quiz:
 

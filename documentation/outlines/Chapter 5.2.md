@@ -8,7 +8,9 @@ Threads that run through every lesson: Server Components are the default, Client
 
 ---
 
-## Lesson 5.2.1 — Server Components
+## Lesson 5.2.1 — Server Components as the default
+
+Renders on the server only, ships zero client JS, supports async bodies with direct DB and filesystem access, and composes with Client Components through import or `children`.
 
 Topics to cover:
 
@@ -40,7 +42,9 @@ Estimated student time: 55 to 70 minutes. Load-bearing for every page in Chapter
 
 ---
 
-## Lesson 5.2.2 — Client Components and the boundary contract
+## Lesson 5.2.2 — Client Components and pushing the boundary down
+
+The two-render model (server HTML plus browser hydration), what earns a `"use client"` boundary, the cost in client JS, and the senior reflex of keeping the boundary at the smallest interactive leaf.
 
 Topics to cover:
 
@@ -70,7 +74,9 @@ Estimated student time: 55 to 70 minutes. Load-bearing for every interactive com
 
 ---
 
-## Lesson 5.2.3 — Directives and structural enforcement of the boundary
+## Lesson 5.2.3 — Directives and `server-only` enforcement
+
+`"use client"` and `"use server"` semantics at the file head, Architectural Principle #6 (prefer explicit over magic), and the `server-only` / `client-only` packages that turn a leaked import into a build error.
 
 Topics to cover:
 
@@ -100,7 +106,9 @@ Estimated student time: 50 to 65 minutes. Load-bearing for every Server Action i
 
 ---
 
-## Lesson 5.2.4 — What crosses the wire: RSC serialization and structured clone
+## Lesson 5.2.4 — What crosses the RSC wire
+
+Structured-clone-compatible values plus React extensions (Promises, JSX, Server/Client/Action references), the rejection of functions and class instances, and the secrets-in-props leak the student must catch.
 
 Topics to cover:
 
@@ -131,7 +139,9 @@ Estimated student time: 50 to 65 minutes. Load-bearing for every Server-to-Clien
 
 ---
 
-## Lesson 5.2.5 — Hydration
+## Lesson 5.2.5 — Hydration and its mismatch failure modes
+
+The server-HTML-meets-client-React handshake, the canonical mismatch causes (`Date.now`, `Math.random`, locale, timezone, browser extensions, stale `.next/dev`), and the fixes via `useEffect`, `useId`, and narrow `suppressHydrationWarning`.
 
 Topics to cover:
 
@@ -162,7 +172,7 @@ Estimated student time: 50 to 60 minutes. Load-bearing for every Client Componen
 
 ---
 
-## Lesson 5.2.6 — Chapter quiz
+## Lesson 5.2.6 — Quizz
 
 Top 10 topics to quiz:
 

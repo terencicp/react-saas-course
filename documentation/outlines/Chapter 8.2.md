@@ -1,4 +1,4 @@
-# Chapter 8.2 — Composing email
+# Chapter 8.2 — Authoring templates
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ The threads that must run through every lesson. React Email is React for the ema
 
 ---
 
-## Lesson 8.2.1 — React Email components and the JSX bridge
+## Lesson 8.2.1 — JSX for the email DOM
+
+Teaches the React Email component vocabulary, the Tailwind styling wrapper, the JSX-to-inline-table render pipeline, and the `emails/*.tsx` props-and-`PreviewProps` file convention.
 
 Topics to cover:
 
@@ -44,7 +46,9 @@ Estimated student time: 50 to 60 minutes. Mechanics-archetype lesson with a work
 
 ---
 
-## Lesson 8.2.2 — The preview dev server and the iteration loop
+## Lesson 8.2.2 — The preview server loop
+
+Teaches the `pnpm email dev` server, the viewport and dark-mode toggles, the HTML and plain-text tabs, and the test-send-to-inbox cross-client verification path.
 
 Topics to cover:
 
@@ -79,7 +83,9 @@ Estimated student time: 30 to 40 minutes. Setup-and-mechanics lesson with the te
 
 ---
 
-## Lesson 8.2.3 — Plain-text fallback, accessibility, and dark mode
+## Lesson 8.2.3 — Readable in every client
+
+Teaches the auto-generated plain-text fallback via `render({ plainText: true })`, the email accessibility checklist (lang, headings, link text, alt, contrast, font size, touch targets), and the three-tier dark-mode posture with its `color-scheme` head plumbing.
 
 Topics to cover:
 
@@ -137,7 +143,7 @@ Estimated student time: 45 to 55 minutes. Pattern-and-checklist lesson — the d
 
 ---
 
-## Lesson 8.2.4 — Chapter quiz
+## Lesson 8.2.4 — Quizz
 
 Top 10 topics to quiz:
 

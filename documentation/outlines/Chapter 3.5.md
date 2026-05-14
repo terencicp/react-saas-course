@@ -26,7 +26,9 @@ The chapter ordering follows the dependency. The DOM-as-tree lesson comes first 
 
 ---
 
-## Lesson 3.5.1 — The DOM as a tree of nodes
+## Lesson 3.5.1 — The DOM as a live tree of typed nodes
+
+Teaches the DOM as a tree of typed node objects built once at parse time and mutated thereafter, walks the `Node` / `Element` / `HTMLElement` / tag-specific subclass hierarchy, names the access surface (`getElementById`, `querySelector`, `closest`, `matches`) and the live-vs-static collection distinction (`childNodes`, `children`, `NodeList`, `HTMLCollection`), and frames every primitive against its rare 2026 reach behind refs, portals, and DevTools.
 
 Topics to cover:
 
@@ -124,7 +126,9 @@ Estimated student time: 45 to 55 minutes. Load-bearing for Lesson 3.5.2, Chapter
 
 ---
 
-## Lesson 3.5.2 — Attributes vs. properties: what HTML serializes vs. what JavaScript reads
+## Lesson 3.5.2 — Attributes vs. properties: parsed state vs. live state
+
+Teaches the split between HTML attributes (the strings the parser captured at load time) and DOM properties (the live values JavaScript reads and mutates), walks the four canonical patterns (identical-name pairs, renamed properties like `class`/`className` and `for`/`htmlFor`, default-vs-current pairs on `value`/`checked`/`selected`, and attribute-only or property-only cases), maps every example to its JSX prop name, and installs the recognition vocabulary that makes hydration mismatches and boolean-attribute traps legible.
 
 Topics to cover:
 
@@ -240,7 +244,9 @@ Estimated student time: 45 to 55 minutes. Load-bearing for Chapter 4.1 (JSX surf
 
 ---
 
-## Lesson 3.5.3 — The DOM event model: bubble, capture, delegation, passive
+## Lesson 3.5.3 — The event model: capture, bubble, delegate
+
+Teaches the three-phase DOM event model (capture, target, bubble), installs event delegation as the canonical pattern with `event.target.closest` and `data-*` hooks, distinguishes `event.target` from `event.currentTarget` and `preventDefault` from `stopPropagation`, names the `addEventListener` option surface (`capture`, `once`, `passive`, `signal`), and locks in the 2026 cleanup reach with `AbortController` and the `{ passive: true }` default for scroll, wheel, and touch listeners.
 
 Topics to cover:
 
@@ -388,7 +394,7 @@ Estimated student time: 55 to 65 minutes. Load-bearing for Chapter 4.7.6 (synthe
 
 ---
 
-## Lesson 3.5.4 — Quiz
+## Lesson 3.5.4 — Quizz
 
 Top ten topics to quiz:
 

@@ -1,4 +1,4 @@
-# Chapter 4.5 — Typography, color, motion, responsive
+# Chapter 4.5 — The visual surface: typography, color, motion, responsive
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ Several threads run through every lesson. Tokens flow from `:root` and recolor o
 
 ---
 
-## Lesson 4.5.1 — Typography: fonts, scale, and the reading surface
+## Lesson 4.5.1 — Type, scale, and the reading surface
+
+Teaches the system-plus-`next/font` stack, Tailwind's `text-*`/`leading-*`/`tracking-*` scales, `text-balance` and `text-pretty` reflexes, `max-w-prose` reading width, and the `truncate` / `line-clamp-*` / `tabular-nums` utilities the student writes daily.
 
 Topics to cover:
 
@@ -43,7 +45,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.5.2 — Color, opacity, and the modern color spaces
+## Lesson 4.5.2 — OKLCH, `color-mix()`, and the alpha syntax
+
+Teaches OKLCH as the token storage form, `color-mix(in oklch, ...)` for runtime mixing, the `bg-blue-500/50` alpha syntax and how it compiles to `color-mix()`, semantic tokens over primitives, `opacity` vs. per-property alpha, and `prefers-color-scheme` vs. the `.dark` class.
 
 Topics to cover:
 
@@ -77,7 +81,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.5.3 — Borders, radius, and shadows
+## Lesson 4.5.3 — Borders, radius, and the elevation scale
+
+Teaches `border` / `border-*` / `divide-*`, the `rounded-*` scale, `outline` vs. `border` for focus rings, `ring-*` as the multi-layer shorthand, the `shadow-*` elevation tiers, `drop-shadow` vs. `box-shadow`, and `backdrop-filter` for glass-morphism headers.
 
 Topics to cover:
 
@@ -112,7 +118,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.5.4 — Pseudo-classes for interaction state and the `:has()` reach
+## Lesson 4.5.4 — Pseudo-classes and the `:has()` parent selector
+
+Teaches `:focus-visible` as the canonical focus reflex, `:focus-within` for parent-of-focused, the disabled/checked/invalid state pseudo-classes, `:has()` and the JavaScript class toggles it retired, `:not()`, the `::placeholder` / `::selection` pseudo-elements, and the iOS sticky-hover gate.
 
 Topics to cover:
 
@@ -147,7 +155,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.5.5 — Animation: keyframes, transitions, and the shadcn dependency
+## Lesson 4.5.5 — Motion: transitions, keyframes, and `tw-animate-css`
+
+Teaches `transition-*` for property motion (with `transform` and `opacity` as the cheap properties), `animate-*` with `@keyframes` declared in `@theme`, `tw-animate-css` as the shadcn dialog/sheet/accordion dependency, the `data-[state=open]:animate-in` choreography pattern, and `prefers-reduced-motion` with the `motion-reduce:` variant.
 
 Topics to cover:
 
@@ -182,7 +192,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.5.6 — Media queries and the responsive design model
+## Lesson 4.5.6 — Breakpoints and the mobile-first reflex
+
+Teaches mobile-first as the senior default, the Tailwind `sm`/`md`/`lg`/`xl`/`2xl` scale, breakpoints as content-driven not device-driven, the `prefers-*` media-feature family, `@media (hover: hover)` against the iOS sticky-hover bug, and the `hidden md:block` / `md:hidden` visibility pattern.
 
 Topics to cover:
 
@@ -218,7 +230,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.5.7 — Container queries: component-level responsive
+## Lesson 4.5.7 — Container queries for component-level layout
+
+Teaches `container-type: inline-size` as the senior default, `@container` plus the `@sm:` / `@md:` Tailwind variants, the `cqi` unit with `clamp()` for fluid component typography, named containers for nested structures, and the viewport-vs-container decision rule.
 
 Topics to cover:
 
@@ -254,7 +268,7 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.5.8 — Chapter quiz
+## Lesson 4.5.8 — Quizz
 
 Top 10 topics to quiz:
 

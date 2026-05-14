@@ -1,4 +1,4 @@
-# Chapter 2.9 — Practical odds and ends
+# Chapter 2.9 — JSON, classes, and the Temporal pivot
 
 ## Chapter framing
 
@@ -22,6 +22,8 @@ The chapter ordering follows the layering. JSON comes first because it's the mos
 ---
 
 ## Lesson 2.9.1 — JSON at the wire boundary
+
+Teaches `JSON.parse`/`JSON.stringify`, the four serialization gotchas (`undefined`, `Date`, `BigInt`, `NaN`/`Infinity`), and the parse-to-`unknown`-then-validate-with-Zod discipline that closes the type story at every wire seam.
 
 Topics to cover:
 
@@ -93,7 +95,9 @@ Estimated student time: 45 to 55 minutes.
 
 ---
 
-## Lesson 2.9.2 — Classes, narrowly: where they still earn their weight
+## Lesson 2.9.2 — Classes, narrowly
+
+Teaches the three sites where classes still earn their weight in 2026 SaaS code (custom `Error` subclasses, SDK adapters, the rare stateful domain class) and the minimum class surface (constructor, `readonly`/`#field`, arrow-field methods, static factory) — refusing inheritance hierarchies, abstract classes, mixins, decorators, and accessors.
 
 Topics to cover:
 
@@ -193,6 +197,8 @@ Estimated student time: 40 to 50 minutes.
 ---
 
 ## Lesson 2.9.3 — `Date`'s problems and the Temporal pivot
+
+Teaches `Date`'s known design issues (zero-indexed months, in-place mutation, timezone as second-class, no real duration type, the `Invalid Date` sentinel) and the senior 2026 pivot to Temporal — Stage 4 March 2026, unflagged in Node 26, with `temporal-polyfill` for the Node 24 LTS line.
 
 Topics to cover:
 

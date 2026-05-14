@@ -26,7 +26,9 @@ The TOC packs the entire request lifecycle into one bullet (3.1.1). One bullet i
 
 ---
 
-## Lesson 3.1.1 — URL bar to first byte: DNS, transport, and the request
+## Lesson 3.1.1 — URL bar to first byte
+
+Walk the four-step network leg from a URL commit to the first byte of HTML — DNS resolution, TCP/QUIC connection, the TLS handshake, and the HTTP request — and read each step on the DevTools Network waterfall against the 2026 HTTP/3-over-QUIC protocol stack.
 
 Topics to cover:
 
@@ -94,7 +96,9 @@ Estimated student time: 45 to 55 minutes. Load-bearing for the rest of Unit 3 an
 
 ---
 
-## Lesson 3.1.2 — First byte to pixels: parsing, painting, and hydration
+## Lesson 3.1.2 — First byte to pixels
+
+Trace the browser-side pipeline from HTML bytes to an interactive page — parser to DOM, CSSOM, render tree, layout, paint, composite — and overlay the SSR plus hydration model that Unit 4 and Unit 5 will land on.
 
 Topics to cover:
 
@@ -170,7 +174,9 @@ Estimated student time: 50 to 60 minutes. Load-bearing for Unit 4 and Unit 5.
 
 ---
 
-## Lesson 3.1.3 — HTTPS and certificates: the dev-time leak
+## Lesson 3.1.3 — HTTPS on localhost with mkcert
+
+Install the TLS 1.3 handshake and certificate-chain mental model at debug depth, then wire a local CA with `mkcert` to unblock the secure-context-required APIs (cookie `Secure`, Clipboard, WebCrypto) that silently fail on `http://localhost`.
 
 Topics to cover:
 
@@ -250,7 +256,7 @@ Estimated student time: 40 to 50 minutes. Includes the `mkcert` install walkthro
 
 ---
 
-## Lesson 3.1.4 — Quiz
+## Lesson 3.1.4 — Quizz
 
 Top ten topics to quiz:
 

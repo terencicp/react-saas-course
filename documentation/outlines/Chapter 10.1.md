@@ -8,7 +8,9 @@ Threads that run through every lesson. The default tenancy enforcement in this s
 
 ---
 
-## Lesson 10.1.1 — The organization data model and the active-org slot
+## Lesson 10.1.1 — Standing up organizations and the active-org slot
+
+Install Better Auth's organization plugin, extend the session with `activeOrganizationId`, and wire the create / switch / list flows that move a user between orgs without leaking stale cache.
 
 Topics to cover:
 
@@ -40,7 +42,9 @@ Estimated student time: 40 to 50 minutes. Mechanics + setup hybrid; a small ER d
 
 ---
 
-## Lesson 10.1.2 — The tenant-aware query helper (SaaS pattern #1)
+## Lesson 10.1.2 — `tenantDb(orgId)`: making the missing-`where` not compile
+
+Wrap Drizzle's relational query API in a typed `tenantDb(orgId)` factory that injects the org predicate on every read and write so the missing-org-filter bug class is structurally impossible.
 
 Topics to cover:
 
@@ -71,7 +75,9 @@ Estimated student time: 45 to 55 minutes. Pattern lesson; the wrong-then-right a
 
 ---
 
-## Lesson 10.1.3 — When Row-Level Security earns its weight
+## Lesson 10.1.3 — The threshold where RLS earns its cost
+
+Frame Postgres Row-Level Security as a conditional power tool — the three triggers (highest-stakes data, many writer paths, external writers) that push past application-layer scoping, and the per-table decision tree that lands RLS on `audit_logs` and nowhere else for this stack.
 
 Topics to cover:
 
@@ -102,7 +108,9 @@ Estimated student time: 35 to 45 minutes. Decision lesson; the threshold-up-fron
 
 ---
 
-## Lesson 10.1.4 — Postgres RLS through Drizzle: policies, session variables, and applying it to audit_logs
+## Lesson 10.1.4 — Wiring RLS on `audit_logs`: policies, `SET LOCAL`, and the `withTenant` helper
+
+Author the policy through Drizzle's `pgPolicy` / `crudPolicy`, enable and force RLS on the table, set `app.org_id` via `SET LOCAL` inside an explicit transaction with a `withTenant(orgId, fn)` wrapper, and prove the isolation with an integration test that runs as the app role.
 
 Topics to cover:
 
@@ -135,7 +143,7 @@ Estimated student time: 50 to 60 minutes. Setup + pattern hybrid; the schema + p
 
 ---
 
-## Lesson 10.1.5 — Chapter quiz
+## Lesson 10.1.5 — Quizz
 
 Top 10 topics to quiz:
 

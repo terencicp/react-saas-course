@@ -1,4 +1,4 @@
-# Chapter 19.4 — Component tests (conditional)
+# Chapter 19.4 — Component tests, off by default
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ Threads through every lesson. **The unit under test is a client component or a p
 
 ---
 
-## Lesson 19.4.1 — When React Testing Library earns its weight
+## Lesson 19.4.1 — When RTL earns its weight
+
+The three triggers (shared library, complex state, critical UX) plus the accessibility-regression trigger that make React Testing Library worth its cost, and the anti-triggers that say delete the test instead of writing it.
 
 Topics to cover:
 
@@ -41,7 +43,9 @@ Estimated student time: 30 to 40 minutes. Decision lesson; the rest of the chapt
 
 ---
 
-## Lesson 19.4.2 — RTL setup, the render helper, and user-event
+## Lesson 19.4.2 — The jsdom project and the render helper
+
+Wiring the third Vitest project against jsdom, pinning the `@testing-library/*` set for React 19, and building the `render` wrapper that pre-applies providers and returns a ready `userEvent` instance.
 
 Topics to cover:
 
@@ -75,7 +79,9 @@ Estimated student time: 45 to 55 minutes. Setup-and-wiring; one-time but everyth
 
 ---
 
-## Lesson 19.4.3 — Query philosophy and what "behavior" means at the component level
+## Lesson 19.4.3 — The query ladder is the accessibility audit
+
+The role-plus-name priority ladder, the `getBy` / `queryBy` / `findBy` split, and the rule that behavior is what a user observes — never internal state, props, or class names.
 
 Topics to cover:
 
@@ -112,7 +118,9 @@ Estimated student time: 50 to 60 minutes. The highest-value lesson in the chapte
 
 ---
 
-## Lesson 19.4.4 — RTL in the course's app: the components where the trigger is met
+## Lesson 19.4.4 — The catalog: five components that earn the test
+
+A walk through the course app's component tests — cookie consent, subscribe form, date-range picker, data table, checkout summary — naming the trigger met, the behaviors to assert, and what to leave to the seam or to E2E.
 
 Topics to cover:
 
@@ -143,7 +151,7 @@ Estimated student time: 50 to 60 minutes. Pattern lesson; the catalog is the can
 
 ---
 
-## Lesson 19.4.5 — Chapter quiz
+## Lesson 19.4.5 — Quizz
 
 Top 10 topics to quiz:
 

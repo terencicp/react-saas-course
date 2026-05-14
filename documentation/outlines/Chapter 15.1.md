@@ -8,7 +8,9 @@ Threads that run through every lesson: caching is opt-in under Cache Components 
 
 ---
 
-## Lesson 15.1.1 — Classifying routes and designing the tag scheme
+## Lesson 15.1.1 — Route classes and the tag scheme
+
+Classify every route as fully dynamic, partially cached, or fully static, then design an org-scoped tag scheme (entity, record, org, user) funneled through a `tags.ts` helper so read-side and write-side strings always align.
 
 Topics to cover:
 
@@ -43,7 +45,9 @@ Estimated student time: 50 to 60 minutes. The classification and the tag scheme 
 
 ---
 
-## Lesson 15.1.2 — The four-way invalidation decision tree on real flows
+## Lesson 15.1.2 — Picking the right invalidation call
+
+Resolve `updateTag`, `revalidateTag`, `revalidatePath`, and `router.refresh` on two axes (read-your-writes vs. eventual, tag vs. path) and trace the decision tree through worked flows: post-edit lists, post-purchase plan flips, membership changes, webhooks, and background jobs.
 
 Topics to cover:
 
@@ -81,7 +85,7 @@ Estimated student time: 50 to 60 minutes. The decision tree is the chapter's run
 
 ---
 
-## Lesson 15.1.3 — Chapter quiz
+## Lesson 15.1.3 — Quizz
 
 Top 10 topics to quiz:
 

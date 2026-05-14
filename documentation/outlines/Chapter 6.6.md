@@ -1,4 +1,4 @@
-# Chapter 6.6 — Project: org-scoped schema and queries
+# Chapter 6.6 — Project: the org-scoped invoicing data layer
 
 ## Chapter framing
 
@@ -100,7 +100,9 @@ The inspector is provided in full; the student fills the queries it imports.
 
 ---
 
-## Lesson 6.6.1 — Project brief
+## Lesson 6.6.1 — The brief: what we're building and what we're not
+
+Frames the org-scoped invoicing surface, the seven "Done when" verifications, the explicit scope cuts (no mutations, no real auth, no RBAC yet), and the senior payoff of installing tenant-aware schema discipline now.
 
 Goals:
 
@@ -123,7 +125,9 @@ Estimated student time: 10 to 15 minutes.
 
 ---
 
-## Lesson 6.6.2 — Starter walkthrough
+## Lesson 6.6.2 — Tour of the starter and the inspector contract
+
+Walks the provided file tree (`drizzle.config.ts`, the pooled `db` client, the cursor helpers, the inspector page, the `db:*` scripts), brings up Docker Postgres, and pins the contracts the student's queries must satisfy.
 
 Goals:
 
@@ -146,7 +150,9 @@ Estimated student time: 20 to 25 minutes.
 
 ---
 
-## Lesson 6.6.3 — Schema, relations, and the first migration
+## Lesson 6.6.3 — Authoring the schema and shipping the init migration
+
+Fills `db/schema.ts` and `db/relations.ts` with the six tables (`organizations`, `users` stub, `org_members`, `customers`, `invoices`, `invoice_lines`) including UUIDv7 PKs, FK `ON DELETE` decisions, tenant-scoped uniques, the three composite indexes, and the `$inferSelect` row types, then generates and runs the initial migration.
 
 Goals:
 
@@ -179,7 +185,9 @@ Estimated student time: 50 to 70 minutes.
 
 ---
 
-## Lesson 6.6.4 — The deterministic seed
+## Lesson 6.6.4 — A deterministic, idempotent seed for two orgs
+
+Writes `scripts/seed.ts` using `reset` plus `seed().refine(...)` with `weightedRandom`, `valuesFromArray`, and `with` to produce two orgs with overlapping members and 100+ invoices, dropping to direct `db.insert` where the seeder's shape doesn't fit.
 
 Goals:
 
@@ -211,7 +219,9 @@ Estimated student time: 55 to 75 minutes.
 
 ---
 
-## Lesson 6.6.5 — The two reads: paginated list and single-round-trip detail
+## Lesson 6.6.5 — Writing the two tenant-scoped reads
+
+Implements `listInvoices` (cursor pagination with the composite tiebreaker predicate and the `limit(pageSize + 1)` trick) and `getInvoiceDetail` (relational `findFirst` with `lines` and `customer`), with the `organizationId` tenant guard baked into every `where`.
 
 Goals:
 
@@ -241,7 +251,9 @@ Estimated student time: 50 to 70 minutes.
 
 ---
 
-## Lesson 6.6.6 — Verify
+## Lesson 6.6.6 — Verifying the seven "Done when" clauses
+
+Runs each Done-when check end-to-end (clean migrate, idempotent seed, cursor pagination, server-side status filter, cross-org tenant guard, single-round-trip detail, `EXPLAIN ANALYZE` showing the right indexes) and forward-references Units 7, 9, 10, and 11.
 
 Goals:
 

@@ -1,4 +1,4 @@
-# Chapter 19.5 — E2E (conditional)
+# Chapter 19.5 — E2E on money paths only
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ Threads through every lesson. **Playwright is pinned to the latest 1.x line, May
 
 ---
 
-## Lesson 19.5.1 — When Playwright earns its weight
+## Lesson 19.5.1 — The money-path filter
+
+Teaches when a Playwright test earns its runtime cost — failure that moves money, breaks identity, or loses unrecoverable data — and why year-one zero is the correct default for a small Next.js 16 SaaS in 2026.
 
 Topics to cover:
 
@@ -37,7 +39,9 @@ Estimated student time: 30 to 40 minutes. Decision lesson; the rest of the chapt
 
 ---
 
-## Lesson 19.5.2 — Playwright primitives in the 2026 idiom
+## Lesson 19.5.2 — Config, storageState, and the trace viewer
+
+Teaches the smallest 2026 Playwright surface — `playwright.config.ts` with `webServer` against a production build, `auth.setup.ts` writing `storageState` per role, role-first auto-waiting locators, fixtures, and `trace: 'on-first-retry'` as the debugger.
 
 Topics to cover:
 
@@ -72,7 +76,9 @@ Estimated student time: 50 to 60 minutes. Setup-and-wiring lesson; the surface i
 
 ---
 
-## Lesson 19.5.3 — Playwright in our app — the four money paths
+## Lesson 19.5.3 — The four-path catalog
+
+Walks the four canonical money paths in the course's app — sign-in, Stripe Checkout round-trip with plan flip, invitation acceptance with seat grant, and the primary value loop — naming the locator shape, data hygiene, and CI integration for each.
 
 Topics to cover:
 
@@ -102,7 +108,7 @@ Estimated student time: 50 to 60 minutes. Pattern lesson; the four-path catalog 
 
 ---
 
-## Lesson 19.5.4 — Chapter quiz
+## Lesson 19.5.4 — Quizz
 
 Top 10 topics to quiz:
 

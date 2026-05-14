@@ -8,7 +8,9 @@ Threads that run through every lesson: storage and metadata are split — Postgr
 
 ---
 
-## Lesson 13.3.1 — When object storage earns its weight
+## Lesson 13.3.1 — Defending the no — when object storage earns its weight
+
+Names the three trigger conditions (user uploads, generated assets the app serves back, third-party media) that put R2 on the table, the conditions that do not, and why R2 beats S3 and the upload SaaS wrappers on unit economics for any read-heavy product.
 
 Topics to cover:
 
@@ -36,7 +38,9 @@ Estimated student time: 25 to 35 minutes. The "defend the no" lesson — most st
 
 ---
 
-## Lesson 13.3.2 — Cloudflare R2 — buckets, credentials, and CORS
+## Lesson 13.3.2 — Standing up R2 — buckets, scoped tokens, and CORS
+
+Sets up the minimum R2 surface a SaaS trusts in production: one bucket per environment, bucket-scoped tokens with minimum operations, the S3-compatible client in `lib/r2.ts`, the CORS rule with explicit origins and headers, and the `org/${orgId}/files/${id}` object-key tenancy convention.
 
 Topics to cover:
 
@@ -67,7 +71,9 @@ Estimated student time: 35 to 45 minutes. The "I can stand up the bucket and tru
 
 ---
 
-## Lesson 13.3.3 — Presigned URLs for direct browser uploads
+## Lesson 13.3.3 — Presigned URLs — signing the upload seam
+
+Teaches the presigned PUT and GET mechanics that move bytes from browser to R2 without touching the function: signed `ContentType` and `ContentLength`, 5-10 minute expiries, the layered size defense, and the sign-then-finalize two-step write with post-upload HEAD verification.
 
 Topics to cover:
 
@@ -98,7 +104,9 @@ Estimated student time: 45 to 55 minutes. The "I can sign safely" lesson — the
 
 ---
 
-## Lesson 13.3.4 — File metadata in Postgres alongside the object reference
+## Lesson 13.3.4 — Postgres owns identity, R2 owns bytes
+
+Designs the `file_metadata` row as the canonical record (id-as-key-segment, tenant-scoped reads, soft-delete with cooled-off object cleanup, HEAD-verified `byteSize`, no persisted URL) and names the orphan failure modes in both directions.
 
 Topics to cover:
 
@@ -128,7 +136,9 @@ Estimated student time: 35 to 45 minutes. The "Postgres owns identity, R2 owns b
 
 ---
 
-## Lesson 13.3.5 — R2 in our app — picking the workloads
+## Lesson 13.3.5 — Wiring R2 into our app — two workloads, one mechanism
+
+Picks the two call sites R2 covers (the 13.4 user-upload path with `file_metadata` and the 13.2 CSV export retrofit with a server-side PUT and no metadata row), names the workloads kept off R2, and pre-loads the lib surface and env shape for the 13.4 project.
 
 Topics to cover:
 
@@ -158,7 +168,7 @@ Estimated student time: 25 to 30 minutes. The bridge lesson — short, names the
 
 ---
 
-## Lesson 13.3.6 — Chapter quiz
+## Lesson 13.3.6 — Quizz
 
 Top 10 topics to quiz:
 

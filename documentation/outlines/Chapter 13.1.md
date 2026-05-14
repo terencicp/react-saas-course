@@ -1,4 +1,4 @@
-# Chapter 13.1 — Background work — defaults and Trigger.dev
+# Chapter 13.1 — Background work — climbing the durability ladder
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ Threads through every lesson: the request-response budget is sacred — user-vis
 
 ---
 
-## Lesson 13.1.1 — Inline async work and `after()` in Server Actions
+## Lesson 13.1.1 — Inline, then `after()`
+
+Teaches the 0-tier (inline `await`) and 0.5-tier (`after()`) defaults for post-request work in Server Actions, the four thresholds that break them, and the `maxDuration` / error-swallow gotchas of running after the response.
 
 Topics to cover:
 
@@ -37,7 +39,9 @@ Estimated student time: 35 to 45 minutes. The "do not over-engineer" lesson — 
 
 ---
 
-## Lesson 13.1.2 — Vercel Cron — scheduled jobs by default
+## Lesson 13.1.2 — Vercel Cron as the schedule default
+
+Teaches the Vercel Cron topology and `vercel.json` shape, `CRON_SECRET` verify-first auth, at-least-once delivery with dedup keys, UTC expressions, and the time-budget threshold that bumps a job up to Trigger.dev.
 
 Topics to cover:
 
@@ -70,6 +74,8 @@ Estimated student time: 35 to 45 minutes. The "the platform already does this" l
 
 ## Lesson 13.1.3 — When Trigger.dev earns its weight
 
+Teaches the five named conditions that justify Trigger.dev (past function time, multi-step orchestration, automatic retries, fan-out, event-driven pauses), the 2026 alternatives, the decision tree, and the org-context separation tasks inherit.
+
 Topics to cover:
 
 - **The senior question.** Inline `await` and `after()` cover same-invocation work. Vercel Cron covers schedules. What workloads do those two combined still fail at, and what specifically does Trigger.dev provide that earns the operational cost of a second platform? Threshold named explicitly so the student can defend the decision both ways.
@@ -96,7 +102,9 @@ Estimated student time: 40 to 50 minutes. The "defend the decision" lesson — e
 
 ---
 
-## Lesson 13.1.4 — Trigger.dev v4 primitives — tasks, schemaTask, queues, schedules
+## Lesson 13.1.4 — Tasks, schemaTask, queues, schedules
+
+Teaches the v4 API surface — `task` and `schemaTask` with Zod payloads, `tasks.trigger` versus `triggerAndWait`, code-defined queues as the v3-to-v4 break, per-tenant dynamic queues, and static and dynamic schedules.
 
 Topics to cover:
 
@@ -128,7 +136,9 @@ Estimated student time: 55 to 65 minutes. The "I can define and run a task" less
 
 ---
 
-## Lesson 13.1.5 — Durable execution — retries, waits, idempotency
+## Lesson 13.1.5 — Surviving crashes — retries, waits, idempotency keys
+
+Teaches checkpoints at step boundaries, exponential retries with jitter and `AbortTaskRunError`, `wait.for` / `wait.until` for durable pauses, `idempotencyKey` and `idempotencyKeyTTL` on every trigger and wait, and cooperative cancellation via `ctx.run.abortSignal`.
 
 Topics to cover:
 
@@ -160,7 +170,9 @@ Estimated student time: 50 to 60 minutes. The "I can write a task that survives 
 
 ---
 
-## Lesson 13.1.6 — Waitpoints — external callbacks, timeouts, human-in-the-loop
+## Lesson 13.1.6 — Waitpoints for callbacks and approvals
+
+Teaches `wait.forToken` with `publicAccessToken` as a third-party callback URL, programmatic `wait.completeToken` for human-in-the-loop approval, mandatory timeouts, multi-token aggregation, and live progress via `ctx.run.metadata`.
 
 Topics to cover:
 
@@ -193,7 +205,9 @@ Estimated student time: 45 to 55 minutes. The "I can pause and resume" lesson �
 
 ---
 
-## Lesson 13.1.7 — Trigger.dev in our app — picking the workloads
+## Lesson 13.1.7 — Wiring our app — which workloads go where
+
+Teaches which three jobs in the course's app run on Trigger.dev (CSV export, Stripe reconciliation, notification dispatcher), which four stay on the platform default, the env surface, and the deploy-Trigger.dev-before-the-app ordering rule.
 
 Topics to cover:
 
@@ -220,7 +234,7 @@ Estimated student time: 20 to 30 minutes. The bridge lesson — short, names wor
 
 ---
 
-## Lesson 13.1.8 — Chapter quiz
+## Lesson 13.1.8 — Quizz
 
 Top 10 topics to quiz:
 

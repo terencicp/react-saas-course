@@ -1,4 +1,4 @@
-# Chapter 2.6 — Modules and the module graph
+# Chapter 2.6 — Modules as a graph
 
 ## Chapter framing
 
@@ -22,7 +22,9 @@ The chapter ordering reflects the layering of the model. The base ESM surface (n
 
 ---
 
-## Lesson 2.6.1 — ESM exports, imports, and the bare-specifier model
+## Lesson 2.6.1 — The four import-export shapes
+
+Teaches the named, default, side-effecting, and dynamic export forms with their matching import surface, the type-only import discipline under `verbatimModuleSyntax`, and the bare-specifier resolution algorithm that picks the file behind every `import 'pkg'`.
 
 Topics to cover:
 
@@ -72,7 +74,9 @@ Estimated student time: 40 to 50 minutes.
 
 ---
 
-## Lesson 2.6.2 — The module graph: evaluation order, live bindings, dynamic import, and the server/client boundary
+## Lesson 2.6.2 — Walking the graph: evaluation, live bindings, and the client bundle
+
+Teaches modules as a depth-first-evaluated directed graph with live-binding semantics, dynamic `import()` as a deferred edge that drives code splitting, and `"use client"` plus `import 'server-only'`/`'client-only'` as the module-graph rule that keeps server code out of the browser.
 
 Topics to cover:
 
@@ -134,7 +138,9 @@ Estimated student time: 60 to 75 minutes. The chapter's longest lesson; the mode
 
 ---
 
-## Lesson 2.6.3 — Top-level await and module-init patterns
+## Lesson 2.6.3 — Top-level await vs. lazy init
+
+Teaches top-level `await` as a graph-level change that turns every upstream consumer async, the canonical `env.ts` shape, and the senior call between top-level await for cheap startup validation and a lazy `getDb()` for expensive or conditional setup.
 
 Topics to cover:
 
@@ -227,7 +233,9 @@ Estimated student time: 35 to 45 minutes.
 
 ---
 
-## Lesson 2.6.4 — Module augmentation: extending third-party types
+## Lesson 2.6.4 — Augmenting third-party modules
+
+Teaches the `declare module` pattern in dedicated `.d.ts` files to extend a published package's interfaces (Better Auth `Session`, Drizzle relations, `next-intl` messages) and tie branded IDs to the third-party session shape at the source.
 
 Topics to cover:
 

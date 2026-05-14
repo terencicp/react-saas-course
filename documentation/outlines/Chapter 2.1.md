@@ -1,4 +1,4 @@
-# Chapter 2.1 — Values, references, and equality
+# Chapter 2.1 — The JavaScript value model
 
 ## Chapter framing
 
@@ -20,7 +20,9 @@ The chapter ordering reflects the dependency between lessons. Values and referen
 
 ---
 
-## Lesson 2.1.1 — Values, references, and what assignment actually does
+## Lesson 2.1.1 — Bindings, not boxes
+
+Teaches what assignment actually does: primitive copy vs. shared object references, function-call pass-by-value-vs-reference, and shallow vs. deep copy with `structuredClone`.
 
 Topics to cover:
 
@@ -48,7 +50,9 @@ Estimated student time: 35 to 45 minutes.
 
 ---
 
-## Lesson 2.1.2 — Equality semantics
+## Lesson 2.1.2 — What `===` actually compares
+
+Teaches value vs. reference equality, `Object.is` for `NaN` and signed zero, `Number.isNaN` over the coercing global, and why the course never writes `==`.
 
 Topics to cover:
 
@@ -76,7 +80,9 @@ Estimated student time: 25 to 35 minutes.
 
 ---
 
-## Lesson 2.1.3 — Numbers, BigInt, and money
+## Lesson 2.1.3 — Store cents, not dollars
+
+Teaches IEEE 754 at the depth that bites, the integer-cents money rule, the `Number.is*` family, when `BigInt` earns its weight, and the `parseInt` vs. `Number` conversion choice.
 
 Topics to cover:
 
@@ -104,7 +110,9 @@ Estimated student time: 35 to 45 minutes.
 
 ---
 
-## Lesson 2.1.4 — Strings, Unicode, and the length problem
+## Lesson 2.1.4 — Why `.length` lies
+
+Teaches code units vs. code points vs. grapheme clusters, `Intl.Segmenter` for user-perceived counts, `normalize` for visually-identical inputs, and the senior string-method surface.
 
 Topics to cover:
 
@@ -134,7 +142,9 @@ Estimated student time: 35 to 45 minutes.
 
 ---
 
-## Lesson 2.1.5 — Template literals and tagged templates
+## Lesson 2.1.5 — Backticks and tagged templates
+
+Teaches template literals as the default for interpolation and multi-line strings, the tag-function mechanics, and `sql` and `dedent` as the canonical tagged-template cases.
 
 Topics to cover:
 
@@ -162,7 +172,9 @@ Estimated student time: 25 to 35 minutes.
 
 ---
 
-## Lesson 2.1.6 — Variables — `let`, `const`, scope, and the TDZ
+## Lesson 2.1.6 — `const` binds, it doesn't freeze
+
+Teaches `const` vs. `let` and when each earns its weight, block scope, the Temporal Dead Zone, hoisting demystified, and why `const` alone doesn't narrow types.
 
 Topics to cover:
 

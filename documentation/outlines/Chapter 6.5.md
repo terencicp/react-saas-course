@@ -1,4 +1,4 @@
-# Chapter 6.5 — Migrations and the seed workflow
+# Chapter 6.5 — Migrations and seeding
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ Threads that run through every lesson: the migration file is checked-in source c
 
 ---
 
-## Lesson 6.5.1 — Drizzle Kit: config, generate, migrate, and the studio
+## Lesson 6.5.1 — The Drizzle Kit daily loop
+
+Teaches the `drizzle.config.ts` contract, the migration folder layout, the `generate` → review → `migrate` workflow, and Drizzle Studio as the in-stack dev GUI.
 
 Topics to cover:
 
@@ -41,7 +43,9 @@ Estimated student time: 45 to 55 minutes. Load-bearing for every later schema ch
 
 ---
 
-## Lesson 6.5.2 — Migrations in production: hand-edits, push vs. generate, and the zero-downtime discipline
+## Lesson 6.5.2 — Production-safe migrations
+
+Teaches the push-vs-generate decision, the five-question SQL review checklist, `CREATE INDEX CONCURRENTLY` with statement breakpoints, the column-change patterns that bite, and expand-backfill-contract as the zero-downtime reflex.
 
 Topics to cover:
 
@@ -77,7 +81,9 @@ Estimated student time: 50 to 60 minutes. Load-bearing for every schema change a
 
 ---
 
-## Lesson 6.5.3 — Seeding with drizzle-seed: dev fixtures and test factories
+## Lesson 6.5.3 — Deterministic seeding with drizzle-seed
+
+Teaches the `seed().refine(...)` call shape, FK-aware insertion order, the idempotent reset-and-seed script, the same-seed determinism guarantee, and the test-factory boundary.
 
 Topics to cover:
 
@@ -111,7 +117,7 @@ Estimated student time: 35 to 45 minutes. Load-bearing for the project in Chapte
 
 ---
 
-## Lesson 6.5.4 — Chapter quiz
+## Lesson 6.5.4 — Quizz
 
 Top 10 topics to quiz:
 

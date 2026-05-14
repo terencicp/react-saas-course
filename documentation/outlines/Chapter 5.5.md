@@ -1,4 +1,4 @@
-# Chapter 5.5 — Server-side reads, the proxy, and URL state
+# Chapter 5.5 — The request surface: server reads, the proxy, and URL state
 
 ## Chapter framing
 
@@ -9,6 +9,8 @@ Threads that run through every lesson: under Cache Components (5.4.1), reading r
 ---
 
 ## Lesson 5.5.1 — Reading the request with `cookies()` and `headers()`
+
+Teaches the async, server-only, read-only `cookies()` and `headers()` APIs from `next/headers`, the senior pattern of reading once at the top and passing resolved values down, the trust-the-platform caveat on proxy headers, and the build-time constraints these reads place on Cache Components.
 
 Topics to cover:
 
@@ -38,6 +40,8 @@ Estimated student time: 25 to 35 minutes. Short, foundational, and the dependenc
 ---
 
 ## Lesson 5.5.2 — `proxy.ts` and the matcher
+
+Teaches the Next.js 16 rename of `middleware.ts` to Node-only `proxy.ts`, the canonical file shape with `NextRequest`/`NextResponse`, the matcher config as the cost-control surface, the proxy-to-route header pattern, and what belongs in the proxy versus the route.
 
 Topics to cover:
 
@@ -70,6 +74,8 @@ Estimated student time: 45 to 55 minutes. Sets the file convention every later a
 
 ## Lesson 5.5.3 — Rewrites and redirects in `proxy.ts`
 
+Teaches the redirect-vs-rewrite semantic split, 307/308 status codes, the proxy-vs-`next.config.ts`-vs-`redirect()` decision tree, the subdomain-rewrite multi-tenant pattern, and open-redirect prevention on the `?next=` return-URL idiom.
+
 Topics to cover:
 
 - **The senior question.** A SaaS launches a v2 of its billing surface and the URL changes from `/billing/manage` to `/settings/billing`. Some links in old emails point to the old URL; the app needs a permanent redirect, search engines need to see 308, and the user lands on the right page. Separately, the app multi-tenants on subdomains — `acme.app.com/dashboard` should serve `app.com/[org]/dashboard` internally without the URL changing. The lesson names redirects as the user-visible URL change (browser navigates, history updates, SEO sees 301/308) and rewrites as the internal URL swap (browser address bar unchanged, user sees one URL, app renders another).
@@ -100,6 +106,8 @@ Estimated student time: 40 to 50 minutes. Pairs with 5.5.2 as the two-part anato
 ---
 
 ## Lesson 5.5.4 — URL state with `searchParams` and route params
+
+Teaches the URL-vs-component-state decision rule, the `params`-for-identity / `searchParams`-for-view-state split, the async Promise shape in Next.js 16, Zod validation at the boundary, opaque base64 cursors, and `nuqs` as the production layer.
 
 Topics to cover:
 
@@ -133,6 +141,8 @@ Estimated student time: 45 to 60 minutes. The conceptual center of the chapter; 
 
 ## Lesson 5.5.5 — Client-side navigation hooks
 
+Teaches the four `next/navigation` hooks (`useRouter`, `usePathname`, `useSearchParams`, `useParams`), the read-on-server / write-on-client division of labor, `push` vs. `replace` vs. `refresh`, the Suspense requirement on `useSearchParams`, and the chip-list pattern that puts it all together.
+
 Topics to cover:
 
 - **The senior question.** A Client Component renders a filter chip. The user clicks it; the URL should update from `?status=draft` to `?status=paid` without a full page load; the server re-renders the list; the back button returns to the previous filter. What hooks make that work, where do they live, and what's the cost of each? The lesson names the four hooks from `next/navigation` — `useRouter`, `usePathname`, `useSearchParams`, `useParams` — and the read-on-server, write-on-client division of labor.
@@ -164,7 +174,7 @@ Estimated student time: 40 to 50 minutes. Closes the client/server pair on URL s
 
 ---
 
-## Lesson 5.5.6 — Chapter quiz
+## Lesson 5.5.6 — Quizz
 
 Top 10 topics to quiz:
 

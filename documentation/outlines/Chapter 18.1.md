@@ -8,7 +8,9 @@ Threads that run through every lesson. The **three-layer split** is the load-bea
 
 ---
 
-## Lesson 18.1.1 — UTC in Postgres `timestamptz`; Temporal at the domain edge
+## Lesson 18.1.1 — Storage, domain, edge
+
+Teaches the three-layer split for time: `timestamptz` (UTC) in Postgres, `Temporal.Instant` in the domain via a single codec in `lib/temporal.ts`, ISO 8601 on the wire, with `Date` confined to third-party seams.
 
 Topics to cover:
 
@@ -40,7 +42,9 @@ Estimated student time: 45 to 55 minutes. The chapter's load-bearing rule; every
 
 ---
 
-## Lesson 18.1.2 — Date-only values: the `date` type, not midnight `timestamptz`
+## Lesson 18.1.2 — Calendar days, not midnight instants
+
+Teaches the second storage pair — Postgres `date` columns and `Temporal.PlainDate` with its codec — and why calendar-day semantics like `dueDate` and `birthDate` must never be modeled as midnight-UTC `timestamptz`.
 
 Topics to cover:
 
@@ -72,7 +76,9 @@ Estimated student time: 35 to 45 minutes. The storage / domain split is establis
 
 ---
 
-## Lesson 18.1.3 — The user's timezone in their profile, not derived per-request
+## Lesson 18.1.3 — Timezone on the profile
+
+Teaches storing the user's IANA timezone as a `users.timeZone` column seeded from the browser at sign-up, validated with `Intl.supportedValuesOf('timeZone')`, read from the session, and passed explicitly to every formatter and scheduler — never derived per-request.
 
 Topics to cover:
 
@@ -104,7 +110,9 @@ Estimated student time: 40 to 50 minutes.
 
 ---
 
-## Lesson 18.1.4 — DST transitions and recurring jobs
+## Lesson 18.1.4 — DST and recurring jobs
+
+Teaches how to schedule recurring work across DST transitions using Trigger.dev `schedules.task` with a named IANA `timezone` for wall-clock jobs and UTC for internal cadence, plus `Temporal.ZonedDateTime` disambiguation and per-tenant dynamic schedules.
 
 Topics to cover:
 
@@ -138,7 +146,9 @@ Estimated student time: 50 to 60 minutes. The chapter's most decision-heavy less
 
 ---
 
-## Lesson 18.1.5 — Date arithmetic with Temporal
+## Lesson 18.1.5 — Arithmetic with Temporal
+
+Teaches the daily Temporal surface — the `Instant` / `ZonedDateTime` / `PlainDate` / `Duration` type catalog, `add` / `subtract` / `since` / `until` / `with` / `round`, month-end clamping, the conversion graph, the six anti-patterns to retire, and the polyfill seam for Node 24 LTS.
 
 Topics to cover:
 
@@ -173,7 +183,7 @@ Estimated student time: 50 to 60 minutes. The chapter's deepest mechanics lesson
 
 ---
 
-## Lesson 18.1.6 — Chapter quiz
+## Lesson 18.1.6 — Quizz
 
 Top 10 topics to quiz:
 

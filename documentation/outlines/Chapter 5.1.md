@@ -1,4 +1,4 @@
-# Chapter 5.1 — The first project: file structure and routing
+# Chapter 5.1 — File-system routing with the App Router
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ Threads that run through every lesson: the file system is the URL space and ever
 
 ---
 
-## Lesson 5.1.1 — The App Router project: file tree, `page.tsx`, and co-location
+## Lesson 5.1.1 — File tree, `page.tsx`, and co-location
+
+Teaches how folders under `app/` become URL segments, how `page.tsx` makes a route routable, and the feature co-location rule that puts route-specific code under `_components/` and `_lib/` private folders.
 
 Topics to cover:
 
@@ -44,7 +46,9 @@ Estimated student time: 50 to 65 minutes. Load-bearing for every later lesson in
 
 ---
 
-## Lesson 5.1.2 — Layouts, nested layouts, and route groups
+## Lesson 5.1.2 — Layouts and route groups
+
+Teaches `layout.tsx` as the persistent shell that composes down the tree, the layout/page render boundary, `template.tsx` for the remount case, and route groups (`(folder)`) for organizing siblings under distinct layouts without affecting the URL.
 
 Topics to cover:
 
@@ -74,7 +78,9 @@ Estimated student time: 50 to 65 minutes. Load-bearing for every multi-page surf
 
 ---
 
-## Lesson 5.1.3 — Dynamic segments and catch-all routes
+## Lesson 5.1.3 — Dynamic and catch-all segments
+
+Teaches `[param]` for single dynamic segments, `[...slug]` and `[[...slug]]` for variable-depth URLs, why `params` is a Promise in Next.js 16, and validating captured strings with Zod before they hit a query.
 
 Topics to cover:
 
@@ -104,7 +110,9 @@ Estimated student time: 45 to 55 minutes. Load-bearing for every dynamic-route p
 
 ---
 
-## Lesson 5.1.4 — Navigation: `<Link>`, `redirect`, `notFound`, `permanentRedirect`
+## Lesson 5.1.4 — Navigation primitives
+
+Teaches `<Link>` for client-side soft navigation with intelligent prefetching, `useRouter().push` for programmatic moves, and the throwing trio `redirect()` (307), `permanentRedirect()` (308), and `notFound()` for server-side flow control.
 
 Topics to cover:
 
@@ -134,6 +142,8 @@ Estimated student time: 50 to 60 minutes. Load-bearing for every navigation in t
 
 ## Lesson 5.1.5 — Parallel routes and slots
 
+Teaches `@slot` folders as named props on a layout that render and stream independently, `default.tsx` as the unmatched-slot fallback, and the canonical list-plus-detail surface where both panes live under one URL.
+
 Topics to cover:
 
 - **The senior question.** How to build a list-plus-detail surface where both panes share one URL, each with its own loading, error, and not-found behavior? The answer names parallel routes: named slots in a layout that render independently.
@@ -157,7 +167,9 @@ Estimated student time: 50 to 65 minutes. Load-bearing for Lesson 5.1.6 (interce
 
 ---
 
-## Lesson 5.1.6 — Intercepting routes and the modal-with-real-URL pattern
+## Lesson 5.1.6 — Intercepting routes and URL-backed modals
+
+Teaches the `(.)`, `(..)`, `(..)(..)`, and `(...)` prefixes for intercepting soft navigations, the always-paired non-intercepting sibling for direct visits, and the combined parallel-plus-intercepting pattern that gives modals a real, shareable, refreshable URL.
 
 Topics to cover:
 
@@ -183,7 +195,7 @@ Estimated student time: 50 to 65 minutes. Load-bearing for Chapter 5.7 (the proj
 
 ---
 
-## Lesson 5.1.7 — Chapter quiz
+## Lesson 5.1.7 — Quizz
 
 Top 10 topics to quiz:
 

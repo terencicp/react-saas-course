@@ -1,4 +1,4 @@
-# Chapter 20.4 — Project: observability and performance audit
+# Chapter 20.4 — Project: wire observability, audit performance
 
 ## Chapter framing
 
@@ -85,7 +85,9 @@ No custom inspector page — the running app, the Sentry dashboard, the PostHog 
 
 ---
 
-## Lesson 20.4.1 — Project brief: wire observability and audit performance
+## Lesson 20.4.1 — Brief: eight findings, two artifacts
+
+Frames the deliverable as working observability plus a `findings/` report against eight seeded issues, restates the rule-location-consequence-fix template, names the scope cuts and the answer-key honor system, and links the starter.
 
 Goals:
 
@@ -110,7 +112,9 @@ Estimated student time: 20 to 25 minutes.
 
 ---
 
-## Lesson 20.4.2 — Audit target walkthrough and one modeled finding
+## Lesson 20.4.2 — Walk the target, model finding 7
+
+Tours the eight finding clusters in the running app and source side-by-side, then writes `findings/007-missing-priority.md` end-to-end as the chapter's reference shape.
 
 Goals:
 
@@ -133,7 +137,9 @@ Estimated student time: 35 to 45 minutes.
 
 ---
 
-## Lesson 20.4.3 — Wire Sentry, structured logs, and request correlation IDs
+## Lesson 20.4.3 — Wire Sentry, the redactor seam, and correlation IDs
+
+Wires Sentry across client/server/edge with source maps and release tags, builds a single `redact` seam reused in Pino and `beforeSend`, and adds a `proxy.ts` correlation-ID middleware backed by `AsyncLocalStorage`.
 
 Goals:
 
@@ -160,7 +166,9 @@ Estimated student time: 60 to 75 minutes.
 
 ---
 
-## Lesson 20.4.4 — Gate PostHog behind the cookie consent banner
+## Lesson 20.4.4 — Gate PostHog behind the consent banner
+
+Flips `opt_out_capturing_by_default: true`, routes accept/reject through a single `grantAnalyticsConsent`/`revokeAnalyticsConsent` seam, restores session continuity on reload, and verifies zero pre-consent network requests.
 
 Goals:
 
@@ -189,7 +197,9 @@ Estimated student time: 40 to 50 minutes.
 
 ---
 
-## Lesson 20.4.5 — Audit performance: waterfall, barrel, N+1, and the bundle-analyzer delta
+## Lesson 20.4.5 — Document the waterfall, N+1, and the barrel before/after
+
+Documents findings 5, 6, and 8 with the rule-location-consequence-fix template, fixes the barrel import in-place to capture `@next/bundle-analyzer` before/after screenshots, and writes `findings/SUMMARY.md` as the coverage-and-evidence artifact.
 
 Goals:
 
@@ -217,7 +227,9 @@ Estimated student time: 75 to 95 minutes.
 
 ---
 
-## Lesson 20.4.6 — Verify and self-grade against the answer key
+## Lesson 20.4.6 — Verify on each surface, self-grade against the answer key
+
+Runs the verify recipe one surface at a time (Sentry dashboard, console logs, PostHog network panel, `findings/`), commits, then diffs the work against the `v1.0-answer-key` tag to score coverage and surface senior-reach details.
 
 Goals:
 

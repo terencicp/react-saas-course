@@ -1,4 +1,4 @@
-# Chapter 2.3 — Objects, arrays, and collections
+# Chapter 2.3 — Picking the right container
 
 ## Chapter framing
 
@@ -21,7 +21,9 @@ The chapter ordering reflects dependencies. Objects come first because every lat
 
 ---
 
-## Lesson 2.3.1 — Objects: access, construction, and the static `Object.*` helpers
+## Lesson 2.3.1 — The object as workhorse record
+
+Read, build, and reshape a record-shaped value with dot and bracket access, the three construction sugars (shorthand, computed keys, spread), and the `Object.*` static surface including `Object.groupBy`.
 
 Topics to cover:
 
@@ -58,7 +60,9 @@ Estimated student time: 35 to 45 minutes.
 
 ---
 
-## Lesson 2.3.2 — Arrays: indexing, length, and the immutable update reflex
+## Lesson 2.3.2 — Arrays and the non-mutating update
+
+Index arrays under `noUncheckedIndexedAccess`, reach for `.at()` and the ES2023 non-mutating update family (`.toSorted`, `.toReversed`, `.toSpliced`, `.with`), and recognize the mutating methods that React state forbids.
 
 Topics to cover:
 
@@ -105,7 +109,9 @@ Estimated student time: 30 to 40 minutes.
 
 ---
 
-## Lesson 2.3.3 — The array method surface a senior reaches for
+## Lesson 2.3.3 — The array method surface
+
+Walk `.map`, `.filter` with type predicates, `.reduce`, the `.find` family, `.some`/`.every`, `.flatMap`, and `.forEach`, and learn the rule for when to drop out of a chain into a `for...of` loop.
 
 Topics to cover:
 
@@ -141,7 +147,9 @@ Estimated student time: 40 to 50 minutes.
 
 ---
 
-## Lesson 2.3.4 — Set, Map, WeakSet, WeakMap, and the modern Set methods
+## Lesson 2.3.4 — When Set and Map earn their weight
+
+Pick `Set` for dedup and membership, `Map` for keyed lookup at scale, `WeakMap` for GC-coupled caches, and reach for the ES2025 Set composition methods and `Map.groupBy` that retire the lodash habit.
 
 Topics to cover:
 
@@ -184,7 +192,9 @@ Estimated student time: 40 to 50 minutes.
 
 ---
 
-## Lesson 2.3.5 — Iteration, `for...of`, and iterator helpers
+## Lesson 2.3.5 — Iteration and the lazy helpers
+
+Learn the iteration protocol behind every iterable, default to `for...of` for side effects, and reach for the ES2025 `Iterator.prototype` helpers when the input is large, lazy, or short-circuited.
 
 Topics to cover:
 
@@ -230,6 +240,8 @@ Estimated student time: 40 to 50 minutes.
 ---
 
 ## Lesson 2.3.6 — Regex: the modern flavor
+
+Write 2026-flavor regex with named capture groups, lookarounds, the `u` and `v` Unicode flags and property escapes, the `.matchAll` iterator surface, and the boundary where a parser replaces the regex.
 
 Topics to cover:
 

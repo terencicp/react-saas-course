@@ -8,7 +8,9 @@ Threads that run through every lesson: the URL is the source of truth for any vi
 
 ---
 
-## Lesson 11.1.1 — The list-view pattern — URL state and the server/client division
+## Lesson 11.1.1 — The list-view anatomy
+
+Teaches the four-pillar SaaS list pattern (filter, sort, search, paginate) as URL state with a server-reads-and-writes-client division, `router.replace` over `push`, the share-and-refresh contract, and the `nuqs` `searchParamsCache` setup that becomes the chapter's reference shape.
 
 Topics to cover:
 
@@ -42,7 +44,9 @@ Estimated student time: 40 to 50 minutes. The chapter's center of gravity — ev
 
 ---
 
-## Lesson 11.1.2 — Filters and sort in the URL
+## Lesson 11.1.2 — Filter shapes and sort encoding
+
+Teaches the four filter shapes (single-value enum, multi-value array, range as two parameters, boolean toggle with omitted default), the `-key` sort string with its enum-constrained indexed columns, the cursor-reset invariant on filter or sort change, and active-filter chips with a "clear all" affordance.
 
 Topics to cover:
 
@@ -76,7 +80,9 @@ Estimated student time: 45 to 55 minutes. The filter/sort row is the most-freque
 
 ---
 
-## Lesson 11.1.3 — Search — typed state, deferred URL writes
+## Lesson 11.1.3 — Typed input, committed URL
+
+Teaches the typed-vs-committed split for search inputs, React 19's `useDeferredValue` plus `useTransition` for input rhythm, `nuqs` `throttleMs` for URL-write rhythm, the `replace`-only history policy, and the `isPending` loading affordance.
 
 Topics to cover:
 
@@ -109,7 +115,9 @@ Estimated student time: 40 to 50 minutes. The search input is the most user-faci
 
 ---
 
-## Lesson 11.1.4 — Pagination — cursor by default, offset when small
+## Lesson 11.1.4 — Cursor by default, offset when small
+
+Teaches the cursor-vs-offset decision for list pagination, the opaque base64 cursor shape with sort key plus tiebreaker, the next-extra-row trick for `hasNext`, cursor versioning against sort, the row-inserted-during-pagination failure mode under offset, and the "position not snapshot" contract for shared URLs.
 
 Topics to cover:
 
@@ -143,7 +151,7 @@ Estimated student time: 40 to 50 minutes. Closes the URL-state list pattern; pai
 
 ---
 
-## Lesson 11.1.5 — Chapter quiz
+## Lesson 11.1.5 — Quizz
 
 Top 10 topics to quiz:
 

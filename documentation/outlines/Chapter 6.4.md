@@ -1,4 +1,4 @@
-# Chapter 6.4 — Performance and integrity
+# Chapter 6.4 — Indexes, plans, and transactions
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ Threads that run through every lesson: indexes are a measured response to a read
 
 ---
 
-## Lesson 6.4.1 — Indexes — B-tree, partial, composite, expression, unique; when to add them
+## Lesson 6.4.1 — Indexes that earn their weight
+
+Teaches the four senior triggers for adding an index (FK columns, selective `where`, `order by` keys, unique constraints), the index-type decision tree (B-tree default, GIN, partial, composite, expression, unique), how to declare them in Drizzle, and the write/disk cost that bounds when not to add one.
 
 Topics to cover:
 
@@ -47,7 +49,9 @@ Estimated student time: 50 to 60 minutes. Load-bearing for every list query and 
 
 ---
 
-## Lesson 6.4.2 — The N+1 query problem at the Drizzle layer
+## Lesson 6.4.2 — Spotting and fixing N+1
+
+Teaches the four canonical N+1 shapes (await-in-loop, `Promise.all` over a parameterized map, per-card RSC fetches, mixed `findMany`/`findFirst`), why `Promise.all` doesn't fix it, and the structural fix via the relational query API or a hand-written join.
 
 Topics to cover:
 
@@ -85,7 +89,9 @@ Estimated student time: 35 to 45 minutes. Load-bearing for every list-and-detail
 
 ---
 
-## Lesson 6.4.3 — EXPLAIN ANALYZE — reading a query plan
+## Lesson 6.4.3 — Reading EXPLAIN ANALYZE
+
+Teaches how to run `EXPLAIN (ANALYZE, BUFFERS)` through Drizzle, read the plan tree bottom-up, interpret the node types (`Seq Scan`, `Index Scan`, `Nested Loop`, `Hash Join`, `Sort`) and the numbers that matter (estimated vs. actual rows, loop counts, buffer hits), and run the measure-hypothesize-verify loop one change at a time.
 
 Topics to cover:
 
@@ -133,6 +139,8 @@ Estimated student time: 45 to 55 minutes. Load-bearing as the diagnostic skill a
 
 ## Lesson 6.4.4 — Transactions and isolation levels
 
+Teaches the `db.transaction(async (tx) => …)` shape, the four senior triggers for a transaction, the four Postgres isolation levels with their SaaS use cases, the SQLSTATE 40001 retry pattern, `SELECT ... FOR UPDATE` for row locking, and the pool-starvation rule that keeps external IO outside the transaction.
+
 Topics to cover:
 
 - **The senior question.** When does a multi-statement write need atomicity, and which isolation level does the work? The lesson lands the `db.transaction(async (tx) => …)` shape, the four Postgres isolation levels with the SaaS triggers for each, the retry pattern for the higher two, and the boundary with what database constraints already handle.
@@ -173,7 +181,7 @@ Estimated student time: 50 to 60 minutes. Load-bearing for Chapter 7.2 (Server A
 
 ---
 
-## Lesson 6.4.5 — Chapter quiz
+## Lesson 6.4.5 — Quizz
 
 Top 10 topics to quiz:
 

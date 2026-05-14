@@ -1,4 +1,4 @@
-# Chapter 10.3 — Invitations and seat management (SaaS pattern #3)
+# Chapter 10.3 — Invitations and the seat-handoff lifecycle (SaaS pattern #3)
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ Threads that run through every lesson. The invitation token is *cryptographicall
 
 ---
 
-## Lesson 10.3.1 — The invitation table and the seat lifecycle
+## Lesson 10.3.1 — The seat reservation that outlives the request
+
+Model Better Auth's `invitation` table with `tokenHash` and `acceptedAt` additions, the `pending` -> `accepted` / `canceled` state machine, the seven-day expiry as a security primitive, and the partial unique index on `(orgId, lower(email))` where `status = 'pending'`.
 
 Topics to cover:
 
@@ -40,7 +42,9 @@ Estimated student time: 35 to 45 minutes. Setup/wiring with one decision thread 
 
 ---
 
-## Lesson 10.3.2 — Sending an invitation — the signed accept link
+## Lesson 10.3.2 — Minting the signed accept link
+
+Build `sendInvitationAction` with a 32-byte Web Crypto token, SHA-256 hash at rest, HMAC-signed accept URL, Resend dispatch after the DB transaction commits, and the `'invitation.sent'` audit event.
 
 Topics to cover:
 
@@ -73,7 +77,9 @@ Estimated student time: 50 to 60 minutes. Pattern lesson; the send action's eigh
 
 ---
 
-## Lesson 10.3.3 — Accepting an invitation across arrival shapes
+## Lesson 10.3.3 — Four arrival shapes on one accept URL
+
+Route signed-in same-email, signed-in different-email, signed-out with account, and signed-out without account through one accept route with a verify order, an explicit Accept-button consent gate, auto-`emailVerified` for invite-sourced signups, and an active-org switch on accept.
 
 Topics to cover:
 
@@ -104,7 +110,9 @@ Estimated student time: 50 to 60 minutes. The most senior-mindset-heavy lesson i
 
 ---
 
-## Lesson 10.3.4 — Managing pending invitations — list, resend, revoke, re-invite
+## Lesson 10.3.4 — Pending invites: list, resend, revoke, collide
+
+Build the admin's pending-invites surface with an expiry-filtered list, `resendInvitationAction` that rotates the token, `revokeInvitationAction` that sets `status = 'canceled'`, and a catch-and-translate of the unique-pending constraint into `'already-invited'`.
 
 Topics to cover:
 
@@ -134,7 +142,9 @@ Estimated student time: 40 to 50 minutes. Mechanics with one decision thread (re
 
 ---
 
-## Lesson 10.3.5 — Edge cases — orphan invites, email mismatch, expiry, races
+## Lesson 10.3.5 — Orphans, mismatches, and the double-click race
+
+Make the senior calls on inviter-removed-before-accept (honor the invite), strict email-mismatch refusal, the double-click race against the `WHERE status='pending'` filter, and the already-a-member short-circuit.
 
 Topics to cover:
 
@@ -165,7 +175,7 @@ Estimated student time: 35 to 45 minutes. Decision-heavy lesson; the load is the
 
 ---
 
-## Lesson 10.3.6 — Chapter quiz
+## Lesson 10.3.6 — Quizz
 
 Top 10 topics to quiz:
 

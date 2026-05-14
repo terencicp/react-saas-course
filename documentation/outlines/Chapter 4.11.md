@@ -8,7 +8,9 @@ Several threads run through every lesson. **You own the code, not a dependency**
 
 ---
 
-## Lesson 4.11.1 — shadcn/ui: the copy-into-repo component system
+## Lesson 4.11.1 — Own the source, not the dependency
+
+Teaches the shadcn/ui copy-into-repo model — the CLI workflow, `components.json` config, Radix-vs-Base engine choice, `asChild` slot composition, semantic-token theming, the fork threshold, and the registry namespace system.
 
 Topics to cover:
 
@@ -48,7 +50,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.11.2 — The accessibility baseline as discipline
+## Lesson 4.11.2 — The four commitments
+
+Consolidates the four discipline-level accessibility commitments — keyboard navigation, WCAG 2.2 AA contrast, `prefers-reduced-motion`, and touch target size — and names semantic HTML as the first move before any ARIA.
 
 Topics to cover:
 
@@ -89,7 +93,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.11.3 — ARIA: roles, labels, and live regions
+## Lesson 4.11.3 — No ARIA is better than bad ARIA
+
+Teaches the four ARIA surfaces a SaaS engineer reaches for — roles, labels, descriptions, and live regions — the icon-only button label pattern, the `sr-only`/`aria-hidden`/`hidden` decision tree, the live-region pre-mount rule, and `role="status"` vs. `role="alert"`.
 
 Topics to cover:
 
@@ -131,7 +137,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.11.4 — Focus management: modals, route changes, post-submission
+## Lesson 4.11.4 — Where focus belongs
+
+Teaches focus management across the three canonical SaaS situations — modal focus traps (Radix-handled), the route-change focus reflex Next.js does not provide, and post-submission focus — plus skip links, the `disabled` vs. `aria-disabled` decision, and the DOM-order rule for tab order.
 
 Topics to cover:
 
@@ -171,7 +179,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.11.5 — Empty, loading, and error states
+## Lesson 4.11.5 — Four states, not one
+
+Teaches the loading/empty/error/populated component contract — `Skeleton` over spinners, `Empty` with a CTA, `Alert` with retry, the accessibility pairing for each state, and the discriminated-union state model that replaces three booleans.
 
 Topics to cover:
 
@@ -212,7 +222,7 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.11.6 — Chapter quiz
+## Lesson 4.11.6 — Quizz
 
 Top 10 topics to quiz:
 

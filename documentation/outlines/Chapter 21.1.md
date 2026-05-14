@@ -1,4 +1,4 @@
-# Chapter 21.1 — Git and version control
+# Chapter 21.1 — Git as shipping discipline
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ Threads that run through every lesson. **Trunk-based and PR-per-change** is the 
 
 ---
 
-## Lesson 21.1.1 — Git fundamentals and the trunk-based workflow
+## Lesson 21.1.1 — Trunk-based Git for teams
+
+The four Git objects, the everyday loop, and the rebase-locally / squash-merge-on-PR defaults that keep `main`'s history one commit per shipped change.
 
 Topics to cover:
 
@@ -47,7 +49,9 @@ Estimated student time: 50 to 60 minutes. Concept + Setup; the `pull.rebase` + s
 
 ---
 
-## Lesson 21.1.2 — Recovery and history shaping
+## Lesson 21.1.2 — Reflog, bisect, and the rescue toolkit
+
+The four power tools — `reflog` for recovery, `bisect` for regression hunting, `cherry-pick` and `revert` for surgical moves, `rebase -i` for shaping history before push — and the trigger that earns each.
 
 Topics to cover:
 
@@ -83,7 +87,9 @@ Estimated student time: 50 to 60 minutes. Mechanics + Reference; the reflog-as-s
 
 ---
 
-## Lesson 21.1.3 — Pull requests as the unit of change
+## Lesson 21.1.3 — The pull request as designed artifact
+
+The small-reviewable-reversible rule, the six-section description template, draft PRs, CODEOWNERS routing, and the fixup-commit-plus-squash-merge review loop.
 
 Topics to cover:
 
@@ -120,7 +126,9 @@ Estimated student time: 45 to 55 minutes. Pattern + Decision; the description te
 
 ---
 
-## Lesson 21.1.4 — Branch protection and structural enforcement
+## Lesson 21.1.4 — Rulesets that enforce the workflow
+
+The six-rule minimum-viable ruleset for `main` — PR required, approvals, stale-approval dismissal, code-owner review, required status checks, linear history — plus bypass actors and the `.github/` policy surface.
 
 Topics to cover:
 
@@ -159,7 +167,7 @@ Estimated student time: 35 to 45 minutes. Setup/wiring + Pattern; the six-rule b
 
 ---
 
-## Lesson 21.1.5 — Chapter quiz
+## Lesson 21.1.5 — Quizz
 
 Top 10 topics to quiz:
 

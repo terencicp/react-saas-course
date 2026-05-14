@@ -1,4 +1,4 @@
-# Chapter 19.6 — Project: integration + E2E tests for the Stripe checkout flow
+# Chapter 19.6 — Project: testing the Stripe webhook and Checkout money path
 
 ## Chapter framing
 
@@ -145,7 +145,9 @@ tests/
 
 ---
 
-## Lesson 19.6.1 — Project brief
+## Lesson 19.6.1 — Brief and Done-when
+
+Frames the deliverable: three webhook integration tests plus one Playwright money-path test, the scope cuts, and the "Done when" clauses that gate the chapter.
 
 Goals:
 
@@ -171,7 +173,9 @@ Estimated student time: 15 to 20 minutes.
 
 ---
 
-## Lesson 19.6.2 — Starter walkthrough
+## Lesson 19.6.2 — Reading the test harness
+
+Walks every provided file in the starter — Vitest integration config, MSW handlers, auth fixtures, the rollback helper, the Stripe event factory, `postWebhook`, `callAction`, Playwright config, and the auth setup — and runs both empty suites to confirm the harness boots.
 
 Goals:
 
@@ -206,7 +210,9 @@ Estimated student time: 30 to 40 minutes.
 
 ---
 
-## Lesson 19.6.3 — Happy-path integration test for `checkout.session.completed`
+## Lesson 19.6.3 — The happy-path webhook test
+
+Writes the first integration test that drives a signed `checkout.session.completed` event through the real route handler and asserts on the `processed_events`, `plan_entitlements`, and `audit_logs` rows that result.
 
 Goals:
 
@@ -239,7 +245,9 @@ Estimated student time: 60 to 75 minutes.
 
 ---
 
-## Lesson 19.6.4 — Idempotency and signature-rejection integration tests
+## Lesson 19.6.4 — Replay and tamper tests
+
+Adds two integration tests proving that a replayed event is a no-op (`duplicate: true`, no extra rows) and that a tampered signature returns 400 problem+json with zero downstream writes.
 
 Goals:
 
@@ -290,7 +298,9 @@ Estimated student time: 60 to 75 minutes.
 
 ---
 
-## Lesson 19.6.5 — Playwright money-path test for the Stripe Checkout round-trip
+## Lesson 19.6.5 — Driving Checkout end to end
+
+Writes the single Playwright test that signs in via `storageState`, clicks Upgrade, fills the Stripe Checkout iframe with `4242 4242 4242 4242`, returns to `/billing/success`, and watches the poller flip the UI to Pro.
 
 Goals:
 
@@ -329,7 +339,9 @@ Estimated student time: 75 to 90 minutes. The chapter's heaviest lesson; the ifr
 
 ---
 
-## Lesson 19.6.6 — Verify
+## Lesson 19.6.6 — Verify and mutation drills
+
+Walks every "Done when" clause, runs the deliberate-handler-mutation drills that prove each test isolates the right failure, and names the coverage gaps to absorb as homework.
 
 Goals:
 

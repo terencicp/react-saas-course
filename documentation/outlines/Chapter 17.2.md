@@ -8,7 +8,9 @@ Threads that run through every lesson. The baseline is **load-bearing minimums, 
 
 ---
 
-## Lesson 17.2.1 — Security headers in `next.config.ts`
+## Lesson 17.2.1 — Headers that block live attacks
+
+The irreducible six security headers — HSTS, nonce-based CSP with `'strict-dynamic'`, `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`, `frame-ancestors` — split between `next.config.ts` (static) and `proxy.ts` (per-request CSP nonce), with the static-prerender trade-off and report-only rollout.
 
 Topics to cover:
 
@@ -34,7 +36,9 @@ Estimated student time: 45 to 55 minutes.
 
 ---
 
-## Lesson 17.2.2 — Rate-limit coverage across abusable endpoints
+## Lesson 17.2.2 — The abusable-endpoint matrix
+
+The seven categories of abusable endpoints, the three triggers that make a limiter mandatory, per-category key strategy, the `safeLimit` seam, module-scope declaration in `lib/rate-limit.ts`, and the coverage matrix as deliverable.
 
 Topics to cover:
 
@@ -58,7 +62,9 @@ Estimated student time: 30 to 40 minutes.
 
 ---
 
-## Lesson 17.2.3 — Audit logs as discipline
+## Lesson 17.2.3 — What belongs in the audit log
+
+The six-category canonical event set, what's forbidden (reads, failed auth), the per-entry field shape with per-event payload schemas, PII redaction policy, append-only defense in depth, transaction-scoped `logAudit(tx, event)`, three audiences, and anonymization on user deletion.
 
 Topics to cover:
 
@@ -86,7 +92,9 @@ Estimated student time: 40 to 50 minutes.
 
 ---
 
-## Lesson 17.2.4 — GDPR posture: retention timers and deletion-on-request
+## Lesson 17.2.4 — Retention and the right to be forgotten
+
+The per-table retention catalog driven by a daily Trigger.dev job (R2 lifecycle for blobs), the async deletion-on-request flow, the three deletion shapes (hard / soft / anonymize), third-party deletion calls, legal retention carve-outs, and the no-real-PII-in-non-prod rule.
 
 Topics to cover:
 
@@ -117,7 +125,9 @@ Estimated student time: 50 to 60 minutes.
 
 ---
 
-## Lesson 17.2.5 — The cookie consent gate
+## Lesson 17.2.5 — Nothing fires pre-consent
+
+Essential vs. non-essential cookies, the four-state consent machine, the single `useConsent()` provider, PostHog's `opt_out_capturing_by_default` plus dynamic SDK import, the three-button banner with equal-weight Accept/Reject, the consent-record audit entry, and the marketing-email opt-in boundary.
 
 Topics to cover:
 
@@ -147,7 +157,9 @@ Estimated student time: 45 to 55 minutes.
 
 ---
 
-## Lesson 17.2.6 — Secrets management
+## Lesson 17.2.6 — Where secrets live and how they rotate
+
+The five secrets rules (never in code, never client-bundled, in the platform store with Vercel's "sensitive" flag, three environments / three sets, rotation as a documented Vercel-before-provider operation), `.env.example` discipline, pre-commit secret scanning, and the canonical leak audit.
 
 Topics to cover:
 
@@ -175,7 +187,9 @@ Estimated student time: 35 to 45 minutes.
 
 ---
 
-## Lesson 17.2.7 — Type-safe environment variables: baseline audit
+## Lesson 17.2.7 — The env schema as single source of truth
+
+The four `@t3-oss/env-nextjs` invariants (typed `env` for every access, server/client split, `.env.example` parity, `SKIP_ENV_VALIDATION` only in legitimate places), the schema-as-documentation read, `NODE_ENV`-conditional production-only vars, and the one-page env audit deliverable.
 
 Topics to cover:
 
@@ -198,7 +212,9 @@ Estimated student time: 20 to 30 minutes.
 
 ---
 
-## Lesson 17.2.8 — Dep hygiene and supply-chain defaults
+## Lesson 17.2.8 — Supply-chain defaults after Shai-Hulud
+
+The 2026 pnpm 11+ load-bearing defaults (`minimumReleaseAge: 1440`, `blockExoticSubdeps`, `only-built-dependencies` allow-list), `pnpm audit --prod` posture, committed lockfile with CI `--frozen-lockfile`, the three-question "is this maintained" check, Renovate / Socket, and canonical incident defenses.
 
 Topics to cover:
 
@@ -224,7 +240,7 @@ Estimated student time: 35 to 45 minutes.
 
 ---
 
-## Lesson 17.2.9 — Chapter quiz
+## Lesson 17.2.9 — Quizz
 
 Top 10 topics to quiz:
 

@@ -29,6 +29,8 @@ Chapter 2.1 lands on this codebase and starts teaching JavaScript values, refere
 
 ## Lesson 1.4.1 — Cloning the starter and the dev/build cycle
 
+Fetch the course's pinned Next.js 16 scaffold with `degit`, read the file tree end to end, and run `pnpm dev` and `pnpm build` to commit the toolchain decisions from Chapters 1.2–1.3 into a real first commit.
+
 Topics to cover:
 
 - The senior question: why does the course ship a starter instead of running `create-next-app`. Two reasons named plainly. First, the wizard's defaults drift across releases — the course pins May 2026's choices and ships them as a frozen commit, so a student starting six months from now lands on the same scaffold the course was written against. Second, the wizard does not produce the file layout, the strictness flags, the env validation, or the `AGENTS.md` the course teaches — recreating those from the wizard's output would take the chapter sideways. The starter is the senior call.
@@ -74,6 +76,8 @@ Estimated student time: 30 to 35 minutes.
 
 ## Lesson 1.4.2 — AGENTS.md as the next contributor's briefing
 
+Read the starter's `AGENTS.md` to see what earns a place (thesis, pinned stack, layout, commands, conventions pointers) and what doesn't (aspirational prose, duplicated rules, hand-maintained file lists), with the deeper documentation doctrine deferred to Chapter 22.1.
+
 Topics to cover:
 
 - The senior question: what is the file the next person to open this repo (human or AI agent) should read first, and what earns a place in it. `AGENTS.md` is that file in 2026. The Linux Foundation adopted it as an Agentic AI Foundation founding project in late 2025; major coding agents (Codex, Cursor, Claude Code, Factory) read it natively. The framing for the course: `AGENTS.md` is **operational onboarding**, not architectural prose — the durable facts the next contributor needs to be productive in their first session.
@@ -113,6 +117,8 @@ Estimated student time: 20 to 25 minutes.
 
 ## Lesson 1.4.3 — The strictness floor the project owns in tsconfig.json
 
+Walk the project-owned half of `tsconfig.json` — `strict`, `noUncheckedIndexedAccess`, `noFallthroughCasesInSwitch`, `noImplicitOverride`, `forceConsistentCasingInFileNames`, the `@/*` path aliases — naming each flag by the bug class it catches and parking `exactOptionalPropertyTypes` as the conditional.
+
 Topics to cover:
 
 - The senior framing for the next two lessons together. `tsconfig.json` has two owners. The project owns the *strictness floor* — the flags that decide which classes of bugs the type-checker catches before the code ships. Next.js owns the *compatibility surface* — the flags that make TypeScript, the bundler, and the runtime agree on what a module is. This lesson covers the first half; 1.4.4 covers the second. Both files live in the same `tsconfig.json`; the split is mental, not physical. Naming it makes the file readable.
@@ -143,6 +149,8 @@ Estimated student time: 30 to 35 minutes.
 ---
 
 ## Lesson 1.4.4 — The compatibility flags Next.js owns in tsconfig.json
+
+Read the framework-owned half of the same file — `target`/`lib`, `module`/`moduleResolution: "bundler"`, the transpiler-alignment trio (`verbatimModuleSyntax`, `isolatedModules`, `esModuleInterop`), `jsx: "preserve"`, `noEmit`, the Next.js plugin, `next-env.d.ts` — under the rule that if you're tempted to edit a flag in this lesson, you're probably wrong.
 
 Topics to cover:
 
@@ -178,6 +186,8 @@ Estimated student time: 30 to 35 minutes.
 ---
 
 ## Lesson 1.4.5 — Type-safe environment variables with @t3-oss/env-nextjs
+
+Wire build-time env validation with `@t3-oss/env-nextjs` and Zod 4 so a missing `DATABASE_URL` fails `pnpm build` before deploy, covering the `server`/`client` split, the `NEXT_PUBLIC_*` convention, the `.env.example` → `.env.local` pattern, and `SKIP_ENV_VALIDATION` as a deliberate escape hatch.
 
 Topics to cover:
 

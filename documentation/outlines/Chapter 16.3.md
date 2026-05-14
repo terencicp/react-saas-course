@@ -10,6 +10,8 @@ Threads through every lesson: Zustand is **conditional and per-feature**, not a 
 
 ## Lesson 16.3.1 — When Zustand earns its weight
 
+The three triggers that justify reaching for Zustand past the five client-state defaults, the per-feature rule, and the "client-only, never global ambient" framing for SaaS codebases.
+
 Topics to cover:
 
 - **The senior question.** Five client-state shapes have already been covered with stronger defaults — `useState` for transient local UI, `useReducer` for related local state with transitions, lifted state plus React Context for narrowly shared trees, `nuqs` for shareable view state in the URL, and TanStack Query for server state on the four 16.1.1 triggers. What's left? When does a SaaS feature genuinely need an in-memory global client store, and what's the threshold the five defaults stop covering? The lesson answers it explicitly so the rest of the chapter has a justification.
@@ -38,7 +40,9 @@ Estimated student time: 30 to 40 minutes. The chapter's load-bearing decision le
 
 ---
 
-## Lesson 16.3.2 — Stores, slices, selectors, and the per-request provider
+## Lesson 16.3.2 — Primitives and the per-request provider
+
+The v5 API surface — `createStore`, the slices pattern with `StateCreator`, selector subscriptions with `useShallow`, the `useRef`-pinned Context provider for App Router SSR, and the middleware lineup named once.
 
 Topics to cover:
 
@@ -77,7 +81,9 @@ Estimated student time: 60 to 75 minutes. The chapter's heaviest mechanics-plus-
 
 ---
 
-## Lesson 16.3.3 — The trigger in our app — the customer-onboarding wizard
+## Lesson 16.3.3 — The routed wizard, end to end
+
+The four-step customer-onboarding wizard as the in-app trigger — the four-slice store shape, per-step Zod gates, the Server-Action submit boundary, back/forward preserves vs. refresh loses, and reset discipline at submit-success and org-switch.
 
 Topics to cover:
 
@@ -113,7 +119,7 @@ Estimated student time: 30 to 40 minutes. The chapter's bridge into the project 
 
 ---
 
-## Lesson 16.3.4 — Chapter quiz
+## Lesson 16.3.4 — Quizz
 
 Top 10 topics to quiz:
 

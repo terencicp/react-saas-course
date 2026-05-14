@@ -8,7 +8,9 @@ Threads that run through every lesson: the route handler is the trust boundary �
 
 ---
 
-## Lesson 12.1.1 — Signature verification at the route handler boundary
+## Lesson 12.1.1 — Verify before parse
+
+Teaches the route handler trust boundary for Stripe webhooks — raw body via `request.text()`, HMAC-SHA-256 over `${t}.${rawBody}`, constant-time compare, the 5-minute timestamp tolerance, the `stripe.webhooks.constructEvent` SDK helper, and returning 400 with RFC 9457 problem+json on failure before any business logic runs.
 
 Topics to cover:
 
@@ -41,7 +43,9 @@ Estimated student time: 50 to 60 minutes. The chapter's trust boundary — every
 
 ---
 
-## Lesson 12.1.2 — Dedup and the outer transaction
+## Lesson 12.1.2 — Claim once, mutate once
+
+Teaches the `processed_events(provider, eventId)` ledger with `INSERT ... ON CONFLICT DO NOTHING RETURNING` as atomic check-and-claim, wrapping the dedup insert and the business mutation in one transaction, returning 200 (not 4xx) on lost-claim, and the 30-second Stripe timing budget that pushes side-effects to background jobs.
 
 Topics to cover:
 
@@ -74,7 +78,9 @@ Estimated student time: 50 to 60 minutes. The structural backbone of every webho
 
 ---
 
-## Lesson 12.1.3 — Out-of-order events and the redirect-versus-webhook race
+## Lesson 12.1.3 — Newer wins, single writer
+
+Teaches the `event.created` plus `last_event_at` predicate inside the UPDATE WHERE for out-of-order delivery, UPDATE-RETURNING to detect stale no-ops, the "webhook is the only writer" rule, and the success-page read-and-poll via `router.refresh()` that closes the redirect-versus-webhook race without double-writing entitlements.
 
 Topics to cover:
 
@@ -108,7 +114,9 @@ Estimated student time: 45 to 55 minutes. The "money seam" lesson — the bugs t
 
 ---
 
-## Lesson 12.1.4 — Idempotency as a unifying discipline
+## Lesson 12.1.4 — One pattern, four surfaces
+
+Promotes the unique-on-key constraint plus atomic insert into a portable idempotency discipline applied identically to webhooks (`event.id`), Server Actions (Client-Component `crypto.randomUUID()` form key), retried background jobs (stable `runId`), and public route handlers (the RFC `Idempotency-Key` header with scoped-per-client response caching).
 
 Topics to cover:
 
@@ -142,7 +150,9 @@ Estimated student time: 45 to 55 minutes. The lesson that promotes the webhook p
 
 ---
 
-## Lesson 12.1.5 — Applying the pattern: Resend bounce and complaint webhooks
+## Lesson 12.1.5 — Resend bounces and complaints
+
+Ships the second instance of the pattern — Svix signature verification (`svix-id` / `svix-timestamp` / `svix-signature`), the `email.bounced` and `email.complained` handlers writing to `email_suppressions` with `ON CONFLICT DO NOTHING`, and the audited `bypassSuppression` carve-out for password-reset and other critical transactional sends.
 
 Topics to cover:
 
@@ -176,7 +186,7 @@ Estimated student time: 35 to 45 minutes. The application lesson — proves the 
 
 ---
 
-## Lesson 12.1.6 — Chapter quiz
+## Lesson 12.1.6 — Quizz
 
 Top 10 topics to quiz:
 

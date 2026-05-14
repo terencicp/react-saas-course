@@ -8,7 +8,9 @@ Several threads run through every lesson. **Composition over configuration**: a 
 
 ---
 
-## Lesson 4.6.1 — Components, props, and the typed contract
+## Lesson 4.6.1 — The typed props contract
+
+Teaches how to write a React 19 component as a typed function of props, using `ComponentProps`, variant unions, default destructuring, and the `className`-plus-`...rest` discipline.
 
 Topics to cover:
 
@@ -45,7 +47,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.6.2 — `children`, composition patterns, and the named-slot reach
+## Lesson 4.6.2 — Children and compound components
+
+Teaches `children: ReactNode`, the shadcn-style compound-component pattern for multi-region UIs, prop-as-slot for single named regions, render props as a recognition-only fallback, and the conditional-render `0`-falsy trap.
 
 Topics to cover:
 
@@ -80,7 +84,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.6.3 — Polymorphic components with `Slot`, `asChild`, and `cva`
+## Lesson 4.6.3 — Polymorphism with Slot and CVA
+
+Teaches the shadcn-style polymorphic component built from `@radix-ui/react-slot` plus `asChild`, the `class-variance-authority` variant table with `VariantProps` and `compoundVariants`, and why this pair beats a generic `as` prop.
 
 Topics to cover:
 
@@ -121,7 +127,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.6.4 — Refs as a prop in React 19
+## Lesson 4.6.4 — Refs as a regular prop
+
+Teaches React 19's ref-as-prop model, the `Ref<T>` and `RefObject<T>` types, ref callbacks with the new cleanup return, merging multiple refs onto one node, and `useImperativeHandle` as the rare escape valve.
 
 Topics to cover:
 
@@ -157,7 +165,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.6.5 — Portals: modals, toasts, and anchored overlays
+## Lesson 4.6.5 — Portals and the layout escape
+
+Teaches `createPortal` for modals, toasts, and anchored popovers, the SSR `document` guard, the accessible-modal contract (focus trap, scroll lock, `Esc`), the native `<dialog>` and CSS anchor-positioning alternatives, and why events still bubble through the React tree.
 
 Topics to cover:
 
@@ -197,7 +207,7 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.6.6 — Chapter quiz
+## Lesson 4.6.6 — Quizz
 
 Top 10 topics to quiz:
 

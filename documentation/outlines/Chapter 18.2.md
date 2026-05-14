@@ -8,7 +8,9 @@ Threads through every lesson. **Translation keys are the wire format; strings ar
 
 ---
 
-## Lesson 18.2.1 — Translation keys, interpolation, never concatenation
+## Lesson 18.2.1 — Keys, catalogs, and the no-concatenation rule
+
+Translation keys in code, per-locale JSON catalogs with named placeholders, one-string-per-key, and the `t.rich` pattern for embedded markup.
 
 Topics to cover:
 
@@ -39,6 +41,8 @@ Estimated student time: 40 to 50 minutes. The chapter's discipline-installation 
 
 ## Lesson 18.2.2 — ICU MessageFormat: plurals, select, gendered forms
 
+ICU `plural` with CLDR categories and exact-match overrides, `selectordinal` for ordinals, `select` for free enums, and nested plural-inside-select for gendered counts.
+
 Topics to cover:
 
 - **The senior question.** A notification says "You have 1 message" or "You have 5 messages." English has two plural forms; Russian has four; Arabic six; Welsh six; Chinese one. Hand-rolling per-language plural logic in component code is the bug class. The senior reach is **ICU MessageFormat** — the catalog entry carries the plural rules, the runtime applies CLDR's plural categories per locale, the engineer writes one `t(key, { count })` call.
@@ -68,7 +72,9 @@ Estimated student time: 40 to 50 minutes. The chapter's load-bearing rule for an
 
 ---
 
-## Lesson 18.2.3 — `Intl.NumberFormat`, `DateTimeFormat`, `RelativeTimeFormat`, `Collator`
+## Lesson 18.2.3 — The `Intl.*` formatter family
+
+The daily-reach `Intl.*` formatters — `NumberFormat`, `DateTimeFormat` (Temporal-native, mandatory `timeZone`), `RelativeTimeFormat`, `Collator`, plus `ListFormat` / `DisplayNames` — and the construct-once-reuse rule.
 
 Topics to cover:
 
@@ -100,7 +106,9 @@ Estimated student time: 50 to 60 minutes. The chapter's deepest mechanics lesson
 
 ---
 
-## Lesson 18.2.4 — Locale negotiation: profile preference plus `Accept-Language`
+## Lesson 18.2.4 — The locale resolution chain
+
+The five-input negotiation order (URL prefix, profile, cookie, `Accept-Language` best-match, default), BCP 47 `Lookup` via `@formatjs/intl-localematcher`, and `users.locale` paired with `users.timeZone`.
 
 Topics to cover:
 
@@ -132,7 +140,9 @@ Estimated student time: 40 to 50 minutes.
 
 ---
 
-## Lesson 18.2.5 — next-intl: wiring the discipline in Next.js 16
+## Lesson 18.2.5 — Wiring next-intl into Next.js 16
+
+The next-intl file shape — `defineRouting`, `createMiddleware`, `getRequestConfig`, `setRequestLocale`, `generateStaticParams`, `useTranslations` / `getTranslations`, `useFormatter`, typed navigation, and the `IntlMessages` global type.
 
 Topics to cover:
 
@@ -166,7 +176,9 @@ Estimated student time: 50 to 60 minutes. The chapter's Setup/Wiring lesson; cas
 
 ---
 
-## Lesson 18.2.6 — i18n SEO: `hreflang`, per-locale sitemaps, canonical URLs
+## Lesson 18.2.6 — hreflang, per-locale canonicals, and SEO
+
+The `alternates.languages` metadata surface with self-reference and bidirectionality, `x-default`, locale-specific canonicals, per-locale sitemaps, and OG `og:locale` with locale-aware OG images.
 
 Topics to cover:
 
@@ -201,7 +213,7 @@ Estimated student time: 45 to 55 minutes.
 
 ---
 
-## Lesson 18.2.7 — Chapter quiz
+## Lesson 18.2.7 — Quizz
 
 Top 10 topics to quiz:
 

@@ -1,4 +1,4 @@
-# Chapter 7.4 — When the platform isn't enough: React Hook Form (conditional)
+# Chapter 7.4 — When the platform isn't enough: React Hook Form
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ The threads that must run through every lesson. RHF is a conditional tool, not a
 
 ---
 
-## Lesson 7.4.1 — When React Hook Form earns its weight
+## Lesson 7.4.1 — The four triggers that flip the choice
+
+Names the four UX shapes that break the native 7.3 form pattern and justify reaching for React Hook Form, the cost of adopting it, and the 2026 form-library landscape (Conform, TanStack Form) at one paragraph each.
 
 Topics to cover:
 
@@ -40,7 +42,9 @@ Estimated student time: 25 to 35 minutes. Decision archetype. The chapter's gate
 
 ---
 
-## Lesson 7.4.2 — RHF fundamentals: `useForm`, `register`, `Controller`
+## Lesson 7.4.2 — The five primitives: `useForm`, `register`, `Controller`, `handleSubmit`, `formState`
+
+Teaches RHF's core surface — the form root, the uncontrolled and controlled field paths, the submit interceptor, the read-side state, and how the shadcn `<Form>` wrapper consumes the form instance.
 
 Topics to cover:
 
@@ -73,6 +77,8 @@ Estimated student time: 45 to 55 minutes. Mechanics archetype. The lesson where 
 
 ## Lesson 7.4.3 — `zodResolver`: one schema, both sides of the wire
 
+Wires `@hookform/resolvers/zod` so the form and the Server Action validate against the same Zod schema, covering the `z.input` vs `z.output` type bridge, the `FormData` vs typed-object action call shape, and mapping server-returned `fieldErrors` back into RHF via `setError`.
+
 Topics to cover:
 
 - **The senior question.** The Server Action's first line is `Schema.safeParse(Object.fromEntries(formData))` (7.2.2). The RHF form needs to validate the same shape *before* the action runs to drive the inline error UX. The lazy reach is to declare a parallel client-side schema or hand-write per-field rules in `register`. Both produce drift the day the schema gains a field. The senior reach is the Zod resolver: RHF reads validity from the *same* Zod schema the action uses. The lesson teaches the resolver wiring, the type bridge, the input-vs-output transform handling, and the rule of one schema per form.
@@ -102,6 +108,8 @@ Estimated student time: 40 to 50 minutes. Pattern archetype. The lesson where RH
 ---
 
 ## Lesson 7.4.4 — `useFieldArray`: dynamic lists of fields
+
+Teaches the hook for variable-length row sets — the `append`/`remove`/`move`/`replace` operations, the `field.id` vs domain-ID split, the `z.array(z.object(...))` schema shape with per-row error access, and the action-side insert/update/delete diff inside a transaction.
 
 Topics to cover:
 
@@ -133,6 +141,8 @@ Estimated student time: 35 to 45 minutes. Mechanics archetype. The lesson instal
 
 ## Lesson 7.4.5 — Multi-step wizards with `FormProvider`
 
+Builds an end-to-end wizard with one `useForm` at the root, `useFormContext` per step, `trigger(fieldNames)` plus schema `.pick()` for per-step validation, `shouldUnregister: false` for back-navigation, and the progressive-enhancement casualty named explicitly.
+
 Topics to cover:
 
 - **The senior question.** An onboarding flow takes the user through five steps: company details, billing address, plan selection, payment method, confirmation. Each step is its own component, each renders a subset of the schema's fields, the user can go back and edit a prior step, the wizard validates per step but submits as one form. The native 7.3 pattern would need a parent `useState` per field (or context), an action call per step (no — the wizard submits once), manual error-state plumbing across components. RHF's `FormProvider` + `useFormContext` carries the single form instance across the tree without prop-drilling; per-step validation reuses the same Zod schema with `.pick()` for the step's fields; the wizard submits once at the end. The lesson teaches the wizard shape end to end.
@@ -162,7 +172,7 @@ Estimated student time: 45 to 55 minutes. Pattern archetype. The lesson runs lon
 
 ---
 
-## Lesson 7.4.6 — Chapter quiz
+## Lesson 7.4.6 — Quizz
 
 Top 10 topics to quiz:
 

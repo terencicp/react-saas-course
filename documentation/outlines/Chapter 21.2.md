@@ -1,4 +1,4 @@
-# Chapter 21.2 — CI on GitHub Actions
+# Chapter 21.2 — The CI gate on GitHub Actions
 
 ## Chapter framing
 
@@ -9,6 +9,8 @@ Threads that run through every lesson. **CI is the structural enforcement of the
 ---
 
 ## Lesson 21.2.1 — GitHub Actions primitives
+
+The workflow/job/step model, the trigger surface, pnpm-aware caching, least-privilege `permissions:`, secrets, and `concurrency:` — the GHA surface a senior needs to author the workflows that produce required status checks.
 
 Topics to cover:
 
@@ -47,7 +49,9 @@ Estimated student time: 55 to 70 minutes. Concept + Setup/wiring; the primitives
 
 ---
 
-## Lesson 21.2.2 — The four-job CI baseline
+## Lesson 21.2.2 — The four-job merge gate
+
+The `.github/workflows/ci.yml` baseline of parallel typecheck / lint / test / build jobs, why these four and no others gate the merge, the five-minute speed budget, and the job-name discipline that keeps the ruleset enforceable.
 
 Topics to cover:
 
@@ -84,7 +88,9 @@ Estimated student time: 50 to 60 minutes. Setup/wiring + Pattern; the four-job b
 
 ---
 
-## Lesson 21.2.3 — Supplementary CI checks and dependency updates
+## Lesson 21.2.3 — Signal checks and dependency hygiene
+
+The gate-vs-signal split for non-blocking jobs (`pnpm audit`, `actionlint`, scheduled link-check), the 2026 supply-chain layer (signature verification, `minimumReleaseAge`, SHA-pinning), and Dependabot grouping with patch auto-merge.
 
 Topics to cover:
 
@@ -121,7 +127,7 @@ Estimated student time: 40 to 50 minutes. Reference/survey + Decision; the gate-
 
 ---
 
-## Lesson 21.2.4 — Chapter quiz
+## Lesson 21.2.4 — Quizz
 
 Top 10 topics to quiz:
 

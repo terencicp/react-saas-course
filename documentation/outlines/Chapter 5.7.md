@@ -88,6 +88,8 @@ components/
 
 ## Lesson 5.7.1 — Project brief
 
+Frames the list-plus-detail surface, the modal-with-real-URL pattern, the "Done when" verifications, and the scope cut against future units.
+
 Goals:
 
 - Frame the SaaS pattern being built: list-plus-detail as the canonical workspace surface, modal-with-real-URL as the senior modal pattern, URL as the source of truth for view state.
@@ -111,6 +113,8 @@ Estimated student time: 10 to 15 minutes.
 
 ## Lesson 5.7.2 — Starter walkthrough
 
+Tours the provided file tree, the queries and Zod schema in `/lib`, the pure render components, and the two-slot layout the student will fill in.
+
 Goals:
 
 - Walk the file tree above, calling out provided vs. stubbed.
@@ -133,7 +137,9 @@ Estimated student time: 20 to 25 minutes.
 
 ---
 
-## Lesson 5.7.3 — Parallel slots with the server-side status filter
+## Lesson 5.7.3 — Wiring the @list and @detail slots
+
+Fills the slot `page.tsx` and `default.tsx` files, reads `searchParams` server-side with Zod validation, and uses `notFound()` for missing records.
 
 Goals:
 
@@ -157,7 +163,9 @@ Estimated student time: 35 to 45 minutes.
 
 ---
 
-## Lesson 5.7.4 — The intercepting modal and its paired full page
+## Lesson 5.7.4 — Modal with a real URL
+
+Builds the `(.)new` intercepting modal and its non-intercepting twin so soft nav opens a dialog while refresh and `Cmd+click` open the full page.
 
 Goals:
 
@@ -182,7 +190,9 @@ Estimated student time: 35 to 45 minutes.
 
 ---
 
-## Lesson 5.7.5 — Slot-specific Suspense boundaries and skeletons
+## Lesson 5.7.5 — Independent streaming per slot
+
+Adds `loading.tsx` and skeleton components to each slot so the list and detail stream independently under throttled network.
 
 Goals:
 
@@ -207,6 +217,8 @@ Estimated student time: 25 to 35 minutes.
 ---
 
 ## Lesson 5.7.6 — Verify
+
+Walks every "Done when" clause as a verification step, names the senior calls, and points at the forward references in Units 6, 7, and 11.
 
 Goals:
 

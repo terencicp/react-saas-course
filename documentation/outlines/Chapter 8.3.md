@@ -1,4 +1,4 @@
-# Chapter 8.3 — Project: transactional email send
+# Chapter 8.3 — Project: the welcome email send path
 
 ## Chapter framing
 
@@ -119,7 +119,9 @@ The inspector lives at `/inspector/send-welcome` and is the verification surface
 
 ---
 
-## Lesson 8.3.1 — Project brief
+## Lesson 8.3.1 — Brief and scope cuts
+
+Frames the welcome send as the canonical transactional surface every later unit reuses, states the six "Done when" clauses, names the scope cuts, and calls out the cheap-real-domain prerequisite.
 
 Goals:
 
@@ -144,7 +146,9 @@ Estimated student time: 10 to 15 minutes.
 
 ---
 
-## Lesson 8.3.2 — Starter walkthrough and the verified-domain ceremony
+## Lesson 8.3.2 — Starter tour and the verified-domain ceremony
+
+Walks the provided file tree, then re-runs the Resend + SPF/DKIM/DMARC setup against the student's own registrar so the transactional subdomain is `Verified` before any code is written.
 
 Goals:
 
@@ -176,7 +180,9 @@ Estimated student time: 30 to 45 minutes (heavy on real-world DNS waits; the wai
 
 ---
 
-## Lesson 8.3.3 — Env entries, the suppression helper, and the `lib/email.ts` wrapper
+## Lesson 8.3.3 — Env, suppression helper, and the send wrapper
+
+Adds the three Resend env entries, fills `lib/suppressions.ts` with the normalize-on-read `isSuppressed` helper, and builds the `lib/email.ts` wrapper as the single suppression-gated, idempotency-key-required send seam.
 
 Goals:
 
@@ -221,7 +227,9 @@ Estimated student time: 30 to 40 minutes.
 
 ---
 
-## Lesson 8.3.4 — The `WelcomeEmail` template and the welcome Server Action
+## Lesson 8.3.4 — Welcome template and the send action
+
+Writes the props-only `<WelcomeEmail />` React Email template, eyeballs it in the preview server (desktop, mobile, dark, plain-text), then wires the five-seam `sendWelcomeEmail` Server Action that the inspector button fires.
 
 Goals:
 
@@ -263,7 +271,9 @@ Estimated student time: 40 to 55 minutes.
 
 ---
 
-## Lesson 8.3.5 — Verify
+## Lesson 8.3.5 — Verify the send path clause by clause
+
+Walks every "Done when" clause as a verification step — real-inbox arrival, DKIM/SPF/DMARC pass in headers, template render across clients, plain-text fallback, suppression short-circuit, idempotency-key retry, and env fail-closed — then recaps disciplines and forward references.
 
 Goals:
 

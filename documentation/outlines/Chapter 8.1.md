@@ -8,7 +8,9 @@ The threads that must run through every lesson: deliverability is the senior's r
 
 ---
 
-## Lesson 8.1.1 — Resend, the verified domain, and the send call
+## Lesson 8.1.1 — Resend and the first verified send
+
+Picks Resend as the 2026 transactional default, walks the verified-domain ceremony and per-environment API-key discipline, installs the SDK, and writes the first `resend.emails.send` call with the canonical `from` shape, idempotency key, and `lib/email.ts` wrapper.
 
 Topics to cover:
 
@@ -41,7 +43,9 @@ Estimated student time: 40 to 50 minutes. Setup-archetype lesson with a single s
 
 ---
 
-## Lesson 8.1.2 — DKIM, SPF, DMARC, and the 2026 bulk-sender bar
+## Lesson 8.1.2 — Authenticating the sender: SPF, DKIM, DMARC
+
+Teaches the three protocols that gate inbox placement in 2026, the DMARC alignment rule that ties them to the visible `From:`, the DNS records Resend asks for, and the staged `p=none` → `quarantine` → `reject` rollout against the Gmail/Yahoo/Microsoft bulk-sender bar.
 
 Topics to cover:
 
@@ -92,7 +96,9 @@ Estimated student time: 45 to 55 minutes. The protocol lesson — heaviest conce
 
 ---
 
-## Lesson 8.1.3 — Transactional and marketing: the subdomain split and the address discipline
+## Lesson 8.1.3 — The transactional subdomain split
+
+Draws the transactional-versus-marketing line, installs the `send.yourapp.com` vs. `marketing.yourapp.com` subdomain architecture that isolates reputations, and teaches the per-purpose local-part conventions and the `noreply@` plus `reply_to` pattern.
 
 Topics to cover:
 
@@ -133,7 +139,9 @@ Estimated student time: 30 to 40 minutes. Decision-archetype lesson — the thre
 
 ---
 
-## Lesson 8.1.4 — Suppression discipline and the complaint-rate budget
+## Lesson 8.1.4 — The suppression list as a send-time chokepoint
+
+Defines the `email_suppressions` table schema, the bounce/complaint taxonomy that writes to it, the read-before-send check enforced inside `lib/email.ts`, the `bypassSuppression` carve-out, and the 0.3 percent complaint-rate budget the team manages against.
 
 Topics to cover:
 
@@ -183,7 +191,7 @@ Estimated student time: 35 to 45 minutes. Pattern-archetype lesson — the schem
 
 ---
 
-## Lesson 8.1.5 — Chapter quiz
+## Lesson 8.1.5 — Quizz
 
 Top 10 topics to quiz:
 

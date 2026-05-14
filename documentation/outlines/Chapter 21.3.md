@@ -1,4 +1,4 @@
-# Chapter 21.3 — Vercel deployment and going live
+# Chapter 21.3 — Ship to Vercel and go live
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ Threads that run through every lesson. **The git push is the deploy** — every 
 
 ---
 
-## Lesson 21.3.1 — The Vercel deployment model
+## Lesson 21.3.1 — The push-is-the-deploy model
+
+Maps git events to immutable deployments, distinguishes the three environment scopes, and explains why production is just an alias swap.
 
 Topics to cover:
 
@@ -34,7 +36,9 @@ Estimated student time: 35 to 45 minutes. Concept; the mental model the rest of 
 
 ---
 
-## Lesson 21.3.2 — First deploy: from repo to a live URL
+## Lesson 21.3.2 — From repo to live URL
+
+Walks the Import-from-GitHub flow, the first production and preview URLs, and the `vercel link` / `vercel env pull` setup every dev runs on clone.
 
 Topics to cover:
 
@@ -60,7 +64,9 @@ Estimated student time: 40 to 50 minutes. Setup/wiring; the "now your code is on
 
 ---
 
-## Lesson 21.3.3 — Regions, runtime, and Fluid Compute
+## Lesson 21.3.3 — Region, runtime, and Fluid Compute
+
+The three platform knobs that govern cold start, latency, and bill — matching the function region to the database, defaulting to Node.js over Edge, and tuning Fluid Compute concurrency safely.
 
 Topics to cover:
 
@@ -84,7 +90,9 @@ Estimated student time: 35 to 45 minutes. Decision + Concept; the region match a
 
 ---
 
-## Lesson 21.3.4 — Custom domains and SSL
+## Lesson 21.3.4 — Custom domains and automatic SSL
+
+DNS records for apex and `www`, Vercel's Let's Encrypt provisioning, the canonical redirect, and the Cloudflare-in-front "Full (strict)" SSL rule.
 
 Topics to cover:
 
@@ -110,7 +118,9 @@ Estimated student time: 30 to 40 minutes. Setup/wiring + Decision; DNS records a
 
 ---
 
-## Lesson 21.3.5 — Preview deployments with a Neon branch per PR
+## Lesson 21.3.5 — A Neon branch per preview
+
+Wires the Native Vercel-Neon Integration so every PR gets a copy-on-write database branch, runs migrations against it, and tears it down on close.
 
 Topics to cover:
 
@@ -138,7 +148,9 @@ Estimated student time: 40 to 50 minutes. Setup/wiring + Concept; the per-PR Neo
 
 ---
 
-## Lesson 21.3.6 — Environment management: dev, preview, prod, and secret scoping
+## Lesson 21.3.6 — Env vars across dev, preview, and prod
+
+Scoping rules for the three environments, the `NEXT_PUBLIC_*` split, the Zod env validator that fails the build on misconfiguration, and OIDC federation as the replacement for long-lived cloud keys.
 
 Topics to cover:
 
@@ -168,7 +180,9 @@ Estimated student time: 40 to 50 minutes. Pattern + Decision; the scope split an
 
 ---
 
-## Lesson 21.3.7 — Production rollback: instant promote and the code-side revert
+## Lesson 21.3.7 — Two-layer rollback when prod breaks
+
+Instant alias re-promotion on Vercel paired with `git revert` on `main`, plus what rollback resets, what it doesn't, and where the feature-flag escape hatch fits.
 
 Topics to cover:
 
@@ -199,6 +213,8 @@ Estimated student time: 35 to 45 minutes. Pattern + Setup; the two-layer rollbac
 
 ## Lesson 21.3.8 — The launch checklist
 
+The eight rows that make a URL defensible — env validation, error monitoring, rate limits, audit logs, security headers, pooled DB with matching region, tested backups, and external uptime monitoring with a human paged.
+
 Topics to cover:
 
 - **The senior question.** Every unit installed a safety net; this is the lesson that confirms each is wired before the URL goes public. The checklist is structural — every row maps to a concrete thing the engineer verifies in one minute. Uncheck any row and the app isn't launched, regardless of how the homepage looks.
@@ -227,7 +243,7 @@ Estimated student time: 45 to 55 minutes. Reference/survey + Pattern; the eight-
 
 ---
 
-## Lesson 21.3.9 — Chapter quiz
+## Lesson 21.3.9 — Quizz
 
 Top 10 topics to quiz:
 

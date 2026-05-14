@@ -1,4 +1,4 @@
-# Chapter 22.4 — Project: PR review and one ADR
+# Chapter 22.4 — Project: Review a PR, write the ADR
 
 ## Chapter framing
 
@@ -129,7 +129,9 @@ The lessons display these signatures verbatim so students don't invent variants.
 
 ---
 
-## Lesson 22.4.1 — Project brief — the seeded PR, the cheatsheet, and the Nygard template
+## Lesson 22.4.1 — The brief, the cheatsheet, the pass order
+
+Sets up the seeded PR and its two deliverables, walks the four-part comment template and the Nygard ADR scaffold, and locks in the review stack pass order before the diff opens.
 
 Goals:
 
@@ -158,7 +160,9 @@ Estimated student time: 15 to 20 minutes.
 
 ---
 
-## Lesson 22.4.2 — Audit target walkthrough and one modeled review comment
+## Lesson 22.4.2 — Walk the diff, model one comment
+
+Tours the nine changed files against the canonical helpers they bypass, then writes the first finding (the missing `authedAction` wrapper) end-to-end in the four-part template as the review's rhythm-setter.
 
 Goals:
 
@@ -189,7 +193,9 @@ Estimated student time: 30 to 40 minutes.
 
 ---
 
-## Lesson 22.4.3 — Review it — four more line-level comments distinguishing suggesting from blocking
+## Lesson 22.4.3 — Four more findings, all blocking
+
+Surfaces the side-effect import, the `Date` arithmetic, the derived-state effect, and the missing audit-log write as four `blocking:` comments, fills the `## Summary` totals, and names the senior-reach bonus findings the rubric awards extra credit for.
 
 Goals:
 
@@ -221,7 +227,9 @@ Estimated student time: 45 to 60 minutes.
 
 ---
 
-## Lesson 22.4.4 — Write it — the ADR for the diff's cache decision
+## Lesson 22.4.4 — ADR 0007 — the cache decision
+
+Runs the three-test inclusion check across the diff's candidate decisions, then writes `0007-cache-entitlement-reads-with-cacheTag.md` with a crisp Decision line, the named alternative, and an honest Consequences list that enumerates every `updateTag` seam.
 
 Goals:
 
@@ -260,7 +268,9 @@ Estimated student time: 40 to 50 minutes.
 
 ---
 
-## Lesson 22.4.5 — Verify — self-grade against the published rubric
+## Lesson 22.4.5 — Commit, then self-grade
+
+Commits the review and ADR, checks out the `v1.0-answer-key` rubric tag, scores each comment and ADR section against the floor-and-senior-reach criteria, and writes the request-changes verdict at the bottom of the review file.
 
 Goals:
 

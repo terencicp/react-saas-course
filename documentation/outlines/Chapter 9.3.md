@@ -1,4 +1,4 @@
-# Chapter 9.3 — Sign-in flows
+# Chapter 9.3 — Authentication flows
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ Threads that run through every lesson. Each flow is configured through Better Au
 
 ---
 
-## Lesson 9.3.1 — Email and password sign-up
+## Lesson 9.3.1 — Password sign-up
+
+Teaches how to configure `emailAndPassword` for sign-up with Argon2id hashing, verification-gated sessions, and an enumeration-safe Server Action that wraps `auth.api.signUpEmail`.
 
 Topics to cover:
 
@@ -36,7 +38,9 @@ Estimated student time: 40–50 minutes. Mechanics with one decision insert (enu
 
 ---
 
-## Lesson 9.3.2 — Email and password sign-in
+## Lesson 9.3.2 — Password sign-in
+
+Teaches the sign-in Server Action, its full `Result` discriminant surface (`'invalid-credentials'`, `'email-not-verified'`, `'too-many-attempts'`, `'requires-second-factor'`, `'ok'`), and how the per-account lockout composes with the per-IP rate limit.
 
 Topics to cover:
 
@@ -72,6 +76,8 @@ Estimated student time: 35–45 minutes. Mechanics + pattern hybrid; the `Result
 
 ## Lesson 9.3.3 — Email verification
 
+Teaches how to wire `sendVerificationEmail` through the Unit 8 Resend pipeline, the hashed-token row in the `verification` table, the click-through endpoint that flips `emailVerified`, and the enumeration discipline that holds across every entry point.
+
 Topics to cover:
 
 - **The senior question.** Sign-up queued an email; sign-in refuses unverified accounts. What's the token shape, how does the click-through endpoint verify it, what's the rotation/expiry policy, and how does enumeration discipline survive the verification surface? Configure `emailVerification`, wire the React Email template through Unit 8, land the verify endpoint that flips `emailVerified`.
@@ -98,6 +104,8 @@ Estimated student time: 35–45 minutes. Setup + pattern hybrid; a sequence diag
 ---
 
 ## Lesson 9.3.4 — Password reset
+
+Teaches the six-step reset flow with `sendResetPassword`, the 10-minute token expiry, and the non-negotiable session-invalidation-on-success property that defines a secure reset.
 
 Topics to cover:
 
@@ -127,7 +135,9 @@ Estimated student time: 35–45 minutes. Pattern + mechanics hybrid; a sequence 
 
 ---
 
-## Lesson 9.3.5 — Magic link sign-in
+## Lesson 9.3.5 — Magic links
+
+Teaches the `magicLink()` plugin, the four-step inbox-as-credential flow, the `disableSignUp` and `expiresIn` knobs, and the product call for when passwordless earns the call over email+password.
 
 Topics to cover:
 
@@ -158,7 +168,9 @@ Estimated student time: 30–40 minutes. Decision + mechanics; a comparison tabl
 
 ---
 
-## Lesson 9.3.6 — TOTP two-factor authentication
+## Lesson 9.3.6 — TOTP and recovery codes
+
+Teaches the `twoFactor()` plugin, six-step enrollment with QR-code + recovery codes, the `'requires-second-factor'` sign-in challenge, and the elevation requirement on every 2FA toggle.
 
 Topics to cover:
 
@@ -191,6 +203,8 @@ Estimated student time: 45–55 minutes. Setup + mechanics hybrid; sequence diag
 ---
 
 ## Lesson 9.3.7 — Passkeys and WebAuthn
+
+Teaches the `passkey()` plugin, the WebAuthn registration and authentication ceremonies, `rpID`/origin scoping, conditional-UI autofill, and the synced-versus-device-bound trade.
 
 Topics to cover:
 
@@ -225,7 +239,9 @@ Estimated student time: 45–55 minutes. Setup + concept hybrid; WebAuthn mental
 
 ---
 
-## Lesson 9.3.8 — OAuth providers
+## Lesson 9.3.8 — Social sign-in with OAuth
+
+Teaches `socialProviders` config with Google as canonical, per-environment redirect URI registration, post-callback `account` table population, the lookup logic for first-time-OAuth vs existing users, and the per-provider quirks for GitHub, Apple, and Microsoft.
 
 Topics to cover:
 
@@ -265,6 +281,8 @@ Estimated student time: 45–55 minutes. Setup + reference hybrid; Google walkth
 
 ## Lesson 9.3.9 — Account linking
 
+Teaches `account.accountLinking` config, the `trustedProviders` allowlist as a security decision, link-on-sign-in versus link-from-settings, the `allowDifferentEmails` knob, and the unlink guard that prevents leaving a user with no sign-in method.
+
 Topics to cover:
 
 - **The senior question.** Ada signs up with email+password in January. In March she clicks "Sign in with Google" with the same email. Does the system create a second user (data lives in two places) or recognize the email match and link Google to her existing user row? The decision lives in `account.accountLinking`. Install it, surface the trusted-providers list, walk through link-on-sign-in vs link-from-settings, name the security trade.
@@ -296,7 +314,7 @@ Estimated student time: 30–40 minutes. Decision-archetype; the trusted-provide
 
 ---
 
-## Lesson 9.3.10 — Chapter quiz
+## Lesson 9.3.10 — Quizz
 
 Top 10 topics to quiz:
 

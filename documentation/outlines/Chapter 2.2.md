@@ -21,7 +21,9 @@ The chapter order reflects the dependency between lessons. Function forms come f
 
 ---
 
-## Lesson 2.2.1 — Function forms and when each earns its weight
+## Lesson 2.2.1 — Arrow by default, declaration on demand
+
+Teaches the three function forms, the senior rule that arrow expressions bound to `const` are the 2026 default, and the narrow triggers (hoisting, named recursion, type-guard signatures) that earn a `function` declaration.
 
 Topics to cover:
 
@@ -52,7 +54,9 @@ Estimated student time: 30 to 40 minutes.
 
 ---
 
-## Lesson 2.2.2 — Parameters, defaults, rest, and spread
+## Lesson 2.2.2 — Signatures that stay readable past two parameters
+
+Teaches the two-positional-parameter rule and the options-object pattern, parameter defaults firing only on `undefined`, rest parameters and call-site spread, and the TypeScript ordering of required vs. optional parameters.
 
 Topics to cover:
 
@@ -80,7 +84,9 @@ Estimated student time: 30 to 40 minutes.
 
 ---
 
-## Lesson 2.2.3 — Naming for intent (Architectural Principle #4)
+## Lesson 2.2.3 — Name for intent, not implementation
+
+Teaches Architectural Principle #4 across the four naming surfaces (variables, functions, parameters, types), the boolean-prefix convention, and the three bad-name classes (implementation-leaking, vague abstractions, negated booleans).
 
 Topics to cover:
 
@@ -114,7 +120,9 @@ Estimated student time: 30 to 40 minutes.
 
 ---
 
-## Lesson 2.2.4 — Control flow that stays flat
+## Lesson 2.2.4 — Guard clauses, ternaries, and exhaustive `switch`
+
+Teaches flat control flow through early-return guards, expression-level ternaries, `switch` with `noFallthroughCasesInSwitch` and `assertNever`, the lookup-map alternative, and the loop forms a 2026 senior reaches for.
 
 Topics to cover:
 
@@ -144,7 +152,9 @@ Estimated student time: 35 to 45 minutes.
 
 ---
 
-## Lesson 2.2.5 — Optional chaining, nullish coalescing, logical assignment
+## Lesson 2.2.5 — The null-safe operator trio
+
+Teaches `?.` for nullable access at each chain link, `??` over `||` for defaults (with the `0` / `''` / `false` trap), and `??=` for lazy initialization, plus the operator-precedence rules that force parentheses.
 
 Topics to cover:
 
@@ -183,7 +193,9 @@ Estimated student time: 30 to 40 minutes.
 
 ---
 
-## Lesson 2.2.6 — Destructuring
+## Lesson 2.2.6 — Destructuring as the API call-shape
+
+Teaches object and array destructuring with rename, defaults, and rest, the signature-level destructure that React and server actions consume, and the destructure-then-rebuild pattern that prevents accidental field forwarding.
 
 Topics to cover:
 
@@ -217,7 +229,9 @@ Estimated student time: 30 to 40 minutes.
 
 ---
 
-## Lesson 2.2.7 — Closures and the boundary they explain later
+## Lesson 2.2.7 — Closures: lexical capture by reference
+
+Teaches closures as lexical capture by reference (not by value), the stale-closure trap in async code, and the three production sites the model later explains: Server Actions, `useEffect` cleanups, and route-handler factories.
 
 Topics to cover:
 

@@ -1,4 +1,4 @@
-# Chapter 12.3 — Project: Stripe webhook to plan entitlements
+# Chapter 12.3 — Project: From Stripe webhook to plan entitlement
 
 ## Chapter framing
 
@@ -153,7 +153,9 @@ The inspector is provided in full; the student writes only the handlers and the 
 
 ---
 
-## Lesson 12.3.1 — Project brief
+## Lesson 12.3.1 — The brief
+
+Frames the build, the "Done when" verification recipe, scope cuts, and the senior payoff of owning the webhook seam end-to-end.
 
 Goals:
 
@@ -177,7 +179,9 @@ Estimated student time: 15 to 20 minutes.
 
 ---
 
-## Lesson 12.3.2 — Starter walkthrough
+## Lesson 12.3.2 — Tour the starter and open the Stripe CLI tunnel
+
+Walks the file tree, reads the provided `claimEvent` / SDK singleton / catalog, runs `stripe listen` + one `stripe trigger` to prove the local tunnel is alive.
 
 Goals:
 
@@ -205,7 +209,9 @@ Estimated student time: 25 to 35 minutes.
 
 ---
 
-## Lesson 12.3.3 — Signature verification with constant-time compare
+## Lesson 12.3.3 — Verify before you parse
+
+Writes the route handler's read-raw-body, `constructEvent`, 400-with-problem+json-on-failure skeleton with structured logging on every disposition.
 
 Goals:
 
@@ -239,7 +245,9 @@ Estimated student time: 35 to 50 minutes.
 
 ---
 
-## Lesson 12.3.4 — The outer transaction and `processed_events` dedup
+## Lesson 12.3.4 — Claim the event inside one transaction
+
+Wraps the post-verify path in `db.transaction`, calls `claimEvent` to dedupe against `processed_events`, and stubs the dispatch switch with structured logging.
 
 Goals:
 
@@ -270,7 +278,9 @@ Estimated student time: 45 to 60 minutes.
 
 ---
 
-## Lesson 12.3.5 — The three event handlers and the derived `plan_entitlements` row
+## Lesson 12.3.5 — Project three events into one entitlement row
+
+Completes the `plan_entitlements` schema, writes the pure `subscriptionToEntitlement` projection, and lands the three handlers with the `last_event_at` ordering predicate plus audit logs.
 
 Goals:
 
@@ -308,7 +318,9 @@ Estimated student time: 75 to 90 minutes. The chapter's heaviest lesson; the pro
 
 ---
 
-## Lesson 12.3.6 — The `billing.*` interface and the inspector portal button
+## Lesson 12.3.6 — Ship the three-method billing interface
+
+Implements `upgrade`, `openPortal`, and `requirePlan` behind `lib/billing/`, wires the inspector's Checkout and Portal buttons, and exercises the Stripe-hosted flow end-to-end with a test card.
 
 Goals:
 
@@ -359,7 +371,9 @@ Estimated student time: 75 to 90 minutes. Second-heaviest lesson; closes the loo
 
 ---
 
-## Lesson 12.3.7 — Verify
+## Lesson 12.3.7 — Rehearse every failure mode
+
+Walks every "Done when" clause as a deterministic probe — tamper, replay, out-of-order, Portal cancel, redirect race, cross-tenant metadata, every `hasActiveAccess` status — and lands the metadata cross-check hardening.
 
 Goals:
 

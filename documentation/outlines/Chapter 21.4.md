@@ -1,4 +1,4 @@
-# Chapter 21.4 — Schema migrations against a live app (SaaS pattern #11)
+# Chapter 21.4 — Migrating a live schema without an outage (SaaS pattern #11)
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ Threads that run through every lesson. **The deploy is not atomic with the migra
 
 ---
 
-## Lesson 21.4.1 — The expand → migrate → contract cadence
+## Lesson 21.4.1 — Expand, migrate, contract
+
+The three-deploy cadence that ships a breaking schema change without an outage: add the new shape alongside the old, dual-write and backfill from app code, then drop the old shape once nothing reads it.
 
 Topics to cover:
 
@@ -46,7 +48,9 @@ Estimated student time: 50 to 60 minutes. Concept + Pattern; the three-deploy me
 
 ---
 
-## Lesson 21.4.2 — When the cadence earns its weight: the trigger map
+## Lesson 21.4.2 — Which migrations need the cadence
+
+The trigger map and three-question decision tree that separate one-deploy additive changes from three-deploy renames, type rewrites, NOT NULL promotions, and FK-required columns.
 
 Topics to cover:
 
@@ -95,7 +99,9 @@ Estimated student time: 35 to 45 minutes. Decision; the three-question tree and 
 
 ---
 
-## Lesson 21.4.3 — Rehearsing the migration on a Neon preview branch
+## Lesson 21.4.3 — Rehearsing on a Neon preview branch
+
+The four-check rehearsal that runs each cadence step against production-shaped data before merge, catching FK violations, missed dual-write sites, slow backfills, and leftover reads of the old shape.
 
 Topics to cover:
 
@@ -138,7 +144,7 @@ Estimated student time: 40 to 50 minutes. Setup/wiring + Pattern; the rehearsal 
 
 ---
 
-## Lesson 21.4.4 — Chapter quiz
+## Lesson 21.4.4 — Quizz
 
 Top 10 topics to quiz:
 

@@ -8,7 +8,9 @@ The threads that run through every lesson: the schema is still the source of tru
 
 ---
 
-## Lesson 9.2.1 — The `auth` instance, the catch-all handler, and the client
+## Lesson 9.2.1 — Wiring the `auth` instance
+
+Installs `better-auth`, defines the server `auth` instance with `nextCookies`, mounts the `[...all]` catch-all route handler, sets up the browser `authClient`, and adds the two required env entries.
 
 Topics to cover:
 
@@ -52,7 +54,9 @@ Estimated student time: 35 to 45 minutes. Setup-archetype lesson — terminal co
 
 ---
 
-## Lesson 9.2.2 — The Drizzle adapter and the four core tables
+## Lesson 9.2.2 — Schema and the four core tables
+
+Wires the Drizzle adapter, generates the canonical `user`, `session`, `account`, and `verification` tables via the Better Auth CLI, walks their load-bearing columns and cascades, and ships the first migration through Drizzle Kit.
 
 Topics to cover:
 
@@ -87,7 +91,9 @@ Estimated student time: 40 to 50 minutes. Setup + reference hybrid — the schem
 
 ---
 
-## Lesson 9.2.3 — Session configuration and the cookie surface
+## Lesson 9.2.3 — Session lifetimes and cookie hardening
+
+Configures `expiresIn`, `updateAge`, and `freshAge`, sets the `__Host-` cookie prefix and SameSite defaults, weighs the cookie-cache staleness trade, and names `secondaryStorage` and `trustedOrigins` as deferred reaches.
 
 Topics to cover:
 
@@ -130,7 +136,9 @@ Estimated student time: 35 to 45 minutes. Decision-archetype lesson — every co
 
 ---
 
-## Lesson 9.2.4 — Reading the session at the call site
+## Lesson 9.2.4 — `getCurrentUser` across the five surfaces
+
+Establishes the one `auth.api.getSession({ headers: await headers() })` call shape used in proxy, layouts, Server Components, Server Actions, and route handlers, wraps it in `React.cache`-backed `getCurrentUser`/`requireUser` helpers, and stands up the minimum `proxy.ts` gate.
 
 Topics to cover:
 
@@ -178,7 +186,7 @@ Estimated student time: 35 to 45 minutes. Pattern + setup hybrid — the `getCur
 
 ---
 
-## Lesson 9.2.5 — Chapter quiz
+## Lesson 9.2.5 — Quizz
 
 Top 10 topics to quiz:
 

@@ -26,7 +26,9 @@ The TOC packs the chapter into three lessons. The slicing holds — each lesson 
 
 ---
 
-## Lesson 3.3.1 — The URL spec: anatomy, parsing, and `URLSearchParams`
+## Lesson 3.3.1 — Parse, don't concatenate
+
+Teaches the URL as a structured value with origin/pathname/search/hash, `new URL()` and `URLSearchParams` as the senior reach, percent-encoding rules (including the `%20`-vs-`+` split), and the bug classes string concatenation produces.
 
 Topics to cover:
 
@@ -114,7 +116,9 @@ Estimated student time: 45 to 55 minutes. Load-bearing for Chapter 11.1 and acro
 
 ---
 
-## Lesson 3.3.2 — The same-origin policy: the browser's default trust boundary
+## Lesson 3.3.2 — Origin is the unit of browser trust
+
+Teaches origin as the `(scheme, host, port)` tuple versus site as `(scheme, eTLD+1)`, what the same-origin policy blocks versus what it always allows, and the load-bearing point that the policy protects the user (not the server) by gating the response, not the request.
 
 Topics to cover:
 
@@ -219,7 +223,9 @@ Estimated student time: 45 to 55 minutes. Load-bearing for Lesson 3.3.3, Chapter
 
 ---
 
-## Lesson 3.3.3 — CORS: preflights, credentials, and the failure modes
+## Lesson 3.3.3 — The preflight dance
+
+Teaches CORS as the opt-in that loosens same-origin, the simple-vs-preflighted decision, the `Access-Control-Allow-*` response-header palette, the wildcard-with-credentials trap, and the canonical browser error messages with their fixes.
 
 Topics to cover:
 
@@ -338,7 +344,7 @@ Estimated student time: 50 to 60 minutes. Load-bearing for Chapter 3.6 (Fetch), 
 
 ---
 
-## Lesson 3.3.4 — Quiz
+## Lesson 3.3.4 — Quizz
 
 Top ten topics to quiz:
 

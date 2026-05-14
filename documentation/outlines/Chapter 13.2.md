@@ -1,4 +1,4 @@
-# Chapter 13.2 — Project: Trigger.dev durable export job
+# Chapter 13.2 — Project: Durable CSV export with Trigger.dev
 
 ## Chapter framing
 
@@ -128,7 +128,9 @@ A single Server Component at `/inspector` provided in full; the student writes o
 
 ---
 
-## Lesson 13.2.1 — Project brief
+## Lesson 13.2.1 — The export job, end to end
+
+Frame the durable paginated CSV export, state the "Done when" clauses, name the scope cuts (no R2 yet, no streaming, no schedule), and clone the starter.
 
 Goals:
 
@@ -153,7 +155,9 @@ Estimated student time: 15 to 25 minutes.
 
 ---
 
-## Lesson 13.2.2 — Starter walkthrough
+## Lesson 13.2.2 — Tour the starter and the two-terminal loop
+
+Walk the provided files and the three TODO task stubs, read the inspector and `exports` table, and run the `pnpm trigger:dev` + `pnpm dev` loop to confirm the cloud link.
 
 Goals:
 
@@ -179,7 +183,9 @@ Estimated student time: 20 to 30 minutes.
 
 ---
 
-## Lesson 13.2.3 — The `schemaTask` skeleton and the per-org dynamic queue
+## Lesson 13.2.3 — The task boundary: schemaTask and the per-org queue
+
+Write the `exportInvoices` `schemaTask` with a Zod payload and a dynamic per-org queue, plus the `startExport` Server Action that fires it with a daily idempotency key.
 
 Goals:
 
@@ -212,7 +218,9 @@ Estimated student time: 45 to 55 minutes.
 
 ---
 
-## Lesson 13.2.4 — Paginated export with `triggerAndWait` and cross-step idempotency
+## Lesson 13.2.4 — One checkpoint per page
+
+Spawn each page as a `paginatePage.triggerAndWait` child with `${ctx.run.id}:page:N` keys, drive progress through `metadata.set`, and abort permanently on empty resultsets with `AbortTaskRunError`.
 
 Goals:
 
@@ -246,7 +254,9 @@ Estimated student time: 60 to 75 minutes. The chapter's heaviest lesson — the 
 
 ---
 
-## Lesson 13.2.5 — The email step and the final audit log
+## Lesson 13.2.5 — Send the email, write the audit log
+
+Add the `sendExportEmail` child task guarded by a `${ctx.run.id}:email` key, then close the parent run by updating the `exports` row and writing `export.invoices.completed` to `audit_logs` in one tenant transaction.
 
 Goals:
 
@@ -275,7 +285,9 @@ Estimated student time: 45 to 60 minutes.
 
 ---
 
-## Lesson 13.2.6 — Verify
+## Lesson 13.2.6 — Verify: progress, kill-resume, serialization, exactly-once email
+
+Walk each "Done when" clause clause-by-clause: visible per-page progress, the Ctrl-C kill-resume drill, per-org serialization vs. cross-org parallelism, schema-boundary validation, and email-send-once across parent retries.
 
 Goals:
 

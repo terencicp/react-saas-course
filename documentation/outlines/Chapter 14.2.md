@@ -164,6 +164,8 @@ The inspector is provided in full; the student writes only dispatcher, channels,
 
 ## Lesson 14.2.1 — Project brief
 
+Three events, one dispatcher: scope, "Done when", and the demo loop you will reproduce.
+
 Goals:
 
 - Frame the build: the dispatcher is the one seam, the registry is the source of truth, prefs read once per dispatch, 60-second dedup window, three real call sites (invite, role change, billing past-due) prove the pattern earns its weight by needing more than one channel and more than one preference resolution. Show one screenshot of the inspector with the three event buttons, the inbox panel populated, the email counter at 3, and the prefs panel.
@@ -187,7 +189,9 @@ Estimated student time: 15 to 25 minutes.
 
 ---
 
-## Lesson 14.2.2 — Starter walkthrough
+## Lesson 14.2.2 — Tour the starter
+
+Walk the file tree, schema stubs, seeded users, and inspector panels before writing any code.
 
 Goals:
 
@@ -211,7 +215,9 @@ Estimated student time: 20 to 30 minutes.
 
 ---
 
-## Lesson 14.2.3 — The registry, the dispatcher, and dedup
+## Lesson 14.2.3 — Registry, dispatcher, dedup
+
+Define the three notifiable events, write `dispatch()` with stub channels, and prove the 60-second dedup window from the inspector.
 
 Goals:
 
@@ -239,7 +245,9 @@ Estimated student time: 70 to 85 minutes.
 
 ---
 
-## Lesson 14.2.4 — The two channels and the prefs read
+## Lesson 14.2.4 — Channels and preferences live
+
+Replace the stubs with the inbox writer, the email channel, and a batched preferences read with default-on and the critical-channel override.
 
 Goals:
 
@@ -269,7 +277,9 @@ Estimated student time: 75 to 90 minutes. The chapter's heaviest lesson — chan
 
 ---
 
-## Lesson 14.2.5 — Wire three call sites
+## Lesson 14.2.5 — Wire the three call sites
+
+Add `dispatch()` after commit in the invite action, the role-change action, and the Stripe past-due webhook branch.
 
 Goals:
 
@@ -294,7 +304,9 @@ Estimated student time: 50 to 65 minutes.
 
 ---
 
-## Lesson 14.2.6 — Verify
+## Lesson 14.2.6 — Verify clause by clause
+
+Walk every "Done when" item in order — dedup, prefs, critical override, channel independence, fire-after-commit, tenant isolation, and the unsubscribe link.
 
 Goals:
 

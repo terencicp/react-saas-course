@@ -1,4 +1,4 @@
-# Chapter 21.5 — Project: deploy and a live expand-migrate-contract migration
+# Chapter 21.5 — Project: ship to production, then live-migrate the schema
 
 ## Chapter framing
 
@@ -159,7 +159,9 @@ The inspector is provided in full and rendered on every environment; preview dep
 
 ---
 
-## Lesson 21.5.1 — Project brief
+## Lesson 21.5.1 — The brief: three PRs, zero outages
+
+Frames the build, the "Done when" bar, and the three-PR plan that splits `customer_name text` into a `customer_id` FK without any moment of app/DB incompatibility in production.
 
 Goals:
 
@@ -185,7 +187,9 @@ Estimated student time: 10 to 15 minutes.
 
 ---
 
-## Lesson 21.5.2 — First deploy: from repo to a live production URL
+## Lesson 21.5.2 — From green repo to a live production URL
+
+Wires Vercel, Neon, env validation, preview password protection, and the launch checklist concretely on the starter to produce the production URL the rest of the chapter targets.
 
 Goals:
 
@@ -220,7 +224,9 @@ Estimated student time: 60 to 80 minutes. Heaviest setup lesson — the platform
 
 ---
 
-## Lesson 21.5.3 — PR 1 (Expand): add the FK column nullable, ship to preview, verify production keeps working
+## Lesson 21.5.3 — PR 1 (Expand): add the nullable FK column
+
+Ships an additive-only migration that adds `customer_id uuid` with a `NOT VALID` FK, rehearses it on the Neon preview branch, merges, and verifies the running 11.3 app code stays healthy against the expanded schema.
 
 Goals:
 
@@ -251,7 +257,9 @@ Estimated student time: 35 to 50 minutes (most of the time is waiting on CI + Ve
 
 ---
 
-## Lesson 21.5.4 — PR 2 (Migrate): backfill and dual-write, ship to preview, verify production keeps working
+## Lesson 21.5.4 — PR 2 (Migrate): dual-write, backfill, dual-read
+
+Lands the structural dual-write in actions, the `coalesce` fall-through in queries, the bounded-idempotent backfill script, the production backfill run, and the `VALIDATE CONSTRAINT` follow-up PR — all while production keeps serving traffic.
 
 Goals:
 
@@ -287,7 +295,9 @@ Estimated student time: 50 to 70 minutes (active work is the dual-write edits, t
 
 ---
 
-## Lesson 21.5.5 — PR 3 (Contract): drop the old text column, make the FK non-null, ship
+## Lesson 21.5.5 — PR 3 (Contract): drop the old column, promote the FK
+
+Drops `customer_name`, flips `customer_id` to `NOT NULL`, removes every legacy reference from actions and queries, and verifies production lands on the target schema with the cadence's safety claims intact.
 
 Goals:
 
@@ -319,7 +329,9 @@ Estimated student time: 40 to 55 minutes.
 
 ---
 
-## Lesson 21.5.6 — Rollback rehearsal: promote the previous deployment, document the steps
+## Lesson 21.5.6 — Rollback rehearsal and the schema caveat
+
+Promotes the previous production deployment against the contract PR to make the "alias rollback does not undo migrations" caveat concrete, then writes the durable runbook for the four-step gesture.
 
 Goals:
 

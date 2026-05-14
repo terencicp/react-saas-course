@@ -1,4 +1,4 @@
-# Chapter 23.3 — Tools, agents, and generative UI
+# Chapter 23.3 — Tool calling, generative UI, and retrieval
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ Threads through every lesson: **tools are the LLM's only safe doorway into the a
 
 ---
 
-## Lesson 23.3.1 — Tool calling and the agentic loop
+## Lesson 23.3.1 — Tools and the agentic loop
+
+Defining tools with Zod `inputSchema`, the server-side `execute` trust boundary, and the v5 `stopWhen` loop with `onStepFinish` audit and quota seams.
 
 Topics to cover:
 
@@ -43,6 +45,8 @@ Estimated student time: 50 to 60 minutes. The chapter's heaviest lesson; the too
 
 ## Lesson 23.3.2 — Generative UI via tool parts
 
+Rendering bespoke React components by switching on `UIMessage` tool-part `type` and `state`, with `InferUITools` typing the client and per-tool skeletons over generic spinners.
+
 Topics to cover:
 
 - **The senior question.** The model has just called a tool that returned a structured invoice summary, or a chart-ready data shape, or a calendar slot. Rendering that as JSON in a chat bubble is wrong; rendering it as a bespoke React component (invoice card, chart, slot picker) is the lesson. How does the client know which component to render, with which props, in which state? The lesson is generative UI built the canonical 2026 way: tool parts on the `UIMessage`, switched on `part.type` and `part.state` in the client, rendering typed components with the tool's `outputSchema` as the props contract.
@@ -71,7 +75,9 @@ Estimated student time: 35 to 45 minutes. A mechanics-and-decision lesson — sh
 
 ---
 
-## Lesson 23.3.3 — Embeddings and retrieval-augmented features
+## Lesson 23.3.3 — Embeddings and pgvector RAG
+
+When retrieval earns its weight, the `embed` / `embedMany` primitives, and the two-phase index-and-query pipeline on pgvector via Drizzle with `orgId`-filtered retrieval.
 
 Topics to cover:
 
@@ -102,7 +108,7 @@ Estimated student time: 40 to 50 minutes. A decision-heavy lesson with one worke
 
 ---
 
-## Lesson 23.3.4 — Chapter quiz
+## Lesson 23.3.4 — Quizz
 
 Top 10 topics to quiz:
 

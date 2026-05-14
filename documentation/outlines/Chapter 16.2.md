@@ -172,6 +172,8 @@ The inspector is provided in full; the student writes only `client.ts`, `keys.ts
 
 ## Lesson 16.2.1 — Project brief
 
+Frames the build: bolt a polling, infinite-scrolling, optimistically-added comment thread onto the 11.3 invoice detail page with TanStack Query scoped to the leaf, names the "Done when" clauses, and links the starter.
+
 Goals:
 
 - Frame the build: take the 11.3 invoice detail page and add a real-time-ish comment thread — `<QueryClientProvider>` wired in the root layout, the invoice page's Server Component prefetches the first page via `prefetchInfiniteQuery` and hands a dehydrated cache to `<HydrationBoundary>`, the client `<CommentThread />` runs `useInfiniteQuery` with 10-second polling and infinite-scroll-up paging, posting a comment fires a Server Action with cache-update optimistic add and rollback on failure. Show one screenshot of the finished invoice page: header, customer card, line items, and the comment thread at the bottom with a posted optimistic row visible.
@@ -194,7 +196,9 @@ Estimated student time: 10 to 15 minutes.
 
 ---
 
-## Lesson 16.2.2 — Starter walkthrough
+## Lesson 16.2.2 — Tour the starter and the inspector
+
+Walks the provided file tree, the new `invoice_comments` schema and seed, the route-handler scaffolding, the shared Zod schemas, the in-process `listCommentsPage` read, and every inspector panel and debug toggle.
 
 Goals:
 
@@ -222,6 +226,8 @@ Estimated student time: 15 to 25 minutes.
 ---
 
 ## Lesson 16.2.3 — Provider, per-request factory, and the SSR-hydrated first page
+
+Wires `getQueryClient()` with the `typeof window` branch and React `cache()`, the `commentKeys` helper, the `<Providers>` shell with senior defaults and gated devtools, the in-process fetcher branch, and the invoice page's `prefetchInfiniteQuery` plus `<HydrationBoundary>` so the seeded thread paints with no client loading state.
 
 Goals:
 
@@ -253,6 +259,8 @@ Estimated student time: 50 to 65 minutes.
 
 ## Lesson 16.2.4 — Infinite scroll, polling, and the route handler
 
+Fills the client fetcher branch, the `authedRoute` `GET` handler as the public read seam, and the leaf's `useInfiniteQuery` with cursor paging, `maxPages: 10`, 10-second `refetchInterval`, and `refetchIntervalInBackground: false` so "Load older" and cross-session arrival both work.
+
 Goals:
 
 - Fill the client branch of `src/lib/comments/fetcher.ts`: build the URL with `cursor` as an optional search param, `fetch` it with `credentials: 'same-origin'`, parse the response envelope (`{ data }` shape from 7.5), validate with `commentsPageSchema.parse`, throw on `!res.ok` so `useInfiniteQuery` surfaces the error. The fetcher now works on both sides — server-side prefetch unchanged, client-side polls and scroll-fetches via this branch.
@@ -283,6 +291,8 @@ Estimated student time: 55 to 70 minutes.
 ---
 
 ## Lesson 16.2.5 — Optimistic add and rollback with `useMutation`
+
+Writes the `addCommentAction` Server Action with audit-log and `revalidateTag`, then wires the form's `useMutation` with `cancelQueries`, snapshot, `setQueryData`, restore in `onError`, and `invalidateQueries` in `onSettled` — surfacing the two-system invalidation reality at the seam.
 
 Goals:
 
@@ -316,7 +326,9 @@ Estimated student time: 55 to 75 minutes. The chapter's heaviest lesson — the 
 
 ---
 
-## Lesson 16.2.6 — Verify
+## Lesson 16.2.6 — Verify against "Done when"
+
+Walks every clause: SSR-hydrated first paint, infinite scroll with `maxPages` cap, cross-session polling arrival within 10 seconds, tab-hide pause, optimistic happy path, forced-500 rollback, two-system invalidation, per-request server `QueryClient` isolation, leaf-scoping, `commentKeys` discipline, route-handler tenancy, Zod-drift recovery, and devtools tree-shaking.
 
 Goals:
 

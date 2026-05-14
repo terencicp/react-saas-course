@@ -1,4 +1,4 @@
-# Chapter 1.3 — Editor and code-quality tools
+# Chapter 1.3 — The feedback loop: editor, linter, DevTools
 
 ## Chapter framing
 
@@ -19,7 +19,9 @@ The student finishes the chapter with VS Code installed, a small workspace-check
 
 ---
 
-## Lesson 1.3.1 — VS Code, the workspace settings the repo owns
+## Lesson 1.3.1 — VS Code as a team artifact
+
+Teaches the editor commitment, the minimum-viable extension set with one senior reason each, and the repo-owned configuration files (`.editorconfig`, `.vscode/extensions.json`, `.vscode/settings.json`) that make editor setup a teammate-shared surface rather than a personal preference.
 
 Topics to cover:
 
@@ -56,7 +58,9 @@ Estimated student time: 25 to 30 minutes.
 
 ---
 
-## Lesson 1.3.2 — Biome: one tool, one config, format and lint
+## Lesson 1.3.2 — Biome, the single-binary linter and formatter
+
+Teaches Biome as the 2026 default over ESLint+Prettier (single Rust binary, dependency-aware domains), the `next lint` removal in Next.js 16, the minimum-viable `biome.json` wired to `.editorconfig`, the four daily scripts, and the safe-versus-unsafe fix distinction.
 
 Topics to cover:
 
@@ -100,7 +104,9 @@ Estimated student time: 35 to 40 minutes.
 
 ---
 
-## Lesson 1.3.3 — Browser DevTools: the four panels you actually use
+## Lesson 1.3.3 — DevTools: the four panels that earn their keep
+
+Teaches the senior workflows in Elements (live DOM and cascade), Network (open before the action, throttle, copy-as-fetch), Console (REPL, `$0`, `console.table`), and Application (cookies, storage, service workers), with React DevTools installed here for its first call in Unit 4.
 
 Topics to cover:
 

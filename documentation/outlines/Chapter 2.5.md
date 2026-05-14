@@ -21,7 +21,9 @@ The chapter ordering reflects the dependency between the moves. Discriminated un
 
 ---
 
-## Lesson 2.5.1 — Discriminated unions and Architectural Principle #7
+## Lesson 2.5.1 — Impossible states, unrepresentable
+
+Teaches the discriminated-union shape, Architectural Principle #7, the canonical SaaS variants (request state, Result, event message, UI variant), and narrowing by a literal discriminant.
 
 Topics to cover:
 
@@ -68,7 +70,9 @@ Estimated student time: 40 to 50 minutes.
 
 ---
 
-## Lesson 2.5.2 — Flow state machines
+## Lesson 2.5.2 — States plus transitions
+
+Teaches the flow state-machine pattern as discriminated unions extended with per-transition function signatures, per-state invariants, and the three canonical SaaS machines (optimistic mutation, upload, subscription).
 
 Topics to cover:
 
@@ -124,7 +128,9 @@ Estimated student time: 50 to 60 minutes.
 
 ---
 
-## Lesson 2.5.3 — Type predicates, assertion functions, and `assertNever`
+## Lesson 2.5.3 — Exhaustiveness, enforced
+
+Teaches type predicates (block-scoped narrow), assertion functions (scope-wide narrow), and the `assertNever` plus `satisfies never` idioms that make a missing variant a compile error.
 
 Topics to cover:
 
@@ -182,7 +188,9 @@ Estimated student time: 45 to 55 minutes.
 
 ---
 
-## Lesson 2.5.4 — Branded types for IDs
+## Lesson 2.5.4 — Branded IDs
+
+Teaches the branded-string pattern (`unique symbol` and `__brand` forms), brand factories, the Zod and Drizzle integration points, and the line between IDs that earn a brand and strings that don't.
 
 Topics to cover:
 
@@ -235,7 +243,9 @@ Estimated student time: 35 to 45 minutes.
 
 ---
 
-## Lesson 2.5.5 — `keyof`, `typeof`, and indexed access types
+## Lesson 2.5.5 — Derive types from values
+
+Teaches the `typeof V`, `keyof T`, and `T[K]` operators and the load-bearing 2026 idioms (`typeof ARR[number]`, `keyof typeof OBJ`) that keep types tracking the values they describe.
 
 Topics to cover:
 
@@ -280,7 +290,9 @@ Estimated student time: 40 to 50 minutes.
 
 ---
 
-## Lesson 2.5.6 — Utility types — the daily-reach surface
+## Lesson 2.5.6 — The utility-type toolbox
+
+Teaches the eleven daily-reach utility types grouped by what they reshape (`Partial`/`Required`/`Readonly`, `Pick`/`Omit`, `Record`, `NonNullable`, `Extract`/`Exclude`, `ReturnType`/`Parameters`, `Awaited`) and how they compose into derived types.
 
 Topics to cover:
 
@@ -331,7 +343,9 @@ Estimated student time: 40 to 50 minutes.
 
 ---
 
-## Lesson 2.5.7 — Generics — basics, constraints, defaults
+## Lesson 2.5.7 — Generics with constraints
+
+Teaches generic functions and types, `extends` constraints (including `K extends keyof T`), default type parameters, the `const` modifier, and the senior 2026 wrapper idioms (`safeAction`, `requireRole`, `cache`).
 
 Topics to cover:
 

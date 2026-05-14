@@ -24,7 +24,9 @@ The chapter ordering follows the layering. The throw-and-catch surface comes fir
 
 ---
 
-## Lesson 2.8.1 — `try`/`catch`/`finally` and the throw-vs-return decision
+## Lesson 2.8.1 — Two channels: throw the unexpected, return the expected
+
+Teaches the `try`/`catch`/`finally` mechanics, the async-throw flow, the "only throw `Error`" rule, and the heuristic for routing each failure into either a `Result<T, E>` return or a throw the framework boundary catches.
 
 Topics to cover:
 
@@ -102,7 +104,9 @@ Estimated student time: 50 to 60 minutes.
 
 ---
 
-## Lesson 2.8.2 — `unknown` in catch, custom errors, and `Error.cause`
+## Lesson 2.8.2 — Narrowing the catch and authoring domain errors
+
+Teaches the `unknown`-in-catch narrow with `instanceof Error` and the `ensureError` normalizer, small custom `Error` subclasses with literal-typed `name` discriminants, `Error.cause` for re-wrap and chain walking, and the `error.name` fallback for `AbortError`, `TimeoutError`, and the cross-realm `instanceof` gotcha.
 
 Topics to cover:
 

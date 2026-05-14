@@ -1,4 +1,4 @@
-# Chapter 5.4 — Rendering and caching in Next.js 16
+# Chapter 5.4 — The Cache Components rendering model
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ Threads that run through every lesson: explicit beats implicit — Next.js 16 de
 
 ---
 
-## Lesson 5.4.1 — Static and dynamic rendering under Cache Components
+## Lesson 5.4.1 — Dynamic by default
+
+How `cacheComponents: true` flips every route to dynamic-by-default with per-component opt-in caching, and the explicit signals (`params`, `searchParams`, `cookies()`, `headers()`, `draftMode()`, `connection()`) that mark a code path dynamic.
 
 Topics to cover:
 
@@ -39,7 +41,9 @@ Estimated student time: 35 to 45 minutes. Sets the mental model that the rest of
 
 ---
 
-## Lesson 5.4.2 — Partial Prerendering as the 2026 rendering shape
+## Lesson 5.4.2 — Shells and holes with PPR
+
+How Partial Prerendering ships a cached static shell from the edge and streams dynamic holes through Suspense boundaries, plus the pure-static and pure-dynamic degenerate cases.
 
 Topics to cover:
 
@@ -70,7 +74,9 @@ Estimated student time: 35 to 45 minutes. Owns the rendering picture every other
 
 ---
 
-## Lesson 5.4.3 — Cache Components and the `use cache` directive
+## Lesson 5.4.3 — The `use cache` directive
+
+The three placements (page, component, function) of `use cache`, the compiler-generated cache key, the serializable-arguments-and-return-value contract, and the closure rules cached functions must obey.
 
 Topics to cover:
 
@@ -103,7 +109,9 @@ Estimated student time: 50 to 65 minutes. The center-of-gravity lesson for the c
 
 ---
 
-## Lesson 5.4.4 — `cacheLife` for freshness and `cacheTag` for invalidation
+## Lesson 5.4.4 — Lifetimes and tags
+
+The three-number `cacheLife` contract (stale, revalidate, expire) with its preset profiles, and `cacheTag` naming conventions for entity-level and record-level invalidation.
 
 Topics to cover:
 
@@ -134,7 +142,9 @@ Estimated student time: 45 to 55 minutes. Pairs with 5.4.3 as the two-part anato
 
 ---
 
-## Lesson 5.4.5 — React `cache()` for per-request memoization
+## Lesson 5.4.5 — Per-request memoization with React `cache()`
+
+React's `cache()` as the request-scoped deduplication primitive for work that depends on request data, contrasted with `use cache` for cross-request persistence, with the canonical request-scoped-user pattern.
 
 Topics to cover:
 
@@ -164,7 +174,9 @@ Estimated student time: 35 to 45 minutes. Short and focused; the lesson pins the
 
 ---
 
-## Lesson 5.4.6 — The post-mutation invalidation surface
+## Lesson 5.4.6 — Invalidating after a mutation
+
+The four-tool decision tree — `updateTag` (Server-Action-only, read-your-writes), `revalidateTag` (stale-while-revalidate), `revalidatePath`, and `router.refresh` — picked by the user-expectation question.
 
 Topics to cover:
 
@@ -195,7 +207,9 @@ Estimated student time: 50 to 65 minutes. Closes the loop on the cache lifecycle
 
 ---
 
-## Lesson 5.4.7 — Route segment config and async request APIs
+## Lesson 5.4.7 — Async request APIs and legacy segment config
+
+Awaiting `params`, `searchParams`, `cookies()`, `headers()`, and `draftMode()` as Promises with `React.use()` for Client Components, `connection()` as the explicit dynamic opt-in, and the migration away from the deprecated `dynamic`, `revalidate`, and `fetchCache` segment exports.
 
 Topics to cover:
 
@@ -228,7 +242,7 @@ Estimated student time: 55 to 70 minutes. Closes the chapter with the surface ev
 
 ---
 
-## Lesson 5.4.8 — Chapter quiz
+## Lesson 5.4.8 — Quizz
 
 Top 10 topics to quiz:
 

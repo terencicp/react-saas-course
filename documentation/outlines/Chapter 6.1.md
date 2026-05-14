@@ -1,4 +1,4 @@
-# Chapter 6.1 — The relational model and the data backplane
+# Chapter 6.1 — Postgres on Neon: the relational backplane
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ Threads that run through every lesson: Postgres is the assumed engine; `DATABASE
 
 ---
 
-## Lesson 6.1.1 — The relational model: tables, rows, columns, and normalization
+## Lesson 6.1.1 — Tables, rows, and 3NF
+
+Teaches the relational model — tables, rows, typed columns, primary and foreign keys — and 3NF as the default schema shape, with the three legitimate triggers for denormalization.
 
 Topics to cover:
 
@@ -40,7 +42,9 @@ Estimated student time: 45 to 55 minutes. Load-bearing for every schema, query, 
 
 ---
 
-## Lesson 6.1.2 — The local development database: Docker Postgres vs. Neon dev branch
+## Lesson 6.1.2 — Local dev: Docker, Neon branch, or Neon Local
+
+Teaches the three credible local-database options for 2026 — Docker Postgres, a Neon dev branch, and Neon Local — and the offline-vs-prod-parity trade that picks between them under one `DATABASE_URL` contract.
 
 Topics to cover:
 
@@ -68,7 +72,9 @@ Estimated student time: 35 to 45 minutes. Load-bearing for every later lesson in
 
 ---
 
-## Lesson 6.1.3 — Neon: branching per preview deploy and scale-to-zero
+## Lesson 6.1.3 — Neon branching and scale-to-zero
+
+Teaches Neon's storage/compute separation, copy-on-write branch-per-preview-deploy via the Vercel integration, and the scale-to-zero pricing model that makes ephemeral preview branches economically sustainable.
 
 Topics to cover:
 
@@ -96,7 +102,9 @@ Estimated student time: 40 to 50 minutes. Load-bearing for Lesson 6.1.4 (the dri
 
 ---
 
-## Lesson 6.1.4 — The Neon serverless driver and connection pooling
+## Lesson 6.1.4 — The serverless driver and the pooled URL
+
+Teaches the `@neondatabase/serverless` driver, the HTTP-vs-WebSocket decision for reads vs. transactions, PgBouncer transaction-mode pooling, and the two-DB-clients pattern with pooled and unpooled connection strings.
 
 Topics to cover:
 
@@ -125,7 +133,7 @@ Estimated student time: 45 to 55 minutes. Load-bearing for Chapter 6.2 (Drizzle'
 
 ---
 
-## Lesson 6.1.5 — Chapter quiz
+## Lesson 6.1.5 — Quizz
 
 Top 10 topics to quiz:
 

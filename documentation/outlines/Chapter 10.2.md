@@ -1,4 +1,4 @@
-# Chapter 10.2 — RBAC and the audit trail at the action boundary
+# Chapter 10.2 — Roles, action wrappers, and the audit trail
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ Threads that run through every lesson. RBAC in year-1 SaaS is *three roles, not 
 
 ---
 
-## Lesson 10.2.1 — The three-role RBAC model
+## Lesson 10.2.1 — Owner, admin, member
+
+Teaches the year-1 three-role RBAC default, the authority gradient between roles, the single-owner invariant, the `roleAtLeast` helper, and extending `requireOrgUser()` to return the current member's role.
 
 Topics to cover:
 
@@ -39,7 +41,9 @@ Estimated student time: 35 to 45 minutes. Decision-plus-mechanics; the role matr
 
 ---
 
-## Lesson 10.2.2 — The `authedAction` wrapper at the Server Action boundary
+## Lesson 10.2.2 — The `authedAction` wrapper
+
+Teaches the `authedAction(role, schema, fn)` factory that lifts session, role check, and schema parse out of every Server Action body, the `ctx = { user, orgId, role, db }` payload it threads, the `Result` return contract, and the named carve-out from Principle #5 that justifies the wrapper.
 
 Topics to cover:
 
@@ -71,7 +75,9 @@ Estimated student time: 50 to 60 minutes. Pattern lesson; the wrong-then-right a
 
 ---
 
-## Lesson 10.2.3 — `authedAction` ported to the route handler boundary
+## Lesson 10.2.3 — The `authedRoute` twin
+
+Teaches the route-handler port of the same discipline as `authedRoute(role, schema, fn)`, the 401 / 403 / 422 / 404 status map, RFC 9457 Problem Details responses, and sharing one business function across the Server Action and route handler seams through `/lib`.
 
 Topics to cover:
 
@@ -103,7 +109,9 @@ Estimated student time: 40 to 50 minutes. Pattern lesson, shorter than 10.2.2 be
 
 ---
 
-## Lesson 10.2.4 — Member management — listing, roles, removal, leave-org, ownership transfer
+## Lesson 10.2.4 — The five member-management flows
+
+Teaches the listing query and the four privileged actions — change role, remove member, leave org, transfer ownership — the invariants that live in the helpers, the multi-row transactions they run inside, and how a removed member's stale session resolves itself on the next request.
 
 Topics to cover:
 
@@ -134,7 +142,9 @@ Estimated student time: 50 to 60 minutes. Mechanics-heavy with multiple flows; t
 
 ---
 
-## Lesson 10.2.5 — The `audit_logs` table
+## Lesson 10.2.5 — The append-only `audit_logs` table
+
+Teaches the audit table's column shape, the three-layer append-only enforcement (RLS policy, table grants, application discipline), the `logAudit(tx, event)` helper whose signature forces a transaction, the canonical event set, and the retention story.
 
 Topics to cover:
 
@@ -169,7 +179,7 @@ Estimated student time: 45 to 55 minutes. Pattern + setup; the table schema, the
 
 ---
 
-## Lesson 10.2.6 — Chapter quiz
+## Lesson 10.2.6 — Quizz
 
 Top 10 topics to quiz:
 

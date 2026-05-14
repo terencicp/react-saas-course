@@ -10,7 +10,9 @@ The chapter ships five teaching lessons plus a quiz.
 
 ---
 
-## Lesson 7.2.1 — Defining and invoking a Server Action
+## Lesson 7.2.1 — The `"use server"` seam
+
+Defines a Server Action, names the file-level and inline declaration sites, walks the three call shapes, and locks the serializable-args contract that crosses the wire.
 
 Topics to cover:
 
@@ -44,7 +46,9 @@ Estimated student time: 35 to 45 minutes. Foundational mechanics; sets the seam 
 
 ---
 
-## Lesson 7.2.2 — Validation as the entry discipline
+## Lesson 7.2.2 — Parse on entry, every time
+
+Installs the five-seam action shape and the `safeParse`-on-`Object.fromEntries(formData)` discipline that runs before any cookie read, database call, or log statement.
 
 Topics to cover:
 
@@ -71,7 +75,9 @@ Estimated student time: 30 to 40 minutes. Pattern archetype: the entry-line disc
 
 ---
 
-## Lesson 7.2.3 — The Result return shape and the throw-versus-Result decision
+## Lesson 7.2.3 — Result, or throw
+
+Locks the canonical `Result<T>` discriminated-union return shape, the `ok` / `err` helpers, the throw-at-the-framework-edge rule, and the standardized error codes every action shares.
 
 Topics to cover:
 
@@ -114,7 +120,9 @@ Estimated student time: 40 to 50 minutes. Decision archetype. The lesson that lo
 
 ---
 
-## Lesson 7.2.4 — Architectural principles around the action seam
+## Lesson 7.2.4 — Thin actions, pure `/lib`
+
+Introduces Principle #3 (pure helpers in `/lib`, side effects at named boundaries) and Principle #5 (don't invent a parallel call wrapper), and names the auth and billing carve-outs that earn their weight later.
 
 Topics to cover:
 
@@ -156,7 +164,9 @@ Estimated student time: 35 to 45 minutes. Decision archetype. The principles get
 
 ---
 
-## Lesson 7.2.5 — After the mutation: revalidation, transactions, and idempotency foreshadowed
+## Lesson 7.2.5 — After the write
+
+Teaches `revalidatePath` as the basic post-mutation move, the `db.transaction` wrapping pattern with its no-external-calls rule, and foreshadows the idempotency-key slot for Chapter 12.1.
 
 Topics to cover:
 
@@ -196,7 +206,7 @@ Estimated student time: 40 to 50 minutes. The lesson that closes the action surf
 
 ---
 
-## Lesson 7.2.6 — Chapter quiz
+## Lesson 7.2.6 — Quizz
 
 Top 10 topics to quiz:
 

@@ -1,4 +1,4 @@
-# Chapter 15.2 — Project: cacheTag-driven invalidation
+# Chapter 15.2 — Project: caching the invoices list with tag-driven invalidation
 
 ## Chapter framing
 
@@ -154,7 +154,9 @@ The inspector is provided in full; the student writes only `tags.ts`, the `use c
 
 ---
 
-## Lesson 15.2.1 — Project brief
+## Lesson 15.2.1 — Brief and the finished cache shape
+
+Frame the build: two `use cache` reads (list and per-org summary), a three-helper `tags.ts`, `updateTag` fan-out from four actions, `revalidateTag` from a Trigger.dev summary task, and the `<FetchedAtStrip />` as the on-page cache-state readout.
 
 Goals:
 
@@ -178,7 +180,9 @@ Estimated student time: 10 to 15 minutes.
 
 ---
 
-## Lesson 15.2.2 — Starter walkthrough
+## Lesson 15.2.2 — Starter tour and inspector surface
+
+Walk the 11.3-based starter, the new `org_invoice_summaries` table, the empty stubs (`tags.ts`, queries directives, action invalidations, task body), and every inspector panel that will verify later lessons.
 
 Goals:
 
@@ -204,7 +208,9 @@ Estimated student time: 15 to 25 minutes.
 
 ---
 
-## Lesson 15.2.3 — Tag helper, cached reads, and `fetchedAt`
+## Lesson 15.2.3 — Tag helpers, cached reads, and `fetchedAt`
+
+Write `tags.ts`, annotate `listInvoices`, `getOrgInvoiceSummary`, and `getInvoiceDetail` with `'use cache'` + `cacheLife` + `cacheTag`, return `fetchedAt`, and verify hits through the inspector's hit/miss probe.
 
 Goals:
 
@@ -231,7 +237,9 @@ Estimated student time: 50 to 65 minutes.
 
 ---
 
-## Lesson 15.2.4 — `updateTag` from actions and `revalidateTag` from the task
+## Lesson 15.2.4 — Wiring both invalidation paths
+
+Fan out three `updateTag` calls after commit in the four lifecycle actions, implement the `summaryRecomputeTask` that calls `revalidateTag`, and wire the deliberate misuse-`revalidateTag`-from-action branch as the failure-mode demo.
 
 Goals:
 
@@ -264,7 +272,9 @@ Estimated student time: 55 to 75 minutes. The chapter's heaviest lesson — the 
 
 ---
 
-## Lesson 15.2.5 — Verify
+## Lesson 15.2.5 — Verify clause-by-clause
+
+Walk every "Done when" clause via the inspector: cache hits, read-your-writes through `updateTag`, record-level scoping, cross-org isolation, lifecycle fan-out, eventual via `revalidateTag`, the misuse demo, and the tag-string and closure-rule disciplines.
 
 Goals:
 

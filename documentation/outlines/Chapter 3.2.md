@@ -1,4 +1,4 @@
-# Chapter 3.2 — HTTP at the depth a SaaS engineer needs
+# Chapter 3.2 — The HTTP contract every endpoint signs
 
 ## Chapter framing
 
@@ -27,7 +27,9 @@ The chapter ordering follows the layering. Methods come first because the choice
 
 ---
 
-## Lesson 3.2.1 — Methods and idempotency: the safe-to-retry contract
+## Lesson 3.2.1 — Methods and the safe-to-retry contract
+
+Teaches the GET/POST/PUT/PATCH/DELETE palette, idempotency as the anchor that decides whether a network blip can be retried, and the `Idempotency-Key` header pattern that makes non-idempotent POSTs retry-safe.
 
 Topics to cover:
 
@@ -98,7 +100,9 @@ Estimated student time: 45 to 55 minutes. Load-bearing for Units 7, 12, and 13.
 
 ---
 
-## Lesson 3.2.2 — Status codes: the response contract
+## Lesson 3.2.2 — Status codes and Problem Details
+
+Teaches the 2xx/3xx/4xx/5xx codes a SaaS engineer reaches for, the 400-vs-422-vs-409 discriminations, the 4xx/5xx split as the on-call paging contract, and RFC 9457 Problem Details as the 2026 default error-body shape.
 
 Topics to cover:
 
@@ -194,7 +198,9 @@ Estimated student time: 50 to 60 minutes. Load-bearing for Units 7, 17, and 20.
 
 ---
 
-## Lesson 3.2.3 — Headers: content, caching, auth, and the metadata channel
+## Lesson 3.2.3 — Headers as the metadata channel
+
+Teaches the header surface a SaaS engineer touches — content negotiation, `Cache-Control` directives, `Authorization` schemes, rate-limit signaling, security-baseline headers, and the custom-header naming convention — and which headers infrastructure reads versus which the application sets.
 
 Topics to cover:
 
@@ -301,7 +307,7 @@ Estimated student time: 50 to 60 minutes. Load-bearing for Units 5, 9, 12, 15, 1
 
 ---
 
-## Lesson 3.2.4 — Quiz
+## Lesson 3.2.4 — Quizz
 
 Top ten topics to quiz:
 

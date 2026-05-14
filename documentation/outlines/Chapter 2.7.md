@@ -24,6 +24,8 @@ The chapter ordering follows the layering. The event loop and microtask queue co
 
 ## Lesson 2.7.1 — The event loop and the microtask queue
 
+Teaches the three-part runtime model (call stack, microtask queue, macrotask queue), the tick recipe that drains microtasks before the next macrotask, and `await` as a microtask-paced suspension so the student can predict the order of output in any small async program.
+
 Topics to cover:
 
 - The chapter-opening senior question: when a function calls `setTimeout(fn, 0)` and a Promise resolves on the next line, which callback runs first, and why does it matter. The answer is the event loop's queue ordering — microtasks drain before the next macrotask — and the question matters because every reactivity surface the course will touch in later units depends on it. The student leaves with a runtime model they can reason about, not a memorized rule.
@@ -81,7 +83,9 @@ Estimated student time: 45 to 60 minutes. Load-bearing for the rest of the chapt
 
 ---
 
-## Lesson 2.7.2 — Promises: the combinator surface and modern construction
+## Lesson 2.7.2 — Promises: combinators and `withResolvers`
+
+Teaches the Promise three-state model, the four combinators (`all`, `allSettled`, `any`, `race`) with the senior trigger and failure mode for each, and `Promise.withResolvers()` as the modern replacement for the deferred-pattern boilerplate when resolvers must live outside the constructor's executor.
 
 Topics to cover:
 
@@ -144,7 +148,9 @@ Estimated student time: 50 to 65 minutes.
 
 ---
 
-## Lesson 2.7.3 — `async`/`await`: sequential vs. parallel, the N+1 trap, async iteration
+## Lesson 2.7.3 — `async`/`await`: parallel by default, sequential by dependency
+
+Teaches the dependency-check reflex that picks `Promise.all` over consecutive `await`s when no data flows between them, the N+1 trap inside `.map(async ...)` with its bounded (`Promise.all`), unbounded (`pMap`), and database-batched fixes, `for await...of` for streams and paginated APIs, and the `return await` discipline that preserves stack traces.
 
 Topics to cover:
 
@@ -206,7 +212,9 @@ Estimated student time: 55 to 70 minutes. The chapter's heaviest application-ski
 
 ---
 
-## Lesson 2.7.4 — `AbortController`, `AbortSignal`, and structured cancellation
+## Lesson 2.7.4 — Cancellation with `AbortController` and `AbortSignal`
+
+Teaches the `{ signal }` parameter shape every modern web API speaks, the canonical user-cancel pattern with `AbortError` discrimination at the catch, `AbortSignal.timeout(ms)` as the 2026 replacement for `Promise.race` timeouts, and `AbortSignal.any([...])` for composing user-cancel, timeout, and shutdown signals into one.
 
 Topics to cover:
 

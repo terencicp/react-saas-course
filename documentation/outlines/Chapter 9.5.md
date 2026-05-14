@@ -113,6 +113,8 @@ src/
 
 ## Lesson 9.5.1 — Project brief
 
+What the project ships, the eight "Done when" verifications, the scope cuts (no OAuth, passkeys, 2FA, magic links, password reset), and the senior payoff each call earns.
+
 Goals:
 
 - Frame the SaaS shape being built: a runnable email+password auth flow with a verification gate, the foundation every later unit (Unit 10 orgs, Unit 11 list views with `requireUser`, Unit 12 billing, Unit 14 notifications) builds on top of.
@@ -134,7 +136,9 @@ Estimated student time: 10 to 15 minutes.
 
 ---
 
-## Lesson 9.5.2 — Starter walkthrough — env, Postgres, the Unit 8 send carry-in
+## Lesson 9.5.2 — Tour the starter
+
+Walk the provided file tree, confirm the Zod-validated env entries, bring up Postgres, and prove the Unit 8 Resend pipeline still works before any code is written.
 
 Goals:
 
@@ -162,7 +166,9 @@ Estimated student time: 20 to 25 minutes.
 
 ---
 
-## Lesson 9.5.3 — Build it — Better Auth instance, catch-all handler, and the first (unverified) sign-up
+## Lesson 9.5.3 — Wire the auth spine
+
+Configure the `betterAuth` instance with `nextCookies()`, generate the four-table schema, mount the catch-all handler, and ship a first unverified sign-up that lands a `__Host-` cookie.
 
 Goals:
 
@@ -201,7 +207,9 @@ Estimated student time: 55 to 75 minutes.
 
 ---
 
-## Lesson 9.5.4 — Build it — verification template, send-on-signup, and the sign-in gate
+## Lesson 9.5.4 — Lock the verification gate
+
+Build the React Email verification template, flip `requireEmailVerification` on, wire `sendVerificationEmail` through the Unit 8 pipeline, and add the sign-in action with opaque errors and `?next=` sanitization.
 
 Goals:
 
@@ -245,7 +253,9 @@ Estimated student time: 55 to 75 minutes.
 
 ---
 
-## Lesson 9.5.5 — Build it — `proxy.ts` two-layer gate, protected layout, and the sign-out action
+## Lesson 9.5.5 — Gate the protected surface
+
+Write the `proxy.ts` cookie-presence gate with inverse redirect, install the layout-level `requireUser()` validating read, and ship the sign-out Server Action that deletes the session row.
 
 Goals:
 
@@ -287,7 +297,9 @@ Estimated student time: 45 to 60 minutes.
 
 ---
 
-## Lesson 9.5.6 — Verify — sign-up → verify → sign-in → protected route → sign-out cycle
+## Lesson 9.5.6 — Verify the cycle
+
+Walk every "Done when" clause against Postgres rows, browser cookies, and inbox arrivals, run adversarial probes against `?next=` and the inverse gate, and name the production checklist for shipping.
 
 Goals:
 

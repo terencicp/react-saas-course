@@ -1,4 +1,4 @@
-# Chapter 23.2 — Generating text and structured output
+# Chapter 23.2 — Text, objects, and the chat surface
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ Threads through every lesson: **every LLM call runs server-side**, the client on
 
 ---
 
-## Lesson 23.2.1 — Text generation with streamText and generateText
+## Lesson 23.2.1 — streamText, generateText, and the route-handler seam
+
+The two text-generation primitives, the messages-array conversation contract, the system prompt as controller, and the Next.js 16 route handler shape that wraps every LLM call with auth, quotas, `onFinish` audit writes, `finishReason` handling, and `abortSignal` cancellation.
 
 Topics to cover:
 
@@ -39,7 +41,9 @@ Estimated student time: 40 to 50 minutes. The chapter's load-bearing mechanics l
 
 ---
 
-## Lesson 23.2.2 — Structured output with generateObject and streamObject
+## Lesson 23.2.2 — Zod schemas as the model contract
+
+`generateObject` and `streamObject` for type-safe structured output, Zod schema design with `.describe` as prompt-shape carrier, the schema constraints the model can render, `enum` and `array` modes, the `maxRetries` cost trade-off, and why structured output is the more provider-swap-friendly call shape.
 
 Topics to cover:
 
@@ -72,7 +76,9 @@ Estimated student time: 40 to 50 minutes. The chapter's portability lesson — s
 
 ---
 
-## Lesson 23.2.3 — UI hooks and the parts-based message model
+## Lesson 23.2.3 — useChat, useObject, and the parts array
+
+The v5 transport-based UI hooks (`useChat`, `useCompletion`, `useObject`), the `UIMessage` `parts` array as rendering source of truth, manually managed input state with plain `useState`, `sendMessage` / `regenerate` / `stop` / `status`, the `convertToModelMessages` / `toUIMessageStreamResponse` handler contract, and the Server-Component-loads-`initialMessages` / Client-Component-mounts-`useChat` boundary.
 
 Topics to cover:
 
@@ -106,7 +112,7 @@ Estimated student time: 45 to 55 minutes. The chapter's client-side mechanics le
 
 ---
 
-## Lesson 23.2.4 — Chapter quiz
+## Lesson 23.2.4 — Quizz
 
 Top 10 topics to quiz:
 

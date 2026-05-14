@@ -1,4 +1,4 @@
-# Chapter 23.4 — Project: LLM-backed invoice Q&A with tool calling
+# Chapter 23.4 — Project: Ask-your-invoices chat with tool calling
 
 ## Chapter framing
 
@@ -174,6 +174,8 @@ Single Server Component at `/inspector`, the verification surface. The chat surf
 
 ## Lesson 23.4.1 — Project brief
 
+Frames the build: a right-rail chat on `/invoices` powered by `streamText`, a single org-scoped `getInvoiceStats` tool, a 5-step `stopWhen` cap, and a per-user daily token quota with typed refusals.
+
 Goals:
 
 - Frame the build: a chat surface mounted in the right-rail of `/invoices` where the user types questions about their org's invoices and a tool-calling LLM answers grounded in real Drizzle data. The route handler is `POST /api/chat` wrapped in `authedRoute('member', …)`, streams `streamText` with a 5-step `stopWhen`, exposes a single tool `getInvoiceStats` whose `execute` closes over `ctx.orgId` from the session, and tracks per-user-per-day token usage with a 100k cap and a typed refusal on overrun. The client uses `useChat<InvoiceUIMessage>` and renders text parts plus `tool-getInvoiceStats` parts across the four lifecycle states. A token-usage panel shows used/remaining.
@@ -196,6 +198,8 @@ Estimated student time: 10 to 15 minutes.
 ---
 
 ## Lesson 23.4.2 — Starter walkthrough
+
+Tours the starter file tree, the provided `lib/llm/models.ts`, the `usage_quota_daily` and `llm_audit_events` tables, and the inspector's verification toggles before any code is written.
 
 Goals:
 
@@ -225,6 +229,8 @@ Estimated student time: 15 to 25 minutes.
 
 ## Lesson 23.4.3 — Streaming route under auth with the agentic loop
 
+Wraps `streamText` in `authedRoute('member', …)` with `stopWhen(stepCountIs(5))`, the tool-grounded system prompt, `convertToModelMessages`, `toUIMessageStreamResponse`, and an `onFinish` audit write.
+
 Goals:
 
 - Fill `src/lib/llm/prompts.ts`: a single export `invoiceQAPrompt({ orgName })` returning the system prompt string. Three load-bearing lines: enforce tool-grounding ("Always call getInvoiceStats before stating numeric facts"), refuse cross-org questions, define error behavior ("If a tool returns { error }, explain and ask the user to rephrase"). The prompt is the controller (23.2.1's posture); user messages are untrusted input.
@@ -253,7 +259,9 @@ Estimated student time: 50 to 60 minutes.
 
 ---
 
-## Lesson 23.4.4 — Tool with org-scoped authz, plus the daily quota
+## Lesson 23.4.4 — Tool with closure-scoped tenancy and the daily quota
+
+Defines `getInvoiceStats` with a closure over `ctx.orgId` (never input), aggregate `outputSchema`, "return don't throw" errors, and wires `reserveQuotaOrRefuse` plus `onStepFinish` token accounting against a 100k daily cap.
 
 Goals:
 
@@ -295,7 +303,9 @@ Estimated student time: 60 to 75 minutes. The chapter's heaviest lesson.
 
 ---
 
-## Lesson 23.4.5 — Typed `useChat` rendering parts and the usage panel
+## Lesson 23.4.5 — Typed `useChat`, tool parts, and the usage panel
+
+Builds the client: `useChat<InvoiceUIMessage>` with manually managed input state, a parts-switch rendering text bubbles and `tool-getInvoiceStats` cards across all four lifecycle states with a per-tool skeleton, plus a 10s-polling token-usage panel.
 
 Goals:
 
@@ -346,6 +356,8 @@ Estimated student time: 50 to 65 minutes.
 ---
 
 ## Lesson 23.4.6 — Verify
+
+Walks every "Done when" clause: grounded answers cite real Drizzle numbers, forged `orgId` is refused, the loop caps at 5 steps, the quota returns 429, tools return typed errors instead of throwing, and the `authedRoute` wrap holds.
 
 Goals:
 

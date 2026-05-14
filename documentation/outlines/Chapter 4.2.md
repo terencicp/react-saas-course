@@ -1,4 +1,4 @@
-# Chapter 4.2 — Tailwind as the CSS surface, where it touches React
+# Chapter 4.2 — Tailwind v4 inside the React component
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ The six teaching lessons run in order — utility-first thinking and the variant
 
 ---
 
-## Lesson 4.2.1 — Utility-first thinking, variants, and arbitrary values
+## Lesson 4.2.1 — Utility-first on JSX
+
+Teaches the utility-class families, the theme scale, prefix-and-colon variants, opacity modifiers, and arbitrary values as the escape hatch.
 
 Topics to cover:
 
@@ -44,7 +46,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.2.2 — Tailwind v4 CSS-first config: `@theme`, `@utility`, `@container`
+## Lesson 4.2.2 — CSS-first config in `globals.css`
+
+Teaches the v4 directives — `@import "tailwindcss"`, `@theme` tokens, `@utility`, `@custom-variant`, `@container`, `@source`, `@plugin` — that replace `tailwind.config.ts`.
 
 Topics to cover:
 
@@ -80,7 +84,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.2.3 — Class composition with `cn()` (`clsx` + `tailwind-merge`)
+## Lesson 4.2.3 — Composing classes with `cn()`
+
+Teaches the `clsx` + `tailwind-merge` helper, the defaults-then-`className`-last override pattern, and conditional class forms for component props.
 
 Topics to cover:
 
@@ -110,7 +116,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.2.4 — State and structural variants: `data-*`, `aria-*`, `group`, `peer`, `has`
+## Lesson 4.2.4 — Variants that read DOM state
+
+Teaches `data-*`, `aria-*`, `group-*`, `peer-*`, `has-*`, `*:`, `not-*`, and positional variants so state-driven styling skips `useState`.
 
 Topics to cover:
 
@@ -144,7 +152,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.2.5 — The `dark:` variant and the semantic-token model
+## Lesson 4.2.5 — Dark mode via semantic tokens
+
+Teaches the shadcn-style `@custom-variant dark` plus `@theme` and `.dark` OKLCH token overrides so components ship one theme-agnostic class string.
 
 Topics to cover:
 
@@ -174,7 +184,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.2.6 — `next-themes`: React-side theme wiring without FOUC
+## Lesson 4.2.6 — Theme switching without FOUC
+
+Teaches the `next-themes` `<ThemeProvider>` wiring, `suppressHydrationWarning`, the `useTheme()` hook, and a hydration-safe `<ThemeToggle>`.
 
 Topics to cover:
 
@@ -208,7 +220,7 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.2.7 — Quiz
+## Lesson 4.2.7 — Quizz
 
 Top ten topics to quiz:
 

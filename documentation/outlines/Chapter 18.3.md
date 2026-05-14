@@ -1,4 +1,4 @@
-# Chapter 18.3 — Project: localized, tz-aware list view
+# Chapter 18.3 — Project: tri-locale invoices list
 
 ## Chapter framing
 
@@ -148,7 +148,9 @@ Student writes only `lib/i18n/{routing,navigation,request,formats}.ts`, `lib/seo
 
 ---
 
-## Lesson 18.3.1 — Project brief
+## Lesson 18.3.1 — Brief and Done-when
+
+Frames the build, scope cuts, and the "Done when" clauses for lifting the 11.3 invoices list into a tri-locale, tz-aware surface with `hreflang` and per-locale sitemap entries.
 
 Goals:
 
@@ -172,7 +174,9 @@ Estimated student time: 10–15 minutes.
 
 ---
 
-## Lesson 18.3.2 — Starter walkthrough
+## Lesson 18.3.2 — Tour the starter
+
+Walks the provided file tree, the English source catalog, the four seeded locale/tz user combinations, and the inspector panels that map to each verification clause.
 
 Goals:
 
@@ -200,7 +204,9 @@ Estimated student time: 20–30 minutes.
 
 ---
 
-## Lesson 18.3.3 — next-intl wiring, locale negotiation, and the three message catalogs
+## Lesson 18.3.3 — Wire next-intl and ship three catalogs
+
+Fills `routing.ts`, `navigation.ts`, `request.ts`, `formats.ts`, `proxy.ts`, and `app/[locale]/layout.tsx`, writes the en-GB and fr-FR catalogs with CLDR plurals, and routes every UI string through `t()`.
 
 Goals:
 
@@ -234,7 +240,9 @@ Estimated student time: 75–90 minutes. Heaviest setup lesson — wiring + tran
 
 ---
 
-## Lesson 18.3.4 — Date rendering with Temporal in profile tz and currency via `Intl.NumberFormat`
+## Lesson 18.3.4 — Format dates in profile tz, currency from data
+
+Routes every invoice date through `useFormatter().dateTime` with the user's profile `timeZone` and every amount through `format.number` with the invoice's stored `currency`, plus a Temporal-driven relative-due column.
 
 Goals:
 
@@ -266,7 +274,9 @@ Estimated student time: 55–70 minutes.
 
 ---
 
-## Lesson 18.3.5 — `alternates.languages` metadata and per-locale sitemap entries
+## Lesson 18.3.5 — Emit `hreflang`, sitemap alternates, and per-locale OG
+
+Builds `generateAlternates`, transforms marketing's `generateMetadata` with locale-specific canonical plus bidirectional `hreflang` and `x-default`, and emits `app/sitemap.ts` with per-entry locale alternates.
 
 Goals:
 
@@ -299,7 +309,9 @@ Estimated student time: 50–65 minutes.
 
 ---
 
-## Lesson 18.3.6 — Verify
+## Lesson 18.3.6 — Verify the locale switch, DST render, and `hreflang` audit
+
+Walks every "Done when" clause with deliberate-misuse demos for the load-bearing rules: DST-spanning render, bidirectional `hreflang` with `x-default`, locale-specific canonical, CLDR plurals, and `setRequestLocale` preserving static rendering.
 
 Goals:
 

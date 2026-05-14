@@ -1,4 +1,4 @@
-# Chapter 6.2 — Defining schema with Drizzle
+# Chapter 6.2 — Schema as source of truth with Drizzle
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ Threads that run through every lesson: Drizzle is the only data-access layer the
 
 ---
 
-## Lesson 6.2.1 — Architectural Principle #2: the schema is the source of truth
+## Lesson 6.2.1 — Principle #2: schema is the source of truth
+
+Establishes Architectural Principle #2 by naming `db/schema.ts` as the canonical root from which row types, insert types, Zod validators, form fields, and RLS column names all derive.
 
 Topics to cover:
 
@@ -32,7 +34,9 @@ Estimated student time: 20 to 25 minutes. Short by design; this is a principle l
 
 ---
 
-## Lesson 6.2.2 — pgTable, the schema file, and the casing convention
+## Lesson 6.2.2 — pgTable and the snake_case bridge
+
+Introduces the `db/` folder layout, the minimal `pgTable` call, column builders, and the `casing: 'snake_case'` config that maps TS camelCase to SQL snake_case.
 
 Topics to cover:
 
@@ -61,7 +65,9 @@ Estimated student time: 35 to 45 minutes. Load-bearing for every later lesson in
 
 ---
 
-## Lesson 6.2.3 — Postgres data types via Drizzle
+## Lesson 6.2.3 — Postgres data types, the 2026 subset
+
+Surveys the durable `pg-core` types — `text`, `numeric` for money, `timestamptz`, `uuid`, `jsonb` with `$type<…>`, `pgEnum`, arrays — with a "reach for it when" rule per type.
 
 Topics to cover:
 
@@ -92,7 +98,9 @@ Estimated student time: 45 to 55 minutes. Load-bearing for every column the stud
 
 ---
 
-## Lesson 6.2.4 — Column modifiers: NOT NULL, DEFAULT, generated columns
+## Lesson 6.2.4 — NOT NULL, defaults, and generated columns
+
+Teaches the three per-column decisions — nullability, defaults (`.default`, `.defaultNow`, `.$defaultFn`, `$onUpdate`), and `generatedAlwaysAs` — plus the reusable-columns pattern.
 
 Topics to cover:
 
@@ -120,7 +128,9 @@ Estimated student time: 40 to 50 minutes. Load-bearing for every table in the ch
 
 ---
 
-## Lesson 6.2.5 — Primary keys: UUIDv7 by default, identity for high-volume internals
+## Lesson 6.2.5 — Primary keys: UUIDv7 and identity bigint
+
+Lands the surrogate-key decision tree — UUIDv7 for user-facing entities, `bigint generatedAlwaysAsIdentity` for high-volume internals, natural keys only for immutable external identifiers.
 
 Topics to cover:
 
@@ -147,7 +157,9 @@ Estimated student time: 35 to 45 minutes. Load-bearing for the project schema in
 
 ---
 
-## Lesson 6.2.6 — Foreign keys and the ON DELETE decision
+## Lesson 6.2.6 — Foreign keys and ON DELETE
+
+Covers `.references(() => other.id, { onDelete })` and the four-way cascade/set null/restrict/set default decision per relationship, plus the hard-delete vs. soft-delete split.
 
 Topics to cover:
 
@@ -181,6 +193,8 @@ Estimated student time: 40 to 50 minutes. Load-bearing for the project schema in
 
 ## Lesson 6.2.7 — UNIQUE and CHECK constraints
 
+Pushes invariants into the database with single-column, composite, partial, and case-insensitive UNIQUE constraints plus `CHECK` predicates as the safety net Zod can't replace.
+
 Topics to cover:
 
 - **The senior question.** Beyond primary keys, what invariants does the senior push into the database instead of relying on app code? The lesson covers `UNIQUE` (single-column, composite, partial, case-insensitive) and `CHECK` (predicate constraints).
@@ -210,6 +224,8 @@ Estimated student time: 35 to 45 minutes. Load-bearing for the project schema in
 
 ## Lesson 6.2.8 — Many-to-many junction tables
 
+Models N:M with two FKs and a composite PK, names the junction-vs-entity trigger, and shows the promotion path when the relationship grows metadata.
+
 Topics to cover:
 
 - **The senior question.** When an invoice carries many tags and a tag applies to many invoices, what does that look like in tables? The junction-table pattern — two FKs with a composite PK — is the only correct shape for N:M, and metadata on the junction is the upgrade path to a first-class entity.
@@ -233,7 +249,9 @@ Estimated student time: 35 to 45 minutes. Load-bearing for tag relationships, us
 
 ---
 
-## Lesson 6.2.9 — The Drizzle Relations v2 declarative API
+## Lesson 6.2.9 — Drizzle Relations v2
+
+Declares the TS-side traversal graph with `defineRelations` in `db/relations.ts` — one/many/through shapes — that enables `db.query.…({ with: … })` nested reads in 6.3.3.
 
 Topics to cover:
 
@@ -261,7 +279,9 @@ Estimated student time: 40 to 50 minutes. Load-bearing for Chapter 6.3.3 (the re
 
 ---
 
-## Lesson 6.2.10 — `$inferSelect` and `$inferInsert`: the canonical row types
+## Lesson 6.2.10 — `$inferSelect` and `$inferInsert`
+
+Cashes Principle #2 in by deriving every row, insert, and prop type from `typeof table.$inferSelect`/`$inferInsert`, replacing every hand-written row interface in the codebase.
 
 Topics to cover:
 
@@ -290,7 +310,7 @@ Estimated student time: 30 to 40 minutes. Load-bearing as the chapter's capstone
 
 ---
 
-## Lesson 6.2.11 — Chapter quiz
+## Lesson 6.2.11 — Quizz
 
 Top 10 topics to quiz:
 

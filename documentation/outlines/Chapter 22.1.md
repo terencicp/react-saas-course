@@ -1,4 +1,4 @@
-# Chapter 22.1 — Documentation that lives next to code
+# Chapter 22.1 — Docs that live next to the truth
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ Threads through every lesson: docs live next to the truth they describe — the 
 
 ---
 
-## Lesson 22.1.1 — Diataxis as the documentation vocabulary
+## Lesson 22.1.1 — Diataxis: the four jobs a doc can do
+
+Learn the Diataxis vocabulary (tutorial, how-to, reference, explanation), the 2x2 axes behind it, the "mixing trap" that wrecks most READMEs, where each type lives in a 2026 SaaS repo, and the "could this be a link?" reflex.
 
 Topics to cover:
 
@@ -37,7 +39,9 @@ Estimated student time: 25 to 30 minutes. The chapter's framing lesson — short
 
 ---
 
-## Lesson 22.1.2 — README discipline and docs that live next to the truth
+## Lesson 22.1.2 — The thin README and source-as-doc
+
+Learn the README's one job (first contact), its five-section template, the "what does NOT belong" list, and the rule that the schema file, `env.ts`, and Server Action signatures ARE the docs for what they describe so the README links instead of duplicating.
 
 Topics to cover:
 
@@ -72,7 +76,9 @@ Estimated student time: 35 to 45 minutes. The chapter's grounding lesson on wher
 
 ---
 
-## Lesson 22.1.3 — AGENTS.md as the conventions surface
+## Lesson 22.1.3 — AGENTS.md, the conventions file
+
+Learn the 2026 `AGENTS.md` standard — its two audiences (coding agents and humans), the canonical sections (overview, layout, commands, conventions, don'ts, pointers), the hierarchical lookup rule, and the boundaries against README and ADRs.
 
 Topics to cover:
 
@@ -108,7 +114,9 @@ Estimated student time: 40 to 50 minutes. The chapter's longest lesson — the f
 
 ---
 
-## Lesson 22.1.4 — ADRs and the decisions worth recording
+## Lesson 22.1.4 — ADRs: one decision per file
+
+Learn the Nygard ADR template (Title, Status, Context, Decision, Consequences), the three-test inclusion check, the "write while deciding" discipline, the supersession lifecycle, and six worked ADR sketches on the course's own opinionated picks (Drizzle, Better Auth, Biome, R2, Node runtime, native forms).
 
 Topics to cover:
 
@@ -153,7 +161,7 @@ Estimated student time: 50 to 60 minutes. The chapter's heaviest lesson — both
 
 ---
 
-## Lesson 22.1.5 — Chapter quiz
+## Lesson 22.1.5 — Quizz
 
 Top 10 topics to quiz:
 

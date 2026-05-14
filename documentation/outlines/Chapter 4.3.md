@@ -8,7 +8,9 @@ The chapter ships four teaching lessons plus the quiz, in dependency order: casc
 
 ---
 
-## Lesson 4.3.1 — Cascade resolution: layers, specificity, and the `!` modifier
+## Lesson 4.3.1 — How the browser picks a winning rule
+
+Teaches the four-step cascade algorithm (origin, layer, specificity, source order), Tailwind v4's `theme`/`base`/`components`/`utilities` layers, specificity weights and `:where()`, why `!important` is a smell, and how to trace conflicts in the DevTools Computed panel.
 
 Topics to cover:
 
@@ -34,7 +36,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.3.2 — Inheritance and which properties flow through the tree
+## Lesson 4.3.2 — What flows down the DOM tree
+
+Teaches CSS inheritance per property family (typography, color, custom properties inherit; box-model, layout, background don't), the `inherit`/`initial`/`unset`/`revert` keywords, form elements as inheritance-rebels, `currentColor` for SVG icons, and the atomic-utility consequence (typography on `<body>`, box-model per element).
 
 Topics to cover:
 
@@ -62,7 +66,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.3.3 — Preflight: naming Tailwind's base reset
+## Lesson 4.3.3 — Preflight, the deliberately blank canvas
+
+Teaches what Preflight strips (heading sizes, list bullets, link underlines, form-element typography, default margins, `box-sizing`), where it lives in `@layer base`, the two legitimate carve-outs (`@tailwindcss/typography` with `prose` for Markdown, scoped overrides for third-party widgets), and why senior devs never strip it globally.
 
 Topics to cover:
 
@@ -89,7 +95,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.3.4 — CSS custom properties as the design-token substrate
+## Lesson 4.3.4 — Custom properties and the three-tier token model
+
+Teaches CSS custom properties as runtime-reactive inheriting bindings, the Tailwind `@theme`-to-utility flow, subtree overrides for theming and multi-tenancy, reading and writing tokens from JavaScript and React inline styles, the three-tier token model (primitive, semantic, component) with naming conventions, and `@property` for animatable typed properties.
 
 Topics to cover:
 
@@ -120,7 +128,7 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.3.5 — Chapter quiz
+## Lesson 4.3.5 — Quizz
 
 Top 10 topics to quiz:
 

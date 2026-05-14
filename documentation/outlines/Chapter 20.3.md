@@ -10,6 +10,8 @@ Threads through every lesson. **Field data is the source of truth, lab data is t
 
 ## Lesson 20.3.1 — The Core Web Vitals
 
+Definitions of LCP, INP, and CLS, their p75 thresholds, the primary cause and one structural reach for each, and the field-data-versus-lab-data discipline that anchors the chapter.
+
 Topics to cover:
 
 - **The senior question.** Production traffic is live; Speed Insights is reporting numbers. Three Vitals matter for Search, conversion, and trust: LCP, INP, CLS. The lesson installs what each measures, the 75th-percentile thresholds Google scores against, the primary cause for each, and the one structural reach that moves the metric in a SaaS context.
@@ -39,7 +41,9 @@ Estimated student time: 30 to 40 minutes. Concept archetype; the three definitio
 
 ---
 
-## Lesson 20.3.2 — `next/image` `priority` and the no-raw-img rule
+## Lesson 20.3.2 — `priority` on the LCP element
+
+How `next/image`'s `priority` prop preloads the LCP element, which exact image gets it, and the ESLint-enforced ban on raw `<img>` that keeps CLS and lazy-loading defaults in place.
 
 Topics to cover:
 
@@ -67,7 +71,9 @@ Estimated student time: 25 to 35 minutes. Mechanics archetype; the `priority` ru
 
 ---
 
-## Lesson 20.3.3 — Per-icon imports and barrel-export bundle cost
+## Lesson 20.3.3 — The barrel-export trap
+
+Why barrel re-exports defeat tree-shaking, the lucide-react case study, and `optimizePackageImports` plus `sideEffects: false` as the modern fix that keeps imports readable while shipping per-export shape.
 
 Topics to cover:
 
@@ -94,7 +100,9 @@ Estimated student time: 25 to 35 minutes. Mechanics-and-decision; `optimizePacka
 
 ---
 
-## Lesson 20.3.4 — `@next/bundle-analyzer` as the audit surface
+## Lesson 20.3.4 — Reading the bundle treemap
+
+Installing `@next/bundle-analyzer`, the four scan passes for reading its treemap (biggest tile, per-route chunks, duplicates, shared chunk), and the triage decision tree from finding to fix.
 
 Topics to cover:
 
@@ -122,7 +130,9 @@ Estimated student time: 35 to 45 minutes. Tooling-and-decision; four scan passes
 
 ---
 
-## Lesson 20.3.5 — Lighthouse passes on the pre-launch surfaces
+## Lesson 20.3.5 — Lighthouse as the pre-launch gate
+
+The two pre-launch audit surfaces (marketing page and one authenticated screen), `@lhci/cli` as the CI regression gate with performance budgets, and the threshold cheat sheet that calibrates lab scores against field data.
 
 Topics to cover:
 
@@ -151,7 +161,9 @@ Estimated student time: 40 to 50 minutes. Tooling-and-discipline; CI gate plus t
 
 ---
 
-## Lesson 20.3.6 — RSC waterfalls and the parallel-await rewrite
+## Lesson 20.3.6 — RSC waterfalls and `Promise.all`
+
+Diagnosing sequential parent-then-child awaits in a Sentry trace, the dependency-check reflex before adding a second `await`, and the `Promise.all` rewrite (with Suspense streaming as a sibling reach) that turns serial waits into parallel ones.
 
 Topics to cover:
 
@@ -180,7 +192,9 @@ Estimated student time: 40 to 50 minutes. Pattern; waterfall diagnosis plus `Pro
 
 ---
 
-## Lesson 20.3.7 — Database query performance: indexes and N+1 revisited
+## Lesson 20.3.7 — Indexes and N+1 in production
+
+Revisiting the two SQL failure classes at production scale: missing composite `(org_id, ...)` indexes diagnosed via `EXPLAIN ANALYZE`, N+1 fixed with Drizzle relations or joins, plus the pre-launch DB checklist and weekly slow-query review.
 
 Topics to cover:
 
@@ -210,7 +224,7 @@ Estimated student time: 35 to 45 minutes. Pattern-revisit; production-vigilance 
 
 ---
 
-## Lesson 20.3.8 — Chapter quiz
+## Lesson 20.3.8 — Quizz
 
 Top 10 topics to quiz:
 

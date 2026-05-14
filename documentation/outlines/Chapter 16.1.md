@@ -10,6 +10,8 @@ Threads through every lesson: TanStack Query is **conditional**, not default —
 
 ## Lesson 16.1.1 — When TanStack Query earns its weight
 
+The four named triggers (polling, cross-view caching, optimistic with rollback into cached queries, infinite scroll with reuse) that justify reaching past Server Components, Server Actions, `useState`, and `nuqs` for a client-side server-state library.
+
 Topics to cover:
 
 - **The senior question.** Server Components fetch and stream data. Server Actions mutate and call `updateTag` for read-your-writes. `useState` holds transient UI state. `nuqs` puts shareable view state in the URL. What's left? When does a SaaS feature genuinely need a client-side server-state library, and what's the threshold the four defaults stop covering? The lesson answers it explicitly so the rest of the chapter has a justification.
@@ -41,7 +43,9 @@ Estimated student time: 35 to 45 minutes. The chapter's load-bearing decision le
 
 ---
 
-## Lesson 16.1.2 — Queries, mutations, optimistic updates, infinite queries
+## Lesson 16.1.2 — The four primitives the project reaches for
+
+`useQuery` (with `staleTime` and the `isPending`/`isFetching` split), `useMutation` (the five-callback lifecycle), the v5 optimistic-update two-shape decision (via-variables vs. cache-update), and `useInfiniteQuery` with `maxPages` — plus query keys as the cache contract, `refetchInterval` polling, and the `invalidateQueries`/`setQueryData`/`removeQueries` trio.
 
 Topics to cover:
 
@@ -77,7 +81,9 @@ Estimated student time: 55 to 70 minutes. The chapter's heaviest mechanics lesso
 
 ---
 
-## Lesson 16.1.3 — Wiring TanStack Query into the App Router
+## Lesson 16.1.3 — Wiring without leaking the cache across requests
+
+The `'use client'` `<Providers>` shell, the per-request `getQueryClient()` helper via React's `cache()` (the multi-tenant isolation trap), SSR-hydrated initial data through `prefetchQuery` plus `<HydrationBoundary>`, the senior `staleTime`/`gcTime` defaults, the two-system invalidation reality after a Server Action, and the org-switch `queryClient.clear()` discipline.
 
 Topics to cover:
 
@@ -110,7 +116,9 @@ Estimated student time: 45 to 55 minutes. The wiring lesson — the one place th
 
 ---
 
-## Lesson 16.1.4 — The trigger in our app — the per-invoice comment thread
+## Lesson 16.1.4 — The per-invoice comment thread clears the bar
+
+Running the four-trigger funnel against one concrete screen, splitting the read side (`useInfiniteQuery` with 10s polling, `maxPages: 10`, SSR-prefetched first page) from the write side (Server Action plus client-side `invalidateQueries`), and the cache-update optimistic-add shape — framing the 16.2 build.
 
 Topics to cover:
 
@@ -150,7 +158,7 @@ Estimated student time: 35 to 45 minutes. The chapter's bridge into the project 
 
 ---
 
-## Lesson 16.1.5 — Chapter quiz
+## Lesson 16.1.5 — Quizz
 
 Top 10 topics to quiz:
 

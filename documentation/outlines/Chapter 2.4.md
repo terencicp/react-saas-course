@@ -22,7 +22,9 @@ The chapter ordering reflects how the static surface composes. Primitives and th
 
 ---
 
-## Lesson 2.4.1 — Primitives, literal types, and the four corners
+## Lesson 2.4.1 — Primitives, literals, and the four corners
+
+The seven primitive types, literal unions as the senior reach for finite domains, and the `any`/`unknown`/`never`/`void` corners with the trigger that earns each.
 
 Topics to cover:
 
@@ -65,7 +67,9 @@ Estimated student time: 35 to 45 minutes.
 
 ---
 
-## Lesson 2.4.2 — `type` vs. `interface` and per-field modifiers
+## Lesson 2.4.2 — Object shapes: `type`, `interface`, and field modifiers
+
+When to default to `type` (always) and reach for `interface` (declaration merging), paired with the per-field `?` and `readonly` modifiers plus the array-level `readonly T[]` and `Readonly<T>` cousins.
 
 Topics to cover:
 
@@ -107,7 +111,9 @@ Estimated student time: 40 to 50 minutes.
 
 ---
 
-## Lesson 2.4.3 — Tuples and readonly tuples
+## Lesson 2.4.3 — Tuples: positions with labels
+
+Tuple syntax with element labels, optional and rest positions, `readonly` tuples, and the concrete patterns (`useState`, custom hooks, `Object.entries`) where a tuple beats a named-field object.
 
 Topics to cover:
 
@@ -143,7 +149,9 @@ Estimated student time: 25 to 35 minutes.
 
 ---
 
-## Lesson 2.4.4 — Index signatures and `Record<K, T>`
+## Lesson 2.4.4 — Dynamic keys: index signatures and `Record<K, T>`
+
+The two forms for dynamic-keyed objects, the completeness payoff of `Record<LiteralUnion, V>`, and how `noUncheckedIndexedAccess` narrows reads differently across the open-keyed and finite-keyed cases.
 
 Topics to cover:
 
@@ -179,7 +187,9 @@ Estimated student time: 35 to 45 minutes.
 
 ---
 
-## Lesson 2.4.5 — Unions and intersections
+## Lesson 2.4.5 — Composing types: unions and intersections
+
+The `|` and `&` operators across literal, mixed-primitive, shape, and nullable unions plus shape-and-narrowing intersections, with the discriminated-union shape seeded for Chapter 2.5.
 
 Topics to cover:
 
@@ -224,7 +234,9 @@ Estimated student time: 35 to 45 minutes.
 
 ---
 
-## Lesson 2.4.6 — Narrowing without `as` and `!`
+## Lesson 2.4.6 — Narrow, don't assert
+
+Control-flow narrowing through `typeof`, equality, `in`, `instanceof`, `Array.isArray`, and discriminant fields, with the three legitimate triggers that earn `as` and `!` named as conditional escape hatches.
 
 Topics to cover:
 
@@ -273,7 +285,9 @@ Estimated student time: 45 to 55 minutes.
 
 ---
 
-## Lesson 2.4.7 — `as const` and `satisfies`
+## Lesson 2.4.7 — Keeping literals narrow: `as const` and `satisfies`
+
+The value-site freeze that keeps literal types from widening, the contract check that validates without losing the narrow, and the combined `as const satisfies T` idiom for typed-config patterns.
 
 Topics to cover:
 
@@ -320,7 +334,9 @@ Estimated student time: 35 to 45 minutes.
 
 ---
 
-## Lesson 2.4.8 — Inference, annotations, and type-only imports
+## Lesson 2.4.8 — Annotate the boundaries, infer the inside
+
+The senior rule for where annotations earn their weight (parameters, exported APIs) and where inference wins (locals, return types, inline callbacks), plus the `import type` discipline that `verbatimModuleSyntax` enforces.
 
 Topics to cover:
 

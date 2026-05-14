@@ -99,7 +99,9 @@ package.json                     # provided
 
 ---
 
-## Lesson 4.12.1 — Project brief
+## Lesson 4.12.1 — The bar and the brief
+
+Frame the static marketing surface as a SaaS pattern, state the seven "Done when" verifications, show the final UX at three widths, set the scope cut, and clone the starter.
 
 Goals:
 
@@ -123,7 +125,9 @@ Estimated student time: 10 to 15 minutes.
 
 ---
 
-## Lesson 4.12.2 — Starter walkthrough
+## Lesson 4.12.2 — Tour the starter
+
+Walk the file tree, read the `@theme` token block, `ThemeProvider` wiring, `components.json`, typed `data.ts`, page placeholders, and `next.config.ts`, then confirm `pnpm dev` renders the shell with system theme respected.
 
 Goals:
 
@@ -149,7 +153,9 @@ Estimated student time: 25 to 35 minutes.
 
 ---
 
-## Lesson 4.12.3 — Header, hero, and the feature grid with CVA variants
+## Lesson 4.12.3 — Header, hero, and feature grid
+
+Build the semantic header with desktop nav, the hero with `<Button asChild>` CTAs and a CSS-only `ThemeAwareImage`, and a `cva`-driven `FeatureCard` mapped into a responsive three-column grid.
 
 Goals:
 
@@ -176,7 +182,9 @@ Estimated student time: 50 to 65 minutes.
 
 ---
 
-## Lesson 4.12.4 — Pricing table, footer, and the theme toggle without FOUC
+## Lesson 4.12.4 — Pricing, footer, and a flicker-free theme toggle
+
+Compose the pricing cards with a data-driven featured tier, build the three-column footer, and wire a `next-themes` toggle that respects `prefers-reduced-motion` and survives hard reload without hydration warnings or FOUC.
 
 Goals:
 
@@ -203,7 +211,9 @@ Estimated student time: 50 to 65 minutes.
 
 ---
 
-## Lesson 4.12.5 — Mobile nav drawer with `useLockBodyScroll` and focus trap
+## Lesson 4.12.5 — Mobile drawer with scroll lock
+
+Write the `useLockBodyScroll` hook that restores prior overflow on cleanup, then drop it inside a shadcn `Sheet`-based `MobileNav` that traps focus, closes on `Esc` and link click, and keeps the desktop and mobile navs single-source via `hidden md:flex` / `md:hidden`.
 
 Goals:
 
@@ -230,7 +240,9 @@ Estimated student time: 45 to 60 minutes.
 
 ---
 
-## Lesson 4.12.6 — Verify
+## Lesson 4.12.6 — Verify clause by clause
+
+Walk every "Done when" check — no-FOUC reload, Lighthouse 100, keyboard-only traversal, reflow at 360/768/1280, drawer focus trap, scroll lock, and `Esc` close — plus an axe DevTools audit, and name the senior calls one more time.
 
 Goals:
 

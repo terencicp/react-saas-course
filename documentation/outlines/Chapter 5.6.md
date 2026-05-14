@@ -1,4 +1,4 @@
-# Chapter 5.6 — The Next.js project surface
+# Chapter 5.6 — Project config, platform primitives, and SEO
 
 ## Chapter framing
 
@@ -8,7 +8,9 @@ Threads that run through every lesson: prefer file conventions over imperative A
 
 ---
 
-## Lesson 5.6.1 — `next.config.ts` orientation and server externals
+## Lesson 5.6.1 — The typed `next.config.ts`
+
+Teaches the typed `next.config.ts` surface as a one-screen map (`cacheComponents`, `typedRoutes`, `images`, `headers`, `experimental`) and `serverExternalPackages` as the lever for Node-native SDKs that break Turbopack bundling.
 
 Topics to cover:
 
@@ -39,7 +41,9 @@ Estimated student time: 25 to 35 minutes.
 
 ---
 
-## Lesson 5.6.2 — Images: `next/image`, `remotePatterns`, and the optimization pipeline
+## Lesson 5.6.2 — Images with `next/image`
+
+Teaches `next/image` as the platform default for sized, lazy, format-negotiated images, the required `sizes`/`priority`/`placeholder` props, the Next.js 16 `qualities` requirement, and `remotePatterns` as the mandatory security gate for external sources.
 
 Topics to cover:
 
@@ -73,7 +77,9 @@ Estimated student time: 45 to 55 minutes.
 
 ---
 
-## Lesson 5.6.3 — Static redirects and rewrites in `next.config.ts`
+## Lesson 5.6.3 — Edge redirects and rewrites
+
+Teaches `redirects()` and `rewrites()` in `next.config.ts` as the edge-applied home for request-independent rules, the `source`/`has`/`missing` pattern syntax, 308-vs-307 SEO consequences, and the decision tree against `proxy.ts` and `redirect()`.
 
 Topics to cover:
 
@@ -104,7 +110,9 @@ Estimated student time: 30 to 40 minutes.
 
 ---
 
-## Lesson 5.6.4 — `next/font` for self-hosted typography
+## Lesson 5.6.4 — Self-hosted fonts with `next/font`
+
+Teaches `next/font/google` and `next/font/local` as the build-time self-hosting pipeline that eliminates CLS via fallback metrics, the required `subsets`, variable-font defaults, and the Tailwind CSS-custom-property bridge.
 
 Topics to cover:
 
@@ -135,7 +143,9 @@ Estimated student time: 30 to 40 minutes.
 
 ---
 
-## Lesson 5.6.5 — `next/script` for third-party scripts
+## Lesson 5.6.5 — Third-party scripts with `next/script`
+
+Teaches the four `next/script` strategies (`beforeInteractive`, `afterInteractive`, `lazyOnload`, `worker`), the `onLoad`/`onReady` callbacks, placement and dedup with `id`, and the SDK-over-snippet preference for vendors that ship one.
 
 Topics to cover:
 
@@ -166,7 +176,9 @@ Estimated student time: 30 to 40 minutes.
 
 ---
 
-## Lesson 5.6.6 — Metadata API and dynamic OG images
+## Lesson 5.6.6 — Metadata and dynamic OG cards
+
+Teaches the static `metadata` export, `generateMetadata` with cached resource reads, `metadataBase` and `alternates.canonical`, and `opengraph-image.tsx` with `ImageResponse` for per-resource social cards.
 
 Topics to cover:
 
@@ -203,7 +215,9 @@ Estimated student time: 50 to 60 minutes.
 
 ---
 
-## Lesson 5.6.7 — SEO file conventions, viewport, and icons
+## Lesson 5.6.7 — Robots, sitemaps, icons, viewport
+
+Teaches the SEO file conventions (`robots.ts`, `sitemap.ts`, `icon.{ext}`, `apple-icon`, `manifest.ts`), the separate `viewport` export with `themeColor`, env-aware robots, and post-deploy OG cache warming.
 
 Topics to cover:
 
@@ -239,7 +253,9 @@ Estimated student time: 35 to 45 minutes.
 
 ---
 
-## Lesson 5.6.8 — `generateStaticParams` for build-time route materialization
+## Lesson 5.6.8 — `generateStaticParams` for static catalogs
+
+Teaches `generateStaticParams` as the hook that materializes dynamic segments at build time, the `dynamicParams` toggle for closed lists, and the pairing with `use cache` and `cacheTag` for the production content-page shape.
 
 Topics to cover:
 
@@ -270,7 +286,7 @@ Estimated student time: 30 to 40 minutes.
 
 ---
 
-## Lesson 5.6.9 — Chapter quiz
+## Lesson 5.6.9 — Quizz
 
 Top 10 topics to quiz:
 

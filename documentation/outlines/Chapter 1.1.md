@@ -1,4 +1,4 @@
-# Chapter 1.1 — Introduction
+# Chapter 1.1 — The contract
 
 ## Chapter framing
 
@@ -18,7 +18,9 @@ This chapter ships no code beyond illustrative one-liners. Setup begins in Chapt
 
 ---
 
-## Lesson 1.1.1 — Who this course is for and what you'll be able to ship
+## Lesson 1.1.1 — Who this is for
+
+Sets the reader profile, the production-code-review win condition, the evenings-not-bootcamp time shape, and a private self-check that recommends starting here, elsewhere, or with a fundamentals course first.
 
 Topics to cover:
 
@@ -44,6 +46,8 @@ Estimated student time: 10 to 15 minutes.
 
 ## Lesson 1.1.2 — The two pillars
 
+Installs the course's operational filters — senior mindset over syntax, and the minimum viable 2026 stack — and states once why AI is deliberately absent from lesson material.
+
 Topics to cover:
 
 - Pillar one: **systems design and senior mindset over syntax.** Code is commodity in 2026. The senior contribution is what gets decided before code is written (planning, data modeling, API contracts, system design) and how the code is shaped so it stays changeable as the system grows. Every lesson foregrounds the decision, then shows the code.
@@ -65,7 +69,9 @@ Estimated student time: 15 minutes.
 
 ---
 
-## Lesson 1.1.3 — The 2026 stack at a glance
+## Lesson 1.1.3 — The stack at a glance
+
+Lays out a one-page map of every load-bearing tool grouped by role, with the senior reason each wins (or the trigger that would flip it), pinned to May 2026.
 
 Topics to cover:
 
@@ -89,7 +95,9 @@ Estimated student time: 20 to 25 minutes.
 
 ---
 
-## Lesson 1.1.4 — Prerequisites — what's re-taught and what's assumed
+## Lesson 1.1.4 — Rusty, not new
+
+Frames prerequisites as returning-developer territory, lists what is assumed without ceremony, what is re-taught at adult depth (and where), what is deliberately cut, and a litmus self-assessment.
 
 Topics to cover:
 
@@ -112,7 +120,9 @@ Estimated student time: 15 to 20 minutes.
 
 ---
 
-## Lesson 1.1.5 — How a lesson works and how to use this course
+## Lesson 1.1.5 — How to read this course
+
+Names the defaults-vs-triggers reading rule, the canonical lesson anatomy, the inline placement of principles and patterns, the project repo and `degit` flow, and the hosted-service accounts (plus one cheap domain) needed later.
 
 Topics to cover:
 

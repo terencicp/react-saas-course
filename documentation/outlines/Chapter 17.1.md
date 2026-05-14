@@ -8,7 +8,9 @@ Threads that run through every lesson. The chapter is an **audit pass, not new c
 
 ---
 
-## Lesson 17.1.1 — Errors fail closed
+## Lesson 17.1.1 — Refuse by default
+
+Every gate that controls access — authorization, tenancy, paywall, signature verify — treats an exception inside the check as a refusal, with the throw-and-catch structure that makes fail-open hard to write.
 
 Topics to cover:
 
@@ -44,7 +46,9 @@ Estimated student time: 45 to 55 minutes. The chapter's load-bearing rule; the r
 
 ---
 
-## Lesson 17.1.2 — User-message vs. operator-message split
+## Lesson 17.1.2 — Two audiences, two messages
+
+Every error splits into a sanitized user string (no IDs, no stacks, no constraint names) and a fully-instrumented operator record (cause chain, ctx, redacted input), diverging at the wrapper and never at the UI.
 
 Topics to cover:
 
@@ -85,7 +89,9 @@ Estimated student time: 50 to 60 minutes. The chapter's heaviest discipline less
 
 ---
 
-## Lesson 17.1.3 — The two commitments revisited at the seams
+## Lesson 17.1.3 — Walking the six error seams
+
+A seam-by-seam audit of `authedAction`, `authedRoute`, page-level `requireOrgUser`, the webhook receiver, the rate limiter, and the `error.tsx` boundaries, naming where each commitment lands and what to grep for to catch bypasses.
 
 Topics to cover:
 
@@ -123,7 +129,7 @@ Estimated student time: 60 to 75 minutes. The chapter's heaviest lesson — ever
 
 ---
 
-## Lesson 17.1.4 — Chapter quiz
+## Lesson 17.1.4 — Quizz
 
 Top 10 topics to quiz:
 

@@ -8,7 +8,9 @@ Six teaching lessons plus a quiz, ordered by dependency: 4.1.1 installs the JSX 
 
 ---
 
-## Lesson 4.1.1 — JSX as HTML through React's lens
+## Lesson 4.1.1 — JSX is property syntax for HTML
+
+The JSX surface every later lesson rides on: the rename table (`className`, `htmlFor`, camelCase events), curly-brace expressions, fragments, void self-close, list keys tied to data, and the `&&` zero trap.
 
 Topics to cover:
 
@@ -65,7 +67,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.1.2 — The Next.js root layout: html, head, body, meta
+## Lesson 4.1.2 — The Next.js root layout owns the document shell
+
+The `app/layout.tsx` Server Component renders `<html lang>` and `<body>`, the metadata API writes the `<head>`, and `'use client'` belongs on a `<Providers>` child, not the root.
 
 Topics to cover:
 
@@ -123,7 +127,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.1.3 — Semantic landmarks and the heading hierarchy
+## Lesson 4.1.3 — Landmarks and the heading outline
+
+The six landmark elements (`<header>`, `<nav>`, `<main>`, `<aside>`, `<article>`, `<section>`, `<footer>`) plus the strict `<h1>`-through-`<h6>` hierarchy form the page outline assistive tech navigates.
 
 Topics to cover:
 
@@ -180,7 +186,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.1.4 — Buttons, links, and lists
+## Lesson 4.1.4 — Actions, navigations, and item sequences
+
+`<button type>` for actions versus `<a href>` and `<Link>` for navigation, `target="_blank"` paired with `rel="noopener noreferrer"`, `aria-label` on icon-only buttons, and `<ul>`/`<ol>` for related parallel items.
 
 Topics to cover:
 
@@ -236,7 +244,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.1.5 — Forms: the element contract
+## Lesson 4.1.5 — Forms as a contract with the server
+
+`<form>`, typed `<input>`s, `<label htmlFor>`, `<fieldset>`/`<legend>`, the `name` attribute as the `FormData` key, `autoComplete` for autofill, and native constraints as UX paired with server-side Zod.
 
 Topics to cover:
 
@@ -319,7 +329,9 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.1.6 — Data attributes, ARIA basics, and tables
+## Lesson 4.1.6 — `data-*`, `aria-*`, and the `<table>` decision
+
+`data-*` for script hooks (delegation, tests, Tailwind state), `aria-*` for assistive-tech signals (`aria-label`, `aria-current`, `aria-expanded`, `aria-pressed`, `role="alert"`), and `<table>` with `<th scope>` and `<caption>` only when the data is genuinely tabular.
 
 Topics to cover:
 
@@ -382,7 +394,7 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4.1.7 — Quiz
+## Lesson 4.1.7 — Quizz
 
 Top ten topics to quiz:
 

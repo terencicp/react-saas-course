@@ -1,4 +1,4 @@
-# Chapter 15.4 — Project: Upstash rate limit on auth endpoints
+# Chapter 15.4 — Project: Upstash rate limits on the auth surface
 
 ## Chapter framing
 
@@ -149,6 +149,8 @@ The inspector is provided in full; the student writes only `redis.ts`, `rate-lim
 
 ## Lesson 15.4.1 — Project brief
 
+Frames the build: wrap the 9.5 sign-in, sign-up, and reset actions with three Upstash limiters, swap out Better Auth's built-in limiter, and verify the 11th-request 429 against the inspector and the Upstash dashboard.
+
 Goals:
 
 - Frame the build: take the 9.5 email+password auth surface and instrument sign-in, sign-up, and reset with `@upstash/ratelimit` at the action boundary. Sign-in carries the dual-keying rule. Better Auth's built-in limiter goes off. Every response carries `RateLimit-*` headers; rejections add `Retry-After`. A Redis outage fails open and logs alertable events. Show one screenshot of `/inspector` after a finished "Spam sign-in": the recent-responses log with ten 401s counting `RateLimit-Remaining` 9 → 0 and the 11th flipping to 429 with `Retry-After`.
@@ -172,7 +174,9 @@ Estimated student time: 15 to 20 minutes.
 
 ---
 
-## Lesson 15.4.2 — Starter walkthrough
+## Lesson 15.4.2 — Tour the 9.5 auth starter and the inspector
+
+Reads the provided file tree, the still-on Better Auth built-in limiter, the empty `lib/` stubs, the seeded `alice` / `bob` / `eve` accounts, the mocked email counter, and every panel and toggle on `/inspector`.
 
 Goals:
 
@@ -199,7 +203,9 @@ Estimated student time: 15 to 25 minutes.
 
 ---
 
-## Lesson 15.4.3 — Redis client, three limiters, and the live readout
+## Lesson 15.4.3 — Declare the Redis client and three module-scope limiters
+
+Adds the two Upstash env vars, writes `redis.ts` as `Redis.fromEnv()`, declares the sign-in, sign-up, and reset `Ratelimit` instances at module scope with distinct prefixes and per-limiter `ephemeralCache`, and lights up the inspector's "Remaining tokens" panel via `getRemaining`.
 
 Goals:
 
@@ -225,7 +231,9 @@ Estimated student time: 40 to 55 minutes.
 
 ---
 
-## Lesson 15.4.4 — Wire the three actions with dual-keying, headers, and fail-open
+## Lesson 15.4.4 — Gate the actions: dual-keying, headers, fail-open
+
+Fills `keys.ts`, `safe-limit.ts`, and `rate-limit-headers.ts`; wraps sign-in with per-IP-and-per-email gates, sign-up with per-IP, and reset with per-IP-plus-per-email; flips Better Auth's built-in limiter off; and hands each `pending` to `after()`.
 
 Goals:
 
@@ -256,7 +264,9 @@ Estimated student time: 70 to 90 minutes. The chapter's heaviest lesson — dual
 
 ---
 
-## Lesson 15.4.5 — Verify
+## Lesson 15.4.5 — Verify against "Done when"
+
+Walks every clause: the 11th-request 429 with `Retry-After`, the cross-IP per-email proof, window resets, opaque 429 bodies, gate-before-work timing, the fail-open log, module-scope cache hits, `pending` off-path, and the Upstash dashboard keys with TTLs.
 
 Goals:
 
