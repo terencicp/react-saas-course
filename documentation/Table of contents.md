@@ -1000,10 +1000,10 @@
 - 23.1.4 Quizz
 
 ### Chapter 23.2 — Generating text and structured output
-- 23.2.1 Text generation with `streamText` and `generateText` — the streaming-vs.-batch cut, the messages array and the system-prompt-as-controller posture, the Next.js 16 route handler seam (`authedRoute` + `convertToModelMessages` + `toUIMessageStreamResponse`), `onFinish` as the post-call audit/`usage` slot, `finishReason` and `abortSignal` for graceful caps and cancellation, `maxOutputTokens` as a syntactic discipline, the named-handle imports from `lib/llm/models.ts`
-- 23.2.2 Structured output with `generateObject` and `streamObject` — Zod schema as the contract, `.describe` as prompt-shape carrier, schema shape constraints (top-level object, no recursion, discriminated unions over untagged), the strict-`.refine` retry-loop cost amplifier, `output: 'enum'` and `output: 'array'` modes, structured output as the swap-friendlier shape vs. free-form `streamText`-with-JSON
-- 23.2.3 UI hooks and the parts-based message model — `useChat` / `useCompletion` / `useObject` under v5's transport-based architecture, the `UIMessage` `parts` array as the rendering source of truth (replaces v4's flat `.content`), `sendMessage` / `regenerate` (renamed from v4's `append` / `reload`), manually managed input state via plain `useState`, the two-message-types boundary (persist `UIMessage[]`, send `ModelMessage[]`), Server Component shell + Client Component live stream, error-state sanitization at the route-handler response boundary
-- 23.2.4 Chapter quiz
+- 23.2.1 AI SDK Core — `streamText` and `generateText`; the message shape and conversation primitives
+- 23.2.2 Structured output — `generateObject` and `streamObject` with Zod schemas
+- 23.2.3 AI SDK UI hooks — `useChat`, `useCompletion` under v5's transport-based architecture; the `UIMessage` `parts` array as the message-state-of-truth (replaces v4's flat `.content`); `sendMessage` / `regenerate` (renamed from v4's `append` / `reload`); manually managed input state (no longer auto-managed by the hook); streaming response patterns and progressive rendering (text deltas, partial objects)
+- 23.2.4 Quizz
 
 ### Chapter 23.3 — Tools, agents, and generative UI
 - 23.3.1 Tool calling — defining tools with Zod, the execution loop, multi-step under v5's `stopWhen` parameter with built-in stop conditions (`stepCountIs(n)`, `hasToolCall(name)`, `isLoopFinished()`) — replaces v4's client-side `maxSteps`; the agentic loop, tool-result handling
