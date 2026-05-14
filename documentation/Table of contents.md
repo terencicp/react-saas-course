@@ -798,13 +798,13 @@
 - 18.1.6 Chapter quiz
 
 ### Chapter 18.2 — Internationalization (SaaS pattern #14)
-- 18.2.1 The i18n discipline — translation keys with interpolation, never string concatenation
-- 18.2.2 ICU MessageFormat for plurals and gendered forms
-- 18.2.3 `Intl.NumberFormat`, `Intl.DateTimeFormat`, `Intl.RelativeTimeFormat`, `Intl.PluralRules`, `Intl.Collator`
-- 18.2.4 Locale negotiation — profile preference + `Accept-Language`
-- 18.2.5 next-intl — the 2026 Next.js i18n library and how it implements the discipline
-- 18.2.6 i18n SEO — `hreflang` tags, per-locale sitemap entries, canonical URLs, locale-aware OG images
-- 18.2.7 Quizz
+- 18.2.1 Translation keys, interpolation, never concatenation — the three-artifact discipline (keys in code, ICU-shaped entries in per-locale catalogs, named placeholders), one-string-one-key, `t.rich` for embedded markup, the JSON-catalog lifecycle
+- 18.2.2 ICU MessageFormat: plurals, select, gendered forms — `plural` with CLDR categories and `=0`/`=1` overrides, `selectordinal` for ordinals, `select` for free enums, nested plural-inside-select for gendered counts, `Intl.PluralRules` as the underlying engine, MF2 named as the path forward
+- 18.2.3 `Intl.NumberFormat`, `DateTimeFormat`, `RelativeTimeFormat`, `Collator` — the daily-reach formatters with `ListFormat` / `DisplayNames` named once; Temporal interop on `DateTimeFormat`; the "construct once, reuse" rule; mandatory `locale` and `timeZone` arguments
+- 18.2.4 Locale negotiation: profile preference plus `Accept-Language` — the five-input resolution chain (URL prefix → profile → cookie → `Accept-Language` best-match → default); BCP 47 `Lookup` via `@formatjs/intl-localematcher`; `users.locale` paired with `users.timeZone`; never geo-IP as a primary signal
+- 18.2.5 next-intl: wiring the discipline in Next.js 16 — `defineRouting` / `createMiddleware` / `getRequestConfig` / `setRequestLocale` / `generateStaticParams` / `useTranslations` / `useFormatter` / typed navigation; the `IntlMessages` global type for compile-time key safety; static-vs-dynamic rendering boundary
+- 18.2.6 i18n SEO: `hreflang`, per-locale sitemaps, canonical URLs — `alternates.languages` in `generateMetadata`, the self-referencing and bidirectional rules, `x-default`, locale-specific canonicals, `MetadataRoute.Sitemap` with alternates, OG `og:locale` and locale-aware OG images
+- 18.2.7 Chapter quiz
 
 ### Chapter 18.3 — Project: localized, tz-aware list view
 - 18.3.1 Project brief
