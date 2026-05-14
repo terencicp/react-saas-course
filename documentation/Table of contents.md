@@ -900,12 +900,12 @@
 - 20.3.8 Quizz
 
 ### Chapter 20.4 — Project: observability and performance audit
-- 20.4.1 Project brief — Sentry + PostHog wiring plus the seeded performance findings
-- 20.4.2 Audit target walkthrough — the seeded codebase, one modeled finding
-- 20.4.3 Wire it — Sentry with source maps, release tagging, and breadcrumbs
-- 20.4.4 Wire it — PostHog events gated by the cookie consent gate
-- 20.4.5 Audit it — performance pass (RSC waterfall, barrel import, missing `priority`, N+1, bundle analyzer)
-- 20.4.6 Verify — Sentry captures a deliberate throw, PostHog records post-consent, bundle before/after attached, findings match the seeded list
+- 20.4.1 Project brief: wire observability and audit performance
+- 20.4.2 Audit target walkthrough and one modeled finding
+- 20.4.3 Wire Sentry, structured logs, and request correlation IDs
+- 20.4.4 Gate PostHog behind the cookie consent banner
+- 20.4.5 Audit performance: waterfall, barrel, N+1, and the bundle-analyzer delta
+- 20.4.6 Verify and self-grade against the answer key
 
 ---
 
