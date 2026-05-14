@@ -10,7 +10,7 @@ effort: xhigh
 
 Read "AGENTS.md".
 
-You will be given a single chapter (e.g. "Chapter 2.3"). Read its outline at `documentation/outlines/Chapter X.X.md` and the matching chapter block in `documentation/Table of contents.md`.
+You will be given a single chapter (e.g. "Chapter 2.3"). Read its outline at `documentation/outlines/Chapter X.X.md`.
 
 For each lesson in the chapter, write:
 
