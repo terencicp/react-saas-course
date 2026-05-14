@@ -621,8 +621,8 @@
 - 12.3.3 Build it — signature verification with constant-time compare
 - 12.3.4 Build it — the outer transaction and `processed_events` dedup
 - 12.3.5 Build it — the three event handlers and the derived `plan_entitlements` row
-- 12.3.6 Build it — the `billing.upgrade` / `openPortal` / `requirePlan` interface and the inspector portal button
-- 12.3.7 Verify — `stripe trigger` lands once, replay doesn't mutate twice, portal opens, signature tampering returns 400
+- 12.3.6 Build it — the `billing.*` interface and the inspector portal button
+- 12.3.7 Verify — `stripe trigger` lands once, replay doesn't mutate twice, portal opens, signature tampering returns 400, ordering predicate no-ops stale events
 
 ---
 
