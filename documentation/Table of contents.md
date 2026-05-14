@@ -317,18 +317,15 @@
 - 5.5.6 Quizz
 
 ### Chapter 5.6 — The Next.js project surface
-- 5.6.1 `next.config.ts` orientation — the typed config; what kinds of settings live here (image config, redirects/rewrites, security headers, server-external packages)
-- 5.6.2 Image domains and formats in `next.config.ts`
-- 5.6.3 Redirects and rewrites for legacy URLs in `next.config.ts`
-- 5.6.4 `serverExternalPackages` — when an SDK breaks bundling
-- 5.6.5 `next/image` — `priority`, `sizes`, `placeholder`
-- 5.6.6 Image transforms (light) — what Vercel's automatic image optimization gives you for free
-- 5.6.7 `next/font` — Google fonts and self-hosted
-- 5.6.8 `next/script` — when third-party scripts are unavoidable; loading strategies and the perf cost named at each
-- 5.6.9 Metadata API — `generateMetadata`, OG/Twitter, dynamic OG images
-- 5.6.10 SEO file conventions — `robots.ts`, `sitemap.ts`, `favicon.ico`, `icon.{ext}`, `apple-icon.{ext}`, `opengraph-image.{ext}`, `twitter-image.{ext}`; `generateViewport`
-- 5.6.11 `generateStaticParams` — SSG for dynamic routes
-- 5.6.12 Quizz
+- 5.6.1 `next.config.ts` orientation and server externals — the typed config, the keys the chapter visits, `serverExternalPackages` for SDKs that break bundling, `typedRoutes`, `cacheComponents` flag
+- 5.6.2 Images: `next/image`, `remotePatterns`, and the optimization pipeline — required props, `sizes`/`priority`/`placeholder`, the new-in-16 `qualities` requirement, what Vercel's automatic optimization gives for free
+- 5.6.3 Static redirects and rewrites in `next.config.ts` — the static, edge-applied side of the redirect/rewrite decision tree
+- 5.6.4 `next/font` for self-hosted typography — Google fonts and `localFont`, variable fonts, the Tailwind variable bridge, Geist as the 2026 scaffold default
+- 5.6.5 `next/script` for third-party scripts — `beforeInteractive`/`afterInteractive`/`lazyOnload`/`worker`, callbacks, the SDK preference over snippets
+- 5.6.6 Metadata API and dynamic OG images — static `metadata`, `generateMetadata`, `metadataBase`, `opengraph-image.tsx` with `ImageResponse`
+- 5.6.7 SEO file conventions, viewport, and icons — `robots.ts`, `sitemap.ts`, `icon.{ext}`, `apple-icon`, the separate `viewport` export, `generateViewport`, `themeColor`, JSON-LD named once
+- 5.6.8 `generateStaticParams` for build-time route materialization — the catalog hook, `dynamicParams`, pairing with `use cache` and `cacheTag` for the production content-page shape
+- 5.6.9 Quizz
 
 ### Chapter 5.7 — Project: list-plus-detail with parallel routes
 - 5.7.1 Project brief
