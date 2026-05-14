@@ -855,10 +855,10 @@
 - 19.4.5 Chapter quiz
 
 ### Chapter 19.5 — E2E (conditional)
-- 19.5.1 When Playwright earns its weight — not a coverage tool; reach for it only on the 20–30 paths where failure costs real money (auth, checkout, Stripe-touching flows); many SaaS skip E2E entirely in their first year
-- 19.5.2 Playwright primitives — running it on auth, checkout, money paths
-- 19.5.3 Playwright in our app — the money paths that pay back the runtime cost
-- 19.5.4 Quizz
+- 19.5.1 When Playwright earns its weight — the money-path filter; not a coverage tool; year-one zero is correct for many SaaS
+- 19.5.2 Playwright primitives in the 2026 idiom — config, `webServer`, `storageState`, fixtures, locators, the trace viewer
+- 19.5.3 Playwright in our app — the four money paths (sign-in, Stripe Checkout round-trip, invitation acceptance, primary value loop)
+- 19.5.4 Chapter quiz
 
 ### Chapter 19.6 — Project: integration + E2E tests for the Stripe checkout flow
 - 19.6.1 Project brief
