@@ -533,12 +533,11 @@
 > Pin every record to an organization, enforce the role check at the action boundary structurally, and write the audit trail that survives discovery.
 
 ### Chapter 10.1 — Organizations as the tenancy model
-- 10.1.1 Organization data model — creation, the active org in the session, switching orgs
-- 10.1.2 Multi-tenancy — every record org-scoped; the tenant-aware query helper (SaaS pattern #1)
-- 10.1.3 When Row-Level Security earns its weight — the threshold past application-layer scoping: the highest-stakes data classes where one missed scope is unacceptable; Postgres RLS as the power-tool tenancy enforcer (named, not defaulted)
-- 10.1.4 RLS primitives — Postgres policies, `current_setting`, session-variable wiring from Drizzle/Neon
-- 10.1.5 RLS in our app — applying it to the data class where the trigger is met
-- 10.1.6 Quizz
+- 10.1.1 The organization data model and the active-org slot — Better Auth's organization plugin tables, `activeOrganizationId` on the session, create / switch / list flows
+- 10.1.2 The tenant-aware query helper (SaaS pattern #1) — `tenantDb(orgId)` wrapping Drizzle so missing the org filter doesn't compile; the named carve-out from Principle #5
+- 10.1.3 When Row-Level Security earns its weight — the threshold past application-layer scoping (highest-stakes data, many code paths, external writers); RLS as defense-in-depth, not the default
+- 10.1.4 Postgres RLS through Drizzle: policies, session variables, and applying it to `audit_logs` — `pgPolicy` / `crudPolicy`, `SET LOCAL` inside a transaction, the `withTenant(orgId, fn)` helper, the bypass-by-owner trap
+- 10.1.5 Chapter quiz
 
 ### Chapter 10.2 — RBAC and the audit trail at the action boundary
 - 10.2.1 RBAC — owner / admin / member as the year-1 default
