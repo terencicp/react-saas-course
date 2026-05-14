@@ -512,11 +512,11 @@
 - 9.3.10 Chapter quiz
 
 ### Chapter 9.4 — Auth at request time and account management
-- 9.4.1 Auth gating in `proxy.ts` — session reads, redirect-to-sign-in, the protected-routes pattern
-- 9.4.2 Credential changes — change password, change email (with verification)
-- 9.4.3 Session management — list active sessions, revoke individual sessions
-- 9.4.4 Browser security defaults in this stack — CSRF (same-site cookies as the default mitigation) and XSS (handled by React's escaping; what `dangerouslySetInnerHTML` opts out of)
-- 9.4.5 Quizz
+- 9.4.1 The protected-routes gate in `proxy.ts`
+- 9.4.2 Credential changes and the elevation tier
+- 9.4.3 Session management across devices
+- 9.4.4 Browser security defaults: what the stack ships, what would undo them
+- 9.4.5 Chapter quiz
 
 ### Chapter 9.5 — Project: email+password auth with verification
 - 9.5.1 Project brief
