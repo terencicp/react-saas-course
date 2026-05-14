@@ -863,10 +863,10 @@
 ### Chapter 19.6 — Project: integration + E2E tests for the Stripe checkout flow
 - 19.6.1 Project brief
 - 19.6.2 Starter walkthrough — Vitest config, MSW handlers, auth fixture factory, test-DB lifecycle
-- 19.6.3 Build it — happy-path integration test against real test Postgres with transaction rollback
-- 19.6.4 Build it — duplicate-event idempotency test and signature-tampered rejection test
-- 19.6.5 Build it — Playwright money-path test (sign-in → Stripe Checkout test card → plan updated)
-- 19.6.6 Verify — suite green twice in a row; deliberate handler mutations fail the expected tests only
+- 19.6.3 Happy-path integration test for `checkout.session.completed`
+- 19.6.4 Idempotency and signature-rejection integration tests
+- 19.6.5 Playwright money-path test for the Stripe Checkout round-trip
+- 19.6.6 Verify
 
 ---
 
