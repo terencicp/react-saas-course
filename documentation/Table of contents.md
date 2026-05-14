@@ -699,10 +699,10 @@
 
 ### Chapter 15.2 — Project: cacheTag-driven invalidation
 - 15.2.1 Project brief
-- 15.2.2 Starter walkthrough — Unit 11 list, stub Trigger.dev summary job
-- 15.2.3 Build it — annotate the list with `use cache`, lay down the cache-tag scheme, and emit `fetchedAt` from inside each cached function
-- 15.2.4 Build it — call `updateTag` from the edit action and `revalidateTag` from the background job
-- 15.2.5 Verify — `fetchedAt` stays stable across cache hits, refreshes after `updateTag`, and refreshes only on the next visit after `revalidateTag`
+- 15.2.2 Starter walkthrough
+- 15.2.3 Tag helper, cached reads, and `fetchedAt`
+- 15.2.4 `updateTag` from actions and `revalidateTag` from the task
+- 15.2.5 Verify
 
 ### Chapter 15.3 — Rate limiting and shared session-shaped data (Upstash)
 - 15.3.1 Edge controls (light) for basic rate limiting before launch
