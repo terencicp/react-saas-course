@@ -558,11 +558,12 @@
 ### Chapter 10.4 — Project: org, RBAC, and invitations
 - 10.4.1 Project brief
 - 10.4.2 Starter walkthrough — Unit 9 auth, Unit 8 send, the existing schema
-- 10.4.3 Build it — `organizations` + `org_members` schema and migration
-- 10.4.4 Build it — `invitations` + `audit_logs` schema and migration
-- 10.4.5 Build it — the `authedAction(role, schema, fn)` wrapper and the `tenantDb(orgId)` helper
-- 10.4.6 Build it — the invite send and accept actions, with audit-log writes
-- 10.4.7 Verify — role refusal, invite accept across email sessions, audit panel updates
+- 10.4.3 Build it — the organization plugin, `activeOrganizationId`, and `requireOrgUser`
+- 10.4.4 Build it — `audit_logs` with RLS deny-write policies and the `withTenant` helper
+- 10.4.5 Build it — `tenantDb`, `authedAction`, and the role-change action
+- 10.4.6 Build it — invite send with the signed accept URL
+- 10.4.7 Build it — accept-invite page and the accept action
+- 10.4.8 Verify — RBAC refusal, append-only enforcement, cross-tenant probes, full invite handshake on a real inbox
 
 ---
 
@@ -713,8 +714,8 @@
 ### Chapter 15.4 — Project: Upstash rate limit on auth endpoints
 - 15.4.1 Project brief
 - 15.4.2 Starter walkthrough — Unit 9 auth flows, the Upstash Redis project
-- 15.4.3 Build it — declare the three sliding-window limiters (sign-in, sign-up, reset)
-- 15.4.4 Build it — wrap sign-in with per-IP and per-email keys; wrap sign-up and reset; emit `RateLimit-*` headers
+- 15.4.3 Redis client, three limiters, and the live readout
+- 15.4.4 Wire the three actions with dual-keying, headers, and fail-open
 - 15.4.5 Verify — 11th request returns 429 with headers, window resets release tokens, Upstash dashboard shows the keys
 
 ---
