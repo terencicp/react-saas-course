@@ -377,10 +377,10 @@
 
 ### Chapter 6.4 — Performance and integrity
 - 6.4.1 Indexes — B-tree, partial, composite, expression, unique; when to add them
-- 6.4.2 The N+1 query problem at the Drizzle layer (foreshadowed for the RSC waterfall lesson in Chapter 20.3)
+- 6.4.2 The N+1 query problem at the Drizzle layer
 - 6.4.3 EXPLAIN ANALYZE — reading a query plan
-- 6.4.4 Transactions and isolation levels (read committed, repeatable read, serializable)
-- 6.4.5 Quizz
+- 6.4.4 Transactions and isolation levels
+- 6.4.5 Chapter quiz
 
 ### Chapter 6.5 — Migrations and the seed workflow
 - 6.5.1 Drizzle Kit — generating migrations, applying them, the studio
