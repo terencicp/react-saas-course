@@ -927,16 +927,15 @@
 - 21.2.4 Quizz
 
 ### Chapter 21.3 — Vercel deployment and going live
-- 21.3.1 The Vercel deployment model — what gets pushed where on each git push
-- 21.3.2 First deploy — connecting the GitHub repo, the first preview URL, the first production URL
-- 21.3.3 Vercel platform specifics — regions, fluid compute, function size, runtime selection (Vercel Functions on the Node.js runtime as the default; the Edge Runtime as a niche optimization)
-- 21.3.4 Custom domains and SSL
-- 21.3.5 Preview deployments per PR (Vercel + Neon branching wired together)
-- 21.3.6 Branch-per-preview on Neon to validate every migration against a real-shaped DB
-- 21.3.7 Environment management — dev / preview / prod, secret scoping
-- 21.3.8 Production rollbacks — promoting a previous deployment when something on `main` breaks production
-- 21.3.9 The launch checklist — env validation green, error monitoring wired, rate limits live, audit logs writing, security headers set
-- 21.3.10 Quizz
+- 21.3.1 The Vercel deployment model — what gets pushed where on each git push; immutable deployments and the production-alias pointer
+- 21.3.2 First deploy: from repo to a live URL — connecting the GitHub repo, the first preview URL, the first production URL
+- 21.3.3 Regions, runtime, and Fluid Compute — function region matching the database, Node.js runtime as the default, Fluid Compute concurrency, Edge Runtime as the niche optimization
+- 21.3.4 Custom domains and SSL — apex/`www` records, auto-provisioned Let's Encrypt, Cloudflare-in-front with SSL "Full (strict)"
+- 21.3.5 Preview deployments with a Neon branch per PR — the Native Vercel Integration, copy-on-write Neon branches, migrations against the preview branch, preview password protection
+- 21.3.6 Environment management: dev, preview, prod, and secret scoping — three environments, `NEXT_PUBLIC_*` vs. server-only, env-validator structural enforcement, OIDC for cloud credentials, `vercel env pull`
+- 21.3.7 Production rollback: instant promote and the code-side revert — the two-layer model (alias plus `git revert`), auto-assignment off after rollback, what rollback doesn't reset
+- 21.3.8 The launch checklist — env validation green, error monitoring wired, rate limits live, audit logs writing, security headers set, pooled DB with matching region, backups tested, external uptime monitoring
+- 21.3.9 Chapter quiz
 
 ### Chapter 21.4 — Schema migrations against a live app (SaaS pattern #11)
 - 21.4.1 The expand → migrate → contract cadence
