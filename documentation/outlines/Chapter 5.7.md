@@ -19,34 +19,35 @@ Threads that run through every lesson: parallel slots render alongside `children
 ### Starter file tree (stubs marked with TODO)
 
 ```
-app/
-  invoices/
-    layout.tsx                 # provided: two-slot layout with @list and @detail
-    @list/
-      default.tsx              # TODO student
-      page.tsx                 # TODO student (reads searchParams.status)
-      loading.tsx              # TODO student (list skeleton)
-    @detail/
-      default.tsx              # TODO student (empty-state)
-      [id]/
-        page.tsx               # TODO student (loads one invoice)
-        loading.tsx            # TODO student (detail skeleton)
-    (.)new/
-      page.tsx                 # TODO student (intercepted modal)
-    new/
-      page.tsx                 # TODO student (paired full page)
-  layout.tsx                   # provided: root shell, fonts, Tailwind
-lib/
-  invoices/
-    data.ts                    # provided: in-memory fixture (30 records)
-    queries.ts                 # provided: getInvoices(filters), getInvoice(id)
-    schema.ts                  # provided: Invoice type, statusSchema
-components/
-  invoice-list.tsx             # provided: pure render component
-  invoice-detail.tsx           # provided: pure render component
-  invoice-form.tsx             # provided: pure render component, no submit yet
-  status-filter.tsx            # provided: client component, useRouter-driven
-  skeletons.tsx                # TODO student exports ListSkeleton, DetailSkeleton
+src/
+  app/
+    invoices/
+      layout.tsx                 # provided: two-slot layout with @list and @detail
+      @list/
+        default.tsx              # TODO student
+        page.tsx                 # TODO student (reads searchParams.status)
+        loading.tsx              # TODO student (list skeleton)
+      @detail/
+        default.tsx              # TODO student (empty-state)
+        [id]/
+          page.tsx               # TODO student (loads one invoice)
+          loading.tsx            # TODO student (detail skeleton)
+      (.)new/
+        page.tsx                 # TODO student (intercepted modal)
+      new/
+        page.tsx                 # TODO student (paired full page)
+    layout.tsx                   # provided: root shell, fonts, Tailwind
+  lib/
+    invoices/
+      data.ts                    # provided: in-memory fixture (30 records)
+      queries.ts                 # provided: getInvoices(filters), getInvoice(id)
+      schema.ts                  # provided: Invoice type, statusSchema
+  components/
+    invoice-list.tsx             # provided: pure render component
+    invoice-detail.tsx           # provided: pure render component
+    invoice-form.tsx             # provided: pure render component, no submit yet
+    status-filter.tsx            # provided: client component, useRouter-driven
+    skeletons.tsx                # TODO student exports ListSkeleton, DetailSkeleton
 ```
 
 ### Reference solution signatures lessons display
@@ -118,9 +119,9 @@ Tours the provided file tree, the queries and Zod schema in `/lib`, the pure ren
 Goals:
 
 - Walk the file tree above, calling out provided vs. stubbed.
-- Read `lib/invoices/queries.ts` together — note `getInvoices` accepts `{ status?: InvoiceStatus }`, returns sorted records; `getInvoice(id)` adds a 600 ms delay to make streaming observable.
-- Read `lib/invoices/schema.ts` — the `statusSchema` enum and `Invoice` type the project consumes; this is what Unit 6 will replace with Drizzle's `$inferSelect` output.
-- Open `app/invoices/layout.tsx` — point out the two-slot layout signature (`children`, `list`, `detail` slots, all already wired into a grid).
+- Read `src/lib/invoices/queries.ts` together — note `getInvoices` accepts `{ status?: InvoiceStatus }`, returns sorted records; `getInvoice(id)` adds a 600 ms delay to make streaming observable.
+- Read `src/lib/invoices/schema.ts` — the `statusSchema` enum and `Invoice` type the project consumes; this is what Unit 6 will replace with Drizzle's `$inferSelect` output.
+- Open `src/app/invoices/layout.tsx` — point out the two-slot layout signature (`children`, `list`, `detail` slots, all already wired into a grid).
 - Read the pure render components (`InvoiceList`, `InvoiceDetail`, `InvoiceForm`) — they take resolved data as props, no fetching inside. Reinforce: data fetching belongs in Server Component pages, not in render components.
 - Read `status-filter.tsx` — it's a Client Component because it uses `useRouter`, and the boundary is named.
 - Run `pnpm dev`, navigate to `/invoices`, confirm an empty layout renders (because the slot `page.tsx` files are still TODO).
@@ -169,8 +170,8 @@ Builds the `(.)new` intercepting modal and its non-intercepting twin so soft nav
 
 Goals:
 
-- Fill `app/invoices/new/page.tsx` first — the non-intercepting twin. Renders a full-page version of `<InvoiceForm>` with a "Cancel" `<Link>` back to `/invoices`. This is what direct visits, refreshes, and `Cmd+click` hit.
-- Fill `app/invoices/(.)new/page.tsx` — the intercepting modal. Wraps `<InvoiceForm>` in a shadcn `<Dialog open>` that closes by navigating back (`router.back()` on a small Client Component close button, or the dialog's `onOpenChange` triggers `router.back()`).
+- Fill `src/app/invoices/new/page.tsx` first — the non-intercepting twin. Renders a full-page version of `<InvoiceForm>` with a "Cancel" `<Link>` back to `/invoices`. This is what direct visits, refreshes, and `Cmd+click` hit.
+- Fill `src/app/invoices/(.)new/page.tsx` — the intercepting modal. Wraps `<InvoiceForm>` in a shadcn `<Dialog open>` that closes by navigating back (`router.back()` on a small Client Component close button, or the dialog's `onOpenChange` triggers `router.back()`).
 - Add a "New invoice" `<Link href="/invoices/new">` to the list header.
 - Soft-navigate: from `/invoices`, click "New invoice" — the modal opens, the URL is `/invoices/new`, the list stays underneath.
 - Hard-refresh the modal URL — the non-intercepting page renders. Name the trade: refresh dropping the underlay is by design in 2026 Next.js; the production reach for "modal preserved across refresh" is a different shape (Suspense + parallel `@modal` slot), out of scope for this project.
@@ -196,7 +197,7 @@ Adds `loading.tsx` and skeleton components to each slot so the list and detail s
 
 Goals:
 
-- Fill `components/skeletons.tsx` — export `<ListSkeleton>` (row-count placeholder) and `<DetailSkeleton>` (header + body placeholder) using shadcn's `<Skeleton>` primitive.
+- Fill `src/components/skeletons.tsx` — export `<ListSkeleton>` (row-count placeholder) and `<DetailSkeleton>` (header + body placeholder) using shadcn's `<Skeleton>` primitive.
 - Fill `@list/loading.tsx` — render `<ListSkeleton>`. This is the segment-level loading UI for the list slot.
 - Fill `@detail/[id]/loading.tsx` — render `<DetailSkeleton>`. Segment-level loading for the detail slot.
 - Throttle network in DevTools to "Slow 3G", navigate from `/invoices` to `/invoices/inv_005`, observe: the list stays mounted (its data already resolved), the detail slot streams from skeleton to content independently. Then navigate to `/invoices/inv_009` from `/invoices/inv_005` — only the detail slot re-streams.

@@ -13,7 +13,7 @@ Threads through every lesson: the limiter is a named seam — call sites import 
 - **From 15.3.1:** the public-URL-plus-auth trigger; two-layer architecture (edge WAF + application limiter); fail-open-on-auth policy.
 - **From 15.3.2:** `Redis.fromEnv()`; the `Ratelimit` constructor (`redis`, `limiter`, `prefix`, `analytics`); `Ratelimit.slidingWindow(max, window)`; `{ success, limit, remaining, reset, pending }` shape; IETF `RateLimit-*` headers; module-scope rule; `ephemeralCache`.
 - **From 15.3.3:** dual-keying (`ip:` and `email:` prefixes through one limiter); gate-before-work; user-safe 429 body; `safeLimit` fail-open; Better-Auth-built-in replacement; `getClientIp`; `normalizeEmail` (trim + lowercase, no `+` strip).
-- **From 1.4.5:** `env.ts` with Zod-validated env — extended with `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+- **From 6.6 (origin 1.4.5):** `src/env.ts` with Zod-validated env — extended with `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
 - **From 7.2 + 7.6:** Result shape, Zod 4 `strictObject` at the action boundary, `'use server'`.
 - **From 2.9:** `RateLimitError` subclass (`RATE_LIMITED`).
 - **From 20.1 (foreshadowed):** structured log shape `{ event: 'rate_limit_rejected' | 'rate_limit_unavailable', limiter, key, remaining, reset }`.
@@ -47,14 +47,13 @@ src/
     rate-limit-log.ts           # provided: logRateLimit helper writing to rate_limit_log
     errors.ts                   # provided: RateLimitError subclass (2.9)
   app/
-    (public)/
+    (auth)/
       sign-in/page.tsx          # provided shell from 9.5
+      sign-in/actions.ts        # provided from 9.5; TODO student wraps with dual-keying
       sign-up/page.tsx          # provided shell
+      sign-up/actions.ts        # provided from 9.5; TODO student wraps per-IP
       reset/page.tsx            # provided shell
-    actions/
-      sign-in.ts                # provided shell; TODO student wraps with dual-keying
-      sign-up.ts                # provided shell; TODO student wraps per-IP
-      reset.ts                  # provided shell; TODO student wraps per-IP + per-email
+      reset/actions.ts          # provided shell; TODO student wraps per-IP + per-email
     api/
       auth/[...all]/route.ts    # provided: Better Auth catch-all (NOT wrapped — limits land
                                 #           at the action seam that calls auth.api.* directly)
@@ -82,9 +81,9 @@ src/
 - **Header helpers** (`src/lib/rate-limit-headers.ts`):
   - `rateLimitHeaders(result)` — `{ 'RateLimit-Limit', 'RateLimit-Remaining', 'RateLimit-Reset' }` (Reset as delta-seconds via `Math.ceil((result.reset - Date.now()) / 1000)`).
   - `rateLimitedResponse(result): Response` — 429, the three headers plus `Retry-After: <delta-seconds>`, body `{"error":"Too many attempts. Please try again later."}`. Identical body regardless of gate.
-- **Sign-in action** (`src/app/actions/sign-in.ts`): `signInAction(formData): Promise<Response>` — Zod parse; resolve `ip` and `email`; `ipLimit = await safeLimit(signInLimiter, 'ip:' + ip)`; return `rateLimitedResponse(ipLimit)` on `!success`; same for `emailLimit = await safeLimit(signInLimiter, 'email:' + email)`; call `auth.api.signInEmail`; on success build `Response` and merge `rateLimitHeaders(ipLimit)`. `after(ipLimit.pending)` + `after(emailLimit.pending)` flush analytics off-path (Next.js 16 `after()` from `next/server`).
-- **Sign-up action** (`src/app/actions/sign-up.ts`): one `safeLimit(signUpLimiter, 'ip:' + ip)` gate, then `auth.api.signUpEmail`. Per-IP only — the email is the attacker's choice (15.3.3).
-- **Reset action** (`src/app/actions/reset.ts`): `safeLimit(resetLimiter, 'ip:' + ip)` then `safeLimit(resetLimiter, 'email:' + email)`; the per-email gate protects victim's inbox + Resend cost. Calls `auth.api.forgetPassword` on success.
+- **Sign-in action** (`src/app/(auth)/sign-in/actions.ts`): `signInAction(state, formData)` returning `Result<never, 'invalid-credentials' | 'email-not-verified' | 'rate-limited'>` — Zod parse; resolve `ip` and `email`; `ipLimit = await safeLimit(signInLimiter, 'ip:' + ip)`; on `!success` attach `rateLimitHeaders(ipLimit)` + `Retry-After` via Next.js 16's server-action `headers()` API and return `Result.err('rate-limited')`; same for `emailLimit = await safeLimit(signInLimiter, 'email:' + email)`; call `auth.api.signInEmail`; on success attach `rateLimitHeaders(ipLimit)` and `redirect(sanitizeNext(formData.get('next')) ?? '/dashboard')`. `after(ipLimit.pending)` + `after(emailLimit.pending)` flush analytics off-path (Next.js 16 `after()` from `next/server`).
+- **Sign-up action** (`src/app/(auth)/sign-up/actions.ts`): one `safeLimit(signUpLimiter, 'ip:' + ip)` gate, then `auth.api.signUpEmail`. Per-IP only — the email is the attacker's choice (15.3.3).
+- **Reset action** (`src/app/(auth)/reset/actions.ts`): `safeLimit(resetLimiter, 'ip:' + ip)` then `safeLimit(resetLimiter, 'email:' + email)`; the per-email gate protects victim's inbox + Resend cost. Calls `auth.api.forgetPassword` on success.
 - **Better Auth built-in disabled** (`src/lib/auth.ts`): inside `betterAuth({...})`, set `rateLimit: { enabled: false }`. Application-level limiters at the action boundary are the one place.
 - **`env.ts` extension:** `UPSTASH_REDIS_REST_URL: z.string().url()`, `UPSTASH_REDIS_REST_TOKEN: z.string().min(1)`. Boot fails fast on missing vars.
 
@@ -240,9 +239,9 @@ Goals:
 - Fill `src/lib/keys.ts`: `getClientIp(headers)` and `normalizeEmail(email)` per reference. Two pure functions. Surface the senior call on `+`-alias stripping inline.
 - Fill `src/lib/safe-limit.ts`: `safeLimit(limiter, key)` per reference. The catch logs `{ event: 'rate_limit_unavailable', limiter: limiter.prefix, key }` via `logRateLimit` and returns `{ success: true, ... }` so call sites have one branch. The failure mode is observable in the log, not in user behavior. Real production logging goes through 20.1's structured logger; the starter's `logRateLimit` writes to the `rate_limit_log` table the inspector tails.
 - Fill `src/lib/rate-limit-headers.ts`: `rateLimitHeaders(result)` (three headers, Reset as delta-seconds) and `rateLimitedResponse(result)` (429, four headers including `Retry-After`, user-safe identical body).
-- Edit `src/app/actions/sign-in.ts` per reference: Zod parse (`z.strictObject({ email: z.email(), password: z.string().min(1) })`); resolve `ip` and `email`; `safeLimit(signInLimiter, 'ip:' + ip)` first, return `rateLimitedResponse` on rejection; then `safeLimit(signInLimiter, 'email:' + email)`, return on rejection; call `auth.api.signInEmail`. On success build the response and merge `rateLimitHeaders(ipLimit)`. Hand both `pending` promises to `after()`.
-- Edit `src/app/actions/sign-up.ts` per reference: one `safeLimit(signUpLimiter, 'ip:' + ip)` gate, then `auth.api.signUpEmail`.
-- Edit `src/app/actions/reset.ts` per reference: `safeLimit(resetLimiter, 'ip:' + ip)` then `safeLimit(resetLimiter, 'email:' + email)`, then `auth.api.forgetPassword`.
+- Edit `src/app/(auth)/sign-in/actions.ts` per reference: keep the 9.5 `(state, formData)` `useActionState` callback shape returning `Result<never, 'invalid-credentials' | 'email-not-verified' | 'rate-limited'>`. Zod parse (`z.strictObject({ email: z.email(), password: z.string().min(1), next: z.string().optional() })`); resolve `ip` and `email`; `safeLimit(signInLimiter, 'ip:' + ip)` first, attach `rateLimitHeaders` + `Retry-After` via Next.js 16's server-action `headers()` API and return `Result.err('rate-limited')` on rejection; then `safeLimit(signInLimiter, 'email:' + email)`, same treatment on rejection; call `auth.api.signInEmail`. On success attach `rateLimitHeaders(ipLimit)` and `redirect(sanitizeNext(formData.get('next')) ?? '/dashboard')`. Hand both `pending` promises to `after()`.
+- Edit `src/app/(auth)/sign-up/actions.ts` per reference: one `safeLimit(signUpLimiter, 'ip:' + ip)` gate, then `auth.api.signUpEmail`.
+- Edit `src/app/(auth)/reset/actions.ts` per reference: `safeLimit(resetLimiter, 'ip:' + ip)` then `safeLimit(resetLimiter, 'email:' + email)`, then `auth.api.forgetPassword`.
 - Flip Better Auth's built-in limiter off: `rateLimit: { enabled: false }` in `src/lib/auth.ts`. The application-level limiters are now the one place. Add a one-line comment naming the architectural rule for future readers.
 - Run the app: open `/inspector`; "Spam sign-in" produces 11 log entries — 10 are 401 with `RateLimit-Remaining` counting 9 → 0, the 11th is 429 with `Retry-After`. The 429 body reads exactly the user-safe message. "Remaining tokens" updates after the burst. "Force Upstash down" toggle on → the next 15 sign-in attempts all return 401 (fail-open) and the structured-log tail captures 15 `rate_limit_unavailable` rows.
 

@@ -9,9 +9,9 @@ Threads through every lesson: caching is opt-in and the senior default for the a
 ### Dependency carry-in
 
 - **From 11.3 (the starter base):** `app/(app)/invoices/page.tsx` Server Component reading `invoiceListSearchParamsCache`, the `<Toolbar />` / `<Table />` / `<Pagination />` shells, `listInvoices({ orgId, view, status, sort, q, cursor, pageSize })` in `src/lib/invoices/queries.ts`, the scoped-query helper `invoiceScope(orgId).active()/.archived()/.includingDeleted()`, the four Server Actions (`updateInvoice`, `archiveInvoice`, `restoreInvoice`, `softDeleteInvoice`) all returning the canonical Result shape with the `version` precondition and tenancy + lifecycle in every `WHERE`.
-- **From 11.3 (concurrency surface):** the `version` column on `invoices`, the conflict banner with `current` payload, `useActionState` + `useOptimistic`.
-- **From 10.4 (tenancy + RBAC):** `tenantDb(orgId)` in `src/lib/tenant-db.ts`, `authedAction(role, schema, fn)` in `src/lib/authed-action.ts`, the active-org slot in the session, `writeAuditLog(tx, event)`.
-- **From 6.6 (schema):** `invoices`, `invoice_lines`, `customers`, `organizations`, `org_members`, `audit_logs`; the composite indexes on `(organizationId, status, createdAt desc, id desc)` and the partial unique on `(organizationId, number) WHERE deletedAt IS NULL`.
+- **From 11.3 (concurrency surface):** the `version` column on `invoices`, the conflict banner with `current` payload, `useActionState` + `useOptimistic`; the partial indexes `invoices_org_number_active_uq` and `invoices_org_status_created_id_active_idx`.
+- **From 10.4 (tenancy + RBAC):** `tenantDb(orgId)` in `src/lib/tenant-db.ts`, `authedAction(role, schema, fn)` in `src/lib/authed-action.ts`, the active-org slot in the session, `logAudit(tx, event)`, `audit_logs` (table).
+- **From 6.6 (schema):** `invoices`, `invoice_lines`, `customers`, `organizations`, `org_members`; the unique `(organizationId, number)` and the composite index `(organizationId, status, createdAt desc, id desc)`.
 - **From 5.4.1:** `cacheComponents: true` flag — already in `next.config.ts`, every route dynamic by default; opt-in only via `use cache`.
 - **From 5.4.3:** `use cache` directive on three placements (page / component / function), serializable arguments, closure rules — cached function cannot read `cookies()` / `headers()` / `auth()` inside.
 - **From 5.4.4:** `cacheLife` profiles (`'seconds'`, `'minutes'`, `'hours'`, `'days'`, `'weeks'`, `'max'`), `cacheTag(...)` call inside the cached function.
@@ -96,7 +96,7 @@ src/
 - **Trigger.dev summary task** (`src/trigger/summary-recompute.ts`):
   - `summaryRecomputeTask = schemaTask({ id: 'org-summary-recompute', schema: z.strictObject({ orgId: z.string().uuid() }), queue: { name: 'summary', concurrencyLimit: 5 }, run: async ({ orgId }) => { ... } })`.
   - Body: compute `totalCount = count(invoices WHERE orgId AND deletedAt IS NULL)` and `totalAmount = sum(total ...)`; UPSERT into `org_invoice_summaries` on `orgId`; `await revalidateTag(orgSummaryTag(orgId), 'max')`; return `{ orgId, totalCount, totalAmount }`.
-  - The inspector's "Run summary task" button calls the task body directly via `summaryRecomputeTask.triggerAndWait({ orgId })` when `TRIGGER_SECRET_KEY` is set, or imports and invokes the run function inline when it is not — the verification surface is identical either way.
+  - The inspector's "Run summary task" button calls the task via `tasks.trigger('org-summary-recompute', { orgId })` when `TRIGGER_SECRET_KEY` is set, or imports and invokes the run function inline when it is not — the verification surface is identical either way.
 - **`org_invoice_summaries` table:**
   - `orgId uuid pk references organizations(id) on delete cascade`, `totalCount int not null default 0`, `totalAmount numeric(14,2) not null default 0`, `updatedAt timestamptz not null default now()`. No composite index — one row per org.
 - **Env entries:** unchanged from 11.3; `TRIGGER_SECRET_KEY` optional — the inspector falls back to in-process invocation when absent.

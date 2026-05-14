@@ -12,8 +12,8 @@ Threads through every lesson: the dispatcher is the only seam — `dispatch` imp
 - **From 14.1.2:** uniform channel signature `({ recipient, event, payload }) => Promise<void>`; render-at-dispatch for inbox rows; channel independence under `try/catch`; `notifications` row shape.
 - **From 14.1.3:** `user_notification_preferences` `(user_id, category)` unique with per-channel booleans; category-level granularity; default-on; critical-channel override; `resolveChannels`.
 - **From 14.1.4:** `notification_dedup` `(event_type, dedup_key, recipient_user_id, fired_at)` + composite index; 60-second default with per-event override; check-then-insert race accepted; order — registry → prefs → dedup → channels.
-- **From 10.4:** `tenantDb(orgId)`, `authedAction(role, schema, fn)`, active-org slot in session, `audit_logs` + `writeAuditLog(tx, event)`. Invite-sent and role-change actions live here.
-- **From 8.3:** `sendEmail(to, template)` in `lib/email.ts`; `email_suppressions` read inside the wrapper (8.1.4); transactional sender split (8.1.3); unsubscribe-link discipline (8.1.2).
+- **From 10.4:** `tenantDb(orgId)`, `authedAction(role, schema, fn)`, active-org slot in session, `audit_logs` + `logAudit(tx, event)`. Invite-sent and role-change actions live here.
+- **From 8.3:** `sendEmail({ to, subject, react, idempotencyKey })` in `lib/email.ts`; `email_suppressions` read inside the wrapper (8.1.4); transactional sender split (8.1.3); unsubscribe-link discipline (8.1.2).
 - **From 9.5:** Better Auth's `user` table with `id` and `email`; `getUserEmail(userId)` helper added in the starter.
 - **From 12.3:** `processed_events` and the webhook handler that triggers `billing.past_due` — the handler dispatches after commit.
 - **From 7.2 + 7.6:** canonical Result shape, Zod 4 strictObject at the action boundary, `'use server'`.
@@ -36,7 +36,7 @@ scripts/
                                 #           a second user with no prefs row (default-on target)
 src/
   db/
-    schema.ts                   # provided: users (Better Auth), organizations + org_members
+    schema.ts                   # provided: users (Better Auth), organizations + member
                                 #           + audit_logs (10.4), invitations (10.4),
                                 #           plan_entitlements (12.3); three stub tables
                                 #           commented out — TODO student fills in 14.2.3/4
@@ -46,7 +46,7 @@ src/
     tenant-db.ts                # provided
     authed-action.ts            # provided
     audit-log.ts                # provided
-    email.ts                    # provided (Unit 8): sendEmail(to, template, { tags, headers });
+    email.ts                    # provided (Unit 8): sendEmail({ to, subject, react, idempotencyKey, tags, headers });
                                 #           inspector-mode mock bumps MOCK_EMAIL_SENT_COUNT
     notifications/
       registry.ts               # TODO student: notifiable_events typed map
@@ -67,7 +67,7 @@ src/
   app/
     (app)/
       members/
-        actions.ts              # provided shell from 10.4; TODO student adds dispatch() calls
+        actions.ts              # provided shell from 10.4 (re-exports `sendInvitationAction` from `src/lib/invitations/send.ts`); TODO student adds dispatch() calls in `src/lib/invitations/send.ts`
       api/webhooks/stripe/
         route.ts                # provided (12.3); TODO student adds dispatch() in past-due branch
       inbox/page.tsx            # provided: server-rendered notifications list for the user
@@ -94,7 +94,7 @@ src/
   - `claimDedup(tx, { eventType, dedupKey, recipientUserId, windowSeconds }): Promise<{ claimed: boolean }>` — selects most-recent row in window; if absent, inserts and returns `claimed: true`. Composite index `(event_type, dedup_key, recipient_user_id, fired_at desc)`.
   - `computeDedupKey(eventDef, payload): string` — joins `keyBy` values with `:`.
 - **Email channel** (`lib/notifications/channels/email.ts`):
-  - `sendEmailChannel({ recipient, event, payload }): Promise<void>` — resolves email via `getUserEmail(recipient.userId)` (throws `RECIPIENT_NOT_FOUND` on null), signs unsubscribe token, renders template with `{ ...payload, unsubscribeUrl }`, calls `sendEmail(to, template, { subject, tags, headers: List-Unsubscribe + List-Unsubscribe-Post })`. Suppression is the wrapper's concern.
+  - `sendEmailChannel({ recipient, event, payload }): Promise<void>` — resolves email via `getUserEmail(recipient.userId)` (throws `RECIPIENT_NOT_FOUND` on null), signs unsubscribe token, renders template with `{ ...payload, unsubscribeUrl }`, calls `sendEmail({ to, subject, react, idempotencyKey, tags, headers: List-Unsubscribe + List-Unsubscribe-Post })`. Suppression is the wrapper's concern.
 - **Inbox channel** (`lib/notifications/channels/inbox.ts`):
   - `writeInboxRow({ recipient, event, payload }): Promise<void>` — renders `event.template.inbox(payload)` once, inserts one row.
 - **`notifications` table:**
@@ -104,8 +104,8 @@ src/
   - `userId uuid not null references users(id) on delete cascade`, `category text not null`, `channels jsonb not null default '{"email": true, "inbox": true}'::jsonb`, `updatedAt timestamptz not null default now()`. PK `(userId, category)`.
 - **`notification_dedup` table:**
   - `eventType text not null`, `dedupKey text not null`, `recipientUserId uuid not null references users(id) on delete cascade`, `firedAt timestamptz not null default now()`. Composite index `(eventType, dedupKey, recipientUserId, firedAt desc)`. No PK — append-with-TTL.
-- **Call-site shape** (`app/(app)/members/actions.ts`):
-  - `inviteMember = authedAction('admin', inviteSchema, async ({ email, role }, ctx) => { const inv = await tenantDb(ctx.orgId).transaction(...); await dispatch({ type: 'org.invitation.sent', recipientUserIds: invitee ? [invitee.id] : [], subjectId: inv.id, payload: { invitedEmail: email, role, orgName, inviterName, acceptUrl }, orgId: ctx.orgId }); return { ok: true, data: inv }; })`.
+- **Call-site shape** (`src/lib/invitations/send.ts`):
+  - `sendInvitationAction = authedAction('admin', inviteSchema, async ({ email, role }, ctx) => { const inv = await tenantDb(ctx.orgId).transaction(...); await dispatch({ type: 'org.invitation.sent', recipientUserIds: invitee ? [invitee.id] : [], subjectId: inv.id, payload: { invitedEmail: email, role, orgName, inviterName, acceptUrl }, orgId: ctx.orgId }); return { ok: true, data: inv }; })`.
   - The implicit `tx.commit()` happens *before* `dispatch` — dispatcher is never inside the transaction.
 - **Env entries:** existing from 10.4 + 12.3; new `NOTIFICATION_UNSUBSCRIBE_SECRET` (HMAC, 32+ bytes via `openssl rand -base64 32`).
 
@@ -283,9 +283,9 @@ Add `dispatch()` after commit in the invite action, the role-change action, and 
 
 Goals:
 
-- Edit `app/(app)/members/actions.ts` (10.4 invite action). After the transaction commits, call `await dispatch({ type: 'org.invitation.sent', recipientUserIds: invitee ? [invitee.id] : [], subjectId: invitation.id, payload: { invitedEmail, role, orgName, inviterName, acceptUrl }, orgId: ctx.orgId })`. `invitee` is resolved by `select user where email = ?`; if absent, `recipientUserIds: []` and the dispatcher no-ops. The 10.4 invitation email still sends via the unauthenticated path for the absent-user case.
+- Edit `src/lib/invitations/send.ts` (10.4 `sendInvitationAction`). After the transaction commits, call `await dispatch({ type: 'org.invitation.sent', recipientUserIds: invitee ? [invitee.id] : [], subjectId: invitation.id, payload: { invitedEmail, role, orgName, inviterName, acceptUrl }, orgId: ctx.orgId })`. `invitee` is resolved by `select user where email = ?`; if absent, `recipientUserIds: []` and the dispatcher no-ops. The 10.4 invitation email still sends via the unauthenticated path for the absent-user case.
 - Edit the role-change action. After commit, call `await dispatch({ type: 'org.member.role_changed', recipientUserIds: [memberUserId], subjectId: memberUserId, payload: { newRole, oldRole, orgName, changedByName }, orgId: ctx.orgId })`. The 10.4 audit-log write stays unchanged — both `audit_logs` (admin-facing) and `notifications` (user-facing) write.
-- Edit `app/api/webhooks/stripe/route.ts` (12.3 handler). In the `onSubscriptionUpdated` past-due branch, after the `plan_entitlements` UPDATE and audit-log write — **still inside the outer transaction** — collect the org's owners (`select user_id from org_members where org_id = ? and role = 'owner'`) into a closure variable. After commit, call `await dispatch({ type: 'org.billing.past_due', recipientUserIds: ownerIds, subjectId: organizationId, payload: { orgName, amountDue, currentPeriodEnd }, orgId: organizationId })`. Read inside transaction (consistent with the transition); dispatch after commit (no notification for rolled-back state).
+- Edit `app/api/webhooks/stripe/route.ts` (12.3 handler). In the `onSubscriptionUpdated` past-due branch, after the `plan_entitlements` UPDATE and audit-log write — **still inside the outer transaction** — collect the org's owners (`select user_id from member where organization_id = ? and role = 'owner'`) into a closure variable. After commit, call `await dispatch({ type: 'org.billing.past_due', recipientUserIds: ownerIds, subjectId: organizationId, payload: { orgName, amountDue, currentPeriodEnd }, orgId: organizationId })`. Read inside transaction (consistent with the transition); dispatch after commit (no notification for rolled-back state).
 - Sanity-check each call site from the real surface — full clause-by-clause walks live in 14.2.6. Submit a new invite for an existing user; change a member's role; `stripe trigger invoice.payment_failed`. Each should produce its notification + audit pair. Inspect the `lib/email.ts` mock console log — the rendered HTML body shows the unsubscribe URL with a signed token.
 
 Senior calls and watch-outs:

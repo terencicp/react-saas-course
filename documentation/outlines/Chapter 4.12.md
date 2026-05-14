@@ -28,7 +28,7 @@ app/
     page.tsx                     # provided: page shell, section placeholders with TODO comments
   globals.css                    # provided: @import "tailwindcss"; @theme { --background, --foreground, --primary, --muted, --ring, --border, --radius } in light + .dark
 components/
-  ui/                            # provided by shadcn add: button, sheet, card, separator, badge, skeleton
+  ui/                            # provided by shadcn add: button, sheet, dialog, card, separator, badge, skeleton
   site-header.tsx                # TODO student
   site-footer.tsx                # TODO student
   hero.tsx                       # TODO student

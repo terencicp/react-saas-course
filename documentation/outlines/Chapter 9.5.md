@@ -9,9 +9,9 @@ Threads that run through every lesson: Better Auth's API is consumed directly pe
 ### Dependency carry-in
 
 - **From 6.1 / 6.2 / 6.5:** Drizzle wired against Postgres, the `db` client in `src/db/client.ts`, the migration pipeline (`pnpm db:generate`, `pnpm db:migrate`), the existing `src/db/schema/` directory ready for `auth.ts` to land alongside domain tables. The `users` stub from 6.6 is dropped in this project — Better Auth's generated `user` table takes its place; FK targets in any `users`-referencing domain tables (created in 7.6) remain valid because the column shape and PK type match.
-- **From 8.3:** `src/lib/email.ts` exposing `sendEmail({ to, subject, react })`, the `RESEND_API_KEY` env entry, the verified-domain `EMAIL_FROM` sender, the `email_suppressions` read built into the send function. The student's `WelcomeVerification.tsx` template lives next to the Unit 8 `WelcomeEmail.tsx`.
+- **From 8.3:** `src/lib/email.ts` exposing `sendEmail({ to, subject, react, idempotencyKey })`, the `RESEND_API_KEY` env entry, the verified-domain `EMAIL_FROM` sender, the `email_suppressions` read built into the send function. The student's `WelcomeVerification.tsx` template lives next to the Unit 8 `WelcomeEmail.tsx`.
 - **From 5.1 / 5.2 / 5.5 / 5.6.1:** The Next.js 16 App Router scaffold; the `'use server'` / `'use client'` boundary; `proxy.ts` at the project root; the `'server-only'` reflex; `lib/env.ts` Zod-validated env loading.
-- **From 7.2 / 7.3:** `<form action={serverAction}>` + `useActionState` for pending state and result; the canonical `Result<T>` discriminant shape (`{ ok: true, data }` vs. `{ ok: false, reason }`); Zod parse at the action boundary; `redirect()` after success.
+- **From 7.2 / 7.3:** `<form action={serverAction}>` + `useActionState` for pending state and result; the canonical `Result<T>` discriminant shape (`{ ok: true, data }` vs. `{ ok: false, error: { code, userMessage, fieldErrors? } }`); Zod parse at the action boundary; `redirect()` after success.
 - **From 9.1.2:** `__Host-` cookie prefix, `HttpOnly`, `Secure`, `SameSite=Lax`, the opaque server-stored session model.
 - **From 9.2.1–9.2.4:** `betterAuth({ database, plugins: [nextCookies()], secret, baseURL })`, the catch-all handler via `toNextJsHandler(auth)`, the `authClient` from `better-auth/react`, the Drizzle adapter, the four-table schema, `cookieCache` enabled, `auth.api.getSession({ headers })` shape, the `getCurrentUser()` and `requireUser()` helpers.
 - **From 9.3.1 / 9.3.2 / 9.3.3:** `signUp.email` / `signIn.email` call shapes, `emailAndPassword: { enabled, requireEmailVerification, minPasswordLength, autoSignIn }`, `emailVerification: { sendVerificationEmail, sendOnSignUp, autoSignInAfterVerification, expiresIn }`, the `verification` table reused.
@@ -20,7 +20,7 @@ Threads that run through every lesson: Better Auth's API is consumed directly pe
 ### Starter file tree (stubs marked with TODO)
 
 ```
-.env.example                       # provided: DATABASE_URL, BETTER_AUTH_SECRET, BETTER_AUTH_URL, RESEND_API_KEY, EMAIL_FROM, APP_URL
+.env.example                       # provided: DATABASE_URL, BETTER_AUTH_SECRET, BETTER_AUTH_URL, RESEND_API_KEY, EMAIL_FROM, EMAIL_REPLY_TO, NEXT_PUBLIC_APP_NAME, APP_URL
 docker-compose.yml                 # provided: postgres:18 from Unit 6 carry-in
 drizzle.config.ts                  # provided: schema path includes src/db/schema/*
 package.json                       # provided: scripts including db:generate, db:migrate, auth:generate (Better Auth CLI)
@@ -62,13 +62,13 @@ src/
 ### Reference solution signatures lessons display
 
 - **`auth` instance config (`src/lib/auth.ts`):**
-  - `betterAuth({ database: drizzleAdapter(db, { provider: 'pg' }), secret: env.BETTER_AUTH_SECRET, baseURL: env.BETTER_AUTH_URL, plugins: [nextCookies()], emailAndPassword: { enabled: true, requireEmailVerification: true, minPasswordLength: 12, autoSignIn: false }, emailVerification: { sendVerificationEmail: async ({ user, url }) => { await sendEmail({ to: user.email, subject: 'Verify your email', react: <WelcomeVerification name={user.name} verifyURL={url} /> }); }, sendOnSignUp: true, autoSignInAfterVerification: true, expiresIn: 60 * 60 } })`
+  - `betterAuth({ database: drizzleAdapter(db, { provider: 'pg' }), secret: env.BETTER_AUTH_SECRET, baseURL: env.BETTER_AUTH_URL, plugins: [nextCookies()], emailAndPassword: { enabled: true, requireEmailVerification: true, minPasswordLength: 12, autoSignIn: false }, emailVerification: { sendVerificationEmail: async ({ user, url }) => { await sendEmail({ to: user.email, subject: 'Verify your email', react: <WelcomeVerification firstName={user.name} verifyUrl={url} />, idempotencyKey: `verify:${user.id}:${url}` }); }, sendOnSignUp: true, autoSignInAfterVerification: true, expiresIn: 60 * 60 } })`
 - **`authClient` (`src/lib/auth-client.ts`):** `createAuthClient({ baseURL: env.NEXT_PUBLIC_APP_URL })`.
 - **Catch-all handler (`src/app/api/auth/[...all]/route.ts`):** `export const { POST, GET } = toNextJsHandler(auth);`.
 - **`getCurrentUser()`** — `async () => { const s = await auth.api.getSession({ headers: await headers() }); return s?.user ?? null; }`.
 - **`requireUser()`** — `async () => { const u = await getCurrentUser(); if (!u) redirect('/sign-in'); return u; }`.
-- **`signUpAction`** — `async (state, formData) => { const parsed = SignUpSchema.safeParse(...); if (!parsed.success) return { ok: false, reason: 'invalid', issues }; try { await auth.api.signUpEmail({ body: { email, password, name } }); redirect('/verify-email?email=' + encodeURIComponent(email)); } catch (e) { return mapAuthError(e); } }`. Returns `Result<never, 'invalid' | 'email-taken'>`.
-- **`signInAction`** — `async (state, formData) => { ... await auth.api.signInEmail({ body: { email, password } }); const next = sanitizeNext(formData.get('next')); redirect(next ?? '/dashboard'); }`. Returns `Result<never, 'invalid' | 'invalid-credentials' | 'email-not-verified'>`.
+- **`signUpAction`** — `async (state, formData) => { const parsed = SignUpSchema.safeParse(...); if (!parsed.success) return err('validation', 'Check the highlighted fields.', z.treeifyError(parsed.error).properties); try { await auth.api.signUpEmail({ body: { email, password, name } }); redirect('/verify-email?email=' + encodeURIComponent(email)); } catch (e) { return mapAuthError(e); } }`. Returns `Result<never, 'validation' | 'conflict'>`.
+- **`signInAction`** — `async (state, formData) => { ... await auth.api.signInEmail({ body: { email, password } }); const next = sanitizeNext(formData.get('next')); redirect(next ?? '/dashboard'); }`. Returns `Result<never, 'validation' | 'invalid-credentials' | 'email-not-verified'>`.
 - **`signOutAction`** — `'use server'; async () => { await auth.api.signOut({ headers: await headers() }); redirect('/sign-in'); }`.
 - **`proxy.ts`** — exports `default` async function reading `getSessionCookie(request)`; on protected matcher hit without cookie, redirect to `/sign-in?next=` with sanitized path; on auth-page matcher hit with cookie, redirect to `/dashboard`; matcher config `['/dashboard/:path*', '/sign-in', '/sign-up']`.
 - **`SignUpSchema`** (Zod) — `{ email: z.string().email(), password: z.string().min(12), name: z.string().min(1).max(80) }`.
@@ -79,7 +79,9 @@ src/
   - `BETTER_AUTH_URL=http://localhost:3000`
   - `NEXT_PUBLIC_APP_URL=http://localhost:3000`
   - `RESEND_API_KEY=re_...` (carry-in from 8.3)
-  - `EMAIL_FROM=verify@<student-verified-domain>` (carry-in)
+  - `EMAIL_FROM='Acme <verify@<student-verified-domain>>'` (carry-in from 8.3 — Display Name format preserved)
+  - `EMAIL_REPLY_TO=support@<student-verified-domain>` (carry-in from 8.3)
+  - `NEXT_PUBLIC_APP_NAME=Acme` (carry-in from 8.3 — read by `EmailLayout.tsx`)
 
 ### Verify recipe mapped to "Done when"
 
@@ -186,9 +188,9 @@ Goals:
 - Fill `src/app/(auth)/sign-up/actions.ts`:
   - `'use server';` first line.
   - Zod `SignUpSchema` parse on `formData`.
-  - On parse failure, return `{ ok: false, reason: 'invalid', issues }`.
+  - On parse failure, return `err('validation', 'Check the highlighted fields.', z.treeifyError(parsed.error).properties)`.
   - On parse success, `try { await auth.api.signUpEmail({ body: { email, password, name } }); }` — without `headers`, the framework sets the cookie because `nextCookies()` is loaded.
-  - On unique-violation error, return `{ ok: false, reason: 'email-taken' }`. (Map by Better Auth's error code.)
+  - On unique-violation error, return `err('conflict', 'An account with that email already exists.')`. (Map by Better Auth's error code.)
   - On success, `redirect('/dashboard')` — because `requireEmailVerification` is off for this lesson, the user lands signed in immediately.
 - Wire the sign-up page form's `action={signUpAction}` and read `state.reason` for the inline error.
 - Smoke test: `/sign-up`, submit `you@example.com` + a 12-char password + a name. Inspect: `user` row created, `account` row created with `providerId: 'credential'` and a bcrypt hash in `password`, `session` row created, `__Host-better-auth.session_token` cookie set in browser devtools, redirected to `/dashboard` (but `/dashboard` still 500s because `requireUser` isn't called there yet — that's fine; the cookie landing is the win).
@@ -215,28 +217,28 @@ Goals:
 
 - Build `src/emails/WelcomeVerification.tsx`:
   - React Email template using the components carry-in from 8.2 (`<Html>`, `<Head>`, `<Body>`, `<Container>`, `<Heading>`, `<Text>`, `<Button>`, `<Link>`).
-  - Props: `{ name: string; verifyURL: string }`.
-  - Body: heading "Verify your email", greeting using `name`, a paragraph explaining the click, a prominent `<Button href={verifyURL}>Verify email</Button>`, a plain-text fallback line ("If the button doesn't work, paste this link: {verifyURL}"), and a small expiry notice ("This link expires in 1 hour.").
+  - Props: `{ firstName: string; verifyUrl: string }`.
+  - Body: heading "Verify your email", greeting using `firstName`, a paragraph explaining the click, a prominent `<Button href={verifyUrl}>Verify email</Button>`, a plain-text fallback line ("If the button doesn't work, paste this link: {verifyUrl}"), and a small expiry notice ("This link expires in 1 hour.").
   - Preview prop set for the inbox preview pane.
 - Flip `lib/auth.ts`:
   - `emailAndPassword.requireEmailVerification: true` (the gate the next sign-in honors).
-  - Add the `emailVerification` block: `{ sendVerificationEmail: async ({ user, url }) => { await sendEmail({ to: user.email, subject: 'Verify your email', react: <WelcomeVerification name={user.name} verifyURL={url} /> }); }, sendOnSignUp: true, autoSignInAfterVerification: true, expiresIn: 60 * 60 }` — 1-hour token expiry, auto-send on signup, auto-sign-in on verify.
+  - Add the `emailVerification` block: `{ sendVerificationEmail: async ({ user, url }) => { await sendEmail({ to: user.email, subject: 'Verify your email', react: <WelcomeVerification firstName={user.name} verifyUrl={url} />, idempotencyKey: `verify:${user.id}:${url}` }); }, sendOnSignUp: true, autoSignInAfterVerification: true, expiresIn: 60 * 60 }` — 1-hour token expiry, auto-send on signup, auto-sign-in on verify.
 - Update `signUpAction`:
   - Instead of `redirect('/dashboard')` on success, `redirect('/verify-email?email=' + encodeURIComponent(email))`.
-  - On `'email-not-verified'` error class from any retry path, surface it (the action keeps returning the canonical Result shape).
+  - On `'email-not-verified'` error class from any retry path, surface it via `err('email-not-verified', 'Verify your email before signing in.')` (the action keeps returning the canonical Result shape from 7.6).
 - Update `src/app/(auth)/verify-email/page.tsx` (provided shell):
   - Reads `?email=` from search params.
   - Renders "Check your inbox" with the email shown and a "resend" button wired to `authClient.sendVerificationEmail({ email })` (client-side call — re-issues the token and re-sends).
 - Build `src/app/(auth)/sign-in/actions.ts`:
   - Same shape as sign-up — `SignInSchema` Zod parse on `formData`.
   - `await auth.api.signInEmail({ body: { email, password } })`.
-  - Catch the error classes — `'invalid-credentials'` (same opaque message regardless of whether email is wrong or password is wrong — the enumeration discipline from 9.3.2), `'email-not-verified'` (returned because `requireEmailVerification: true` blocks the sign-in).
+  - Catch the error classes — `err('invalid-credentials', 'Invalid email or password.')` (same opaque message regardless of whether email is wrong or password is wrong — the enumeration discipline from 9.3.2), `err('email-not-verified', 'Verify your email before signing in.')` (returned because `requireEmailVerification: true` blocks the sign-in).
   - `next` sanitization: `formData.get('next')` runs through a `sanitizeNext()` helper that rejects anything starting with `//`, anything containing a `:`, anything not starting with `/`, falling back to `/dashboard`.
   - On success, `redirect(next ?? '/dashboard')`.
 - Wire `/sign-in` form's `action={signInAction}`, render `state.reason` inline. Pass `next` from `searchParams.next` as a hidden input.
 - Smoke flow:
   - Hit `/sign-up` with a fresh email; redirect to `/verify-email`; inbox arrival of the React Email template; click the verify button; verification token consumed in the `verification` table; `user.emailVerified` flips to `true`; auto-sign-in via `autoSignInAfterVerification: true` lands on `/dashboard` (still 500s — next lesson fixes).
-  - Hit `/sign-up` with a second fresh email but don't click the link; hit `/sign-in` with those credentials; action returns `'email-not-verified'`; UI surfaces "verify your email" inline with a resend link. No session cookie set.
+  - Hit `/sign-up` with a second fresh email but don't click the link; hit `/sign-in` with those credentials; action returns `err('email-not-verified', ...)`; UI surfaces "verify your email" inline with a resend link. No session cookie set.
 
 Senior calls and watch-outs:
 

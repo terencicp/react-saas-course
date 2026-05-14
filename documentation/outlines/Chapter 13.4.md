@@ -10,16 +10,16 @@ Threads through every lesson: the function never sees the bytes for user uploads
 
 - **From 13.3.2:** the bucket with CORS for `http://localhost:3000` allowing `GET`/`PUT`/`Content-Type`; scoped token with Object Read + Object Write; env `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`; `lib/r2.ts` with `S3Client({ region: 'auto', endpoint, credentials })`.
 - **From 13.3.3:** `getSignedUrl` + `PutObjectCommand`/`GetObjectCommand`, 5-min PUT expiry / 10-min GET expiry, layered size defense, content-type allowlist, two-step write, CORS preflight failure shape.
-- **From 13.3.4:** the row shape (`id` UUIDv7 as key segment, `organizationId`, `uploadedBy`, `objectKey` unique, `originalFileName`, `contentType`, `byteSize`, `uploadedAt`, `softDeletedAt`); index `(organizationId, softDeletedAt, uploadedAt desc, id desc)`; no-`url`-column rule.
+- **From 13.3.4:** the row shape (`id` UUIDv7 as key segment, `organizationId`, `uploadedBy`, `objectKey` unique, `originalFileName`, `contentType`, `byteSize`, `uploadedAt`, `deletedAt`); index `(organizationId, deletedAt, uploadedAt desc, id desc)`; no-`url`-column rule.
 - **From 13.3.5:** user uploads use `file_metadata` + browser PUT + soft-delete; exports use no metadata row + server-side worker PUT + lifecycle-rule cleanup; 13.4.6 retrofits the export to write `org/${orgId}/exports/${runId}.csv`.
 - **From 13.2:** the `exportInvoices` parent task with the paginate-page loop, `metadata.set('downloadUrl', ...)`, `sendExportEmail` child accepting `downloadUrl`, the inspector reading `run.metadata`.
 - **From 8.3:** `sendEmail` in `lib/email.ts`; `ExportReadyEmail` template taking `{ orgName, rowCount, downloadUrl }`.
-- **From 10.1/10.2:** `tenantDb(orgId)`; `authedAction('member', schema, fn)`; `audit_logs` with `writeAuditLog(tx, event)`.
+- **From 10.1/10.2:** `tenantDb(orgId)`; `authedAction('member', schema, fn)`; `audit_logs` with `logAudit(tx, event)`.
 - **From 7.2:** canonical Result shape; Zod validation at the action boundary.
 - **From 5.4/15.1:** the `Files` list is *not* `use cache` — presigned GETs are per-render-fresh and would poison a cached response.
-- **From 11.2:** `softDeletedAt` discipline.
+- **From 11.2:** `deletedAt` discipline.
 - **From 3.7:** file picker, MIME/size validation, blob URL preview — thread closed here.
-- **From 2.9:** `UploadError` subclass with codes `UNSUPPORTED_TYPE | TOO_LARGE | SIZE_MISMATCH | OBJECT_NOT_FOUND`.
+- **From 2.9:** `UploadError` subclass with codes `unsupported-type | too-large | size-mismatch | object-not-found`.
 
 ### Starter file tree (stubs marked TODO)
 
@@ -68,11 +68,11 @@ src/
 - **`lib/r2.ts`** (provided) — exports `r2: S3Client`, `BUCKET: string`, `ALLOWED_CONTENT_TYPES` (`as const` tuple of `image/png | image/jpeg | image/webp | application/pdf | text/csv`), `MAX_BYTES = 25 * 1024 * 1024`.
 - **`buildObjectKey`** (provided) — `({ orgId, fileId, contentType }) => \`org/${orgId}/files/${fileId}.${extFor(contentType)}\``. Extension comes from the validated content type via a static map; never from the user's filename.
 - **`presignedPut`** — `authedAction('member', z.strictObject({ fileName: z.string().min(1).max(255), contentType: z.enum(ALLOWED_CONTENT_TYPES), claimedSize: z.int().positive().max(MAX_BYTES) }), async (input, ctx): Promise<Result<{ uploadId, url, objectKey }>>)`. Generates `uploadId = uuidv7()`, builds `objectKey`, signs `PutObjectCommand({ Bucket, Key: objectKey, ContentType, ContentLength: claimedSize })` with `expiresIn: 300`. No DB write.
-- **`finalizeUpload`** — `authedAction('member', z.strictObject({ uploadId: z.uuid(), objectKey: z.string(), originalFileName: z.string().min(1).max(255), contentType: z.enum(ALLOWED_CONTENT_TYPES) }), ...): Promise<Result<{ fileId }>>`. HEADs the object (`OBJECT_NOT_FOUND` on 404), asserts `head.ContentType === input.contentType`, asserts `head.ContentLength <= MAX_BYTES` (`SIZE_MISMATCH` otherwise). In `tenantDb(ctx.orgId).transaction`: inserts the row with `id: uploadId`, `byteSize: head.ContentLength`, `contentType: head.ContentType`; writes `audit_logs` `file.uploaded`.
-- **`getFileDownloadUrl`** — `({ fileId }, ctx): Promise<Result<{ url, fileName, contentType }>>`. Reads via `tenantDb(ctx.orgId)` filtered by `isNull(softDeletedAt)`. Signs `GetObjectCommand({ Bucket, Key: row.objectKey, ResponseContentDisposition: \`attachment; filename="${encodeRFC5987(row.originalFileName)}"\` })` with `expiresIn: 600`.
+- **`finalizeUpload`** — `authedAction('member', z.strictObject({ uploadId: z.uuid(), objectKey: z.string(), originalFileName: z.string().min(1).max(255), contentType: z.enum(ALLOWED_CONTENT_TYPES) }), ...): Promise<Result<{ fileId }>>`. HEADs the object (`object-not-found` on 404), asserts `head.ContentType === input.contentType`, asserts `head.ContentLength <= MAX_BYTES` (`size-mismatch` otherwise). In `tenantDb(ctx.orgId).transaction`: inserts the row with `id: uploadId`, `byteSize: head.ContentLength`, `contentType: head.ContentType`; writes `audit_logs` `file.uploaded`.
+- **`getFileDownloadUrl`** — `({ fileId }, ctx): Promise<Result<{ url, fileName, contentType }>>`. Reads via `tenantDb(ctx.orgId)` filtered by `isNull(deletedAt)`. Signs `GetObjectCommand({ Bucket, Key: row.objectKey, ResponseContentDisposition: \`attachment; filename="${encodeRFC5987(row.originalFileName)}"\` })` with `expiresIn: 600`.
 - **`getSignedGetForKey`** — pure helper, `({ objectKey, expiresIn }) => Promise<{ url }>`. No tenant check — caller is a worker, inside the trust boundary.
-- **`listFiles`** — `({ orgId, cursor, limit = 20 }) => Promise<{ rows, nextCursor }>`. `tenantDb(orgId).fileMetadata.findMany` with `isNull(softDeletedAt)`, `orderBy: [desc(uploadedAt), desc(id)]`, `limit + 1` n+1 trick.
-- **`file_metadata` table** — `id uuid pk` (UUIDv7), `organizationId uuid not null references organizations(id) on delete cascade`, `uploadedBy uuid not null references users(id) on delete restrict`, `objectKey text not null unique`, `originalFileName text not null`, `contentType text not null`, `byteSize bigint not null check (byteSize >= 0)`, `uploadedAt timestamptz not null default now()`, `softDeletedAt timestamptz`. Index: `(organizationId, softDeletedAt, uploadedAt desc, id desc)`.
+- **`listFiles`** — `({ orgId, cursor, limit = 20 }) => Promise<{ rows, nextCursor }>`. `tenantDb(orgId).fileMetadata.findMany` with `isNull(deletedAt)`, `orderBy: [desc(uploadedAt), desc(id)]`, `limit + 1` n+1 trick.
+- **`file_metadata` table** — `id uuid pk` (UUIDv7), `organizationId uuid not null references organizations(id) on delete cascade`, `uploadedBy uuid not null references users(id) on delete restrict`, `objectKey text not null unique`, `originalFileName text not null`, `contentType text not null`, `byteSize bigint not null check (byteSize >= 0)`, `uploadedAt timestamptz not null default now()`, `deletedAt timestamptz`. Index: `(organizationId, deletedAt, uploadedAt desc, id desc)`.
 - **CORS JSON** — `[{ AllowedOrigins: [env.APP_URL], AllowedMethods: ['GET', 'PUT'], AllowedHeaders: ['content-type'], ExposeHeaders: ['etag'], MaxAgeSeconds: 3600 }]`.
 - **`upload-form.tsx`** — `XMLHttpRequest` for the R2 PUT (so `xhr.upload.onprogress` fires); `fetch` for the two Server Action calls.
 - **Export retrofit** — after the page loop, `Buffer.from(csvAccumulator)`, `r2.send(new PutObjectCommand({ Bucket, Key: \`org/${organizationId}/exports/${ctx.run.id}.csv\`, Body, ContentType: 'text/csv', ContentDisposition: \`attachment; filename="export-${dayBucket()}.csv"\` }))`, then `getSignedGetForKey({ objectKey, expiresIn: 600 })` → pass `downloadUrl` to `sendExportEmail`. No `file_metadata` row.
@@ -97,9 +97,9 @@ src/
 | Download works after the GET window | View source, copy a `href`. Wait 11 minutes. Copied URL returns `403 AccessDenied`. Refresh `/files` — same row's `href` is different; click — works. **Load-bearing proof.** |
 | 13.2 export emails a working R2 link | Trigger export. Inspector shows `downloadUrl` as a real R2 link. Email arrives with same URL — click within 10 minutes — CSV downloads. |
 | Function never sees the bytes (user uploads) | Network tab: `presignedPut` POST ~400 B response; PUT to `<bucket>.r2.cloudflarestorage.com` carries the MB body; `finalizeUpload` POST ~100 B response. |
-| Payload validation at the action boundary | `presignedPut({ contentType: 'application/octet-stream', ... })` → `{ ok: false, error: { code: 'INVALID_INPUT' } }`; no R2 call. Same for `claimedSize > MAX_BYTES`. |
-| Tenancy at GET boundary | Upload in org A; switch to org B. `getFileDownloadUrl({ fileId: <orgA-id> })` → `{ ok: false, error: { code: 'OBJECT_NOT_FOUND' } }`. |
-| HEAD-based size verification | Debug helper: `claimedSize: 1024`, PUT 10 MB body. R2 accepts. `finalizeUpload` HEADs, sees 10 MB, throws `SIZE_MISMATCH`. No row inserted. |
+| Payload validation at the action boundary | `presignedPut({ contentType: 'application/octet-stream', ... })` → `{ ok: false, error: { code: 'invalid-input' } }`; no R2 call. Same for `claimedSize > MAX_BYTES`. |
+| Tenancy at GET boundary | Upload in org A; switch to org B. `getFileDownloadUrl({ fileId: <orgA-id> })` → `{ ok: false, error: { code: 'object-not-found' } }`. |
+| HEAD-based size verification | Debug helper: `claimedSize: 1024`, PUT 10 MB body. R2 accepts. `finalizeUpload` HEADs, sees 10 MB, throws `size-mismatch`. No row inserted. |
 | CORS in the browser | Serve on `127.0.0.1:3000` (not allowed). PUT preflight 403 (R2-side). Restore `localhost` — works. |
 | No `file_metadata` for exports | `select count(*) from file_metadata where object_key like 'org/%/exports/%'` → 0. |
 
@@ -182,7 +182,7 @@ Goals:
   - From the browser console: `await presignedPut({ fileName: 'sample.jpg', contentType: 'image/jpeg', claimedSize: 5_000_000 })` returns `{ ok: true, data: { uploadId, url: 'https://<bucket>.r2.cloudflarestorage.com/...?X-Amz-Signature=...', objectKey } }`.
   - `curl -X PUT -H "Content-Type: image/jpeg" --data-binary @some.jpg "<url>"` returns 200. R2 dashboard shows the object at `org/<orgId>/files/<uploadId>.jpeg`. **Proof that the byte-pipe rule holds — no function in the call.**
   - `curl`-PUT with mismatched `Content-Type: image/png` against the JPEG-signed URL — R2 returns 403 `SignatureDoesNotMatch`.
-  - `presignedPut({ contentType: 'application/octet-stream' })` → `{ ok: false, error: { code: 'INVALID_INPUT' } }` from the Zod parse. No R2 call.
+  - `presignedPut({ contentType: 'application/octet-stream' })` → `{ ok: false, error: { code: 'invalid-input' } }` from the Zod parse. No R2 call.
   - `presignedPut({ claimedSize: 100_000_000 })` (exceeds `MAX_BYTES`) → same.
 
 Senior calls and watch-outs:
@@ -192,7 +192,7 @@ Senior calls and watch-outs:
 - 5-min `expiresIn` is the trade-off — long enough for 25 MB on a slow connection (the client can also re-sign on retry), short enough that leaks don't grant indefinite write.
 - Role is `member`, not `admin`. The function-level gate is the structural defense — R2 credentials are app-wide.
 - Students often want to "reserve" a row with `status: pending`. The senior call: no row until the bytes are confirmed. Orphan rows lie in the UI; orphan objects are cheap to clean.
-- `'INVALID_INPUT'` is mapped at the `authedAction` boundary (from Unit 10), not by the action body.
+- `'invalid-input'` is mapped at the `authedAction` boundary (from Unit 10), not by the action body.
 
 Codebase state at entry: empty `presigned-put.ts`.
 Codebase state at exit: `presignedPut` works end-to-end against R2 (verified via `curl`); payload validation rejects bad inputs; no client-side upload yet. **Runnable — action fires; next lesson wires the browser.**
@@ -208,7 +208,7 @@ Lands the `file_metadata` migration, the `finalizeUpload` action that HEADs the 
 Goals:
 
 - Write the `file_metadata` migration. Add the table to `db/schema.ts` per the reference. Run `pnpm db:generate --name add_file_metadata`, inspect emitted SQL, run `pnpm db:migrate`. Confirm in Studio.
-- Write `lib/files/finalize.ts`: Zod input (`uploadId` uuid, `objectKey`, `originalFileName`, `contentType` from the enum). `r2.send(new HeadObjectCommand({ Bucket, Key: objectKey }))` — catch 404 → `UploadError('OBJECT_NOT_FOUND')`. Assert `head.ContentType === input.contentType`. Assert `head.ContentLength <= MAX_BYTES` → `SIZE_MISMATCH` otherwise. In `tenantDb(ctx.orgId).transaction`: insert the row with `id: input.uploadId`, `byteSize: head.ContentLength`, `contentType: head.ContentType`; write `audit_logs` `file.uploaded`. Return `{ ok: true, data: { fileId: uploadId } }`.
+- Write `lib/files/finalize.ts`: Zod input (`uploadId` uuid, `objectKey`, `originalFileName`, `contentType` from the enum). `r2.send(new HeadObjectCommand({ Bucket, Key: objectKey }))` — catch 404 → `UploadError('object-not-found')`. Assert `head.ContentType === input.contentType`. Assert `head.ContentLength <= MAX_BYTES` → `size-mismatch` otherwise. In `tenantDb(ctx.orgId).transaction`: insert the row with `id: input.uploadId`, `uploadedBy: ctx.user.id`, `byteSize: head.ContentLength`, `contentType: head.ContentType`; call `logAudit(tx, { action: 'file.uploaded', subjectType: 'file', subjectId: input.uploadId, actorUserId: ctx.user.id, orgId: ctx.orgId, payload: { byteSize: head.ContentLength, contentType: head.ContentType } })`. Return `{ ok: true, data: { fileId: uploadId } }`.
 - Write `app/files/upload-form.tsx` as a client component: `<input type="file" accept="...">` + `useRef`; status `useState` (`idle | signing | uploading | finalizing | done | failed`) + progress (0-100); on submit, client-side validation (`file.size <= MAX_BYTES`, `file.type` in allowlist) → `'signing'`, call `presignedPut` → `'uploading'`, create `XMLHttpRequest`, `xhr.open('PUT', data.url)`, `xhr.setRequestHeader('Content-Type', file.type)` (must match signed `ContentType`), `xhr.upload.onprogress` drives the bar, `xhr.send(file)`; on PUT 200 → `'finalizing'`, call `finalizeUpload` with the `uploadId` + `objectKey` + `originalFileName` + `contentType`; on success → `'done'`, `router.refresh()`, reset after 2s.
 - Pre-fill the `/files` page list section with a minimal empty state. Full list rendering is 13.4.5.
 - Verify: 1 MB upload runs to `done`, progress bar smooth; refresh shows empty list still (next lesson). 30 MB picks rejects client-side, no `presignedPut` call. `.exe` filtered by `accept` (or rejected by client validation on drag-drop). Network tab during success: small POST to `presignedPut`, MB-scale PUT to `r2.cloudflarestorage.com`, small POST to `finalizeUpload`. **Byte-pipe verification — function-side bytes, not megabytes.** `audit_logs` has one `file.uploaded` row.
@@ -238,18 +238,18 @@ Writes `getFileDownloadUrl`, `listFiles`, and the un-cached `/files` server comp
 
 Goals:
 
-- Write `lib/files/presigned-get.ts`: read the row via `tenantDb(ctx.orgId)` filtered by `isNull(softDeletedAt)`; on no row → `{ ok: false, error: { code: 'OBJECT_NOT_FOUND' } }`; sign `GetObjectCommand({ Bucket, Key: row.objectKey, ResponseContentDisposition: \`attachment; filename="${encodeRFC5987(row.originalFileName)}"\` })` at `expiresIn: 600`; return `{ url, fileName: row.originalFileName, contentType: row.contentType }`. Also export `getSignedGetForKey({ objectKey, expiresIn })` — pure, no tenant check, for the worker caller in 13.4.6.
-- Write `lib/files/list.ts`: `tenantDb(orgId).fileMetadata.findMany({ where: isNull(softDeletedAt), orderBy: [desc(uploadedAt), desc(id)], limit: limit + 1 })`. Cursor decode/encode reuses `db/cursor.ts` from 6.6.
-- Write `app/files/page.tsx` as a Server Component: read `searchParams.cursor` (Zod-validated); call `listFiles`; for each row call `getFileDownloadUrl({ fileId: row.id })` to attach a fresh signed URL (**N signing calls per page render**, ~microseconds each, no R2 round trip); render the table; render `"Next page"` link with `nextCursor`. Write one `audit_logs` `file.list_viewed { fileIds }` per page render (batched — one row per view, not per signed URL).
-- Verify: upload from 13.4.4 now appears; click "Download" → fetches via presigned GET; saves as `originalFileName`. View source — `href`s are real `https://<bucket>.r2.cloudflarestorage.com/...?X-Amz-Signature=...` URLs. **Fresh-per-render proof:** copy a URL, wait 11 minutes, paste in new tab — `403 AccessDenied`. Refresh `/files` — same row's `href` is different; click — works. **Senior anchor of the chapter.** Cross-org test: upload in A, switch to B, `/files` empty; `getFileDownloadUrl({ fileId: <A-id> })` → `OBJECT_NOT_FOUND`.
+- Write `lib/files/presigned-get.ts`: read the row via `tenantDb(ctx.orgId)` filtered by `isNull(deletedAt)`; on no row → `{ ok: false, error: { code: 'object-not-found' } }`; sign `GetObjectCommand({ Bucket, Key: row.objectKey, ResponseContentDisposition: \`attachment; filename="${encodeRFC5987(row.originalFileName)}"\` })` at `expiresIn: 600`; return `{ url, fileName: row.originalFileName, contentType: row.contentType }`. Also export `getSignedGetForKey({ objectKey, expiresIn })` — pure, no tenant check, for the worker caller in 13.4.6.
+- Write `lib/files/list.ts`: `tenantDb(orgId).fileMetadata.findMany({ where: isNull(deletedAt), orderBy: [desc(uploadedAt), desc(id)], limit: limit + 1 })`. Cursor decode/encode lives in a new `lib/files/cursor.ts` with shape `{ uploadedAt: string; id: string }` (base64url-encoded JSON, Zod-validated) — `db/cursor.ts` from 6.6 hardcodes `createdAt` and is not reusable here.
+- Write `app/files/page.tsx` as a Server Component: read `searchParams.cursor` (Zod-validated); call `listFiles`; for each row call `getFileDownloadUrl({ fileId: row.id })` to attach a fresh signed URL (**N signing calls per page render**, ~microseconds each, no R2 round trip); render the table; render `"Next page"` link with `nextCursor`. Call `logAudit(tx, { action: 'file.list_viewed', subjectType: 'file', subjectId: 'list', actorUserId: ctx.user.id, orgId: ctx.orgId, payload: { fileIds } })` once per page render (batched — one row per view, not per signed URL).
+- Verify: upload from 13.4.4 now appears; click "Download" → fetches via presigned GET; saves as `originalFileName`. View source — `href`s are real `https://<bucket>.r2.cloudflarestorage.com/...?X-Amz-Signature=...` URLs. **Fresh-per-render proof:** copy a URL, wait 11 minutes, paste in new tab — `403 AccessDenied`. Refresh `/files` — same row's `href` is different; click — works. **Senior anchor of the chapter.** Cross-org test: upload in A, switch to B, `/files` empty; `getFileDownloadUrl({ fileId: <A-id> })` → `object-not-found`.
 
 Senior calls and watch-outs:
 
 - Page is **not** `use cache`. Caching serves stale presigned URLs; the URL expires, the cached HTML lies. Fresh-per-render belongs at the boundary; cache lives one layer up (forecasts 15.1).
 - N signing calls per render is not a hot spot — `getSignedUrl` is local HMAC, no R2 round trip. Signing is free; R2 round trips are not.
 - `ResponseContentDisposition` overrides the default. Without it, the browser saves as the `objectKey` segment (`<uuid>.jpeg`). Must be RFC 5987-encoded for non-ASCII names (`encodeRFC5987` helper provided).
-- `isNull(softDeletedAt)` is the structural enforcement of soft-delete hiding. The base-query helper from 11.3 would normally enforce this; the project has one read shape so the manual `isNull` is the discipline.
-- Cursor shape mirrors 6.6 — `(uploadedAt desc, id desc)` matched by the composite index.
+- `isNull(deletedAt)` is the structural enforcement of soft-delete hiding. The base-query helper from 11.3 would normally enforce this; the project has one read shape so the manual `isNull` is the discipline.
+- Cursor shape is `{ uploadedAt, id }` (file-local, in `lib/files/cursor.ts`) — `(uploadedAt desc, id desc)` matched by the composite index. 6.6's `db/cursor.ts` is `createdAt`-hardcoded and not reusable for an `uploadedAt` payload.
 - Audit at the user action (visit), not the derived effect (sign N URLs). Cardinality choice.
 
 Codebase state at entry: uploads work, no list.
@@ -288,23 +288,23 @@ Estimated student time: 45 to 60 minutes.
 
 ## Lesson 13.4.7 — Verify
 
-Walks each "Done when" clause as a runnable check — the 11-minute URL-death proof, function-side byte-pipe inspection, cross-org GET denial, `SIZE_MISMATCH` from a lying client, CORS preflight on a non-allowed host, and the exports-have-no-row SQL.
+Walks each "Done when" clause as a runnable check — the 11-minute URL-death proof, function-side byte-pipe inspection, cross-org GET denial, `size-mismatch` from a lying client, CORS preflight on a non-allowed host, and the exports-have-no-row SQL.
 
 Goals:
 
 - Walk every "Done when" clause as a verification step (the table in the framing).
-- **User upload + row:** upload `fixtures/sample-5mb.jpg` from `/files`; confirm one R2 object at `org/<orgId>/files/<uuid>.jpeg`; confirm one `file_metadata` row with matching `objectKey`, `byteSize ≈ 5242880`, `contentType: 'image/jpeg'`, `uploadedBy: ctx.userId`.
+- **User upload + row:** upload `fixtures/sample-5mb.jpg` from `/files`; confirm one R2 object at `org/<orgId>/files/<uuid>.jpeg`; confirm one `file_metadata` row with matching `objectKey`, `byteSize ≈ 5242880`, `contentType: 'image/jpeg'`, `uploadedBy: ctx.user.id`.
 - **List + download:** click "Download"; file saves as `sample-5mb.jpg` via `Content-Disposition`.
 - **Fresh-per-render (chapter's load-bearing proof):** view source, copy a `href`, wait 11 minutes, paste in new tab → `403 AccessDenied (Request has expired)`. Refresh `/files` — same row's `href` is different; click — works. **Senior anchor of the chapter — the URL is never persisted, never cached.**
 - **Export emails working R2 link:** trigger export; panel shows real R2 `downloadUrl`; click — CSV downloads. Email has the same URL; click within 10 min — CSV downloads.
 - **Function never sees user-upload bytes:** Network tab — `presignedPut` ~400 B response; PUT to `<bucket>.r2.cloudflarestorage.com` carries the MB body; `finalizeUpload` ~100 B response. Function-side bytes are orders of magnitude less than the upload.
-- **Payload validation:** `presignedPut({ contentType: 'application/octet-stream' })` → `{ ok: false, error: { code: 'INVALID_INPUT' } }`, no R2 call. Same for `claimedSize: 100_000_000`.
-- **Tenancy at GET:** upload in A; switch session to B (seeded users); `/files` empty; `getFileDownloadUrl({ fileId: <A-id> })` → `OBJECT_NOT_FOUND`. Even with the right ID, wrong org returns no row.
-- **HEAD-based size verification (layered defense):** `debug:fake-upload` calls `presignedPut({ claimedSize: 1024 })` then PUTs 10 MB. R2 accepts. `finalizeUpload` reads `head.ContentLength: 10485760` → throws `SIZE_MISMATCH`. No row inserted. Orphan 10 MB object remains (cleanup sweep named).
+- **Payload validation:** `presignedPut({ contentType: 'application/octet-stream' })` → `{ ok: false, error: { code: 'invalid-input' } }`, no R2 call. Same for `claimedSize: 100_000_000`.
+- **Tenancy at GET:** upload in A; switch session to B (seeded users); `/files` empty; `getFileDownloadUrl({ fileId: <A-id> })` → `object-not-found`. Even with the right ID, wrong org returns no row.
+- **HEAD-based size verification (layered defense):** `debug:fake-upload` calls `presignedPut({ claimedSize: 1024 })` then PUTs 10 MB. R2 accepts. `finalizeUpload` reads `head.ContentLength: 10485760` → throws `size-mismatch`. No row inserted. Orphan 10 MB object remains (cleanup sweep named).
 - **CORS in the browser:** serve on `127.0.0.1:3000` (not in allowlist). PUT preflight returns 200 (allowed for the host); R2 returns 403 on the PUT because origin doesn't match. Restore `localhost` — works.
 - **No `file_metadata` for exports:** `select count(*) from file_metadata where object_key like 'org/%/exports/%'` → 0.
-- **Audit log:** `select event, count(*) from audit_logs group by event` — `file.uploaded` per upload, `file.list_viewed` per page render, `file.download_url_issued` per email link from the export task.
-- **Soft-delete column exists:** `select column_name from information_schema.columns where table_name = 'file_metadata' and column_name = 'soft_deleted_at'` returns the column. Action exists in `lib/files/soft-delete.ts`; structural shape verified.
+- **Audit log:** `select action, count(*) from audit_logs group by action` — `file.uploaded` per upload (the `finalizeUpload` `logAudit(tx, { action: 'file.uploaded', subjectType: 'file', subjectId: fileId, actorUserId: ctx.user.id, orgId: ctx.orgId, payload: { byteSize, contentType } })` call), `file.list_viewed` per page render (the `/files` `logAudit(tx, { action: 'file.list_viewed', subjectType: 'file', subjectId: 'list', actorUserId: ctx.user.id, orgId: ctx.orgId, payload: { fileIds } })` call), `file.download_url_issued` per email link from the export task (`logAudit(tx, { action: 'file.download_url_issued', subjectType: 'file', subjectId: objectKey, actorUserId: null, orgId: organizationId, payload: { objectKey, expiresIn: 600 } })`).
+- **Soft-delete column exists:** `select column_name from information_schema.columns where table_name = 'file_metadata' and column_name = 'deleted_at'` returns the column. Action exists in `lib/files/soft-delete.ts`; structural shape verified.
 - Name the senior calls once more:
   - Function never sees bytes for user uploads — browser PUT direct to R2.
   - Two-step write — sign → upload → finalize-with-HEAD → row insert.
@@ -318,7 +318,7 @@ Goals:
 - Forward references:
   - **Unit 14:** `file.uploaded` fires the notification dispatcher; channel choice is the dispatcher's.
   - **Unit 15a:** `/files` deliberately not cached; cache one layer up at the metadata read if volume demands.
-  - **Unit 17:** layered size defense, CORS specificity, `softDeletedAt` reads are audit line items.
+  - **Unit 17:** layered size defense, CORS specificity, `deletedAt` reads are audit line items.
   - **Unit 21:** rotating R2 credentials follows staged-rollover discipline.
   - **Avatars (9.x forward note):** Better Auth's hosted avatar handles its own pipeline; a custom avatar field reuses this chapter's shape with `contentType` restricted to images. Named, not built.
 

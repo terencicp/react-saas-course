@@ -11,7 +11,7 @@ Threads that run through every lesson: `lib/email.ts` is the single named seam �
 - **From 8.1.1 / 8.1.2 / 8.1.3:** Resend account, the verified transactional subdomain (`send.<student>.<tld>`), SPF/DKIM/DMARC records published, the `resend` Node SDK, the per-purpose `from` address discipline, the `reply_to` pattern. The student walks 8.1's setup again in 8.3.2 to land it on their *own* domain (not just read about it).
 - **From 8.1.4:** the `email_suppressions` Drizzle table shape (`id`, `email`, `reason` enum, `provider_event_id`, `bypass_until`, `metadata`, `created_at`, `updated_at`), the normalize-on-read rule (lowercase + trim), the read-at-the-wrapper pattern, the `bypassSuppression` carve-out semantics, the `reason`-aware bypass (transactional bypasses `manual_unsubscribe` only). The webhook *writer* lands in 12.1.5 — out of scope here.
 - **From 8.2.1 / 8.2.2 / 8.2.3:** the React Email primitives (`<Html>`, `<Head>`, `<Preview>`, `<Container>`, `<Section>`, `<Heading>`, `<Text>`, `<Button>`, `<Img>`, the `<Tailwind>` wrapper), `PreviewProps` as the mock-data contract, the `pnpm email dev` loop, the head meta plumbing for dark mode, the `lang`/`<Title>` accessibility floor. The student writes the template once in 8.3.4 against this vocabulary.
-- **From 7.2.1 / 7.2.2 / 7.2.3 / 7.2.4 / 7.2.5:** the `'use server'` file-level directive, the five-seam action shape, the `Result<T>` type plus `ok`/`err` helpers in `lib/result.ts`, the `validation` / `not_found` / `internal` codes (`'suppressed'` is added here as a fourth common code), `revalidatePath` is NOT used (no list to revalidate), no transaction (the send is one external call).
+- **From 7.2.1 / 7.2.2 / 7.2.3 / 7.2.4 / 7.2.5:** the `'use server'` file-level directive, the five-seam action shape, the `Result<T>` type plus `ok`/`err` helpers in `lib/result.ts`, the `validation` / `conflict` / `not_found` / `internal` codes (`'suppressed'` is added here as a fifth common code), `revalidatePath` is NOT used (no list to revalidate), no transaction (the send is one external call).
 - **From 7.1.2 / 7.1.6 / 7.1.7:** `z.email()`, `z.uuid()`, `safeParse(Object.fromEntries(formData))`, `z.treeifyError(parsed.error).properties` for the `fieldErrors` shape.
 - **From 6.6 / 7.6:** the pooled `db` client, `db/schema.ts` already contains the `email_suppressions` table from 8.1.4 (the starter adds it if 8.1.4 didn't seed it into the running project — the starter README flags both paths), the `lib/auth-stub.ts` returning a fixed `{ organizationId, userId }` (Better Auth lands in Unit 9).
 - **From 5.2 / 1.4:** `lib/env.ts` already exists with `@t3-oss/env-nextjs`; the student adds the new entries (`RESEND_API_KEY`, `EMAIL_FROM`, `EMAIL_REPLY_TO`) to the existing `server` block. The `import 'server-only'` poisoning at the top is inherited.
@@ -26,7 +26,6 @@ The Server Action needs a recipient and a logged-in identity. Unit 9 (Better Aut
 src/
   db/
     schema.ts                      # provided: email_suppressions table (carry-in from 8.1.4)
-    seed.ts                        # provided: inserts one pre-suppressed row at suppressed@<student-domain>
   lib/
     env.ts                         # provided: existing schema; TODO student: add RESEND_API_KEY, EMAIL_FROM, EMAIL_REPLY_TO
     email.ts                       # TODO student: Resend client singleton + sendEmail wrapper with suppression read
@@ -44,6 +43,8 @@ src/
         send-welcome-form.tsx      # provided: client component reading useActionState
     actions/
       send-welcome.ts              # TODO student: sendWelcomeEmail Server Action
+scripts/
+  seed.ts                          # provided: inserts one pre-suppressed row at suppressed@<student-domain>
 .env.example                       # provided: lists the new entries with example values
 README.md                          # provided: the verified-domain ceremony recap, the DNS checklist
 ```
@@ -63,7 +64,7 @@ The provided inspector page calls the student-written action by relative import 
   - `idempotencyKey: string` — required, not optional (the senior call from 8.1.1)
   - `replyTo?: string` — defaults to `env.EMAIL_REPLY_TO`
   - `bypassSuppression?: boolean` — defaults to `false`
-- `Result<T>` error codes extended in this chapter: `'validation' | 'suppressed' | 'internal'`. The `'suppressed'` code's `userMessage` is `"This recipient is on the suppression list."` and never surfaces to end users in production (only the inspector reads it).
+- `Result<T>` error codes after this chapter: `'validation' | 'conflict' | 'not_found' | 'internal' | 'suppressed'`. The `'suppressed'` code's `userMessage` is `"This recipient is on the suppression list."` and never surfaces to end users in production (only the inspector reads it).
 - `isSuppressed(email: string, opts: { kind: 'transactional' | 'marketing' }): Promise<{ suppressed: boolean; reason?: string; bypassUntil?: Date }>` in `lib/suppressions.ts` — the helper the wrapper calls. The `kind` arg drives the `reason`-aware bypass (transactional bypasses `manual_unsubscribe` only).
 - `WelcomeEmail` template — default-exported React component with props `{ firstName: string; verifyUrl: string }` and a `PreviewProps` named export. Wrapped in `<EmailLayout>`, the body is one `<Section>` with a `<Heading>`, a `<Text>`, and a `<Button href={verifyUrl}>`. Sets `<Preview>` to `"Welcome to {appName} — verify your email"` and `<Title>` to `"Welcome to {appName}"`.
 - `sendWelcomeEmail(prevState: Result<{ id: string }> | null, formData: FormData): Promise<Result<{ id: string }>>` — file-level `'use server'` in `app/actions/send-welcome.ts`. Five-seam shape:

@@ -53,7 +53,9 @@ src/
       quota.ts                    # TODO: checkAndReserveQuota(userId), addUsage,
                                   #       readUsage — DAILY_TOKEN_CAP = 100_000
       audit.ts                    # TODO: writeLlmStepEvent, writeLlmFinishEvent
-                                  #       (thin wrappers around logAudit)
+                                  #       (direct inserts into llm_audit_events; same audit-log
+                                  #        discipline as 10.2.5's logAudit but against the LLM
+                                  #        events table)
   app/
     (app)/
       invoices/
@@ -234,7 +236,7 @@ Wraps `streamText` in `authedRoute('member', …)` with `stopWhen(stepCountIs(5)
 Goals:
 
 - Fill `src/lib/llm/prompts.ts`: a single export `invoiceQAPrompt({ orgName })` returning the system prompt string. Three load-bearing lines: enforce tool-grounding ("Always call getInvoiceStats before stating numeric facts"), refuse cross-org questions, define error behavior ("If a tool returns { error }, explain and ask the user to rephrase"). The prompt is the controller (23.2.1's posture); user messages are untrusted input.
-- Fill `src/lib/llm/audit.ts`: two thin wrappers around the existing `logAudit` from 10.2.5: `writeLlmStepEvent({ userId, orgId, toolCalls, finishReason, usage })` and `writeLlmFinishEvent({ userId, orgId, finishReason, usage })`. Both insert into `llm_audit_events`. No `tx` required at this seam — these writes happen outside the request transaction (the route handler isn't transactional; audit-log discipline still applies because each event is one row).
+- Fill `src/lib/llm/audit.ts`: two direct inserts into `llm_audit_events` that mirror the audit-log discipline from 10.2.5's `logAudit` (one row per event, no off-transaction writes); the table differs from `auditLogs` so these aren't `logAudit` wrappers: `writeLlmStepEvent({ userId, orgId, toolCalls, finishReason, usage })` and `writeLlmFinishEvent({ userId, orgId, finishReason, usage })`. Both insert into `llm_audit_events`. Each wrapper opens a one-statement `tenantDb(ctx.orgId).transaction(async (tx) => logAudit(tx, { ... }))` — `logAudit`'s signature from 10.2.5 requires a `tx` so off-transaction calls don't typecheck. The route handler itself isn't transactional; the wrapper supplies the bounded one-row transaction the signature demands.
 - Fill `src/app/api/chat/route.ts`. The full shape:
   - `export const POST = authedRoute({ role: 'member', schema: z.strictObject({ messages: z.array(z.unknown()) }), fn: async ({ ctx, input }) => { … } })`.
   - The input schema accepts an untyped messages array — full type validation happens inside via `convertToModelMessages`. Note the senior trade: validating the full `UIMessage` shape with Zod is heavy; the SDK's converter does the job.
