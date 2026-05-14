@@ -808,8 +808,8 @@
 
 ### Chapter 18.3 — Project: localized, tz-aware list view
 - 18.3.1 Project brief
-- 18.3.2 Starter walkthrough — Unit 11 list, profile `locale` + `timezone` columns, `next-intl` installed
-- 18.3.3 Build it — `next-intl` config, locale negotiation in the layout, and three message catalogs with ICU plurals
+- 18.3.2 Starter walkthrough — Unit 11 list, profile `locale` + `timeZone` columns, `next-intl` installed
+- 18.3.3 Build it — `next-intl` wiring, locale negotiation, and the three message catalogs
 - 18.3.4 Build it — date rendering with Temporal in profile tz and currency via `Intl.NumberFormat`
 - 18.3.5 Build it — `alternates.languages` metadata and per-locale sitemap entries
 - 18.3.6 Verify — locale switch reflow, DST-spanning render, `hreflang` tags in source
