@@ -474,10 +474,11 @@
 - 8.2.4 Quizz
 
 ### Chapter 8.3 — Project: transactional email send
-- 8.3.1 Project brief — verified domain, the Resend setup, the suppression read
-- 8.3.2 Build it — `lib/email.ts`, the env entries, and the suppression read
-- 8.3.3 Build it — the Server Action that composes and sends the welcome email
-- 8.3.4 Verify — real-inbox arrival on the student's verified domain, DKIM/SPF pass, suppression path returns `{ ok: false }` without calling Resend
+- 8.3.1 Project brief
+- 8.3.2 Starter walkthrough and the verified-domain ceremony
+- 8.3.3 Env entries, the suppression helper, and the `lib/email.ts` wrapper
+- 8.3.4 The `WelcomeEmail` template and the welcome Server Action
+- 8.3.5 Verify — real-inbox arrival, DKIM/SPF/DMARC pass, suppression short-circuit, idempotency-key retry
 
 ---
 
