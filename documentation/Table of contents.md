@@ -390,11 +390,11 @@
 
 ### Chapter 6.6 — Project: org-scoped schema and queries
 - 6.6.1 Project brief
-- 6.6.2 Starter walkthrough — empty `db/schema.ts`, Drizzle Kit config, Docker Postgres
-- 6.6.3 Build it — the schema and the generated migration
-- 6.6.4 Build it — the seed script with two orgs and 50+ invoices each
-- 6.6.5 Build it — paginated list query and the single-round-trip detail query
-- 6.6.6 Verify — inspector page, idempotent seed, `EXPLAIN ANALYZE` on the detail query
+- 6.6.2 Starter walkthrough
+- 6.6.3 Schema, relations, and the first migration
+- 6.6.4 The deterministic seed
+- 6.6.5 The two reads: paginated list and single-round-trip detail
+- 6.6.6 Verify
 
 ---
 
