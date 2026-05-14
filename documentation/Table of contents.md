@@ -830,11 +830,11 @@
 ### Chapter 19.2 — Unit tests for `/lib`
 - 19.2.1 Unit tests for pure logic in `/lib`
 - 19.2.2 Test fixtures and factories
-- 19.2.3 Determinism — controlling time, randomness, and IDs (fake timers, injected `now()` / `uuid()`)
-- 19.2.4 Type-level testing with `expectTypeOf` / `assertType` — guarding the moves from Principle #7
-- 19.2.5 Testing async code — the forgotten-`await` trap, fake timers with promises
-- 19.2.6 Testing the unhappy path — `expect(...).toThrow`, expected-failure assertions, error-result shape
-- 19.2.7 Quizz
+- 19.2.3 Determinism: time, randomness, and IDs
+- 19.2.4 Type-level testing with `expectTypeOf`
+- 19.2.5 Testing async code
+- 19.2.6 Testing the unhappy path
+- 19.2.7 Chapter quiz
 
 ### Chapter 19.3 — Integration tests at the seams
 - 19.3.1 Integration tests against a real test Postgres with transaction-rollback per test
