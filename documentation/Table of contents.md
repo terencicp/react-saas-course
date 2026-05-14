@@ -659,12 +659,12 @@
 
 ### Chapter 13.4 — Project: presigned R2 upload
 - 13.4.1 Project brief
-- 13.4.2 Starter walkthrough — R2 bucket, credentials env, S3-compatible SDK, upload page shell
-- 13.4.3 Build it — the `presignedPut` server action and the env entries
-- 13.4.4 Build it — the client-side direct-to-R2 upload and the `file_metadata` migration + save
-- 13.4.5 Build it — the `Files` list page rendering rows with fresh presigned GET URLs
-- 13.4.6 Build it — wire back to the Unit 13a export job so it uploads the CSV to R2 and the email carries the presigned download link
-- 13.4.7 Verify — file lands in R2, metadata matches, download works after the GET URL window, Unit 13a job emails a working R2 link
+- 13.4.2 Starter walkthrough — provided `lib/r2.ts` + `buildObjectKey` + CORS script, TODOs in `lib/files/` and `app/files/`
+- 13.4.3 The `presignedPut` Server Action — Zod-validated input, server-generated `uploadId`, signed `PutObjectCommand`, no DB write
+- 13.4.4 The browser direct-to-R2 upload, the migration, and `finalizeUpload` — `file_metadata` migration, HEAD-and-insert action, XHR upload form with progress
+- 13.4.5 The `Files` list with fresh presigned GETs — server-rendered list, per-render signing, the 11-minute-later refresh proof
+- 13.4.6 Retrofit the 13.2 export with R2 — server-side worker PUT, real `downloadUrl` in the email, no `file_metadata` row for exports
+- 13.4.7 Verify — file lands in R2, metadata matches, GET window proof, export emails working R2 link, tenancy + size + CORS proofs
 
 ---
 
