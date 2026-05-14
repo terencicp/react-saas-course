@@ -875,12 +875,11 @@
 > What broke, when, and why — and the perf vigilance that keeps the production app fast under iteration.
 
 ### Chapter 20.1 — Error monitoring and structured logs
-- 20.1.1 Sentry — error capture, source maps, release tagging, breadcrumbs
-- 20.1.2 Structured logs with request correlation IDs — the discipline, not a specific library
-- 20.1.3 The "log inputs you'd want at 3am" rule and the PII/secrets exclusion
-- 20.1.4 Vercel Log Drains — shipping logs to a searchable destination; reading production logs in anger
-- 20.1.5 Debugging server-side Next.js — `node --inspect`, attaching from VS Code, the server-action-failed-and-I-can't-tell-why workflow; how structured logs and Sentry breadcrumbs interleave with a live debugger
-- 20.1.6 Quizz
+- 20.1.1 Sentry: error capture, source maps, releases, and breadcrumbs
+- 20.1.2 Structured logs, correlation IDs, and the PII boundary
+- 20.1.3 Log destinations: Vercel Drains and reading production logs
+- 20.1.4 Live debugging Server Actions and route handlers
+- 20.1.5 Quizz
 
 ### Chapter 20.2 — Product analytics
 - 20.2.1 Vercel Analytics — what it covers without configuration (the default)
