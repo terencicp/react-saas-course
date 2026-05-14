@@ -447,12 +447,12 @@
 
 ### Chapter 7.6 — Project: CRUD via Server Actions
 - 7.6.1 Project brief
-- 7.6.2 Starter walkthrough — Unit 6 schema, shadcn `<Form>` primitives, page shell
-- 7.6.3 Build it — Zod schemas and the three Server Actions returning the canonical Result
-- 7.6.4 Build it — form components with `useActionState` and inline field errors driven by the Result
-- 7.6.5 Build it — `useOptimistic` on create with rollback on action failure
-- 7.6.6 Build it — the delete confirmation wrapped in a Drizzle transaction
-- 7.6.7 Verify — JS-disabled flow, invalid-data field errors, optimistic rollback on failure
+- 7.6.2 Starter walkthrough — Unit 6 schema carry-in, shadcn form primitives, page shells, auth stub
+- 7.6.3 Mutation schemas and the three Server Actions — `safeParse`, `Result`, `revalidatePath`
+- 7.6.4 Forms, inline field errors, and the `<SubmitButton>`
+- 7.6.5 `useOptimistic` on create with implicit rollback
+- 7.6.6 Wrapping the delete in a Drizzle transaction
+- 7.6.7 Verify — JS-disabled flow, field errors, optimistic rollback, transactional delete
 
 ---
 
