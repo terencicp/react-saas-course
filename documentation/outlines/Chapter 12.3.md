@@ -412,3 +412,7 @@ Codebase state at entry: full webhook + projection + billing interface wired.
 Codebase state at exit: every "Done when" clause verified clause-by-clause; the metadata cross-check landed; the student can articulate every decision (verify before parse, dedup atomically, project purely, `last_event_at` ordering, single-writer entitlement, Portal for user-initiated changes, the three-method interface, the lint rule) and which forward unit will lean on it.
 
 Estimated student time: 40 to 55 minutes.
+
+---
+
+> **Note (`revalidateTag` in Next.js 16):** the single-argument form `revalidateTag(tag)` is deprecated — every call must pass a `cacheLife` profile as the second argument (`'max'` is the senior default), e.g. `revalidateTag(tag, 'max')`.

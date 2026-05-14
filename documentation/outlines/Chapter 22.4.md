@@ -236,7 +236,7 @@ Goals:
 - **Decision.** One declarative sentence. *"We will cache `getPlanEntitlement(orgId)` with `cacheTag('org:{orgId}:plan-entitlement')` and `cacheLife({ revalidate: 60 })`, and invalidate via `updateTag('org:{orgId}:plan-entitlement')` from every mutation seam that touches plan or entitlement state."* No "we are considering," no "we should." Senior writes the decision crisply.
 - **Consequences.** Three to seven bullets, upsides *and* costs:
   - Every plan-or-entitlement mutation (upgrade, downgrade, plan-label change, seat add/remove, the Stripe webhook handlers) now owns an `updateTag` call adjacent to the DB mutation. Name the seams explicitly: `lib/billing/upgrade.ts`, `lib/billing/downgrade.ts`, `app/(app)/plan/actions.ts:updatePlanLabel`, `lib/seats/add.ts`, `lib/seats/remove.ts`, the Stripe webhook handlers in `app/api/webhooks/stripe/`. Each one must call `updateTag('org:{orgId}:plan-entitlement')`.
-  - Background jobs that batch-update entitlements (the daily summary recalculator, the quota sweeper) use `revalidateTag('org:{orgId}:plan-entitlement')` instead of `updateTag` because they're not in a user-facing request path; the next visit sees the fresh value with no extra cost. (The `updateTag` vs. `revalidateTag` cut comes from Chapter 5.4 — name the lesson.)
+  - Background jobs that batch-update entitlements (the daily summary recalculator, the quota sweeper) use `revalidateTag('org:{orgId}:plan-entitlement', 'max')` instead of `updateTag` because they're not in a user-facing request path; the next visit sees the fresh value with no extra cost. (The `updateTag` vs. `revalidateTag` cut comes from Chapter 5.4 — name the lesson.)
   - Staleness window of up to 60 seconds for any read path that didn't trigger a mutation. Acceptable for entitlement gating because entitlements change quarterly; not acceptable for the plan-page itself, which is read immediately after a mutation and inherits the fresh `updateTag` path.
   - The failure mode if a future mutation forgets to call `updateTag`: the cached entitlement stays stale for up to 60 seconds, and the user sees the old plan in the gating middleware. Mitigation: a single-place-to-lint (the `lib/plan/get-plan-entitlement.ts` file's TSDoc lists every mutation seam that must call `updateTag` — name the seam in the TSDoc when you add it; future audits grep the list against the codebase).
   - The cost: every new mutation that touches the cached entitlement is now also touching a cache invalidation. The convention lives in `AGENTS.md`'s "Conventions" section ("plan-entitlement reads are cached; mutations must `updateTag`") and the cached function's TSDoc.
@@ -303,3 +303,7 @@ Codebase state at entry: target unchanged; five comments written; ADR drafted; i
 Codebase state at exit: review and ADR committed; rubric tag checked out; the student has a side-by-side comparison, a scored coverage percentage, a severity-match percentage, and an updated personal review checklist for the next PR.
 
 Estimated student time: 25 to 35 minutes.
+
+---
+
+> **Note (`revalidateTag` in Next.js 16):** the single-argument form `revalidateTag(tag)` is deprecated — every call must pass a `cacheLife` profile as the second argument (`'max'` is the senior default), e.g. `revalidateTag(tag, 'max')`.

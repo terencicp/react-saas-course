@@ -197,3 +197,7 @@ Top 10 topics to quiz:
 - Query-string list pattern — filter (enum, multi-value), sort (prefix-form), search (ILIKE / FTS / external), cursor pagination (base64-wrapped opaque token, `limit` with hard ceiling, `{ data, pageInfo: { nextCursor, hasMore } }` envelope); the shared `where`-builder pure function consumed by the route handler and the in-app Server Component.
 
 ---
+
+---
+
+> **Note (`revalidateTag` in Next.js 16):** the single-argument form `revalidateTag(tag)` is deprecated — every call must pass a `cacheLife` profile as the second argument (`'max'` is the senior default), e.g. `revalidateTag(tag, 'max')`.

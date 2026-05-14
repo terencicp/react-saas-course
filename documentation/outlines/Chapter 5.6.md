@@ -284,3 +284,7 @@ Top 10 topics to quiz:
 - The static `metadata` export versus `generateMetadata` for dynamic routes; `metadataBase` is required for absolute OG URLs; `viewport` is a separate export in 16.
 - File-convention SEO surface — `robots.ts`, `sitemap.ts`, `icon.{ext}`, `apple-icon`, `opengraph-image.tsx`; all cached by default unless a request-time API is read.
 - `generateStaticParams` materializes dynamic segments at build, requires the catalog to be enumerable, pairs with `use cache` and `cacheTag` for the production content-page shape; the rename from `getStaticPaths`.
+
+---
+
+> **Note (`revalidateTag` in Next.js 16):** the single-argument form `revalidateTag(tag)` is deprecated — every call must pass a `cacheLife` profile as the second argument (`'max'` is the senior default), e.g. `revalidateTag(tag, 'max')`.

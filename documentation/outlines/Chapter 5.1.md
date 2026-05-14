@@ -197,3 +197,7 @@ Top 10 topics to quiz:
 - `<Link>` prefetching — the `null`/`auto` default prefetches static parts on viewport, dynamic on hover; `true` always; `false` disables.
 - Parallel routes — `@slot` folders become named props in the layout; every slot needs `default.tsx`; slots stream independently; canonical use case is list-plus-detail.
 - Intercepting routes — `(.)`, `(..)`, `(..)(..)`, `(...)` intercept soft navigations to render in-context; always paired with the non-intercepting sibling; canonical use case is modals with real URLs.
+
+---
+
+> **Note (`revalidateTag` in Next.js 16):** the single-argument form `revalidateTag(tag)` is deprecated — every call must pass a `cacheLife` profile as the second argument (`'max'` is the senior default), e.g. `revalidateTag(tag, 'max')`.

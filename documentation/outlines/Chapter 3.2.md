@@ -321,3 +321,7 @@ Top ten topics to quiz:
 ## Total chapter time
 
 Roughly 145 to 175 minutes across the three teaching lessons plus the quiz. The chapter fits across two evenings — methods and idempotency in the first sitting (45-55 minutes), status codes and headers together in a second longer sitting (100-120 minutes), the quiz at the end. The student finishes the chapter able to design an endpoint by picking the right method and naming the idempotency guarantee, return the right status code on every outcome, set the right cache and content-type headers, recognize Problem Details when reading third-party errors, and read the request/response surface in DevTools with vocabulary for every field. The HTTP contract Unit 5 (Next.js Route Handlers and Server Actions) and Unit 7 (the Server Action + form pattern) will land on is in place. Chapter 3.3 opens on the other side with the URL spec and the origin model — the security-boundary frame around the request/response surface this chapter installed.
+
+---
+
+> **Note (`revalidateTag` in Next.js 16):** the single-argument form `revalidateTag(tag)` is deprecated — every call must pass a `cacheLife` profile as the second argument (`'max'` is the senior default), e.g. `revalidateTag(tag, 'max')`.

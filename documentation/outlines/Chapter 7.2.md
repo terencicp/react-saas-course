@@ -210,3 +210,7 @@ Top 10 topics to quiz:
 - Architectural Principle #3 — pure helpers in `/lib`, side effects at named boundaries (action, route handler, job); the directory shape the chapter writes from.
 - Architectural Principle #5 — use the framework's conventions; why the course doesn't roll a generic `safeAction(schema, fn)` wrapper, and the auth carve-out in 10.2 that's the named exception.
 - `revalidatePath` as the basic post-mutation move (the full decision tree lives in 5.4.6), the transaction-wrapping pattern for multi-step mutations, the "no external calls inside the transaction" rule, and the idempotency-key slot foreshadowed for 12.1.
+
+---
+
+> **Note (`revalidateTag` in Next.js 16):** the single-argument form `revalidateTag(tag)` is deprecated — every call must pass a `cacheLife` profile as the second argument (`'max'` is the senior default), e.g. `revalidateTag(tag, 'max')`.

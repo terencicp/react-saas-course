@@ -128,7 +128,7 @@ Topics to cover:
 - **The polling cadence — `refetchInterval` plus `refetchIntervalInBackground: false`.** Poll every 10 seconds while the tab is focused; stop polling when the tab is hidden. The senior call: 10 seconds is the right cadence for a comment thread (faster feels jittery, slower feels stale); the in-background pause is the battery-and-connection-pool discipline. The threshold from 16.1.1 was "the cadence drops below user-initiated" — 10s clears that bar.
 - **The SSR-hydrated initial page.** The Server Component page (`app/(app)/invoices/[id]/page.tsx`) prefetches the first page of the infinite query via `queryClient.prefetchInfiniteQuery`. The dehydrated state goes into `<HydrationBoundary>`; the `<CommentThread />` Client Component renders the prefetched data on first paint. No loading skeleton on initial load; subsequent scroll-down calls hit the route handler directly. The win: server-rendered first paint, client-cached scroll.
 - **The two invalidation systems, side by side.** When `addCommentAction` succeeds:
-  - The Server Action calls `revalidateTag(invoiceTag(invoiceId))` so the **Server Component** invoice page (the parent layout's summary cards, any other server-rendered comment counts) refreshes.
+  - The Server Action calls `revalidateTag(invoiceTag(invoiceId), 'max')` so the **Server Component** invoice page (the parent layout's summary cards, any other server-rendered comment counts) refreshes.
   - The client awaits the action's `Result`, then calls `queryClient.invalidateQueries({ queryKey: commentKeys.list(invoiceId) })` so the **TanStack Query** cache refetches.
   - Both fire because both layers hold data. The lesson surfaces this two-system reality as the architectural cost of bringing TanStack Query in — it's not a bug, it's the price tag.
 - **What stays in Server-Component shape — the rest of the page.** The invoice header, the customer card, the line items table, the version banner — all Server Components, no `useQuery`. The comment thread is the one part of the screen that needs TanStack Query; the rest stays with the framework defaults. The senior reflex: scope the library to the leaf that needs it.
@@ -164,3 +164,7 @@ Top 10 topics to quiz:
 - The per-request `QueryClient` rule on the server — using React's `cache()` to scope per-request, why module-scoped instantiation is a multi-tenant data-isolation bug.
 - The SSR-hydrated shape — Server Component prefetches via `queryClient.prefetchQuery`/`prefetchInfiniteQuery`, dehydrates, passes state to `<HydrationBoundary>`, the Client Component reads from the populated cache on first render.
 - The two-system invalidation reality after a Server Action mutation — `revalidateTag` (or `updateTag`) for the Server Component cache, `queryClient.invalidateQueries` for the TanStack Query cache, both fired because both layers hold data; the org-switch `queryClient.clear()` discipline at the tenancy boundary.
+
+---
+
+> **Note (`revalidateTag` in Next.js 16):** the single-argument form `revalidateTag(tag)` is deprecated — every call must pass a `cacheLife` profile as the second argument (`'max'` is the senior default), e.g. `revalidateTag(tag, 'max')`.

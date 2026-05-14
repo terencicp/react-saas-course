@@ -282,3 +282,7 @@ Top 10 topics to quiz:
 - Nine flake taxa — DB-state leak, timer leak, MSW handler leak, mock-impl leak, real-time clock, unawaited promise, random data, port collision, order dependency; each has a structural fix, not `--retry`.
 - `vitest run --shuffle` as the order-dependency audit; `--repeat N` as the flake-rate quantifier; never `--retry` to hide a test-logic bug.
 - Integration project scope — `.int.test.ts` files under `src/**`; `vitest run --project integration` in CI; faster than E2E (19.5), slower than `/lib` unit tests (19.2), placed where bug density is highest.
+
+---
+
+> **Note (`revalidateTag` in Next.js 16):** the single-argument form `revalidateTag(tag)` is deprecated — every call must pass a `cacheLife` profile as the second argument (`'max'` is the senior default), e.g. `revalidateTag(tag, 'max')`.

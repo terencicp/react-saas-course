@@ -234,3 +234,7 @@ Top 10 topics to quiz:
 - `idempotencyKey` on `tasks.trigger`, `wait.for`, `wait.until` — the unifying discipline from 12.1.4 as a runtime primitive; per-step keys (`${ctx.run.id}:user:${userId}`) guarding side effects across retry boundaries.
 - Waitpoints — `wait.forToken` with public access token for third-party callback URLs, `wait.completeToken` for programmatic / human-in-the-loop completion, mandatory timeouts, many-runs-on-one-token and one-run-on-many-tokens topologies.
 - The course's wiring — CSV export, Stripe reconciliation, notification dispatcher in Trigger.dev; Resend-from-action, hourly trial sweep, audit logs, analytics on platform default; per-tenant queues, `TRIGGER_SECRET_KEY` env, deploy-Trigger.dev-before-the-app order.
+
+---
+
+> **Note (`revalidateTag` in Next.js 16):** the single-argument form `revalidateTag(tag)` is deprecated — every call must pass a `cacheLife` profile as the second argument (`'max'` is the senior default), e.g. `revalidateTag(tag, 'max')`.

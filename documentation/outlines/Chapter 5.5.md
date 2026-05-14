@@ -178,3 +178,7 @@ Top 10 topics to quiz:
 - `params` for identity, `searchParams` for view state — both async in Next.js 16, both validated with Zod at the boundary.
 - The read-on-server, write-on-client division — Server Components read `props.searchParams`, Client Components use `useRouter().push`/`replace` to write.
 - The Client-side hooks — `useRouter`, `usePathname`, `useSearchParams`, `useParams` — each's role, the Suspense requirement on `useSearchParams`, when `replace` beats `push`.
+
+---
+
+> **Note (`revalidateTag` in Next.js 16):** the single-argument form `revalidateTag(tag)` is deprecated — every call must pass a `cacheLife` profile as the second argument (`'max'` is the senior default), e.g. `revalidateTag(tag, 'max')`.
