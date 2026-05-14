@@ -740,10 +740,10 @@
 - 16.2.6 Verify — cross-session arrival within the poll window, optimistic visibility, forced 500 rollback
 
 ### Chapter 16.3 — Zustand (conditional)
-- 16.3.1 When Zustand earns its weight — the threshold past `useState` and URL state: genuinely shared client state across deeply nested components (multi-step wizards, global UI flags, cart-style stores); client-only, never in server components
-- 16.3.2 Zustand primitives — global client state; slices
-- 16.3.3 Zustand in our app — the wizard or shared-flag case where the trigger is met
-- 16.3.4 Quizz
+- 16.3.1 When Zustand earns its weight — the threshold past `useState`, lifted state + Context, URL state, and TanStack Query: genuinely shared client state across cross-route or disjoint subtrees (multi-step wizards, global UI flags, cart-style stores); per-feature, never global ambient; client-only, never in server components
+- 16.3.2 Stores, slices, selectors, and the per-request provider — `createStore` vs. `create`, the `set`/`get` API, the slices pattern with `StateCreator`, selector-based subscriptions and `useShallow`, the `useRef`-pinned provider for App Router SSR, `persist`/`subscribeWithSelector`/`devtools` middlewares named once, the reset action
+- 16.3.3 The trigger in our app — the customer-onboarding wizard — the four-step routed wizard, the three-trigger check, the four-slice store shape, per-step Zod gates, the Server-Action submit boundary, back/forward preserves vs. refresh loses, reset at submit-success and org-switch
+- 16.3.4 Chapter quiz
 
 ### Chapter 16.4 — Project: Zustand for a multi-step wizard
 - 16.4.1 Project brief
