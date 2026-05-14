@@ -219,13 +219,13 @@
 - 4.6.6 Chapter quiz
 
 ### Chapter 4.7 — The render model
-- 4.7.1 The render model — what triggers re-render, reference identity in props
-- 4.7.2 Reconciliation — keys, diffing, when components remount
-- 4.7.3 Keeping components pure — render is a pure function of props and state; side effects belong in handlers/effects; the rule the React Compiler relies on
-- 4.7.4 State as a snapshot — render is a snapshot of state; the updater form `setX(prev => ...)` under React 19 automatic batching
-- 4.7.5 Resetting state with `key` — component identity as a state-reset; the canonical "form fields stuck on the previous record" fix
-- 4.7.6 JSX synthetic events — capture vs. bubble (callback to the DOM events introduced in Chapter 3.5)
-- 4.7.7 Quizz
+- 4.7.1 Render triggers and reference identity — what triggers re-render (own state, parent, context), `Object.is` on props, inline literals as identity churn, the React Compiler as the retirement of manual memoization
+- 4.7.2 Reconciliation, keys, and component identity — the same-type-updates-in-place heuristic, identity by position by default and by `key` when provided, the index-as-key anti-pattern
+- 4.7.3 Keeping components pure — render is a pure function of props and state; side effects belong in handlers/effects; the contract the React Compiler depends on; the DevTools compiler badge as the audit signal
+- 4.7.4 State as a snapshot and the updater form — render is a snapshot of state; the updater form `setX(prev => ...)` under React 19 automatic batching; stale closures in async callbacks
+- 4.7.5 Resetting state with the `key` prop — component identity as a state-reset; the canonical "form fields stuck on the previous record" fix; the reset-by-button-bump pattern
+- 4.7.6 JSX synthetic events — `SyntheticEvent` over native, delegation at the React root, typed handlers (`MouseEvent<HTMLButtonElement>`), `e.currentTarget` over `e.target`, `e.key`, pointer events as the unified primitive
+- 4.7.7 Chapter quiz
 
 ### Chapter 4.8 — Hooks: state and refs
 - 4.8.1 `useState` — basics
