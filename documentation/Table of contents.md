@@ -972,8 +972,8 @@
 - 22.2.4 Quizz
 
 ### Chapter 22.3 — Code review
-- 22.3.1 What a senior reviewer looks for — mapping reviews to the architectural principles (#1–#7) and SaaS patterns (#1–#15)
-- 22.3.2 How to leave a good review comment — suggesting vs. blocking, the language of disagreement
+- 22.3.1 What a senior reviewer looks for — the review stack (correctness/security, principles #1–#7, patterns #1–#15, tests/contracts, style last); the diff signature that signals each principle and pattern violation; the PR-size threshold; CI/lint as the first reviewer
+- 22.3.2 How to leave a good review comment — the four-part anatomy (severity label, observation, reason, action); the severity labels (`blocking:`, `suggestion:`, `question:`, `nit:`, `praise:`) as a Conventional Comments subset; the language of disagreement; the receiving-review posture
 - 22.3.3 Quizz
 
 ### Chapter 22.4 — Project: PR review and one ADR
