@@ -300,15 +300,14 @@
 - 5.3.5 Quizz
 
 ### Chapter 5.4 — Rendering and caching in Next.js 16
-- 5.4.1 Static vs. dynamic rendering — under Cache Components (`cacheComponents: true`), every route is dynamic by default in Next.js 16; per-component opt-in via `use cache`
-- 5.4.2 Partial Prerendering — static shell with streamed dynamic holes; the canonical 2026 rendering shape
-- 5.4.3 Cache Components — `cacheComponents: true` and the `use cache` directive at function and component level
-- 5.4.4 `cacheLife` and `cacheTag` — keying a cached value's freshness window and the tags that name it for invalidation
-- 5.4.5 React `cache()` for per-request memoization in server work; `use cache` for cross-request caching
-- 5.4.6 `updateTag`, `revalidateTag`, `revalidatePath`, `router.refresh` — the post-mutation decision tree; `updateTag` (Server-Action-only, immediate expiry) when the user expects to see their change right after a redirect or navigation; `revalidateTag` (stale-while-revalidate, also usable in route handlers) for webhooks, scheduled jobs, and admin mutations where a brief stale read is fine
-- 5.4.7 Route segment config — `dynamic`, `revalidate`, `runtime` under Cache Components
-- 5.4.8 Async Request APIs in Next.js 16 — `params`, `searchParams`, `cookies()`, `headers()`, `draftMode()` return Promises; `await` them in Server Components, unwrap with `React.use()` in Client Components; `connection()` as the explicit dynamic opt-in
-- 5.4.9 Quizz
+- 5.4.1 Static and dynamic rendering under Cache Components — `cacheComponents: true` flips the default so every route is dynamic in Next.js 16; per-component opt-in via `use cache`; the explicit dynamic signals (`params`, `searchParams`, `cookies()`, `headers()`, `draftMode()`, `connection()`)
+- 5.4.2 Partial Prerendering as the 2026 rendering shape — static shell with streamed dynamic holes; the Suspense boundary as the seam; the pure-static and pure-dynamic degenerate cases
+- 5.4.3 Cache Components and the `use cache` directive — three placements (page, component, function); the compiler-generated cache key; serializable arguments and return value; the closure rules
+- 5.4.4 `cacheLife` for freshness and `cacheTag` for invalidation — the three-number lifetime (stale, revalidate, expire); preset profiles; tag naming conventions for entity-level and record-level invalidation
+- 5.4.5 React `cache()` for per-request memoization — the request-scoped layer; the contrast with `use cache` for cross-request persistence; the canonical pattern for the request-scoped user
+- 5.4.6 The post-mutation invalidation surface — `updateTag` (Server-Action-only, read-your-writes), `revalidateTag` (stale-while-revalidate), `revalidatePath`, `router.refresh`; the user-expectation question that picks between them
+- 5.4.7 Route segment config and async request APIs — the deprecated config (`dynamic`, `revalidate`, `fetchCache`) under Cache Components and what replaces it; awaiting `params`, `searchParams`, `cookies()`, `headers()`, `draftMode()`; `connection()` as the explicit dynamic opt-in; `React.use()` for Client Component unwrap
+- 5.4.8 Quizz
 
 ### Chapter 5.5 — Server-side reads, middleware, and URL state
 - 5.5.1 `cookies()`, `headers()` — server-side reads; the dynamic-rendering implication
