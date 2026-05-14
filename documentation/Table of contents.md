@@ -651,10 +651,10 @@
 
 ### Chapter 13.3 — Object storage (conditional)
 - 13.3.1 When object storage earns its weight — most SaaS have no user-uploaded files; the trigger conditions (avatars, documents, generated assets) and why R2 (not S3, not UploadThing) for SaaS unit economics
-- 13.3.2 Cloudflare R2 — buckets, the S3-compatible API, the Workers/Vercel-side configuration
+- 13.3.2 Cloudflare R2 — buckets, credentials, and CORS
 - 13.3.3 Presigned URLs for direct browser uploads (closes the Blob/File primitives thread from Chapter 3.7)
 - 13.3.4 File metadata in Postgres alongside the object reference
-- 13.3.5 R2 in our app — wiring uploads when the product calls for them
+- 13.3.5 R2 in our app — picking the workloads
 - 13.3.6 Quizz
 
 ### Chapter 13.4 — Project: presigned R2 upload
