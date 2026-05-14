@@ -882,11 +882,12 @@
 - 20.1.5 Quizz
 
 ### Chapter 20.2 — Product analytics
-- 20.2.1 Vercel Analytics — what it covers without configuration (the default)
+- 20.2.1 Vercel Analytics: the zero-config default — what Web Analytics and Speed Insights cover without configuration, where the default stops earning
 - 20.2.2 When PostHog earns its weight — the threshold past Vercel Analytics: event-level product analytics, feature flags for gradual rollouts, session replay for UX debugging, experiments; folding 4–5 separate tools into one platform as the minimum-stack philosophy in action
-- 20.2.3 PostHog primitives — events, feature flags, session replay, experiments
-- 20.2.4 PostHog in our app — wiring it gated by the cookie consent gate from Unit 17
-- 20.2.5 Quizz
+- 20.2.3 PostHog events: autocapture, identify, and custom events — the event model, server-side capture from Server Actions, the `identify` / `group` / `reset` lifecycle
+- 20.2.4 Feature flags and experiments — server-side evaluation, the rollout / kill-switch / targeted-access / experiment lifecycle, multivariate flags and the measurement plan
+- 20.2.5 Wiring PostHog: session replay and the consent gate — the reverse proxy, the consent-gated init, the session-replay PII configuration, the identify-once pattern
+- 20.2.6 Chapter quiz
 
 ### Chapter 20.3 — Performance vigilance (SaaS pattern #15)
 - 20.3.1 The Core Web Vitals — LCP, INP, CLS, what each measures, how to move each
