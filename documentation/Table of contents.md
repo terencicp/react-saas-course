@@ -254,12 +254,12 @@
 - 4.10.4 Chapter quiz
 
 ### Chapter 4.11 — shadcn/ui and the accessibility baseline
-- 4.11.1 shadcn/ui — copy-paste model, slot composition, theming, when to fork; the registry and namespace model
-- 4.11.2 Accessibility baseline — keyboard navigation, prefers-reduced-motion, color contrast (WCAG AA) as discipline-level commitments; per-element specifics (`<button type>` defaults, `<label htmlFor>`, `:focus-visible`) are taught at their call sites in earlier chapters
-- 4.11.3 ARIA basics — roles, labels, live regions, the "first rule of ARIA"
-- 4.11.4 Focus management and tab order — modals, route changes, post-submission
-- 4.11.5 Empty/loading/error state UI patterns at the component level — the trio every list view, card, and widget needs
-- 4.11.6 Quizz
+- 4.11.1 shadcn/ui — the copy-into-repo component system: CLI, `components.json`, Radix-vs-Base engine choice, `asChild` slot composition, semantic-token theming, when to fork, the registry and namespace model
+- 4.11.2 The accessibility baseline as discipline — the four commitments (keyboard, WCAG 2.2 AA contrast, `prefers-reduced-motion`, touch target size); per-element specifics (`<button type>`, `<label htmlFor>`, `:focus-visible`) are taught at their call sites in earlier chapters
+- 4.11.3 ARIA: roles, labels, and live regions — the "first rule of ARIA," icon-only button labels, `aria-describedby` wiring, the live-region pre-mount rule, `role="status"` vs. `role="alert"`
+- 4.11.4 Focus management — modal focus trap (Radix-handled), the route-change focus reflex Next.js does not provide, skip links, post-submission focus rules, the `disabled` vs. `aria-disabled` decision
+- 4.11.5 Empty, loading, and error states — `Skeleton`, `Empty`, `Alert`; the four-state component contract; the discriminated-union state model over three booleans; stale-while-refetching and optimistic-state recognition
+- 4.11.6 Chapter quiz
 
 ### Chapter 4.12 — Project: themed product surface
 - 4.12.1 Project brief
