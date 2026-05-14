@@ -515,15 +515,16 @@
 - 9.4.1 The protected-routes gate in `proxy.ts`
 - 9.4.2 Credential changes and the elevation tier
 - 9.4.3 Session management across devices
-- 9.4.4 Browser security defaults: what the stack ships, what would undo them
-- 9.4.5 Chapter quiz
+- 9.4.4 Account deletion with verification and cascading revocation
+- 9.4.5 Browser security defaults: what the stack ships, what would undo them
+- 9.4.6 Chapter quiz
 
 ### Chapter 9.5 — Project: email+password auth with verification
 - 9.5.1 Project brief
-- 9.5.2 Starter walkthrough — Better Auth instance skeleton, migrations, Unit 8 send
-- 9.5.3 Build it — Better Auth instance config and first sign-up working (unverified)
-- 9.5.4 Build it — email-verification template, send through Unit 8, and the token-handling callback
-- 9.5.5 Build it — `proxy.ts` matcher, session reads in the layout, and the sign-out action
+- 9.5.2 Starter walkthrough — env, Postgres, the Unit 8 send carry-in
+- 9.5.3 Build it — Better Auth instance, catch-all handler, and the first (unverified) sign-up
+- 9.5.4 Build it — verification template, send-on-signup, and the sign-in gate
+- 9.5.5 Build it — `proxy.ts` two-layer gate, protected layout, and the sign-out action
 - 9.5.6 Verify — sign-up → verify → sign-in → protected route → sign-out cycle
 
 ---
