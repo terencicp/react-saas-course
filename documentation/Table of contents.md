@@ -248,10 +248,10 @@
 - 4.9.9 Chapter quiz
 
 ### Chapter 4.10 — Custom hooks and what to stop hand-tuning
-- 4.10.1 Custom hooks — extracting reusable behavior, the `use*` naming convention, when a custom hook earns its weight
+- 4.10.1 Custom hooks: extracting reusable behavior — the `use*` naming convention, the share-code-not-state rule, when a custom hook earns its weight, the canonical 2026 catalog
 - 4.10.2 The React Compiler — what it auto-memoizes and how to enable it (`reactCompiler: true` in `next.config.ts`, `babel-plugin-react-compiler` installed); stable in Next 16 but not default-on, named explicitly per "explicit over magic"
-- 4.10.3 When manual memoization still earns its weight — the narrow cases for `memo` / `useMemo` / `useCallback`; what to stop hand-tuning, including `useMemo` everywhere and premature `dynamic()`
-- 4.10.4 Quizz
+- 4.10.3 Manual memoization, the narrow cases that remain — the four cases where `memo` / `useMemo` / `useCallback` still earn their weight; what to stop hand-tuning, including `useMemo` everywhere and premature `dynamic()`
+- 4.10.4 Chapter quiz
 
 ### Chapter 4.11 — shadcn/ui and the accessibility baseline
 - 4.11.1 shadcn/ui — copy-paste model, slot composition, theming, when to fork; the registry and namespace model
@@ -350,16 +350,17 @@
 - 6.1.5 Chapter quiz
 
 ### Chapter 6.2 — Defining schema with Drizzle
-- 6.2.1 Architectural Principle #2 introduced — the schema is the source of truth
-- 6.2.2 Drizzle schema — `pgTable`, columns, relations, references
-- 6.2.3 Postgres data types — text, integer, bigint, numeric, boolean, timestamptz, date, jsonb, uuid, enum, arrays
-- 6.2.4 NOT NULL, DEFAULT, generated columns
-- 6.2.5 Primary keys — surrogate vs. natural; UUID vs. bigserial; composite primary keys
-- 6.2.6 Foreign keys; ON DELETE and ON UPDATE behavior
+- 6.2.1 Architectural Principle #2: the schema is the source of truth
+- 6.2.2 pgTable, the schema file, and the casing convention
+- 6.2.3 Postgres data types via Drizzle
+- 6.2.4 Column modifiers: NOT NULL, DEFAULT, generated columns
+- 6.2.5 Primary keys: UUIDv7 by default, identity for high-volume internals
+- 6.2.6 Foreign keys and the ON DELETE decision
 - 6.2.7 UNIQUE and CHECK constraints
 - 6.2.8 Many-to-many junction tables
-- 6.2.9 `$inferSelect` / `$inferInsert` as the canonical row types
-- 6.2.10 Quizz
+- 6.2.9 The Drizzle Relations v2 declarative API
+- 6.2.10 `$inferSelect` and `$inferInsert`: the canonical row types
+- 6.2.11 Chapter quiz
 
 ### Chapter 6.3 — Querying and mutating
 - 6.3.1 Drizzle queries — select, insert, update, delete; where, orderBy, limit/offset; SQL injection handled by Drizzle's parameterization (named explicitly so learners know why)
