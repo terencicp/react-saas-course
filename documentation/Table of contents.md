@@ -921,10 +921,10 @@
 - 21.1.5 Chapter quiz
 
 ### Chapter 21.2 — CI on GitHub Actions
-- 21.2.1 GitHub Actions primitives — workflows, jobs, steps, secrets, cached deps, least-privilege `permissions:`, `concurrency:`, SHA-pinning actions that handle secrets
-- 21.2.2 The four-job CI baseline — type-check, lint, test, build as parallel jobs in `.github/workflows/ci.yml`; the under-five-minute speed budget; matching job names to the ruleset's required-status-check strings
-- 21.2.3 Supplementary CI checks and dependency updates — the gate-vs-signal split; `pnpm audit` with `--audit-level=high`, `pnpm audit signatures` plus `minimumReleaseAge`/`strictDepBuilds` as the 2026 supply-chain layer, `actionlint` on the workflows, `markdown-link-check` on a weekly schedule, Dependabot with grouped minor+patch updates
-- 21.2.4 Chapter quiz
+- 21.2.1 GitHub Actions — workflows, jobs, steps, secrets, cached deps
+- 21.2.2 The CI baseline — type-check, lint, test, build
+- 21.2.3 Supplementary CI checks — `pnpm audit` for dep hygiene, `markdown-link-check` on docs
+- 21.2.4 Quizz
 
 ### Chapter 21.3 — Vercel deployment and going live
 - 21.3.1 The Vercel deployment model — what gets pushed where on each git push
