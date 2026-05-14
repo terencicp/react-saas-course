@@ -14,7 +14,7 @@ Create a document in the documentation/outlines folder named "Chapter X.X" for t
 
 The goal of this doc is to be the bridge between the TOC and the Initial lesson draft that will be written by an AI subagent.
 
-Consider the TOC a canonical list for Units and Chapters but not for lessons. Your first task is to consider if the TOC chapter subdivision in lessons is appropriate, if not rewrite the lesson structure for the chapter. Read other chapter's outlines if necessary.
+Consider the TOC a canonical list for Units and Chapters but not for lessons. Your first task is to consider if the TOC chapter subdivision in lessons is appropriate, if not rewrite the lesson structure for the chapter. Read one of the other chapter's outlines at most if necessary.
 
 Chapters can have two forms: Regular lessons and Projects, follow the instructions in each section, then follow the instructions in the Finally section.
 
