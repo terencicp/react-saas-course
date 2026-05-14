@@ -693,8 +693,8 @@
 > Cache decisions as architecture, not afterthought — and rate limiting on the abusable endpoints from the moment the project ships to a public URL.
 
 ### Chapter 15.1 — Cache decisions as architecture (SaaS pattern #8)
-- 15.1.1 Cache decisions as architecture — which routes are statically cacheable vs. always-dynamic in a SaaS; when to reach for `cacheTag` so a single mutation can invalidate exactly the right caches
-- 15.1.2 Cache invalidation after a mutation — `updateTag`, `revalidateTag`, `revalidatePath`, `router.refresh` decision tree applied to worked SaaS cases (list view post-edit, post-purchase, post-membership-change); the `updateTag`-vs-`revalidateTag` call (immediate expiry for user-driven mutations vs. stale-while-revalidate for background ones) made operational on real flows; revisits Chapter 5.4
+- 15.1.1 Classifying routes and designing the tag scheme — the three route classes (fully dynamic, partially cached, fully static), the cacheable-in-a-SaaS shortlist, `cacheLife` profile selection as a UX question, the four tag shapes (entity, record, org-scoped, user-scoped), and the `tags.ts` helper that keeps read-side and write-side strings aligned
+- 15.1.2 The four-way invalidation decision tree on real flows — `updateTag`, `revalidateTag`, `revalidatePath`, `router.refresh` resolved on two axes (read-your-writes vs. eventual, tag vs. path) and applied to worked SaaS cases (list view post-edit, post-purchase, post-membership-change, webhook-driven status, background-job rebuild); the "invalidate after commit, then redirect" sequence; revisits Chapter 5.4
 - 15.1.3 Quizz
 
 ### Chapter 15.2 — Project: cacheTag-driven invalidation
