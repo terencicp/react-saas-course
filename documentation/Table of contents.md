@@ -848,11 +848,11 @@
 - 19.3.9 Chapter quiz
 
 ### Chapter 19.4 — Component tests (conditional)
-- 19.4.1 When React Testing Library earns its weight — bulk-testing presentational components has poor cost-benefit; reach for it on shared component libraries, complex stateful components, and critical UX paths
-- 19.4.2 React Testing Library — setup and the basics
-- 19.4.3 RTL query philosophy — by role, by label, by text; `getByTestId` as last resort; what "behavior" means at the component level
-- 19.4.4 RTL in our app — the components where the trigger is met
-- 19.4.5 Quizz
+- 19.4.1 When React Testing Library earns its weight
+- 19.4.2 RTL setup, the render helper, and user-event
+- 19.4.3 Query philosophy and what "behavior" means at the component level
+- 19.4.4 RTL in the course's app: the components where the trigger is met
+- 19.4.5 Chapter quiz
 
 ### Chapter 19.5 — E2E (conditional)
 - 19.5.1 When Playwright earns its weight — not a coverage tool; reach for it only on the 20–30 paths where failure costs real money (auth, checkout, Stripe-touching flows); many SaaS skip E2E entirely in their first year
