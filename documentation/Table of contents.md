@@ -363,17 +363,17 @@
 - 6.2.11 Chapter quiz
 
 ### Chapter 6.3 — Querying and mutating
-- 6.3.1 Drizzle queries — select, insert, update, delete; where, orderBy, limit/offset; SQL injection handled by Drizzle's parameterization (named explicitly so learners know why)
-- 6.3.2 Joins — inner, left, right, full
-- 6.3.3 Drizzle's relational query API
-- 6.3.4 Aggregations — GROUP BY, HAVING
-- 6.3.5 Upserts (`INSERT ... ON CONFLICT`) and RETURNING
-- 6.3.6 Pagination — cursor vs. offset; cursor encoding (opaque base64 of last-row sort key + tiebreaker), stable ordering for cursor stability, when offset is fine vs. when cursor wins (live data, deep pagination, large tables); page size as a query param
-- 6.3.7 Subqueries and CTEs (WITH)
-- 6.3.8 Full-text search in Postgres (light, brief)
-- 6.3.9 JSONB columns and querying — when to reach for JSONB vs. a real column
-- 6.3.10 When to drop to raw SQL via `` sql`` `` and what it costs
-- 6.3.11 Quizz
+- 6.3.1 Select, insert, update, delete; where, orderBy, limit; parameterization
+- 6.3.2 Joins: inner, left, right, full
+- 6.3.3 The relational query API for nested reads
+- 6.3.4 Aggregations: count, sum, GROUP BY, HAVING
+- 6.3.5 Upserts with ON CONFLICT and RETURNING
+- 6.3.6 Pagination: cursor by default, offset when small
+- 6.3.7 Subqueries, CTEs, and when to layer the query
+- 6.3.8 Light Postgres full-text search
+- 6.3.9 JSONB columns and querying
+- 6.3.10 When to drop to raw SQL via `` sql`` ``
+- 6.3.11 Chapter quiz
 
 ### Chapter 6.4 — Performance and integrity
 - 6.4.1 Indexes — B-tree, partial, composite, expression, unique; when to add them
