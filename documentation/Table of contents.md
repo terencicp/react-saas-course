@@ -762,8 +762,8 @@
 ### Chapter 17.1 — Error discipline
 - 17.1.1 Errors fail closed — anything that looks like authorization (`requireRole`, paywall checks, tenancy filters) refuses by default; an exception inside the check is treated as a refusal, not an allow
 - 17.1.2 User-message vs. operator-message split — what reaches the user is operator-safe to read aloud (no internal IDs, no stack traces, no "DB constraint X failed"); diagnostic detail goes to Sentry and the audit log
-- 17.1.3 The two commitments revisited at the seams — where each commitment lands in `authedAction`, billing, and webhook code
-- 17.1.4 Quizz
+- 17.1.3 The two commitments revisited at the seams — where each commitment lands across the six error seams: `authedAction`, `authedRoute`, page-level `requireOrgUser`, webhook receivers, the rate limiter (the documented fail-open carve-out), and the `error.tsx` / `global-error.tsx` boundaries
+- 17.1.4 Chapter quiz
 
 ### Chapter 17.2 — The security baseline
 - 17.2.1 Security headers — CSP, HSTS, X-Frame-Options, Referrer-Policy — set in `next.config.ts`
