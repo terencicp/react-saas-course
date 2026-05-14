@@ -1004,11 +1004,10 @@
 - 23.2.4 Quizz
 
 ### Chapter 23.3 — Tools, agents, and generative UI
-- 23.3.1 Tool calling — defining tools with Zod, the execution loop, multi-step under v5's `stopWhen` parameter with built-in stop conditions (`stepCountIs(n)`, `hasToolCall(name)`, `isLoopFinished()`) — replaces v4's client-side `maxSteps`; the agentic loop, tool-result handling
-- 23.3.2 Generative UI with `ai/rsc` — `streamUI`, server-rendered tool components, `useUIState` / `useAIState`
-- 23.3.3 Embeddings and vector search (light) — when retrieval-augmented features earn their weight
-- 23.3.4 AI SDK in our app — wiring an LLM-backed surface where the trigger is met
-- 23.3.5 Quizz
+- 23.3.1 Tool calling and the agentic loop — defining tools with v5's `tool({ description, inputSchema, execute })` (renamed from v4's `parameters`), where `execute` runs and the org-scoped trust boundary, multi-step under `stopWhen` with built-in conditions (`stepCountIs(n)`, `hasToolCall(name)`, custom predicates) replacing v4's client-side `maxSteps`, `onStepFinish` for per-step audit and quota accounting, `prepareStep` for adapting the loop mid-flight, tool-result projection and `outputSchema`, `toolChoice` modes
+- 23.3.2 Generative UI via tool parts — the 2026 canonical path through `useChat` + `UIMessage` tool parts (not the experimental `ai/rsc`), the four part states (`input-streaming` / `input-available` / `output-available` / `output-error`), per-tool skeletons, end-to-end typing with `InferUITools`, the `lib/llm/tools.ts` registry convention, the propose-then-confirm pattern for destructive actions
+- 23.3.3 Embeddings and retrieval-augmented features — the senior threshold for when RAG earns its weight, `embed` / `embedMany` / `cosineSimilarity` from the SDK, pgvector via Drizzle as the 2026 default stack, the two-phase index/query pipeline, pre-retrieval vs. tool-based retrieval, the `orgId` filter as the multi-tenant rule
+- 23.3.4 Quiz
 
 ### Chapter 23.4 — Project: LLM-backed invoice Q&A with tool calling
 - 23.4.1 Project brief
