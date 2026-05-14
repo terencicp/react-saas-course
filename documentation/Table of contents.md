@@ -585,11 +585,11 @@
 
 ### Chapter 11.3 — Project: URL-state list with soft delete and concurrency
 - 11.3.1 Project brief
-- 11.3.2 Starter walkthrough — Unit 7 CRUD surface, `deletedAt` + `version` already in schema
-- 11.3.3 Build it — lift filter, sort, and cursor to `searchParams`
-- 11.3.4 Build it — the base-query helper, soft-delete action, restore action
-- 11.3.5 Build it — the `version` precondition on update and the 409 surface
-- 11.3.6 Verify — share-and-refresh URL, soft-deleted visibility toggle, two-tab 409 race
+- 11.3.2 Starter walkthrough — Unit 7 CRUD surface with `deletedAt`, `archivedAt`, `version` in schema
+- 11.3.3 Build it — lift filter, sort, search, and cursor to the URL
+- 11.3.4 Build it — the scoped query helper and the lifecycle actions
+- 11.3.5 Build it — the `version` precondition and the 409 surface
+- 11.3.6 Verify — share-and-refresh, view tabs, partial unique index, two-tab 409, optimistic rollback
 
 ---
 
