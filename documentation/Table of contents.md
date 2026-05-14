@@ -285,15 +285,12 @@
 - 5.1.7 Quizz
 
 ### Chapter 5.2 — The server / client boundary
-- 5.2.1 Server Components — fundamentals, async components, server-side data fetching
-- 5.2.2 Client Components — fundamentals, the boundary contract
-- 5.2.3 `"use client"` and `"use server"` — what each means, what each constrains
-- 5.2.4 Architectural Principle #6 introduced — prefer explicit over magic; named at the `"use client"` / `"use server"` boundary as the canonical "name the magic" example
-- 5.2.5 `server-only` / `client-only` packages — structural enforcement of the boundary
-- 5.2.6 Server Component → Client Component prop serialization — what crosses the RSC wire, common failure shapes (Map, Set, class instances, functions)
-- 5.2.7 Structured clone — what it can/can't carry across boundaries
-- 5.2.8 Hydration — what it is, hydration mismatches, common causes (`Date.now`, random IDs, locale)
-- 5.2.9 Quizz
+- 5.2.1 Server Components — fundamentals, async components, server-side data fetching, composition with Client Components
+- 5.2.2 Client Components and the boundary contract — fundamentals, the two-render model, the "push the boundary down" reflex, the cost ledger
+- 5.2.3 Directives and structural enforcement of the boundary — `"use client"` and `"use server"` semantics; Architectural Principle #6 introduced (prefer explicit over magic, named at the directives as the canonical "name the magic" case); `server-only` / `client-only` packages as compile-time enforcement
+- 5.2.4 What crosses the wire — RSC serialization and structured clone; supported shapes (primitives, plain objects, arrays, `Map`, `Set`, `Date`, typed arrays, Promises, JSX, Server/Client references); rejected shapes (functions, class instances, WeakMap); the secrets-in-props leak
+- 5.2.5 Hydration — what it is, mismatch causes (`Date.now`, `Math.random`, locale, timezone, browser extensions, stale `.next/dev` cache), `useEffect`/`useId`/`suppressHydrationWarning` as the canonical fixes
+- 5.2.6 Quizz
 
 ### Chapter 5.3 — Async UI primitives
 - 5.3.1 Suspense as a declarative loading contract
