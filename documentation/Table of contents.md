@@ -733,10 +733,10 @@
 
 ### Chapter 16.2 — Project: TanStack Query on optimistic comments
 - 16.2.1 Project brief
-- 16.2.2 Starter walkthrough — Unit 11 invoices, the comments route handlers, seeded comments
-- 16.2.3 Build it — `QueryClientProvider` + `HydrationBoundary` for SSR-hydrated initial data
-- 16.2.4 Build it — `useInfiniteQuery` for the thread with cursor paging and the polling interval
-- 16.2.5 Build it — `useMutation` with optimistic add and rollback on `onError`
+- 16.2.2 Starter walkthrough — Unit 11 invoices, the comments route handler stub, seeded comments
+- 16.2.3 Provider, per-request factory, and the SSR-hydrated first page
+- 16.2.4 Infinite scroll, polling, and the route handler
+- 16.2.5 Optimistic add and rollback with `useMutation`
 - 16.2.6 Verify — cross-session arrival within the poll window, optimistic visibility, forced 500 rollback
 
 ### Chapter 16.3 — Zustand (conditional)
