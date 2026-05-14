@@ -486,9 +486,9 @@
 > Wire identity onto the data backplane: sessions, sign-in flows, and the request-time reads that downstream patterns lean on.
 
 ### Chapter 9.1 — Auth concepts
-- 9.1.1 Authentication vs. authorization made explicit
-- 9.1.2 Sessions, tokens, cookies — the conceptual model lifted into a working auth flow
-- 9.1.3 The OAuth 2.0 authorization-code flow with PKCE — the protocol Better Auth abstracts
+- 9.1.1 Authentication vs. authorization
+- 9.1.2 Sessions, tokens, and the cookie that carries them
+- 9.1.3 OAuth 2.1 and the authorization-code flow with PKCE
 - 9.1.4 Quizz
 
 ### Chapter 9.2 — Better Auth setup
