@@ -500,16 +500,16 @@
 - 9.2.5 Chapter quiz
 
 ### Chapter 9.3 — Sign-in flows
-- 9.3.1 Email + password sign-up — the verification-gated flow
-- 9.3.2 Email + password sign-in — the rate-limited surface and failed-attempt counter
-- 9.3.3 Email verification — the token, the link, the verified-email gate
-- 9.3.4 Password reset — the secure flow end to end
-- 9.3.5 Magic-link / passwordless email auth
-- 9.3.6 2FA / TOTP — enrolling, verifying, the recovery codes
-- 9.3.7 Passkeys / WebAuthn — registration and assertion at Better Auth's level
-- 9.3.8 OAuth providers in Better Auth — redirect URIs, scopes, the callback route, the accounts table, provider-specific quirks
-- 9.3.9 Account linking — multiple identities pointing at one user record
-- 9.3.10 Quizz
+- 9.3.1 Email and password sign-up
+- 9.3.2 Email and password sign-in
+- 9.3.3 Email verification
+- 9.3.4 Password reset
+- 9.3.5 Magic link sign-in
+- 9.3.6 TOTP two-factor authentication
+- 9.3.7 Passkeys and WebAuthn
+- 9.3.8 OAuth providers
+- 9.3.9 Account linking
+- 9.3.10 Chapter quiz
 
 ### Chapter 9.4 — Auth at request time and account management
 - 9.4.1 Auth gating in `proxy.ts` — session reads, redirect-to-sign-in, the protected-routes pattern
