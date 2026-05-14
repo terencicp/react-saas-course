@@ -945,12 +945,12 @@
 - 21.4.4 Quizz
 
 ### Chapter 21.5 — Project: deploy and a live expand-migrate-contract migration
-- 21.5.1 Project brief
-- 21.5.2 First deploy: from repo to a live production URL
-- 21.5.3 PR 1 (Expand): add the FK column nullable, ship to preview, verify production keeps working
-- 21.5.4 PR 2 (Migrate): backfill and dual-write, ship to preview, verify production keeps working
-- 21.5.5 PR 3 (Contract): drop the old text column, make the FK non-null, ship
-- 21.5.6 Rollback rehearsal: promote the previous deployment, document the steps
+- 21.5.1 Project brief — the migration class that demands the cadence; the rollback expectation
+- 21.5.2 First deploy — connecting the repo to Vercel, the first production URL, environment scoping
+- 21.5.3 PR 1 (Expand) — add the FK column nullable, ship to preview, verify production keeps working
+- 21.5.4 PR 2 (Migrate) — backfill and dual-write, ship to preview, verify production keeps working
+- 21.5.5 PR 3 (Contract) — drop the old text column, make the FK non-null, ship
+- 21.5.6 Rollback rehearsal — promote the previous deployment, document the steps
 
 ---
 
