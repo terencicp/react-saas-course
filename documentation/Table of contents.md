@@ -890,14 +890,14 @@
 - 20.2.5 Quizz
 
 ### Chapter 20.3 — Performance vigilance (SaaS pattern #15)
-- 20.3.1 The Core Web Vitals — LCP, INP, CLS, what each measures, the p75 thresholds, the field-vs-lab rule, the one structural reach per metric
-- 20.3.2 `next/image` `priority` and the no-raw-img rule — `priority` on the LCP element exactly once, the ESLint structural ban on `<img>`, `width`/`height` as the CLS protection (revisits 5.6.2)
-- 20.3.3 Per-icon imports and barrel-export bundle cost — the lucide-react trap, `optimizePackageImports` as the modern default, `sideEffects: false` on internal packages
-- 20.3.4 `@next/bundle-analyzer` as the audit surface — the four scan passes (biggest tile, per-route chunks, duplicates, shared chunk), the triage decision tree, the Next.js 16.1 built-in
-- 20.3.5 Lighthouse passes on the pre-launch surfaces — DevTools / PageSpeed Insights / `@lhci/cli`, performance budgets, the threshold cheat sheet for marketing + one authenticated screen, the lab-vs-field calibration
-- 20.3.6 RSC waterfalls and the parallel-await rewrite — sequential parent-then-child awaits compounding latency, the dependency-check reflex, the `Promise.all` rewrite, parent-child hoisting and Suspense streaming (the RSC-side cousin of N+1)
-- 20.3.7 Database query performance: indexes and N+1 revisited — production-vigilance reach over indexes from 6.4.1 and N+1 from 6.4.2, Drizzle relations as the structural fix, pool saturation as the shifted bottleneck, the pre-launch DB checklist
-- 20.3.8 Chapter quiz
+- 20.3.1 The Core Web Vitals — LCP, INP, CLS, what each measures, how to move each
+- 20.3.2 `next/image` `priority` for above-the-fold (revisit) and never raw `<img>`
+- 20.3.3 Per-icon imports vs. barrel imports — the bundle-size cost of shipping the whole icon set
+- 20.3.4 `@next/bundle-analyzer` — running it and reading what it shows
+- 20.3.5 Lighthouse passes on the marketing page and one critical authenticated screen pre-launch
+- 20.3.6 RSC waterfalls — sequential parent-then-child awaits compounding latency; the `Promise.all` rewrite (the RSC-side cousin of N+1)
+- 20.3.7 Database query performance — index hits, N+1 (revisit; the Drizzle thread cashes in)
+- 20.3.8 Quizz
 
 ### Chapter 20.4 — Project: observability and performance audit
 - 20.4.1 Project brief — Sentry + PostHog wiring plus the seeded performance findings
