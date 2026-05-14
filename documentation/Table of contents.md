@@ -294,8 +294,8 @@
 
 ### Chapter 5.3 — Async UI primitives
 - 5.3.1 Suspense as a declarative loading contract
-- 5.3.2 Streaming and Suspense at the route boundary
-- 5.3.3 `loading.tsx`, `error.tsx`, `not-found.tsx` — the platform's async-UI primitives; `error.tsx` wraps React's underlying class-based Error Boundary mechanism, named once where it bites (the file-convention is the form learners will write)
+- 5.3.2 Streaming at the route boundary
+- 5.3.3 `loading.tsx`, `error.tsx`, and `not-found.tsx` — the platform's async-UI primitives; `error.tsx` wraps React's underlying class-based Error Boundary mechanism, named once where it bites (the file-convention is the form learners will write)
 - 5.3.4 `global-error.tsx` — the root-layout error boundary that catches what `error.tsx` can't
 - 5.3.5 Quizz
 
