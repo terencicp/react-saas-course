@@ -891,13 +891,12 @@
 
 ### Chapter 20.3 — Performance vigilance (SaaS pattern #15)
 - 20.3.1 The Core Web Vitals — LCP, INP, CLS, what each measures, how to move each
-- 20.3.2 `next/image` `priority` for above-the-fold (revisit) and never raw `<img>`
-- 20.3.3 Per-icon imports vs. barrel imports — the bundle-size cost of shipping the whole icon set
-- 20.3.4 `@next/bundle-analyzer` — running it and reading what it shows
-- 20.3.5 Lighthouse passes on the marketing page and one critical authenticated screen pre-launch
-- 20.3.6 RSC waterfalls — sequential parent-then-child awaits compounding latency; the `Promise.all` rewrite (the RSC-side cousin of N+1)
-- 20.3.7 Database query performance — index hits, N+1 (revisit; the Drizzle thread cashes in)
-- 20.3.8 Quizz
+- 20.3.2 Image and font hygiene for LCP and CLS — `next/image` `priority`, `sizes`, the "never raw `<img>`" ESLint enforcement, `next/font` revisit
+- 20.3.3 Bundle hygiene: barrel imports and `@next/bundle-analyzer` — `optimizePackageImports`, per-file fallback, `next/dynamic`, reading the treemap
+- 20.3.4 RSC waterfalls and parallel data fetching — sequential awaits inflating TTFB, the `Promise.all` and Suspense-siblings rewrites, `React.cache()`, structural fan-out
+- 20.3.5 Database performance in production — the index and N+1 thread cashes in, the diagnostic flow, `EXPLAIN ANALYZE` against a Neon branch
+- 20.3.6 Pre-launch Lighthouse passes — marketing top-of-funnel and one critical authenticated screen, the two-page rule, the three-runs-median protocol
+- 20.3.7 Quizz
 
 ### Chapter 20.4 — Project: observability and performance audit
 - 20.4.1 Project brief — Sentry + PostHog wiring plus the seeded performance findings
