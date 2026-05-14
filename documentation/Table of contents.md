@@ -606,12 +606,12 @@
 - 12.1.6 Quizz
 
 ### Chapter 12.2 — Stripe billing (SaaS pattern #4)
-- 12.2.1 Stripe — products, prices, customers, subscriptions
-- 12.2.2 Stripe Checkout sessions
-- 12.2.3 The Stripe customer portal
-- 12.2.4 Plan entitlements as a derived view your app reads from
-- 12.2.5 Trial / past-due / cancelled as first-class statuses, not boolean flags
-- 12.2.6 The thin internal billing interface (`billing.upgrade`, `billing.openPortal`, `billing.requirePlan`) — the billing carve-out to Architectural Principle #5
+- 12.2.1 The Stripe object graph — Products, Prices, Customers, Subscriptions; one Customer per organization; `lookup_key` over hardcoded `price_id`; metadata as the carry-channel for `organization_id`
+- 12.2.2 Stripe Checkout sessions — the Server Action that creates the session, lazy Customer creation, hosted-vs-embedded as the 2026 default, trials via `subscription_data`, the success-URL polling against the webhook
+- 12.2.3 The Stripe customer portal — plan changes, cancellation at period end, payment-method update, deep-link flows; the return URL as navigation hint not state-change proof
+- 12.2.4 Plan entitlements as a derived view your app reads from — one row per org, written exclusively by the webhook, never call `stripe.*` on the hot path; the projection function from event to entitlement
+- 12.2.5 Subscription status as first-class application state — `trialing` / `active` / `past_due` / `canceled` / `incomplete` semantics, the `hasActiveAccess` gate, grace banners over instant lockout, `cancel_at_period_end` as the winding-down state
+- 12.2.6 The thin internal billing interface (`billing.upgrade`, `billing.openPortal`, `billing.requirePlan`) — the billing carve-out to Architectural Principle #5; `requirePlan` as the load-bearing gate; `/lib/billing/` as the only place `stripe` is imported
 - 12.2.7 When an SDK adapter earns its weight — only the two named carve-outs (the authz wrapper from Chapter 10.2, the billing interface above); Resend, Trigger.dev, and R2 are explicitly NOT wrapped, because their swap cost doesn't justify the tax
 - 12.2.8 Quizz
 
