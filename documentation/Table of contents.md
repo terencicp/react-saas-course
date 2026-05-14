@@ -329,11 +329,11 @@
 
 ### Chapter 5.7 — Project: list-plus-detail with parallel routes
 - 5.7.1 Project brief
-- 5.7.2 Starter walkthrough — App Router scaffold, in-memory invoice fixture, typed server functions
-- 5.7.3 Build it — the two parallel slots with `default.tsx` fallbacks and the server-side `?status=` filter from `searchParams`
-- 5.7.4 Build it — the intercepting modal route and its paired non-intercepting `page.tsx`
-- 5.7.5 Build it — Suspense boundaries with slot-specific skeletons
-- 5.7.6 Verify — direct visit, soft nav, refresh, `Cmd+click`, and `?status=paid` survives reload
+- 5.7.2 Starter walkthrough
+- 5.7.3 Parallel slots with the server-side status filter
+- 5.7.4 The intercepting modal and its paired full page
+- 5.7.5 Slot-specific Suspense boundaries and skeletons
+- 5.7.6 Verify
 
 ---
 
