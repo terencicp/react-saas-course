@@ -309,12 +309,12 @@
 - 5.4.7 Route segment config and async request APIs — the deprecated config (`dynamic`, `revalidate`, `fetchCache`) under Cache Components and what replaces it; awaiting `params`, `searchParams`, `cookies()`, `headers()`, `draftMode()`; `connection()` as the explicit dynamic opt-in; `React.use()` for Client Component unwrap
 - 5.4.8 Quizz
 
-### Chapter 5.5 — Server-side reads, middleware, and URL state
-- 5.5.1 `cookies()`, `headers()` — server-side reads; the dynamic-rendering implication
-- 5.5.2 `proxy.ts` orientation and matcher config — the Node-runtime-only file convention that replaces `middleware.ts` in Next.js 16; `middleware.ts` named once as the deprecated Edge-runtime predecessor
-- 5.5.3 Rewrites and redirects in `proxy.ts`
-- 5.5.4 `searchParams` and route params — the URL-state pattern (foundation for SaaS pattern #7)
-- 5.5.5 Client-side navigation hooks — `useRouter`, `usePathname`, `useSearchParams`, `useParams` from `next/navigation`; when to read URL state on the server vs. on the client
+### Chapter 5.5 — Server-side reads, the proxy, and URL state
+- 5.5.1 Reading the request with `cookies()` and `headers()` — async, server-only, read-only by default; setting cookies requires a Server Action context
+- 5.5.2 `proxy.ts` and the matcher — the Node-runtime-only file convention that replaces `middleware.ts` in Next.js 16 (`middleware.ts` named once as the deprecated Edge-runtime predecessor); the matcher as the cost-control surface; what the proxy is for and what it isn't
+- 5.5.3 Rewrites and redirects in `proxy.ts` — redirect vs. rewrite semantics, 307 vs. 308, the proxy-vs-`next.config.ts`-vs-`redirect()` decision tree, open-redirect prevention on `?next=`
+- 5.5.4 URL state with `searchParams` and route params — `params` for identity, `searchParams` for view state; Zod validation at the boundary; the cursor encoding shape; nuqs as the production layer (foundation for SaaS pattern #7)
+- 5.5.5 Client-side navigation hooks — `useRouter`, `usePathname`, `useSearchParams`, `useParams` from `next/navigation`; the read-on-server, write-on-client division; `push` vs. `replace` vs. `refresh`; the Suspense requirement on `useSearchParams`
 - 5.5.6 Quizz
 
 ### Chapter 5.6 — The Next.js project surface
