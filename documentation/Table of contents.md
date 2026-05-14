@@ -493,11 +493,11 @@
 - 9.1.4 Chapter quiz
 
 ### Chapter 9.2 — Better Auth setup
-- 9.2.1 Better Auth Drizzle adapter and the tables it owns
-- 9.2.2 The session table and why it earns its weight
-- 9.2.3 Session strategies — server-stored sessions vs. JWTs, revocation, multi-device sessions
-- 9.2.4 Session reads in middleware, layouts, and server actions
-- 9.2.5 Quizz
+- 9.2.1 The `auth` instance, the catch-all handler, and the client
+- 9.2.2 The Drizzle adapter and the four core tables
+- 9.2.3 Session configuration and the cookie surface
+- 9.2.4 Reading the session at the call site
+- 9.2.5 Chapter quiz
 
 ### Chapter 9.3 — Sign-in flows
 - 9.3.1 Email + password sign-up — the verification-gated flow
