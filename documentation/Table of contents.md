@@ -644,10 +644,10 @@
 ### Chapter 13.2 — Project: Trigger.dev durable export job
 - 13.2.1 Project brief
 - 13.2.2 Starter walkthrough — Trigger.dev v4 project, the cloud link, the local dev CLI for the kill/resume verification, the empty task file, the pre-built `ExportReadyEmail.tsx` template
-- 13.2.3 Build it — the `schemaTask` with payload schema and the code-defined queue declaration
-- 13.2.4 Build it — paginate the export with `wait.for` between pages and idempotency keys per page
-- 13.2.5 Build it — the final send-email step rendering `ExportReadyEmail` and calling the Unit 8 send
-- 13.2.6 Verify — visible run progress, mid-run local-worker kill resumes, parallel triggers per org serialize
+- 13.2.3 The `schemaTask` skeleton and the per-org dynamic queue — `schemaTask` with payload schema, dynamic per-tenant queue declaration, the `startExport` Server Action with `tasks.trigger` and the daily idempotency key
+- 13.2.4 Paginated export with `triggerAndWait` and cross-step idempotency — each page as its own checkpointed child task, `${ctx.run.id}:page:N` cross-step keys for durability, `metadata.set` for live progress, `AbortTaskRunError` for the empty-resultset case
+- 13.2.5 The email step and the final audit log — `sendExportEmail` child task rendering `ExportReadyEmail`, the `${ctx.run.id}:email` idempotency key guarding against parent retries, audit-log write on completion
+- 13.2.6 Verify — visible run progress, mid-run local-worker kill resumes, parallel triggers per org serialize, across-org parallelism, payload validation at the boundary, email-send-once across parent retries
 
 ### Chapter 13.3 — Object storage (conditional)
 - 13.3.1 When object storage earns its weight — most SaaS have no user-uploaded files; the trigger conditions (avatars, documents, generated assets) and why R2 (not S3, not UploadThing) for SaaS unit economics
