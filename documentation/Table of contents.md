@@ -1012,8 +1012,8 @@
 
 ### Chapter 23.4 — Project: LLM-backed invoice Q&A with tool calling
 - 23.4.1 Project brief
-- 23.4.2 Starter walkthrough — Unit 11.3 surface, AI SDK installed, provider key, new `usage_quota_daily` and `llm_audit_events` tables
-- 23.4.3 Streaming route under auth with the agentic loop — `authedRoute` wrapping `streamText`, `stopWhen(stepCountIs(5))`, `onFinish` audit, smoke-test client
-- 23.4.4 Tool with org-scoped authz, plus the daily quota — `getInvoiceStats` with Zod `inputSchema`/`outputSchema`, `orgId` from closure not input, `reserveQuotaOrRefuse` pre-stream, `addUsage` in `onStepFinish`
-- 23.4.5 Typed `useChat` rendering parts and the usage panel — `useChat<InvoiceUIMessage>` via `InferUITools`, the part-type/part-state switch, per-tool skeleton, polling token-usage panel
-- 23.4.6 Verify — grounded answers cite real Drizzle numbers; forged `orgId` refused; 5-step ceiling holds; quota refusal surfaces; tool errors return not throw
+- 23.4.2 Starter walkthrough — Unit 10/11 surface, AI SDK installed, provider key
+- 23.4.3 Build it — the route handler with `streamText` and the agentic loop via `stopWhen(stepCountIs(5))`
+- 23.4.4 Build it — the `getInvoiceStats` tool with Zod and org-scoped authz inside the tool, plus the daily-quota check
+- 23.4.5 Build it — wire `useChat` to render the `UIMessage` `parts` array and the token-usage panel
+- 23.4.6 Verify — grounded answers cite real Drizzle numbers; forged `orgId` refused; 11th question hits the quota
