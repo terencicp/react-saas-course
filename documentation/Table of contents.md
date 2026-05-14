@@ -468,9 +468,9 @@
 - 8.1.5 Quizz
 
 ### Chapter 8.2 — Composing email
-- 8.2.1 React Email — components and templating (closes the loop with JSX)
-- 8.2.2 Previewing email locally — React Email's dev server, the iteration loop before any send-from-staging
-- 8.2.3 Plain-text fallbacks and accessibility in HTML email
+- 8.2.1 React Email components and the JSX bridge
+- 8.2.2 The preview dev server and the iteration loop
+- 8.2.3 Plain-text fallback, accessibility, and dark mode
 - 8.2.4 Quizz
 
 ### Chapter 8.3 — Project: transactional email send
