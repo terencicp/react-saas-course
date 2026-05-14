@@ -403,15 +403,14 @@
 > Validate at every boundary, define the Server Action seam first, write native React 19 forms against it, and decide the error model where it actually bites.
 
 ### Chapter 7.1 — Schema-first validation with Zod 4
-- 7.1.1 Zod 4 schemas — primitives, objects, arrays, unions, literals, enums; `z.strictObject` / `z.looseObject` as the top-level forms (the v3 `.strict()` / `.passthrough()` methods are legacy)
-- 7.1.2 Top-level string format APIs — `z.email`, `z.uuid`, `z.url`, `z.cuid`, `z.ulid`, `z.ipv4`, ISO date/time validators (the v3 `z.string().email()` chain is deprecated)
-- 7.1.3 Refinements and transforms — checks live inside the schema (the v4 "checks" model), transforms in a dedicated class; `.overwrite()` as the type-preserving transform
-- 7.1.4 Composing schemas — extending, picking, omitting, merging; `z.record(keySchema, valueSchema)` now requires both arguments
-- 7.1.5 Inferring TS types from schemas (`z.infer`)
-- 7.1.6 Parsing vs. safe-parsing
-- 7.1.7 The unified `error` param — replacing v3's separate `message` / `invalid_type_error` / `required_error`
-- 7.1.8 drizzle-zod — `createSelectSchema`, `createInsertSchema` (now lives inside the drizzle-orm repo, same API surface)
-- 7.1.9 Quizz
+- 7.1.1 Schemas: primitives, objects, arrays, unions, literals, enums — `z.strictObject` / `z.looseObject` as the top-level forms (the v3 `.strict()` / `.passthrough()` methods are legacy); discriminated unions for tagged shapes
+- 7.1.2 Top-level string formats and built-in validators — `z.email`, `z.uuid` (strict RFC) vs. `z.guid` (v3-compatible), `z.url`, `z.cuid`, `z.ulid`, `z.ipv4`, `z.iso.date`/`datetime`/`duration`, number/bigint/date constraints (the v3 `z.string().email()` chain is deprecated)
+- 7.1.3 Refinements, transforms, and the checks model — single-field and cross-field `.refine` with `path`, `.superRefine` for multi-issue rules, `.transform` vs. type-preserving `.overwrite()`, `.pipe` for staged validation; the v4 transform-on-refine-fail behavior
+- 7.1.4 Composing schemas and inferring types — `.extend`/`.merge`/`.pick`/`.omit`/`.partial`/`.required`/`.readonly`; `z.record(keySchema, valueSchema)` now requires both arguments; `z.infer` vs. `z.input` vs. `z.output` for transform schemas
+- 7.1.5 Parsing, safe-parsing, and error customization — `parse` vs. `safeParse` vs. async variants, the `ZodError` issue shape, `z.treeifyError` (replacing v3's `.format()`), the unified `error` option (replacing v3's separate `message` / `invalid_type_error` / `required_error`)
+- 7.1.6 Coercion and the `FormData` boundary — `z.coerce` (number, boolean, date, bigint), `z.preprocess` for the HTML checkbox shape, `Object.fromEntries(formData)`, the empty-string and `"on"` traps, `z.coerce.date` vs. `z.iso.datetime`, `File` validation
+- 7.1.7 drizzle-zod: the database as the schema's source of truth — `createSelectSchema`, `createInsertSchema`, `createUpdateSchema` (lives inside the drizzle-orm repo); the refinement-on-top pattern, the `jsonb` schema pairing, `createSchemaFactory` for custom Zod instances
+- 7.1.8 Quizz
 
 ### Chapter 7.2 — Server Actions
 - 7.2.1 Server Actions — definition and invocation from the client
