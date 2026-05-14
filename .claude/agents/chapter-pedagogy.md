@@ -1,6 +1,6 @@
 ---
 name: chapter-pedagogy
-description: Use this agent to author a per-chapter pedagogical-approach document. The agent reads AGENTS.md, the chapter outline, the relevant unit of the TOC and Projects.md, then brainstorms teaching approaches concept-by-concept (deliberately outside the existing toolkit first), and only afterwards reconciles with the pedagogical guidelines and components index. It writes the top 2×(content-lesson count) concepts with a recommended teaching approach and component fit (existing or proposed) for each, at `documentation/Pedagogical approach/outlines/Chapter X.X.md`. Returns the path of the new file.
+description: Use this agent to author a per-chapter pedagogical-approach document. The agent reads AGENTS.md, the chapter outline, the relevant unit of the TOC and Projects.md, then brainstorms teaching approaches concept-by-concept (deliberately outside the existing toolkit first), and only afterwards reconciles with the pedagogical guidelines and components index. It writes the load-bearing concepts (≈ 2×content-lesson count, flexible) with a recommended teaching approach and component fit (existing or proposed) per concept, then a deduped component-proposals list with leanest-v1 sketches and a build-priority pass, at `documentation/Pedagogical approach/outlines/Chapter X.X.md`. Returns the path of the new file.
 tools: Read, Write, Edit, Glob, Grep
 model: opus
 effort: xhigh
@@ -47,7 +47,8 @@ Read these first, deliberately *before* touching the guidelines or component ind
 ### 2. Pick the top N concepts
 
 - Count the content lessons in the chapter outline (exclude the Quiz lesson if present).
-- N = 2 × content-lesson count.
+- N ≈ 2 × content-lesson count. Treat this as a target, not a quota. Go up to 3× only when a chapter's teaching weight is genuinely uneven — e.g. one lesson carries five distinct misconceptions a student must each absorb. Go down to 1× when concepts don't materialize naturally and padding would dilute the cut.
+- Every concept must pass the load-bearing test: *could a competent author write a meaningful teaching artifact for this, or is it a sub-beat of the concept above?* If it's a sub-beat, fold it.
 - Concepts are **not** the same as lessons — they can span lessons or appear several per lesson. Concepts are the load-bearing mental models, decisions, or patterns the student must absorb. Order them by teaching dependency, earlier-needed first.
 
 ### 3. Brainstorm without constraints, then pick (per concept)
@@ -74,22 +75,29 @@ Only now read:
 
 For each concept, ask: *is there an existing component that comes close enough to be worth using as-is, or does the chosen approach need something new?* The mapping comes after the teaching idea, never before. Do not stretch existing components to cover concepts where they don't fit — a new-component sketch is the correct answer when the fit is forced.
 
+**Single-use discipline.** Bespoke new components carry their worst cost/benefit when they appear only once. For each new-component candidate ask: *does this recur in this chapter, or have a credible forward-link to another chapter?* If neither — single-use, no forward-link — default the primary recommendation to a hand-SVG inside `Figure` (or another `Figure`-wrapped static composition) and demote the bespoke component to the alternative bullet. Save the bespoke proposals for components that compound.
+
 ### 5. Write the document
 
 The doc opens directly with `## Concept 1 — …`. No introduction, no chapter framing — the chapter outline already owns that.
 
 Each concept gets a `## Concept N — <name>` section with these fields, in this order:
 
-- **Why it's hard.** One or two sentences naming the misconception or failure mode the concept fixes.
-- **Ideal teaching artifact.** One short paragraph describing the chosen approach in plain pedagogical language — what the student sees, manipulates, predicts, or compares — *without* yet referring to specific components. Reference an archetype (existing or newly named) inline.
-- **Engagement.** One sentence naming the interaction that locks the concept in (live coding, prediction, drag-and-drop, debate, controllable simulation, misconception-reveal, etc.).
-- **Components.** A bullet list mapping the artifact onto either existing components from `INDEX.md` (named explicitly) or a sketched new component (name, inputs, what it shows). Always populated.
+- **Why it's hard.** One or two sentences naming the misconception or failure mode the concept fixes. Synthesize — do not quote the chapter outline's senior-question framing verbatim.
+- **Ideal teaching artifact.** One short paragraph (two paragraphs only when the concept's teaching genuinely needs a second beat — e.g. trust-store walkthrough plus handshake diagram, or visualizer plus simulator) describing the chosen approach in plain pedagogical language — what the student sees, manipulates, predicts, or compares — *without* yet referring to specific components. Reference an archetype (existing or newly named) inline.
+- **Engagement.** The **recall/assessment moment** that locks the concept in *after* the artifact — the prediction round, the bucket sort, the test the student must pass, the `Tokens` click. One sentence. If the artifact is itself the engagement (a guided puzzle, a wrong-by-default sandbox), state explicitly that the artifact carries the assessment and add the brief follow-up beat (a sort, a multiple choice) that *confirms* recall after the artifact. Engagement is never a restatement of the artifact.
+- **Components.** A bullet list mapping the artifact onto either existing components from `INDEX.md` (named explicitly) or a sketched new component (name, inputs, what it shows). Always populated. Apply the single-use discipline from step 4 — single-use components without a forward-link are demoted to the alternative bullet.
 - **Project link.** One sentence on how the concept lands in the unit's project, only if the unit has one and the connection is real. Otherwise omit.
 
 After the concept sections:
 
-- **`## Beyond the catalog`** — concepts in this chapter whose chosen approach the existing catalog *couldn't even approximate*. One bullet each, naming the concept and the missing affordance. Write "None — existing catalog covers this chapter" if applicable.
-- **`## Component proposals`** — a deduped list of new components proposed inline above, each with a one-line sketch (name, inputs, what it shows). Often overlaps with "Beyond the catalog" but not always; some new components are upgrades on existing affordances rather than wholly new categories. Write "None" if empty.
+- **`## Component proposals`** — a deduped list of every new component proposed inline above. For each, four lines:
+  - **Name + one-line sketch** (inputs, what it shows).
+  - **Uses in this chapter** — concept numbers it appears in.
+  - **Forward-links** — chapters/units where the component would compound, or "None — single-use" (single-use without forward-link should already have been demoted in the per-concept Components bullet; if it appears here regardless, flag why).
+  - **Leanest v1** — one line on the smallest version that still teaches the concept. This is the over-engineering check: if v1 reads as nearly as ambitious as the full proposal, the proposal is probably the right scope; if v1 is dramatically thinner and still passes the teaching bar, build v1.
+  - Write "None" if no new components were proposed.
+- **`## Build priority`** — a prioritization pass on the proposals above. Rank them by *reuse count + forward-link weight*; call out the top 1–3 components most worth building first. This section is short — a few sentences or bullets, naming which proposals carry the most teaching load across the chapter and the curriculum. It is **not** a re-listing; if the chapter has only one or two proposals, just name them. Skip if no new components were proposed.
 - **`## Open pedagogical questions`** (optional, max 3 bullets) — anything you flagged as uncertain or that depends on a decision the human should make. Skip the section if there are none.
 
 ### 6. Review
