@@ -201,14 +201,14 @@
 - 4.4.10 Chapter quiz
 
 ### Chapter 4.5 — Typography, color, motion, responsive
-- 4.5.1 CSS typography — font, line-height, letter-spacing
-- 4.5.2 CSS color, opacity, the modern color spaces
-- 4.5.3 CSS borders, border-radius, box-shadow
-- 4.5.4 CSS pseudo-classes (`:hover`, `:focus`, `:focus-visible`, `:has`)
-- 4.5.5 Tailwind animation system — `animate-*`, custom `@keyframes` via `@theme`, `tw-animate-css` as the dependency shadcn dialog/sheet/accordion expect
-- 4.5.6 CSS media queries and the responsive design model (at Tailwind responsive variants)
-- 4.5.7 CSS container queries (at Tailwind `@container`)
-- 4.5.8 Quizz
+- 4.5.1 Typography: fonts, scale, and the reading surface — the system-plus-`next/font` stack, the `text-*`/`leading-*`/`tracking-*` scales, `text-balance` on headings and `text-pretty` on body, `max-w-prose` reading width, `truncate` / `line-clamp-*` / `tabular-nums`
+- 4.5.2 Color, opacity, and the modern color spaces — OKLCH as the token storage form, `color-mix(in oklch, ...)` for runtime mixing, the `bg-blue-500/50` alpha syntax compiling to `color-mix()`, semantic tokens over primitives, `opacity` vs. per-property alpha and the stacking-context trigger, `prefers-color-scheme` vs. `.dark`
+- 4.5.3 Borders, radius, and shadows — `outline` vs. `border` for focus rings, `ring-*` as the multi-layer shorthand, the `shadow-*` elevation scale, `drop-shadow` vs. `box-shadow`, `backdrop-filter` for glass-morphism headers
+- 4.5.4 Pseudo-classes for interaction state and the `:has()` reach — `:focus-visible` as the canonical focus reflex, `:focus-within` for parent-of-focused, disabled/checked/invalid states, `:has()` and the JavaScript class toggles it retired, `:not()`, placeholder pseudo-elements, the iOS sticky-hover gate
+- 4.5.5 Animation: keyframes, transitions, and the shadcn dependency — `transition-*` for property motion (cheap properties: `transform`, `opacity`), `animate-*` with `@keyframes` in `@theme`, `tw-animate-css` as the shadcn dialog/sheet/accordion dependency, the `data-[state=open]:animate-in` pattern, `prefers-reduced-motion` and `motion-reduce:`
+- 4.5.6 Media queries and the responsive design model — mobile-first as the senior default, the Tailwind `sm`/`md`/`lg`/`xl`/`2xl` scale, breakpoints are content-driven not device-driven, the `prefers-*` family, `@media (hover: hover)` and the iOS sticky-hover bug, `hidden md:block` / `md:hidden`
+- 4.5.7 Container queries: component-level responsive — `container-type: inline-size` as the default, `@container` plus `@sm:` / `@md:` Tailwind variants, the `cqi` unit with `clamp()` for fluid component typography, named containers for nested structures, the viewport-vs-container decision rule
+- 4.5.8 Chapter quiz
 
 ### Chapter 4.6 — Components and composition
 - 4.6.1 Components and composition — props, children, slots
