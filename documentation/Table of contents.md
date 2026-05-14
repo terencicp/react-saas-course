@@ -577,10 +577,11 @@
 > Build the list view every SaaS screen ends up being — URL-state filters, base-query helpers that prevent missing-`deletedAt` bugs, and concurrency that catches stale writes.
 
 ### Chapter 11.1 — URL-state list views (SaaS pattern #7)
-- 11.1.1 URL-state list views — pagination, filter, sort, search
-- 11.1.2 Filtering, sorting, search in the URL — what belongs vs. transient state
-- 11.1.3 Pagination as URL state — encoding cursor or offset in `searchParams`, the share-and-refresh consequences (mechanics covered in Chapter 6.3)
-- 11.1.4 Quizz
+- 11.1.1 The list-view pattern — URL state and the server/client division
+- 11.1.2 Filters and sort in the URL
+- 11.1.3 Search — typed state, deferred URL writes
+- 11.1.4 Pagination — cursor by default, offset when small
+- 11.1.5 Chapter quiz
 
 ### Chapter 11.2 — Soft delete, archive, and concurrency
 - 11.2.1 Soft delete, archive, restore — `deletedAt`; archive as a distinct user-facing state (SaaS pattern #9)
