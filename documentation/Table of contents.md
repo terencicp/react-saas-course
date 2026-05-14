@@ -461,10 +461,10 @@
 > Set up Resend before any other unit needs it — auth verification, magic-links, password reset, invitations, and the notification dispatcher all build on the email plumbing introduced here.
 
 ### Chapter 8.1 — Sender identity and deliverability
-- 8.1.1 Resend — sending and the verified-domain setup
-- 8.1.2 DKIM, SPF, DMARC — what to set up before sending
-- 8.1.3 Transactional vs. marketing email
-- 8.1.4 Email bounces and complaints — the `email_suppressions` table and the never-re-send-to-suppressed discipline; the webhook handler that populates it lands in Chapter 12.1
+- 8.1.1 Resend, the verified domain, and the send call
+- 8.1.2 DKIM, SPF, DMARC, and the 2026 bulk-sender bar
+- 8.1.3 Transactional and marketing: the subdomain split and the address discipline
+- 8.1.4 Suppression discipline and the complaint-rate budget — the `email_suppressions` table and the read-before-send pattern; the webhook handler that populates it lands in Chapter 12.1
 - 8.1.5 Quizz
 
 ### Chapter 8.2 — Composing email
