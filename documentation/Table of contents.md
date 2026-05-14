@@ -939,9 +939,9 @@
 
 ### Chapter 21.4 — Schema migrations against a live app (SaaS pattern #11)
 - 21.4.1 The expand → migrate → contract cadence
-- 21.4.2 Which migrations actually need it (renames, type changes, NOT NULL on existing, drops still referenced mid-deploy)
-- 21.4.3 Testing a migration against the Neon preview branch before merge — what to run, what to look at; the failure modes the three-step cadence is designed to catch
-- 21.4.4 Quizz
+- 21.4.2 When the cadence earns its weight: the trigger map
+- 21.4.3 Rehearsing the migration on a Neon preview branch
+- 21.4.4 Chapter quiz
 
 ### Chapter 21.5 — Project: deploy and a live expand-migrate-contract migration
 - 21.5.1 Project brief — the migration class that demands the cadence; the rollback expectation
