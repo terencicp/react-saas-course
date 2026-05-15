@@ -1,0 +1,7 @@
+# Chapter 5.2 prerequisites review
+
+## Missing prerequisites
+
+- **Lesson 5.2.4** — structured clone via `postMessage` and `IndexedDB`. Quote: "The student already knows structured clone from `postMessage` and `IndexedDB`; RSC reuses the mental model." Neither `postMessage` nor the structured-clone browser algorithm in that context is taught in prior chapters. `postMessage` is absent from all Units 1–4 outlines; `IndexedDB` is "recognition only" in Lesson 3.7.4. The actual prior teaching covers the `structuredClone` function and its serializable types (Lesson 2.1.1), but uses a different framing. Students who try to recall the concept via the `postMessage`/`IndexedDB` bridge will find no prior anchor. Suggested source: rephrase the bridge in 5.2.4 to reference Lesson 2.1.1 (`structuredClone`) rather than `postMessage`/`IndexedDB`, or add a one-sentence note to Lesson 3.7 naming the structured-clone algorithm as the mechanism behind `postMessage`. Severity: low.
+
+- **Lesson 5.2.2** — `@next/bundle-analyzer` as a diagnostic tool. Quote: "The diagnostic is `next build` output and `@next/bundle-analyzer`; the senior reach is to read the bundle report before merging anything that adds a Client Component." The tool is formally introduced in Lesson 20.3.4 (Unit 20). No prior chapter names or installs it. Suggested source: add a forward reference noting the tool is covered in Chapter 20.3, or move the diagnostic mention to a parenthetical so it reads as a forward pointer rather than assumed knowledge. Severity: low.

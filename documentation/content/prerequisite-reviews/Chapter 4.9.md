@@ -1,0 +1,7 @@
+# Chapter 4.9 prerequisites review
+
+## Missing prerequisites
+
+- **Lesson 4.9.1** — `useMemo` and `useCallback` referenced by name as things Strict Mode double-invokes ("double-invokes component function bodies, `useState`/`useReducer` initializers, `useMemo`/`useCallback` factories"), but these hooks are not introduced until Lesson 4.10.3. Students reading 4.9.1 have no prior exposure to either hook. Suggested source: introduce a one-line recognition note in Lesson 4.8 (e.g., 4.8.7 quiz framing) or in the Chapter 4.9 framing, or add a parenthetical in the bullet "(memoization hooks, covered in 4.10.3)". Severity: low.
+
+- **Lesson 4.9.7** — `<Suspense>` treated as a usable primitive throughout ("Promise pending → throws to nearest Suspense boundary", "`use()` reading a promise without `<Suspense>` above suspends the whole tree — wrap at the right granularity", "the parent's `<Suspense fallback>` shows"). The lesson explains the throw-to-suspend mechanic inline, but it relies on the student being able to place `<Suspense>` boundaries at the correct granularity and nest them — a skill not taught until Lesson 5.3.1 ("Suspense, the fallback contract"), which is a later unit. No prior chapter in Unit 4 introduces `<Suspense>`. Suggested source: a brief `<Suspense>` primer (what it is, how to wrap, what the `fallback` prop does) added to the Chapter 4.9 framing or as a standalone callout early in Lesson 4.9.7, or forward-reference it as recognition-only and defer the wrapping-granularity guidance to 5.3.1. Severity: medium.

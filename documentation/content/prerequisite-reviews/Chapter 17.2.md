@@ -1,0 +1,7 @@
+# Chapter 17.2 prerequisites review
+
+## Missing prerequisites
+
+- **Lesson 17.2.6** — Husky / pre-commit hook setup. Quote: "Gitleaks / Trufflehog in the `pre-commit` hook (Husky from Unit 21.2.4)." The cited source (Unit 21.2.4) is the Chapter 21.2 Quizz, not a Husky lesson. Chapter 1.3 explicitly defers Husky to Unit 21 ("out of scope for the first chapter on tooling — revisited in Unit 21"), and Chapter 21.2.3 states "Pre-commit hooks (Husky / lefthook) — Unit 1 / out of scope here." No prior lesson introduces Husky or pre-commit hook wiring. Suggested source: new lesson in Unit 1 (Chapter 1.3) or a dedicated lesson in Unit 21 before 21.2.3. Severity: **high**.
+
+- **Lesson 17.2.5** — PostHog SDK API surface. Quote: "PostHog's SDK supports `opt_out_capturing_by_default: true`. Initialize with capturing opted out; call `posthog.opt_in_capturing()` only on consent. Session replay gated similarly (`disable_session_recording: true` flipped on consent)." And: "Revocation calls `posthog.opt_out_capturing()` and discards pending events via `posthog.reset()`." PostHog is not introduced until Unit 20.2 (specifically 20.2.2 "When PostHog earns its weight" and 20.2.3 "Wiring PostHog through the consent gate"). The chapter framing acknowledges PostHog is "foreshadowed in 20.2," but the lesson teaches PostHog-specific SDK methods and initialization options as implementation steps without prior introduction. Suggested source: 20.2.2–20.2.3, or a brief PostHog SDK orientation added to 17.2.5's preamble. Severity: **medium**.

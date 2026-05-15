@@ -1,0 +1,5 @@
+# Chapter 2.3 prerequisites review
+
+## Missing prerequisites
+
+- **Lesson 2.3.2** — React reconciler's reference-equality re-render check. Quote: "The day-one React bug: a component sorts its state array with `.sort()`, the array mutates in place, and React skips the re-render because the reference didn't change." The lesson's motivating premise and closing `react-coding` exercise both require the student to understand *why* mutating state in place prevents a re-render — i.e., that React uses reference equality to detect state changes. Lesson 1.1.4 explicitly defers the React render model to Unit 4 ("the React render model (Unit 4)"), and no prior lesson explains this mechanism. Lesson 2.1.1 mentions "Immutability as the React-shaped reflex" but does not explain the reconciler's reference-equality check. Suggested source: a brief explanation (one paragraph) of React's reference-equality re-render check added to 2.1.1 where the React immutability reflex is already named, or a one-sentence callout in 2.3.2 before the opening example. Severity: **medium**.

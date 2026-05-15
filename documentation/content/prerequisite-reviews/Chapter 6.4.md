@@ -1,0 +1,7 @@
+# Chapter 6.4 prerequisites review
+
+## Missing prerequisites
+
+- **Lesson 6.4.2** — Drizzle `logger: true` client option. Quote: "Drizzle's `logger: true` option on the client logs every emitted SQL statement. Turning it on in dev surfaces N+1 visually — N near-identical statements in a row." The lesson tells students to turn it on as their primary N+1 diagnostic, but no prior chapter (6.1–6.3) shows how to configure it on the Drizzle client. The lesson's own text acknowledges "The course wires this in 6.5 setup," meaning the setup lesson is *after* this one. Suggested source: add a one-liner to 6.2.2 (the `db/` folder and Drizzle client setup lesson) or 6.1.4 (the driver/client lesson). Severity: medium.
+
+- **Lesson 6.4.3** — Drizzle `logger: true` as a prerequisite for the recommended EXPLAIN workflow. Quote: "the course's reflex: copy the SQL Drizzle logs (`logger: true`), prefix it with `explain (analyze, buffers, format text)`, run it in a `psql` or Neon SQL console." The core diagnostic pipeline described in this lesson depends on `logger: true` being already active on the client, but the setup is deferred to 6.5.1 (Drizzle Kit daily loop / Drizzle Studio), which comes after 6.4. Unlike 6.4.2, no inline caveat is given here. Suggested source: same as above — introduce `logger: true` in 6.2.2 or 6.1.4, or add a caveat sentence in 6.4.3 pointing forward to 6.5.1. Severity: medium.

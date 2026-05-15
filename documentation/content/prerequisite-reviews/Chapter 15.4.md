@@ -1,0 +1,5 @@
+# Chapter 15.4 prerequisites review
+
+## Missing prerequisites
+
+- **Lesson 15.4.4** — Setting response headers from a Server Action via Next.js 16's writable `headers()` API. Quote: "attach `rateLimitHeaders` + `Retry-After` via Next.js 16's server-action `headers()` API". The `headers()` from `next/headers` taught in 5.5.1 is explicitly read-only ("response headers are written via the platform, not via this read API"); the writable variant available inside Server Actions is a separate, distinct usage. Chapter 3.2.2 mentions "response-specific headers… in the route handler or Server Action response" with only "a brief inline example of each layer's setter, no full file" — not a full teaching. No prior chapter demonstrates calling `headers()` in write mode from a Server Action to append custom response headers. Suggested source: a new bullet in 7.2.5 ("After the write") or 7.2.1 ("The `'use server'` seam"), or a dedicated callout in 15.3.3 where the `rateLimitHeaders()` helper is first previewed. Severity: medium.
