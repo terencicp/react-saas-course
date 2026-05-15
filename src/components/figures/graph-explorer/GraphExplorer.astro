@@ -396,9 +396,22 @@ const { title, direction = 'TB' } = Astro.props;
 		} | null;
 	};
 
-	type PlayStep =
-		| { kind: 'node'; id: string }
-		| { kind: 'edge'; edgeIdx: number };
+	// One frame in a traversal's playback. Modelled as the *full set* of
+	// things currently lit (rather than "highlight this one") so that a
+	// step can express overlap states like "node A and the outgoing edge
+	// are both on" — which is what makes the handoff between nodes look
+	// smooth instead of flashing dark between them.
+	type PlayStep = {
+		nodeIds: string[];
+		edgeIdx: number | null;
+		// Optional panel update. `null` = leave the panel as-is (so the
+		// in-flight overlap frames don't churn the side-panel content).
+		panel:
+			| { kind: 'node'; id: string }
+			| { kind: 'edge'; idx: number }
+			| null;
+		dwell: number;
+	};
 
 	const builtPerRoot = new Map<HTMLElement, State>();
 	let mermaidUid = 0;
@@ -497,6 +510,38 @@ const { title, direction = 'TB' } = Astro.props;
 		state.playing = null;
 	}
 
+	// Apply a single playback frame: light exactly the listed nodes/edge,
+	// optionally swap the side panel. Reading the desired state declaratively
+	// (rather than calling separate highlight/clear helpers) keeps the
+	// overlap frames from racing — every frame fully describes itself.
+	function applyPlayStep(state: State, step: PlayStep) {
+		const nodeSet = new Set(step.nodeIds);
+		state.stage.querySelectorAll('g.node').forEach((n) => {
+			n.classList.toggle(
+				'is-active',
+				nodeSet.has((n as HTMLElement).dataset.geId || ''),
+			);
+		});
+		state.stage.querySelectorAll('g.edgeLabel').forEach((el, i) => {
+			el.classList.toggle('is-active', i === step.edgeIdx);
+		});
+		// Toggle the underlying edge path too so unlabelled edges still
+		// pulse (Mermaid emits an empty `g.edgeLabel` for those, which has
+		// nothing visible to style).
+		state.stage.querySelectorAll('g.edgePaths > path').forEach((el, i) => {
+			el.classList.toggle('is-active', i === step.edgeIdx);
+		});
+		if (step.panel) {
+			if (step.panel.kind === 'node') {
+				const n = state.nodeById.get(step.panel.id);
+				if (n) setPanelNode(state, n);
+			} else {
+				const e = state.edges[step.panel.idx];
+				if (e) setPanelEdge(state, e);
+			}
+		}
+	}
+
 	function startPlayback(
 		state: State,
 		traversalId: string,
@@ -506,23 +551,64 @@ const { title, direction = 'TB' } = Astro.props;
 		const tr = state.traversals.find((t) => t.id === traversalId);
 		if (!tr || tr.sequence.length === 0) return;
 
-		// Expand the sequence into alternating node/edge steps. Each pair of
-		// consecutive nodes becomes [node, edge, node] — if no edge connects
-		// them, we skip the edge step rather than fail. When `nodesOnly` is
-		// set on the traversal, edge steps are dropped so the cursor hops
-		// node-to-node without dwelling on the connectors.
-		const steps: PlayStep[] = [];
-		for (let i = 0; i < tr.sequence.length; i++) {
-			steps.push({ kind: 'node', id: tr.sequence[i] });
-			if (!tr.nodesOnly && i < tr.sequence.length - 1) {
-				const edgeIdx = findEdgeIdx(state.edges, tr.sequence[i], tr.sequence[i + 1]);
-				if (edgeIdx >= 0) steps.push({ kind: 'edge', edgeIdx });
-			}
-		}
-
 		const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
-		const NODE_MS = reduced ? 0 : 1000;
-		const EDGE_MS = reduced ? 0 : 500;
+		const NODE_SOLO_MS = reduced ? 0 : 700;
+		const OVERLAP_MS = reduced ? 0 : 220;
+		const EDGE_SOLO_MS = reduced ? 0 : 220;
+		// Edges with explanatory panel content get a longer solo dwell so
+		// the briefly-surfaced panel is actually readable.
+		const RICH_EDGE_MS = reduced ? 0 : 600;
+
+		// Cross-fade state machine. Each transition between consecutive
+		// nodes becomes:  A → A+edge → edge → edge+B → B  — so something
+		// stays lit throughout the handoff (no abrupt off+on flash). When
+		// the traversal is `nodesOnly`, the edge phases are skipped (just
+		// A → B). If no edge connects two consecutive nodes in the
+		// sequence, the overlap phases are also skipped.
+		const steps: PlayStep[] = [];
+		const seq = tr.sequence;
+		steps.push({
+			nodeIds: [seq[0]],
+			edgeIdx: null,
+			panel: { kind: 'node', id: seq[0] },
+			dwell: NODE_SOLO_MS,
+		});
+		for (let i = 0; i < seq.length - 1; i++) {
+			const a = seq[i];
+			const b = seq[i + 1];
+			const edgeIdx = !tr.nodesOnly ? findEdgeIdx(state.edges, a, b) : -1;
+			if (edgeIdx >= 0) {
+				const edge = state.edges[edgeIdx];
+				const richEdge = !!(edge && edge.panelHtml);
+				steps.push({
+					nodeIds: [a],
+					edgeIdx,
+					panel: null,
+					dwell: OVERLAP_MS,
+				});
+				steps.push({
+					nodeIds: [],
+					edgeIdx,
+					// Pulse edge panel only when the edge has explanatory
+					// content; generic labels (`depends on`, `prompt`) would
+					// just flash a boring fallback.
+					panel: richEdge ? { kind: 'edge', idx: edgeIdx } : null,
+					dwell: richEdge ? RICH_EDGE_MS : EDGE_SOLO_MS,
+				});
+				steps.push({
+					nodeIds: [b],
+					edgeIdx,
+					panel: { kind: 'node', id: b },
+					dwell: OVERLAP_MS,
+				});
+			}
+			steps.push({
+				nodeIds: [b],
+				edgeIdx: null,
+				panel: { kind: 'node', id: b },
+				dwell: NODE_SOLO_MS,
+			});
+		}
 
 		const playState = {
 			traversalId,
@@ -536,23 +622,12 @@ const { title, direction = 'TB' } = Astro.props;
 
 		const tick = () => {
 			if (state.playing !== playState) return;
-			const step = steps[playState.idx];
-			if (step.kind === 'node') {
-				selectNode(state, step.id);
-			} else {
-				// Edge step: keep the previous node lit and overlay the edge
-				// label. Pulse the edge panel only if the edge has explanatory
-				// content — generic relationships (`depends on`, `prompt`)
-				// would just flash a boring fallback message.
-				highlightEdge(state, step.edgeIdx, true);
-				const edge = state.edges[step.edgeIdx];
-				if (edge && edge.panelHtml) setPanelEdge(state, edge);
-			}
+			applyPlayStep(state, steps[playState.idx]);
 			if (playState.idx >= steps.length - 1) {
 				stopPlayback(state, tabButtons);
 				return;
 			}
-			const dwell = step.kind === 'edge' ? EDGE_MS : NODE_MS;
+			const dwell = steps[playState.idx].dwell;
 			playState.idx += 1;
 			playState.timer = window.setTimeout(tick, dwell);
 		};
