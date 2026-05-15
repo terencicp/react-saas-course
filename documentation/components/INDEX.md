@@ -44,6 +44,7 @@ Visual scaffolds — wrappers, diagrams, and tabbed/sequenced panels.
 | `TabbedContent` | Tabbed comparison of panels with any type of content, each with its own optional caption. For tabbed *code* comparisons, prefer `CodeVariants`. | [tabbed-content.md](./figures/tabbed-content.md) |
 | `ParamPlayground` | Live preview driven by a column of controls. Control values pipe into the preview as CSS custom properties; optional chips below echo a value or evaluate an expression. | [param-playground.md](./figures/param-playground.md) |
 | `RenderTracking` | A tree of labeled "components" with per-node render-count badges. Triggers tick the badges of nodes you tag as re-rendering; optional tabs for comparisons. | [render-tracking.md](./figures/render-tracking.md) |
+| `StateMachineWalker` | A chained multi-choice walk: each step is a question with branch buttons, and picking one advances to the next step. Two modes — decisions that end on a recommendation, or state machines whose questions are states with cycles allowed, synced topology diagram highlighting current state. | [state-machine-walker.md](./figures/state-machine-walker.md) |
 
 ---
 
