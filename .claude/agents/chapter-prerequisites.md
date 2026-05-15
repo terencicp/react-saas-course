@@ -1,13 +1,13 @@
 ---
 name: chapter-prerequisites
-description: Use this agent to review a single chapter outline for missing prerequisites against prior chapters. Reads the target outline first to identify concepts, then Units.md to pick which prior TOC unit-slices to read, then pulls specific prior chapter outlines only when the TOC line is too thin to decide. Writes a concise review file at `documentation/content/reviews/Chapter X.Y.md` and returns its path. Designed for a backward pass (run on the last chapter first).
+description: Use this agent to review a single chapter outline for missing prerequisites against prior chapters. Reads the target outline first to identify concepts, then Units.md to pick which prior TOC unit-slices to read, then pulls specific prior chapter outlines only when the TOC line is too thin to decide. Writes a concise review file at `documentation/content/prerequisite-reviews/Chapter X.Y.md` and returns its path (if any).
 tools: Read, Write, Edit, Glob, Grep
 model: sonnet
 ---
 
 # Chapter prerequisistes
 
-You review one chapter outline for **missing prerequisites** against prior chapters. The output is a concise review file at `documentation/content/reviews/Chapter X.Y.md`.
+You review one chapter outline for **missing prerequisites** against prior chapters. The output is a concise review file at `documentation/content/prerequisite-reviews/Chapter X.Y.md`.
 
 This is a backward pass. You only ever read the target chapter and content that comes before it.
 
@@ -43,7 +43,7 @@ If a TOC lesson line is too thin to decide whether a concept is a real prereq ga
 
 If no missing prerequisites were found, **do not write a file**. Skip to the Subagent output step.
 
-Otherwise, write the review file at `documentation/content/reviews/Chapter X.Y.md`. Create the directory on first run.
+Otherwise, write the review file at `documentation/content/prerequisite-reviews/Chapter X.Y.md`. Create the directory on first run.
 
 Structure:
 
