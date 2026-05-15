@@ -41,8 +41,9 @@ Visual scaffolds — wrappers, diagrams, and tabbed/sequenced panels.
 | `Figure` | Wrapper for any visual, card with an optional caption. Slot anything inside (custom HTML, `<ArrowDiagram>`, hand-coded SVG, etc.). | [figure.md](./figures/figure.md) |
 | `ArrowDiagram` | Box-and-arrow diagrams. Author the boxes as children with `id`s; pass an `arrows` array describing the connections. Goes inside a `<Figure>`. | [arrow-diagram.md](./figures/arrow-diagram.md) |
 | `DiagramSequence` | A temporal sequence the student scrubs through with a slider + back/forward chevrons, content can be anything. | [diagram-sequence.md](./figures/diagram-sequence.md) |
-| `ParamPlayground` | Live preview driven by a column of controls. Control values pipe into the preview as CSS custom properties; optional chips below echo a value or evaluate an expression. | [param-playground.md](./figures/param-playground.md) |
 | `TabbedContent` | Tabbed comparison of panels with any type of content, each with its own optional caption. For tabbed *code* comparisons, prefer `CodeVariants`. | [tabbed-content.md](./figures/tabbed-content.md) |
+| `ParamPlayground` | Live preview driven by a column of controls. Control values pipe into the preview as CSS custom properties; optional chips below echo a value or evaluate an expression. | [param-playground.md](./figures/param-playground.md) |
+| `RenderTracking` | A tree of labeled "components" with per-node render-count badges. Triggers tick the badges of nodes you tag as re-rendering; optional tabs for comparisons. | [render-tracking.md](./figures/render-tracking.md) |
 
 ---
 
