@@ -1,6 +1,6 @@
 # AGENTS.md
 
-A web development course for junior-to-mid devs with some web experience. Ships as an Astro Starlight site with MDX lessons.
+A web development course for junior-to-mid devs with some web experience. Ships as an Astro Starlight site with MDX lessons. Content is AI-generated (with human curation).
 
 **Thesis.** Systems design and senior mindset over syntax; the minimum viable 2026 SaaS stack, no historical detours. Every code sample and every paragraph passes through both filters. Teach only what a web developer building a new SaaS project in 2026 would use.
 
@@ -10,9 +10,11 @@ Read project files only if required by your current task:
 
 ## Repo layout
 
+### Components
+
 - `src/components/` — astro components used in lessons
 
-### Content
+### Lessons
 
 - `src/content/docs/` — lessons MDX
 - `src/content/docs/0 Demos` — astro components showcase
@@ -24,4 +26,4 @@ Read project files only if required by your current task:
 - `documentation/content/overview/Project dependencies.md` — for each chapter-end project, which earlier project's codebase it continues from.
 - `documentation/content/outlines/` — one file per chapter (`Chapter X.Y.md`) breaking down the content and scope of each lesson within the chapter.
 - `documentation/Pedagogical approach/Pedagogical guidelines.md` — Teaching style for the course's lessons.
-- `documentation/Diagrams.md` — How to pick a diagram engine (Mermaid, D2, etc.).
+- `documentation/Diagrams.md` — How to pick the best diagram engine for each use case (Mermaid, D2, etc.).
