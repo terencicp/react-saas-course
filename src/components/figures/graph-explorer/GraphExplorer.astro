@@ -1,0 +1,725 @@
+---
+// Nodes-and-edges visualization. Mermaid handles the layout; this component
+// adds the click-to-explain side panel and optional traversal play buttons.
+// Clicking a node fills the panel with that node's content; clicking an
+// edge label fills it with the relationship. Each <Traversal> declared
+// inside renders as a play button above the stage — clicking the button
+// walks the named sequence of nodes (panel content updates as the cursor
+// advances). No separate prev/next/scrub controls; replay by clicking the
+// same button again.
+//
+// Authoring (matches RenderTracking's "declarative tree of hidden carriers"
+// idiom):
+//
+//   <GraphExplorer title="Module dependency graph" direction="BT">
+//     <GraphNode id="ui"     label="ui">… panel …</GraphNode>
+//     <GraphNode id="domain" label="domain">… panel …</GraphNode>
+//     <GraphNode id="lib"    label="lib">… panel …</GraphNode>
+//
+//     <GraphEdge from="ui"     to="domain" label="depends on" />
+//     <GraphEdge from="ui"     to="lib"    label="depends on" />
+//     <GraphEdge from="domain" to="lib"    label="depends on" />
+//
+//     <Traversal id="boot" label="Boot order" sequence="lib,domain,ui" />
+//   </GraphExplorer>
+
+interface Props {
+	/** Optional heading rendered above the stage. */
+	title?: string;
+	/** Mermaid flowchart direction. `TB` (top → bottom, default), `BT`, `LR`, `RL`. */
+	direction?: 'TB' | 'BT' | 'LR' | 'RL';
+}
+
+const { title, direction = 'TB' } = Astro.props;
+---
+
+<div class="graph-explorer not-content" data-ge-root data-ge-direction={direction}>
+	{title && <div class="ge-title">{title}</div>}
+
+	<div class="ge-tabs" data-ge-tabs role="group" aria-label="Traversals" hidden></div>
+
+	<div class="ge-stage" data-ge-stage></div>
+
+	<div class="ge-panel" data-ge-panel aria-live="polite">
+		<div class="ge-panel-head" data-ge-panel-head>
+			<span class="ge-panel-kind">tip</span>
+			<span class="ge-panel-name ge-panel-placeholder">Click any node or labelled edge</span>
+		</div>
+		<div class="ge-panel-body" data-ge-panel-body>
+			<p class="ge-panel-placeholder">
+				Click a box above to read what it represents. Labelled edges are clickable
+				too — and if a play button is present, it walks the path for you.
+			</p>
+		</div>
+	</div>
+
+	{/* Hidden payload area: <GraphNode>, <GraphEdge>, <Traversal> children
+	    drop placeholder elements here; the script reads them on mount. */}
+	<div class="ge-payloads" data-ge-payloads hidden>
+		<slot />
+	</div>
+</div>
+
+<style is:global>
+	.graph-explorer {
+		--ge-accent: var(--sl-color-accent);
+
+		position: relative;
+		margin: 1.5rem 0;
+		background: var(--sl-color-bg-sidebar);
+		border: 1px solid var(--sl-color-hairline);
+		border-radius: 14px;
+		padding: 16px 18px 18px;
+	}
+
+	.graph-explorer .ge-title {
+		font: 600 16px ui-sans-serif, system-ui, sans-serif;
+		color: var(--sl-color-text);
+		letter-spacing: -0.005em;
+		margin-bottom: 12px;
+	}
+
+	/* === Tab strip (one play button per Traversal) === */
+	.graph-explorer .ge-tabs[hidden] {
+		display: none;
+	}
+	.graph-explorer .ge-tabs {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+		margin-bottom: 10px;
+	}
+	.graph-explorer .ge-tab {
+		display: inline-flex;
+		align-items: center;
+		gap: 7px;
+		font: 600 14px ui-sans-serif, system-ui, sans-serif;
+		padding: 6px 12px 6px 10px;
+		border: 1px solid var(--sl-color-hairline);
+		border-radius: 7px;
+		background: var(--sl-color-bg);
+		color: var(--sl-color-text);
+		cursor: pointer;
+		transition: color 0.14s, background-color 0.14s, border-color 0.14s;
+	}
+	.graph-explorer .ge-tab:hover {
+		border-color: var(--ge-accent);
+		background: color-mix(in srgb, var(--ge-accent) 8%, var(--sl-color-bg));
+	}
+	.graph-explorer .ge-tab:focus-visible {
+		outline: 2px solid var(--ge-accent);
+		outline-offset: 2px;
+	}
+	.graph-explorer .ge-tab[data-playing='true'] {
+		background: var(--ge-accent);
+		color: #fff;
+		border-color: var(--ge-accent);
+	}
+	.graph-explorer .ge-tab svg {
+		width: 13px;
+		height: 13px;
+		flex: 0 0 auto;
+	}
+	.graph-explorer .ge-tab .ge-icon-pause {
+		display: none;
+	}
+	.graph-explorer .ge-tab[data-playing='true'] .ge-icon-play {
+		display: none;
+	}
+	.graph-explorer .ge-tab[data-playing='true'] .ge-icon-pause {
+		display: inline;
+	}
+
+	/* === Stage (Mermaid SVG lives here) === */
+	.graph-explorer .ge-stage {
+		position: relative;
+		background: var(--sl-color-bg);
+		border: 1px solid var(--sl-color-hairline);
+		border-radius: 10px;
+		min-height: 220px;
+		padding: 16px;
+		display: flex;
+		justify-content: center;
+		align-items: center;
+		overflow: auto;
+	}
+	.graph-explorer .ge-stage[data-ge-state='loading']::after {
+		content: 'Laying out…';
+		position: absolute;
+		inset: 0;
+		display: grid;
+		place-items: center;
+		font: 500 12px ui-sans-serif, system-ui, sans-serif;
+		color: var(--sl-color-gray-4);
+		pointer-events: none;
+	}
+	.graph-explorer .ge-stage[data-ge-state='error'] {
+		justify-content: stretch;
+		align-items: stretch;
+	}
+	.graph-explorer .ge-stage svg {
+		max-width: 100%;
+		height: auto;
+	}
+
+	/* Mermaid node interactivity overrides */
+	.graph-explorer .ge-stage g.node {
+		cursor: pointer;
+	}
+	.graph-explorer .ge-stage g.node:hover > rect,
+	.graph-explorer .ge-stage g.node:hover > polygon,
+	.graph-explorer .ge-stage g.node:hover > circle,
+	.graph-explorer .ge-stage g.node:hover > ellipse,
+	.graph-explorer .ge-stage g.node:hover > path {
+		stroke: var(--ge-accent);
+		stroke-width: 2px;
+	}
+	.graph-explorer .ge-stage g.node.is-active > rect,
+	.graph-explorer .ge-stage g.node.is-active > polygon,
+	.graph-explorer .ge-stage g.node.is-active > circle,
+	.graph-explorer .ge-stage g.node.is-active > ellipse,
+	.graph-explorer .ge-stage g.node.is-active > path {
+		fill: var(--ge-accent) !important;
+		stroke: var(--ge-accent) !important;
+	}
+	.graph-explorer .ge-stage g.node.is-active foreignObject *,
+	.graph-explorer .ge-stage g.node.is-active .nodeLabel,
+	.graph-explorer .ge-stage g.node.is-active .nodeLabel * {
+		color: #fff !important;
+		fill: #fff !important;
+	}
+
+	/* Mermaid edge-label interactivity */
+	.graph-explorer .ge-stage g.edgeLabel.ge-clickable {
+		cursor: pointer;
+	}
+	.graph-explorer .ge-stage g.edgeLabel.ge-clickable foreignObject *,
+	.graph-explorer .ge-stage g.edgeLabel.ge-clickable .edgeLabel {
+		text-decoration: underline;
+		text-decoration-color: color-mix(in srgb, var(--ge-accent) 50%, transparent);
+		text-underline-offset: 3px;
+		transition: color 0.14s, text-decoration-color 0.14s;
+	}
+	.graph-explorer .ge-stage g.edgeLabel.ge-clickable:hover foreignObject *,
+	.graph-explorer .ge-stage g.edgeLabel.ge-clickable:hover .edgeLabel {
+		color: var(--ge-accent) !important;
+		text-decoration-color: var(--ge-accent);
+	}
+	.graph-explorer .ge-stage g.edgeLabel.is-active foreignObject *,
+	.graph-explorer .ge-stage g.edgeLabel.is-active .edgeLabel {
+		color: var(--ge-accent) !important;
+		font-weight: 700 !important;
+		text-decoration-color: var(--ge-accent);
+	}
+
+	/* Edge path highlight (used for unlabelled edges during traversal) */
+	.graph-explorer .ge-stage g.edgePaths > path.is-active {
+		stroke: var(--ge-accent) !important;
+		stroke-width: 2.5px !important;
+	}
+
+	/* === Side panel (under stage, only visible after first interaction) === */
+	.graph-explorer .ge-panel[hidden] {
+		display: none;
+	}
+	.graph-explorer .ge-panel {
+		margin-top: 12px;
+		background: var(--sl-color-bg);
+		border: 1px solid var(--sl-color-hairline);
+		border-radius: 10px;
+		padding: 12px 14px;
+	}
+	.graph-explorer .ge-panel-head {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		font: 600 15px ui-monospace, SFMono-Regular, Menlo, monospace;
+		color: var(--sl-color-text);
+		padding-bottom: 10px;
+		margin-bottom: 10px;
+		border-bottom: 1px solid var(--sl-color-hairline);
+	}
+	.graph-explorer .ge-panel-kind {
+		display: inline-flex;
+		align-items: center;
+		font: 600 11px ui-sans-serif, system-ui, sans-serif;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		color: var(--ge-accent);
+		background: color-mix(in srgb, var(--ge-accent) 12%, transparent);
+		border-radius: 999px;
+		padding: 3px 9px;
+	}
+	.graph-explorer .ge-panel-arrow {
+		color: var(--sl-color-gray-3);
+		font-weight: 400;
+	}
+	.graph-explorer .ge-panel-edge-label {
+		color: var(--sl-color-gray-3);
+		font-weight: 400;
+	}
+	.graph-explorer .ge-panel-placeholder {
+		color: var(--sl-color-gray-3);
+		font-style: italic;
+		font-weight: 400;
+	}
+	.graph-explorer .ge-panel-body {
+		font: 400 15.5px ui-sans-serif, system-ui, sans-serif;
+		color: var(--sl-color-text);
+		line-height: 1.6;
+	}
+	.graph-explorer .ge-panel-body > *:first-child {
+		margin-top: 0;
+	}
+	.graph-explorer .ge-panel-body > *:last-child {
+		margin-bottom: 0;
+	}
+	.graph-explorer .ge-panel-body p {
+		margin: 0 0 0.6em;
+	}
+	.graph-explorer .ge-panel-body code {
+		font-size: 0.92em;
+		background: var(--sl-color-bg-sidebar);
+		border: 1px solid var(--sl-color-hairline);
+		border-radius: 4px;
+		padding: 0 4px;
+	}
+	.graph-explorer .ge-panel-body pre {
+		background: var(--sl-color-bg-sidebar);
+		border: 1px solid var(--sl-color-hairline);
+		border-radius: 6px;
+		padding: 10px 12px;
+		overflow-x: auto;
+		font-size: 13.5px;
+		line-height: 1.55;
+	}
+	.graph-explorer .ge-panel-body ul {
+		padding-left: 1.1em;
+		margin: 0 0 0.6em;
+	}
+</style>
+
+<script>
+	const PLAY_SVG =
+		'<svg class="ge-icon-play" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7 5v14l12-7L7 5z" fill="currentColor"></path></svg>' +
+		'<svg class="ge-icon-pause" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 5h4v14H6zM14 5h4v14h-4z" fill="currentColor"></path></svg>';
+
+	type MermaidApi = {
+		initialize: (config: Record<string, unknown>) => void;
+		render: (id: string, source: string) => Promise<{ svg: string }>;
+	};
+
+	let mermaidPromise: Promise<MermaidApi> | null = null;
+	function loadMermaid(): Promise<MermaidApi> {
+		if (mermaidPromise) return mermaidPromise;
+		mermaidPromise = import('mermaid').then((m) => m.default as MermaidApi);
+		return mermaidPromise;
+	}
+
+	function currentMermaidTheme(): string {
+		const t = document.documentElement.getAttribute('data-theme');
+		if (t === 'dark') return 'dark';
+		if (t === 'light') return 'default';
+		return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+	}
+
+	function escapeHtml(s: unknown): string {
+		return String(s ?? '').replace(/[&<>"']/g, (c) =>
+			c === '&'
+				? '&amp;'
+				: c === '<'
+					? '&lt;'
+					: c === '>'
+						? '&gt;'
+						: c === '"'
+							? '&quot;'
+							: '&#39;',
+		);
+	}
+
+	// Mermaid bracket-syntax label escaping. Inside `id["…"]` with
+	// htmlLabels on, raw `<`/`>` get parsed as HTML tags (so e.g. `<App />`
+	// disappears entirely). Use Mermaid's `#`-prefixed entity form so the
+	// renderer maps them back to literal characters in the SVG label.
+	function mermaidLabel(s: string): string {
+		return s
+			.replace(/"/g, '#quot;')
+			.replace(/</g, '#lt;')
+			.replace(/>/g, '#gt;');
+	}
+
+	type NodeData = { id: string; label: string; group: string; panelHtml: string };
+	type EdgeData = { from: string; to: string; label: string; panelHtml: string };
+	type Traversal = { id: string; label: string; sequence: string[] };
+
+	type State = {
+		root: HTMLElement;
+		stage: HTMLElement;
+		panelEl: HTMLElement;
+		panelHead: HTMLElement;
+		panelBody: HTMLElement;
+		nodes: NodeData[];
+		edges: EdgeData[];
+		nodeById: Map<string, NodeData>;
+		traversals: Traversal[];
+		direction: string;
+		mermaidId: string;
+		playing: {
+			traversalId: string;
+			timer: number | null;
+			idx: number;
+			steps: PlayStep[];
+		} | null;
+	};
+
+	type PlayStep =
+		| { kind: 'node'; id: string }
+		| { kind: 'edge'; edgeIdx: number };
+
+	const builtPerRoot = new Map<HTMLElement, State>();
+	let mermaidUid = 0;
+
+	function buildSource(state: State): string {
+		const lines: string[] = [`flowchart ${state.direction}`];
+		for (const n of state.nodes) {
+			lines.push(`  ${n.id}["${mermaidLabel(n.label)}"]`);
+		}
+		for (const e of state.edges) {
+			if (e.label) {
+				lines.push(`  ${e.from} -- "${mermaidLabel(e.label)}" --> ${e.to}`);
+			} else {
+				lines.push(`  ${e.from} --> ${e.to}`);
+			}
+		}
+		return lines.join('\n');
+	}
+
+	function setPanelNode(state: State, node: NodeData) {
+		state.panelEl.hidden = false;
+		state.panelHead.innerHTML =
+			'<span class="ge-panel-kind">node</span><span class="ge-panel-name"></span>';
+		(state.panelHead.querySelector('.ge-panel-name') as HTMLElement).textContent =
+			node.label;
+		state.panelBody.innerHTML =
+			node.panelHtml ||
+			'<p style="color: var(--sl-color-gray-4); font-style: italic;">No detail provided for this node.</p>';
+	}
+
+	function setPanelEdge(state: State, edge: EdgeData) {
+		const fromLabel = state.nodeById.get(edge.from)?.label ?? edge.from;
+		const toLabel = state.nodeById.get(edge.to)?.label ?? edge.to;
+		state.panelEl.hidden = false;
+		const labelHtml = edge.label
+			? `<span class="ge-panel-edge-label">: ${escapeHtml(edge.label)}</span>`
+			: '';
+		state.panelHead.innerHTML =
+			`<span class="ge-panel-kind">edge</span>` +
+			`<span class="ge-panel-name">${escapeHtml(fromLabel)} <span class="ge-panel-arrow">→</span> ${escapeHtml(toLabel)}</span>` +
+			labelHtml;
+		if (edge.panelHtml) state.panelBody.innerHTML = edge.panelHtml;
+		else if (edge.label)
+			state.panelBody.innerHTML = `<p style="color: var(--sl-color-gray-3);">Relationship: <strong>${escapeHtml(edge.label)}</strong>.</p>`;
+		else
+			state.panelBody.innerHTML =
+				'<p style="color: var(--sl-color-gray-4); font-style: italic;">No detail provided for this edge.</p>';
+	}
+
+	function highlightNode(state: State, id: string) {
+		state.stage.querySelectorAll('g.node').forEach((n) => {
+			n.classList.toggle('is-active', (n as HTMLElement).dataset.geId === id);
+		});
+		state.stage
+			.querySelectorAll('g.edgeLabel.is-active, g.edgePaths > path.is-active')
+			.forEach((e) => e.classList.remove('is-active'));
+	}
+
+	function highlightEdge(state: State, edgeIdx: number, keepNodes = false) {
+		if (!keepNodes) {
+			state.stage.querySelectorAll('g.node.is-active').forEach((n) =>
+				n.classList.remove('is-active'),
+			);
+		}
+		state.stage.querySelectorAll('g.edgeLabel').forEach((el, i) => {
+			el.classList.toggle('is-active', i === edgeIdx);
+		});
+		// Also toggle on the underlying path so unlabelled edges still
+		// pulse visibly during traversal (Mermaid emits an empty
+		// `g.edgeLabel` for those, which has nothing to style).
+		state.stage.querySelectorAll('g.edgePaths > path').forEach((el, i) => {
+			el.classList.toggle('is-active', i === edgeIdx);
+		});
+	}
+
+	function findEdgeIdx(edges: EdgeData[], a: string, b: string): number {
+		// Match in either direction — the traversal sequence may walk
+		// against arrow direction (e.g. boot order walks leaves-first
+		// while edges point dependent → dependency).
+		return edges.findIndex(
+			(e) => (e.from === a && e.to === b) || (e.from === b && e.to === a),
+		);
+	}
+
+	function selectNode(state: State, id: string) {
+		highlightNode(state, id);
+		const node = state.nodeById.get(id);
+		if (node) setPanelNode(state, node);
+	}
+
+	function stopPlayback(state: State, tabButtons: Map<string, HTMLButtonElement>) {
+		if (!state.playing) return;
+		if (state.playing.timer != null) clearTimeout(state.playing.timer);
+		const btn = tabButtons.get(state.playing.traversalId);
+		if (btn) btn.dataset.playing = 'false';
+		state.playing = null;
+	}
+
+	function startPlayback(
+		state: State,
+		traversalId: string,
+		tabButtons: Map<string, HTMLButtonElement>,
+	) {
+		stopPlayback(state, tabButtons);
+		const tr = state.traversals.find((t) => t.id === traversalId);
+		if (!tr || tr.sequence.length === 0) return;
+
+		// Expand the sequence into alternating node/edge steps. Each pair of
+		// consecutive nodes becomes [node, edge, node] — if no edge connects
+		// them, we skip the edge step rather than fail.
+		const steps: PlayStep[] = [];
+		for (let i = 0; i < tr.sequence.length; i++) {
+			steps.push({ kind: 'node', id: tr.sequence[i] });
+			if (i < tr.sequence.length - 1) {
+				const edgeIdx = findEdgeIdx(state.edges, tr.sequence[i], tr.sequence[i + 1]);
+				if (edgeIdx >= 0) steps.push({ kind: 'edge', edgeIdx });
+			}
+		}
+
+		const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+		const NODE_MS = reduced ? 0 : 1000;
+		const EDGE_MS = reduced ? 0 : 500;
+
+		const playState = {
+			traversalId,
+			timer: null as number | null,
+			idx: 0,
+			steps,
+		};
+		state.playing = playState;
+		const btn = tabButtons.get(traversalId);
+		if (btn) btn.dataset.playing = 'true';
+
+		const tick = () => {
+			if (state.playing !== playState) return;
+			const step = steps[playState.idx];
+			if (step.kind === 'node') {
+				selectNode(state, step.id);
+			} else {
+				// Edge step: keep the previous node lit and overlay the edge
+				// label. Pulse the edge panel only if the edge has explanatory
+				// content — generic relationships (`depends on`, `prompt`)
+				// would just flash a boring fallback message.
+				highlightEdge(state, step.edgeIdx, true);
+				const edge = state.edges[step.edgeIdx];
+				if (edge && edge.panelHtml) setPanelEdge(state, edge);
+			}
+			if (playState.idx >= steps.length - 1) {
+				stopPlayback(state, tabButtons);
+				return;
+			}
+			const dwell = step.kind === 'edge' ? EDGE_MS : NODE_MS;
+			playState.idx += 1;
+			playState.timer = window.setTimeout(tick, dwell);
+		};
+		tick();
+	}
+
+	function wireSvgInteractions(state: State) {
+		// Tag each node group with its source id (Mermaid encodes ids in
+		// the DOM element id like "flowchart-<id>-<n>").
+		const nodeGroups = state.stage.querySelectorAll<SVGGElement>('g.node');
+		nodeGroups.forEach((g) => {
+			const rawId = g.id || '';
+			// Match "flowchart-<id>-<num>" or "<prefix>-<id>-<num>". We look
+			// up our nodes by checking which node id appears in the element id.
+			let matched: NodeData | undefined;
+			for (const n of state.nodes) {
+				const re = new RegExp(`(?:^|-)${n.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:-|$)`);
+				if (re.test(rawId)) {
+					matched = n;
+					break;
+				}
+			}
+			if (!matched) return;
+			(g as unknown as HTMLElement).dataset.geId = matched.id;
+			g.addEventListener('click', () => {
+				const tabButtons = tabButtonsByRoot.get(state.root);
+				if (tabButtons) stopPlayback(state, tabButtons);
+				selectNode(state, matched!.id);
+			});
+		});
+
+		// Edge labels: Mermaid emits one g.edgeLabel per edge in source
+		// order. Map index to our edges[]. Only labeled edges are clickable.
+		const edgeLabels = state.stage.querySelectorAll<SVGGElement>('g.edgeLabel');
+		edgeLabels.forEach((g, i) => {
+			const edge = state.edges[i];
+			if (!edge || !edge.label) return;
+			g.classList.add('ge-clickable');
+			g.addEventListener('click', () => {
+				const tabButtons = tabButtonsByRoot.get(state.root);
+				if (tabButtons) stopPlayback(state, tabButtons);
+				highlightEdge(state, i);
+				setPanelEdge(state, edge);
+			});
+		});
+	}
+
+	const tabButtonsByRoot = new Map<HTMLElement, Map<string, HTMLButtonElement>>();
+
+	async function renderMermaid(state: State) {
+		const stage = state.stage;
+		stage.dataset.geState = 'loading';
+		try {
+			const mermaid = await loadMermaid();
+			mermaid.initialize({
+				startOnLoad: false,
+				theme: currentMermaidTheme(),
+				securityLevel: 'loose',
+				flowchart: { htmlLabels: true, curve: 'basis' },
+			});
+			const source = buildSource(state);
+			const { svg } = await mermaid.render(state.mermaidId, source);
+			stage.innerHTML = svg;
+			stage.dataset.geState = 'ready';
+			wireSvgInteractions(state);
+		} catch (err) {
+			stage.dataset.geState = 'error';
+			const msg = document.createElement('div');
+			msg.style.cssText =
+				'color: var(--sl-color-red, #c00); padding: 12px; font: 500 12px ui-sans-serif, system-ui, sans-serif;';
+			msg.textContent =
+				'Mermaid render failed: ' +
+				(err instanceof Error ? err.message : String(err));
+			stage.innerHTML = '';
+			stage.appendChild(msg);
+		}
+	}
+
+	function init(root: HTMLElement) {
+		const stage = root.querySelector<HTMLElement>('[data-ge-stage]');
+		const panelEl = root.querySelector<HTMLElement>('[data-ge-panel]');
+		const panelHead = root.querySelector<HTMLElement>('[data-ge-panel-head]');
+		const panelBody = root.querySelector<HTMLElement>('[data-ge-panel-body]');
+		const payloads = root.querySelector<HTMLElement>('[data-ge-payloads]');
+		const tabsEl = root.querySelector<HTMLElement>('[data-ge-tabs]');
+		if (!stage || !panelEl || !panelHead || !panelBody || !payloads || !tabsEl)
+			return;
+
+		// Astro leaves a couple of whitespace chars in `innerHTML` for
+		// self-closing children — treat whitespace-only as empty so the
+		// "has explanatory content" check stays honest.
+		const nonEmptyInner = (el: HTMLElement) => (el.innerHTML.trim() ? el.innerHTML : '');
+
+		const nodeEls = Array.from(payloads.querySelectorAll<HTMLElement>(':scope > [data-ge-node]'));
+		const nodes: NodeData[] = nodeEls.map((el) => ({
+			id: el.dataset.geId || '',
+			label: el.dataset.geLabel || el.dataset.geId || '',
+			group: el.dataset.geGroup || '',
+			panelHtml: nonEmptyInner(el),
+		}));
+
+		const edgeEls = Array.from(payloads.querySelectorAll<HTMLElement>(':scope > [data-ge-edge]'));
+		const edges: EdgeData[] = edgeEls.map((el) => ({
+			from: el.dataset.geFrom || '',
+			to: el.dataset.geTo || '',
+			label: el.dataset.geLabel || '',
+			panelHtml: nonEmptyInner(el),
+		}));
+
+		const traversals: Traversal[] = Array.from(
+			payloads.querySelectorAll<HTMLElement>(':scope > [data-ge-traversal]'),
+		).map((el) => ({
+			id: el.dataset.geId || '',
+			label: el.dataset.geLabel || el.dataset.geId || '',
+			sequence: (el.dataset.geSequence || '')
+				.split(',')
+				.map((s) => s.trim())
+				.filter(Boolean),
+		}));
+
+		const nodeById = new Map<string, NodeData>();
+		for (const n of nodes) nodeById.set(n.id, n);
+
+		mermaidUid += 1;
+		const state: State = {
+			root,
+			stage,
+			panelEl,
+			panelHead,
+			panelBody,
+			nodes,
+			edges,
+			nodeById,
+			traversals,
+			direction: root.dataset.geDirection || 'TB',
+			mermaidId: `ge-mermaid-${mermaidUid}`,
+			playing: null,
+		};
+		builtPerRoot.set(root, state);
+
+		// === Traversal tabs ===
+		const tabButtons = new Map<string, HTMLButtonElement>();
+		tabButtonsByRoot.set(root, tabButtons);
+
+		function renderTabs() {
+			tabsEl!.innerHTML = '';
+			tabButtons.clear();
+			if (traversals.length === 0) {
+				tabsEl!.hidden = true;
+				return;
+			}
+			tabsEl!.hidden = false;
+			for (const t of traversals) {
+				const btn = document.createElement('button');
+				btn.type = 'button';
+				btn.className = 'ge-tab';
+				btn.dataset.traversalId = t.id;
+				btn.dataset.playing = 'false';
+				btn.innerHTML = PLAY_SVG + '<span class="ge-tab-label"></span>';
+				(btn.querySelector('.ge-tab-label') as HTMLElement).textContent = t.label;
+				btn.addEventListener('click', () => {
+					if (state.playing && state.playing.traversalId === t.id) {
+						stopPlayback(state, tabButtons);
+					} else {
+						startPlayback(state, t.id, tabButtons);
+					}
+				});
+				tabsEl!.appendChild(btn);
+				tabButtons.set(t.id, btn);
+			}
+		}
+		renderTabs();
+
+		void renderMermaid(state);
+
+		new MutationObserver(() => {
+			stopPlayback(state, tabButtons);
+			void renderMermaid(state);
+		}).observe(document.documentElement, {
+			attributes: true,
+			attributeFilter: ['data-theme'],
+		});
+	}
+
+	function start() {
+		document
+			.querySelectorAll<HTMLElement>('[data-ge-root]')
+			.forEach((root) => {
+				if (builtPerRoot.has(root)) return;
+				init(root);
+			});
+	}
+
+	if (document.readyState === 'complete') setTimeout(start, 0);
+	else window.addEventListener('load', () => setTimeout(start, 0));
+</script>

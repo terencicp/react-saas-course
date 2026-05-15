@@ -45,6 +45,7 @@ Visual scaffolds — wrappers, diagrams, and tabbed/sequenced panels.
 | `ParamPlayground` | Live preview driven by a column of controls. Control values pipe into the preview as CSS custom properties; optional chips below echo a value or evaluate an expression. | [param-playground.md](./figures/param-playground.md) |
 | `RenderTracking` | A tree of labeled "components" with per-node render-count badges. Triggers tick the badges of nodes you tag as re-rendering; optional tabs for comparisons. | [render-tracking.md](./figures/render-tracking.md) |
 | `StateMachineWalker` | A chained multi-choice walk: each step is a question with branch buttons, and picking one advances to the next step. Two modes — decisions that end on a recommendation, or state machines whose questions are states with cycles allowed, synced topology diagram highlighting current state. | [state-machine-walker.md](./figures/state-machine-walker.md) |
+| `GraphExplorer` | Small graphs (3–8 nodes) with click-to-reveal side panel; optional play buttons that walk a named path through the graph. Mermaid handles layout. Use for type hierarchies, module dependency graphs, trust topologies, CORS actor diagrams. | [graph-explorer.md](./figures/graph-explorer.md) |
 
 ---
 
