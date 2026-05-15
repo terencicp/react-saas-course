@@ -2,6 +2,7 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import mermaid from 'astro-mermaid';
+import astroD2 from 'astro-d2';
 import starlightFullViewMode from 'starlight-fullview-mode';
 import starlightLinksValidator from 'starlight-links-validator';
 // Expressive Code options live in ./ec.config.mjs so the standalone
@@ -29,6 +30,14 @@ export default defineConfig({
 	},
 	integrations: [
 		mermaid({ autoTheme: true }),
+		astroD2({
+			// Use the WASM build (D2.js) so contributors don't need the D2 CLI installed.
+			// `inline: true` is required when useD2js is on for icons/themes to apply.
+			experimental: { useD2js: true },
+			inline: true,
+			layout: 'elk',
+			theme: { default: '0', dark: '200' },
+		}),
 		starlight({
 			title: 'React SaaS Course',
 			customCss: ['./src/styles/custom.css'],
