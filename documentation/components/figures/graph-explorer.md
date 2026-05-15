@@ -52,6 +52,7 @@ The default slot is the side-panel content rendered when the edge label is click
 | `id` | `string` | yes | — | Identifier for the traversal. Used as a stable key when multiple traversals share the same graph. |
 | `label` | `string` | yes | — | Text on the play button ("Boot order", "Happy path", "Attack path"). |
 | `sequence` | `string` | yes | — | Comma-separated node ids to walk in order. Edges between consecutive ids are inferred and pulsed automatically — the sequence does not need to follow arrow direction (boot order walks leaves-first while edges point dependent → dependency, and that's fine). |
+| `nodesOnly` | `boolean` | no | `false` | When set, the cursor hops node-to-node without dwelling on the connecting edges. Edges stay clickable and labelled; only the *animation* changes. Use when edge labels are detail-on-click rather than steps in the walk (e.g. a request lifecycle where the labels carry SQL strings or cache headers and the rhythm is "where is the request now?"). |
 
 Self-closing — no slot, no children.
 
@@ -81,29 +82,7 @@ Self-closing — no slot, no children.
 
 ## Authoring
 
-Minimal three-node dependency graph with one traversal:
-
-```mdx
-<GraphExplorer title="Boot order: leaves first" direction="BT">
-  <GraphNode id="lib" label="lib">
-    Stateless helpers. Boots first — it's a leaf.
-  </GraphNode>
-  <GraphNode id="domain" label="domain">
-    Pure business logic. Boots second.
-  </GraphNode>
-  <GraphNode id="ui" label="ui">
-    React components. Boots last.
-  </GraphNode>
-
-  <GraphEdge from="ui" to="domain" label="depends on" />
-  <GraphEdge from="ui" to="lib" label="depends on" />
-  <GraphEdge from="domain" to="lib" label="depends on" />
-
-  <Traversal id="boot" label="Boot order" sequence="lib,domain,ui" />
-</GraphExplorer>
-```
-
-Same graph, two paths — happy vs attack — with edges that carry their own lesson:
+Two paths — happy vs attack — with edges that carry their own lesson:
 
 ```mdx
 <GraphExplorer title="LLM agent trust boundaries" direction="LR">
@@ -128,32 +107,21 @@ Same graph, two paths — happy vs attack — with edges that carry their own le
 </GraphExplorer>
 ```
 
-Nodes-only — edges as pure connectors, no labels:
-
-```mdx
-<GraphExplorer title="Provider stacking" direction="TB">
-  <GraphNode id="query" label="QueryClientProvider">…</GraphNode>
-  <GraphNode id="theme" label="ThemeProvider">…</GraphNode>
-  <GraphNode id="auth" label="AuthProvider">…</GraphNode>
-  <GraphNode id="app" label="<App />">…</GraphNode>
-
-  <GraphEdge from="query" to="theme" />
-  <GraphEdge from="theme" to="auth" />
-  <GraphEdge from="auth" to="app" />
-
-  <Traversal id="stack" label="Outer to inner" sequence="query,theme,auth,app" />
-</GraphExplorer>
-```
-
 ## Animation behaviour
 
-A traversal walk alternates **node → edge → node → edge → … → node**:
+Each transition between consecutive nodes in a traversal is a five-frame cross-fade — `A` → `A + edge` → `edge` → `edge + B` → `B` — so something stays lit throughout the handoff (no abrupt off+on flash):
 
-- Each node step lights the node for ~1000ms and updates the side panel to that node's content.
-- Each edge step lights the previous node *and* the connecting edge for ~500ms. The panel updates to the edge's content **only if** the edge has authored slot content; otherwise the panel stays on the node so generic relationships (`depends on`, `prompt`) don't flash distracting fallback text.
-- Edges with a `label` highlight the label; edges without one highlight the path stroke instead — so unlabelled paths still pulse visibly.
-- Clicking the playing tab stops mid-walk; clicking a different tab switches walks. Reduced-motion users get instant transitions.
+- **Solo node** (~700ms) — the focus moment; side panel shows that node's content.
+- **`A + edge`** (~220ms) — outgoing edge lights up while `A` is still on.
+- **`edge` alone** (~220ms) — `A` turns off; the edge carries the transition.
+- **`edge + B`** (~220ms) — `B` lights up while the edge is still on; panel switches to `B`.
+- **Solo `B`** (~700ms) — edge turns off; the next transition begins.
 
-## Example
+The panel updates only when a new node enters the active set, so the in-flight overlap frames don't churn the side-panel content. The exception: an edge with authored slot content briefly surfaces its panel during its solo phase (extended to ~600ms so the panel is actually readable). Generic edges (`depends on`, `prompt`) leave the panel on the previous node — no distracting fallback text.
 
-Four full variations — labelled edges with click-to-explain, single-traversal dependency graph, multi-traversal trust topology, and a nodes-only provider stack — live in [the explorer demo page](../../../src/content/docs/0%20Demos/figures/graph-explorer-demo.mdx).
+Other rules:
+
+- Edges with a `label` highlight the label chip (accent-coloured background); edges without one highlight the path stroke instead — so unlabelled paths still pulse visibly.
+- A `<Traversal nodesOnly>` traversal skips all the edge phases — the cursor hops `A` → `B` directly, with edges staying fully clickable but uninvolved in the animation.
+- If two consecutive nodes in a sequence have no edge between them, the overlap phases are also skipped (defensive — sequences can include gaps).
+- Clicking the playing tab stops mid-walk; clicking a different tab switches walks. Reduced-motion users get instant transitions (every dwell collapses to 0).
