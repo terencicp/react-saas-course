@@ -141,6 +141,7 @@ Goals:
 - Read `lib/invoices/mutation-schemas.ts` — empty with TODO comments naming the three exports the actions will import.
 - Read `lib/invoices/actions.ts` — the file starts with `'use server'` and three empty function signatures with TODOs.
 - Read `app/_components/submit-button.tsx` and `field-error.tsx` — empty TODOs with the expected props.
+- Sonner's `<Toaster>` is preinstalled in the root layout (the starter wires `<Toaster />` from `sonner` in `app/layout.tsx`); the `toast.success(message)` call shape lands in 7.6.6 for the URL-param success toast after a delete.
 - Read the three form components' page-side parents to lock in what the student-written client components receive as props and what they must render. The edit page passes the loaded invoice; the new page passes nothing; the detail page passes the invoice and the delete is a separate small form.
 - Bring up the dev surface: `pnpm dev` renders `/invoices` with the seeded list. Clicking "New invoice" 404s because `new-invoice-form.tsx` is empty. That's the runnable starting point.
 

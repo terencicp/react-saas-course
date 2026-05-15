@@ -135,7 +135,7 @@ Topics to cover:
 - **Essential vs. non-essential.** Essential (no consent): session cookie (Better Auth), CSRF token, the consent-choice cookie itself, active-org cookie from 10.1.1. Legal test: strictly necessary for the service the user explicitly asked for. Non-essential (consent required): analytics (PostHog), session replay, marketing pixels, support chat widgets, anything that profiles the user. If in doubt, non-essential. The gate ships two categories: `analytics` and `marketing`, both default-off.
 - **State machine — four states.** `unset` (no decision; non-essential off), `analytics-only`, `marketing-only` (rare), `all`. State in a cookie (`consent_choice`, 13-month max per ePrivacy), readable server-side via `cookies()` and client-side via `document.cookie`. Writing is a Server Action.
 - **The consent provider — one React Context.** `ConsentProvider` at the root layout, exposes `useConsent()` returning `{ analytics, marketing, open(), accept(level), reject() }`. Every third party imports the hook and short-circuits when the flag is false. One gate.
-- **PostHog gating.** PostHog's SDK supports `opt_out_capturing_by_default: true`. Initialize with capturing opted out; call `posthog.opt_in_capturing()` only on consent. Session replay gated similarly (`disable_session_recording: true` flipped on consent).
+- **PostHog gating.** (PostHog wiring is owned by 20.2.3; the SDK names below appear here only to demonstrate the consent rule's shape.) PostHog's SDK supports `opt_out_capturing_by_default: true`. Initialize with capturing opted out; call `posthog.opt_in_capturing()` only on consent. Session replay gated similarly (`disable_session_recording: true` flipped on consent).
 - **The banner — three buttons, no dark patterns.** "Accept all," "Reject all," "Manage preferences." Reject must be as visible/easy as Accept (ePrivacy regulators have called out asymmetric designs). "Manage preferences" opens a modal with the two category toggles. Small non-modal sticky footer.
 - **Reject must be functional.** No PostHog request, no marketing pixel, no replay socket. Audit step: incognito, click reject, network tab clean.
 - **Pre-consent boundary — the load-bearing rule.** Even one analytics event before the click violates the regulation. PostHog initialized with `opt_out_capturing_by_default: true` *and* the SDK dynamically imported by the consent provider only when analytics flips on. Both belts.
@@ -173,7 +173,7 @@ Topics to cover:
 - **The Vercel "sensitive" flag.** Sensitive vars stored unreadably after creation. Backfilling existing vars is a one-time audit step. Cost: a forgotten sensitive var can only be reset, not retrieved — keep a separate password manager for break-glass access.
 - **Audit step — canonical leaks.** (1) `process.env.X` outside `env.ts`. (2) `NEXT_PUBLIC_*` matching secret patterns (`SECRET`, `TOKEN`, `KEY` without the `PUBLIC` qualifier). (3) `.env*` in `git log` — history scan; BFG Repo-Cleaner if found. (4) Sentry / PostHog / log drains receiving env-shaped strings (the 17.1.2 redactor catches this).
 - **Local dev secrets — password manager.** 1Password / Bitwarden, not Slack. Doppler / Infisical for teams of 3+; Vercel's env UI is sufficient through that point.
-- **Pre-commit secret scanning.** Gitleaks / Trufflehog in the `pre-commit` hook (Husky from Unit 21.2.4). CI runs the same scan as a belt.
+- **Pre-commit secret scanning.** Gitleaks / Trufflehog in the `pre-commit` hook. Husky is the standard Git-hook manager and is wired here at first use: `pnpm add -D husky lint-staged`, then `pnpm dlx husky init` to scaffold `.husky/`, then a `.husky/pre-commit` script that runs the Gitleaks / Trufflehog scan on staged files. CI runs the same scan as a belt.
 - **KMS / HSM / Vault?** Out of scope through Series A. Vercel's encrypted env store is sufficient.
 - **Watch-outs.** `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` is fine; `NEXT_PUBLIC_STRIPE_SECRET_KEY` is a name-contradiction bug; `console.log(process.env)` in a Server Component dumps every var if the component throws; sharing `.env.local` over Slack is the bug; rotating without updating Vercel first breaks the deployment for the window; `.env.example` drifting from the schema causes silent onboarding failures.
 
@@ -181,7 +181,7 @@ What this lesson does not cover:
 
 - `@t3-oss/env-nextjs` at depth — Chapter 1.4.5; 17.2.7 revisits.
 - KMS, HSM, Vault, Doppler / Infisical — out of scope or deferred.
-- Gitleaks config — Chapter 21.2.4.
+- Gitleaks rule-set tuning and CI integration — Chapter 21.2.4.
 
 Estimated student time: 35 to 45 minutes.
 

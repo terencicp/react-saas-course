@@ -223,7 +223,7 @@ Goals:
   - On success, log `{ eventId: event.id, eventType: event.type }` via the structured logger and return `Response.json({ received: true }, { status: 200 })` — no business logic yet; the dispatch lands in 12.3.4.
 - Add the `problemJson(status, title)` helper to `lib/webhooks/stripe.ts` (or import the one from 7.5 if the starter ships it). Returns `new Response(JSON.stringify({ type, title, status, instance }), { status, headers: { 'content-type': 'application/problem+json' } })`. No body echo, no detail leakage.
 - Verify the route is the Node runtime: the starter sets `export const runtime = 'nodejs'` at the top — names the rule from 12.1.1 even though Edge would also work for the HMAC.
-- Wire the structured logger from Chapter 20.1 (provided in the starter as `lib/logger.ts`): every verification path logs `{ eventId, eventType, disposition }` where disposition is `'verified'`, `'invalid_signature'`, or `'missing_header'`. The structured log is what 2am debugging will need.
+- Wire the structured logger from Chapter 20.1 (provided in the starter as `lib/logger.ts`): every verification path logs `{ eventId, eventType, disposition }` where disposition is `'verified'`, `'invalid_signature'`, or `'missing_header'`. Structured logging — key-value JSON via Pino — is the discipline that lets 2am debugging filter by event-id (depth in 20.1.2); the structured log is what 2am debugging will need.
 - Run the verification:
   - `stripe trigger checkout.session.completed` → handler logs `verified`, returns 200, no `processed_events` row yet (that's 12.3.4).
   - Click the inspector's "Tamper signature" debug → handler logs `invalid_signature`, returns 400 with problem+json body; the inspector's debug panel renders the 400 status and the body inline.

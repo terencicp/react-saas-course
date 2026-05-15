@@ -86,7 +86,7 @@ Topics to cover:
 - The cross-realm `instanceof` gotcha, stated plainly. Each JavaScript realm has its own `Error` constructor; an error thrown in a Web Worker and caught in the main thread fails `instanceof Error` because the two `Error` references are different objects. Three sites where this bites in 2026 SaaS code.
   - **Web Workers and `MessageChannel` boundaries** — rare in app code, common in observability libraries.
   - **The `vm` module in Node** — used by test runners and sandboxes.
-  - **The edge / Node runtime boundary in Next.js** — errors thrown in middleware (edge) and caught in a Server Component (Node) cross realms.
+  - **The edge / Node runtime boundary in Next.js** (Next.js runtime split — covered in Unit 5) — errors thrown in middleware (edge) and caught in a Server Component (Node) cross realms.
   - The fix: `Error.isError(err)` in 2026, or the `error.name` fallback (next bullet) where realms are an issue.
 - The `error.name` fallback, the portable form. Every `Error` subclass sets `name`. Discriminating on `err.name === 'AbortError'` or `err.name === 'TimeoutError'` works across realms because strings are values, not constructor references. The canonical sites.
   - **`AbortError`** — `DOMException` in browsers, varies in Node depending on the API. 2.7.4 named the discrimination; here, name the realm-safe form.

@@ -30,6 +30,8 @@ src/
     auth.ts                        # TODO student: betterAuth({ database, emailAndPassword, emailVerification, plugins: [nextCookies()] })
     auth-client.ts                 # TODO student: createAuthClient({ baseURL })
     auth-helpers.ts                # TODO student: getCurrentUser, requireUser
+    auth/
+      error-mapping.ts             # provided: mapAuthError — maps Better Auth error codes to the Result taxonomy (validation/conflict/invalid-credentials/email-not-verified)
     email.ts                       # provided: sendEmail wrapper from Unit 8
     env.ts                         # provided: Zod-validated env with the entries above
   db/
@@ -190,7 +192,7 @@ Goals:
   - Zod `SignUpSchema` parse on `formData`.
   - On parse failure, return `err('validation', 'Check the highlighted fields.', z.treeifyError(parsed.error).properties)`.
   - On parse success, `try { await auth.api.signUpEmail({ body: { email, password, name } }); }` — without `headers`, the framework sets the cookie because `nextCookies()` is loaded.
-  - On unique-violation error, return `err('conflict', 'An account with that email already exists.')`. (Map by Better Auth's error code.)
+  - On unique-violation error, return `err('conflict', 'An account with that email already exists.')`. The mapping from Better Auth's error codes to the `Result` taxonomy is centralized in the provided `src/lib/auth/error-mapping.ts` (`mapAuthError`), which the action calls in its `catch` block.
   - On success, `redirect('/dashboard')` — because `requireEmailVerification` is off for this lesson, the user lands signed in immediately.
 - Wire the sign-up page form's `action={signUpAction}` and read `state.reason` for the inline error.
 - Smoke test: `/sign-up`, submit `you@example.com` + a 12-char password + a name. Inspect: `user` row created, `account` row created with `providerId: 'credential'` and a bcrypt hash in `password`, `session` row created, `__Host-better-auth.session_token` cookie set in browser devtools, redirected to `/dashboard` (but `/dashboard` still 500s because `requireUser` isn't called there yet — that's fine; the cookie landing is the win).

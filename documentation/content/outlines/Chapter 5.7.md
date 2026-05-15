@@ -129,7 +129,7 @@ Goals:
 Senior calls and watch-outs:
 
 - Pure render components that take data as props compose freely on either side of the server/client boundary — the senior shape.
-- The `searchParamsSchema` is in `/lib` so the same Zod schema validates the URL and would validate a form payload later — this is Architectural Principle #3 (pure `/lib`).
+- The `searchParamsSchema` is in `/lib` so the same Zod schema validates the URL and would validate a form payload later — this is Architectural Principle #3 (pure `/lib`) (introduced formally in Chapter 7.2.4).
 
 Codebase state at entry: starter cloned, `pnpm dev` runs an empty `/invoices` shell.
 Codebase state at exit: student has read every provided file and can articulate which slot needs which signature. No code written.

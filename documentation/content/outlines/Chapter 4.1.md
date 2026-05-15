@@ -79,7 +79,7 @@ Topics to cover:
   - **`<html lang="en">`** — root element with document language; always set `lang`. For i18n (Chapter 18.2), rendered dynamically per locale.
   - **`<head>`** — non-rendered metadata (`<meta>`, `<title>`, `<link>`, rare `<script>`).
   - **`<body>`** — visible content; React tree mounts here.
-- **The Next.js App Router root layout.** `app/layout.tsx` defines the outermost shell: a default-exported `RootLayout` taking `{ children }: { children: React.ReactNode }` and returning `<html lang="en"><body>{children}</body></html>`.
+- **The Next.js App Router root layout.** `app/layout.tsx` defines the outermost shell: a default-exported `RootLayout` taking `{ children }: { children: React.ReactNode }` and returning `<html lang="en"><body>{children}</body></html>`. `React.ReactNode` is the type for anything React can render — JSX, strings, numbers, arrays, `null`/`undefined`; full treatment in 4.6.1.
   - **Server Component by default** (Chapter 5.2.1) — no `'use client'`, no hooks, renders on the server to HTML.
   - **Owns `<html>` and `<body>`**, exclusively. Nested layouts (Chapter 5.1.4) return JSX that slots inside `<body>`.
   - **The `children` prop** — Next.js injects the page (or nested layout) via the framework convention.

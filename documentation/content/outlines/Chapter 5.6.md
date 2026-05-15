@@ -47,7 +47,7 @@ Teaches `next/image` as the platform default for sized, lazy, format-negotiated 
 
 Topics to cover:
 
-- **The senior question.** A product card shows an avatar, a thumbnail from S3, and a hero from design. Plain `<img>` ships oversized images, blows CLS, and tanks LCP. The lesson names `next/image` as the platform default, `remotePatterns` as the security gate for external sources, and Vercel's automatic optimization as the pipeline behind both.
+- **The senior question.** A product card shows an avatar, a thumbnail from S3, and a hero from design. Plain `<img>` ships oversized images, blows CLS, and tanks LCP (CLS = Cumulative Layout Shift, LCP = Largest Contentful Paint — both Core Web Vitals, depth in 20.3.1). The lesson names `next/image` as the platform default, `remotePatterns` as the security gate for external sources, and Vercel's automatic optimization as the pipeline behind both.
 - **What `next/image` gives you.** Automatic `srcset`/`sizes`, modern formats (AVIF, WebP) negotiated via `Accept`, layout-shift prevention via required `width`/`height` or `fill`, lazy loading by default, on-demand optimization. `<img>` is the wrong default in 2026.
 - **Required props.** `src`, `width`, `height`, `alt`. `width`/`height` carry intrinsic ratio, not display size — CSS sizes. `alt` is required; empty string for decorative.
 - **`fill` for unknown-size containers.** Pair with `sizes` always — without it the browser downloads the largest variant. Prefer fixed dimensions when known.

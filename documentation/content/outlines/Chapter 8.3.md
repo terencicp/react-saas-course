@@ -191,7 +191,7 @@ Goals:
   - `RESEND_API_KEY: z.string().min(1)` — fail-closed if missing.
   - `EMAIL_FROM: z.string().min(1)` — the full `Display Name <local-part@send.domain.tld>` format. The student sets it in `.env.local` to their verified subdomain (e.g., `'Acme <noreply@send.acme.example>'`).
   - `EMAIL_REPLY_TO: z.email()` — a monitored mailbox at the apex (`support@<student>.<tld>` or the student's personal inbox for the project).
-  Also add `NEXT_PUBLIC_APP_NAME: z.string().min(1)` to the `client` section so `EmailLayout.tsx` can read it. Confirm `pnpm dev` boots cleanly; comment out `RESEND_API_KEY` and confirm the boot fails with the Zod error (one verify step landed early).
+  Also add `NEXT_PUBLIC_APP_NAME: z.string().min(1)` and `NEXT_PUBLIC_APP_URL: z.url()` to the `client` section so `EmailLayout.tsx` can read the brand name and the action in 8.3.4 can compute the `verifyUrl` (Unit 9 reuses the same `NEXT_PUBLIC_APP_URL` when it swaps the placeholder for a real signed verification link). Confirm `pnpm dev` boots cleanly; comment out `RESEND_API_KEY` and confirm the boot fails with the Zod error (one verify step landed early).
 - Fill `lib/suppressions.ts`. Single named export:
   - `isSuppressed(email: string, opts: { kind: 'transactional' | 'marketing' }): Promise<{ suppressed: boolean; reason?: string; bypassUntil?: Date }>`
   - Normalize the email first (`email.trim().toLowerCase()`).
