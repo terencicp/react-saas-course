@@ -26,4 +26,4 @@ Read project files only if required by your current task:
 - `documentation/content/overview/Project dependencies.md` — for each chapter-end project, which earlier project's codebase it continues from.
 - `documentation/content/outlines/` — one file per chapter (`Chapter X.Y.md`) breaking down the content and scope of each lesson within the chapter.
 - `documentation/Pedagogical approach/Pedagogical guidelines.md` — Teaching style for the course's lessons.
-- `documentation/Diagrams.md` — How to pick the best diagram engine for each use case (Mermaid, D2, etc.).
+- `documentation/diagrams/INDEX.md` — How to pick the best diagram engine for each use case (Mermaid, D2, etc.).

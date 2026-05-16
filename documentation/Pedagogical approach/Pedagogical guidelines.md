@@ -87,11 +87,7 @@ Code samples carry the same posture as the prose: direct, minimal, opinionated. 
 
 **Coding sandboxes.** Different from exercises. An optional expandable callout, at most once per lesson, offered when the student is likely to want to play with the new concept freely without a prescribed goal.
 
-**Diagrams.** Add when the model has more than one moving part. Always justified: lifecycles/flows, trees/graphs, anatomy. Form preference:
-
-- **(1) Mermaid** (default, relational/topological — connection > layout). Examples: flowcharts, sequence diagrams, state machines, ER diagrams, gitGraphs.
-- **(2) Interactive widget** using DOM elements — when manipulation *is* the lesson and a static picture can't show the cause-and-effect. Examples: calculators/converters, property playgrounds (sliders driving real CSS), quizzes with feedback, toggleable comparison panels, simulators with controls (rate limiter, debounce).
-- **(3) Hand-authored SVG** where layout itself carries meaning (cascade, box model, flex/grid axes, component-tree emphasis, anatomy with annotations); or animated when change-over-time is the lesson. Examples: box model, flex/grid axes, anatomy diagrams (URL, HTTP request), component trees, animated processes (event loop, paint/reflow).
+**Diagrams.** Add when visualization is the best vehicle to teach a concept.
 
 **YouTube embeds.** Add only when it conveys something previous elements can't. Contextual videos in body; reinforcement videos in Learning resources. Lesson body must be complete without the video.
 
