@@ -25,6 +25,7 @@ import Traversal from '../../../../components/figures/graph-explorer/Traversal.a
 | --- | --- | --- | --- | --- |
 | `title` | `string` | no | — | Short heading above the toolbar and stage. Plain text. |
 | `direction` | `'TB' \| 'BT' \| 'LR' \| 'RL'` | no | `'TB'` | Mermaid flowchart direction. **Prefer `'LR'` (left-to-right) whenever the graph reads sensibly horizontally** — tall layouts push the side panel far below the diagram on narrow viewports, and reader-orienting at small widths gets hard. Use `'BT'` (bottom-up) for dependency graphs where leaves should sit at the bottom; reserve `'TB'` (top-down) for genuine top-down hierarchies. |
+| `placeholder` | `string` | no | `"Click a box above to read what it represents. Labelled edges are clickable too — and if a play button is present, it walks the path for you."` | Body text shown in the side-panel before any interaction. Override when the default generic hint doesn't fit — e.g. an attack-path diagram might want `"Press 'Attack path' to see how a prompt injection escalates."` to point the reader at the right entry point. Plain text only; replaced by the node/edge content on first click. The "tip" pill label above it stays fixed. |
 
 ### `GraphNode`
 
@@ -71,7 +72,7 @@ Self-closing — no slot, no children.
 - Edges without a `label` are non-clickable; the side panel can't reach them. If you want the relationship to be explorable, the edge needs a label.
 - **Prefer horizontal layouts** (`direction="LR"` or `"RL"`) over vertical for any graph with 4+ nodes. Tall layouts read poorly on narrow viewports (the side panel sits far below the diagram) and the stage gets cropped on small screens.
 - This component is a complete figure card — don't wrap it in `<Figure>` (you'll get nested padding and borders).
-- The panel reserves space from page load with placeholder copy ("Click any node or labelled edge"). Don't restate the same instruction in surrounding prose.
+- The panel reserves space from page load with placeholder copy ("Click any node or labelled edge"). Don't restate the same instruction in surrounding prose. If the generic hint isn't a fit — e.g. the diagram leads with a `<Traversal>` and you want readers to press the play button rather than click a node — override the body via the `placeholder` prop instead of writing instructions in the lesson text.
 
 ## When to reach for it
 
