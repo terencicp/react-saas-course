@@ -79,7 +79,7 @@ Code samples carry the same posture as the prose: direct, minimal, opinionated. 
 2. **Introduction** — state the lesson's goal, why it matters, connect it to what learner already know,  preview the practical skill or project built by the end, motivate the topic with a concrete problem. Keep it warm and brief.
 3. **Body** — h2/h3 where there are distinct subtopics; teaching prose with code, exercises, and videos all placed *where they belong*, never at the end.
 4. **External exercises** (optional LinkCards) — links to the external practice repo.
-5. **Learning resources** (optional LinkCards) — Udemy section link, official docs, supplementary video.
+5. **Learning resources** (optional LinkCards) — Official docs, supplementary video.
 
 ## 6. Content decision rules
 
@@ -90,8 +90,6 @@ Code samples carry the same posture as the prose: direct, minimal, opinionated. 
 **Diagrams.** Add when visualization is the best vehicle to teach a concept.
 
 **YouTube embeds.** Add only when it conveys something previous elements can't. Contextual videos in body; reinforcement videos in Learning resources. Lesson body must be complete without the video.
-
-**Udemy parallel.** Per-unit or chapter curated mapping.
 
 **External exercises.** Link to external online exercises when directly relevant.
 
