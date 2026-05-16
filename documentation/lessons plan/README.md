@@ -1,6 +1,6 @@
 # Lessons authoring workflow
 
-How the course's 654 lessons get written. One main agent ("orchestrator") owns a whole chapter end-to-end and runs a fixed sequence of independent subagents per lesson. Subagent definitions live in `.claude/agents/`.
+How the course's 654 lessons get written. One main agent ("orchestrator") owns a whole chapter end-to-end and runs a fixed sequence of independent subagents per lesson. Multiple chapters can be authored in parallel — each chapter orchestrator runs in its own git worktree of `react-saas-course`, on its own chapter-scoped branch, with the worktree created and torn down by Claude Code. Subagent definitions live in `.claude/agents/`.
 
 ## Files in this folder
 
@@ -41,15 +41,15 @@ Project lessons walk the student through code that has to exist and pass tests *
 
 ### Chapter-level prep (run once at the start of the chapter)
 
-The orchestrator first runs `git checkout -b chapter-<X.Y>-prep` on the course repo. All chapter-prep work — code and lesson MDX — happens on this branch.
+All chapter-prep work — code and lesson MDX — happens inside the chapter worktree, on the chapter's branch. The orchestrator does no branch or worktree setup; Claude Code provisioned both before the orchestrator started.
 
 1. `project-architect` — plans the project's full solution and the precondition state it's built from. Writes the project code plan to `documentation/lessons plan/work/Chapter <X.Y>/project code plan.md`. The plan contains the precondition recipe, every build slice (with full solution-side file content **and** stub-contract bodies), lesson tagging (precondition / slice / verify walkthrough), and acceptance criteria.
 2. `project-fact-verifier` — web-searches every 2026-dated technical claim in the plan (library versions, API shapes, install commands). Writes `project facts.md`. If divergences are flagged, the orchestrator may re-fire `project-architect` once.
-3. `project-coder-precondition` — initializes the working code directory at `documentation/lessons plan/work/Chapter <X.Y>/code/` per the plan's precondition recipe (fork prior project, or scaffold-fresh for Chapter 4.12). Applies precondition deltas, copies canonical configs from `documentation/code standards/configs/`, runs install/build/lint, and commits as `precondition` on the prep branch.
-4. `project-slice-coder` — runs **once per build slice in the plan**, sequentially. Each invocation applies one slice's code, runs that slice's "Runnable after" verify, runs lint/build, and commits as `slice <id>`. On lint/build/verify failure: orchestrator runs `git reset --hard HEAD` and re-fires the same slice coder with the failure inline. Cap 2 retries per slice; escalate to human after.
-5. `project-coder-starter` — derives the starter mechanically from the precondition commit's tree plus every slice's **stub contract**. Writes `documentation/lessons plan/work/Chapter <X.Y>/starter/`. Verifies install/build/lint. Commits.
+3. `project-coder-precondition` — initializes the working code directory at `documentation/lessons plan/work/Chapter <X.Y>/code/` per the plan's precondition recipe (fork prior project, or scaffold-fresh for Chapter 4.12). Applies precondition deltas, copies canonical configs from `documentation/code standards/configs/`, runs install/build/lint, and commits as `precondition` on the chapter worktree's branch.
+4. `project-slice-coder` — runs **once per build slice in the plan**, sequentially. Each invocation applies one slice's code, runs that slice's "Runnable after" verify, runs lint/build, and commits as `slice <id>` on the chapter worktree's branch. On lint/build/verify failure: orchestrator runs `git reset --hard HEAD` and re-fires the same slice coder with the failure inline. Cap 2 retries per slice; escalate to human after.
+5. `project-coder-starter` — derives the starter mechanically from the precondition commit's tree plus every slice's **stub contract**. Writes `documentation/lessons plan/work/Chapter <X.Y>/starter/`. Verifies install/build/lint. Commits on the chapter worktree's branch.
 
-The per-slice diff lives in git history on the prep branch — no separate diff-log file is generated. Downstream agents (lesson designer, writer, validator) read the **project code plan** for slice specs and the **working code directory at HEAD** for the realized state.
+The per-slice diff lives in git history on the chapter worktree's branch — no separate diff-log file is generated. Downstream agents (lesson designer, writer, validator) read the **project code plan** for slice specs and the **working code directory at HEAD** for the realized state.
 
 ### Per project lesson (run once per lesson in the chapter)
 
@@ -73,7 +73,7 @@ Same triage as teaching chapters. Drift from `project-validator` goes to `lesson
 
 For teaching chapters (except unit 1), after every lesson in the chapter is complete, the orchestrator fires `quiz-maker` once (subject to §7 of the pedagogical guidelines). Project chapters do not get a quiz — the project itself is the assessment.
 
-After the last lesson is reviewed and accepted on a project chapter, the chapter prep branch is ready to merge into `main`. Merging is a human-curator step; the branch carries the lesson MDX, the working code, the derived starter, the project plan, and the project facts — all of it together.
+After the last lesson of a chapter is reviewed and accepted, the chapter worktree's branch is ready to merge into `main`. Merging — and tearing down the worktree afterwards — is a human-curator step. The branch carries the lesson MDX, the working code (project chapters), the derived starter (project chapters), the project plan, the project facts, and any quiz output — all of it together.
 
 ## Frontmatter status flow
 
@@ -103,8 +103,8 @@ src/components/lessons/<chapter>/<lesson-slug>/<n>.astro
 For project chapters, the project code is built during prep at:
 
 ```
-documentation/lessons plan/work/Chapter <X.Y>/code/      — working solution, slice commits live on the prep branch
-documentation/lessons plan/work/Chapter <X.Y>/starter/   — derived starter, one commit on the prep branch
+documentation/lessons plan/work/Chapter <X.Y>/code/      — working solution, slice commits live on the chapter worktree's branch
+documentation/lessons plan/work/Chapter <X.Y>/starter/   — derived starter, one commit on the chapter worktree's branch
 ```
 
 When the chapter ships, these two directories get copied to the sibling `react-saas-course-projects` repo at `<project-id>/{starter,solution}/` (e.g. `7.6-server-actions/`) for student `degit` access. Publication is a human-curator step.
@@ -125,7 +125,7 @@ Project chapters also have chapter-level artifacts:
 documentation/lessons plan/work/Chapter <X.Y>/
   project code plan.md  — project-architect output (precondition + slices + stub contracts + lesson tagging)
   project facts.md      — project-fact-verifier output
-  code/                 — working solution directory (slice history on the prep branch — `git log -p` if you want per-slice diffs)
+  code/                 — working solution directory (slice history on the chapter worktree's branch — `git log -p` if you want per-slice diffs)
   starter/              — derived starter directory
 ```
 
@@ -139,20 +139,21 @@ Every lesson in a project chapter gets a tag from the project plan that determin
 
 The designer reads the tag and picks the outline shape. The writer reads the tag and picks the MDX shape. The validator reads the tag and picks the verification mode.
 
-## Git mechanics — project chapter prep
+## Git mechanics — chapter worktree
 
-The orchestrator does all git operations on the course repo. Slice coders, the precondition coder, and the starter coder each `git add` + `git commit` their own work; everything else (branching, resetting, log-extracting) is the orchestrator's job.
+The orchestrator does its git commits inside a chapter worktree of `react-saas-course`, on a chapter-scoped branch. Slice coders, the precondition coder, and the starter coder each `git add` + `git commit` their own work in the same worktree; everything else (commit decisions, resetting on slice failure, log-extracting) is the orchestrator's job.
 
-- **Branch:** `git checkout -b chapter-<X.Y>-prep` at chapter start. All prep code and lesson MDX commits live on this branch.
-- **Slice retry on failure:** when a slice coder reports blocked, orchestrator runs `git reset --hard HEAD` and re-fires the same slice coder with the failure output appended. Cap 2 retries per slice.
-- **Per-slice diffs on demand:** the slice history lives in the prep branch's git log. If you ever want a per-slice diff, run `git log -p <precondition-sha>..HEAD -- "documentation/lessons plan/work/Chapter <X.Y>/code/"`. No diff-log file is materialized — downstream agents read the plan's slice specs for what should be there and the working code at HEAD for what is.
-- **Chapter completion:** when every lesson is reviewed, the branch is ready for human curation. The merge (squash or keep history) is the human's choice.
+- **Worktree:** one git worktree per chapter, created by Claude Code before the orchestrator starts and torn down by the human curator after merge. The orchestrator never runs `git worktree add` or `git worktree remove` itself, and never runs `git checkout` to switch branches. All of the chapter's commits — lesson MDX, project code, derived starter — land on the single chapter branch attached to this worktree.
+- **Parallelism:** multiple chapter orchestrators may run concurrently in sibling worktrees off `main`. Worktrees do not see each other's uncommitted state. Inter-chapter code dependencies (e.g. a project chapter that extends a prior project) require that the prior chapter has already been merged to `main` before the dependent chapter's worktree is created.
+- **Slice retry on failure:** when a slice coder reports blocked, orchestrator runs `git reset --hard HEAD` and re-fires the same slice coder with the failure output appended. Cap 2 retries per slice. The reset is local to the chapter worktree and does not affect any other worktree.
+- **Per-slice diffs on demand:** the slice history lives in the chapter branch's git log. If you ever want a per-slice diff, run `git log -p <precondition-sha>..HEAD -- "documentation/lessons plan/work/Chapter <X.Y>/code/"` from inside the worktree. No diff-log file is materialized — downstream agents read the plan's slice specs for what should be there and the working code at HEAD for what is.
+- **Chapter completion:** when every lesson is reviewed, the branch is ready for human curation. The merge (squash or keep history) and worktree teardown (`git worktree remove`, `git branch -d`) are the human's choices.
 
-No nested `.git/` directories. The prep branch lives inside the course repo's single git history; the published projects repo only receives finished `starter/` and `solution/` copies and never sees the slice commits.
+No nested `.git/` directories. The worktree's `.git` is a pointer file into the main repo's git directory; the published projects repo only receives finished `starter/` and `solution/` copies and never sees the slice commits.
 
 ## Concept ledger — keeping lessons from re-teaching each other
 
-After each completed lesson, the orchestrator fires `lesson-cataloger`. It reads the final MDX and writes a short ledger entry to `documentation/lessons plan/work/Chapter <X.Y>/<lesson-slug>/lesson concepts.md` noting what was actually taught (concepts introduced, terms newly defined, patterns shown, code domain). The next lesson's designer reads every prior completed lesson's concepts file and treats anything in any of them as a prerequisite — referenced in one line with a link, not re-taught.
+After each completed lesson, the orchestrator fires `lesson-cataloger`. It reads the final MDX and every prior completed lesson's `lesson concepts.md` in the chapter, then writes a short ledger entry to `documentation/lessons plan/work/Chapter <X.Y>/<lesson-slug>/lesson concepts.md` noting what *this* lesson newly taught (concepts introduced, terms newly defined, patterns shown, code domain). Reading the prior ledgers lets the cataloger distinguish concepts this lesson introduced from ones it merely restated. The next lesson's designer reads every prior completed lesson's concepts file and treats anything in any of them as a prerequisite — referenced in one line with a link, not re-taught.
 
 ## What every subagent gets, by default
 
@@ -194,8 +195,7 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-  Start([Chapter starts]) --> Branch["orchestrator: git checkout -b chapter-X.Y-prep"]
-  Branch --> A
+  Start(["Chapter starts<br/>(inside the chapter worktree)"]) --> A
   subgraph Prep["Chapter prep · once"]
     direction TB
     A[project-architect] --> FV[project-fact-verifier]
@@ -219,5 +219,5 @@ flowchart TD
     R2 -. issues .-> Im2[12 . improver]
     Im2 -.-> Cat
   end
-  Cat --> Done([Chapter complete · branch ready for human merge])
+  Cat --> Done(["Chapter complete · branch ready for human merge"])
 ```

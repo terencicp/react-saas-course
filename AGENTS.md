@@ -32,11 +32,11 @@ Read project files only if required by your current task:
 
 ### Project chapter prep (transient)
 
-Project chapters build their code on a per-chapter prep branch (`chapter-<X.Y>-prep`) in this repo. Working artifacts under `documentation/lessons plan/work/Chapter <X.Y>/`:
+Project chapters build their code inside a per-chapter git worktree of this repo, on a chapter-scoped branch. Multiple chapters can be authored in parallel — each chapter orchestrator runs in its own worktree, created and torn down by Claude Code. Working artifacts under `documentation/lessons plan/work/Chapter <X.Y>/`:
 
 - `project code plan.md` — architect's plan (precondition + slices with full inline content + stub contracts + lesson tagging).
 - `project facts.md` — fact-verifier output.
-- `code/` — working solution directory; slice commits live on the prep branch. Per-slice diffs available on demand via `git log -p`.
+- `code/` — working solution directory; slice commits live on the chapter worktree's branch. Per-slice diffs available on demand via `git log -p`.
 - `starter/` — derived starter directory.
 
 When a chapter ships, `code/` and `starter/` get copied to the sibling `react-saas-course-projects` repo at `<project-id>/{solution,starter}/` for student `degit` access.
