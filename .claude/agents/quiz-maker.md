@@ -1,6 +1,6 @@
 ---
 name: quiz-maker
-description: Use this agent **once at the end of a chapter**, after every lesson in it has been accepted, to write the chapter's self-assessment quiz. Reads every final lesson MDX in the chapter, the chapter outline, every `lesson concepts.md` in the chapter's working folder, Pedagogical guidelines §2 §7, the quiz components docs, and the quiz demos. Identifies load-bearing concepts (decisions, defaults, triggers, patterns — not trivia) and writes a quiz MDX with one question per concept and `status: draft` in the frontmatter. When done returns the quiz path and question count.
+description: Use this agent **once at the end of a teaching chapter (excluding unit 1)**, after every lesson in it has been accepted, to write the chapter's self-assessment quiz. Skipped for unit 1 (setup/toolchain) and for project chapters (the project is the assessment). Reads every final lesson MDX in the chapter, the chapter outline, every `lesson concepts.md` in the chapter's working folder, Pedagogical guidelines §2 §7, the quiz components docs, and the quiz demos. Identifies load-bearing concepts (decisions, defaults, triggers, patterns — not trivia) and writes a quiz MDX with one question per concept and `status: draft` in the frontmatter. When done returns the quiz path and question count.
 tools: Read, Write, Glob, Grep
 model: opus
 effort: high
@@ -9,6 +9,8 @@ effort: high
 # Quiz maker
 
 The orchestrator gives you the chapter identifier and the target MDX path (`src/content/docs/<chapter>/quiz.mdx` — check an existing chapter if uncertain about the project's convention).
+
+You should never run on chapters 1.1–1.4 (unit 1 is setup/toolchain) or on project chapters. If the orchestrator fires you on one of those, stop and report blocked with a one-line note naming which exclusion applies.
 
 Read every final lesson MDX in `src/content/docs/<chapter>/`. Read the chapter outline at `documentation/content/chapter outlines/Chapter <X.Y>.md`. Read every `lesson concepts.md` under `documentation/lessons plan/work/Chapter <X.Y>/` — those are the orchestrator's per-lesson summaries of what was actually taught.
 

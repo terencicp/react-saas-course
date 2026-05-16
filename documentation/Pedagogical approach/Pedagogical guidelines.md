@@ -64,7 +64,7 @@ Code samples carry the same posture as the prose: direct, minimal, opinionated. 
 
 **Scope**. Cover only what a senior shipping production SaaS on this stack in 2026 reaches for with  regularity, and nothing else. The essentials get full treatment — signature, the decisions around them, the failure modes that bite in production. The long tail gets a one-line mention or gets cut. Length is not the constraint; a lesson that runs long because the topic is load-bearing is correctly scoped, and every paragraph earns its place. The failure mode is the lesson that surveys an API end-to-end: the student loses the signal of what matters and stops trusting the cut. Prerequisites are never re-taught — a one-line frame and a link to the lesson that owns the topic.
 
-**Six archetypes** — descriptive shapes, used as a thinking framework, not as blueprint:
+**Lesson archetypes** — descriptive shapes, used as a thinking framework, not as blueprint:
 
 - *Mechanics* — specific syntax/API. Code example + inline watch-out + quick exercise. Sandbox often.
 - *Decision* — "when does X earn its weight." Threshold up front, alternatives compared. Decision-tree or comparison diagram often essential.
@@ -72,6 +72,7 @@ Code samples carry the same posture as the prose: direct, minimal, opinionated. 
 - *Setup/wiring* — terminal-style walkthrough + verify step. No exercise default.
 - *Pattern* — code block named for what it prevents, failure mode without it, structural enforcement that makes the bug hard to write. "Spot the missing piece" exercises.
 - *Reference/survey* — enumerate an API set with "reach for it when…" lines.
+- *Project walkthrough* — used by lessons in project chapters only, in three flavors (precondition / slice / verify walkthrough). The code is built during chapter prep; the lesson walks the student over it. See §8 and the project-lesson-designer / project-lesson-writer agents.
 
 **Canonical lesson shape:**
 
@@ -95,7 +96,7 @@ Code samples carry the same posture as the prose: direct, minimal, opinionated. 
 
 ## 7. Quizzes
 
-Most chapters will have a final quizz to let the student self-assess its recall.
+Teaching chapters end with a final quiz so the student can self-assess recall — except unit 1 (chapters 1.1–1.4), which is setup/toolchain and has nothing quiz-worthy. Project chapters do not get a quiz; the project itself is the assessment.
 
 ## 8. Small focused projects
 

@@ -12,7 +12,7 @@ The orchestrator fires you once per diagram in the lesson outline, sequentially.
 
 The orchestrator gives you the lesson outline path, the MDX path, the lesson slug, the chapter, and the diagram index.
 
-Read the outline and pull out the diagram brief for your assigned index. Read `documentation/diagrams/INDEX.md` to map the diagram's shape to the right engine. Read the specific engine's doc — `documentation/diagrams/mermaid.md`, `d2.md`, `svg.md`, or `html-css.md`. Read `documentation/components/figures/figure.md` since every diagram wraps in `<Figure>`. If you're using `<ArrowDiagram>`, also read `documentation/components/figures/arrow-diagram.md`.
+Read the outline and pull out the diagram brief for your assigned index. Read `documentation/diagrams/INDEX.md` to map the diagram's shape to the right engine. Read the specific engine's doc. For Mermaid, D2, SVG, HTML+CSS: `documentation/diagrams/{mermaid,d2,svg,html-css}.md`. For `<FileTree>`: `documentation/components/starlight/file-tree.md`. For `<ArrowDiagram>`: `documentation/components/figures/arrow-diagram.md`. Read `documentation/components/figures/figure.md` since every diagram wraps in `<Figure>`.
 
 If the outline's suggested engine is wrong for the diagram's shape (per the INDEX rules), override it and note the change in your final report.
 

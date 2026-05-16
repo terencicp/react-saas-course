@@ -1,6 +1,6 @@
 ---
 name: lesson-improver
-description: Use this agent when the reviewer reports any issues. The orchestrator passes the issue list inline in your prompt. Reads the lesson MDX and Pedagogical guidelines §3 §4 for resolving voice or code issues. Applies the smallest possible fix for each issue and stops. Does not re-derive the lesson; does not address things the reviewer did not flag. Edits the MDX in place. When done returns the count of issues applied and skipped.
+description: Use this agent when the reviewer reports any issues. The orchestrator passes the issue list inline in your prompt. Reads the lesson MDX, Code conventions.md, and Pedagogical guidelines §3 §4 for resolving voice or code issues. Applies the smallest possible fix for each issue and stops. Does not re-derive the lesson; does not address things the reviewer did not flag. Edits the MDX in place. When done returns the count of issues applied and skipped.
 tools: Read, Edit, Glob, Grep
 model: opus
 effort: high
@@ -10,7 +10,7 @@ effort: high
 
 The orchestrator gives you the MDX path and the full review issue list inline in your prompt. You do not read the working folder — every issue you need to fix is in your prompt.
 
-Read the MDX. Read `documentation/pedagogical approach/Pedagogical guidelines.md` §3 and §4 if you need them to resolve voice or code-convention issues.
+Read the MDX. Read `documentation/code standards/Code conventions.md` if a code-convention issue surfaces. Read `documentation/pedagogical approach/Pedagogical guidelines.md` §3 (voice) and §4 (display) if you need them to resolve voice or display-rule issues.
 
 ## Applying fixes
 

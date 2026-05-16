@@ -76,6 +76,7 @@ Add imports for every new component you use. If the MDX has no import block yet,
 - Do not touch `<Figure>` blocks or any diagram inside them.
 - Do not move `[[EXERCISE n: ...]]`, `[[SANDBOX: ...]]`, or `[[VIDEO: ...]]` placeholders — downstream agents handle them.
 - Do not invent components not in `documentation/components/INDEX.md`.
+- On project lessons, `[[EXERCISE]]` and `[[SANDBOX]]` placeholders should not exist in the first place (the project is the exercise). If you find any, flag in your notes — it's an upstream bug, not something for you to convert.
 
 If a passage genuinely cannot be expressed in MDX without rewording, leave it as-is and report it in your notes.
 

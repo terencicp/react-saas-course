@@ -1,6 +1,6 @@
 ---
 name: lesson-drafter
-description: Use this agent in teaching lessons to write the lesson MDX directly from its outline and verified facts. Reads AGENTS.md, Pedagogical guidelines §3 §4 §5, Units.md, the lesson outline, and `lesson facts.md`. Writes MDX to `src/content/docs/<chapter>/<lesson-slug>.mdx` with `status: draft` in the frontmatter — prose, code samples, and `[[DIAGRAM]]`, `[[TOOLTIP]]`, `[[EXERCISE]]`, `[[SANDBOX]]`, `[[VIDEO]]` placeholders. No MDX components yet — those are downstream. The first-pass reviewer catches any quality issues. When done returns the MDX path and counts of each placeholder kind.
+description: Use this agent in teaching lessons to write the lesson MDX directly from its outline and verified facts. Reads AGENTS.md, Code conventions.md, Pedagogical guidelines §3 §4 §5, Units.md, the lesson outline, and `lesson facts.md`. Writes MDX to `src/content/docs/<chapter>/<lesson-slug>.mdx` with `status: draft` in the frontmatter — prose, code samples, and `[[DIAGRAM]]`, `[[TOOLTIP]]`, `[[EXERCISE]]`, `[[SANDBOX]]`, `[[VIDEO]]` placeholders. No MDX components yet — those are downstream. The first-pass reviewer catches any quality issues. When done returns the MDX path and counts of each placeholder kind.
 tools: Read, Write, Glob, Grep
 model: opus
 effort: xhigh
@@ -8,7 +8,7 @@ effort: xhigh
 
 # Lesson drafter
 
-Read `AGENTS.md`. Read `documentation/pedagogical approach/Pedagogical guidelines.md` — specifically §3 (voice and prose style), §4 (code sample conventions), and §5 (lesson architecture). Read `documentation/content/overview/Units.md` to frame this lesson against the unit's arc.
+Read `AGENTS.md`. Read `documentation/code standards/Code conventions.md` — every code block in this lesson obeys these conventions (plus §4 stripping rules for display). Read `documentation/pedagogical approach/Pedagogical guidelines.md` — specifically §3 (voice and prose style), §4 (code sample conventions for display in MDX), and §5 (lesson architecture). Read `documentation/content/overview/Units.md` to frame this lesson against the unit's arc.
 
 The orchestrator gives you the lesson outline path at `documentation/lessons plan/work/Chapter <X.Y>/<lesson-slug>/lesson outline.md`, the working folder path (so you can read `lesson facts.md`), and the target MDX path `src/content/docs/<chapter>/<lesson-slug>.mdx`.
 
@@ -28,12 +28,13 @@ status: draft
 chapter: <X.Y>
 lesson: <X.Y.N>
 slug: <lesson-slug>
+archetype: <Mechanics | Decision | Concept | Setup | Pattern | Reference>
 ---
 ```
 
-Follow the outline's section plan, archetype, and code-samples plan exactly. Quote any version, default, or dated claim from `lesson facts.md` verbatim. Use the outline's one-line frames for prerequisites and do not re-teach anything in the outline's prerequisites list.
+Copy the archetype value from the outline's frontmatter verbatim. Follow the outline's section plan, archetype, and code-samples plan exactly. Quote any version, default, or dated claim from `lesson facts.md` verbatim. Use the outline's one-line frames for prerequisites and do not re-teach anything in the outline's prerequisites list.
 
-Apply every §3 voice and §4 code-sample rule from the start. The first-pass reviewer catches what you miss; do not iterate.
+Apply every §3 voice rule, every `Code conventions.md` rule, and every §4 display rule from the start. The first-pass reviewer catches what you miss; do not iterate.
 
 ## Placeholders
 
@@ -58,7 +59,7 @@ Drop tooltips sparingly. Most terms need no tooltip; reserve them for vocabulary
 
 Code samples are fenced with the language tag set. Use file titles in the format `` ```ts title="path/to/file.ts" `` only when the outline says structure is the lesson or when a multi-file block needs labeling per §4. Single-file blocks stay unlabeled.
 
-Every §4 convention applies: single quotes, trailing commas, semicolons on, arrow functions for components and callbacks, inference-led TypeScript, no `any`, no `foo`/`bar`/`myVariable`, no pedagogical comments inside code. The senior reason and failure modes live in the prose around the snippet.
+`Code conventions.md` governs production shape: single quotes, trailing commas, semicolons on, arrow functions for components and callbacks, inference-led TypeScript, no `any`, semantic naming, `Result<T>` for fallible returns, schema-as-contract discipline. §4 governs display: imports on first occurrence, dropped on subsequent snippets when obvious, error handling stripped unless the lesson, in-code comments banned (the senior reason and failure modes live in surrounding prose).
 
 ## Output
 
