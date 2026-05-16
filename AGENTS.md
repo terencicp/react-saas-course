@@ -24,6 +24,6 @@ Read project files only if required by your current task:
 - `documentation/content/overview/Table of contents.md` — canonical curriculum, the source of truth for what gets taught and in what order. Extensive document, read only the relevant sections.
 - `documentation/content/overview/Units.md` — brief high-level overview of the course's units and the topics each covers.
 - `documentation/content/overview/Project dependencies.md` — for each chapter-end project, which earlier project's codebase it continues from.
-- `documentation/content/outlines/` — one file per chapter (`Chapter X.Y.md`) breaking down the content and scope of each lesson within the chapter.
-- `documentation/Pedagogical approach/Pedagogical guidelines.md` — Teaching style for the course's lessons.
+- `documentation/content/chapter outlines/` — one file per chapter (`Chapter X.Y.md`) breaking down the content and scope of each lesson within the chapter.
+- `documentation/pedagogical approach/Pedagogical guidelines.md` — Teaching style for the course's lessons.
 - `documentation/diagrams/INDEX.md` — How to pick the best diagram engine for each use case (Mermaid, D2, etc.).
