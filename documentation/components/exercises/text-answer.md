@@ -1,14 +1,14 @@
-# `TextAnswer` + `Why`
+# `TextAnswer` + `AnswerWhy`
 
-Free-text answer drill. The student types a free-form answer into a textarea and presses **Submit answer**. A local Ollama model streams a one-paragraph verdict — the first word is `Pass.` or `Fail.` (driving the panel color and headline), the rest streams live into the panel as tokens arrive. The grader is told to weave the `<Why>` explanation into its paragraph so the student walks away understanding the principle.
+Free-text answer drill. The student types a free-form answer into a textarea and presses **Submit answer**. A local Ollama model streams a one-paragraph verdict — the first word is `Pass.` or `Fail.` (driving the panel color and headline), the rest streams live into the panel as tokens arrive. The grader is told to weave the `<AnswerWhy>` explanation into its paragraph so the student walks away understanding the principle.
 
-If Ollama is unreachable or never produces a verdict word, the script falls back to **keyword grading**: any one string in the required `keywords` array appearing (case-insensitive substring) in the answer is enough to pass. The offline path streams the `<Why>` text verbatim. The feedback panel labels which path was used (`Graded by AI` vs `Graded by keyword match`).
+If Ollama is unreachable or never produces a verdict word, the script falls back to **keyword grading**: any one string in the required `keywords` array appearing (case-insensitive substring) in the answer is enough to pass. The offline path streams the `<AnswerWhy>` text verbatim. The feedback panel labels which path was used (`Graded by AI` vs `Graded by keyword match`).
 
 ## Imports
 
 ```ts
 import TextAnswer from '../../../../components/exercises/text-answer/TextAnswer.astro';
-import Why from '../../../../components/exercises/text-answer/Why.astro';
+import AnswerWhy from '../../../../components/exercises/text-answer/AnswerWhy.astro';
 ```
 
 (Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
@@ -24,19 +24,19 @@ import Why from '../../../../components/exercises/text-answer/Why.astro';
 | `lines` | `number` | no | `4` | Initial textarea height in rows. The textarea is also vertically resizable. |
 | `placeholder` | `string` | no | `'Write your answer…'` | Textarea placeholder. |
 
-### `Why` — required inside the slot
+### `AnswerWhy` — required inside the slot
 
-No props. The senior-quality explanation. **Must be present** — the component throws at build time if no `<Why>` is found. Its content is fed to the AI grader (so the feedback paragraph can weave the principle in) and rendered verbatim in the keyword-fallback path. **Never rendered to the page in the AI path.**
+No props. The senior-quality explanation. **Must be present** — the component throws at build time if no `<AnswerWhy>` is found. Its content is fed to the AI grader (so the feedback paragraph can weave the principle in) and rendered verbatim in the keyword-fallback path. **Never rendered to the page in the AI path.**
 
 ## Slots
 
-- **`TextAnswer` default** — question prose + optional fenced code block + a **required** `<Why>`.
-- **`Why` default** — the senior explanation. Markdown / inline code / links all work.
+- **`TextAnswer` default** — question prose + optional fenced code block + a **required** `<AnswerWhy>`.
+- **`AnswerWhy` default** — the senior explanation. Markdown / inline code / links all work.
 
 ## Constraints & gotchas
 
-- The `<Why>` slot is enforced at build time. Missing it = build error. Empty `keywords` array = build error.
-- The AI grader receives: the rubric, the `<Why>` text, the flattened question, and the student's answer. It does **not** see the `keywords` (those are pure offline).
+- The `<AnswerWhy>` slot is enforced at build time. Missing it = build error. Empty `keywords` array = build error.
+- The AI grader receives: the rubric, the `<AnswerWhy>` text, the flattened question, and the student's answer. It does **not** see the `keywords` (those are pure offline).
 - Cmd/Ctrl-Enter inside the textarea submits.
 - The card locks after submit — answer remains visible but greyed out. There's no "Try again" path; if the lesson needs retry, the student would re-load.
 - Streamed paragraphs trim leading whitespace after the verdict word to avoid the dangling space some models emit between `Pass.` and the explanation.
@@ -54,7 +54,7 @@ Short prose answer:
 
 In React, why is mirroring a prop into `useState` (e.g. `const [name, setName] = useState(props.name)`) considered an anti-pattern?
 
-<Why>The local state is initialized once and never re-syncs with the prop. Any update to `props.name` from the parent won't reach the child until something explicitly calls `setName` — derived values should be recomputed from props on every render instead.</Why>
+<AnswerWhy>The local state is initialized once and never re-syncs with the prop. Any update to `props.name` from the parent won't reach the child until something explicitly calls `setName` — derived values should be recomputed from props on every render instead.</AnswerWhy>
 
 </TextAnswer>
 ````
@@ -81,7 +81,7 @@ function Counter() {
 }
 ```
 
-<Why>The empty dependency array means the effect only runs once — the interval closes over `count = 0` forever. Fix by adding `count` to the deps, or by using a ref / functional setState so the latest value is read without re-subscribing.</Why>
+<AnswerWhy>The empty dependency array means the effect only runs once — the interval closes over `count = 0` forever. Fix by adding `count` to the deps, or by using a ref / functional setState so the latest value is read without re-subscribing.</AnswerWhy>
 
 </TextAnswer>
 ````

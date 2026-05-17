@@ -9,8 +9,8 @@ Each `<MultipleChoice>` keeps its own click → reveal flow; the Quiz shell list
 ```ts
 import Quiz from '../../../../components/quiz/Quiz.astro';
 import MultipleChoice from '../../../../components/exercises/multiple-choice/MultipleChoice.astro';
-import Choice from '../../../../components/exercises/multiple-choice/Choice.astro';
-import Why from '../../../../components/exercises/multiple-choice/Why.astro';
+import McqChoice from '../../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../../components/exercises/multiple-choice/McqWhy.astro';
 ```
 
 (Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
@@ -60,43 +60,43 @@ Three questions tagged by source, one of them multi-select (auto-detected from t
   <MultipleChoice src="4.7.4">
     Calling `setCount(count + 1)` three times in the same handler results in count incrementing by…
 
-    <Choice>3</Choice>
-    <Choice correct>1</Choice>
-    <Choice>9</Choice>
+    <McqChoice>3</McqChoice>
+    <McqChoice correct>1</McqChoice>
+    <McqChoice>9</McqChoice>
 
-    <Why>Each call reads the same snapshot of `count`. They all resolve to `count + 1`. Use the updater form (`prev => prev + 1`) to stack.</Why>
+    <McqWhy>Each call reads the same snapshot of `count`. They all resolve to `count + 1`. Use the updater form (`prev => prev + 1`) to stack.</McqWhy>
   </MultipleChoice>
 
   <MultipleChoice src="4.7.5">
     Which form correctly increments `count` three times per click?
 
-    <Choice>
+    <McqChoice>
       ```js
       setCount(count + 1);
       setCount(count + 1);
       setCount(count + 1);
       ```
-    </Choice>
-    <Choice correct>
+    </McqChoice>
+    <McqChoice correct>
       ```js
       setCount(prev => prev + 1);
       setCount(prev => prev + 1);
       setCount(prev => prev + 1);
       ```
-    </Choice>
+    </McqChoice>
 
-    <Why>The updater form reads from the queue, so each call stacks on top of the previous one.</Why>
+    <McqWhy>The updater form reads from the queue, so each call stacks on top of the previous one.</McqWhy>
   </MultipleChoice>
 
   <MultipleChoice src="4.8.1">
     Which of these belong in `useState`? **Select all that apply.**
 
-    <Choice correct>A modal's open/closed flag</Choice>
-    <Choice correct>The current page number in a paginated list</Choice>
-    <Choice>The user's auth token (used by every page)</Choice>
-    <Choice>A computed value derived from another piece of state</Choice>
+    <McqChoice correct>A modal's open/closed flag</McqChoice>
+    <McqChoice correct>The current page number in a paginated list</McqChoice>
+    <McqChoice>The user's auth token (used by every page)</McqChoice>
+    <McqChoice>A computed value derived from another piece of state</McqChoice>
 
-    <Why>Component-local UI state belongs in `useState`. Cross-cutting state (auth) goes in a store. Derived values shouldn't be stored at all.</Why>
+    <McqWhy>Component-local UI state belongs in `useState`. Cross-cutting state (auth) goes in a store. Derived values shouldn't be stored at all.</McqWhy>
   </MultipleChoice>
 </Quiz>
 ````

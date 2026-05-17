@@ -75,7 +75,7 @@ Interactive non-coding exercises.
 | `Tokens` | Click pre-highlighted parts of the code on a block — identify operators, calls, literals, etc. Targets are correct, decoys are clickable wrong picks. | [tokens.md](./exercises/tokens.md) |
 | `Buckets` | Classification drag-and-drop. Sort items into the right category. One- or two-column layout. | [buckets.md](./exercises/buckets.md) |
 | `CodeReview` | PR-style review — student leaves inline comments on a diff, AI grades each against a short `kernel` rubric phrase. | [code-review.md](./exercises/code-review.md) |
-| `Dropdowns` | Fill-in-the-blank with `<select>`s — either inline prose with `<Choice>`, or a fenced code block with `___` placeholders and an `answers` prop. | [dropdowns.md](./exercises/dropdowns.md) |
+| `Dropdowns` | Fill-in-the-blank with `<select>`s — either inline prose with `<DropdownChoice>`, or a fenced code block with `___` placeholders and an `answers` prop. | [dropdowns.md](./exercises/dropdowns.md) |
 | `Matching`  | Two-column matching drill — click a left item, then its corresponding right item; they link with a line. | [matching.md](./exercises/matching.md) |
 | `MultipleChoice` | Single multiple-choice question. Two or more `correct` choices auto-switch the card to multi-select mode. | [multiple-choice.md](./exercises/multiple-choice.md) |
 | `PredictOutput` | "What does this program print?" drill. Expected output withheld on the first wrong attempt. | [predict-output.md](./exercises/predict-output.md) |

@@ -1,8 +1,8 @@
-# `MultipleChoice` + `Choice` + `Why`
+# `MultipleChoice` + `McqChoice` + `McqWhy`
 
-Single multiple-choice question. Mark the right answer(s) with `correct` on `<Choice>`. With one `correct` choice, the card runs in click-and-reveal mode (the student's click immediately reveals right/wrong). With two or more, it switches to multi-select / submit-to-check mode automatically — a Check button appears and the student picks all that apply before submitting.
+Single multiple-choice question. Mark the right answer(s) with `correct` on `<McqChoice>`. With one `correct` choice, the card runs in click-and-reveal mode (the student's click immediately reveals right/wrong). With two or more, it switches to multi-select / submit-to-check mode automatically — a Check button appears and the student picks all that apply before submitting.
 
-The optional `<Why>` slot is the explanation, prefixed `Correct.` or `Not quite.` in the reveal. Inside a `<Quiz>` (see [quiz.md](../quiz/quiz.md)), `<MultipleChoice>` cards roll up into a shared score bar.
+The optional `<McqWhy>` slot is the explanation, prefixed `Correct.` or `Not quite.` in the reveal. Inside a `<Quiz>` (see [quiz.md](../quiz/quiz.md)), `<MultipleChoice>` cards roll up into a shared score bar.
 
 To properly help the student self-check its knowledge, it's important that answers are not literally exactly what's in the prose otherwise the student is not thinking, it's just pattern-matching.
 
@@ -10,8 +10,8 @@ To properly help the student self-check its knowledge, it's important that answe
 
 ```ts
 import MultipleChoice from '../../../../components/exercises/multiple-choice/MultipleChoice.astro';
-import Choice from '../../../../components/exercises/multiple-choice/Choice.astro';
-import Why from '../../../../components/exercises/multiple-choice/Why.astro';
+import McqChoice from '../../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../../components/exercises/multiple-choice/McqWhy.astro';
 ```
 
 (Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
@@ -24,21 +24,21 @@ import Why from '../../../../components/exercises/multiple-choice/Why.astro';
 | --- | --- | --- | --- | --- |
 | `src` | `string` | no | — | Source pill — typically a chapter reference like `'0.2.1.1'`. Only renders when the card sits inside a `<Quiz>`. |
 
-### `Choice`
+### `McqChoice`
 
 | Prop | Type | Required | Default | Purpose |
 | --- | --- | --- | --- | --- |
 | `correct` | `boolean` | no | `false` | Mark this option as a valid answer. Two or more `correct` choices switch the card to multi-select / submit mode. |
 
-### `Why`
+### `McqWhy`
 
 No props. Optional explanation revealed alongside the answer.
 
 ## Slots
 
-- **`MultipleChoice` default** — question prose first, then `<Choice>` options, then an optional `<Why>`. The question can include inline code, fenced code blocks, etc.
-- **`Choice` default** — option text. Inline markdown works; a fenced code block becomes the entire answer ("which snippet does X?").
-- **`Why` default** — explanation markdown. Auto-prefixed with `Correct.` / `Not quite.` based on the result.
+- **`MultipleChoice` default** — question prose first, then `<McqChoice>` options, then an optional `<McqWhy>`. The question can include inline code, fenced code blocks, etc.
+- **`McqChoice` default** — option text. Inline markdown works; a fenced code block becomes the entire answer ("which snippet does X?").
+- **`McqWhy` default** — explanation markdown. Auto-prefixed with `Correct.` / `Not quite.` based on the result.
 
 ## Constraints & gotchas
 
@@ -55,12 +55,12 @@ Single correct, prose options:
 <MultipleChoice>
   In modern JavaScript, which keyword creates a binding that **can't be reassigned**?
 
-  <Choice>`var`</Choice>
-  <Choice>`let`</Choice>
-  <Choice correct>`const`</Choice>
-  <Choice>`final`</Choice>
+  <McqChoice>`var`</McqChoice>
+  <McqChoice>`let`</McqChoice>
+  <McqChoice correct>`const`</McqChoice>
+  <McqChoice>`final`</McqChoice>
 
-  <Why>`const` locks the binding. The value can still mutate (e.g. you can `push` into a `const` array), but you can't point the name at something else.</Why>
+  <McqWhy>`const` locks the binding. The value can still mutate (e.g. you can `push` into a `const` array), but you can't point the name at something else.</McqWhy>
 </MultipleChoice>
 ````
 
@@ -70,21 +70,21 @@ Single correct, code block in the question, fenced code as answers:
 <MultipleChoice>
   Which snippet copies an array without mutating the original?
 
-  <Choice>
+  <McqChoice>
     ```js
     const b = a;
     ```
-  </Choice>
-  <Choice correct>
+  </McqChoice>
+  <McqChoice correct>
     ```js
     const b = [...a];
     ```
-  </Choice>
-  <Choice>
+  </McqChoice>
+  <McqChoice>
     ```js
     const b = a.sort();
     ```
-  </Choice>
+  </McqChoice>
 </MultipleChoice>
 ````
 
@@ -94,10 +94,10 @@ Multi-select (auto-detected from two `correct` marks):
 <MultipleChoice>
   Which of these are **block-scoped** in JavaScript? Select all that apply.
 
-  <Choice correct>`let`</Choice>
-  <Choice correct>`const`</Choice>
-  <Choice>`var`</Choice>
+  <McqChoice correct>`let`</McqChoice>
+  <McqChoice correct>`const`</McqChoice>
+  <McqChoice>`var`</McqChoice>
 
-  <Why>`let` and `const` are block-scoped. `var` is function-scoped.</Why>
+  <McqWhy>`let` and `const` are block-scoped. `var` is function-scoped.</McqWhy>
 </MultipleChoice>
 ````

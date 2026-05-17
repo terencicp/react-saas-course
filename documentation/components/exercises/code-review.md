@@ -1,4 +1,4 @@
-# `CodeReview` + `ReviewFile` + `ReviewIssue` + `Why`
+# `CodeReview` + `ReviewFile` + `ReviewIssue` + `ReviewWhy`
 
 PR-style code-review exercise. The student sees a multi-file diff, clicks lines to leave inline review comments, and presses **Submit review**. Each on-line comment is sent to a local Ollama model that grades it against the issue's `kernel` — a short rubric phrase naming the single defect the senior reviewer would flag. The reveal panel shows ✓ (caught) or ✗ (missed) for every seeded plant.
 
@@ -10,7 +10,7 @@ Two or more `<ReviewFile>` children render inside Starlight's `<Tabs>`; a single
 import CodeReview from '../../../../components/exercises/code-review/CodeReview.astro';
 import ReviewFile from '../../../../components/exercises/code-review/ReviewFile.astro';
 import ReviewIssue from '../../../../components/exercises/code-review/ReviewIssue.astro';
-import Why from '../../../../components/exercises/code-review/Why.astro';
+import ReviewWhy from '../../../../components/exercises/code-review/ReviewWhy.astro';
 ```
 
 (Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
@@ -37,16 +37,16 @@ import Why from '../../../../components/exercises/code-review/Why.astro';
 | `line` | `number` | yes | — | 1-based line index in the rendered source (every line counts, including `ins=` and `del=` ones). |
 | `kernel` | `string` | no | — | Short rubric phrase naming the single defect. **The only thing sent to the AI grader.** Authoring this separately from the slot keeps the bar where the lesson author meant it. If omitted, the grader falls back to the flattened slot text. |
 
-### `Why`
+### `ReviewWhy`
 
 No props. Optional overall debrief rendered above the issue list after submit.
 
 ## Slots
 
-- **`CodeReview` default** — `<ReviewFile>` blocks, `<ReviewIssue>` declarations, and an optional `<Why>`. Order doesn't matter; the runtime sorts them.
+- **`CodeReview` default** — `<ReviewFile>` blocks, `<ReviewIssue>` declarations, and an optional `<ReviewWhy>`. Order doesn't matter; the runtime sorts them.
 - **`ReviewFile` default** — exactly one fenced Expressive Code block. Use `ins={...}` / `del={...}` meta for diff gutters.
 - **`ReviewIssue` default** — long-form senior reveal shown after submit (markdown / inline JSX). The LLM never sees this; only `kernel` is fed to the grader.
-- **`Why` default** — overall lesson takeaway, rendered as the top of the reveal panel.
+- **`ReviewWhy` default** — overall lesson takeaway, rendered as the top of the reveal panel.
 
 ## Grading
 
@@ -85,9 +85,9 @@ Single file, one plant — the student must flag swapping a type assertion for a
     Good move from `as User` to `User.parse(data)` — but the comment should call out **why**: `as` is a type-level lie, the runtime never checks the shape. `User.parse` actually validates.
   </ReviewIssue>
 
-  <Why>
+  <ReviewWhy>
     The lesson here isn't the fix; it's spotting the *shape* of the bug. Anywhere an `as` is doing the work of a parse is a candidate for the same flag.
-  </Why>
+  </ReviewWhy>
 </CodeReview>
 ````
 

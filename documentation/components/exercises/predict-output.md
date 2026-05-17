@@ -1,14 +1,14 @@
-# `PredictOutput` + `Why`
+# `PredictOutput` + `PredictWhy`
 
 "Predict what this program prints" drill. Wrap a fenced code block in the slot; pass the program's literal stdout via `expected`. The student types into a console-styled textarea and presses **Check**. The script trims trailing whitespace per line and trailing blank lines before comparing.
 
-An optional `<Why>` slot is revealed on a wrong answer (alongside the expected output after the second wrong attempt). On a correct answer, the panel collapses to a green check + "Correct" label.
+An optional `<PredictWhy>` slot is revealed on a wrong answer (alongside the expected output after the second wrong attempt). On a correct answer, the panel collapses to a green check + "Correct" label.
 
 ## Imports
 
 ```ts
 import PredictOutput from '../../../../components/exercises/predict-output/PredictOutput.astro';
-import Why from '../../../../components/exercises/predict-output/Why.astro';
+import PredictWhy from '../../../../components/exercises/predict-output/PredictWhy.astro';
 ```
 
 (Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
@@ -25,14 +25,14 @@ import Why from '../../../../components/exercises/predict-output/Why.astro';
 
 The textarea height auto-sizes to the line count of `expected` (so the box mirrors the volume of output being predicted).
 
-### `Why`
+### `PredictWhy`
 
 No props. Optional explanation revealed on a wrong answer.
 
 ## Slots
 
-- **`PredictOutput` default** — question prose (optional) + one fenced code block (the program) + an optional `<Why>`. Inline markdown works.
-- **`Why` default** — explanation rendered into the wrong-feedback panel.
+- **`PredictOutput` default** — question prose (optional) + one fenced code block (the program) + an optional `<PredictWhy>`. Inline markdown works.
+- **`PredictWhy` default** — explanation rendered into the wrong-feedback panel.
 
 ## Constraints & gotchas
 
@@ -54,7 +54,7 @@ const greet = (name) => `Hello, ${name}!`;
 console.log(greet("world"));
 ```
 
-<Why>Template literals splice the argument straight into the string.</Why>
+<PredictWhy>Template literals splice the argument straight into the string.</PredictWhy>
 
 </PredictOutput>
 ````
@@ -72,7 +72,7 @@ for (var i = 0; i < 3; i++) {
 }
 ```
 
-<Why>`var` is function-scoped — every callback closes over the **same** `i`, which has run up to `3` by the time the timers fire. Swap `var` for `let` and you get `0 1 2`.</Why>
+<PredictWhy>`var` is function-scoped — every callback closes over the **same** `i`, which has run up to `3` by the time the timers fire. Swap `var` for `let` and you get `0 1 2`.</PredictWhy>
 
 </PredictOutput>
 ````

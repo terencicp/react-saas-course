@@ -1,15 +1,15 @@
-# `Dropdowns` + `Choice`
+# `Dropdowns` + `DropdownChoice`
 
 Fill-in-the-blank drill where each blank is a `<select>`. Two authoring modes:
 
-- **Inline prose** — drop a `<Choice answer="…" options={[…]} />` at each blank in the prose slot.
+- **Inline prose** — drop a `<DropdownChoice answer="…" options={[…]} />` at each blank in the prose slot.
 - **Fenced code block** — write `___` (three underscores) at each blank inside a fenced block and pass an `answers` prop on `<Dropdowns>` listing the answers in source order. The block is highlighted by Expressive Code first; the runtime then swaps each `___` for a `<select>`.
 
 ## Imports
 
 ```ts
 import Dropdowns from '../../../../components/exercises/dropdowns/Dropdowns.astro';
-import Choice from '../../../../components/exercises/dropdowns/Choice.astro';
+import DropdownChoice from '../../../../components/exercises/dropdowns/DropdownChoice.astro';
 ```
 
 (Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
@@ -23,7 +23,7 @@ import Choice from '../../../../components/exercises/dropdowns/Choice.astro';
 | `answers` | `{ answer: string; options: string[] }[]` | no | `[]` | Used only with the **fenced code block** mode. One entry per `___` placeholder in the slot, in source order. |
 | `instructions` | `string` | no | — | Task-specific lead-in prepended to the default "Pick the right option…" prompt. |
 
-### `Choice`
+### `DropdownChoice`
 
 | Prop | Type | Required | Default | Purpose |
 | --- | --- | --- | --- | --- |
@@ -32,7 +32,7 @@ import Choice from '../../../../components/exercises/dropdowns/Choice.astro';
 
 ## Slot
 
-`<Dropdowns>` default — prose or a fenced code block (or both). Use `<Choice>` directly inside prose; use `___` inside a fenced block.
+`<Dropdowns>` default — prose or a fenced code block (or both). Use `<DropdownChoice>` directly inside prose; use `___` inside a fenced block.
 
 ## Constraints & gotchas
 
@@ -47,8 +47,8 @@ Inline prose with three dropdowns:
 
 ````mdx
 <Dropdowns>
-  HTTP <Choice answer="GET" options={['GET', 'POST', 'PUT', 'DELETE']} /> is the
-  default safe method for fetching a resource. <Choice answer="POST" options={['GET', 'POST', 'PUT', 'DELETE']} /> creates a new resource, while <Choice answer="DELETE" options={['GET', 'POST', 'PUT', 'DELETE']} /> removes one.
+  HTTP <DropdownChoice answer="GET" options={['GET', 'POST', 'PUT', 'DELETE']} /> is the
+  default safe method for fetching a resource. <DropdownChoice answer="POST" options={['GET', 'POST', 'PUT', 'DELETE']} /> creates a new resource, while <DropdownChoice answer="DELETE" options={['GET', 'POST', 'PUT', 'DELETE']} /> removes one.
 </Dropdowns>
 ````
 
