@@ -23,6 +23,7 @@ All paths in this prompt are rooted in this chapter's git worktree. The orchestr
 ## Step 1 — Replace `[[VIDEO]]` placeholders
 - For each `[[VIDEO: <topic>]]`, web-search for a contextual video that conveys what prose/diagrams can't (demo, animation, short talk). Embed inline at the placeholder with `<VideoCallout>`.
 - Body must still make sense without the video — `<VideoCallout>` is enhancement.
+- **Minimum length: 3 minutes.** Anything shorter is too compressed to convey what prose can't and counts as a drop (log it with reason `under 3 minutes`).
 - No high-signal video for a topic → delete the placeholder cleanly. Never fabricate URLs.
 - **Every video placeholder you encounter must be recorded in the agent log** (see *Agent log entry* below) as either `kept` (with the URL) or `dropped` (with a one-line reason). The second-pass reviewer reads this log to distinguish a deliberate drop from a forgotten placeholder; an unlogged drop is treated as a forgotten one.
 

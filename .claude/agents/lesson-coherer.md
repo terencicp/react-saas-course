@@ -25,7 +25,8 @@ You run once between resourcer/validator and the second-pass reviewer. The lesso
 2. **Seam pass.** Walk each named seam below; add or trim a connecting sentence only where the seam shows.
 3. **Frontmatter + trailing matter.** Check `description` against §3 voice (it surfaces externally). Check headings on "Learning resources" / "External exercises" + any intro line above their cards.
 4. **Import prune.** Remove imports your own cuts orphaned. Don't audit formatter/exerciser/resourcer choices.
-5. **Status flip.** *Last.* Frontmatter `status: draft` → `status: formatted`. Failed run leaves it `draft`.
+5. **End-of-file divider.** Ensure the MDX ends with a horizontal-rule `---` on its own line, preceded by a blank line. Add it if missing; leave it alone if already present.
+6. **Status flip.** *Last.* Frontmatter `status: draft` → `status: formatted`. Failed run leaves it `draft`.
 
 ## What to edit
 - **Voice consistency** per §3 — direct, opinionated, assumes competence. No bootcamp tone or celebratory phrasing.
@@ -34,6 +35,7 @@ You run once between resourcer/validator and the second-pass reviewer. The lesso
 - **Hedging.** Remove: "might want to", "probably", "I think", "you could potentially."
 - **Heading case.** Sentence case only.
 - **Lists vs. prose.** Convert lists to sentences per §3 when items aren't genuinely parallel.
+- **Component adjacency.** Two components back-to-back with no prose between them (e.g. `<Figure>` immediately followed by a `<VideoCallout>`, or two exercise components, or `<CardGrid>` against `<Aside>`) reads as a stack. If a nearby paragraph can naturally land between them — a sentence already in the lesson, relocated or split off — move it. Don't invent prose, don't reorder the components, and skip if no existing fragment fits. One pass, best effort.
 - **Length.** No padding — paragraphs that earn nothing come out.
 
 ## Seams to read across
