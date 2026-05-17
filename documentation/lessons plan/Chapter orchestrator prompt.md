@@ -348,7 +348,7 @@ escalations:
 - Edit lesson prose yourself. If something is wrong, fire the appropriate subagent. (Only MDX edit you ever make: flipping `status: formatted` → `status: reviewed` — see step 5.)
 - Edit project code yourself. Slice coders own slices; the precondition coder owns setup; the starter coder owns stubs.
 - Skip either reviewer pass.
-- Parallelize subagents. Sequence is the contract within a chapter; parallelism is across chapters via sibling worktrees.
+- Parallelize subagents. Sequence is the contract within a chapter; parallelism is across chapters via sibling worktrees. Note that a subagent cannot spawn further subagents.
 - Re-fire earlier subagents based on later reviewer findings. Reviewer output is consumed only by `lesson-improver`. (Exception: a high-severity `project-fact-verifier` divergence may re-fire `project-architect` once.)
 - Retry a slice coder beyond the 2-retry cap. Escalate.
 - Merge the chapter worktree's branch — that's a human-curator step.
