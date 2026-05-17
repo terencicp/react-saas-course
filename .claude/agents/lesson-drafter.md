@@ -28,6 +28,8 @@ Read outline + facts file. Do **not** read other chapter outlines, other lesson 
 
 ## Style
 
+**Reader model.** Junior-to-mid dev, 6–10 hours/week, evenings or weekends after a full day of other work. Cognitive load is the binding constraint, not curiosity. A sentence that takes a second pass costs more than its information yield — three of them in a row and the reader closes the tab. When the narrator's instinct and the reader's working memory conflict, the reader wins. Default to whatever a tired reader can follow without re-reading.
+
 The outline's `## Narrator` field names a published author (Sandi Metz, Julia Evans, etc.) plus a one-line voice cue. Hold that voice for the entire draft. §3 governs sentence-level tone — terse, opinionated, no humor, sentence-case headings — and is the constraint within which every narrator writes. The narrator is the *shape* of teaching: how each beat opens, how the reader is led through it, the rhythm of paragraphs.
 
 These pacing rules apply alongside §3 regardless of narrator:
@@ -39,6 +41,19 @@ These pacing rules apply alongside §3 regardless of narrator:
 - **Pivot between sections.** When a section closes, the next H2 opens with one sentence tying what just landed to what comes next, not cold.
 - **Defer non-essential surface area.** When introducing a model, hold adjacent concepts that share screen space for a later beat rather than bundling them in the main one.
 - **Concept archetype: worked example in prose.** When the outline calls for a worked example, write a paragraph that walks through one specific run with concrete values. An interactive component is the surface the student replays on; the prose is where the worked example *happens*.
+
+**Clarity (sentence-level — these run alongside pacing).** Pacing governs paragraph shape; these govern what each sentence costs to read.
+
+- **One idea per sentence.** If two clauses joined by "and"/"but"/"because" could each stand alone as a beat, split them.
+- **Concrete subject.** The grammatical subject should be something the reader can picture — a function, a value, a click, a file. Avoid "the approach", "the pattern", "the situation" as subjects when a concrete noun is available.
+- **Active voice by default.** "React re-renders the component" beats "the component is re-rendered". Passive only when the actor is genuinely irrelevant.
+- **Define on first use.** A term the reader hasn't met gets a one-clause inline definition the first time it appears, even when a `[[TOOLTIP]]` is also placed. The tooltip is reinforcement, not the sole definition.
+- **No forward references.** Don't lean on a concept not yet introduced ("as we'll see later"). If the explanation needs it, front-load or restructure.
+- **Pronoun rule.** "it", "this", "they", "that" must refer to the most recent matching noun in the same or previous sentence. If ambiguous, name the noun.
+- **Prefer the shorter word** when both fit — "use" over "utilize", "show" over "demonstrate", "before" over "prior to". Narrator voice can override; the default is plain.
+- **No stacked qualifiers.** "if X, unless Y, but only when Z" overloads working memory — break into separate sentences or a short list.
+- **Sentence length.** Aim around 15–20 words average, hard ceiling near 35. Occasional long sentences are fine; back-to-back long sentences are not.
+- **Nominalizations off.** "implement X" beats "the implementation of X". Verbs over verb-nouns.
 
 Voice tilt in the outline (when present) overrides the narrator default for that section.
 
@@ -64,6 +79,7 @@ archetype: <Mechanics | Decision | Concept | Setup | Pattern | Reference>
 - Quote any version/default/dated claim from `lesson facts.md` verbatim.
 - Use outline's one-line frames for prerequisites; do not re-teach anything in outline's prerequisites list.
 - Apply the *Style* section above, §3 voice, every `Code conventions.md` rule, every §4 display rule from the start. First-pass reviewer catches what you miss — do not iterate.
+- While writing each sentence, ask: one subject, one idea, every pronoun unambiguous, every term defined? If re-reading is needed to parse, split or rewrite before moving on. This is a write-time habit, not a separate pass.
 
 ## Placeholders (1-indexed per kind, in draft order)
 
