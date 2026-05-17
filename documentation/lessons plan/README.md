@@ -12,7 +12,13 @@ Each chapter orchestrator runs inside a git worktree of this repo. Subagents spa
 
 ## Lesson slug
 
-Every lesson has one slug used in three places (working folder, MDX filename, frontmatter `slug:` / URL). The format is `<X.Y.N>-<body>` where `<body>` is the outline's lesson heading, lowercased, with every run of non-alphanumeric chars collapsed to a single `-` and leading/trailing `-` stripped. Examples (in chapter 4.4): `The box model and the inline / block axis` → `4.4.1-the-box-model-and-the-inline-block-axis`; `useState — the basics` (lesson 4.4.2) → `4.4.2-usestate-the-basics`. The `<X.Y.N>-` prefix is mandatory so the working folder, MDX file, and URL all sort in chapter order and stay unique even when two lessons share a heading.
+Every lesson has one slug, used verbatim in three places: the working folder name, the MDX filename, and the MDX frontmatter `slug:` (which is also the lesson's URL).
+
+Format: `<X.Y.N>-<body>` — the lesson id from the chapter outline heading (`## Lesson 4.4.1 — …` → `4.4.1`), followed by `-`, followed by the heading body lowercased with non-alphanumeric runs collapsed to a single `-` and leading/trailing `-` stripped.
+
+Example (chapter 4.4, lesson 1): the chapter outline heading `## Lesson 4.4.1 — The box model and the inline/block axis` yields the slug `4.4.1-the-box-model-and-the-inline-block-axis`. That same string is the working folder name (`documentation/lessons plan/work/Chapter 4.4/4.4.1-the-box-model-and-the-inline-block-axis/`), the MDX filename (`src/content/docs/4.4 Layout and sizing/4.4.1-the-box-model-and-the-inline-block-axis.mdx`), and the MDX frontmatter `slug:`.
+
+The `<X.Y.N>-` prefix is mandatory. A slug like `the-box-model-and-the-inline-block-axis` (no `4.4.1-`) is a bug — it loses chapter-order sorting, breaks collision-safety across lessons sharing a heading body, and forces every artifact to be renamed downstream. The lesson-designer, lesson-drafter, project-lesson-designer, project-lesson-writer, and lesson-cataloger subagents each verify the slug starts with `<X.Y.N>-` and return `blocked` if it doesn't, so the orchestrator notices the bug immediately instead of writing non-prefixed paths chapter-wide. The orchestrator prompt's *Lesson slug — the single naming rule* section is the authoritative spec.
 
 ## Two chapter shapes
 

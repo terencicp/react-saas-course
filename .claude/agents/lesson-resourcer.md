@@ -28,7 +28,7 @@ All paths in this prompt are rooted in this chapter's git worktree. The orchestr
 ## Step 2 — End-of-lesson resources (not placeholder-driven)
 - Decide from outline hints + lesson content what links earn their place per §5.
 - Two sections, each only if it has ≥1 entry:
-  - **Learning resources** — official docs (`<LinkCard>`, grouped in `<CardGrid>` if >2), reinforcement videos (long-form/deeper-dive, also `<LinkCard>` → YouTube).
+  - **Learning resources** — official docs (`<LinkCard>`, grouped in `<CardGrid>` if >2), reinforcement videos (long-form/deeper-dive, also `<LinkCard>` → YouTube). Do not use VideoCallout here.
   - **External exercises** — links to external practice repos / exercise sets if directly relevant.
 - Web-search to confirm every URL. Skip + note any URL that can't be verified.
 - Place at the very end of MDX, in the order above, after all body content.

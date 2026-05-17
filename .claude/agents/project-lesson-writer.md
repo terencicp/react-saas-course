@@ -14,6 +14,10 @@ All paths in this prompt are rooted in this chapter's git worktree. The orchestr
 
 Writes lesson MDX directly. Branch on lesson's type from outline frontmatter — three shapes: precondition walkthrough, slice walkthrough, verify walkthrough.
 
+## Slug check
+
+Before writing any path or any frontmatter `slug:` value, verify that the slug you were given starts with `<X.Y.N>-` matching this lesson's id (e.g. `4.4.1-the-box-model-…` for lesson 4.4.1). A slug missing the `<X.Y.N>-` prefix (e.g. `the-box-model-…` alone) is an orchestrator bug — do **not** silently strip or repair it. Return `status: blocked` with `notes: slug missing lesson-id prefix: <slug>` and write nothing. The orchestrator will recompute the slug per its *Lesson slug — the single naming rule* and re-fire you.
+
 ## Inputs (from orchestrator)
 - Lesson outline path at `documentation/lessons plan/work/Chapter <X.Y>/<lesson-slug>/lesson outline.md`.
 - Working folder path (for `lesson facts.md`).

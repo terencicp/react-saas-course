@@ -4,6 +4,8 @@ Single multiple-choice question. Mark the right answer(s) with `correct` on `<Ch
 
 The optional `<Why>` slot is the explanation, prefixed `Correct.` or `Not quite.` in the reveal. Inside a `<Quiz>` (see [quiz.md](../quiz/quiz.md)), `<MultipleChoice>` cards roll up into a shared score bar.
 
+To properly help the student self-check its knowledge, it's important that answers are not literally exactly what's in the prose otherwise the student is not thinking, it's just pattern-matching.
+
 ## Imports
 
 ```ts

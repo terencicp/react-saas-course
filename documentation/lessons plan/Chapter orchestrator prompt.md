@@ -21,6 +21,36 @@ When ON, interactive inspection mode:
 
 Inside a git worktree of `react-saas-course` on a chapter-scoped branch. Claude Code creates and names the worktree; you neither create nor remove it. Every read/write/commit happens inside this worktree. Sibling chapter orchestrators may run concurrently — you cannot see their work. When done, the worktree is ready for human-curator merge. **Do not merge it yourself.**
 
+## Lesson slug — the single naming rule
+
+**Every lesson has one slug, used in three places verbatim: the working folder, the MDX filename, and the MDX frontmatter `slug:` (which is also the lesson's URL).**
+
+Format: `<X.Y.N>-<body>`
+
+- `<X.Y.N>` — the lesson id, copied **exactly** from the chapter outline's lesson heading (`## Lesson 4.4.1 — …` → `4.4.1`). Never omit, never abbreviate.
+- `<body>` — the chapter outline's lesson heading **after** stripping the `Lesson <X.Y.N> — ` prefix, lowercased, every run of non-alphanumeric characters collapsed to a single `-`, leading/trailing `-` stripped.
+
+Worked example — chapter 4.4, lesson 1:
+
+| Source | Value |
+| --- | --- |
+| Chapter outline heading | `## Lesson 4.4.1 — The box model and the inline/block axis` |
+| `<X.Y.N>` | `4.4.1` |
+| `<body>` | `the-box-model-and-the-inline-block-axis` |
+| **Final slug** | **`4.4.1-the-box-model-and-the-inline-block-axis`** |
+| Working folder | `<WT>/documentation/lessons plan/work/Chapter 4.4/4.4.1-the-box-model-and-the-inline-block-axis/` |
+| MDX file | `<WT>/src/content/docs/4.4 Layout and sizing/4.4.1-the-box-model-and-the-inline-block-axis.mdx` |
+| MDX frontmatter | `slug: 4.4.1-the-box-model-and-the-inline-block-axis` |
+
+More examples (same chapter):
+
+- `## Lesson 4.4.2 — Display modes and the hide decision tree` → `4.4.2-display-modes-and-the-hide-decision-tree`
+- `## Lesson 4.4.3 — Flexbox, the 1D primitive` → `4.4.3-flexbox-the-1d-primitive`
+
+**Never use a slug without the `<X.Y.N>-` prefix.** A slug like `the-box-model-and-the-inline-block-axis` is a bug — it loses chapter-order sorting, breaks collision-safety when two lessons share a heading body, and forces the curator to rename every artifact later. If you catch yourself about to pass a non-prefixed slug to a subagent or to write one into a path or a frontmatter field, stop and fix it before proceeding.
+
+Compute the slug **once** when you enter step 1 of the per-lesson loop, store it in per-lesson state, and reuse it for every subsequent path — working folder, MDX, subagent inputs, end-of-chapter report.
+
 ## Paths and the worktree root
 
 Subagents are spawned in fresh shells; their cwd is **not guaranteed** to be the worktree. The only reliable way to make every read/write land inside this worktree is to pass absolute paths.
@@ -107,7 +137,9 @@ For each lesson in the outline, in order:
 <WT>/documentation/lessons plan/work/Chapter <X.Y>/<lesson-slug>/
 ```
 
-**Lesson slug:** `<X.Y.N>-<body>` where `<body>` is the outline's lesson heading, lowercased, with every run of non-alphanumeric chars collapsed to a single `-`, leading/trailing `-` stripped. The `<X.Y.N>-` prefix is mandatory — it makes the working folder, MDX file, and URL all sort in chapter order and stay collision-free across lessons that happen to share a heading. Examples (in chapter 4.4): `The box model and the inline / block axis` → `4.4.1-the-box-model-and-the-inline-block-axis`; `useState — the basics` (lesson 4.4.2) → `4.4.2-usestate-the-basics`; `Routing & layouts` (lesson 4.4.3) → `4.4.3-routing-layouts`. Use the same slug everywhere — folder, MDX filename, and frontmatter `slug:`.
+Compute `<lesson-slug>` per the *Lesson slug — the single naming rule* section above. It is always `<X.Y.N>-<slugified-body>` (e.g. `4.4.1-the-box-model-and-the-inline-block-axis`). The same slug is reused as the MDX filename and as the frontmatter `slug:` later — store it in per-lesson state now so every downstream step references the same string.
+
+Before firing the first subagent, sanity-check: the computed slug starts with the lesson id followed by a `-`. If it doesn't, you've stripped the prefix by mistake — recompute. A slug like `the-box-model-…` (no `4.4.1-`) is a bug; never pass it to a subagent.
 
 ### 2. Run the subagent sequence
 

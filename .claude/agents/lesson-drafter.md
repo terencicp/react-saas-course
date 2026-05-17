@@ -3,7 +3,7 @@ name: lesson-drafter
 description: "Use this agent in teaching lessons to write the lesson MDX directly from its outline and verified facts. Reads AGENTS.md, Code conventions.md, Pedagogical guidelines §3 §4 §5, Units.md, the lesson outline, and `lesson facts.md`. Writes MDX to `src/content/docs/<chapter>/<lesson-slug>.mdx` with `status: draft` in the frontmatter — prose, code samples, and `[[DIAGRAM]]`, `[[TOOLTIP]]`, `[[EXERCISE]]`, `[[SANDBOX]]`, `[[VIDEO]]` placeholders. No MDX components yet — those are downstream. The first-pass reviewer catches any quality issues. When done returns the MDX path and counts of each placeholder kind."
 tools: Read, Write, Glob, Grep
 model: opus
-effort: xhigh
+effort: max
 ---
 
 # Lesson drafter
