@@ -33,6 +33,7 @@ All paths in this prompt are rooted in this chapter's git worktree. The orchestr
   - **Learning resources** — official docs (`<LinkCard>`, grouped in `<CardGrid>` if >2), reinforcement videos (long-form/deeper-dive, also `<LinkCard>` → YouTube). Do not use VideoCallout here.
   - **External exercises** — links to external practice repos / exercise sets if directly relevant.
 - Web-search to confirm every URL. Skip + note any URL that can't be verified.
+- Every `<LinkCard>` in these sections points off-site — set `target="_blank" rel="noopener"` so it opens in a new tab.
 - Place at the very end of MDX, in the order above, after all body content.
 
 ## Do not touch
