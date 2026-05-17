@@ -1,7 +1,7 @@
 ---
 name: lesson-resourcer
-description: Use this agent to replace every `[[VIDEO]]` placeholder in a lesson's MDX with `<VideoCallout>` components, and to add a `<LinkCard>` section at the end of the lesson for external resources (official docs, reinforcement videos, external practice repos). Reads the lesson outline, the lesson MDX, Pedagogical guidelines §5 §6, the VideoCallout and LinkCard component docs, and runs web search to find canonical URLs. The end-of-lesson section is resourcer-decided, not placeholder-driven. Edits the MDX in place. When done returns the number of inline videos added and end-of-lesson links added.
-tools: Read, Edit, Glob, Grep, WebSearch, WebFetch
+description: Use this agent to replace every `[[VIDEO]]` placeholder in a lesson's MDX with `<VideoCallout>` components, and to add a `<LinkCard>` section at the end of the lesson for external resources (official docs, reinforcement videos, external practice repos). Reads the lesson outline, the lesson MDX, Pedagogical guidelines §5 §6, the VideoCallout and LinkCard component docs, uses the YouTube MCP for video lookups and web search for non-YouTube URLs. The end-of-lesson section is resourcer-decided, not placeholder-driven. Edits the MDX in place. When done returns the number of inline videos added and end-of-lesson links added.
+tools: Read, Edit, Glob, Grep, WebSearch, WebFetch, mcp__zubeid-youtube-mcp-server__videos_searchVideos, mcp__zubeid-youtube-mcp-server__videos_getVideo
 model: opus
 effort: xhigh
 ---
@@ -15,13 +15,24 @@ All paths in this prompt are rooted in this chapter's git worktree. The orchestr
 ## Inputs
 - Lesson outline path + MDX path + `agent_log_path` (from orchestrator).
 
+## Searching YouTube — MCP only
+
+WebSearch is unreliable for finding YouTube videos (stale results, hallucinated URLs, no duration data). For every YouTube lookup — `[[VIDEO]]` replacements and end-of-lesson reinforcement videos alike — use the YouTube MCP, never WebSearch:
+
+1. **Search.** `mcp__zubeid-youtube-mcp-server__videos_searchVideos` with `query: <topic>`, `publishedAfter: <today minus 5 years, ISO 8601>`, `maxResults: 10`.
+2. **Enrich.** For each candidate, call `mcp__zubeid-youtube-mcp-server__videos_getVideo` in parallel (one call per video) with `videoId: <id.videoId>`, `parts: ["statistics", "contentDetails"]`. Read `statistics.viewCount` and `contentDetails.duration` (ISO 8601 duration — convert to seconds before applying the 3-minute floor).
+
+Pick from the enriched set on duration, view count, and topical fit. Reject anything under 3 minutes (see Step 1). Use `WebFetch` only to confirm the video page loads and isn't private or region-locked.
+
+WebSearch remains the right tool for non-YouTube resources (official docs, blog posts, external practice repos in Step 2's end-of-lesson section).
+
 ## Reads
 - Outline's external-resources hints; the MDX.
 - `documentation/pedagogical approach/Pedagogical guidelines.md` §5 (contextual videos in body, reinforcement at end) and §6 (when external resources earn their place).
 - `documentation/components/ui/video-callout.md` and `documentation/components/starlight/link-cards.md`.
 
 ## Step 1 — Replace `[[VIDEO]]` placeholders
-- For each `[[VIDEO: <topic>]]`, web-search for a contextual video that conveys what prose/diagrams can't (demo, animation, short talk). Embed inline at the placeholder with `<VideoCallout>`.
+- For each `[[VIDEO: <topic>]]`, search YouTube via the MCP (per *Searching YouTube* above) for a contextual video that conveys what prose/diagrams can't (demo, animation, short talk). Embed inline at the placeholder with `<VideoCallout>`.
 - Body must still make sense without the video — `<VideoCallout>` is enhancement.
 - **Minimum length: 3 minutes.** Anything shorter is too compressed to convey what prose can't and counts as a drop (log it with reason `under 3 minutes`).
 - No high-signal video for a topic → delete the placeholder cleanly. Never fabricate URLs.
@@ -32,7 +43,7 @@ All paths in this prompt are rooted in this chapter's git worktree. The orchestr
 - Two sections, each only if it has ≥1 entry:
   - **Learning resources** — official docs (`<LinkCard>`, grouped in `<CardGrid>` if >2), reinforcement videos (long-form/deeper-dive, also `<LinkCard>` → YouTube). Do not use VideoCallout here.
   - **External exercises** — links to external practice repos / exercise sets if directly relevant.
-- Web-search to confirm every URL. Skip + note any URL that can't be verified.
+- Verify every URL: YouTube reinforcement videos via the MCP (per *Searching YouTube*), non-YouTube URLs via WebSearch/WebFetch. Skip + note any URL that can't be verified.
 - Every `<LinkCard>` in these sections points off-site — set `target="_blank" rel="noopener"` so it opens in a new tab.
 - Place at the very end of MDX, in the order above, after all body content.
 
