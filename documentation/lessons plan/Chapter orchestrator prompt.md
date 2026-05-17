@@ -51,6 +51,10 @@ More examples (same chapter):
 
 Compute the slug **once** when you enter step 1 of the per-lesson loop, store it in per-lesson state, and reuse it for every subsequent path — working folder, MDX, subagent inputs, end-of-chapter report.
 
+## Chapter folder name
+
+Format: `<X.Y> <body>`, where `<body>` is the outline H1 with the `Chapter <X.Y> — ` prefix stripped and every `#`, `(`, `)` removed (Starlight routes by on-disk path; `#` is the URL fragment delimiter and silently 404s the lesson). Example: `# Chapter 15.1 — Cache decisions as architecture (SaaS pattern #8)` → `15.1 Cache decisions as architecture SaaS pattern 8`. Compute once in pre-flight, store as `<chapter>`, reuse everywhere. If the H1 contains a character not on the strip list, escalate.
+
 ## Paths and the worktree root
 
 Subagents are spawned in fresh shells; their cwd is **not guaranteed** to be the worktree. The only reliable way to make every read/write land inside this worktree is to pass absolute paths.
@@ -335,6 +339,7 @@ Set `status: reviewed` by editing the frontmatter directly.
 After every lesson is accepted:
 
 - Teaching chapters **other than unit 1** (1.1–1.4 are setup/toolchain — no quiz): fire `quiz-maker` once (subject to §7 of the pedagogical guidelines). Project chapters get no quiz — the project is the assessment.
+- **Browser-verify.** Run `npm run build`, start `npm run preview &`, curl every new lesson route (and the quiz, if any) for HTTP 200 + lesson title present, then open the browser on a sample (first lesson, one mid, quiz/last) to spot-check sidebar, diagrams, exercises, code blocks. Kill the preview. Any 404 or missing-title → escalate. Broken artifact → re-fire the owning subagent once, then escalate.
 - The branch is ready for human curation. Do not merge; do not remove the worktree. Teardown is the human curator's step after merge.
 
 Report shape:
