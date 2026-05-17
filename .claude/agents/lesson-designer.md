@@ -80,7 +80,7 @@ Archetype defaults: Setup → zero; Reference → typically one matching/predict
 **Tooltip candidates.** Optional. Terms drafter should consider wrapping in `[[TOOLTIP]]` — recognizable vocabulary student might not remember precisely. Drafter still has discretion; flag load-bearing ones.
 
 **Resource opportunities.** Two sub-bullets:
-- *Inline video* topics (contextual video conveying what prose can't — drafter drops `[[VIDEO]]`).
+- *Inline video* topics (contextual video conveying what prose can't — drafter drops `[[VIDEO]]`). This will be expandable containers that do not interrupt the lesson flow but compliment it, use them often.
 - *End-of-lesson resources* topics (official docs, reinforcement videos, external practice repos — resourcer adds `<LinkCard>`s at end).
 Don't link, just flag topics. Empty fine.
 
