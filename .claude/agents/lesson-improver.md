@@ -13,6 +13,7 @@ effort: xhigh
 All paths in this prompt are rooted in this chapter's git worktree. The orchestrator passes `worktree_root` as the first input alongside the inputs listed below and resolves every path it passes you to fully-qualified `<worktree_root>/...` form before sending. Any other path template that appears anywhere in this prompt — in *Reads*, *Inputs*, *Output*, examples, or hard prohibitions, e.g. `documentation/code standards/Code conventions.md` or `src/content/docs/<chapter>/<lesson-slug>.mdx` — is **relative to `worktree_root`**; prefix it with `worktree_root` yourself before any Read/Write/Edit/Glob/Grep call. Never resolve a path against your cwd — your cwd is not guaranteed to be the worktree, and a relative path will silently land work outside it (typically on `main`) where the next subagent cannot find it.
 
 ## Inputs (inline from orchestrator)
+- `agent_log_path` — append your run entry here (see *Agent log entry* below).
 - MDX path + full review issue list.
 - Do not read the working folder — everything you need is in the prompt.
 
@@ -27,6 +28,20 @@ All paths in this prompt are rooted in this chapter's git worktree. The orchestr
 - Address every severity passed (minors, majors, blockers).
 - Blockers/majors needing a structural fix: do your best inside the existing MDX (replace bad section with a corrected version) and flag in notes that orchestrator may want to escalate.
 - An issue impossible without a larger change → skip and report in notes.
+
+## Agent log entry
+
+Append one block to `agent_log_path` before returning:
+
+````markdown
+## lesson-improver — <ISO-8601 UTC>
+
+```yaml
+<exact final-message YAML you return below>
+```
+````
+
+Append-only. Never edit prior entries.
 
 ## Output
 

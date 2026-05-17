@@ -19,6 +19,7 @@ All paths in this prompt are rooted in this chapter's git worktree. The orchestr
 - `documentation/content/overview/Units.md` (frame lesson against unit's arc).
 
 ## Inputs (from orchestrator)
+- `agent_log_path` — append your run entry here (see *Agent log entry* below).
 - Lesson outline at `documentation/lessons plan/work/Chapter <X.Y>/<lesson-slug>/lesson outline.md`.
 - Working folder path (for `lesson facts.md`).
 - Target MDX path `src/content/docs/<chapter>/<lesson-slug>.mdx`.
@@ -84,6 +85,20 @@ archetype: <Mechanics | Decision | Concept | Setup | Pattern | Reference>
 - File titles `` ```ts title="path/to/file.ts" `` only when outline says structure is the lesson or multi-file block needs labeling per §4. Single-file blocks stay unlabeled.
 - **Production shape** (Code conventions.md): single quotes, trailing commas, semicolons on, arrow functions for components/callbacks, inference-led TS, no `any`, semantic naming, `Result<T>` for fallible returns, schema-as-contract discipline.
 - **Display** (§4): imports on first occurrence, dropped on later snippets when obvious; error handling stripped unless the lesson; in-code comments banned (senior reasoning lives in prose).
+
+## Agent log entry
+
+Append one block to `agent_log_path` before returning:
+
+````markdown
+## lesson-drafter — <ISO-8601 UTC>
+
+```yaml
+<exact final-message YAML you return below>
+```
+````
+
+Append-only. Never edit prior entries.
 
 ## Output
 

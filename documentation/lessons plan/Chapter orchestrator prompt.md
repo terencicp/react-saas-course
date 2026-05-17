@@ -141,6 +141,8 @@ Compute `<lesson-slug>` per the *Lesson slug — the single naming rule* section
 
 Before firing the first subagent, sanity-check: the computed slug starts with the lesson id followed by a `-`. If it doesn't, you've stripped the prefix by mistake — recompute. A slug like `the-box-model-…` (no `4.4.1-`) is a bug; never pass it to a subagent.
 
+Then create an empty `agent log.md` in the working folder. Every per-lesson subagent appends its final-message YAML to this file when it finishes — see *Agent log* below. Pass `agent_log_path` to every per-lesson subagent alongside the other inputs.
+
 ### 2. Run the subagent sequence
 
 **Teaching lesson:**
@@ -207,6 +209,7 @@ Per-lesson working folder contains at most:
   lesson facts.md       — fact-verifier output
   lesson review.md      — lesson-reviewer output (second pass overwrites first)
   lesson concepts.md    — lesson-cataloger output
+  agent log.md          — append-only run log; every per-lesson subagent appends one entry on completion
 ```
 
 For project chapters, the chapter root additionally holds:
@@ -219,7 +222,21 @@ For project chapters, the chapter root additionally holds:
   starter/              — derived starter directory (one commit on the branch)
 ```
 
-### 5. Finalize and catalog
+### 5. Agent log
+
+`<WT>/documentation/lessons plan/work/Chapter <X.Y>/<lesson-slug>/agent log.md` is an append-only record of every per-lesson subagent's final-message YAML. You touch it empty at step 1 and never edit it. Each subagent appends one block when it completes:
+
+````markdown
+## <subagent-name> — <ISO-8601 UTC timestamp>
+
+```yaml
+<exact final-message fields the subagent returns to you>
+```
+````
+
+The second-pass `lesson-reviewer` reads this file to distinguish *deliberately dropped* artifacts (e.g. a `[[VIDEO]]` the resourcer searched for and rejected) from *forgotten or crashed* ones. You do not parse it yourself — but if you escalate, attach the file to the report.
+
+### 6. Finalize and catalog
 
 After the lesson clears its second review (with or without improver):
 
@@ -228,13 +245,15 @@ After the lesson clears its second review (with or without improver):
 - Project lessons: confirm working code and starter directories still exist at `<WT>/documentation/lessons plan/work/Chapter <X.Y>/{code,starter}/`.
 - Fire `lesson-cataloger` with the MDX path, working folder path, and paths to every prior completed lesson's `lesson concepts.md` in this chapter (chapter order; empty for lesson 1). It writes `lesson concepts.md` — the next designer reads it to know what not to re-teach. Reading prior ledgers lets the cataloger separate concepts this lesson introduced from ones it merely restated.
 
-### 6. Move to the next lesson
+### 7. Move to the next lesson
 
 ## Subagent input contract
 
 Pass exactly these fields; names match what each subagent's prompt header refers to.
 
 **Every path is absolute and rooted at `WT`.** In addition to the fields listed below, every subagent invocation includes `worktree_root: <WT>` as its first input. Path templates in the columns below show the *shape* relative to `WT`; you always pass the fully-resolved `<WT>/...` form. A subagent that receives a relative path is a bug — it will write to the orchestrator's cwd, which may not be the worktree, and the next subagent will not find the file.
+
+Every per-lesson subagent invocation (teaching and project, including reviewers, improvers, and the cataloger) additionally receives `agent_log_path: <WT>/documentation/lessons plan/work/Chapter <X.Y>/<lesson-slug>/agent log.md`. Chapter-prep subagents (`project-architect`, `project-fact-verifier`, the three project coders) and `quiz-maker` do not get it — the log is per-lesson.
 
 ### Teaching lesson subagents
 
@@ -345,7 +364,7 @@ escalations:
 ## Things you do not do
 
 - Create, name, or remove the worktree (Claude Code owns that).
-- Edit lesson prose yourself. If something is wrong, fire the appropriate subagent. (Only MDX edit you ever make: flipping `status: formatted` → `status: reviewed` — see step 5.)
+- Edit lesson prose yourself. If something is wrong, fire the appropriate subagent. (Only MDX edit you ever make: flipping `status: formatted` → `status: reviewed` — see step 6.)
 - Edit project code yourself. Slice coders own slices; the precondition coder owns setup; the starter coder owns stubs.
 - Skip either reviewer pass.
 - Parallelize subagents. Sequence is the contract within a chapter; parallelism is across chapters via sibling worktrees. Note that a subagent cannot spawn further subagents.

@@ -24,6 +24,7 @@ All paths in this prompt are rooted in this chapter's git worktree. The orchestr
 - `mdx_path` — `src/content/docs/<chapter>/<lesson-slug>.mdx`
 - `outline_path` — `documentation/lessons plan/work/Chapter <X.Y>/<lesson-slug>/lesson outline.md`
 - `working_folder` — `documentation/lessons plan/work/Chapter <X.Y>/<lesson-slug>/`
+- `agent_log_path` — `<working_folder>/agent log.md` (append-only run log; read on second pass)
 - `pass` — `first` (post-drafter/writer) or `second` (post-coherer)
 - `lesson_type` — `teaching` or `project`
 - `prior_concepts_paths` — zero+ paths to prior completed lessons' `lesson concepts.md` (chapter order)
@@ -34,7 +35,7 @@ Block immediately if any of the above are missing for your pass+type or the MDX 
 ## Read list
 **Always:** the MDX, outline, `lesson facts.md` from working folder, `AGENTS.md`, `documentation/code standards/Code conventions.md`, `documentation/pedagogical approach/Pedagogical guidelines.md` (full — you carry the global view), every `prior_concepts_paths`.
 
-**Second pass also reads:** `documentation/diagrams/INDEX.md` and `documentation/components/INDEX.md` (to validate engines/components are real). Plus prior `lesson review.md` if present — carry forward any of its issues the MDX still violates, tagged `(carried from first pass)`.
+**Second pass also reads:** `documentation/diagrams/INDEX.md` and `documentation/components/INDEX.md` (to validate engines/components are real), and `agent log.md` to interpret missing artifacts (see axis 10). Plus prior `lesson review.md` if present — carry forward any of its issues the MDX still violates, tagged `(carried from first pass)`.
 
 **Project lessons also read:** `project_plan_path`, `project_facts_path`. If `tag` is `slice walkthrough: <ids>`, locate named slice specs in plan. Realized code at `documentation/lessons plan/work/Chapter <X.Y>/code/` at HEAD — read files the lesson touches. For `precondition walkthrough`: tree at `documentation/lessons plan/work/Chapter <X.Y>/starter/`.
 
@@ -63,7 +64,7 @@ Shared axes apply every pass. Per-pass/per-type axes apply only when conditions 
 9. **Placeholders match outline plan.** `[[DIAGRAM]]` count = diagram briefs; `[[EXERCISE]]` = exercise plan; `[[SANDBOX]]` present iff outline says yes; `[[VIDEO]]` reasonable given outline's resource hints; `[[TOOLTIP]]` at drafter's discretion. Axes 10–11 don't apply yet (components downstream).
 
 ### Second pass only
-10. **Placeholders all resolved.** No `[[DIAGRAM]]`, `[[EXERCISE]]`, `[[SANDBOX]]`, `[[VIDEO]]`, `[[TOOLTIP]]` strings remain anywhere.
+10. **Placeholders all resolved.** No `[[DIAGRAM]]`, `[[EXERCISE]]`, `[[SANDBOX]]`, `[[VIDEO]]`, `[[TOOLTIP]]` strings remain anywhere — a remaining string is a **blocker** (the responsible agent didn't run or crashed). For `[[VIDEO]]` specifically: an *absent* `<VideoCallout>` where the outline named a video topic is **not an issue** if `agent log.md` has a `lesson-resourcer` entry with a matching `video_decisions` row marked `dropped` (note it under *Notes*, don't flag). If the log has no row for that topic, flag **major**, owner `lesson-resourcer` — it was forgotten, not deliberately dropped. Same rule generalizes to any outlined artifact the MDX lacks: check the log before flagging.
 11. **Components + rendered pieces.** Diagrams replaced with inline engines (Mermaid, D2, FileTree) or component imports from `src/components/lessons/<chapter>/<lesson-slug>/<n>.astro` — engine names exist in diagrams INDEX. Exercise components exist in components INDEX. Sandbox callout present iff outline said yes. `<VideoCallout>`, `<LinkCard>`, `<Term>`, `<CodeTooltips>` well-formed, wrapping the right content.
 12. **Exercises + content decisions (§6) — teaching lessons only.** Exercises present where they should be, in flow not at end, form matches outline, sandbox callout used correctly. Project lessons skip (project is the exercise).
 
@@ -119,6 +120,20 @@ Write to `documentation/lessons plan/work/Chapter <X.Y>/<lesson-slug>/lesson rev
 - Parsimonious — group repeated hits into one line (`§3 cliché: 4 occurrences of "Let's dive in" — lines 12, 47, 89, 134`) rather than enumerating each.
 - Tag any issue surviving the first pass with `(carried from first pass)` after the issue text.
 - Do not edit the MDX. Do not invent severities — a taste-disagreement not violating guidelines isn't an issue.
+
+## Agent log entry
+
+After writing `lesson review.md`, append one block to `agent_log_path`:
+
+````markdown
+## lesson-reviewer (<first | second>) — <ISO-8601 UTC>
+
+```yaml
+<exact final-message YAML you return below>
+```
+````
+
+Append-only — never edit prior entries. Both passes write their own entry.
 
 ## Final chat message
 

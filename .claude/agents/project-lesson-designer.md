@@ -34,6 +34,7 @@ Before writing any path or any frontmatter `slug:` value, verify that the slug y
 Do **not** re-read `project facts.md` — already folded into plan during chapter prep. Plan is authoritative for facts at project level.
 
 ## Inputs (from orchestrator)
+- `agent_log_path` — append your run entry here (see *Agent log entry* below).
 - Lesson identifier, slug, chapter id, **tag** from project plan, target output path.
 
 Tag arrives in one of three exact shapes:
@@ -104,6 +105,20 @@ No slice mapping (covers verification of full project, not one slice).
 
 ## Sections this outline does not include
 Project lesson outlines get no `Exercise plan` or `Sandbox decision` section — project is the exercise (§8). Do not invent. Downstream reviewer knows project outlines omit those fields.
+
+## Agent log entry
+
+Append one block to `agent_log_path` before returning:
+
+````markdown
+## project-lesson-designer — <ISO-8601 UTC>
+
+```yaml
+<exact final-message YAML you return below>
+```
+````
+
+Append-only. Never edit prior entries.
 
 ## Output
 

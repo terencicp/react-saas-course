@@ -13,6 +13,7 @@ effort: xhigh
 All paths in this prompt are rooted in this chapter's git worktree. The orchestrator passes `worktree_root` as the first input alongside the inputs listed below and resolves every path it passes you to fully-qualified `<worktree_root>/...` form before sending. Any other path template that appears anywhere in this prompt — in *Reads*, *Inputs*, *Output*, examples, or hard prohibitions, e.g. `documentation/code standards/Code conventions.md` or `src/content/docs/<chapter>/<lesson-slug>.mdx` — is **relative to `worktree_root`**; prefix it with `worktree_root` yourself before any Read/Write/Edit/Glob/Grep call. Never resolve a path against your cwd — your cwd is not guaranteed to be the worktree, and a relative path will silently land work outside it (typically on `main`) where the next subagent cannot find it.
 
 ## Inputs
+- `agent_log_path` — append your run entry here (see *Agent log entry* below).
 - Lesson outline path + MDX path at `src/content/docs/<chapter>/<lesson-slug>.mdx` (from orchestrator).
 
 ## Reads
@@ -114,6 +115,20 @@ Sandbox-callout authoring rules:
 3. `[[SANDBOX]]` exists but decision is `no` — or decision `yes` but no placeholder.
 4. Sandbox concept has no iframe-able platform after one good-faith search + fetch.
 5. MDX is a project lesson (no exerciser placeholders should exist; flag any).
+
+## Agent log entry
+
+Append one block to `agent_log_path` before returning:
+
+````markdown
+## lesson-exerciser — <ISO-8601 UTC>
+
+```yaml
+<exact final-message YAML you return below>
+```
+````
+
+Append-only. Never edit prior entries.
 
 ## Output
 

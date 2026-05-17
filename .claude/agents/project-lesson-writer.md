@@ -19,6 +19,7 @@ Writes lesson MDX directly. Branch on lesson's type from outline frontmatter —
 Before writing any path or any frontmatter `slug:` value, verify that the slug you were given starts with `<X.Y.N>-` matching this lesson's id (e.g. `4.4.1-the-box-model-…` for lesson 4.4.1). A slug missing the `<X.Y.N>-` prefix (e.g. `the-box-model-…` alone) is an orchestrator bug — do **not** silently strip or repair it. Return `status: blocked` with `notes: slug missing lesson-id prefix: <slug>` and write nothing. The orchestrator will recompute the slug per its *Lesson slug — the single naming rule* and re-fire you.
 
 ## Inputs (from orchestrator)
+- `agent_log_path` — append your run entry here (see *Agent log entry* below).
 - Lesson outline path at `documentation/lessons plan/work/Chapter <X.Y>/<lesson-slug>/lesson outline.md`.
 - Working folder path (for `lesson facts.md`).
 - Target MDX path `src/content/docs/<chapter>/<lesson-slug>.mdx`.
@@ -141,6 +142,20 @@ Drop tooltips sparingly.
 **`[[VIDEO: <topic>]]`** — only when a *contextual, inline-embedded* video would convey what prose can't, and outline's "Resource opportunities" names it as inline-video topic. Reinforcement videos + supplementary docs are **not** placeholders — `lesson-resourcer` adds them at the end.
 
 **Do not** drop `[[EXERCISE]]` or `[[SANDBOX]]`. The project is the exercise.
+
+## Agent log entry
+
+Append one block to `agent_log_path` before returning:
+
+````markdown
+## project-lesson-writer — <ISO-8601 UTC>
+
+```yaml
+<exact final-message YAML you return below>
+```
+````
+
+Append-only. Never edit prior entries.
 
 ## Output
 

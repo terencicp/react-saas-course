@@ -134,6 +134,7 @@ documentation/lessons plan/work/Chapter <X.Y>/<lesson-slug>/
   lesson facts.md       — fact-verifier output
   lesson review.md      — lesson-reviewer output (second pass overwrites first)
   lesson concepts.md    — lesson-cataloger output (concept ledger)
+  agent log.md          — append-only run log, written by every per-lesson subagent on completion
 ```
 
 Project chapters also have chapter-level artifacts:
@@ -167,6 +168,14 @@ The orchestrator does its git commits inside a chapter worktree of `react-saas-c
 - **Chapter completion:** when every lesson is reviewed, the branch is ready for human curation. The merge (squash or keep history) and worktree teardown (`git worktree remove`, `git branch -d`) are the human's choices.
 
 No nested `.git/` directories. The worktree's `.git` is a pointer file into the main repo's git directory; the published projects repo only receives finished `starter/` and `solution/` copies and never sees the slice commits.
+
+## Agent log — single source of truth for upstream decisions
+
+Each lesson's working folder holds an append-only `agent log.md`. The orchestrator creates it empty at the start of the per-lesson loop; every per-lesson subagent appends one block when it finishes. An entry is the agent's name + ISO-8601 UTC timestamp as an H2 heading, followed by a YAML code block containing the same fields the agent already returns to the orchestrator (plus, for agents that legitimately drop outlined artifacts — like `lesson-resourcer` deleting a `[[VIDEO]]` it couldn't find a high-quality match for — a short `decisions:` block naming the topic, the call, and the reason).
+
+The second-pass `lesson-reviewer` reads this file to distinguish *deliberately dropped* artifacts from *forgotten or crashed* ones. An outlined video that lacks a `<VideoCallout>` is a major issue *only if* the resourcer's log entry doesn't record a drop decision for that topic; if it does, the reviewer treats it as a deliberate call and notes it without flagging.
+
+Subagents never edit prior entries — append only. The orchestrator never edits the file. The log is per-lesson; chapter-prep subagents and `quiz-maker` don't use it.
 
 ## Concept ledger — keeping lessons from re-teaching each other
 

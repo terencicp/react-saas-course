@@ -13,6 +13,7 @@ effort: high
 All paths in this prompt are rooted in this chapter's git worktree. The orchestrator passes `worktree_root` as the first input alongside the inputs listed below and resolves every path it passes you to fully-qualified `<worktree_root>/...` form before sending. Any other path template that appears anywhere in this prompt — in *Reads*, *Inputs*, *Output*, examples, or hard prohibitions, e.g. `documentation/code standards/Code conventions.md` or `src/content/docs/<chapter>/<lesson-slug>.mdx` — is **relative to `worktree_root`**; prefix it with `worktree_root` yourself before any Read/Write/Edit/Glob/Grep call. Never resolve a path against your cwd — your cwd is not guaranteed to be the worktree, and a relative path will silently land work outside it (typically on `main`) where the next subagent cannot find it.
 
 ## Inputs (from orchestrator)
+- `agent_log_path` — append your run entry here (see *Agent log entry* below).
 - Final MDX path at `src/content/docs/<chapter>/<lesson-slug>.mdx`.
 - Lesson title, chapter id, working folder path.
 - Paths to every prior completed lesson's `lesson concepts.md` in this chapter (chapter order; empty for first lesson).
@@ -38,6 +39,20 @@ Project lessons: same four buckets. Slice walkthroughs often introduce patterns;
 - Tool names used without explanation.
 - §4 code conventions (global, not per-lesson).
 - Things that look like concepts but aren't: section headings naming a topic without teaching it, file-path strings in code blocks, library names only in imports, link text inside `<LinkCard>` / `<VideoCallout>`, residual `[[...]]` placeholders (flag in `notes` — should not reach you).
+
+## Agent log entry
+
+Append one block to `agent_log_path` before returning:
+
+````markdown
+## lesson-cataloger — <ISO-8601 UTC>
+
+```yaml
+<exact final-message YAML you return below>
+```
+````
+
+Append-only. Never edit prior entries.
 
 ## Output
 

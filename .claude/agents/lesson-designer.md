@@ -26,6 +26,7 @@ You own the pedagogical decisions for this lesson; every downstream subagent con
 Do **not** read other lessons' MDX in `src/content/docs/` (concepts files are the contract) or the full `Table of contents.md` (chapter outline is local truth).
 
 ## Inputs (from orchestrator)
+- `agent_log_path` — append your run entry here (see *Agent log entry* below).
 - Lesson identifier (e.g. `Lesson 4.3.2`), slug, target output path `documentation/lessons plan/work/Chapter <X.Y>/<lesson-slug>/lesson outline.md`.
 
 ## Producing the outline
@@ -118,6 +119,20 @@ Stop and report `blocked` if any:
 - Archetype the chapter outline implies doesn't match any of the six §5 shapes.
 
 Do not invent. Do not paper over ambiguous scope.
+
+## Agent log entry
+
+Append one block to `agent_log_path` before returning:
+
+````markdown
+## lesson-designer — <ISO-8601 UTC>
+
+```yaml
+<exact final-message YAML you return below>
+```
+````
+
+Append-only. Never edit prior entries.
 
 ## Output
 
