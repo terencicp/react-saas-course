@@ -15,6 +15,7 @@ import Figure from '../../../../components/figures/Figure.astro';
 | Prop | Type | Required | Default | Purpose |
 | --- | --- | --- | --- | --- |
 | `caption` | `string` | no | — | Plain-text caption rendered below the body. Overridden by the `caption` slot when both are present. |
+| `expandable` | `boolean` | no | `true` | Shows a small "expand" chip in the top-right corner of the figure. Clicking the chip opens the figure (and caption) in an in-page lightbox (`<dialog>`). ESC, the close button, or a backdrop click closes it. Set to `false` for figures whose content breaks when its DOM is relocated — currently `<ArrowDiagram>` (its leader lines are positioned from `document.body`). |
 
 ## Slots
 
@@ -26,6 +27,7 @@ import Figure from '../../../../components/figures/Figure.astro';
 - Provide `caption` as a prop *or* a slot, not both — the slot wins, the prop is ignored.
 - Captions render as a `<figcaption>` styled in muted grey. Inline markdown works inside the slot; keep it to one or two sentences.
 - The wrapper has its own padding and border — don't nest another card-like wrapper (e.g. `<DiagramSequence>`, `<TabbedContent>`) inside it. Those components already provide the outer card.
+- The expand chip moves the figure body (and caption) into a `<dialog>` on open and back on close — so any content that survives being detached and reattached works. Content that won't survive (LeaderLine-based diagrams, anything that appends siblings to `document.body` keyed off `getBoundingClientRect`) must opt out with `expandable={false}`. In practice that's `<ArrowDiagram>`.
 
 ## Example
 
