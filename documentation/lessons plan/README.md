@@ -33,22 +33,26 @@ Each subagent runs once, in sequence.
 1. `lesson-designer` — writes the lesson outline to `documentation/lessons plan/work/Chapter <X.Y>/<lesson-slug>/lesson outline.md` (archetype, sections, diagram briefs, exercise plan, sandbox decision, code-samples plan, prerequisites not to re-teach, explicit cuts).
 2. `fact-verifier` — web-searches every 2026-dated claim in the outline (versions, defaults, library status) and writes `lesson facts.md` to the working folder.
 3. `lesson-drafter` — writes MDX directly to `src/content/docs/<chapter>/<lesson-slug>.mdx` with `status: draft` in the frontmatter — prose, code samples, and `[[DIAGRAM]]`, `[[TOOLTIP]]`, `[[EXERCISE]]`, `[[SANDBOX]]`, `[[VIDEO]]` placeholders. MDX without components yet.
-4. `lesson-reviewer` (first pass) — audit-only. Produces a structured issue list with severity; does not edit.
-5. `lesson-improver` — only if the reviewer reports any issues.
-6. `lesson-diagramer` — called once per diagram, sequentially. Inline engines (Mermaid, D2, FileTree) embed in the MDX; lengthier diagrams get a custom Astro component at `src/components/lessons/<chapter>/<lesson-slug>/<n>.astro` and an import.
-7. `lesson-formatter` — adds MDX components (asides, cards, tooltips, code variants, tabs, file trees, etc.) where the prose calls for them. Does not touch wording, code, structure, or diagrams.
-8. `lesson-exerciser` — replaces `[[EXERCISE]]` and `[[SANDBOX]]` placeholders with pre-built components (live-coding, interactive, sandboxes); for any outline entry tagged `Custom`, renames `[[EXERCISE n]]` to `[[CUSTOM EXERCISE n]]` and leaves it for the builder.
-9. `exercise-builder` — only when the exerciser reports `custom_exercises_remaining > 0`. Called once per custom exercise, sequentially. Builds a lesson-scoped interactive component at `src/components/lessons/<chapter>/<lesson-slug>/exercise-<n>.astro` (paired with `exercise-<n>.tsx` for React-island exercises), imports it, and replaces the `[[CUSTOM EXERCISE n]]` placeholder.
-10. `lesson-resourcer` — replaces `[[VIDEO]]` placeholders with `VideoCallout` components and adds `LinkCard`s at the end of the lesson for external resources.
-11. `lesson-coherer` — single final edit pass for flow, voice, and removed seams between previous agents' contributions. Flips the frontmatter to `status: formatted`.
-12. `lesson-reviewer` (second pass) — audit-only.
-13. `lesson-improver` — only if the reviewer reports any issues.
-14. `lesson-cataloger` — fired after the orchestrator accepts the lesson. Reads the final MDX and writes `lesson concepts.md` to the working folder.
+4. `lesson-diagramer` — called once per diagram, sequentially. Inline engines (Mermaid, D2, FileTree) embed in the MDX; lengthier diagrams get a custom Astro component at `src/components/lessons/<chapter>/<lesson-slug>/<n>.astro` and an import.
+5. `lesson-formatter` — adds MDX components (asides, cards, tooltips, code variants, tabs, file trees, etc.) where the prose calls for them. Does not touch wording, code, structure, or diagrams.
+6. `lesson-exerciser` — replaces `[[EXERCISE]]` and `[[SANDBOX]]` placeholders with pre-built components (live-coding, interactive, sandboxes); for any outline entry tagged `Custom`, renames `[[EXERCISE n]]` to `[[CUSTOM EXERCISE n]]` and leaves it for the builder.
+7. `exercise-builder` — only when the exerciser reports `custom_exercises_remaining > 0`. Called once per custom exercise, sequentially. Builds a lesson-scoped interactive component at `src/components/lessons/<chapter>/<lesson-slug>/exercise-<n>.astro` (paired with `exercise-<n>.tsx` for React-island exercises), imports it, and replaces the `[[CUSTOM EXERCISE n]]` placeholder.
+8. `lesson-resourcer` — replaces `[[VIDEO]]` placeholders with `VideoCallout` components and adds `LinkCard`s at the end of the lesson for external resources.
+9. `lesson-coherer` — single final edit pass for flow, voice, and removed seams between previous agents' contributions. Flips the frontmatter to `status: formatted`.
+10. `lesson-reviewer` (iteration 1) — audit-only. Produces a structured issue list with severity; does not edit.
+11. `lesson-improver` — only if iteration 1 reports issues; applies the smallest possible fix for each.
+12. `lesson-reviewer` (iteration 2) — only if iteration 1 fired the improver. Audits the improver's output; carries forward any unresolved iteration-1 items.
+13. `lesson-improver` (iteration 2) — only if iteration 2 reports issues.
+14. `lesson-reviewer` (iteration 3) — only if iteration 2 fired the improver. If issues remain, escalate; otherwise pass.
+15. `lesson-cataloger` — fired after the orchestrator accepts the lesson. Reads the final MDX and writes `lesson concepts.md` to the working folder.
 
 The orchestrator reads each reviewer report and decides:
 
-- No issues → continue (or, after the second pass, mark the lesson complete and move on).
-- Any issues → fire `lesson-improver` with the exact issues passed inline. The orchestrator does not re-fire upstream subagents.
+- `verdict: accept` → continue (skip remaining review iterations and proceed to the cataloger).
+- `verdict: issues` on iteration 1 or 2 → fire `lesson-improver` with the exact issues passed inline, then re-fire `lesson-reviewer` with the next iteration index.
+- `verdict: issues` on iteration 3 → escalate; the improver loop has hit its cap of 2 runs per lesson.
+
+The orchestrator never re-fires upstream subagents based on reviewer findings.
 
 ## Per-lesson sequence — project chapter
 
@@ -71,18 +75,19 @@ The per-slice diff lives in git history on the chapter worktree's branch — no 
 1. `project-lesson-designer` — reads the lesson's **type** from the plan's lesson tagging (`precondition walkthrough` / `slice walkthrough` / `verify walkthrough`) and writes the outline to `documentation/lessons plan/work/Chapter <X.Y>/<lesson-slug>/lesson outline.md`.
 2. `fact-verifier` — same as teaching.
 3. `project-lesson-writer` — writes MDX with `status: draft`, branching on the lesson type. Slice walkthroughs match the project plan's slice spec and the working code at HEAD; precondition walkthroughs tour the starter; verify walkthroughs walk the chapter's acceptance criteria.
-4. `lesson-reviewer` (first pass).
-5. `lesson-improver` — only if issues.
-6. `lesson-diagramer` — once per diagram in the outline (project lessons rarely have any).
-7. `lesson-formatter`.
-8. `lesson-resourcer` (no exerciser — the project is the exercise).
-9. `project-validator` — branches on the lesson type. Re-checks lesson prose and code blocks against the project plan's slice specs and the working code and starter directories. Re-runs this lesson's acceptance criteria (slice and verify walkthroughs). Reports drift inline; does not edit.
-10. `lesson-coherer` — flips frontmatter to `status: formatted`.
-11. `lesson-reviewer` (second pass).
-12. `lesson-improver` — only if issues.
-13. `lesson-cataloger` — fired after the orchestrator accepts the lesson.
+4. `lesson-diagramer` — once per diagram in the outline (project lessons rarely have any).
+5. `lesson-formatter`.
+6. `lesson-resourcer` (no exerciser — the project is the exercise).
+7. `project-validator` — branches on the lesson type. Re-checks lesson prose and code blocks against the project plan's slice specs and the working code and starter directories. Re-runs this lesson's acceptance criteria (slice and verify walkthroughs). Reports drift inline; does not edit.
+8. `lesson-coherer` — flips frontmatter to `status: formatted`.
+9. `lesson-reviewer` (iteration 1) — audit-only. The orchestrator folds `project-validator`'s drift items into iteration 1's issue list before passing it on.
+10. `lesson-improver` — only if iteration 1 reports issues.
+11. `lesson-reviewer` (iteration 2) — only if iteration 1 fired the improver.
+12. `lesson-improver` (iteration 2) — only if iteration 2 reports issues.
+13. `lesson-reviewer` (iteration 3) — only if iteration 2 fired the improver. If issues remain, escalate; otherwise pass.
+14. `lesson-cataloger` — fired after the orchestrator accepts the lesson.
 
-Same triage as teaching chapters. Drift from `project-validator` goes to `lesson-improver` via the next reviewer pass; only `lesson-improver` is fired on issues.
+Same triage as teaching chapters. `project-validator` drift is folded into iteration 1's reviewer issue list, then handled by the iterative review-improver loop like any other findings. Validator does not re-run on later iterations — the reviewer's own technical-correctness axis catches code regressions the improver might introduce.
 
 ## End-of-chapter step
 
@@ -98,7 +103,7 @@ Every lesson MDX carries a `status` field that progresses through four values:
 | --- | --- | --- |
 | `draft` | `lesson-drafter` / `project-lesson-writer` | after the initial write |
 | `formatted` | `lesson-coherer` | after coherer finishes its pass |
-| `reviewed` | orchestrator | after the second review clears and any improver runs are done |
+| `reviewed` | orchestrator | after the review loop accepts (final iteration verdict `accept`; cap is 2 improver runs before escalate) |
 | `final` | human curator | manually, outside this workflow |
 
 ## Working files vs. final files
@@ -132,7 +137,7 @@ Each lesson has a working folder for intermediate artifacts:
 documentation/lessons plan/work/Chapter <X.Y>/<lesson-slug>/
   lesson outline.md     — lesson-designer / project-lesson-designer output
   lesson facts.md       — fact-verifier output
-  lesson review.md      — lesson-reviewer output (second pass overwrites first)
+  lesson review.md      — lesson-reviewer output (each iteration overwrites the prior)
   lesson concepts.md    — lesson-cataloger output (concept ledger)
   agent log.md          — append-only run log, written by every per-lesson subagent on completion
 ```
@@ -173,7 +178,7 @@ No nested `.git/` directories. The worktree's `.git` is a pointer file into the 
 
 Each lesson's working folder holds an append-only `agent log.md`. The orchestrator creates it empty at the start of the per-lesson loop; every per-lesson subagent appends one block when it finishes. An entry is the agent's name + ISO-8601 UTC timestamp as an H2 heading, followed by a YAML code block containing the same fields the agent already returns to the orchestrator (plus, for agents that legitimately drop outlined artifacts — like `lesson-resourcer` deleting a `[[VIDEO]]` it couldn't find a high-quality match for — a short `decisions:` block naming the topic, the call, and the reason).
 
-The second-pass `lesson-reviewer` reads this file to distinguish *deliberately dropped* artifacts from *forgotten or crashed* ones. An outlined video that lacks a `<VideoCallout>` is a major issue *only if* the resourcer's log entry doesn't record a drop decision for that topic; if it does, the reviewer treats it as a deliberate call and notes it without flagging.
+The `lesson-reviewer` reads this file (on every iteration) to distinguish *deliberately dropped* artifacts from *forgotten or crashed* ones. An outlined video that lacks a `<VideoCallout>` is a major issue *only if* the resourcer's log entry doesn't record a drop decision for that topic; if it does, the reviewer treats it as a deliberate call and notes it without flagging.
 
 Subagents never edit prior entries — append only. The orchestrator never edits the file. The log is per-lesson; chapter-prep subagents and `quiz-maker` don't use it.
 
@@ -201,19 +206,22 @@ A short chat message to the orchestrator with:
 
 ### Teaching chapter
 
-Dashed arrows mark the conditional `lesson-improver` step — only fired when the preceding reviewer reports issues.
+Dashed arrows mark conditional steps — `lesson-improver` only fires when the preceding reviewer reports issues, and iterations 2 and 3 only run when their preceding improver fired.
 
 ```mermaid
 flowchart LR
   Start([Chapter starts]) --> D
   subgraph PerLesson["Per lesson × N"]
     direction LR
-    D[1 . designer] --> F[2 . fact-verifier] --> Dr[3 . drafter] --> R1[4 . reviewer] --> Di[6 . diagramer] --> Fm[7 . formatter] --> Ex[8 . exerciser] --> EB[9 . exercise-builder] --> Res[10 . resourcer] --> Co[11 . coherer] --> R2[12 . reviewer] --> Cat[14 . cataloger]
-    R1 -. issues .-> Im1[5 . improver]
-    Im1 -.-> Di
+    D[1 . designer] --> F[2 . fact-verifier] --> Dr[3 . drafter] --> Di[4 . diagramer] --> Fm[5 . formatter] --> Ex[6 . exerciser] --> EB[7 . exercise-builder] --> Res[8 . resourcer] --> Co[9 . coherer] --> R1[10 . reviewer iter 1] --> Cat[15 . cataloger]
     Ex -. no custom .-> Res
+    R1 -. issues .-> Im1[11 . improver]
+    Im1 --> R2[12 . reviewer iter 2]
+    R2 -. accept .-> Cat
     R2 -. issues .-> Im2[13 . improver]
-    Im2 -.-> Cat
+    Im2 --> R3[14 . reviewer iter 3]
+    R3 -. accept .-> Cat
+    R3 -. issues .-> Esc((escalate))
   end
   Cat --> Quiz[quiz-maker]
 ```
@@ -240,11 +248,14 @@ flowchart TD
   Starter --> D
   subgraph PerLesson["Per lesson × N"]
     direction LR
-    D[1 . designer] --> F[2 . fact-verifier] --> W[3 . writer] --> R1[4 . reviewer] --> Di[6 . diagramer] --> Fm[7 . formatter] --> Res[8 . resourcer] --> V[9 . validator] --> Co[10 . coherer] --> R2[11 . reviewer] --> Cat[13 . cataloger]
-    R1 -. issues .-> Im1[5 . improver]
-    Im1 -.-> Di
+    D[1 . designer] --> F[2 . fact-verifier] --> W[3 . writer] --> Di[4 . diagramer] --> Fm[5 . formatter] --> Res[6 . resourcer] --> V[7 . validator] --> Co[8 . coherer] --> R1[9 . reviewer iter 1] --> Cat[14 . cataloger]
+    R1 -. issues .-> Im1[10 . improver]
+    Im1 --> R2[11 . reviewer iter 2]
+    R2 -. accept .-> Cat
     R2 -. issues .-> Im2[12 . improver]
-    Im2 -.-> Cat
+    Im2 --> R3[13 . reviewer iter 3]
+    R3 -. accept .-> Cat
+    R3 -. issues .-> Esc((escalate))
   end
   Cat --> Done(["Chapter complete · branch ready for human merge"])
 ```

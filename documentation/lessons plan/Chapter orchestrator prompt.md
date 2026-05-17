@@ -154,52 +154,55 @@ Then create an empty `agent log.md` in the working folder. Every per-lesson suba
 1. `lesson-designer`
 2. `fact-verifier`
 3. `lesson-drafter`
-4. `lesson-reviewer` (first pass)
-5. `lesson-improver` — only if review reports issues
-6. `lesson-diagramer` — once per diagram in outline, in order
-7. `lesson-formatter`
-8. `lesson-exerciser`
-9. `exercise-builder` — only if the exerciser reports `custom_exercises_remaining > 0`; fire once per index in `custom_exercise_indices`, in order
-10. `lesson-resourcer`
-11. `lesson-coherer`
-12. `lesson-reviewer` (second pass)
-13. `lesson-improver` — only if issues
-14. `lesson-cataloger` — after you set `status: reviewed`
+4. `lesson-diagramer` — once per diagram in outline, in order
+5. `lesson-formatter`
+6. `lesson-exerciser`
+7. `exercise-builder` — only if the exerciser reports `custom_exercises_remaining > 0`; fire once per index in `custom_exercise_indices`, in order
+8. `lesson-resourcer`
+9. `lesson-coherer`
+10. `lesson-reviewer` (iteration 1)
+11. `lesson-improver` — only if iteration 1 reports issues
+12. `lesson-reviewer` (iteration 2) — only if iteration 1 fired the improver
+13. `lesson-improver` (iteration 2) — only if iteration 2 reports issues
+14. `lesson-reviewer` (iteration 3) — only if iteration 2 fired the improver. If issues remain, escalate.
+15. `lesson-cataloger` — after you set `status: reviewed`
 
 **Project lesson** (pass the lesson's **tag** from the project plan — `precondition walkthrough` / `slice walkthrough: <ids>` / `verify walkthrough` — to `project-lesson-designer` and `project-lesson-writer`):
 
 1. `project-lesson-designer`
 2. `fact-verifier`
 3. `project-lesson-writer`
-4. `lesson-reviewer` (first pass)
-5. `lesson-improver` — only if issues
-6. `lesson-diagramer` — once per diagram (project lessons rarely have diagrams)
-7. `lesson-formatter`
-8. `lesson-resourcer`
-9. `project-validator`
-10. `lesson-coherer`
-11. `lesson-reviewer` (second pass)
-12. `lesson-improver` — only if issues
-13. `lesson-cataloger` — after you set `status: reviewed`
+4. `lesson-diagramer` — once per diagram (project lessons rarely have diagrams)
+5. `lesson-formatter`
+6. `lesson-resourcer`
+7. `project-validator`
+8. `lesson-coherer`
+9. `lesson-reviewer` (iteration 1) — fold `project-validator` drift items into the issue list before firing iteration-1 improver
+10. `lesson-improver` — only if iteration 1 reports issues
+11. `lesson-reviewer` (iteration 2) — only if iteration 1 fired the improver
+12. `lesson-improver` (iteration 2) — only if iteration 2 reports issues
+13. `lesson-reviewer` (iteration 3) — only if iteration 2 fired the improver. If issues remain, escalate.
+14. `lesson-cataloger` — after you set `status: reviewed`
 
 Subagents run **strictly sequentially** within a chapter (parallelism is across chapters via sibling worktrees). Read each subagent's chat report before firing the next. Pass each subagent only what its prompt requires — see "Subagent input contract" below.
 
-After the drafter (teaching) or writer (project) finishes, **spot-check** placeholder counts against the outline before firing the diagramer loop: `diagrams_placed` matches outline's diagram count; `exercises_placed` matches exercise plan (Custom entries still produce a single `[[EXERCISE n]]` from the drafter — the exerciser does the rename later); `sandbox_placed` agrees with sandbox decision. Don't retry the drafter on mismatch — the first-pass reviewer catches these on axis 6 (outline adherence). The spot-check only tells you how many times to fire the diagramer.
+After the drafter (teaching) or writer (project) finishes, **spot-check** placeholder counts against the outline before firing the diagramer loop: `diagrams_placed` matches outline's diagram count; `exercises_placed` matches exercise plan (Custom entries still produce a single `[[EXERCISE n]]` from the drafter — the exerciser does the rename later); `sandbox_placed` agrees with sandbox decision. Don't retry the drafter on mismatch — the post-coherer reviewer catches these on the outline-adherence axis. The spot-check only tells you how many times to fire the diagramer.
 
-After the exerciser finishes (step 8), a second spot-check before firing the `exercise-builder` loop (step 9): the exerciser's `custom_exercises_remaining` must equal the number of `Custom` entries in the outline's `## Exercise plan`, and `custom_exercise_indices` is the ordered list of placeholders to feed the builder. Mismatch → escalate; the outline and the exerciser's view of it have diverged. On match, store `custom_exercise_indices` in per-lesson state and fire `exercise-builder` once per index, sequentially. Skip step 9 entirely when `custom_exercises_remaining == 0`.
+After the exerciser finishes (teaching step 6), a second spot-check before firing the `exercise-builder` loop (step 7): the exerciser's `custom_exercises_remaining` must equal the number of `Custom` entries in the outline's `## Exercise plan`, and `custom_exercise_indices` is the ordered list of placeholders to feed the builder. Mismatch → escalate; the outline and the exerciser's view of it have diverged. On match, store `custom_exercise_indices` in per-lesson state and fire `exercise-builder` once per index, sequentially. Skip step 7 entirely when `custom_exercises_remaining == 0`.
 
 ### 3. Triage the reviewer's report
 
-`lesson-reviewer` writes to `<WT>/documentation/lessons plan/work/Chapter <X.Y>/<lesson-slug>/lesson review.md`. Read it.
+`lesson-reviewer` writes to `<WT>/documentation/lessons plan/work/Chapter <X.Y>/<lesson-slug>/lesson review.md`. Each iteration overwrites the prior. Read it after every reviewer run.
 
-| Reviewer output | Action |
-| --- | --- |
-| No issues | Continue to the next step. |
-| Any issues | Fire `lesson-improver` with the issue list **inline** (improver does not read the working folder). Do not re-fire upstream subagents. |
+| Reviewer output | Iteration | Action |
+| --- | --- | --- |
+| `verdict: accept` | any | Skip remaining review iterations and proceed to `lesson-cataloger`. |
+| `verdict: issues` | 1 or 2 | Fire `lesson-improver` with the issue list **inline** (improver does not read the working folder), then re-fire `lesson-reviewer` with `iteration: <prev+1>`. Do not re-fire upstream subagents. |
+| `verdict: issues` | 3 | Stop and escalate — the improver loop has hit its cap of 2 runs. |
 
-If after the improver runs you still can't trust the result, stop and escalate. Do not loop.
+The cap is hard: at most **2 improver runs per lesson** (and therefore at most **3 reviewer iterations**). The post-improver re-review is what catches cases where the improver makes things worse — if iteration 3 still reports issues, escalate rather than loop.
 
-For project lessons, `project-validator` (step 9) reports drift inline as a structured `issues:` list — no file written. Capture it. At the second-pass reviewer (step 11), append the validator's items to the reviewer's own issue list before passing the combined set to `lesson-improver` (step 12). Improver treats them as one batch.
+For project lessons, `project-validator` (step 7) reports drift inline as a structured `issues:` list — no file written. Capture it. Before firing the iteration-1 `lesson-improver` (step 10), append the validator's items to the reviewer's own iteration-1 issue list; the improver treats them as one batch. Validator does not re-run on later iterations — the reviewer's own technical-correctness axis catches any code regressions improver introduces.
 
 ### 4. Working-folder access rules
 
@@ -211,7 +214,7 @@ Per-lesson working folder contains at most:
 <WT>/documentation/lessons plan/work/Chapter <X.Y>/<lesson-slug>/
   lesson outline.md     — lesson-designer / project-lesson-designer output
   lesson facts.md       — fact-verifier output
-  lesson review.md      — lesson-reviewer output (second pass overwrites first)
+  lesson review.md      — lesson-reviewer output (each iteration overwrites the prior)
   lesson concepts.md    — lesson-cataloger output
   agent log.md          — append-only run log; every per-lesson subagent appends one entry on completion
 ```
@@ -238,14 +241,14 @@ For project chapters, the chapter root additionally holds:
 ```
 ````
 
-The second-pass `lesson-reviewer` reads this file to distinguish *deliberately dropped* artifacts (e.g. a `[[VIDEO]]` the resourcer searched for and rejected) from *forgotten or crashed* ones. You do not parse it yourself — but if you escalate, attach the file to the report.
+The `lesson-reviewer` reads this file (on every iteration) to distinguish *deliberately dropped* artifacts (e.g. a `[[VIDEO]]` the resourcer searched for and rejected) from *forgotten or crashed* ones. You do not parse it yourself — but if you escalate, attach the file to the report.
 
 ### 6. Finalize and catalog
 
-After the lesson clears its second review (with or without improver):
+After the review loop accepts (a reviewer iteration returns `verdict: accept`):
 
 - Confirm final MDX at `<WT>/src/content/docs/<chapter>/<lesson-slug>.mdx`.
-- The coherer set frontmatter to `status: formatted` at step 10 — flip it to `status: reviewed` now (edit frontmatter directly).
+- The coherer set frontmatter to `status: formatted` (teaching step 9 / project step 8) — flip it to `status: reviewed` now (edit frontmatter directly).
 - Project lessons: confirm working code and starter directories still exist at `<WT>/documentation/lessons plan/work/Chapter <X.Y>/{code,starter}/`.
 - Fire `lesson-cataloger` with the MDX path, working folder path, and paths to every prior completed lesson's `lesson concepts.md` in this chapter (chapter order; empty for lesson 1). It writes `lesson concepts.md` — the next designer reads it to know what not to re-teach. Reading prior ledgers lets the cataloger separate concepts this lesson introduced from ones it merely restated.
 
@@ -266,8 +269,8 @@ Every per-lesson subagent invocation (teaching and project, including reviewers,
 | `lesson-designer` | lesson id (`<X.Y.N>`), lesson slug, chapter id, target outline path, ordered list of prior `lesson concepts.md` paths |
 | `fact-verifier` | lesson outline path, working folder path |
 | `lesson-drafter` | lesson outline path, working folder path, target MDX path |
-| `lesson-reviewer` | lesson outline path, MDX path, working folder path, `pass: first` or `pass: second`, ordered list of prior `lesson concepts.md` paths |
-| `lesson-improver` | MDX path, full reviewer issue list **inline** (improver does not read the working folder); on project second pass, append validator drift items inline as well |
+| `lesson-reviewer` | lesson outline path, MDX path, working folder path, `iteration: 1 \| 2 \| 3`, ordered list of prior `lesson concepts.md` paths |
+| `lesson-improver` | MDX path, full reviewer issue list **inline** (improver does not read the working folder); on project iteration 1, append validator drift items inline as well |
 | `lesson-diagramer` | lesson outline path, MDX path, lesson slug, chapter id, 1-based diagram index (fire once per diagram, in order) |
 | `lesson-formatter` | MDX path |
 | `lesson-exerciser` | lesson outline path, MDX path |
@@ -311,14 +314,15 @@ Shared with teaching (`lesson-reviewer`, `lesson-improver`, `lesson-diagramer`, 
 | `lesson-designer` or `project-lesson-designer` returns `blocked` | Stop — escalate | — | Human |
 | `lesson-drafter` or `project-lesson-writer` returns `blocked` | Stop — escalate | — | Human |
 | `fact-verifier` or `project-fact-verifier` returns `blocked` (e.g. no web access) | Stop — escalate | — | Human |
-| `lesson-reviewer` verdict `issues` | Fire `lesson-improver` with the issue list inline | — | — |
-| `lesson-improver` returns `skipped > 0`, or notes flag an unfixable blocker, or a blocker the reviewer raised is still in the MDX | Stop — escalate | — | Human |
+| `lesson-reviewer` verdict `issues` (iteration 1 or 2) | Fire `lesson-improver` with the issue list inline, then re-fire `lesson-reviewer` with `iteration: <prev+1>` | 2 improver runs per lesson | Human |
+| `lesson-reviewer` verdict `issues` (iteration 3) | Stop — escalate; the improver loop has hit its cap | — | Human |
+| `lesson-improver` returns `skipped > 0`, or notes flag an unfixable blocker | Stop — escalate (re-firing the improver on the same issue won't help) | — | Human |
 | `exercise-builder` returns `blocked` (vague brief, pre-built fits, unsupported runtime, mis-dispatch) | Stop — escalate; do not loop | — | Human |
 | `project-fact-verifier` returns `high_severity_divergences > 0` | Re-fire `project-architect` with divergences inline, then re-run `project-fact-verifier` | 1 architect retry | Human |
 | `project-coder-precondition` returns `blocked` | Stop — escalate | — | Human |
 | `project-slice-coder` returns `blocked` | `git reset --hard HEAD`, re-fire same slice coder with failing output appended inline | 2 retries per slice | Human |
 | `project-coder-starter` returns `blocked` | Stop — escalate | — | Human |
-| `project-validator` reports drift | Fold drift items into the second-pass reviewer's issue list (see step 3 of per-lesson loop) | — | — |
+| `project-validator` reports drift | Fold drift items into iteration 1's reviewer issue list (see step 3 of per-lesson loop) | — | — |
 | `quiz-maker` returns `blocked` | Stop — escalate; do not re-fire | — | Human |
 
 "Escalate" = stop the chapter's work, leave the worktree in its current state (no reset, no delete), and report to the human with the failing subagent's report verbatim plus everything completed so far.
@@ -329,7 +333,7 @@ Shared with teaching (`lesson-reviewer`, `lesson-improver`, `lesson-diagramer`, 
 | --- | --- | --- |
 | `draft` | `lesson-drafter` / `project-lesson-writer` | after initial write |
 | `formatted` | `lesson-coherer` | after coherer's pass |
-| `reviewed` | you (orchestrator) | after the second review clears and any improver runs are done |
+| `reviewed` | you (orchestrator) | after the review loop accepts (a reviewer iteration returns `verdict: accept`; cap is 2 improver runs before escalate) |
 | `final` | human curator | manually, outside this workflow |
 
 Set `status: reviewed` by editing the frontmatter directly.
@@ -371,7 +375,7 @@ escalations:
 - Create, name, or remove the worktree (Claude Code owns that).
 - Edit lesson prose yourself. If something is wrong, fire the appropriate subagent. (Only MDX edit you ever make: flipping `status: formatted` → `status: reviewed` — see step 6.)
 - Edit project code yourself. Slice coders own slices; the precondition coder owns setup; the starter coder owns stubs.
-- Skip either reviewer pass.
+- Skip the post-coherer review loop, or mark a lesson `reviewed` while iteration 3 still reports `issues`.
 - Parallelize subagents. Sequence is the contract within a chapter; parallelism is across chapters via sibling worktrees. Note that a subagent cannot spawn further subagents.
 - Re-fire earlier subagents based on later reviewer findings. Reviewer output is consumed only by `lesson-improver`. (Exception: a high-severity `project-fact-verifier` divergence may re-fire `project-architect` once.)
 - Retry a slice coder beyond the 2-retry cap. Escalate.
