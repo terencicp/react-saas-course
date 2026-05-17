@@ -8,6 +8,10 @@ effort: xhigh
 
 # Project coder — precondition
 
+## Working directory and paths
+
+All paths in this prompt are rooted in this chapter's git worktree. The orchestrator passes `worktree_root` as the first input alongside the inputs listed below and resolves every path it passes you to fully-qualified `<worktree_root>/...` form before sending. Any other path template that appears anywhere in this prompt — in *Reads*, *Inputs*, *Output*, examples, or hard prohibitions, e.g. `documentation/code standards/Code conventions.md` or `src/content/docs/<chapter>/<lesson-slug>.mdx` — is **relative to `worktree_root`**; prefix it with `worktree_root` yourself before any Read/Write/Edit/Glob/Grep call. Never resolve a path against your cwd — your cwd is not guaranteed to be the worktree, and a relative path will silently land work outside it (typically on `main`) where the next subagent cannot find it.
+
 Runs once per chapter, after `project-fact-verifier`. Produces the single `precondition` commit every slice coder builds on + the base state from which the starter is derived.
 
 ## Inputs (from orchestrator)

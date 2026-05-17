@@ -21,6 +21,24 @@ When ON, interactive inspection mode:
 
 Inside a git worktree of `react-saas-course` on a chapter-scoped branch. Claude Code creates and names the worktree; you neither create nor remove it. Every read/write/commit happens inside this worktree. Sibling chapter orchestrators may run concurrently — you cannot see their work. When done, the worktree is ready for human-curator merge. **Do not merge it yourself.**
 
+## Paths and the worktree root
+
+Subagents are spawned in fresh shells; their cwd is **not guaranteed** to be the worktree. The only reliable way to make every read/write land inside this worktree is to pass absolute paths.
+
+1. As the first pre-flight step, resolve and pin the worktree root:
+
+   ```sh
+   git rev-parse --show-toplevel
+   ```
+
+   Save the result as `WT` (the chapter worktree's absolute root). Use `WT` for the rest of the chapter — do not re-derive it later, and do not rely on cwd for any subagent call.
+
+2. **Every path you pass to a subagent must be absolute and rooted at `WT`.** Path templates in this prompt and in subagent prompts (e.g. `documentation/lessons plan/work/Chapter <X.Y>/<lesson-slug>/lesson outline.md`) show the *shape* of the path relative to `WT`; you always resolve and pass the fully-qualified `<WT>/...` form.
+
+3. Always also pass `worktree_root: <WT>` as the first input to every subagent, so the subagent has the explicit anchor even when an absolute path it receives looks self-sufficient. Subagent prompts instruct subagents to use these supplied absolute paths verbatim and never to resolve relative paths against their own cwd.
+
+If `git rev-parse --show-toplevel` ends in the main repo root rather than a worktree path, **stop and escalate** — you were started outside the chapter worktree and any work you do will land on `main`.
+
 ## Inputs
 
 - A chapter identifier (e.g. `Chapter 4.3`).
@@ -39,10 +57,10 @@ Inside a git worktree of `react-saas-course` on a chapter-scoped branch. Claude 
 
 Before any subagent fires, confirm:
 
-- You are in a worktree (`git rev-parse --show-toplevel` ends in a worktree path, not the main repo root).
-- `documentation/content/chapter outlines/Chapter <X.Y>.md` exists. Missing → escalate.
-- `documentation/content/overview/Project dependencies.md` is readable (needed for classification).
-- For project chapters whose prior project lives in this repo (not `react-saas-course-projects/`): the prior project's `documentation/lessons plan/work/Chapter <prior-X.Y>/code/` is present (prior chapter must have been merged to `main` before this worktree was created). If absent and not published to `react-saas-course-projects/`, escalate — worktree was branched off the wrong base.
+- You resolved `WT = $(git rev-parse --show-toplevel)` and it ends in a worktree path, not the main repo root. See *Paths and the worktree root* above.
+- `<WT>/documentation/content/chapter outlines/Chapter <X.Y>.md` exists. Missing → escalate.
+- `<WT>/documentation/content/overview/Project dependencies.md` is readable (needed for classification).
+- For project chapters whose prior project lives in this repo (not `react-saas-course-projects/`): the prior project's `<WT>/documentation/lessons plan/work/Chapter <prior-X.Y>/code/` is present (prior chapter must have been merged to `main` before this worktree was created). If absent and not published to `react-saas-course-projects/`, escalate — worktree was branched off the wrong base.
 
 If any check fails, escalate. Do not invent missing inputs.
 
@@ -86,10 +104,10 @@ For each lesson in the outline, in order:
 ### 1. Create the working folder
 
 ```
-documentation/lessons plan/work/Chapter <X.Y>/<lesson-slug>/
+<WT>/documentation/lessons plan/work/Chapter <X.Y>/<lesson-slug>/
 ```
 
-**Lesson slug:** outline's lesson heading, lowercased, with every run of non-alphanumeric chars collapsed to a single `-`, leading/trailing `-` stripped. Examples: `Who this is for` → `who-this-is-for`; `useState — the basics` → `usestate-the-basics`; `Routing & layouts` → `routing-layouts`. Use the same slug everywhere — folder, MDX filename, and frontmatter `slug:`.
+**Lesson slug:** `<X.Y.N>-<body>` where `<body>` is the outline's lesson heading, lowercased, with every run of non-alphanumeric chars collapsed to a single `-`, leading/trailing `-` stripped. The `<X.Y.N>-` prefix is mandatory — it makes the working folder, MDX file, and URL all sort in chapter order and stay collision-free across lessons that happen to share a heading. Examples (in chapter 4.4): `The box model and the inline / block axis` → `4.4.1-the-box-model-and-the-inline-block-axis`; `useState — the basics` (lesson 4.4.2) → `4.4.2-usestate-the-basics`; `Routing & layouts` (lesson 4.4.3) → `4.4.3-routing-layouts`. Use the same slug everywhere — folder, MDX filename, and frontmatter `slug:`.
 
 ### 2. Run the subagent sequence
 
@@ -131,7 +149,7 @@ After the drafter (teaching) or writer (project) finishes, **spot-check** placeh
 
 ### 3. Triage the reviewer's report
 
-`lesson-reviewer` writes to `documentation/lessons plan/work/Chapter <X.Y>/<lesson-slug>/lesson review.md`. Read it.
+`lesson-reviewer` writes to `<WT>/documentation/lessons plan/work/Chapter <X.Y>/<lesson-slug>/lesson review.md`. Read it.
 
 | Reviewer output | Action |
 | --- | --- |
@@ -149,7 +167,7 @@ The canonical list of subagents that read/write the working folder directly live
 Per-lesson working folder contains at most:
 
 ```
-documentation/lessons plan/work/Chapter <X.Y>/<lesson-slug>/
+<WT>/documentation/lessons plan/work/Chapter <X.Y>/<lesson-slug>/
   lesson outline.md     — lesson-designer / project-lesson-designer output
   lesson facts.md       — fact-verifier output
   lesson review.md      — lesson-reviewer output (second pass overwrites first)
@@ -159,7 +177,7 @@ documentation/lessons plan/work/Chapter <X.Y>/<lesson-slug>/
 For project chapters, the chapter root additionally holds:
 
 ```
-documentation/lessons plan/work/Chapter <X.Y>/
+<WT>/documentation/lessons plan/work/Chapter <X.Y>/
   project code plan.md  — project-architect output (slice specs with full inline content)
   project facts.md      — project-fact-verifier output
   code/                 — working solution directory (slice commits on the branch)
@@ -170,9 +188,9 @@ documentation/lessons plan/work/Chapter <X.Y>/
 
 After the lesson clears its second review (with or without improver):
 
-- Confirm final MDX at `src/content/docs/<chapter>/<lesson-slug>.mdx`.
+- Confirm final MDX at `<WT>/src/content/docs/<chapter>/<lesson-slug>.mdx`.
 - The coherer set frontmatter to `status: formatted` at step 10 — flip it to `status: reviewed` now (edit frontmatter directly).
-- Project lessons: confirm working code and starter directories still exist at `documentation/lessons plan/work/Chapter <X.Y>/{code,starter}/`.
+- Project lessons: confirm working code and starter directories still exist at `<WT>/documentation/lessons plan/work/Chapter <X.Y>/{code,starter}/`.
 - Fire `lesson-cataloger` with the MDX path, working folder path, and paths to every prior completed lesson's `lesson concepts.md` in this chapter (chapter order; empty for lesson 1). It writes `lesson concepts.md` — the next designer reads it to know what not to re-teach. Reading prior ledgers lets the cataloger separate concepts this lesson introduced from ones it merely restated.
 
 ### 6. Move to the next lesson
@@ -180,6 +198,8 @@ After the lesson clears its second review (with or without improver):
 ## Subagent input contract
 
 Pass exactly these fields; names match what each subagent's prompt header refers to.
+
+**Every path is absolute and rooted at `WT`.** In addition to the fields listed below, every subagent invocation includes `worktree_root: <WT>` as its first input. Path templates in the columns below show the *shape* relative to `WT`; you always pass the fully-resolved `<WT>/...` form. A subagent that receives a relative path is a bug — it will write to the orchestrator's cwd, which may not be the worktree, and the next subagent will not find the file.
 
 ### Teaching lesson subagents
 
@@ -278,9 +298,9 @@ project_shas:   # project chapters only; omit for teaching
     - ...
   starter: <sha>
 files_written:
-  - src/content/docs/<chapter>/<lesson-slug>.mdx
-  - src/components/lessons/<chapter>/<lesson-slug>/<n>.astro   # if any
-  - documentation/lessons plan/work/Chapter <X.Y>/...
+  - <WT>/src/content/docs/<chapter>/<lesson-slug>.mdx
+  - <WT>/src/components/lessons/<chapter>/<lesson-slug>/<n>.astro   # if any
+  - <WT>/documentation/lessons plan/work/Chapter <X.Y>/...
 escalations:
   - <one line per escalation, or "none">
 ```

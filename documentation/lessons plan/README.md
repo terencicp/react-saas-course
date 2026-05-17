@@ -6,6 +6,14 @@ How the course's 654 lessons get written. One main agent ("orchestrator") owns a
 
 - `Chapter orchestrator prompt.md` — prompt for the chapter-level main agent.
 
+## Worktree root and absolute paths
+
+Each chapter orchestrator runs inside a git worktree of this repo. Subagents spawn in fresh shells whose cwd is **not** guaranteed to be that worktree, so the orchestrator's first pre-flight step is to resolve the worktree root via `git rev-parse --show-toplevel` (call it `WT`) and then pass every path to every subagent as an absolute `<WT>/…` path, plus `worktree_root: <WT>` itself. Subagent prompts state in their *Working directory and paths* section that they must use the supplied absolute paths verbatim and never resolve relative paths against their own cwd. The path templates in this README (e.g. `documentation/lessons plan/work/Chapter <X.Y>/<lesson-slug>/lesson outline.md`) show shape relative to `WT`; the orchestrator always resolves them before passing them down.
+
+## Lesson slug
+
+Every lesson has one slug used in three places (working folder, MDX filename, frontmatter `slug:` / URL). The format is `<X.Y.N>-<body>` where `<body>` is the outline's lesson heading, lowercased, with every run of non-alphanumeric chars collapsed to a single `-` and leading/trailing `-` stripped. Examples (in chapter 4.4): `The box model and the inline / block axis` → `4.4.1-the-box-model-and-the-inline-block-axis`; `useState — the basics` (lesson 4.4.2) → `4.4.2-usestate-the-basics`. The `<X.Y.N>-` prefix is mandatory so the working folder, MDX file, and URL all sort in chapter order and stay unique even when two lessons share a heading.
+
 ## Two chapter shapes
 
 **Teaching chapters** (the default).
