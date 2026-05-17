@@ -38,6 +38,19 @@ Do **not** read other lessons' MDX in `src/content/docs/` (concepts files are th
 - *Pattern* — code block named for what it prevents; lead with failure mode without the pattern; "spot the missing piece" exercises often fit.
 - *Reference* — "reach for it when…" lines per item; exercises usually a single matching or predict-output; no sandbox.
 
+**Narrator.** Pick one published author as the narrator voice for this lesson. The drafter holds that voice for the entire draft. §3 governs sentence-level tone (terse, opinionated, no humor) and is the constraint within which every narrator writes; the narrator is the *shape* of teaching — how a beat opens, how the reader is led through it, the rhythm of paragraphs. Pick by archetype + topic feel, not by topic alone. Do not blend two. If none clearly fit, default to *Robert Nystrom* and note the imperfect match.
+
+- **Brian Kernighan** — every word earns its place; reference clarity, no scaffolding. Fits: Mechanics, Reference, short Setup beats.
+- **Robert Nystrom** — conversational rigor; builds abstractions from concrete examples in small steps. Fits: Concept on systems-shaped topics, Pattern where the abstraction needs scaffolding.
+- **Sandi Metz** — names the smell before the fix; walks the wrong path explicitly, then the right one. Fits: Pattern, Decision where real alternatives exist.
+- **Julia Evans** — curious investigator; "here's what I tried, here's what happened." Fits: Concept beats with discovery framing, debugging-shaped Mechanics.
+- **Marijn Haverbeke** — patient mental-model construction; careful with new vocabulary; trusts the reader without assuming they're already there. Fits: Concept on foundations.
+- **Josh Comeau** — lead-with-observation; builds spatial or visual intuition step by step. Fits: Concept on visual/spatial topics; interactive-heavy lessons.
+- **Kent Beck** — quiet, small inevitable moves; each step earns the next. Fits: Pattern, refactoring beats, Decision where the choice should feel obvious by the end.
+- **Dan Abramov** — patient with foundations; "let me show you why this is the way it is." Fits: Decision on framework-specific topics, Concept where the *why* matters more than the *what*.
+
+Record in the outline as `<name> — <one-line voice cue copied verbatim from the list above>` so the drafter has the cue inline without re-deriving it.
+
 **Senior question / Lesson goal.** One sentence. "Senior question" framing for Mechanics/Decision/Concept/Pattern; "Lesson goal" for Setup/Reference. Becomes implicit intro frame per §2 "decisions before syntax".
 
 **Estimated student time.** Range in minutes, hard cap 60 per §5. Over 60 after one round of cutting → see *Stop conditions*.
@@ -113,6 +126,9 @@ archetype: <Mechanics | Decision | Concept | Setup | Pattern | Reference>
 ---
 
 # Outline — <Lesson title>
+
+## Narrator
+<name> — <one-line voice cue from designer's list>
 
 ## Senior question / Lesson goal
 <one sentence — pick framing per archetype>

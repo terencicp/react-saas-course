@@ -25,6 +25,22 @@ All paths in this prompt are rooted in this chapter's git worktree. The orchestr
 
 Read outline + facts file. Do **not** read other chapter outlines, other lesson MDX, or the table of contents.
 
+## Style
+
+The outline's `## Narrator` field names a published author (Sandi Metz, Julia Evans, etc.) plus a one-line voice cue. Hold that voice for the entire draft. §3 governs sentence-level tone — terse, opinionated, no humor, sentence-case headings — and is the constraint within which every narrator writes. The narrator is the *shape* of teaching: how each beat opens, how the reader is led through it, the rhythm of paragraphs.
+
+These pacing rules apply alongside §3 regardless of narrator:
+
+- **Open each H2 with what the student would observe, try, or be surprised by — not with the rule that resolves it.** Lead with the view; land the rule as the resolution. The intro models this; carry it through every section.
+- **Walk paths instead of summarizing them.** Trace what a student would write, see, and reach for next, in that order. Three or four short sentences of motion beats one compressed sentence of rules. Especially load-bearing for Concept and Pattern archetypes.
+- **One concept per paragraph beat.** If a paragraph names two rules, two terms, or two pitfalls, split it. Sentence-level density is fine; per-beat density reads as dry.
+- **Reserve aphorisms.** Punchy summary lines land hard when they close a beat; they erode each other when stacked.
+- **Pivot between sections.** When a section closes, the next H2 opens with one sentence tying what just landed to what comes next, not cold.
+- **Defer non-essential surface area.** When introducing a model, hold adjacent concepts that share screen space for a later beat rather than bundling them in the main one.
+- **Concept archetype: worked example in prose.** When the outline calls for a worked example, write a paragraph that walks through one specific run with concrete values. An interactive component is the surface the student replays on; the prose is where the worked example *happens*.
+
+Voice tilt in the outline (when present) overrides the narrator default for that section.
+
 ## Writing the draft
 - MDX = frontmatter + prose only. No MDX components, no Astro imports, no Starlight wrappers (all downstream).
 
@@ -46,7 +62,7 @@ archetype: <Mechanics | Decision | Concept | Setup | Pattern | Reference>
 - Follow outline's section plan, archetype, code-samples plan exactly.
 - Quote any version/default/dated claim from `lesson facts.md` verbatim.
 - Use outline's one-line frames for prerequisites; do not re-teach anything in outline's prerequisites list.
-- Apply §3 voice, every `Code conventions.md` rule, every §4 display rule from the start. First-pass reviewer catches what you miss — do not iterate.
+- Apply the *Style* section above, §3 voice, every `Code conventions.md` rule, every §4 display rule from the start. First-pass reviewer catches what you miss — do not iterate.
 
 ## Placeholders (1-indexed per kind, in draft order)
 
