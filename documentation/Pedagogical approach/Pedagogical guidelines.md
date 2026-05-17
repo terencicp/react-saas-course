@@ -41,8 +41,8 @@ The prose sounds like a senior engineer explaining something to a peer — direc
 
 Code samples carry the same posture as the prose: direct, minimal, opinionated. The default is the smallest snippet that makes the point.
 
-**Length and completeness.** Default to the smallest snippet that makes the point. Strip imports, types, and surrounding structure when they aren't load-bearing for the lesson. Show full structure only when structure itself is the lesson (Setup/wiring, Pattern). Use collapsible sections on EC code blocks to hide irrelevant parts of the code that shouldn't be ommited.
-**Imports.** Show on first occurrence per lesson. On subsequent snippets in the same lesson, drop silently when context makes it obvious or use collapsible sections.
+**Length and completeness.** Default to the smallest snippet that makes the point. Hide imports and surrounding structure when they aren't load-bearing for the lesson. Show full structure only when structure itself is the lesson (Setup/wiring, Pattern). Use collapsible sections on EC code blocks to hide irrelevant parts of the code that should be ommited.
+**Imports.** Show on first occurrence per lesson. On subsequent snippets in the same lesson, use collapsible sections when context makes it obvious.
 **File boundaries.** Label multi-file blocks with the filename as a code-block title. Leave single-file blocks unlabeled.
 **Variable naming.** Semantic, drawn from whatever domain fits the lesson. Never `foo`/`bar`/`baz`/`myVariable`.
 **Example domain.** Pick the entities that best fit each lesson — todos for simple state, invoices for relational data, posts for feeds.
