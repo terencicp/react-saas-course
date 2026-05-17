@@ -114,7 +114,7 @@ Minimal decision tree — no `root` prop, no `kind`, no descriptions or rational
 State machine with topology diagram — `kind="machine"` + `<Figure slot="diagram">`:
 
 ````mdx
-import Figure from '…/components/figures/Figure.astro';
+import Figure from '../../../../components/figures/Figure.astro';
 
 <StateMachineWalker kind="machine" title="Consent flow">
   <Figure slot="diagram">
