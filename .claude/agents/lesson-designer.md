@@ -68,12 +68,19 @@ Record in the outline as `<name> — <one-line voice cue copied verbatim from th
 **Diagram briefs.** Numbered 1, 2, 3 — orchestrator fires `lesson-diagramer` per diagram by 1-based index. Per diagram: concept conveyed, mental model student should leave with, section it sits in, suggested engine from diagrams INDEX, layout constraints (laptops are short — prefer horizontal). Zero diagrams fine; Concept lesson without one is a smell.
 
 **Exercise plan.** Per exercise:
-- *Form and component* — exact component name from components INDEX (`ReactCoding`, `HtmlCssCoding`, `SQLCoding`, `DrizzleCoding`, `DrizzleSchemaCoding`, `Buckets`, `Matching`, `PredictOutput`, `CodeReview`, `MultipleChoice`, etc.). Exerciser picks runtime mechanically from this name; do not leave "live-coding with which runtime" unresolved.
+- *Form and component* — exact component name from components INDEX (`ReactCoding`, `HtmlCssCoding`, `SQLCoding`, `DrizzleCoding`, `DrizzleSchemaCoding`, `Buckets`, `Matching`, `PredictOutput`, `CodeReview`, `MultipleChoice`, etc.) **or** the literal value `Custom` for a bespoke interactive component built by `exercise-builder` (use only when no pre-built component fits; see the *Custom exercises* sub-section below). Exerciser picks runtime mechanically from this name; do not leave "live-coding with which runtime" unresolved.
 - *Placement* — which section, where in flow. Per §6: default, in flow, never at end.
 - *What it confirms* — one line on specific understanding.
-- *Grading criterion* — one line on what counts as done (tests pass / exact answer / spot-the-missing-piece target).
+- *Grading criterion* — one line on what counts as done (tests pass / exact answer / spot-the-missing-piece target). For `Custom`, this must name a concrete pass state (not "student understands X") — the builder authors the comparison logic from scratch and cannot infer it.
 
 Archetype defaults: Setup → zero; Reference → typically one matching/predict-output; else ≥1, usually more.
+
+*Custom exercises.* Reach for `Custom` only when the pre-built menu genuinely cannot carry the lesson. They cost a max-effort agent run per exercise and they fragment the visual vocabulary of the course — both worth paying for occasionally, neither worth paying for casually. Treat **more than one Custom per lesson** as a smell: re-read the brief and check whether the second one is really pulling its weight, or whether the lesson is trying to do too much. When you do mark an entry `Custom`, the bullet needs four extra sub-fields the builder will consume verbatim:
+
+- *Interaction mechanic* — one line on what the student does (drag, click, drop, scrub a slider, type into a controlled input, …).
+- *Why no pre-built fits* — one line naming the closest pre-built component (`Buckets`, `ReactCoding`, etc.) and the specific gap that justifies a custom build. Forces honesty — if you can't name the gap, the pre-built fits.
+- *Layout / space constraint* — laptops are wide but short. Declare cap height or horizontal-first orientation explicitly so the builder doesn't author a vertical-stack widget that pushes the rest of the lesson off-screen.
+- *Visual-tone anchor* — name the pre-built component the builder should pattern its visuals against (button shapes, success/failure colors). Coherence with the rest of the course matters more than novelty.
 
 **Sandbox decision.** At most one per lesson per §6. If yes: concept, placement, why free play earns its weight. Setup/Reference default no.
 

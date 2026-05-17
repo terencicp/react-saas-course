@@ -37,12 +37,13 @@ Each subagent runs once, in sequence.
 5. `lesson-improver` — only if the reviewer reports any issues.
 6. `lesson-diagramer` — called once per diagram, sequentially. Inline engines (Mermaid, D2, FileTree) embed in the MDX; lengthier diagrams get a custom Astro component at `src/components/lessons/<chapter>/<lesson-slug>/<n>.astro` and an import.
 7. `lesson-formatter` — adds MDX components (asides, cards, tooltips, code variants, tabs, file trees, etc.) where the prose calls for them. Does not touch wording, code, structure, or diagrams.
-8. `lesson-exerciser` — replaces `[[EXERCISE]]` and `[[SANDBOX]]` placeholders with real components (live-coding, interactive, sandboxes).
-9. `lesson-resourcer` — replaces `[[VIDEO]]` placeholders with `VideoCallout` components and adds `LinkCard`s at the end of the lesson for external resources.
-10. `lesson-coherer` — single final edit pass for flow, voice, and removed seams between previous agents' contributions. Flips the frontmatter to `status: formatted`.
-11. `lesson-reviewer` (second pass) — audit-only.
-12. `lesson-improver` — only if the reviewer reports any issues.
-13. `lesson-cataloger` — fired after the orchestrator accepts the lesson. Reads the final MDX and writes `lesson concepts.md` to the working folder.
+8. `lesson-exerciser` — replaces `[[EXERCISE]]` and `[[SANDBOX]]` placeholders with pre-built components (live-coding, interactive, sandboxes); for any outline entry tagged `Custom`, renames `[[EXERCISE n]]` to `[[CUSTOM EXERCISE n]]` and leaves it for the builder.
+9. `exercise-builder` — only when the exerciser reports `custom_exercises_remaining > 0`. Called once per custom exercise, sequentially. Builds a lesson-scoped interactive component at `src/components/lessons/<chapter>/<lesson-slug>/exercise-<n>.astro` (paired with `exercise-<n>.tsx` for React-island exercises), imports it, and replaces the `[[CUSTOM EXERCISE n]]` placeholder.
+10. `lesson-resourcer` — replaces `[[VIDEO]]` placeholders with `VideoCallout` components and adds `LinkCard`s at the end of the lesson for external resources.
+11. `lesson-coherer` — single final edit pass for flow, voice, and removed seams between previous agents' contributions. Flips the frontmatter to `status: formatted`.
+12. `lesson-reviewer` (second pass) — audit-only.
+13. `lesson-improver` — only if the reviewer reports any issues.
+14. `lesson-cataloger` — fired after the orchestrator accepts the lesson. Reads the final MDX and writes `lesson concepts.md` to the working folder.
 
 The orchestrator reads each reviewer report and decides:
 
@@ -108,10 +109,12 @@ The lesson MDX lives at:
 src/content/docs/<chapter>/<lesson-slug>.mdx
 ```
 
-Custom diagram components (SVG, HTML/CSS, ArrowDiagram authored for a specific lesson) live at:
+Lesson-scoped custom components live at:
 
 ```
-src/components/lessons/<chapter>/<lesson-slug>/<n>.astro
+src/components/lessons/<chapter>/<lesson-slug>/<n>.astro            — custom diagrams (SVG, HTML/CSS, ArrowDiagram) authored by lesson-diagramer
+src/components/lessons/<chapter>/<lesson-slug>/exercise-<n>.astro   — custom exercises authored by exercise-builder
+src/components/lessons/<chapter>/<lesson-slug>/exercise-<n>.tsx     — React island sibling for an exercise that needs hooks/state
 ```
 
 For project chapters, the project code is built during prep at:
@@ -175,7 +178,7 @@ After each completed lesson, the orchestrator fires `lesson-cataloger`. It reads
 - `documentation/code standards/Code conventions.md` — every subagent that writes code or audits code.
 - Specific docs named in each subagent's prompt — deliberately minimal. Subagents do not read the full pedagogical guidelines unless their job depends on it. The orchestrator and the designer carry the global view; downstream agents work from the outline.
 
-Subagents that read or write the per-lesson or per-chapter working folder directly: `lesson-designer`, `project-lesson-designer`, `fact-verifier`, `project-fact-verifier`, `lesson-drafter`, `project-lesson-writer`, `lesson-reviewer`, `lesson-diagramer`, `lesson-exerciser`, `lesson-resourcer`, `lesson-cataloger`, `quiz-maker`, `project-coder-precondition`, `project-slice-coder`, `project-coder-starter`, `project-validator`. Every other subagent receives the file paths and information it needs in its input prompt from the orchestrator.
+Subagents that read or write the per-lesson or per-chapter working folder directly: `lesson-designer`, `project-lesson-designer`, `fact-verifier`, `project-fact-verifier`, `lesson-drafter`, `project-lesson-writer`, `lesson-reviewer`, `lesson-diagramer`, `lesson-exerciser`, `exercise-builder`, `lesson-resourcer`, `lesson-cataloger`, `quiz-maker`, `project-coder-precondition`, `project-slice-coder`, `project-coder-starter`, `project-validator`. Every other subagent receives the file paths and information it needs in its input prompt from the orchestrator.
 
 ## What every subagent reports back, by default
 
@@ -196,10 +199,11 @@ flowchart LR
   Start([Chapter starts]) --> D
   subgraph PerLesson["Per lesson × N"]
     direction LR
-    D[1 . designer] --> F[2 . fact-verifier] --> Dr[3 . drafter] --> R1[4 . reviewer] --> Di[6 . diagramer] --> Fm[7 . formatter] --> Ex[8 . exerciser] --> Res[9 . resourcer] --> Co[10 . coherer] --> R2[11 . reviewer] --> Cat[13 . cataloger]
+    D[1 . designer] --> F[2 . fact-verifier] --> Dr[3 . drafter] --> R1[4 . reviewer] --> Di[6 . diagramer] --> Fm[7 . formatter] --> Ex[8 . exerciser] --> EB[9 . exercise-builder] --> Res[10 . resourcer] --> Co[11 . coherer] --> R2[12 . reviewer] --> Cat[14 . cataloger]
     R1 -. issues .-> Im1[5 . improver]
     Im1 -.-> Di
-    R2 -. issues .-> Im2[12 . improver]
+    Ex -. no custom .-> Res
+    R2 -. issues .-> Im2[13 . improver]
     Im2 -.-> Cat
   end
   Cat --> Quiz[quiz-maker]

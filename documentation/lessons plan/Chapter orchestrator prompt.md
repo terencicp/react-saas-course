@@ -102,7 +102,7 @@ Read the outline. The chapter is a **project chapter** if its id is in the list 
 
 ## State to track across the chapter
 
-- **Per-lesson:** lesson id, lesson slug, working folder path, outline's diagram count, exercise count, sandbox decision, and (project chapters) the lesson's tag from the project plan.
+- **Per-lesson:** lesson id, lesson slug, working folder path, outline's diagram count, exercise count, custom-exercise indices (1-based, in outline order — empty unless any exercise plan entry is `Custom`), sandbox decision, and (project chapters) the lesson's tag from the project plan.
 - **Cumulative across the chapter:** ordered list of every prior completed lesson's `lesson concepts.md` path (consumed by designer, reviewer, cataloger). Append after each `lesson-cataloger` run, in chapter order; empty before lesson 1.
 - **Project chapters only:** precondition commit SHA, ordered list of slice commit SHAs (one per completed slice), starter commit SHA. Capture each from the relevant coder's final report — every downstream coder and the end-of-chapter report need them.
 
@@ -153,11 +153,12 @@ Before firing the first subagent, sanity-check: the computed slug starts with th
 6. `lesson-diagramer` — once per diagram in outline, in order
 7. `lesson-formatter`
 8. `lesson-exerciser`
-9. `lesson-resourcer`
-10. `lesson-coherer`
-11. `lesson-reviewer` (second pass)
-12. `lesson-improver` — only if issues
-13. `lesson-cataloger` — after you set `status: reviewed`
+9. `exercise-builder` — only if the exerciser reports `custom_exercises_remaining > 0`; fire once per index in `custom_exercise_indices`, in order
+10. `lesson-resourcer`
+11. `lesson-coherer`
+12. `lesson-reviewer` (second pass)
+13. `lesson-improver` — only if issues
+14. `lesson-cataloger` — after you set `status: reviewed`
 
 **Project lesson** (pass the lesson's **tag** from the project plan — `precondition walkthrough` / `slice walkthrough: <ids>` / `verify walkthrough` — to `project-lesson-designer` and `project-lesson-writer`):
 
@@ -177,7 +178,9 @@ Before firing the first subagent, sanity-check: the computed slug starts with th
 
 Subagents run **strictly sequentially** within a chapter (parallelism is across chapters via sibling worktrees). Read each subagent's chat report before firing the next. Pass each subagent only what its prompt requires — see "Subagent input contract" below.
 
-After the drafter (teaching) or writer (project) finishes, **spot-check** placeholder counts against the outline before firing the diagramer loop: `diagrams_placed` matches outline's diagram count; `exercises_placed` matches exercise plan; `sandbox_placed` agrees with sandbox decision. Don't retry the drafter on mismatch — the first-pass reviewer catches these on axis 6 (outline adherence). The spot-check only tells you how many times to fire the diagramer.
+After the drafter (teaching) or writer (project) finishes, **spot-check** placeholder counts against the outline before firing the diagramer loop: `diagrams_placed` matches outline's diagram count; `exercises_placed` matches exercise plan (Custom entries still produce a single `[[EXERCISE n]]` from the drafter — the exerciser does the rename later); `sandbox_placed` agrees with sandbox decision. Don't retry the drafter on mismatch — the first-pass reviewer catches these on axis 6 (outline adherence). The spot-check only tells you how many times to fire the diagramer.
+
+After the exerciser finishes (step 8), a second spot-check before firing the `exercise-builder` loop (step 9): the exerciser's `custom_exercises_remaining` must equal the number of `Custom` entries in the outline's `## Exercise plan`, and `custom_exercise_indices` is the ordered list of placeholders to feed the builder. Mismatch → escalate; the outline and the exerciser's view of it have diverged. On match, store `custom_exercise_indices` in per-lesson state and fire `exercise-builder` once per index, sequentially. Skip step 9 entirely when `custom_exercises_remaining == 0`.
 
 ### 3. Triage the reviewer's report
 
@@ -245,6 +248,7 @@ Pass exactly these fields; names match what each subagent's prompt header refers
 | `lesson-diagramer` | lesson outline path, MDX path, lesson slug, chapter id, 1-based diagram index (fire once per diagram, in order) |
 | `lesson-formatter` | MDX path |
 | `lesson-exerciser` | lesson outline path, MDX path |
+| `exercise-builder` | lesson outline path, MDX path, lesson slug, chapter id, 1-based exercise index (fire once per index in `custom_exercise_indices`, in order) |
 | `lesson-resourcer` | lesson outline path, MDX path |
 | `lesson-coherer` | MDX path |
 | `lesson-cataloger` | final MDX path, lesson title, chapter id, working folder path, ordered list of prior `lesson concepts.md` paths (empty for lesson 1) |
@@ -286,6 +290,7 @@ Shared with teaching (`lesson-reviewer`, `lesson-improver`, `lesson-diagramer`, 
 | `fact-verifier` or `project-fact-verifier` returns `blocked` (e.g. no web access) | Stop — escalate | — | Human |
 | `lesson-reviewer` verdict `issues` | Fire `lesson-improver` with the issue list inline | — | — |
 | `lesson-improver` returns `skipped > 0`, or notes flag an unfixable blocker, or a blocker the reviewer raised is still in the MDX | Stop — escalate | — | Human |
+| `exercise-builder` returns `blocked` (vague brief, pre-built fits, unsupported runtime, mis-dispatch) | Stop — escalate; do not loop | — | Human |
 | `project-fact-verifier` returns `high_severity_divergences > 0` | Re-fire `project-architect` with divergences inline, then re-run `project-fact-verifier` | 1 architect retry | Human |
 | `project-coder-precondition` returns `blocked` | Stop — escalate | — | Human |
 | `project-slice-coder` returns `blocked` | `git reset --hard HEAD`, re-fire same slice coder with failing output appended inline | 2 retries per slice | Human |

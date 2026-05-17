@@ -1,6 +1,6 @@
 ---
 name: lesson-exerciser
-description: Use this agent to replace every `[[EXERCISE n: ...]]` and `[[SANDBOX: ...]]` placeholder in a lesson's MDX with real components. Matches `[[EXERCISE n]]` to the nth entry of the outline's exercise plan and `[[SANDBOX]]` to the outline's sandbox decision. Authors seed code, starter code, and grading criteria for live-coding components; questions, options, and answers for interactive components; and picks the sandbox platform + prefilled URL for sandbox callouts. Owns the imports for the components it adds. Leaves `[[VIDEO]]` placeholders, prose, code samples, diagrams, and other MDX components untouched. Skipped on project lessons (the project is the exercise) — if fired on one, returns blocked and flags any stray exercise/sandbox placeholders as an upstream bug. When done returns counts of live-coding, interactive, and sandbox components added plus remaining placeholders of each kind.
+description: Use this agent to replace every `[[EXERCISE n: ...]]` and `[[SANDBOX: ...]]` placeholder in a lesson's MDX with real components — except for entries the outline marks as `Custom`, which it renames to `[[CUSTOM EXERCISE n]]` for `exercise-builder` to handle next. Matches `[[EXERCISE n]]` to the nth entry of the outline's exercise plan and `[[SANDBOX]]` to the outline's sandbox decision. Authors seed code, starter code, and grading criteria for live-coding components; questions, options, and answers for interactive components; and picks the sandbox platform + prefilled URL for sandbox callouts. Owns the imports for the components it adds. Leaves `[[VIDEO]]` placeholders, prose, code samples, diagrams, and other MDX components untouched. Skipped on project lessons (the project is the exercise) — if fired on one, returns blocked and flags any stray exercise/sandbox placeholders as an upstream bug. When done returns counts of live-coding, interactive, and sandbox components added; the indices of Custom exercises renamed to `[[CUSTOM EXERCISE n]]`; plus remaining placeholders of each kind.
 tools: Read, Edit, Glob, Grep, WebSearch, WebFetch
 model: opus
 effort: xhigh
@@ -29,8 +29,16 @@ Project lessons have no `[[EXERCISE]]` / `[[SANDBOX]]` (project is the exercise)
 
 ## Matching placeholders to outline
 Placeholders 1-indexed per kind, in draft order.
-- `[[EXERCISE n]]` matches **nth bullet** of `## Exercise plan` (in outline order). Count mismatch → `blocked` with mismatch in notes.
+- `[[EXERCISE n]]` matches **nth bullet** of `## Exercise plan` (in outline order, including `Custom` entries — they take their slot in the count even though you don't author them). Total count of `[[EXERCISE n]]` + already-renamed `[[CUSTOM EXERCISE n]]` placeholders must equal `## Exercise plan` entry count. Mismatch → `blocked` with mismatch in notes.
 - `[[SANDBOX: <concept>]]` matches `## Sandbox decision`. Placeholder when decision is `no`, or no placeholder when decision is `yes` → `blocked`.
+
+## Custom exercises — skip and rename
+
+When the outline's nth `## Exercise plan` entry has *Form and component: `Custom`*, do **not** author a component yourself. Replace `[[EXERCISE n]]` with `[[CUSTOM EXERCISE n]]` in place — single-token rename, no other edit, no import. `exercise-builder` runs after you, once per Custom index, and resolves the renamed placeholder.
+
+Rationale: keeping the index inside the new token (`[[CUSTOM EXERCISE n]]`, not `[[CUSTOM EXERCISE]]`) preserves the same 1-based nth-bullet correspondence to `## Exercise plan` that the builder needs to look the brief up. Don't reorder. Don't strip the brackets. Don't add stub components.
+
+If the outline marks an entry `Custom` but the brief is missing any of the four required sub-fields (*interaction mechanic*, *why no pre-built fits*, *layout / space constraint*, *visual-tone anchor*) — still rename the placeholder. `exercise-builder` will return `blocked` and the orchestrator will escalate. Don't try to repair the outline yourself; that's the designer's territory.
 
 ## Replacing `[[EXERCISE]]`
 
@@ -94,18 +102,18 @@ Sandbox-callout authoring rules:
 
 ## Do not touch
 - Prose, code samples, diagrams, other MDX components.
-- Move/rewrite `[[EXERCISE]]` / `[[SANDBOX]]` placeholders — replace in place.
+- Move/rewrite `[[EXERCISE]]` / `[[SANDBOX]]` placeholders — replace in place. The only structural edit you make is the `[[EXERCISE n]]` → `[[CUSTOM EXERCISE n]]` rename for Custom entries.
+- Any `[[CUSTOM EXERCISE n]]` you renamed — leave it on its own line with a blank line on either side so `exercise-builder` can pattern-match cleanly.
 - `[[VIDEO]]` placeholders (resourcer).
 - Components not in `documentation/components/INDEX.md`.
 - Frontmatter.
 
 ## Blocking conditions
-1. Outline calls for a live-coding runtime with no matching component.
-2. Outline calls for an interactive form not in `documentation/components/exercises/`.
-3. `[[EXERCISE n]]` count ≠ `## Exercise plan` entry count.
-4. `[[SANDBOX]]` exists but decision is `no` — or decision `yes` but no placeholder.
-5. Sandbox concept has no iframe-able platform after one good-faith search + fetch.
-6. MDX is a project lesson (no exerciser placeholders should exist; flag any).
+1. Outline names a non-`Custom` form that isn't in the pre-built tables above (live-coding runtime with no matching component, interactive form not in `documentation/components/exercises/`). If the closest fit is genuinely "needs a bespoke component", that's a designer bug — the entry should have been tagged `Custom`; do not silently rename to `[[CUSTOM EXERCISE n]]` to paper over it.
+2. Total of `[[EXERCISE n]]` + `[[CUSTOM EXERCISE n]]` placeholders ≠ `## Exercise plan` entry count.
+3. `[[SANDBOX]]` exists but decision is `no` — or decision `yes` but no placeholder.
+4. Sandbox concept has no iframe-able platform after one good-faith search + fetch.
+5. MDX is a project lesson (no exerciser placeholders should exist; flag any).
 
 ## Output
 
@@ -118,7 +126,11 @@ status: <complete | blocked>
 live_coding_added: <integer>
 interactive_added: <integer>
 sandboxes_added: <integer>
+custom_exercises_remaining: <integer>
+custom_exercise_indices: <comma-separated 1-based indices, or "—">
 exercise_placeholders_remaining: <integer>
 sandbox_placeholders_remaining: <integer>
 notes: <one line — components used and sandbox platforms picked, or the blocker, or "—">
 ```
+
+`custom_exercises_remaining` counts `[[CUSTOM EXERCISE n]]` placeholders you renamed and left for `exercise-builder` (the orchestrator fires the builder that many times); `exercise_placeholders_remaining` counts `[[EXERCISE n]]` placeholders still un-replaced (should be 0 on a clean run).
