@@ -31,7 +31,7 @@ A component earns its place only when it conveys structure prose can't carry inl
 | Component | Trigger in the draft |
 | --- | --- |
 | `<Term>` | A `[[TOOLTIP]]` placeholder inside a sentence. |
-| `<CodeTooltips>` | One+ `[[TOOLTIP]]` lines immediately preceding a fenced code block. |
+| `<CodeTooltips>` | One+ `[[TOOLTIP]]` lines immediately before *or* after a fenced code block. |
 | `<Aside type="…">` | Paragraph opens with "Note:", "Tip:", "Caution:", "Watch out:", "Be careful:", "Don't…", or parenthetical aside that breaks the main argument. Pick `note`/`tip`/`caution`/`danger` on tone. |
 | `<Steps>` | Explicit numbered procedure followed in order — markdown `1. 2. 3.` *and* items are imperative actions, not concepts. List of three concepts stays a list. |
 | `<Tabs>` / `<TabItem>` | Non-code alternatives the reader chooses between (OS, package manager, framework). Tabbed *code* comparisons → use `<CodeVariants>`. |
@@ -66,7 +66,7 @@ the [[TOOLTIP: useState | React hook returning [value, setter]]] hook
 the <Term definition="React hook returning [value, setter]">useState</Term> hook
 ```
 
-**Above a fenced code block** — one+ `[[TOOLTIP: <token> | <definition>]]` lines immediately precede the fence:
+**Adjacent to a fenced code block** — one+ `[[TOOLTIP: <token> | <definition>]]` lines immediately precede *or* follow a fence (blank line between is fine; nothing else between):
 
 ```
 [[TOOLTIP: useState | React hook returning [value, setter]]]
@@ -77,7 +77,9 @@ const inc = () => setCount(count + 1);
 ```
 ```
 
-Strip placeholder lines, wrap next code block in `<CodeTooltips>`:
+The same applies if the placeholder lines sit *after* the fence — the drafter sometimes places tooltip annotations below the code they describe (a common shape for tokens that appear in build output / console output blocks). Treat before and after identically. If placeholders appear on both sides of the same fence, merge them into one `<CodeTooltips>` wrapper.
+
+Strip placeholder lines, wrap the adjacent code block in `<CodeTooltips>`:
 
 ```mdx
 <CodeTooltips tooltips={{
@@ -95,7 +97,7 @@ const inc = () => setCount(count + 1);
 - Apply duplicates mechanically — drafter dropped the same tooltip twice → render both. Restraint is drafter's job.
 
 ### Tooltip edge cases
-- **Placeholder on its own line, no fence follows** — drafter mistake. If token clearly belongs to a phrase in the next prose sentence, convert to inline `<Term>` there; otherwise drop. Flag either way.
+- **Placeholder on its own line, no fence adjacent on either side** — drafter mistake. If token clearly belongs to a phrase in adjacent prose, convert to inline `<Term>` there; otherwise, if the token appears inside a nearby fence (within a few lines), wrap *that* fence in `<CodeTooltips>` and attach the tooltip there; otherwise drop. Flag whichever path you take.
 - **Token in `[[TOOLTIP: <token> | …]]` not present in the next code block** — skip that one (don't invent a substring) and flag. Other tooltips on the same block still apply.
 - **Placeholder inside `<Figure>`** (e.g. inside Mermaid/D2 source) — skip; diagrams aren't your territory.
 
