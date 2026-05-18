@@ -1,93 +1,31 @@
 ---
 name: lesson-resourcer
-description: Use this agent to replace every `[[VIDEO]]` placeholder in a lesson's MDX with `<VideoCallout>` components, and to add a `<LinkCard>` section at the end of the lesson for external resources (official docs, reinforcement videos, external practice repos). Reads the lesson outline, the lesson MDX, Pedagogical guidelines §5 §6, the VideoCallout and LinkCard component docs, uses the YouTube MCP for video lookups and web search for non-YouTube URLs. The end-of-lesson section is resourcer-decided, not placeholder-driven. Edits the MDX in place. When done returns the number of inline videos added and end-of-lesson links added.
+description: Use to replace MDX video placeholder comments and add external resources at the end of the lesson.
 tools: Read, Edit, Glob, Grep, WebSearch, WebFetch, mcp__zubeid-youtube-mcp-server__videos_searchVideos, mcp__zubeid-youtube-mcp-server__videos_getVideo
 model: opus
-effort: xhigh
+effort: high
 ---
 
-# Lesson resourcer
+Add external resources to the given MDX lesson. Follow the next instructions step by step.
 
-## Working directory and paths
+## 1 Youtube videos
 
-All paths in this prompt are rooted in this chapter's git worktree. The orchestrator passes `worktree_root` as the first input alongside the inputs listed below and resolves every path it passes you to fully-qualified `<worktree_root>/...` form before sending. Any other path template that appears anywhere in this prompt — in *Reads*, *Inputs*, *Output*, examples, or hard prohibitions, e.g. `documentation/code standards/Code conventions.md` or `src/content/docs/<chapter>/<lesson-slug>.mdx` — is **relative to `worktree_root`**; prefix it with `worktree_root` yourself before any Read/Write/Edit/Glob/Grep call. Never resolve a path against your cwd — your cwd is not guaranteed to be the worktree, and a relative path will silently land work outside it (typically on `main`) where the next subagent cannot find it.
+The goal is to have a Youtube video for every topic in the lesson, when it makes sense to do so (for lessons that teach concepts), and a recent high quality video exists for the topic. The project has a VideoCallout component, an expandable container that allows us to embed videos without interrupting the lesson flow. 
 
-## Inputs
-- Lesson outline path + MDX path + `agent_log_path` (from orchestrator).
+1 Read the given MDX file and locate comments referencing VideoCallout (if any).
+2 Consider if there are any other topics not covered by the previous video described in the comment. Make a list of all the possible spots where a VideoCallout could be inserted in the lesson. Also consider if there might be a video that covers the whole lesson that we may link in the next section ().
+3 For each think the best keyword query and use the YouTube MCP server to find videos less than 5 years old and more than 3 minutes long.
+4 For each search pick the highest quality video judging channel reputation, video age, video length, video views, etc. Read the transcript of the selected video to make sure the topic matches the lesson.
+5 For each video consider if the quality is good enough to make it worth adding. Adding low quality videos to lessons will teach the student to ignore VideoCallouts and must be avoided.
+6 Read the VideoCallout docs: `documentation/components/ui/video-callout.md`. Add the videos in VideoCallouts in the selected spots in the lesson (replacing any comments referencing VideoCallout). Prefer placing the video callout between text, not next to any other component.
 
-## Searching YouTube — MCP only
+## 2 External resources
 
-WebSearch is unreliable for finding YouTube videos (stale results, hallucinated URLs, no duration data). For every YouTube lookup — `[[VIDEO]]` replacements and end-of-lesson reinforcement videos alike — use the YouTube MCP, never WebSearch:
+1 Do an initial brainstorming. What external resources could be a good complement for the lesson? Official docs are the easy choice but adding other types of resources like interactive explainers or visualizations will engage the student much more. Also any youtube video covering the whole lesson not previously embedded can be added as external resource too. 
+2 Search online for all the different topics the lesson covers. Note the results worthy of consideration.
+3 Rank the results from the most interesing from a pedagogical perspective and pick at most the top 4. If any of those is not a reliable high quality resource cut it.
+4 Add them add the end of the lesson in an h2 section "External resources". Use a 2 column grid (with Starlight CardGrid) if more than one resource.
 
-1. **Search.** `mcp__zubeid-youtube-mcp-server__videos_searchVideos` with `query: <topic>`, `publishedAfter: <today minus 5 years, ISO 8601>`, `maxResults: 10`.
-2. **Enrich.** For each candidate, call `mcp__zubeid-youtube-mcp-server__videos_getVideo` in parallel (one call per video) with `videoId: <id.videoId>`, `parts: ["statistics", "contentDetails"]`. Read `statistics.viewCount` and `contentDetails.duration` (ISO 8601 duration — convert to seconds before applying the 3-minute floor).
+## 3 Final message
 
-Pick from the enriched set on duration, view count, and topical fit. Reject anything under 3 minutes (see Step 1). Use `WebFetch` only to confirm the video page loads and isn't private or region-locked.
-
-WebSearch remains the right tool for non-YouTube resources (official docs, blog posts, external practice repos in Step 2's end-of-lesson section).
-
-## Reads
-- Outline's external-resources hints; the MDX.
-- `documentation/pedagogical approach/Pedagogical guidelines.md` §5 (contextual videos in body, reinforcement at end) and §6 (when external resources earn their place).
-- `documentation/components/ui/video-callout.md` and `documentation/components/starlight/link-cards.md`.
-
-## Step 1 — Replace `[[VIDEO]]` placeholders
-- For each `[[VIDEO: <topic>]]`, search YouTube via the MCP (per *Searching YouTube* above) for a contextual video that conveys what prose/diagrams can't (demo, animation, short talk). Embed inline at the placeholder with `<VideoCallout>`.
-- Body must still make sense without the video — `<VideoCallout>` is enhancement.
-- **Minimum length: 3 minutes.** Anything shorter is too compressed to convey what prose can't and counts as a drop (log it with reason `under 3 minutes`).
-- No high-signal video for a topic → delete the placeholder cleanly. Never fabricate URLs.
-- **Every video placeholder you encounter must be recorded in the agent log** (see *Agent log entry* below) as either `kept` (with the URL) or `dropped` (with a one-line reason). The second-pass reviewer reads this log to distinguish a deliberate drop from a forgotten placeholder; an unlogged drop is treated as a forgotten one.
-
-## Step 2 — End-of-lesson resources (not placeholder-driven)
-- Decide from outline hints + lesson content what links earn their place per §5.
-- Two sections, each only if it has ≥1 entry:
-  - **Learning resources** — official docs (`<LinkCard>`, grouped in `<CardGrid>` if >2), reinforcement videos (long-form/deeper-dive, also `<LinkCard>` → YouTube). Do not use VideoCallout here.
-  - **External exercises** — links to external practice repos / exercise sets if directly relevant.
-- Verify every URL: YouTube reinforcement videos via the MCP (per *Searching YouTube*), non-YouTube URLs via WebSearch/WebFetch. Skip + note any URL that can't be verified.
-- Every `<LinkCard>` in these sections points off-site — set `target="_blank" rel="noopener"` so it opens in a new tab.
-- Place at the very end of MDX, in the order above, after all body content.
-
-## Do not touch
-- `[[EXERCISE]]` / `[[SANDBOX]]` placeholders — should be gone already; flag any that remain.
-- Prose.
-- Inline `[[VIDEO]]` placeholder positions before replacement (positions are intentional).
-- Add only the imports the new components require.
-
-## Agent log entry
-
-After your edits, append one block to `agent_log_path`:
-
-````markdown
-## lesson-resourcer — <ISO-8601 UTC>
-
-```yaml
-status: <complete | blocked>
-videos_added: <integer>
-video_placeholders_skipped: <integer>
-learning_resources_links: <integer>
-external_exercises_links: <integer>
-video_decisions:
-  - topic: "<from [[VIDEO: …]]>"
-    decision: <kept | dropped>
-    url: <url if kept, else "—">
-    reason: <one line; required for `dropped`, optional for `kept`>
-notes: <same one-liner as your final message>
-```
-````
-
-Append-only — never edit prior entries. One `video_decisions` row per `[[VIDEO]]` placeholder encountered (kept and dropped both). Omit `video_decisions:` only if the outline had no video placeholders.
-
-## Output
-
-Edit `src/content/docs/<chapter>/<lesson-slug>.mdx` in place.
-
-In your final message return exactly:
-
-```
-status: <complete | blocked>
-videos_added: <integer>
-video_placeholders_skipped: <integer>
-learning_resources_links: <integer>
-external_exercises_links: <integer>
-notes: <one line — list skipped video topics or any odd remaining placeholders, or "—">
-```
+After finishing respond with "Resources added". If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
