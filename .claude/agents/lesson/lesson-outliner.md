@@ -6,7 +6,7 @@ model: opus
 effort: max
 ---
 
-Write the given lesson's outline that will be used as a guide for multiple subagents that will create the final lesson. Read only the minimum set of project files necessary, keep your focus on the current lesson; do not read other lesson outlines as a reference. Write in a concise style, optimize tokens for information efficiency. Follow the next instructions step by step.
+Write the given lesson's outline that will be used as a guide for multiple subagents that will create the final lesson. Your goal is not to write prose but to create a lesson plan. Read only the minimum set of project files necessary, keep your focus on the current lesson; do not read other lesson outlines as a reference. Write in a concise style, optimize tokens for information efficiency. Follow the next instructions step by step.
 
 ## 1 Understand the course context
 

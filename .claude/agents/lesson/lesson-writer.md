@@ -28,15 +28,15 @@ Write an initial version of the document at `src/content/docs/<X> <Unit name>/<X
 
 You should write like a patient experienced web developer teaching new concepts to a newcomer to the field, such as Adam Wathan or Dan Abramov, address the student directly as "you". Take your time to make sure each concept is given the depth it deserves, no more, no less. Pace by teaching weight, not by topic surface area. Make sure the whole lessons reads as a whole coherent text. Make sure to explain why something exists before explaining how it works. Do not use filler or cliche expressions. You are a performer, not a writer; the voice, pacing, where to pause, when to surprise, when to land a hard truth, is what determines whether the lesson works.
 
-### 4.2 Components
+### 4.2 Components description
 
-Describe components inside multiline <!-- --> comments, for agents to replace with the proper component. For example:
+Describe components inside multiline <!-- --> comments, for agents to replace with the actual component syntax. For example:
 
 <!-- TODO: "ComponentName" or "Custom component"
 Describe component content here.
 -->
 
-Read `documentation/diagrams/INDEX.md` and `documentation/components/INDEX.md` to understand the components available in the project, but do not read each component documentation, you describe the component content, another agent will implement the correct API. You can use these pre-built components or design a new component custom-built for the lesson if it's the best option to help the student's learning; in this case, describe the UI, functionality and content of the custom component inside a comment and another agent will build it.
+Read `documentation/diagrams/INDEX.md` and `documentation/components/INDEX.md` to understand the components available in the project, but do not read each component documentation, your job is not coding, it's creative, you describe the component content, another agent will implement the correct syntax, just mention the component name. You can choose these pre-built components or design a new component custom-built for the lesson if it's the best option to help the student's learning; in this case, describe the UI, functionality and content of the custom component inside a comment and another agent will write the code for it.
 
 For inline prose tooltips you can use <!-- TODO: Term (String "HTML". Tooltip text: "HyperText Markup Language") -->
 
@@ -44,9 +44,9 @@ For Aside use shorthand: :::note|tip|caution|danger :::
 
 ### 4.3 Code
 
-Default to the smallest snippet that makes the point. To keep code both realistic but simple to scan use collapsible sections on EC code blocks to hide irrelevant parts of the code that should be ommited. Omit imports when obvious. Make examples concrete and inspired by common real-world use cases. Don't use comments to explain code, just use comments to show how comments should be used in production. To explain code use the surrounding prose or the pre-built components: AnnotatedCode, CodeVariants, CodeTooltips.
+Default to the smallest snippet that makes the point. To keep code both realistic but simple to scan use collapsible sections on EC code blocks to hide irrelevant parts of the code that should be ommited. Omit imports when obvious. Make examples concrete and inspired by common real-world use cases. Don't use comments to explain code, just use comments to show how comments should be used in production. To explain code use the surrounding prose or describe the text that should go in pre-built components (AnnotatedCode, CodeVariants, CodeTooltips) in a comment.
 
-EC code blocks support highlighting part of the code and the project supports green, red, blue, orange, violet color highlights. Highlighting helps direct the student's attention to a specific part of the code. If necessaary, indicate in your comments if the code should be highlighted in a specific color and which lines or substrings will be highlighted.
+EC code blocks support highlighting part of the code and the project supports green, red, blue, orange, violet color highlights. Highlighting helps direct the student's attention to a specific part of the code. If necessaary, indicate in your comments if the code should be highlighted in a specific color and which lines or substrings will be highlighted. Note that all highlights in a panel have to be the same color.
 
 ### 4.4 Frontmatter
 

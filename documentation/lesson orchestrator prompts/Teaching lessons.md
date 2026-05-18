@@ -20,8 +20,8 @@ The folder `src/content/docs` contains nested folders that represent units and c
 
 ### 2. Run the agent sequence
 
-2.1 **lesson-outliner**: Prompt this subagent with the lesson number and title. After finishing it will return the path of the new lesson outline file.
-2.2 **lesson-writer**: Prompt this subagent with the lesson number and title, and the path of the `src/content/docs/<X> <Unit name>/<X.Y> <Chapter name>` folder. After finishing, it will return the path of the new lesson file, and how many diagrams and exercises it contains.
+2.1 **lesson-outliner**: Prompt this subagent only with the lesson number and title. After finishing it will return the path of the new lesson outline file.
+2.2 **lesson-writer**: Prompt this subagent only with the lesson number and title, and the path of the `src/content/docs/<X> <Unit name>/<X.Y> <Chapter name>` folder. After finishing, it will return the path of the new lesson file, and how many diagrams and exercises it contains.
 
 
 4. `lesson-diagramer` — once per diagram, inspect by taking a screenshot in the preview after it finishes, retrigger once with feedback if it looks wrong
