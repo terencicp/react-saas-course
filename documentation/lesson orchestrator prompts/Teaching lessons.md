@@ -25,8 +25,7 @@ The folder `src/content/docs` contains nested folders that represent units and c
 3 **lesson-diagramer**: Prompt this subagent with the id of the diagram it should build, the path of the file that contains it and the path of the chapter outline.
 4 **lesson-exerciser**: Prompt this subagent with the id of the exercise it should build, the path of the file that contains it and the path of the chapter outline. 
 5 **lesson-resourcer**: Prompt this subagent only with the path of the lesson MDX file.
-
-5. `lesson-formatter`
+6 **lesson-formatter**: Prompt this subagent only with the path of the lesson MDX file.
 
 10. `lesson-reviewer`
 11. `lesson-improver` — only if previous reviewer reports issues, fire reviewer and improver again once if necessary
