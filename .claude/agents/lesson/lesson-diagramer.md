@@ -1,12 +1,12 @@
 ---
 name: lesson-diagramer
-description: Use this agent to replace an mdx placeholder comment with a diagram or fix an existing diagram.
+description: Use this agent to replace an mdx placeholder comment with a diagram.
 tools: Read, Write, Edit, Glob, Grep, Bash, mcp__Claude_Preview__preview_list, mcp__Claude_Preview__preview_start, mcp__Claude_Preview__preview_stop, mcp__Claude_Preview__preview_snapshot, mcp__Claude_Preview__preview_screenshot, mcp__Claude_Preview__preview_console_logs, mcp__Claude_Preview__preview_logs, mcp__Claude_Preview__preview_click, mcp__Claude_Preview__preview_fill, mcp__Claude_Preview__preview_eval, mcp__Claude_Preview__preview_inspect, mcp__Claude_Preview__preview_resize
 model: opus
 effort: max
 ---
 
-Your goal is to build a single diagram for a web development online course. Replace the mdx comment in the given file with the given id with a proper diagram, or fix the given diagram. Read only the minimum set of project files necessary, keep your focus on the current lesson; do not read other lesson outlines as a reference. Follow the next instructions step by step.
+Your goal is to build a single diagram for a web development online course. Replace the mdx comment in the given file with the given id with a proper diagram. Read only the minimum set of project files necessary, keep your focus on the current lesson; do not read other lesson outlines as a reference. Follow the next instructions step by step.
 
 ## 1 Read diagram context
 
@@ -26,26 +26,21 @@ Decide which component / engine you will use, considering the pros and cons of e
 
 Consider if it is necessary to include a caption describing the diagram step by step, or the surrounding prose already does this job.
 
-If you are fixing an existing diagram consider if the engine itself is the problem. Is it worth starting from scratch with another engine or is it better to fix the current diagram? Why did the previous diagram fail and how will you overcome the issue?
-
 ## 5 Write diagram
 
 Replace the placeholder comment with the diagram. For diagrams that would be lengthy inline (custom SVG, HTML/CSS, ArrowDiagram), write a custom Astro component to `src/components/lessons/<lesson id>/<name>.astro` and import it.
 
 ## 6 Review
 
-Verify the diagram renders correctly.
+Verify the diagram renders and works as expected. Fix only errors directly related to your code.
 
-1. Run `pnpm lint` from the working directory. Fix any errors.
-2. `mcp__Claude_Preview__preview_list`. If empty, `preview_start` and remember to `preview_stop` at the end. If a server is already running, use it and leave it running.
-3. `preview_snapshot` against the lesson URL — confirm the diagram node mounted where you placed the MDX.
-4. `preview_console_logs` — zero errors, zero warnings. Mermaid parse failures, D3 runtime errors, and React hydration mismatches surface here, not in lint.
-5. `preview_screenshot` of the initial state — labels readable, edges don't cross unnecessarily, nothing overflows, theme matches the site.
-6. **If the diagram is interactive** (hover tooltips, clickable nodes, step-through controls, view toggles, zoom/pan, or any user input the diagram responds to): drive every interaction with `preview_click`, `preview_fill`, and — if hover state matters — `preview_eval` for `dispatchEvent(new MouseEvent('mouseover', ...))`. After each interaction, `preview_snapshot` to confirm the state actually changed in the DOM, then `preview_screenshot` to confirm the new visual is correct. Exercise every interaction branch the diagram exposes, not just the happy path.
-7. `preview_resize` to ~1024px width. `preview_screenshot` again. At this width Starlight's sidebar is still on screen and the content column is at its narrowest realistic state — does the diagram still fit without horizontal scroll, and are labels still readable? If anything breaks, the diagram is wrong, not the viewport.
-8. If anything's off, fix in source, let HMR reload, re-verify from step 3.
-
-Your work is not done until lint passes, the console is clean, the diagram is legible at desktop and mobile in real screenshots, and — if it is interactive — every interaction branch has been driven through the live preview with the resulting state confirmed in both DOM and visual. "Looks right in the source" is not verification.
+1. Run `npm run build`.
+2. `mcp__Claude_Preview__preview_list`. Use the running server or `preview_start`.
+3. `preview_snapshot` against the lesson URL
+4. `preview_console_logs` filtered by `level: 'error'`, then again by `level: 'warn'`. 
+5. If the diagram is interactive drive every input in your new code. Use `preview_eval` to locate elements because pre-built  components shuffle their choices at hydration.
+6. `preview_screenshot` to make sure the layout is correct and all text is readable.
+8. If any step fails, fix in source, let HMR reload, re-verify from step 3.
 
 ## 6 Final message
 

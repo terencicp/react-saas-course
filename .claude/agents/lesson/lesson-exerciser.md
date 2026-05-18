@@ -40,7 +40,18 @@ Consider incorporating Starlight default components or project pre-built compone
 
 ### 3.5 Use the component in MDX
 
+## 4 Review
 
-## 4 Final message
+Verify the exercise renders and works as expected. Fix only errors directly related to your code.
+
+1. Run `npm run build`.
+2. `mcp__Claude_Preview__preview_list`. Use the running server or `preview_start`.
+3. `preview_snapshot` against the lesson URL
+4. `preview_console_logs` filtered by `level: 'error'`, then again by `level: 'warn'`. 
+5. Drive every input in your new code. Use `preview_eval` to locate elements because pre-built  components shuffle their choices at hydration.
+6. `preview_screenshot` to make sure the layout is correct and all text is readable.
+8. If any step fails, fix in source, let HMR reload, re-verify from step 3.
+
+## 5 Final message
 
 After finishing respond with "Exercise <id> done". If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
