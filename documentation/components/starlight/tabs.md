@@ -1,6 +1,6 @@
 # `Tabs` + `TabItem`
 
-A tab strip with one panel visible at a time. Each `<TabItem>` is one tab. Use for genuine alternatives (per-OS, per-package-manager, per-tool) — not for hiding length.
+A tab strip with one panel visible at a time. Each `<TabItem>` is one tab. Use for genuine alternatives not for hiding length.
 
 For tabbed *code* comparisons specifically, prefer the in-repo [`CodeVariants`](../code/code-variants.md) — it wraps `Tabs` in a card with prose-under-fence styling.
 

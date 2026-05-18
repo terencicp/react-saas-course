@@ -1,6 +1,6 @@
 # `Icon`
 
-Renders one of Starlight's built-in SVG icons. The same icon names are accepted by `Card`, `Aside`, `TabItem`, etc. — so this doc also doubles as the icon-name reference for those components.
+Renders one of Starlight's built-in SVG icons. The same icon names are accepted by `Card`, `Aside`, `TabItem`, etc.
 
 ## Import
 

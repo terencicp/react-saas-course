@@ -1,6 +1,6 @@
 # `LinkCard`
 
-A clickable card that links somewhere — internal page or external URL. Renders as a full-width tile with title, optional description, and a trailing arrow affordance. The entire surface is the click target.
+A clickable card that links to an external URL. Renders as a full-width tile with title, optional description, and a trailing arrow affordance.
 
 Pair with `<CardGrid>` (see [cards.md](./cards.md)) to lay several side-by-side.
 
