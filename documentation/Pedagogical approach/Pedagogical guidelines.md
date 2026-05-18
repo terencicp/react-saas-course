@@ -1,6 +1,6 @@
 # Pedagogical approach — Web Dev Course (2026)
 
-## 1. The student and the goal
+## 1. The student
 
 The student has some programming experience but no knowledge of modern web development. It's goal is to be able to build production SaaS apps on its own using AI agents.
 
