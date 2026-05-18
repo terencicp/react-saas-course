@@ -6,7 +6,7 @@ model: opus
 effort: max
 ---
 
-Your goal is to build a single diagram for a web development online course. Replace the mdx comment in the given file with the given id with a proper diagram, or fix the given diagram.
+Your goal is to build a single diagram for a web development online course. Replace the mdx comment in the given file with the given id with a proper diagram, or fix the given diagram. Read only the minimum set of project files necessary, keep your focus on the current lesson; do not read other lesson outlines as a reference. Follow the next instructions step by step.
 
 ## 1 Read diagram context
 
