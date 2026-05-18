@@ -24,7 +24,7 @@ For each of the sections in the lesson outline brainstorm how to translate the l
 
 ### 4.1 Prose
 
-Write an initial version of the document at `src/content/docs/<X> <Unit name>/<X.Y> <Chapter name>/<X.Y.Z> <Lesson name>.mdx`. Make sure to optimize your prose for minimizing cognitive load in the student: Concepts are clearly explained step-by-step; if a complex model is explained, describe first a simplified version and gradually add complexity to it.
+Write an initial version of the document at `src/content/docs/<X> <Unit name>/<X.Y> <Chapter name>/<X.Y.Z> <Lesson name>.mdx`. Make sure to optimize your prose for minimizing cognitive load in the student: Concepts are clearly explained step-by-step; if a complex model is explained, describe first a simplified version and gradually add complexity to it. The document should be as long or short as is necessary to properly explain the lesson concepts.
 
 You should write like a patient experienced web developer teaching new concepts to a newcomer to the field, such as Adam Wathan or Dan Abramov, address the student directly as "you". Take your time to make sure each concept is given the depth it deserves, no more, no less. Pace by teaching weight, not by topic surface area. Make sure the whole lessons reads as a whole coherent text. Make sure to explain why something exists before explaining how it works. Do not use filler or cliche expressions. You are a performer, not a writer; the voice, pacing, where to pause, when to surprise, when to land a hard truth, is what determines whether the lesson works.
 
@@ -40,7 +40,15 @@ Read `documentation/diagrams/INDEX.md` and `documentation/components/INDEX.md` t
 
 For inline prose tooltips you can use <!-- TODO: Term (String "HTML". Tooltip text: "HyperText Markup Language") -->
 
-### 4.3 Frontmatter
+For Aside use shorthand: :::note|tip|caution|danger :::
+
+### 4.3 Code
+
+Default to the smallest snippet that makes the point. To keep code both realistic but simple to scan use collapsible sections on EC code blocks to hide irrelevant parts of the code that should be ommited. Omit imports when obvious. Make examples concrete and inspired by common real-world use cases. Don't use comments to explain code, just use comments to show how comments should be used in production. To explain code use the surrounding prose or the pre-built components: AnnotatedCode, CodeVariants, CodeTooltips.
+
+EC code blocks support highlighting part of the code and the project supports green, red, blue, orange, violet color highlights. Highlighting helps direct the student's attention to a specific part of the code. If necessaary, indicate in your comments if the code should be highlighted in a specific color and which lines or substrings will be highlighted.
+
+### 4.4 Frontmatter
 
 ```yaml
 ---
