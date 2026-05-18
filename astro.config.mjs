@@ -46,14 +46,17 @@ export default defineConfig({
             format: 'es',
         },
     },
-    integrations: [mermaid({ autoTheme: true }), astroD2({
-        // Use the WASM build (D2.js) so contributors don't need the D2 CLI installed.
-        // `inline: true` is required when useD2js is on for icons/themes to apply.
-        experimental: { useD2js: true },
-        inline: true,
-        layout: 'elk',
-        theme: { default: '0', dark: '200' },
-		}), starlight({
+    integrations: [
+        mermaid({ autoTheme: true }),
+        astroD2({
+            // Use the WASM build (D2.js) so contributors don't need the D2 CLI installed.
+            // `inline: true` is required when useD2js is on for icons/themes to apply.
+            experimental: { useD2js: true },
+            inline: true,
+            layout: 'elk',
+            theme: { default: '0', dark: '200' },
+        }),
+        starlight({
         title: 'React SaaS Course',
         customCss: ['./src/styles/custom.css'],
         plugins: [starlightFullViewMode({}), starlightLinksValidator()],
@@ -91,5 +94,7 @@ document.addEventListener('DOMContentLoaded', function () {
             },
         ],
         sidebar: sidebarGroups,
-		}), react()],
+        }),
+        react(),
+    ],
 });
