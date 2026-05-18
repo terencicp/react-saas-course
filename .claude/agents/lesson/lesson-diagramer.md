@@ -1,7 +1,7 @@
 ---
 name: lesson-diagramer
 description: Use this agent to replace an mdx placeholder comment with a diagram or fix an existing diagram.
-tools: Read, Write, Edit, Glob, Grep
+tools: Read, Write, Edit, Glob, Grep, Bash, mcp__Claude_Preview__preview_list, mcp__Claude_Preview__preview_start, mcp__Claude_Preview__preview_stop, mcp__Claude_Preview__preview_snapshot, mcp__Claude_Preview__preview_screenshot, mcp__Claude_Preview__preview_console_logs, mcp__Claude_Preview__preview_logs, mcp__Claude_Preview__preview_click, mcp__Claude_Preview__preview_fill, mcp__Claude_Preview__preview_eval, mcp__Claude_Preview__preview_inspect, mcp__Claude_Preview__preview_resize
 model: opus
 effort: max
 ---
@@ -31,6 +31,21 @@ If you are fixing an existing diagram consider if the engine itself is the probl
 ## 5 Write diagram
 
 Replace the placeholder comment with the diagram. For diagrams that would be lengthy inline (custom SVG, HTML/CSS, ArrowDiagram), write a custom Astro component to `src/components/lessons/<lesson id>/<name>.astro` and import it.
+
+## 6 Review
+
+Verify the diagram renders correctly.
+
+1. Run `pnpm lint` from the working directory. Fix any errors.
+2. `mcp__Claude_Preview__preview_list`. If empty, `preview_start` and remember to `preview_stop` at the end. If a server is already running, use it and leave it running.
+3. `preview_snapshot` against the lesson URL — confirm the diagram node mounted where you placed the MDX.
+4. `preview_console_logs` — zero errors, zero warnings. Mermaid parse failures, D3 runtime errors, and React hydration mismatches surface here, not in lint.
+5. `preview_screenshot` of the initial state — labels readable, edges don't cross unnecessarily, nothing overflows, theme matches the site.
+6. **If the diagram is interactive** (hover tooltips, clickable nodes, step-through controls, view toggles, zoom/pan, or any user input the diagram responds to): drive every interaction with `preview_click`, `preview_fill`, and — if hover state matters — `preview_eval` for `dispatchEvent(new MouseEvent('mouseover', ...))`. After each interaction, `preview_snapshot` to confirm the state actually changed in the DOM, then `preview_screenshot` to confirm the new visual is correct. Exercise every interaction branch the diagram exposes, not just the happy path.
+7. `preview_resize` to ~1024px width. `preview_screenshot` again. At this width Starlight's sidebar is still on screen and the content column is at its narrowest realistic state — does the diagram still fit without horizontal scroll, and are labels still readable? If anything breaks, the diagram is wrong, not the viewport.
+8. If anything's off, fix in source, let HMR reload, re-verify from step 3.
+
+Your work is not done until lint passes, the console is clean, the diagram is legible at desktop and mobile in real screenshots, and — if it is interactive — every interaction branch has been driven through the live preview with the resulting state confirmed in both DOM and visual. "Looks right in the source" is not verification.
 
 ## 6 Final message
 

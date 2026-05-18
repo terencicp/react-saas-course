@@ -1,9 +1,9 @@
 ---
 name: lesson-exerciser
 description: Use this agent to replace an mdx placeholder comment with an exercise.
-tools: Read, Write, Edit, Glob, Grep
+tools: Read, Write, Edit, Glob, Grep, Bash, mcp__Claude_Preview__preview_list, mcp__Claude_Preview__preview_start, mcp__Claude_Preview__preview_stop, mcp__Claude_Preview__preview_snapshot, mcp__Claude_Preview__preview_screenshot, mcp__Claude_Preview__preview_console_logs, mcp__Claude_Preview__preview_logs, mcp__Claude_Preview__preview_click, mcp__Claude_Preview__preview_fill, mcp__Claude_Preview__preview_eval, mcp__Claude_Preview__preview_inspect, mcp__Claude_Preview__preview_resize
 model: opus
-effort: xhigh
+effort: max
 ---
 
 Your goal is to build a single exercise for a web development online course. Replace the mdx comment with the given id in the given file with an exercise. Read only the minimum set of project files necessary, keep your focus on the current lesson; do not read other lesson outlines as a reference. Follow the next instructions step by step.
@@ -20,10 +20,27 @@ Read `documentation/components/INDEX.md` to understand the existing project pre-
 
 If the given exercise describes a custom component follow the next steps.
 
-## Plan custom exercise
+### 3.1 Read existing exercises
+
+Read the documentation and the source code of the component that most closely resembles the one you want to build to understand the current conventions and styles. Read at least one component from the live-coding folder and another from the exercises folder.
+
+### 3.4 Brainstorm the custom exercise
+
+
+
+### 3.3 Plan the custom exercise
 
 Astro / Astro + React islands
 
-## Create lesson-specific component
+Consider incorporating Starlight default components or project pre-built components if appropriate.
 
-## Use component in MDX
+### 3.4 Create a lesson-specific component
+
+`src/components/lessons/<lesson id>/<name>.astro`
+
+### 3.5 Use the component in MDX
+
+
+## 4 Final message
+
+After finishing respond with "Exercise <id> done". If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
