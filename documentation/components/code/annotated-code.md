@@ -26,7 +26,7 @@ import AnnotatedStep from '../../../../components/code/annotated-code/AnnotatedS
 | Prop | Type | Required | Default | Purpose |
 | --- | --- | --- | --- | --- |
 | `meta` | `string` | no | `''` (no highlight) | Expressive Code meta — same syntax as a fenced block's meta after the language tag. See **Highlight syntax** below. |
-| `color` | `'green' \| 'red' \| 'blue' \| 'orange' \| 'violet'` | no | — (neutral grey) | Re-tints **every** highlight in this step (line ranges, quoted strings, regex) with one color. |
+| `color` | `'green' \| 'red' \| 'blue' \| 'orange' \| 'violet'` | no | — (neutral grey) | Re-tints **every** highlight in this step (line ranges, quoted strings, regex) with one color. Always prefer colors to the default grey, consider blue the default. |
 
 ## Slot / structure
 
@@ -48,8 +48,6 @@ Standard Expressive Code meta — same as what you'd write after a fence's langu
 When the value contains `"`, write it inside a `meta={`…`}` template literal so MDX doesn't fight you over quoting.
 
 The `color` prop on the step tints all three kinds uniformly — you can't color individual highlights differently within a single step.
-
-Under the hood, `color="green"` sets `data-mark-color="green"` on the step container. The same five colors (`green`, `red`, `blue`, `orange`, `violet`) are available on **any** Expressive Code block — wrap a plain fence in `<div data-mark-color="…">` and `<CodeVariant>` panes the same way. See [Colored marks](../starlight/code.md#colored-marks--data-mark-color-wrapper) in the plain-fences doc. The palette lives in `src/styles/custom.css`; edit there to add or recolor.
 
 ## Constraints & gotchas
 

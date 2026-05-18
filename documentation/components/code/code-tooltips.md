@@ -32,7 +32,7 @@ import CodeTooltips from '../../../../components/code/CodeTooltips.astro';
 
 Exactly **one fenced Expressive Code block**. Author it as a normal fence — no special comment markers or meta directives needed. Highlighting is driven purely by the `tooltips` map.
 
-You can still use EC meta on the fence (`{lines}`, `"strings"`, etc.) — the tooltip wrapping runs after EC renders.
+You can still use EC meta on the fence (`{lines}`, `"strings"`, `/regex/`, `ins=`/`del=`) — the tooltip wrapping runs after EC renders, so marks and tooltips compose. To retint the marks, wrap the whole `<CodeTooltips>` in `<div data-mark-color="…">` (`green`, `red`, `blue`, `orange`, `violet`) — same hook as plain fences, see [code.md](../starlight/code.md#colored-marks--data-mark-color-wrapper).
 
 ## Constraints & gotchas
 

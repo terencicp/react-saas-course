@@ -149,10 +149,10 @@ const [a, b] = await Promise.all([fa(), fb()]);
 
 ### Colored marks — `data-mark-color="…"` wrapper
 
-The neutral mark on `{lines}`, `"tokens"`, and `/regex/` is a soft grey by default. Wrap any fenced block in `<div data-mark-color="…">` to re-tint **every** mark inside it.
+The neutral mark on `{lines}`, `"tokens"`, and `/regex/` is a soft grey by default. Wrap any fenced block in `<div data-mark-color="…">` to re-tint **every** mark inside it. Always prefer colored marks to the default grey, consider blue the default.
 
 ````mdx
-<div data-mark-color="green">
+<div data-mark-color="blue">
 
 ```ts {2} "useState"
 import { useState } from 'react';
@@ -163,8 +163,6 @@ const [count, setCount] = useState(0);
 ````
 
 Five colors: `green`, `red`, `blue`, `orange`, `violet`. Dark and light themes each have their own stops so the highlight stays legible against either background.
-
-The mechanism is a generic CSS hook in `src/styles/custom.css` — paired variables `--mark-{color}-bg` / `--mark-{color}-brd`, bound to Expressive Code's `--ec-tm-markBg` / `--ec-tm-markBrdCol` via a `[data-mark-color='…'] .expressive-code` selector. The same hook powers `<AnnotatedStep color="…">` and `<CodeVariant>` panes (wrap the inner fence the same way). To add or rename a color, edit the variable block in `custom.css` — no per-component CSS to update.
 
 Blank lines around the fence inside the wrapper are required so MDX still parses the fence as markdown.
 
