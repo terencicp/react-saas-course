@@ -1,23 +1,22 @@
 # AGENTS.md
 
-A web development course for junior-to-mid devs with some web experience. Ships as an Astro Starlight site with MDX lessons. Content is AI-generated (with human curation).
+A web development course for junior devs from other fields with some previous exposure to web basics. Ships as an Astro Starlight site with MDX lessons. Content is AI-generated (with human curation).
 
 **Thesis.** Systems design and senior mindset over syntax; the minimum viable 2026 SaaS stack, no historical detours. Every code sample and every paragraph passes through both filters. Teach only what a web developer building a new SaaS project in 2026 would use.
 
 **Stack core, May 2026.** React 19, Next.js 16.
 
-Read project files only if required by your current task:
+Read project files only if essential to your current task:
 
 ## Repo layout
 
 ### Components
 
-- `src/components/` — astro components used in lessons. Pre-built primitives live in topical subfolders (`figures/`, `code/`, `exercises/`, `live-coding/`, `quiz/`, `starlight/`, `ui/`) and are documented in `documentation/components/`. Lesson-specific diagram components live under `src/components/lessons/<chapter>/<lesson-slug>/<n>.astro` and are written by `lesson-diagramer` — those are not pre-built primitives.
+- `src/components/` — astro components used in lessons, organized by topic. Lesson-specific components at `src/components/lessons/<lesson id>/<name>.astro`.
 
 ### Lessons
 
 - `src/content/docs/` — lessons MDX
-- `src/content/docs/0 Demos` — astro components showcase
 
 ### Documentation
 

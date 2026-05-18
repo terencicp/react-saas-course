@@ -22,13 +22,13 @@ API reference for the pre-built Astro components used in lessons, grouped by cat
 
 ## Code → [`code/`](./code/)
 
-Embed code in lessons.
+Embed code blocks in lessons.
 
 | Choice | Use when… | Doc |
 | --- | --- | --- |
 | `CodeTooltips` | Hover tooltips on chosen substrings inside a single code block. Useful for short inline definitions. | [code-tooltips.md](./code/code-tooltips.md) |
 | `AnnotatedCode` | Stepped walkthrough of a single code block, with parts of the code highlighted, each step has its own text explaing the highlighted code.  Use when one code block is complex and you need to focus student's attention on specific parts of the code at a time. | [annotated-code.md](./code/annotated-code.md) |
-| `CodeVariants` | Tabbed comparison of two or more versions of the same code, each tab contains text explaining that variant. Useful to show the incorrect and correct version of the code. | [code-variants.md](./code/code-variants.md) |
+| `CodeVariants` | Tabbed comparison of two or more versions of the same code, each tab contains text explaining that variant. Useful to show the incorrect and correct version of the code or group related files. | [code-variants.md](./code/code-variants.md) |
 
 ---
 

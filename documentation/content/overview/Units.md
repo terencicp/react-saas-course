@@ -1,6 +1,6 @@
 # The course
 
-> A one-line compressed view of the [full Table of contents](../Table%20of%20contents.md). Each line names the tech, libraries, APIs, and architectural patterns introduced in that unit's teaching chapters (project chapters excluded — they apply what the teaching chapters cover).
+> A one-line compressed view of the [full Table of contents](../Table%20of%20contents.md). Each line names the tech, libraries, APIs, and architectural patterns introduced in that unit's teaching chapters and a brief description of the projects it includes.
 
 - **Unit 1 — Setup and Toolchain**: Node 24 LTS, pnpm, mise, TypeScript strict, Biome, Next.js 16, React 19, Tailwind v4, `@t3-oss/env-nextjs`, Zod
 - **Unit 2 — JavaScript and TypeScript**: TypeScript (generics, narrowing, discriminated unions, branded types), ES modules, Promises, async/await, AbortController, Temporal, JSON
