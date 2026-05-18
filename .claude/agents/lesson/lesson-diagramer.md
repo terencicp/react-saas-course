@@ -40,7 +40,7 @@ Verify the diagram renders and works as expected. Fix only errors directly relat
 4. `preview_console_logs` filtered by `level: 'error'`, then again by `level: 'warn'`. 
 5. If the diagram is interactive drive every input in your new code. Use `preview_eval` to locate elements because pre-built  components shuffle their choices at hydration.
 6. `preview_screenshot` to make sure the layout is correct and all text is readable.
-8. If any step fails, fix in source, let HMR reload, re-verify from step 3.
+7. If any step fails, fix in source, let HMR reload, re-verify from step 3.
 
 ## 6 Final message
 

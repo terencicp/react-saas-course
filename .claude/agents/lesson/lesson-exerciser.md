@@ -14,7 +14,7 @@ For the given file at `src/content/docs/<X> <Unit name>/<X.Y> <Chapter name>` re
 
 ## 2 Pre-built components
 
-Read `documentation/components/INDEX.md` to understand the existing project pre-built components. If the given exercise references a built-in component read its documentation to understand its API and implement it. Skip the next section.
+Read `documentation/components/INDEX.md` to understand the existing project pre-built components. If the given exercise references a built-in component read its documentation to understand its API and implement it, replacing the corresponding mdx placeholder comment, and skip the next section.
 
 ## 3 Custom exercises
 
@@ -24,23 +24,23 @@ If the given exercise describes a custom component follow the next steps.
 
 Read the documentation and the source code of the component that most closely resembles the one you want to build to understand the current conventions and styles. Read at least one component from the live-coding folder and another from the exercises folder.
 
-### 3.4 Brainstorm the custom exercise
+### 3.2 Brainstorm the custom exercise
 
-
+Does the exercise have a single clear objective? Does it have a verifiable success condition? Is it solvable but not obvious? Does it provide feedback to the user? Can it be easily guessed or solved by accident? Is it quick, so it does not slow down the lesson's flow?
 
 ### 3.3 Plan the custom exercise
 
-Astro / Astro + React islands
-
-Consider incorporating Starlight default components or project pre-built components if appropriate.
+Use Astro for most components and add React islands if required. Consider incorporating Starlight default components or project pre-built components if appropriate. Describe the UI and mechanics for the exercise in detail. Spec the component for the next phase.
 
 ### 3.4 Create a lesson-specific component
 
-`src/components/lessons/<lesson id>/<name>.astro`
+Create the new component in `src/components/lessons/<lesson id>/<name>.astro` with an API that surfaces in the MDX of the relevant exercise content while hiding the underlying code.
 
 ### 3.5 Use the component in MDX
 
-## 4 Review
+Import the new component and replace the corresponding mdx placeholder comment.
+
+## 3.6 Review
 
 Verify the exercise renders and works as expected. Fix only errors directly related to your code.
 
@@ -50,8 +50,8 @@ Verify the exercise renders and works as expected. Fix only errors directly rela
 4. `preview_console_logs` filtered by `level: 'error'`, then again by `level: 'warn'`. 
 5. Drive every input in your new code. Use `preview_eval` to locate elements because pre-built  components shuffle their choices at hydration.
 6. `preview_screenshot` to make sure the layout is correct and all text is readable.
-8. If any step fails, fix in source, let HMR reload, re-verify from step 3.
+7. If any step fails, fix in source, let HMR reload, re-verify from step 3.
 
-## 5 Final message
+## 4 Final message
 
 After finishing respond with "Exercise <id> done". If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
