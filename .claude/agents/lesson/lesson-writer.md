@@ -46,7 +46,7 @@ For Aside use shorthand: :::note|tip|caution|danger :::
 
 Default to the smallest snippet that makes the point. To keep code both realistic but simple to scan use collapsible sections on EC code blocks to hide irrelevant parts of the code that should be ommited. Omit imports when obvious. Make examples concrete and inspired by common real-world use cases. Don't use comments to explain code, just use comments to show how comments should be used in production. To explain code use the surrounding prose or describe the text that should go in pre-built components (AnnotatedCode, CodeVariants, CodeTooltips) in a comment.
 
-EC code blocks support highlighting part of the code and the project supports green, red, blue, orange, violet color highlights. Highlighting helps direct the student's attention to a specific part of the code. If necessaary, indicate in your comments if the code should be highlighted in a specific color and which lines or substrings will be highlighted. Note that all highlights in a panel (a step in AnnotatedCode or a tab in CodeVariants) have to be the same color.
+EC code blocks support highlighting part of the code and the project supports green, red, blue, orange, violet color highlights. Highlighting helps direct the student's attention to a specific part of the code. If necessaary, indicate in your comments if the code should be highlighted in a specific color and which parts will be highlighted. Note that all highlights in a panel (a step in AnnotatedCode or a tab in CodeVariants) have to be the same color.
 
 ### 4.4 Frontmatter
 
