@@ -22,7 +22,7 @@ Consider 2–3 candidate compositions and pick the one that showcases the concep
 
 ## 4 Plan diagram
 
-Decide which component / engine you will use, considering the pros and cons of each option. Decide on what will the specific visual elements that the diagram will contain and what is the best way to lay them out given the chosen engine.
+Decide which component / engine you will use, considering the pros and cons of each option. Decide on what will the specific visual elements that the diagram will contain and what is the best way to lay them out given the chosen engine.  Do not edit existing component files, create new ones if necessary.
 
 Consider if it is necessary to include a caption describing the diagram step by step, or the surrounding prose already does this job.
 

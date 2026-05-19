@@ -30,7 +30,7 @@ Does the exercise have a single clear objective? Does it have a verifiable succe
 
 ### 3.3 Plan the custom exercise
 
-Use Astro for most components and add React islands if required. Consider incorporating Starlight default components or project pre-built components if appropriate. Describe the UI and mechanics for the exercise in detail. Spec the component for the next phase.
+Use Astro for most components and add React islands if required. Consider incorporating Starlight default components or project pre-built components if appropriate. Describe the UI and mechanics for the exercise in detail. Spec the component for the next phase. Do not edit existing component files, create new ones if necessary.
 
 ### 3.4 Create a lesson-specific component
 
