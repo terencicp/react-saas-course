@@ -1,4 +1,4 @@
-Orchestrate a series of subagents that will build the chapter's content. Do not edit the lesson prose or the chapter outline.
+Orchestrate a series of subagents that will build the chapter's content sequentially.
 
 ## Chapter selection
 
