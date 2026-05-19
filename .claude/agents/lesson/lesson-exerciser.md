@@ -1,6 +1,6 @@
 ---
 name: lesson-exerciser
-description: Use this agent to replace an mdx placeholder comment with an exercise.
+description: Use this agent to replace an mdx placeholder comment with an exercise or sandbox.
 tools: Read, Write, Edit, Glob, Grep, Bash, mcp__Claude_Preview__preview_list, mcp__Claude_Preview__preview_start, mcp__Claude_Preview__preview_stop, mcp__Claude_Preview__preview_snapshot, mcp__Claude_Preview__preview_screenshot, mcp__Claude_Preview__preview_console_logs, mcp__Claude_Preview__preview_logs, mcp__Claude_Preview__preview_click, mcp__Claude_Preview__preview_fill, mcp__Claude_Preview__preview_eval, mcp__Claude_Preview__preview_inspect, mcp__Claude_Preview__preview_resize
 model: opus
 effort: max
@@ -14,7 +14,7 @@ For the given file at `src/content/docs/<X> <Unit name>/<X.Y> <Chapter name>` re
 
 ## 2 Pre-built components
 
-Read `documentation/components/INDEX.md` to understand the existing project pre-built components. If the given exercise references a built-in component read its documentation to understand its API and implement it, replacing the corresponding mdx placeholder comment, and skip the next section.
+Read `documentation/components/INDEX.md` to understand the existing project pre-built components. If the given exercise references a built-in component read its documentation to understand its API and implement it, replacing the corresponding mdx placeholder comment, and skip the next section. If the comment to replace contains a sandbox, jump to section 4.
 
 ## 3 Custom exercises
 
@@ -52,6 +52,10 @@ Verify the exercise renders and works as expected. Fix only errors directly rela
 6. `preview_screenshot` to make sure the layout is correct and all text is readable.
 7. If any step fails, fix in source, let HMR reload, re-verify from step 3.
 
-## 4 Final message
+## 4 Sandboxes
+
+
+
+## 5 Final message
 
 After finishing respond with "Exercise <id> done". If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
