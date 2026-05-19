@@ -24,7 +24,7 @@ The goal is to have a Youtube video for every topic in the lesson, when it makes
 1 Do an initial brainstorming. What external resources could be a good complement for the lesson? Official docs are the easy choice but adding other types of resources like interactive explainers or visualizations will engage the student much more. Also any youtube video covering the whole lesson not previously embedded can be added as external resource too. 
 2 Search online for all the different topics the lesson covers. Note the results worthy of consideration.
 3 Rank the results from the most interesing from a pedagogical perspective and pick at most the top 4. If any of those is not a reliable high quality resource cut it.
-4 Add them add the end of the lesson in an h2 section "External resources". Use a 2 column grid (with Starlight CardGrid) if more than one resource.
+4 Add them add the end of the lesson in an h2 section "External resources" using LinkCard: `documentation/components/starlight/link-cards.md`. Use a 2 column grid if more than one resource.
 
 ## 3 Final message
 
