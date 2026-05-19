@@ -10,7 +10,7 @@ Replace comments with components and format with markdown to deliver the given l
 
 ## 1 Replace comments with components
 
-Comments inside <!-- --> were placed in the lesson as placeholders for components. Read `documentation/components/INDEX.md` to understand what pre-built components are available in the project. Then replace any comment in the given lesson with the corresponding component. 
+Comments inside {/* */} were placed in the lesson as placeholders for components. Read `documentation/components/INDEX.md` to understand what pre-built components are available in the project. Then replace any comment in the given lesson with the corresponding component. 
 
 ## 2 Format text appropriately
 

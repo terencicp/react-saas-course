@@ -30,11 +30,11 @@ You should write like a patient experienced web developer teaching new concepts 
 
 ### 4.2 Component content description
 
-Use comments as placeholders for diagrams, code, exercises and videos. Describe components inside multiline <!-- --> comments, that other agents will replace with the actual component syntax. For example:
+Use comments as placeholders for diagrams, code, exercises and videos. Describe components inside multiline {/* */} comments, that other agents will replace with the actual component syntax. For example:
 
-<!-- TODO: "ComponentName" or "Custom component" (unique-id)
+{/* TODO: "ComponentName" or "Custom component" (unique-id)
 Describe component content here.
--->
+*/}
 
 The idea is you handle the content / pedagogical part of the components and another agent will figure out how to translate each description into proper syntax. Read `documentation/components/INDEX.md` to understand the names and shapes of the components available in the project, but do not read each component documentation. You can also design a custom-built component for the lesson if it's the best option to help the student's learning; in this case, describe the UI, functionality and content of the custom component inside a comment and another agent will write the code for it. Asign a unique id or name to each diagram or exercise.
 
