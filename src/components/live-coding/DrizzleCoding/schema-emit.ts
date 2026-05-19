@@ -5,13 +5,11 @@
 // is needed) and emit the matching CREATE TABLEs ahead of the inserts.
 //
 // Scope: enough to cover the column / PK / FK / NOT NULL / DEFAULT vocabulary
-// the course teaches in Unit 6. Composite PKs and table-level uniques are
-// handled; indexes, enums, and check constraints are not yet — they're either
-// not load-bearing for query correctness (indexes) or rare in lesson code
-// (enums, checks). Extend the column-type and constraint switch as Unit 6
-// adds chapters.
+// the course teaches in Unit 6, plus B-tree indexes (regular, unique, partial)
+// for Chapter 6.4 and the soft-delete partial-unique index in Chapter 11.2.
+// Enums and check constraints are not yet emitted — rare in lesson code so far.
 
-import { getTableConfig, PgTable } from 'drizzle-orm/pg-core';
+import { getTableConfig, PgDialect, PgTable } from 'drizzle-orm/pg-core';
 import { is, sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 
@@ -80,13 +78,67 @@ export function emitTableDDL(table: unknown): string {
   return `CREATE TABLE ${quoteIdent(cfg.name)} (\n${lines.join(',\n')}\n);`;
 }
 
-/** Emit DDL for every PgTable in the iterable, joined with blank lines. */
+/** Emit DDL for every PgTable in the iterable, joined with blank lines. The
+ * CREATE TABLE statements come first, then every index — Postgres needs the
+ * table to exist before its indexes, and indexes between tables don't depend
+ * on each other so the ordering is straightforward. */
 export function emitSchemaDDL(tables: Iterable<unknown>): string {
-  const stmts: string[] = [];
+  const tableObjects: PgTable[] = [];
   for (const t of tables) {
-    if (is(t, PgTable)) stmts.push(emitTableDDL(t));
+    if (is(t, PgTable)) tableObjects.push(t);
+  }
+  const stmts: string[] = tableObjects.map((t) => emitTableDDL(t));
+  for (const t of tableObjects) {
+    stmts.push(...emitIndexDDLs(t));
   }
   return stmts.join('\n\n');
+}
+
+/** Emit `CREATE [UNIQUE] INDEX ... ON table (cols) [WHERE expr];` for every
+ * index declared on the table. Supports partial indexes via `.where(sql\`…\`)`
+ * — the index dialect serializes column references as identifiers (not
+ * parameterized placeholders), which is what Postgres requires inside an
+ * index definition. */
+export function emitIndexDDLs(table: PgTable): string[] {
+  const cfg = getTableConfig(table);
+  const tableName = quoteIdent(cfg.name);
+  const stmts: string[] = [];
+  for (const idx of cfg.indexes) {
+    const c = idx.config;
+    const unique = c.unique ? 'UNIQUE ' : '';
+    const concurrently = c.concurrently ? 'CONCURRENTLY ' : '';
+    const onlyOnly = c.only ? 'ONLY ' : '';
+    const name = c.name ? quoteIdent(c.name) + ' ' : '';
+    const colParts = c.columns.map((col) => {
+      // IndexedColumn has a `name`; SQL expressions get serialized via the
+      // dialect. Mixed indexes (column + expression) are rare in lessons but
+      // covered by the same branch.
+      if (isSqlObject(col)) {
+        return serializeSql(col);
+      }
+      const obj = col as { name?: string };
+      return obj.name ? quoteIdent(obj.name) : '';
+    });
+    const cols = colParts.filter(Boolean).join(', ');
+    const using = c.method && c.method !== 'btree' ? ` USING ${c.method}` : '';
+    let stmt = `CREATE ${unique}INDEX ${concurrently}${name}ON ${onlyOnly}${tableName}${using} (${cols})`;
+    if (c.where) {
+      stmt += ` WHERE ${serializeSql(c.where)}`;
+    }
+    stmt += ';';
+    stmts.push(stmt);
+  }
+  return stmts;
+}
+
+// Single shared dialect instance — `sqlToQuery('indexes')` inlines params and
+// renders column references as identifiers, which is what an index definition
+// needs (parameterized placeholders are not valid SQL inside a CREATE INDEX).
+const pgDialect = new PgDialect();
+
+function serializeSql(s: SQL): string {
+  const { sql: text } = pgDialect.sqlToQuery(s, 'indexes');
+  return text;
 }
 
 // Always quote identifiers — Postgres folds unquoted ones to lowercase, and
@@ -107,10 +159,18 @@ function formatDefault(v: unknown): string {
   if (typeof v === 'number' || typeof v === 'boolean') return String(v);
   if (typeof v === 'string') return `'${v.replace(/'/g, "''")}'`;
   if (isSqlObject(v)) {
-    // Best-effort: serialise the SQL object's first string chunk. Lessons
-    // mostly default with literals or `sql\`now()\``, both of which round-trip.
-    const text = trySerializeSql(v);
-    if (text) return text;
+    // Serialise through the shared dialect — handles `sql\`now()\`` (the
+    // common `defaultNow()` shape, whose chunk is a StringChunk and not a
+    // plain string) and any other SQL-defaulted column lessons might use.
+    try {
+      return serializeSql(v);
+    } catch {
+      // Fall through to the legacy string-chunk fast path for shapes the
+      // dialect can't render (none observed in lesson code so far, but
+      // keeping the path keeps schema-emit forgiving).
+      const text = trySerializeSql(v);
+      if (text) return text;
+    }
   }
   return String(v);
 }
