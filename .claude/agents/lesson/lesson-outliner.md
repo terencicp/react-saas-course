@@ -62,4 +62,4 @@ If your research surfaces any severe discrepancies between your initial lesson o
 
 ## 6 Final message
 
-Finally, return the path of the newly created lesson outline file. If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
+Finally, return the path of the newly created lesson outline file and its title. If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.

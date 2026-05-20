@@ -15,7 +15,7 @@ The folder `src/content/docs` contains nested folders that represent units and c
 
 ### 1. Create folder
 
-- `src/content/docs/<X> <Unit name>/<X.Y> <Chapter name>`, strip `#`  from names.
+- `src/content/docs/<X> <Unit name>/<X.Y> <Chapter name>`, strip `#` from folder names, replace `/` with `-`.
 
 ### 2. Run the agent sequence
 

@@ -24,7 +24,7 @@ For each of the sections in the lesson outline brainstorm how to translate the l
 
 ### 4.1 Prose
 
-Write an initial version of the document at `src/content/docs/<X> <Unit name>/<X.Y> <Chapter name>/<X.Y.Z> <Lesson name>.mdx`. Make sure to optimize your prose for minimizing cognitive load in the student: Concepts are clearly explained step-by-step; if a complex model is explained, describe first a simplified version and gradually add complexity to it. The document should be as long or short as is necessary to properly explain the lesson concepts.
+Write an initial version of the document at `src/content/docs/<X> <Unit name>/<X.Y> <Chapter name>/<X.Y.Z> <Lesson name>.mdx`, strip `#` from folder names, replace `/` with `-`. Make sure to optimize your prose for minimizing cognitive load in the student: Concepts are clearly explained step-by-step; if a complex model is explained, describe first a simplified version and gradually add complexity to it. The document should be as long or short as is necessary to properly explain the lesson concepts.
 
 You should write like a patient experienced web developer teaching new concepts to a newcomer to the field, such as Adam Wathan or Dan Abramov, address the student directly as "you". Take your time to make sure each concept is given the depth it deserves, no more, no less. Pace by teaching weight, not by topic surface area. Make sure the whole lessons reads as a whole coherent text. Make sure to explain why something exists before explaining how it works. Do not use filler or cliche expressions. You are a performer, not a writer; the voice, pacing, where to pause, when to surprise, when to land a hard truth, is what determines whether the lesson works.
 
