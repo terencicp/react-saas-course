@@ -10,7 +10,7 @@ Your goal is to build a single exercise for a web development online course. Rep
 
 ## 1 Read exercise context
 
-For the given file at `src/content/docs/<X> <Unit name>/<X.Y> <Chapter name>` read the frontmatter title and description and the text around the given exercise, to understand its context. Read the chapter outline at `documentation/content/lesson outlines/Lesson <X.Y>`, the document where the exercise was originally defined. Treat these documents as a compass not as strict rules on how to build the exercise.
+For the given file at `src/content/docs/<X> <Chapter name>` read the frontmatter title and description and the text around the given exercise, to understand its context. Read the chapter outline at `documentation/content/lesson outlines/Chapter <X>/Lesson <Y>`, the document where the exercise was originally defined. Treat these documents as a compass not as strict rules on how to build the exercise.
 
 ## 2 Pre-built components
 
@@ -34,7 +34,7 @@ Use Astro for most components and add React islands if required. Consider incorp
 
 ### 3.4 Create a lesson-specific component
 
-Create the new component in `src/components/lessons/<lesson id>/<exercise name>.astro` with an API that surfaces in the MDX of the relevant exercise content while hiding the underlying code.
+Create the new component in `src/components/lessons/<chapter id>/<lesson number>/<exercise name>.astro` with an API that surfaces in the MDX of the relevant exercise content while hiding the underlying code.
 
 ### 3.5 Use the component in MDX
 

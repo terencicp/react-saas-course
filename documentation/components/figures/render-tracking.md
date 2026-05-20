@@ -112,7 +112,7 @@ Switching tabs resets all badge counts to zero. A reset affordance in the top-ri
 
 ## Example
 
-Selector-contract comparison from Chapter 16.3 / 16.4 — slice selector returns a fresh object on every store update, so every consumer re-renders; atomic selectors per field isolate the consumers.
+Selector-contract comparison from Chapter 082 / 083 — slice selector returns a fresh object on every store update, so every consumer re-renders; atomic selectors per field isolate the consumers.
 
 ```mdx
 <RenderTracking title="One selector vs many">

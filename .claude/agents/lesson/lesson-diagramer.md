@@ -10,7 +10,7 @@ Your goal is to build a single diagram for a web development online course. Repl
 
 ## 1 Read diagram context
 
-For the given file at `src/content/docs/<X> <Unit name>/<X.Y> <Chapter name>` read the frontmatter title and description and the text around the given diagram, to understand its context. Read the chapter outline at `documentation/content/lesson outlines/Lesson <X.Y.Z>`, the document where the diagram was originally defined. Treat these documents as a compass not as strict rules on how to build the diagram.
+For the given file at `src/content/docs/<X> <Chapter name>` read the frontmatter title and description and the text around the given diagram, to understand its context. Read the chapter outline at `documentation/content/lesson outlines/Chapter <X>/Lesson <Y>`, the document where the diagram was originally defined. Treat these documents as a compass not as strict rules on how to build the diagram.
 
 ## 2 Read documentation
 
@@ -28,7 +28,7 @@ Consider if it is necessary to include a caption describing the diagram step by 
 
 ## 5 Write diagram
 
-Replace the placeholder comment with the diagram. For diagrams that would be lengthy inline (custom SVG, HTML/CSS, ArrowDiagram), write a custom Astro component to `src/components/lessons/<lesson id>/<diagram name>.astro` and import it.
+Replace the placeholder comment with the diagram. For diagrams that would be lengthy inline (custom SVG, HTML/CSS, ArrowDiagram), write a custom Astro component to `src/components/lessons/<chapter id>/<lesson number>/<diagram name>.astro` and import it.
 
 ## 6 Review
 

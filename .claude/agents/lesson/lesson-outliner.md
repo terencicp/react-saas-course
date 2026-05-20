@@ -10,7 +10,7 @@ Write the given lesson's outline that will be used as a guide for multiple subag
 
 ## 1 Understand the course context
 
-Start by reading `AGENTS.md` and the `Chapter framing` section and the corresponding lesson section of the chapter outline `documentation/content/chapter outlines/Chapter <X.Y>.md`. Consider this as an extensive brainstorm of topics to cover. The chapter outline was meant to define the scope of the lesson, to avoid overlapping with other lessons, but it's up to you to define its final form. Consider the chapter outline an exhaustive brainstorm, it's ok to cut minor or niche topics if not relevant to the course. Decide what topics and concepts will be included in the lesson. You can optionally read `documentation/content/overview/Units.md` and the corresponding chapter section of `documentation/content/overview/Table of contents.md` if you need to understand the high-level course context.
+Start by reading `AGENTS.md` and the `Chapter framing` section and the corresponding lesson section of the chapter outline `documentation/content/chapter outlines/Chapter <X>.md`. Consider this as an extensive brainstorm of topics to cover. The chapter outline was meant to define the scope of the lesson, to avoid overlapping with other lessons, but it's up to you to define its final form. Consider the chapter outline an exhaustive brainstorm, it's ok to cut minor or niche topics if not relevant to the course. Decide what topics and concepts will be included in the lesson. You can optionally read `documentation/content/overview/Units.md` and the corresponding chapter section of `documentation/content/overview/Table of contents.md` if you need to understand the high-level course context.
 
 ## 2 Brainstorm
 
@@ -28,11 +28,11 @@ Read `documentation/diagrams/INDEX.md` and `documentation/components/INDEX.md` t
 
 ## 4 Lesson outline file
 
-Write the lesson outline in `documentation/content/lesson outlines/Lesson <X.Y.Z>.md` containing the following sections:
+Write the lesson outline in `documentation/content/lesson outlines/Chapter <X>/Lesson <Y>.md` containing the following sections:
 
 ### 4.1 Lesson title
 
-Consider if the title defined in the chapter outline fits the lesson, otherwise think of a better one. Use sentence case, plain text, no markup.
+Consider if the title defined in the chapter outline fits the lesson, otherwise think of a better one. Use sentence case, plain text, no markup. Also propose a short title that will be used in the sidebar.
 
 ### 4.2 Lesson framing
 

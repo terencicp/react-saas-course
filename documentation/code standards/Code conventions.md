@@ -552,9 +552,9 @@ Open candidates, gated until the unit lands:
 
 - **Resend conventions** — once Unit 8 ships. Add: the `lib/email.ts` wrapper shape, the suppression-list read, the per-send `Idempotency-Key` convention, the transactional-vs-marketing subdomain rule.
 - **Stripe / billing conventions** — once Unit 12 ships. Add: the three-method `lib/billing/` interface (`upgrade`, `openPortal`, `requirePlan`), the `plan_entitlements` projection shape, the webhook-is-the-only-writer rule.
-- **R2 / object storage conventions** — once Unit 13.3 ships. Add: the `lib/r2.ts` singleton shape, the `buildObjectKey` tenancy convention, the presigned PUT / HEAD / insert two-step write.
+- **R2 / object storage conventions** — once Chapter 072 ships. Add: the `lib/r2.ts` singleton shape, the `buildObjectKey` tenancy convention, the presigned PUT / HEAD / insert two-step write.
 - **Notification dispatcher conventions** — once Unit 14 ships. Add: the `notifiable_events` registry, the dispatcher signature, the 60-second dedup window keying.
-- **Upstash rate-limit conventions** — once Unit 15.3 ships. Add: the `safeLimit` wrapper, the dual-key auth-endpoint pattern, the `RateLimit-*` header shape.
+- **Upstash rate-limit conventions** — once Chapter 078 ships. Add: the `safeLimit` wrapper, the dual-key auth-endpoint pattern, the `RateLimit-*` header shape.
 - **Sentry / Pino observability conventions** — once Unit 20 ships. Add: the `redact` seam reused in Pino and `beforeSend`, the `requestId` AsyncLocalStorage shape, the release-tag pipeline.
 - **Vercel AI SDK conventions** — once Unit 23 ships. Add: the `lib/llm/models.ts` handle pattern, the tool `inputSchema` with closure-scoped tenancy, the quota-gate placement, the `onFinish` audit write.
 

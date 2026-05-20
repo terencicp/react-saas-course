@@ -13,8 +13,10 @@ Review the given lesson for serious issues that should be fixed before publishin
 - `AGENTS.md`
 - `documentation/content/overview/Units.md`
 - `documentation/pedagogical approach/Pedagogical guidelines.md`
-- `documentation/content/chapter outlines/Chapter <X.Y>.md`
-- `documentation/content/lesson outlines/Lesson <X.Y.Z>.md`
+- `documentation/content/chapter outlines/Chapter <X>.md`
+- `documentation/content/lesson outlines/Chapter <X>/Lesson <Y>.md`
+
+Consider these as a compass not a strict set of rules to follow.
 
 ## Consider
 
@@ -22,4 +24,4 @@ Read the given lesson and consider: Are there any serious issues with the lesson
 
 ## Report back
 
-In your last message report back with "No serious issues" or a description of the issues you found.
+In your last message report back with "No serious issues" or a description of the issues you found ranked by severity.
