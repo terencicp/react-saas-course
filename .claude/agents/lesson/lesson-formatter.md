@@ -20,13 +20,12 @@ The text may already be properly formatted. If it's not, consider if it needs ma
 
 Verify the exercise renders and works as expected. Fix only errors directly related to the current lesson.
 
-1. Run `npm run build`.
-2. `mcp__Claude_Preview__preview_list`. Use the running server or `preview_start`.
-3. `preview_snapshot` against the lesson URL
-4. `preview_console_logs` filtered by `level: 'error'`, then again by `level: 'warn'`. 
-5. Drive every input in your new code. Use `preview_eval` to locate elements because pre-built components shuffle their choices at hydration.
-6. `preview_screenshot` to make sure the layout is correct and all text is readable.
-7. If any step fails, fix in source, let HMR reload, re-verify from step 3.
+1 `mcp__Claude_Preview__preview_list`. Use the running server or `preview_start`.
+2 `preview_snapshot` against the lesson URL
+3 `preview_console_logs` filtered by `level: 'error'`
+4 Drive every input in your new code. Use `preview_eval` to locate elements because pre-built components shuffle their choices at hydration.
+5 `preview_screenshot` to make sure the layout is correct and all text is readable.
+6 If any step surfaces an error in the lesson's code, fix it in source once. Do not re-run the verification. If the failure isn't clearly caused by the lesson's, or you can't identify a fix, stop and include the diagnostic verbatim in your final message.
 
 ## 4 Final message
 
