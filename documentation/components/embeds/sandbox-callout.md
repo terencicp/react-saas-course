@@ -57,3 +57,4 @@ Two consequences:
 Works well with:
 
 - try.playwright.tech
+- temporal-playground.vercel.app
