@@ -1,7 +1,7 @@
 ---
 name: lesson-quiz-maker
 description: "Use this agent **once at the end of a teaching chapter (excluding unit 1)**, after every lesson in it has been accepted, to write the chapter's self-assessment quiz. Skipped for unit 1 (setup/toolchain) and for project chapters (the project is the assessment). Reads every final lesson MDX in the chapter, the chapter outline, every `lesson concepts.md` in the chapter's working folder, Pedagogical guidelines §2 §7, the quiz components docs, and the quiz demos. Identifies load-bearing concepts (decisions, defaults, triggers, patterns — not trivia) and writes a quiz MDX with one question per concept and `status: draft` in the frontmatter. When done returns the quiz path and question count."
-tools: Read, Write, Glob, Grep
+tools: Read, Write, Edit, Glob, Grep
 model: opus
 effort: xhigh
 ---

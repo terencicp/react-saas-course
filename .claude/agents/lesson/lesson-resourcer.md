@@ -1,7 +1,7 @@
 ---
 name: lesson-resourcer
 description: Use to replace MDX video placeholder comments and add external resources at the end of the lesson.
-tools: Read, Edit, Glob, Grep, WebSearch, WebFetch, mcp__zubeid-youtube-mcp-server__videos_searchVideos, mcp__zubeid-youtube-mcp-server__videos_getVideo
+tools: Read, Write, Edit, Glob, Grep, Bash, WebSearch, WebFetch, mcp__zubeid-youtube-mcp-server__videos_searchVideos, mcp__zubeid-youtube-mcp-server__videos_getVideo
 model: opus
 effort: high
 ---
@@ -17,7 +17,7 @@ The goal is to have a Youtube video for every topic in the lesson, when it makes
 3 For each think the best keyword query and use the YouTube MCP server to find videos less than 5 years old and more than 3 minutes long.
 4 For each search pick the highest quality video judging channel reputation, video age, video length, video views, etc. Read the transcript of the selected video to make sure the topic matches the lesson.
 5 For each video consider if the quality is good enough to make it worth adding. Adding low quality videos to lessons will teach the student to ignore VideoCallouts and must be avoided.
-6 Read the VideoCallout docs: `documentation/components/ui/video-callout.md`. Add the videos in VideoCallouts in the selected spots in the lesson (replacing any comments referencing VideoCallout). Prefer placing the video callout between text, not next to any other component.
+6 Read the VideoCallout docs: `documentation/components/embeds/video-callout.md`. Add the videos in VideoCallouts in the selected spots in the lesson (replacing any comments referencing VideoCallout). Prefer placing the video callout between text, not next to any other component.
 
 ## 2 External resources
 
