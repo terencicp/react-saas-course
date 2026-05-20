@@ -2,8 +2,6 @@
 
 Collapsible callout that lazy-loads an external code sandbox in an iframe.
 
-For StackBlitz embeds specifically, prefer [`StackBlitzCallout`](./stackblitz-callout.md) — it builds the URL for you and handles both GitHub-loader and project-ID modes.
-
 ## Import
 
 ```ts
@@ -20,6 +18,7 @@ import SandboxCallout from '../../../../components/embeds/SandboxCallout.astro';
 | `title` | `string` | yes | — | `<iframe title>` — for accessibility, not shown. |
 | `height` | `number` | no | `560` | Iframe height in pixels. Bump it for sandboxes with tall layouts. |
 | `label` | `string` | no | `'Open sandbox'` | Bold text on the collapsed row. The close-state label is derived by stripping the leading `Open ` and prepending `Hide ` — e.g. `'Open Tailwind sandbox'` → `'Hide Tailwind sandbox'`. Keep the `Open …` prefix so the toggle reads naturally. |
+| `minIframeWidth` | `number` | no | — | Render the iframe at a fixed minimum internal width and CSS-scale it down to fit when the lesson column is narrower. Use for sandboxes whose own responsive CSS breaks below a known threshold (e.g. `try.playwright.tech` wedges its right column at 768–991 px — set `minIframeWidth={1000}`). |
 
 ## Slot
 
@@ -58,3 +57,4 @@ Works well with:
 
 - try.playwright.tech
 - temporal-playground.vercel.app
+- play.tailwindcss.com

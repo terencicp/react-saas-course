@@ -2,7 +2,7 @@
 
 Iframe wrapper for [`trace.playwright.dev`](https://trace.playwright.dev/) — the official, fully client-side build of the Playwright trace inspector. The whole API is the URL: pass a public `trace.zip` URL and the viewer fetches it in the browser, no upload, no auth, no SDK.
 
-Two render modes: collapsible (default — thin URL builder over [`SandboxCallout`](./sandbox-callout.md)) or plain inline iframe (`expandable={false}`) for when the trace *is* the lesson content.
+Two render modes: plain inline iframe (default) for when the trace *is* the lesson content, or collapsible (`expandable={true}` — thin URL builder over [`SandboxCallout`](./sandbox-callout.md)) for an optional reference the reader opens on demand.
 
 ## Import
 
@@ -18,7 +18,7 @@ import PlaywrightEmbed from '../../../../components/embeds/PlaywrightEmbed.astro
 | --- | --- | --- | --- | --- |
 | `zipUrl` | `string` | one of `zipUrl` or `zipUrls` | — | Absolute URL to a public `trace.zip`. Must serve the binary with `Access-Control-Allow-Origin: *` — the viewer fetches it from the `trace.playwright.dev` origin. |
 | `zipUrls` | `string[]` | one of `zipUrl` or `zipUrls` | — | Multiple trace URLs for compare/layer mode (`?trace=…&trace=…`). Overrides `zipUrl`. |
-| `expandable` | `boolean` | no | `true` | `true` → wraps the iframe in the collapsible `SandboxCallout` button; `false` → plain inline iframe that loads with the page. |
+| `expandable` | `boolean` | no | `false` | `false` → plain inline iframe that loads with the page; `true` → wraps the iframe in the collapsible `SandboxCallout` button. |
 | `title` | `string` | no | `'Playwright Trace Viewer'` | `<iframe title>` — for accessibility, not shown. |
 | `height` | `number` | no | `640` | Iframe height in pixels. |
 | `label` | `string` | no | `'Open in Trace Viewer'` | Bold text on the collapsed row. Only used when `expandable` is `true`. Keep an `Open …` prefix so the toggle reads naturally. |
@@ -31,11 +31,21 @@ When `expandable` is `true`, the default slot is the **message** rendered next t
 
 - **CORS is mandatory.** The zip is fetched from the `trace.playwright.dev` origin, so the host must respond with `Access-Control-Allow-Origin: *` (or the docs origin). GitHub Actions artifact URLs do *not* qualify — mirror the zip to R2/S3 or host the static Playwright HTML report, then point `zipUrl` at the public URL.
 - **No prefill of the test source.** The viewer reads only what's in the zip. Page-object code, helpers, and fixtures must already be captured in the trace recorder's stack frames at record time.
-- **`expandable={false}` boots immediately.** Use only when the trace anchors the lesson; otherwise prefer the default collapsible mode so the iframe doesn't auto-fetch on page load.
+- **Default boots immediately.** The inline iframe auto-fetches the zip on page load — that's the right shape when the trace anchors the lesson. When the trace is an optional reference, pass `expandable={true}` so it doesn't auto-load on page hit.
 
 ## Examples
 
-Collapsible (default) — for an optional reference trace the reader opens on demand:
+Inline (default) — when the trace *is* the lesson surface and the prose anchors back to it:
+
+````mdx
+<PlaywrightEmbed
+  zipUrl="https://demo.playwright.dev/reports/todomvc/data/e6099cadf79aa753d5500aa9508f9d1dbd87b5ee.zip"
+  title="Trace viewer — TodoMVC sample (auto-loaded)"
+  height={680}
+/>
+````
+
+Collapsible (`expandable={true}`) — for an optional reference trace the reader opens on demand:
 
 ````mdx
 <PlaywrightEmbed
@@ -43,20 +53,10 @@ Collapsible (default) — for an optional reference trace the reader opens on de
   title="TodoMVC failing run"
   label="Open prefilled TodoMVC trace"
   height={640}
+  expandable={true}
 >
   A real Playwright run from the official TodoMVC sample report.
 </PlaywrightEmbed>
-````
-
-Inline (`expandable={false}`) — when the trace *is* the lesson surface and the prose anchors back to it:
-
-````mdx
-<PlaywrightEmbed
-  zipUrl="https://demo.playwright.dev/reports/todomvc/data/e6099cadf79aa753d5500aa9508f9d1dbd87b5ee.zip"
-  title="Trace viewer — TodoMVC sample (auto-loaded)"
-  height={680}
-  expandable={false}
-/>
 ````
 
 Compare two runs (e.g. green baseline vs failing retry):

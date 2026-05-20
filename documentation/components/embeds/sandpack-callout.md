@@ -2,7 +2,7 @@
 
 Collapsible callout that lazy-loads an in-page **Sandpack** sandbox — the same `sandpack-react` engine that powers every editable example on [react.dev](https://react.dev). Unlike the other embeds in this folder, Sandpack does **not** take a URL: you pass `files`, `dependencies`, and `options` as props and Sandpack's iframe bundler compiles them at runtime.
 
-Use this whenever you want an editable React/TS sandbox in a lesson and the matrix calls for the SDK-backed prefill path (see [Sandbox provider ranking](../../content/overview/Sandbox%20provider%20ranking.md)). For URL-prefilled CodeSandbox examples, use [`CodeSandboxCallout`](./codesandbox-callout.md) instead.
+Use this whenever you want an editable React/TS sandbox in a lesson and need the SDK-backed prefill path (inline `files` map, no published sandbox). For URL-prefilled CodeSandbox examples, use [`CodeSandboxCallout`](./codesandbox-callout.md) instead.
 
 ## Import
 
@@ -85,5 +85,3 @@ With a custom dependency, multi-file project, and active tab:
   options={{ showLineNumbers: true, editorHeight: 360 }}
 />
 ````
-
-A walkthrough of every prop shape lives at [`0 Demos/sandboxes/06-react-sandpack`](../../../src/content/docs/0%20Demos/sandboxes/06-react-sandpack.mdx).

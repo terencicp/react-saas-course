@@ -86,19 +86,19 @@ Interactive non-coding exercises.
 
 ## Embeds → [`embeds/`](./embeds/)
 
-Collapsible callouts that lazy-load a third-party iframe (sandbox, video). The whole site is cross-origin isolated (`COOP: same-origin` + `COEP: credentialless`) so that WebContainer-based sandboxes can boot; the iframes in this category carry the `credentialless` attribute so non-COEP third parties keep loading. See [sandbox-callout.md § Cross-origin isolation](./embeds/sandbox-callout.md#cross-origin-isolation) before adding a new iframe-rendering component.
+Collapsible callouts that lazy-load and embedded iframes. The site is cross-origin isolated (`COOP: same-origin` + `COEP: credentialless`) so WebContainer sandboxes can boot; the iframes carry the `credentialless` attribute.
 
 | Choice | Use when… | Doc |
 | --- | --- | --- |
-| `SandboxCallout` | Generic expandable iframe-callout. Embedding any third-party sandbox by URL. | [sandbox-callout.md](./embeds/sandbox-callout.md) |
 | `StackBlitzCallout` | Embedding a StackBlitz WebContainer sandbox by GitHub repo or project ID. | [stackblitz-callout.md](./embeds/stackblitz-callout.md) |
 | `CodeSandboxCallout` | Embedding a CodeSandbox sandbox by sandbox ID or public GitHub repo. | [codesandbox-callout.md](./embeds/codesandbox-callout.md) |
 | `TSPlaygroundCallout` | Embedding a TypeScript Playground with either a pre-computed share URL or a raw `code` + `flags` pair that gets LZ-compressed client-side. | [ts-playground-callout.md](./embeds/ts-playground-callout.md) |
 | `ZodPlaygroundCallout` | Embedding the marilari88 Zod Playground with a schema (and optional sample values, version, `zod/mini` flag) prefilled via LZ-compressed `?appdata=…`. | [zod-playground-callout.md](./embeds/zod-playground-callout.md) |
 | `SandpackCallout` | In-page React/TS sandbox via `sandpack-react` — prefill `files`, `dependencies`, `options` as props (not a URL). Use for editable React examples in Unit 4 onward; lazy-mounts on first click. | [sandpack-callout.md](./embeds/sandpack-callout.md) |
-| `PlaywrightEmbed` | Embed the Playwright trace viewer (`trace.playwright.dev`) prefilled with a public `trace.zip`. Collapsible by default; pass `expandable={false}` for a plain inline iframe when the trace *is* the lesson. | [playwright-embed.md](./embeds/playwright-embed.md) |
 | `ReactTestingCallout` | Embedding [Testing Playground](https://testing-playground.com) with HTML markup (and optional starter `screen.*` query) prefilled via LZ-compressed `#markup=…&query=…`. Use for React Testing Library query-ladder demos. | [react-testing-callout.md](./embeds/react-testing-callout.md) |
+| `SandboxCallout` | Generic expandable iframe-callout. Embedding any third-party sandbox by URL. | [sandbox-callout.md](./embeds/sandbox-callout.md) |
 | `VideoCallout` | Embedding a YouTube video. | [video-callout.md](./embeds/video-callout.md) |
+| `PlaywrightEmbed` | Embed the Playwright trace viewer (`trace.playwright.dev`) prefilled with a public `trace.zip`. | [playwright-embed.md](./embeds/playwright-embed.md) |
 
 ---
 
