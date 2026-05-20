@@ -10,7 +10,6 @@ API reference for the pre-built Astro components used in lessons, grouped by cat
 | --- | --- | --- |
 | `Code` | Default for any code or code output. Expressive Code. Can be combined with Tabs to for multiple code blocks that logically grouped together. | [code.md](./starlight/code.md) |
 | `Card`, `CardGrid` | Grouping a small set of related items in a responsive grid; each tile has a title, optional icon, and free-form body. | [cards.md](./starlight/cards.md) |
-| `LinkCard` | A single clickable tile that points elsewhere — external resource, related lesson, follow-up reading. Combine with `CardGrid` for a row of related links. | [link-cards.md](./starlight/link-cards.md) |
 | `Aside` | Setting a paragraph apart from prose as a note, tip, caution, danger. | [asides.md](./starlight/asides.md) |
 | `Badge` | A short inline status pill. | [badges.md](./starlight/badges.md) |
 | `FileTree` | File tree. | [file-tree.md](./starlight/file-tree.md) |
