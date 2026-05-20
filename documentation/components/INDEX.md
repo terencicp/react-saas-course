@@ -104,6 +104,7 @@ Lesson UI elements.
 | Choice | Use when… | Doc |
 | --- | --- | --- |
 | `Term` | Inline word or phrase in prose with a dashed underline and a hover/focus tooltip showing a short definition. | [term.md](./ui/term.md) |
+| `ExternalResource` | Clickable card linking out to an external resource (docs, repo, design file) with an icon badge, title, hostname, and short description. Combine with `CardGrid` for a row. Prefer over `LinkCard` when the brand/category cue matters. | [external-resource.md](./ui/external-resource.md) |
 
 ---
 
