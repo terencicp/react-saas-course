@@ -90,10 +90,11 @@ Collapsible callouts that lazy-load a third-party iframe (sandbox, video). The w
 
 | Choice | Use when… | Doc |
 | --- | --- | --- |
-| `SandboxCallout` | Generic expandable iframe-callout. Embedding any third-party sandbox by URL (TS playground, Tailwind play, JWT.io, etc.). | [sandbox-callout.md](./embeds/sandbox-callout.md) |
-| `StackBlitzCallout` | Embedding a StackBlitz WebContainer sandbox by GitHub repo or project ID. Use this instead of `SandboxCallout` for StackBlitz so the URL and options are built correctly. | [stackblitz-callout.md](./embeds/stackblitz-callout.md) |
-| `CodeSandboxCallout` | Embedding a CodeSandbox sandbox by sandbox ID or public GitHub repo. Use this instead of `SandboxCallout` for CodeSandbox so the embed URL and cosmetics are built correctly. | [codesandbox-callout.md](./embeds/codesandbox-callout.md) |
-| `VideoCallout` | Embedding a YouTube video as supplementary material. | [video-callout.md](./embeds/video-callout.md) |
+| `SandboxCallout` | Generic expandable iframe-callout. Embedding any third-party sandbox by URL. | [sandbox-callout.md](./embeds/sandbox-callout.md) |
+| `StackBlitzCallout` | Embedding a StackBlitz WebContainer sandbox by GitHub repo or project ID. | [stackblitz-callout.md](./embeds/stackblitz-callout.md) |
+| `CodeSandboxCallout` | Embedding a CodeSandbox sandbox by sandbox ID or public GitHub repo. | [codesandbox-callout.md](./embeds/codesandbox-callout.md) |
+| `TSPlaygroundCallout` | Embedding a TypeScript Playground with either a pre-computed share URL or a raw `code` + `flags` pair that gets LZ-compressed client-side. | [ts-playground-callout.md](./embeds/ts-playground-callout.md) |
+| `VideoCallout` | Embedding a YouTube video. | [video-callout.md](./embeds/video-callout.md) |
 
 ---
 
