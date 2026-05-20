@@ -45,6 +45,42 @@ export default defineConfig({
         worker: {
             format: 'es',
         },
+        plugins: [
+            // Site-wide cross-origin isolation.
+            //
+            // StackBlitz's WebContainer is built on SharedArrayBuffer, which
+            // browsers only expose in cross-origin isolated documents. Agent
+            // clusters are inherited from the top-level browsing context, so
+            // an iframe can only be isolated if the embedding lesson page is
+            // isolated too — there is no per-iframe escape hatch.
+            //
+            // The trade-off is on the *other* cross-origin iframes the site
+            // embeds (YouTube nocookie, Tailwind play, TS playground, etc.):
+            // they must either send COEP themselves (StackBlitz does) or be
+            // tagged `<iframe credentialless>` so they load without
+            // credentials. That tag lives on the two iframe-renderers in the
+            // codebase — SandboxCallout and VideoCallout.
+            //
+            // Production: see public/_headers (Netlify, Cloudflare Pages).
+            // For Vercel, equivalent rules go in vercel.json under "headers".
+            {
+                name: 'coop-coep-site-wide',
+                configureServer(server) {
+                    server.middlewares.use((req, res, next) => {
+                        res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+                        res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
+                        next();
+                    });
+                },
+                configurePreviewServer(server) {
+                    server.middlewares.use((req, res, next) => {
+                        res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+                        res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
+                        next();
+                    });
+                },
+            },
+        ],
     },
     integrations: [
         mermaid({ autoTheme: true }),
