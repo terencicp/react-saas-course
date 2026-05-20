@@ -16,12 +16,15 @@ import icon from 'astro-icon';
 // the next dev-server start — no config edits required.
 const docsDir = join(dirname(fileURLToPath(import.meta.url)), 'src/content/docs');
 
+// Folder names carry a 3-digit chapter prefix (e.g. "004 The first project
+// scaffold") so the filesystem and Starlight's sort both order by chapter.
+// The prefix is stripped from the sidebar label so the UI stays clean.
 const sidebarGroups = readdirSync(docsDir, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
     .map((entry) => entry.name)
     .sort()
     .map((name) => ({
-        label: name,
+        label: name.replace(/^\d+\s+/, ''),
         items: [{ autogenerate: { directory: name } }],
     }));
 // Expressive Code options live in ./ec.config.mjs so the standalone
