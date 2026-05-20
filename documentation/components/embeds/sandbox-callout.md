@@ -36,7 +36,7 @@ The whole site sends `Cross-Origin-Opener-Policy: same-origin` + `Cross-Origin-E
 
 Two consequences:
 
-- **Embedded sites load without credentials** — users won't be signed into StackBlitz, YouTube, etc. inside the embed. For a course site that's fine; if you need an authenticated embed, open in a new tab instead (a regular link, or `StackBlitzPostShim`).
+- **Embedded sites load without credentials** — users won't be signed into StackBlitz, etc. inside the embed. For a course site that's fine; if you need an authenticated embed, open in a new tab instead.
 - **Invariant for new iframe-rendering components** — anything that renders a cross-origin `<iframe>` directly (instead of delegating to `SandboxCallout`) **must** include the `credentialless` attribute, or the iframe will be blocked. Components that go through `SandboxCallout` inherit it for free.
 
 ## Example
