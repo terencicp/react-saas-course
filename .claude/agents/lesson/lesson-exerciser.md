@@ -1,7 +1,7 @@
 ---
 name: lesson-exerciser
 description: Use this agent to replace an mdx placeholder comment with an exercise or sandbox.
-tools: Read, Write, Edit, Glob, Grep, Bash, mcp__Claude_Preview__preview_list, mcp__Claude_Preview__preview_start, mcp__Claude_Preview__preview_stop, mcp__Claude_Preview__preview_snapshot, mcp__Claude_Preview__preview_screenshot, mcp__Claude_Preview__preview_console_logs, mcp__Claude_Preview__preview_logs, mcp__Claude_Preview__preview_click, mcp__Claude_Preview__preview_fill, mcp__Claude_Preview__preview_eval, mcp__Claude_Preview__preview_inspect, mcp__Claude_Preview__preview_resize
+tools: Read, Write, Edit, Glob, Grep, Bash, mcp__Claude_Preview__preview_list, mcp__Claude_Preview__preview_start, mcp__Claude_Preview__preview_stop, mcp__Claude_Preview__preview_snapshot, mcp__Claude_Preview__preview_screenshot, mcp__Claude_Preview__preview_console_logs, mcp__Claude_Preview__preview_logs, mcp__Claude_Preview__preview_click, mcp__Claude_Preview__preview_fill, mcp__Claude_Preview__preview_eval, mcp__Claude_Preview__preview_inspect, mcp__Claude_Preview__preview_resize, WebSearch, WebFetch
 model: opus
 effort: max
 ---
@@ -54,7 +54,7 @@ Verify the exercise renders and works as expected. Fix only errors directly rela
 
 ## 4 Sandboxes
 
-
+If the given comment to replace refers to a Sandbox, brainstorm and search online to figure out the best provider for the sandbox and embed it using a component specific to that provider or a generic SandboxCallout.
 
 ## 5 Final message
 
