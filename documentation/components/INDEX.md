@@ -95,6 +95,7 @@ Collapsible callouts that lazy-load a third-party iframe (sandbox, video). The w
 | `CodeSandboxCallout` | Embedding a CodeSandbox sandbox by sandbox ID or public GitHub repo. | [codesandbox-callout.md](./embeds/codesandbox-callout.md) |
 | `TSPlaygroundCallout` | Embedding a TypeScript Playground with either a pre-computed share URL or a raw `code` + `flags` pair that gets LZ-compressed client-side. | [ts-playground-callout.md](./embeds/ts-playground-callout.md) |
 | `ZodPlaygroundCallout` | Embedding the marilari88 Zod Playground with a schema (and optional sample values, version, `zod/mini` flag) prefilled via LZ-compressed `?appdata=…`. | [zod-playground-callout.md](./embeds/zod-playground-callout.md) |
+| `SandpackCallout` | In-page React/TS sandbox via `sandpack-react` — prefill `files`, `dependencies`, `options` as props (not a URL). Use for editable React examples in Unit 4 onward; lazy-mounts on first click. | [sandpack-callout.md](./embeds/sandpack-callout.md) |
 | `VideoCallout` | Embedding a YouTube video. | [video-callout.md](./embeds/video-callout.md) |
 
 ---
