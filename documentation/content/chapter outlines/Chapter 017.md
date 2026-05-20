@@ -10,7 +10,7 @@ The student finishes with: a precise reading of every attribute on a `Set-Cookie
 
 ---
 
-## Lesson 1 — Set-Cookie attributes and the senior default
+## Lesson 1 — Set-Cookie attributes and the safe default
 
 Read the `Set-Cookie` header attribute by attribute — `HttpOnly`, `Secure`, `SameSite`, `Path`, `Domain`, `Max-Age` / `Expires`, the `__Host-` and `__Secure-` prefixes, and the `Partitioned` (CHIPS) attribute — name the senior default (`HttpOnly; Secure; SameSite=Lax; Path=/`), map each attribute to the failure mode it prevents, and thread the Next.js `cookies()` helper and the 2026 third-party-cookie reality.
 

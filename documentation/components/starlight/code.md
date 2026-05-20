@@ -1,14 +1,10 @@
 # Plain code blocks (Expressive Code)
 
-Starlight renders every fenced code block through **Expressive Code** (EC). No imports, no wrapper component — just a triple-backtick fence with a language and optional fence-meta directives.
+Starlight renders every fenced code block through **Expressive Code** (EC) — no imports, just a triple-backtick fence with a language and optional fence-meta directives.
 
-Installed EC plugins (configured in [astro.config.mjs](astro.config.mjs)):
+EC plugins enabled in [astro.config.mjs](astro.config.mjs): built-in syntax highlighting, frames, text markers, word wrap; `plugin-line-numbers` (opt-in per block, off site-wide); `plugin-collapsible-sections` (opt-in per block).
 
-- Built-in: syntax highlighting, frames, text markers, word wrap.
-- `@expressive-code/plugin-line-numbers` — opt-in per block with `showLineNumbers`. Defaulted to **off** site-wide so existing blocks are unaffected.
-- `@expressive-code/plugin-collapsible-sections` — opt-in per block with `collapse={…}`.
-
-A live reference for every fence feature below: [`0 Demos/code/code-blocks-demo`](src/content/docs/0%20Demos/code/code-blocks-demo.mdx).
+Live reference for every feature: [`0 Demos/code/code-blocks-demo`](src/content/docs/0%20Demos/code/code-blocks-demo.mdx).
 
 ## Basic fence
 
@@ -18,123 +14,39 @@ const x: number = 1;
 ```
 ````
 
-The token after the opening backticks is the **language identifier**. Common ones: `ts`, `tsx`, `js`, `jsx`, `astro`, `html`, `css`, `json`, `yaml`, `bash`, `sh`, `md`, `mdx`, `sql`, `diff`. (~100 languages via Shiki.) Omit the language only for truly free-form text — you lose highlighting otherwise.
+The token after the backticks is the **language identifier** (`ts`, `tsx`, `js`, `astro`, `html`, `css`, `json`, `yaml`, `bash`, `sql`, `diff`, … ~100 via Shiki). Omit it only for free-form text — you lose highlighting otherwise.
 
 ## Frames
 
-EC wraps each block in a "frame" — either an editor tab or a terminal window — chosen automatically by language.
+EC wraps each block in a frame — editor tab or terminal window — chosen automatically by language.
 
-### Editor frame with a title
-
-Two ways to set a tab title. They render identically; pick whichever reads cleaner.
-
-**`title="…"` attribute:**
+**Editor title.** Always set it with the `title="…"` attribute — one rule, no exceptions.
 
 ````md
 ```ts title="src/lib/db.ts"
-import { drizzle } from 'drizzle-orm/postgres-js';
 export const db = drizzle(connectionString);
 ```
 ````
 
-**Leading file-path comment** (first 4 lines, starts with `//`, `<!--`, `/*`, or `#`):
+EC can also derive a title from a leading file-path comment, but that detection fails silently on paths with parentheses (Next.js route groups like `(app)`), so the course standardises on `title="…"`.
 
-````md
-```ts
-// src/lib/db.ts
-import { drizzle } from 'drizzle-orm/postgres-js';
-export const db = drizzle(connectionString);
-```
-````
-
-The comment is **stripped** from the rendered code once it becomes the title.
-
-### Terminal frame
-
-Use to show code output. Automatic for shell languages (`bash`, `sh`, `zsh`, `powershell`, etc.). Optional title:
-
-````md
-```bash title="Install dependencies"
-npm install drizzle-orm
-```
-````
-
-### Overriding the frame
-
-| Value | Effect |
-| --- | --- |
-| `frame="none"` | Strip the frame entirely — useful inside another component or for inline-feeling snippets. |
-| `frame="code"` | Force an editor frame (e.g. show a shell config as if it were an editor file). |
-| `frame="terminal"` | Force a terminal frame. |
-| `frame="auto"` | Default — language-driven. |
-
-````md
-```sh frame="none"
-echo "no chrome around this line"
-```
-````
+**Terminal frame** is automatic for shell languages (`bash`, `sh`, `zsh`, `powershell`, …). Override the frame with `frame="none"` (strip it — good inside another component), `frame="code"` (force editor), `frame="terminal"` (force terminal), or `frame="auto"` (default, language-driven).
 
 ## Highlighting (text markers)
 
-Highlight text to focus the student's attention. Mix any of these on the same fence — they compose.
+Focus the student's attention. All of these compose on one fence.
 
-### Line ranges — `{…}`
-
-Neutral highlight on whole lines. Single line, list, range, or all three:
+- **Line ranges `{…}`** — neutral highlight on whole lines: `{4}`, `{1, 4, 7-8}`, `{1-3}`.
+- **Quoted tokens `"…"`** — highlight every occurrence of a literal string; mix quote types to avoid escaping (`"this 'inner' text"`).
+- **Regex `/…/`** — highlight pattern matches; capture groups narrow the highlight to the group.
+- **Insert/delete `ins=…` / `del=…`** — same syntax as the markers above (lines, strings, regex) but green/red, for diffs without using `diff` as the language.
 
 ````md
-```ts {4}
-```
-```ts {1, 4, 7-8}
-```
-```ts {1-3}
+```ts {1-3} "useState" /set\w+/ ins={5} del="old"
 ```
 ````
 
-### Quoted tokens — `"…"`
-
-Highlight every occurrence of a literal string:
-
-````md
-```ts "useState" "count"
-const [count, setCount] = useState(0);
-```
-````
-
-Mix quote types to avoid escaping: `"this 'inner' text"`.
-
-### Regex — `/…/`
-
-Highlight pattern matches. Capture groups narrow the highlight to the group; non-capturing groups match the full pattern:
-
-````md
-```ts /set\w+/
-const [count, setCount] = useState(0);
-```
-````
-
-### Insert / delete markers — `ins=…` / `del=…`
-
-Same syntax as the neutral markers, but green / red, for showing diffs without using `diff` as the language:
-
-````md
-```ts del={2} ins={3}
-function add(a, b) {
-  return a - b;
-  return a + b;
-}
-```
-````
-
-Works with strings and regex too:
-
-````md
-```ts ins="Promise.all" del="await"
-const [a, b] = await Promise.all([fa(), fb()]);
-```
-````
-
-### `diff` language (alternative for line-level diffs)
+**`diff` language** is the alternative for line-level diffs; add `lang="ts"` to keep syntax highlighting on top (leading whitespace after `+`/`-` is preserved):
 
 ````md
 ```diff lang="ts"
@@ -145,55 +57,25 @@ const [a, b] = await Promise.all([fa(), fb()]);
 ```
 ````
 
-`lang="ts"` keeps TypeScript syntax highlighting on top of the diff markers. Leading whitespace after `+`/`-` is preserved correctly.
-
-### Colored marks — `data-mark-color="…"` wrapper
-
-The neutral mark on `{lines}`, `"tokens"`, and `/regex/` is a soft grey by default. Wrap any fenced block in `<div data-mark-color="…">` to re-tint **every** mark inside it. Always prefer colored marks to the default grey, consider blue the default.
+**Mark color.** The neutral mark is a soft grey. Wrap a fence in `<div data-mark-color="…">` to re-tint **every** mark inside it — `green`, `red`, `blue`, `orange`, `violet` (each theme has its own legible stops). Always prefer a colored mark to grey; treat blue as the default. Blank lines around the fence inside the wrapper are required so MDX still parses it.
 
 ````mdx
 <div data-mark-color="blue">
 
 ```ts {2} "useState"
-import { useState } from 'react';
 const [count, setCount] = useState(0);
 ```
 
 </div>
 ````
 
-Five colors: `green`, `red`, `blue`, `orange`, `violet`. Dark and light themes each have their own stops so the highlight stays legible against either background.
+## Word wrap — `wrap`
 
-Blank lines around the fence inside the wrapper are required so MDX still parses the fence as markdown.
+Use for lines over ~90 chars you don't want to scroll horizontally. Variants: `wrap=false` (explicit off — the default), `wrap preserveIndent=false` (continuation starts at column 1, good for terminal output), `wrap hangingIndent=2` (indent continuations by 2 spaces).
 
-## Word wrap
+## Line numbers — `showLineNumbers`
 
-For long lines you don't want to scroll horizontally, use when lines are more than 90 characters:
-
-````md
-```ts wrap
-const longString = 'a very long string that would otherwise overflow the container horizontally and force a scroll'
-```
-````
-
-Variants:
-- `wrap=false` — explicitly disable (default is no wrap).
-- `wrap preserveIndent=false` — wrapped continuation starts at column 1 (good for terminal output).
-- `wrap hangingIndent=2` — add 2 spaces of indent to wrapped continuations.
-
-## Line numbers — `showLineNumbers`, `startLineNumber=…`
-
-Opt-in per block. Other meta (line ranges, string marks, etc.) keep targeting **source** line numbers, not the displayed numbers — so `{1-3}` still hits the first three lines even if `startLineNumber=100`.
-
-````md
-```ts showLineNumbers
-export function add(a: number, b: number) {
-  return a + b;
-}
-```
-````
-
-Custom start number, useful for snippets from larger files:
+Opt-in per block. `startLineNumber=42` sets a custom start (useful for snippets from larger files). Other meta still targets **source** line numbers, so `{1-3}` hits the first three lines regardless of `startLineNumber`.
 
 ````md
 ```ts showLineNumbers startLineNumber=42 title="src/lib/math.ts"
@@ -205,66 +87,38 @@ export function add(a: number, b: number) {
 
 ## Collapsible sections — `collapse={…}`
 
-Hides a line range behind an "expand" affordance. Useful for keeping boilerplate (imports, scaffolding) out of the way of the lines that matter.
-
-````md
-```ts collapse={1-5}
-import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/lib/db';
-import { usersTable } from '@/lib/schema';
-import { eq } from 'drizzle-orm';
-import { cookies } from 'next/headers';
-
-export async function GET(req: NextRequest) {
-  const [user] = await db.select().from(usersTable);
-  return NextResponse.json({ user });
-}
-```
-````
-
-Multiple ranges, comma-separated:
-
-````md
-```ts collapse={1-5, 10-12}
-…
-```
-````
+Hides a line range behind an "expand" affordance — keeps boilerplate (imports, scaffolding) out of the way of the lines that matter. Comma-separate multiple ranges: `collapse={1-5, 10-12}`.
 
 ## Programmatic `<Code>` component (rare)
 
-For the unusual case where the code string lives in a variable or a file — e.g. an imported snippet:
-
-```ts
-import { Code } from '@astrojs/starlight/components';
-```
+Only when the code string lives in a variable or an imported file:
 
 ```mdx
+import { Code } from '@astrojs/starlight/components';
+
 <Code code={someVar} lang="ts" title="src/foo.ts" />
 ```
 
-Key props: `code` (required), `lang`, `title`, `frame`, `mark`, `ins`, `del`, `wrap`. Use only when a literal fence won't work — for hand-authored snippets the fence is shorter and reads better.
+Props: `code` (required), `lang`, `title`, `frame`, `mark`, `ins`, `del`, `wrap`. For hand-authored snippets a literal fence is shorter and reads better.
 
 ## Quick reference — fence-meta cheat sheet
 
 ````md
-```ts                                              ← language only
-```ts title="src/foo.ts"                            ← editor frame, explicit title
-```ts                                              ← editor frame, title from leading // comment
-```bash                                            ← terminal frame (auto)
-```sh frame="none"                                 ← no frame
-```ts {1-3}                                        ← line range highlight
-```ts {1, 4, 7-8}                                  ← mixed lines
-```ts "useState" "count"                           ← string marks
-```ts /set\w+/                                     ← regex mark
-```ts del={2} ins={3}                              ← line-level diff colors
-```ts ins="new" del="old"                          ← inline diff colors
-```diff lang="ts"                                  ← real diff language with TS highlighting
-```ts wrap                                         ← word wrap on
-```ts showLineNumbers                              ← line numbers on (opt-in)
-```ts showLineNumbers startLineNumber=42           ← line numbers starting at 42
-```ts collapse={1-5}                               ← collapse lines 1–5
-```ts collapse={1-5, 10-12}                        ← multiple collapse ranges
-```ts {1-3} "token" ins={5} title="src/foo.ts"     ← combine freely
+```ts                                          ← language only
+```ts title="src/foo.ts"                        ← editor frame, explicit title
+```bash                                        ← terminal frame (auto)
+```sh frame="none"                             ← no frame
+```ts {1, 4, 7-8}                              ← line highlights (single/list/range)
+```ts "useState" "count"                       ← string marks
+```ts /set\w+/                                 ← regex mark
+```ts del={2} ins={3}                          ← line-level diff colors
+```ts ins="new" del="old"                      ← inline diff colors
+```diff lang="ts"                              ← diff language with TS highlighting
+```ts wrap                                     ← word wrap on
+```ts showLineNumbers startLineNumber=42       ← line numbers, custom start
+```ts collapse={1-5, 10-12}                    ← collapse line ranges
+```ts {1-3} "token" ins={5} title="src/foo.ts" ← combine freely
 ```
 
-<div data-mark-color="green">                       ← retint every mark inside (green|red|blue|orange|violet)`
+<div data-mark-color="blue"> … </div>           ← retint marks (green|red|blue|orange|violet)
+````

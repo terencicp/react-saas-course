@@ -4,7 +4,7 @@ How to pick a diagram tool for a lesson. Decisions here optimize for **AI-author
 
 Working assumption: AI agents fail at hand-positioned diagrams. Any tool with a real layout engine constrains the agent into producing something usable. Pick the engine whose *output shape* matches the diagram's shape.
 
-Vertical-space constraint: laptop viewports are wide but short — prefer horizontal layouts and cap diagram height, compress elements vertically.
+Vertical-space constraint: laptop viewports are wide but short — prefer horizontal layouts and cap diagram height, compress elements vertically. Consider ~800px the maximum height for a diagram's main container (including caption).
 
 All diagrams should be wrapped in our custom [`<Figure>` component](../components/figures/figure.md).
 

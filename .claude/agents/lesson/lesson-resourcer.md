@@ -13,7 +13,7 @@ Add external resources to the given MDX lesson. Follow the next instructions ste
 The goal is to have a Youtube video for every topic in the lesson, when it makes sense to do so (for lessons that teach concepts), and a recent high quality video exists for the topic. The project has a VideoCallout component, an expandable container that allows us to embed videos without interrupting the lesson flow. 
 
 1 Read the given MDX file and locate comments referencing VideoCallout (if any).
-2 Consider if there are any other topics not covered by the previous video described in the comment. Make a list of all the possible spots where a VideoCallout could be inserted in the lesson. Also consider if there might be a video that covers the whole lesson that we may link in the next section.
+2 Consider if there are any other topics not covered by the previous video described in the comment. Make a list of all the possible spots where a VideoCallout could be inserted in the lesson, considering that a video is a supplement to the prose so it must be placed after the topic at hand has been properly explained. Also consider if there might be a video that covers the whole lesson that we may link in the next section.
 3 For each think the best keyword query and use the YouTube MCP server to find videos less than 5 years old and more than 3 minutes long.
 4 For each search pick the highest quality video judging channel reputation, video age, video length, video views, etc. Read the transcript of the selected video to make sure the topic matches the lesson.
 5 For each video consider if the quality is good enough to make it worth adding. Adding low quality videos to lessons will teach the student to ignore VideoCallouts and must be avoided.
@@ -24,7 +24,8 @@ The goal is to have a Youtube video for every topic in the lesson, when it makes
 1 Do an initial brainstorming. What external resources could be a good complement for the lesson? Official docs are the easy choice but adding other types of resources like interactive explainers or visualizations will engage the student much more. Also any youtube video covering the whole lesson not previously embedded can be added as external resource too. 
 2 Search online for all the different topics the lesson covers. Note the results worthy of consideration.
 3 Rank the results from the most interesing from a pedagogical perspective and pick at most the top 4. If any of those is not a reliable high quality resource cut it, less is more.
-4 Add them add the end of the lesson in an h2 section "External resources" using ExternalResource: `documentation/components/ui/external-resource.md`. Use a 2 column grid if more than one resource.
+4 Add them add the end of the lesson in an h2 section "External resources" using ExternalResource: `documentation/components/ui/external-resource.md`. Use a 2 column grid if more than one resource. Pick a unique custom icon for each source.
+5 Featch all the URLs added to the lesson to make sure they are working and lead to the information you expect. Replace them if something is wrong.
 
 ## 3 Final message
 

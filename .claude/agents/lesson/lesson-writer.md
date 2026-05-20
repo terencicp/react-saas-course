@@ -14,7 +14,7 @@ Start by reading `AGENTS.md`, and only the initial `Chapter framing` section of 
 
 ## 2 Read the lesson outline
 
-The lesson outline at `documentation/content/lesson outlines/Chapter <X>/Lesson <Y>` defines the scope of the lesson (what should be covered) and its pedagogical approach (how it should be treated). Your goal is translate the vision in the lesson outline into a concrete implementation. Note that the technical facts in the lesson outline have been reviewed to make sure they follow the latest best practices, follow its conventions.
+The lesson outline at `documentation/content/lesson outlines/Chapter <X>/Lesson <Y>.md` defines the scope of the lesson (what should be covered) and its pedagogical approach (how it should be treated). Your goal is translate the vision in the lesson outline into a concrete implementation. Note that the technical facts in the lesson outline have been reviewed to make sure they follow the latest best practices, follow its conventions.
 
 ## 3 Brainstorm
 
@@ -27,6 +27,8 @@ For each of the sections in the lesson outline brainstorm how to translate the l
 Write an initial version of the document at `src/content/docs/<X> <Chapter name>/<Y> <Lesson name>.mdx`, strip `#` and replace `/` with `-` from filenames. Make sure to optimize your prose for minimizing cognitive load in the student: Concepts are clearly explained step-by-step; if a complex model is explained, describe first a simplified version and gradually add complexity to it. The document should be as long or short as is necessary to properly explain the lesson concepts.
 
 You should write like a patient experienced web developer teaching new concepts to a newcomer to the field, such as Adam Wathan or Dan Abramov, address the student directly as "you". Take your time to make sure each concept is given the depth it deserves, no more, no less. Pace by teaching weight, not by topic surface area. Make sure the whole lessons reads as a whole coherent text. Make sure to explain why something exists before explaining how it works. Do not use filler or cliche expressions. You are a performer, not a writer; the voice, pacing, where to pause, when to surprise, when to land a hard truth, is what determines whether the lesson works.
+
+Do not use the word "senior" use other synomyms like "experienced engineer", etc.
 
 ### 4.2 Component content description
 

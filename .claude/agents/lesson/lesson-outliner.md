@@ -20,7 +20,7 @@ Read `documentation/pedagogical approach/Pedagogical guidelines.md`, think of th
 
 ## 2.2 Sections
 
-After that, define the sections, and subsections if necessary, the titles of the h2 and h3 headers of the final lesson, and what each will contain. All sections in the outline must be content driven, and their headers written specifically for this lesson, no generic sections like "Things to watch out for". Use sentence case for titles.
+After that, define the sections, and subsections if necessary, the titles of the h2 and h3 headers of the final lesson, and what each will contain. All sections in the outline must be content driven, and their headers written specifically for this lesson. Do not create a section whose contents are unified only by being watch-outs, or tips; these belong in the section teaching the concept they qualify. Use sentence case for titles.
 
 ## 3 Project context
 

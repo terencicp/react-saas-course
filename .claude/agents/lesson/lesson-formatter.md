@@ -10,13 +10,17 @@ Replace comments with components and format with markdown to deliver the given l
 
 ## 1 Replace comments with components
 
-Comments inside {/* */} were placed in the lesson as placeholders for components. Read `documentation/components/INDEX.md` to understand what pre-built components are available in the project. Then replace any comment in the given lesson with the corresponding component. 
+Comments inside {/* TODO START */} … {/* TODO END */} were placed in the lesson as placeholders for components. Read `documentation/components/INDEX.md` to understand what pre-built components are available in the project. Then replace any comment in the given lesson with the corresponding component. Read the documentation of each component before using it.
 
 ## 2 Format text appropriately
 
 The text may already be properly formatted. If it's not, consider if it needs markdown headings, emphasis markers, lists, code blocks, horizontal rules, etc. Make only the minimal changes necessary.
 
-## 3 Review
+## 3 Code highlights review
+
+Code each component with an EC Code block (Code, AnnotatedCode, CodeTooltips, CodeVariants) read the prose around it and the component content and consider if the parts of the code highlighted make sense, they are misplaced or there are elements highlighted that shouldn't be. Fix any highlighting errors. If a long multiline code block has no highlighting but the prose refers mostly to a specific section of the code add code highlighting. 
+
+## 4 Final test
 
 Verify the exercise renders and works as expected. Fix only errors directly related to the current lesson.
 
@@ -27,6 +31,6 @@ Verify the exercise renders and works as expected. Fix only errors directly rela
 5 `preview_screenshot` to make sure the layout is correct and all text is readable.
 6 If any step surfaces an error in the lesson's code, fix it in source once. Do not re-run the verification. If the failure isn't clearly caused by the lesson's, or you can't identify a fix, stop and include the diagnostic verbatim in your final message.
 
-## 4 Final message
+## 5 Final message
 
 After finishing respond with "Lesson formatted". If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.

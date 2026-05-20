@@ -130,7 +130,7 @@
 - 4 Quiz
 
 ### Chapter 017 — Cookies and the trust model
-- 1 Set-Cookie attributes and the senior default (Reads the `Set-Cookie` header attribute by attribute — `HttpOnly`, `Secure`, `SameSite`, `Path`, `Domain`, `Max-Age`, the `__Host-` prefix, and the `Partitioned` (CHIPS) attribute — names the senior default (`HttpOnly; Secure; SameSite=Lax; Path=/`), maps each attribute to the failure mode it prevents, and threads the Next.js `cookies()` helper and the 2026 third-party-cookie reality.)
+- 1 Set-Cookie attributes and the safe default (Reads the `Set-Cookie` header attribute by attribute — `HttpOnly`, `Secure`, `SameSite`, `Path`, `Domain`, `Max-Age`, the `__Host-` prefix, and the `Partitioned` (CHIPS) attribute — names the senior default (`HttpOnly; Secure; SameSite=Lax; Path=/`), maps each attribute to the failure mode it prevents, and threads the Next.js `cookies()` helper and the 2026 third-party-cookie reality.)
 - 2 Quiz
 
 ### Chapter 018 — The DOM and event substrate

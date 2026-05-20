@@ -10,7 +10,7 @@ Your goal is to build a single diagram for a web development online course. Repl
 
 ## 1 Read diagram context
 
-For the given file at `src/content/docs/<X> <Chapter name>` read the frontmatter title and description and the text around the given diagram, to understand its context. Read the chapter outline at `documentation/content/lesson outlines/Chapter <X>/Lesson <Y>`, the document where the diagram was originally defined. Treat these documents as a compass not as strict rules on how to build the diagram.
+For the given file at `src/content/docs/<X> <Chapter name>.mdx` read the frontmatter title and description and the text around the given diagram, to understand its context. Read the lesson outline at `documentation/content/lesson outlines/Chapter <X>/Lesson <Y>.md`, the document where the diagram was originally defined. Treat these documents as a compass not as strict rules on how to build the diagram.
 
 ## 2 Read documentation
 
