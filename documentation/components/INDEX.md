@@ -97,6 +97,7 @@ Collapsible callouts that lazy-load a third-party iframe (sandbox, video). The w
 | `ZodPlaygroundCallout` | Embedding the marilari88 Zod Playground with a schema (and optional sample values, version, `zod/mini` flag) prefilled via LZ-compressed `?appdata=…`. | [zod-playground-callout.md](./embeds/zod-playground-callout.md) |
 | `SandpackCallout` | In-page React/TS sandbox via `sandpack-react` — prefill `files`, `dependencies`, `options` as props (not a URL). Use for editable React examples in Unit 4 onward; lazy-mounts on first click. | [sandpack-callout.md](./embeds/sandpack-callout.md) |
 | `PlaywrightEmbed` | Embed the Playwright trace viewer (`trace.playwright.dev`) prefilled with a public `trace.zip`. Collapsible by default; pass `expandable={false}` for a plain inline iframe when the trace *is* the lesson. | [playwright-embed.md](./embeds/playwright-embed.md) |
+| `ReactTestingCallout` | Embedding [Testing Playground](https://testing-playground.com) with HTML markup (and optional starter `screen.*` query) prefilled via LZ-compressed `#markup=…&query=…`. Use for React Testing Library query-ladder demos. | [react-testing-callout.md](./embeds/react-testing-callout.md) |
 | `VideoCallout` | Embedding a YouTube video. | [video-callout.md](./embeds/video-callout.md) |
 
 ---
