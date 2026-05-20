@@ -107,6 +107,17 @@ Lesson UI elements.
 
 ---
 
+## Icons
+
+Import `Icon` from `astro-icon/components` and reference an icon by `set:name`.
+
+| Set | Use for | Catalog |
+| --- | --- | --- |
+| `lucide:*` | Generic UI glyphs. | [lucide.dev/icons](https://lucide.dev/icons) |
+| `simple-icons:*` | Brand logos. | [simpleicons.org](https://simpleicons.org) |
+
+---
+
 ## Quiz → [`quiz/`](./quiz/)
 
 | Choice | Use when… | Doc |
