@@ -85,14 +85,24 @@ Interactive non-coding exercises.
 
 ---
 
+## Embeds → [`embeds/`](./embeds/)
+
+Collapsible callouts that lazy-load a third-party iframe (sandbox, video). The whole site is cross-origin isolated (`COOP: same-origin` + `COEP: credentialless`) so that WebContainer-based sandboxes can boot; the iframes in this category carry the `credentialless` attribute so non-COEP third parties keep loading. See [sandbox-callout.md § Cross-origin isolation](./embeds/sandbox-callout.md#cross-origin-isolation) before adding a new iframe-rendering component.
+
+| Choice | Use when… | Doc |
+| --- | --- | --- |
+| `SandboxCallout` | Generic expandable iframe-callout. Embedding any third-party sandbox by URL (TS playground, Tailwind play, JWT.io, etc.). | [sandbox-callout.md](./embeds/sandbox-callout.md) |
+| `StackBlitzCallout` | Embedding a StackBlitz WebContainer sandbox by GitHub repo or project ID. Use this instead of `SandboxCallout` for StackBlitz so the URL and options are built correctly. | [stackblitz-callout.md](./embeds/stackblitz-callout.md) |
+| `VideoCallout` | Embedding a YouTube video as supplementary material. | [video-callout.md](./embeds/video-callout.md) |
+
+---
+
 ## UI → [`ui/`](./ui/)
 
 Lesson UI elements.
 
 | Choice | Use when… | Doc |
 | --- | --- | --- |
-| `SandboxCallout` | Expandable container, lazy loading. Embedding an interactive code sandbox for optional free exploration. | [sandbox-callout.md](./ui/sandbox-callout.md) |
-| `VideoCallout` | Expandable container, lazy loading. Embedding a YouTube video as supplementary material. | [video-callout.md](./ui/video-callout.md) |
 | `Term` | Inline word or phrase in prose with a dashed underline and a hover/focus tooltip showing a short definition. | [term.md](./ui/term.md) |
 
 ---
