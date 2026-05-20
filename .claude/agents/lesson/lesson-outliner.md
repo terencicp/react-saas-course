@@ -14,11 +14,11 @@ Start by reading `AGENTS.md` and the `Chapter framing` section and the correspon
 
 ## 2 Brainstorm
 
-### 2.2 Pedagogical approach
+### 2.1 Pedagogical approach
 
 Read `documentation/pedagogical approach/Pedagogical guidelines.md`, think of this as a compass, not as strong rules. After that brainstorm what is the best way to teach the lesson's concepts. Think about the target student and about the concepts that need to be taught. What are the most important concepts in the lesson? What's the best way to convey this properly? Where do students like these usually struggle when meeting this topic for the first time? What pain points does the tech taught relieve? What is the mental model the student should end with? What should the student be able to do at the end of this lesson? What do begginers usually get wrong when using this in the real world? Can this be framed in real production stakes? How can these concepts be linked to what the student already knows? Should the alternatives be mentioned to help the student understand why we choose this tech? These are some starting ideas, ask yourself other questions according to the topics at hand. If there are multiple distinct topics in the lesson consider each separately. Consider if the concepts need to be visualized using diagrams or interactive widgets, what role should code examples play in the lesson,should the student practice the syntax and play around with the tech using live coding exercises? Should the students understanding be checked using interactive exercises? Can embedding a YouTube video help support the lesson's concepts? Make sure to optimize your pedagogical approach for minimizing cognitive load in the student: Concepts are clearly explained step-by-step; if a complex model is explained, describe first a simplified version and gradually add complexity to it.
 
-## 2.3 Sections
+## 2.2 Sections
 
 After that, define the sections, and subsections if necessary, the titles of the h2 and h3 headers of the final lesson, and what each will contain. All sections in the outline must be content driven, and their headers written specifically for this lesson, no generic sections like "Things to watch out for". Use sentence case for titles.
 
@@ -28,7 +28,7 @@ Read `documentation/diagrams/INDEX.md` and `documentation/components/INDEX.md` t
 
 ## 4 Lesson outline file
 
-Write the lesson outline in `documentation/content/lesson outlines/<Lesson X.Y.Z>.md` containing the following sections:
+Write the lesson outline in `documentation/content/lesson outlines/Lesson <X.Y.Z>.md` containing the following sections:
 
 ### 4.1 Lesson title
 

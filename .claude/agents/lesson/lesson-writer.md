@@ -14,7 +14,7 @@ Start by reading `AGENTS.md`, and only the initial `Chapter framing` section of 
 
 ## 2 Read the lesson outline
 
-The lesson outline at `documentation/content/lesson outlines/<Lesson X.Y.Z>` defines the scope of the lesson (what should be covered) and its pedagogical approach (how it should be treated). Your goal is translate the vision in the lesson outline into a concrete implementation. Note that the technical facts in the lesson outline have been reviewed to make sure they follow the latest best practices, follow its conventions.
+The lesson outline at `documentation/content/lesson outlines/Lesson <X.Y.Z>` defines the scope of the lesson (what should be covered) and its pedagogical approach (how it should be treated). Your goal is translate the vision in the lesson outline into a concrete implementation. Note that the technical facts in the lesson outline have been reviewed to make sure they follow the latest best practices, follow its conventions.
 
 ## 3 Brainstorm
 
@@ -38,7 +38,7 @@ Describe component content here.
 
 The idea is you handle the content / pedagogical part of the components and another agent will figure out how to translate each description into proper syntax. Read `documentation/components/INDEX.md` to understand the names and shapes of the components available in the project, but do not read each component documentation. You can also design a custom-built component for the lesson if it's the best option to help the student's learning; in this case, describe the UI, functionality and content of the custom component inside a comment and another agent will write the code for it. Asign a unique id or name to each diagram, exercise or sandbox.
 
-Use inline prose tooltips, like <!-- TODO: Term (String "HTML". Tooltip text: "HyperText Markup Language") -->, to describe acronyms, re-explain prerequisite concepts without interrupting lesson flow or define terms the student might not be familiar with.
+Use inline prose tooltips, like {/* TODO: Term (String "HTML". Tooltip text: "HyperText Markup Language") */}, to describe acronyms, re-explain prerequisite concepts without interrupting lesson flow or define terms the student might not be familiar with.
 
 For Aside use shorthand: :::note|tip|caution|danger :::
 

@@ -10,7 +10,7 @@ Your goal is to build a single exercise for a web development online course. Rep
 
 ## 1 Read exercise context
 
-For the given file at `src/content/docs/<X> <Unit name>/<X.Y> <Chapter name>` read the frontmatter title and description and the text around the given exercise, to understand its context. Read the chapter outline at `documentation/content/lesson outlines/Chapter <X.Y>`, the document where the exercise was originally defined. Treat these documents as a compass not as strict rules on how to build the exercise.
+For the given file at `src/content/docs/<X> <Unit name>/<X.Y> <Chapter name>` read the frontmatter title and description and the text around the given exercise, to understand its context. Read the chapter outline at `documentation/content/lesson outlines/Lesson <X.Y>`, the document where the exercise was originally defined. Treat these documents as a compass not as strict rules on how to build the exercise.
 
 ## 2 Pre-built components
 
@@ -22,7 +22,7 @@ If the given exercise describes a custom component follow the next steps.
 
 ### 3.1 Read existing exercises
 
-Read the documentation and the source code of the component that most closely resembles the one you want to build to understand the current conventions and styles. Read at least one component from the live-coding folder and another from the exercises folder.
+Read the documentation and the source code of the component that most closely resembles the one you want to build to understand the current conventions and styles. Read at least one component from the live-coding folder `documentation/components/live-coding` and another from the exercises folder `documentation/components/exercises`.
 
 ### 3.2 Brainstorm the custom exercise
 
@@ -34,13 +34,17 @@ Use Astro for most components and add React islands if required. Consider incorp
 
 ### 3.4 Create a lesson-specific component
 
-Create the new component in `src/components/lessons/<lesson id>/<name>.astro` with an API that surfaces in the MDX of the relevant exercise content while hiding the underlying code.
+Create the new component in `src/components/lessons/<lesson id>/<exercise name>.astro` with an API that surfaces in the MDX of the relevant exercise content while hiding the underlying code.
 
 ### 3.5 Use the component in MDX
 
 Import the new component and replace the corresponding mdx placeholder comment.
 
-## 3.6 Review
+## 4 Sandboxes
+
+If the given comment to replace refers to a Sandbox, brainstorm and search online to figure out the best provider for the sandbox and embed it using a component specific to that provider or a generic SandboxCallout.
+
+## 5 Review
 
 Verify the exercise renders and works as expected. Fix only errors directly related to your code.
 
@@ -48,14 +52,10 @@ Verify the exercise renders and works as expected. Fix only errors directly rela
 2. `mcp__Claude_Preview__preview_list`. Use the running server or `preview_start`.
 3. `preview_snapshot` against the lesson URL
 4. `preview_console_logs` filtered by `level: 'error'`, then again by `level: 'warn'`. 
-5. Drive every input in your new code. Use `preview_eval` to locate elements because pre-built  components shuffle their choices at hydration.
+5. Drive every input in your new code. Use `preview_eval` to locate elements because pre-built components shuffle their choices at hydration.
 6. `preview_screenshot` to make sure the layout is correct and all text is readable.
 7. If any step fails, fix in source, let HMR reload, re-verify from step 3.
 
-## 4 Sandboxes
-
-If the given comment to replace refers to a Sandbox, brainstorm and search online to figure out the best provider for the sandbox and embed it using a component specific to that provider or a generic SandboxCallout.
-
-## 5 Final message
+## 6 Final message
 
 After finishing respond with "Exercise <id> done". If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
