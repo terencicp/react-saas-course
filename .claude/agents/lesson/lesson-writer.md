@@ -30,7 +30,7 @@ You should write like a patient experienced web developer teaching new concepts 
 
 ### 4.2 Component content description
 
-Use comments as placeholders for diagrams, code, exercises and videos. Describe components inside multiline {/* */} comments, that other agents will replace with the actual component syntax. For example:
+Use comments as placeholders for diagrams, code, exercises and videos. Describe components inside multiline {/* */} comments, that other agents will replace with the actual component syntax. Intersperse them with the prose. For example:
 
 {/* TODO: "ComponentName" or "Custom component" (unique-id)
 Describe component content here.
