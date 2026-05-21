@@ -1,4 +1,4 @@
-Orchestrate a series of subagents that will build the chapter's content sequentially, no parallelism.
+Orchestrate a series of subagents that will build the chapter's content sequentially, no parallelism. Read only the minimal set of project files you need for your task.
 
 ## Chapter selection
 
@@ -9,7 +9,7 @@ The folder `src/content/docs` contains nested folders that represent units and c
 
 ## Read
 
-- `documentation/content/chapter outlines/Chapter <X>.md`
+- `documentation/content/chapter outlines/Chapter <X>.md`: Read only the headers to understand how many lessons there are in the chapter.
 
 ## For each lesson
 
