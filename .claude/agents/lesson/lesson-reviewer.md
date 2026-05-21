@@ -6,7 +6,7 @@ model: opus
 effort: high
 ---
 
-Review the given lesson for serious issues that should be fixed before publishing.
+Review the given lesson for serious issues that should be fixed before publishing. Follow the steps in order.
 
 ## Read
 
@@ -18,9 +18,15 @@ Review the given lesson for serious issues that should be fixed before publishin
 
 Consider these as a compass not a strict set of rules to follow.
 
-## Consider
+## Pedagogic review
 
 Read the given lesson and consider: Are there any serious issues with the lesson that would hinder student's progress or its ability to follow the course?
+
+## Coherence review
+
+Now read the continuity notes for this chapter and read the mdx of previous lessons if necessary. Consider if there are any serious discrepancies between lessons that might confuse the student.
+
+Then read the continuity notes for the two preceding chapters, and the mdx of any previous relevant lesson in the course if necessary. Are there any serious issues that must be fixed?
 
 ## Report back
 

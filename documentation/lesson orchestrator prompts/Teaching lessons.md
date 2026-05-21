@@ -13,25 +13,27 @@ The folder `src/content/docs` contains nested folders that represent units and c
 
 ## For each lesson
 
-### 1. Create folders
+### 1. Create folders and files
 
 Folder and file names: Strip # and `, replace / with -, no markup.
 
 - `src/content/docs/<X> <Chapter name>`.
 - `documentation/content/lesson outlines/<X> <Chapter name>`
+- `documentation/content/lesson outlines/<X> <Chapter name>/Continuity notes.md`, add just the heading `# Chapter <X> — <Chapter title>`.
 
 ### 2. Run the agent sequence
 
 Pass each subagent only the fields listed, no need to prompt the agent further, it already knows what to do.
 
-1 **lesson-outliner**: chapter id `<X>`, lesson number `<Y>`, lesson title. Returns the lesson outline path and the (possibly revised) title.
+1 **lesson-outliner**: chapter id `<X>`, lesson number `<Y>`, lesson title, continuity notes path. Returns the lesson outline path and the (possibly revised) title.
 2 **lesson-writer**: chapter id `<X>`, lesson number `<Y>`, lesson title, lesson outline path, chapter folder path. Returns the lesson MDX path plus the count and unique ids of its diagrams and exercises/sandboxes.
 3 **lesson-diagramer**: chapter id `<X>`, lesson number `<Y>`, diagram id, lesson MDX path, lesson outline path. Run a new subagent sequentially for each diagram.
 4 **lesson-exerciser**: chapter id `<X>`, lesson number `<Y>`, exercise/sandbox id, lesson MDX path, lesson outline path. Run a new subagent sequentially for each exercise or sandbox.
 5 **lesson-resourcer**: lesson MDX path.
 6 **lesson-formatter**: lesson MDX path, lesson outline path.
-7 **lesson-reviewer**: chapter id `<X>`, lesson outline path, lesson MDX path. Returns the list of issues.
-8 **lesson-corrector**: chapter id `<X>`, lesson outline path, lesson MDX path, the reviewer's issue list inline.
+7 **lesson-reviewer**: chapter id `<X>`, lesson outline path, lesson MDX path, the continuity notes paths for this chapter and the two preceding chapters. Returns the list of issues.
+8 **lesson-corrector**: chapter id `<X>`, lesson outline path, lesson MDX path, the reviewer's issue list inline. Its goal is to fix the current lesson only, if there's an issue with a previous lesson surface it in the chat.
+9 **lesson-continuity**: chapter id `<X>`, lesson number `<Y>`, lesson MDX path, lesson outline path, continuity notes path.
 
 ## Quiz
 

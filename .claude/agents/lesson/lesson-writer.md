@@ -59,6 +59,7 @@ EC code blocks support highlighting part of the code and the project supports gr
 title: <lesson title>
 description: <one sentence summary>
 chapter-id: <X>
+chapter-title: <chapter title>
 sidebar:
   order: <Y>
   label: <short title>
