@@ -16,7 +16,7 @@ Read `AGENTS.md`, `documentation/pedagogical approach/Pedagogical guidelines.md`
 
 Content inside {/* TODO START */} … {/* TODO END */} was placed in the lesson as placeholders for components. Read the lesson find all comments that need replacement.
 
-## 1 Replace comments with components
+## 2 Replace comments with components
 
 Read `documentation/components/INDEX.md` to understand what pre-built components are available in the project. Then replace any comment in the given lesson with the corresponding component. Read the documentation of each component before using it, including built-in Starlight components.
 
@@ -26,13 +26,13 @@ Use an EC Code block (Code, AnnotatedCode, CodeTooltips, CodeVariants) to showca
 
 For each block with lines or sections highlighted, read the prose around and the component content and consider if the parts of the code highlighted make sense, they are misplaced or there are elements highlighted that shouldn't be. Fix any highlighting errors. If a long multiline code block has no highlighting but the prose refers mostly to a specific section of the code add code highlighting. 
 
-## 2 Format text appropriately
+## 3 Format text appropriately
 
 The text may already be properly formatted. If it's not, consider if it needs markdown headings, emphasis markers, lists, code blocks, horizontal rules, etc. Make only the minimal changes necessary.
 
-## 3 Final test
+## 4 Final test
 
-Verify the exercise renders and works as expected. Fix only errors directly related to the current lesson.
+Verify the lesson renders and works as expected. Fix only errors directly related to the current lesson.
 
 1 `mcp__Claude_Preview__preview_list`. Use the running server or `preview_start`.
 2 `preview_snapshot` against the lesson URL

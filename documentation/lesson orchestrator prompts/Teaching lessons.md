@@ -11,7 +11,11 @@ The folder `src/content/docs` contains nested folders that represent units and c
 
 - `documentation/content/chapter outlines/Chapter <X>.md`: Read only the headers to understand how many lessons there are in the chapter.
 
-## For each lesson
+## Create continuity notes
+
+- `documentation/content/lesson outlines/Chapter <X>/Continuity notes.md`, add just the heading `# Chapter <X> — <Chapter title>`.
+
+## For each lesson (except Quiz)
 
 ### 1. Create folders and files
 
@@ -19,7 +23,6 @@ Folder and file names: Strip # and `, replace / with -, no markup.
 
 - `src/content/docs/<X> <Chapter name>`.
 - `documentation/content/lesson outlines/Chapter <X>`
-- `documentation/content/lesson outlines/Chapter <X>/Continuity notes.md`, add just the heading `# Chapter <X> — <Chapter title>`.
 
 ### 2. Run the agent sequence
 
@@ -32,7 +35,7 @@ Pass each subagent only the fields listed, no need to prompt the agent further, 
 5 **lesson-resourcer**: lesson MDX path.
 6 **lesson-formatter**: lesson MDX path, lesson outline path.
 7 **lesson-reviewer**: chapter id `<X>`, lesson outline path, lesson MDX path, the continuity notes paths for this chapter and the two preceding chapters. Returns the list of issues.
-8 **lesson-corrector**: chapter id `<X>`, lesson outline path, lesson MDX path, the reviewer's issue list inline. Its goal is to fix the current lesson only, if there's an issue with a previous lesson surface it in the chat.
+8 **lesson-corrector**: chapter id `<X>`, lesson outline path, lesson MDX path, the reviewer's issue list inline. Its goal is to fix the current lesson only, if there's an issue with a previous lesson surface it in the chat, do not share them with the corrector.
 9 **lesson-continuity**: chapter id `<X>`, lesson number `<Y>`, lesson MDX path, lesson outline path, continuity notes path.
 
 ## Quiz

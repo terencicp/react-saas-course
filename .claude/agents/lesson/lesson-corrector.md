@@ -6,7 +6,7 @@ model: opus
 effort: xhigh
 ---
 
-Fix the issues in the lesson in order.
+Fix the issues in the given lesson mdx, in order.
 
 ## 1 Read
 
@@ -38,7 +38,7 @@ Consider these as a compass not a strict set of rules to follow.
 
 - Re-read the finial document to make sure it's all coherent.
 
-Verify the exercise renders and works as expected. Fix only errors directly related to the current lesson.
+Verify the lesson renders and works as expected. Fix only errors directly related to the current lesson.
 
 1 `mcp__Claude_Preview__preview_list`. Use the running server or `preview_start`.
 2 `preview_snapshot` against the lesson URL
