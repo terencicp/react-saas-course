@@ -18,7 +18,7 @@ Questions must test understanding, not recall. A question whose answer is a phra
 
 ## 2 Filter
 
-Review the previous questions across the whole chapter and keep only the ones that test its load-bearing concepts. Aim for 5-15 questions depending on how much the lesson covers. Make sure questions are diverse in topic and form to keep the student engaged. Make sure the questions selected are correct, if doubt you can search online to verify sources, syntax and 2026 best practices. 
+Review previous questions across the chapter and keep only the load-bearing ones. Aim for ~1 question per lesson. Make sure questions are diverse in topic and form to keep the student engaged. Make sure the questions selected are correct, if doubt you can search online to verify sources, syntax and 2026 best practices. 
 
 ## 3 Write
 
