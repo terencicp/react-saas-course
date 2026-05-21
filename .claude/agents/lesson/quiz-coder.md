@@ -10,7 +10,7 @@ Turn the quiz outline into the final quiz lesson MDX. Follow the next instructio
 
 ## 1 Read
 
-Read the quiz outline at `documentation/content/lesson outlines/<X> <Chapter name>/<Y> Quiz.md` and the quiz component docs under `documentation/components/quiz/quiz.md`.
+Read the quiz outline at `documentation/content/lesson outlines/Chapter <X>/<Y> Quiz.md` and the quiz component docs under `documentation/components/quiz/quiz.md`.
 
 ## 2 Write the quiz
 

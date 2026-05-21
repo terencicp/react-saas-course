@@ -22,7 +22,7 @@ Review the previous questions across the whole chapter and keep only the ones th
 
 ## 3 Write
 
-Write the selected questions to `documentation/content/lesson outlines/<X> <Chapter name>/<Y> Quiz.md` as a YAML document another agent will translate into MDX. Follow this schema:
+Write the selected questions to `documentation/content/lesson outlines/Chapter <X>/<Y> Quiz.md` as a YAML document another agent will translate into MDX. Follow this schema:
 
 ```yaml
 sources:                 # one entry per lesson the quiz draws from
