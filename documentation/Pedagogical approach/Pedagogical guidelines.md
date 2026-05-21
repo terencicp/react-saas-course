@@ -31,7 +31,7 @@ Six filters operationalize the pillars; if a lesson fails any, rewrite.
 
 ## 4. Internal references
 
-Chapter and lesson numbers are for internal use only, students can't see them. When referring to another chapter or lesson do it by title. Prefer using relative terms like "in the next chapter".
+Students can't see chapter and lesson numbers in the sidebar, just in the lesson header. When referring to another chapter or lesson number always mention its title. Prefer using relative terms like "in the next chapter".
 
 ## 4. Quizzes
 
@@ -39,4 +39,4 @@ Teaching chapters (except unit 1) end with a final quiz so the student can self-
 
 ## 5. Projects
 
-At the end of select units or chapters, a small focused project lets the student apply the unit's concepts in a realistic workflow. Projects are independent.
+At the end of most units, a small focused projects let the student apply the unit's concepts in a realistic workflow.

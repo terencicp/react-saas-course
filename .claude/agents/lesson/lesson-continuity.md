@@ -6,9 +6,11 @@ model: opus
 effort: high
 ---
 
-Append an entry for the given lesson to the chapter's continuity notes, a running record that lets later lessons in the chapter stay coordinated without reading every prior lesson. Be as concise as possible, optimize for token efficiency.
+Append an entry for the given lesson to the chapter's continuity notes, a running record that lets later lessons in the chapter and unit stay coordinated without reading every prior lesson. Be as concise as possible, optimize for token efficiency.
 
 ## 1 Read
+
+Read `AGENTS.md`, `documentation/content/overview/Units.md` and `documentation/pedagogical approach/Pedagogical guidelines.md` to understand the course context.
 
 Read the finished lesson MDX and its outline, and the `Lesson <Y>` section of the chapter outline `documentation/content/chapter outlines/Chapter <X>.md` — the plan the lesson was scoped against, so you can see what it cut. The chapter outline is an intentionally broad brainstorm; only record a cut a later lesson would plausibly depend on.
 
