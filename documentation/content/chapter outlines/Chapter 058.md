@@ -8,7 +8,7 @@ Threads that run through every lesson. The proxy is for redirects on cookie-pres
 
 ---
 
-## Lesson 1 — The two-layer gate in `proxy.ts`
+## Lesson 1 — The two-layer gate in proxy.ts
 
 Teaches the production-shaped protected-routes proxy — cookie-presence-only checks with `getSessionCookie`, matcher design (allowlist vs matchall-minus-public), the `?next=` round-trip with open-redirect closure, the inverse gate that bounces signed-in users off `/sign-in`, and the rule that keeps authorization decisions at the action boundary rather than the proxy.
 

@@ -8,7 +8,7 @@ Threads that run through every lesson: under Cache Components (lesson 1 of chapt
 
 ---
 
-## Lesson 1 — Reading the request with `cookies()` and `headers()`
+## Lesson 1 — Reading the request with cookies() and headers()
 
 Teaches the async, server-only, read-only `cookies()` and `headers()` APIs from `next/headers`, the senior pattern of reading once at the top and passing resolved values down, the trust-the-platform caveat on proxy headers, and the build-time constraints these reads place on Cache Components.
 
@@ -39,7 +39,7 @@ Estimated student time: 25 to 35 minutes. Short, foundational, and the dependenc
 
 ---
 
-## Lesson 2 — `proxy.ts` and the matcher
+## Lesson 2 — proxy.ts and the matcher
 
 Teaches the Next.js 16 rename of `middleware.ts` to Node-only `proxy.ts`, the canonical file shape with `NextRequest`/`NextResponse`, the matcher config as the cost-control surface, the proxy-to-route header pattern, and what belongs in the proxy versus the route.
 
@@ -72,7 +72,7 @@ Estimated student time: 45 to 55 minutes. Sets the file convention every later a
 
 ---
 
-## Lesson 3 — Rewrites and redirects in `proxy.ts`
+## Lesson 3 — Rewrites and redirects in proxy.ts
 
 Teaches the redirect-vs-rewrite semantic split, 307/308 status codes, the proxy-vs-`next.config.ts`-vs-`redirect()` decision tree, the subdomain-rewrite multi-tenant pattern, and open-redirect prevention on the `?next=` return-URL idiom.
 
@@ -105,7 +105,7 @@ Estimated student time: 40 to 50 minutes. Pairs with lesson 2 of chapter 037 as 
 
 ---
 
-## Lesson 4 — URL state with `searchParams` and route params
+## Lesson 4 — URL state with searchParams and route params
 
 Teaches the URL-vs-component-state decision rule, the `params`-for-identity / `searchParams`-for-view-state split, the async Promise shape in Next.js 16, Zod validation at the boundary, opaque base64 cursors, and `nuqs` as the production layer.
 

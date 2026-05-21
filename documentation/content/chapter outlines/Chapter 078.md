@@ -41,7 +41,7 @@ Estimated student time: 40 to 50 minutes. The chapter's threshold lesson — eve
 
 ---
 
-## Lesson 2 — The `@upstash/ratelimit` API surface
+## Lesson 2 — The @upstash/ratelimit API surface
 
 Teaches the connectionless `Redis.fromEnv()` client, the module-scope `Ratelimit` declaration with prefix and analytics, the three algorithms (sliding window default, token bucket, fixed window), the `limit(key)` return shape, key design, and the `pending` analytics flush via `waitUntil`.
 

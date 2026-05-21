@@ -118,7 +118,7 @@ Estimated student time: 25 to 30 minutes.
 
 ---
 
-## Lesson 4 — Guard clauses, ternaries, and exhaustive `switch`
+## Lesson 4 — Guard clauses, ternaries, and exhaustive switch
 
 Teaches flat control flow through early-return guards, expression-level ternaries, `switch` with `noFallthroughCasesInSwitch` and `assertNever`, the lookup-map alternative, and the loop forms a 2026 senior reaches for.
 

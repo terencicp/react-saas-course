@@ -290,7 +290,7 @@ Estimated student time: 55 to 70 minutes.
 
 ---
 
-## Lesson 5 — Optimistic add and rollback with `useMutation`
+## Lesson 5 — Optimistic add and rollback with useMutation
 
 Writes the `addCommentAction` Server Action with audit-log and `revalidateTag`, then wires the form's `useMutation` with `cancelQueries`, snapshot, `setQueryData`, restore in `onError`, and `invalidateQueries` in `onSettled` — surfacing the two-system invalidation reality at the seam.
 

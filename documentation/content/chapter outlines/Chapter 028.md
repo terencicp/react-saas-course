@@ -8,7 +8,7 @@ Several threads run through every lesson. **State has four homes** — local com
 
 ---
 
-## Lesson 1 — The `useState` surface and lazy initialization
+## Lesson 1 — The useState surface and lazy initialization
 
 Teaches the `useState` signature, typing pitfalls, the `Object.is` bailout, immutable-update reflex, lazy initializer form, setter stability, and what `useState` is not for.
 
@@ -123,7 +123,7 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4 — `useReducer` when transitions multiply
+## Lesson 4 — useReducer when transitions multiply
 
 Teaches the threshold where coordinated `useState`s become a reducer, the discriminated-union action shape, the reducer purity contract, lazy init via the `init` argument, and the async-lives-in-the-handler rule.
 
@@ -163,7 +163,7 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 5 — `useRef` as the non-rendering escape hatch
+## Lesson 5 — useRef as the non-rendering escape hatch
 
 Teaches the two flavors of ref (DOM nodes and instance values), the state-vs-ref rule ("does the JSX read it?"), the four canonical DOM-ref reaches, the don't-read-or-write-during-render rule, and how refs interact with the React Compiler.
 
@@ -205,7 +205,7 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 6 — `useId` for ARIA wiring across SSR
+## Lesson 6 — useId for ARIA wiring across SSR
 
 Teaches the position-in-the-tree derivation that keeps IDs stable across server and client, composing multiple IDs from one call, the label-input-error wiring pattern, and the not-for-list-keys rule.
 

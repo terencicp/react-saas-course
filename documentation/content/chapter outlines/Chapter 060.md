@@ -42,7 +42,7 @@ Estimated student time: 40 to 50 minutes. Mechanics + setup hybrid; a small ER d
 
 ---
 
-## Lesson 2 — `tenantDb(orgId)`: making the missing-`where` not compile
+## Lesson 2 — tenantDb(orgId): making the missing-where not compile
 
 Wrap Drizzle's relational query API in a typed `tenantDb(orgId)` factory that injects the org predicate on every read and write so the missing-org-filter bug class is structurally impossible.
 
@@ -108,7 +108,7 @@ Estimated student time: 35 to 45 minutes. Decision lesson; the threshold-up-fron
 
 ---
 
-## Lesson 4 — Wiring RLS on `audit_logs`: policies, `SET LOCAL`, and the `withTenant` helper
+## Lesson 4 — Wiring RLS on audit_logs: policies, SET LOCAL, and the withTenant helper
 
 Author the policy through Drizzle's `pgPolicy` / `crudPolicy`, enable and force RLS on the table, set `app.org_id` via `SET LOCAL` inside an explicit transaction with a `withTenant(orgId, fn)` wrapper, and prove the isolation with an integration test that runs as the app role.
 

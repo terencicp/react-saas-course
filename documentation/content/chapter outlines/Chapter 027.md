@@ -43,7 +43,7 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 2 — Reconciliation and the `key` prop
+## Lesson 2 — Reconciliation and the key prop
 
 How React diffs trees by element type, identifies siblings by position, uses `key` as explicit identity, and why index-as-key breaks reorderable lists.
 
@@ -159,7 +159,7 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 5 — Remounting with `key`
+## Lesson 5 — Remounting with key
 
 Using a `key` change to discard local state on identity switches, the canonical record-bound form fix, the animation-replay and button-bump variants, and when to lift or derive state instead.
 

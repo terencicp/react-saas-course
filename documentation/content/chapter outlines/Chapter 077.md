@@ -208,7 +208,7 @@ Estimated student time: 15 to 25 minutes.
 
 ---
 
-## Lesson 3 — Tag helpers, cached reads, and `fetchedAt`
+## Lesson 3 — Tag helpers, cached reads, and fetchedAt
 
 Write `tags.ts`, annotate `listInvoices`, `getOrgInvoiceSummary`, and `getInvoiceDetail` with `'use cache'` + `cacheLife` + `cacheTag`, return `fetchedAt`, and verify hits through the inspector's hit/miss probe.
 

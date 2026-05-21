@@ -305,7 +305,7 @@ Estimated student time: 60 to 75 minutes. The chapter's heaviest lesson.
 
 ---
 
-## Lesson 5 — Typed `useChat`, tool parts, and the usage panel
+## Lesson 5 — Typed useChat, tool parts, and the usage panel
 
 Builds the client: `useChat<InvoiceUIMessage>` with manually managed input state, a parts-switch rendering text bubbles and `tool-getInvoiceStats` cards across all four lifecycle states with a per-tool skeleton, plus a 10s-polling token-usage panel.
 

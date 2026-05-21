@@ -8,7 +8,7 @@ Threads through every lesson: the request-response budget is sacred — user-vis
 
 ---
 
-## Lesson 1 — Inline, then `after()`
+## Lesson 1 — Inline, then after()
 
 Teaches the 0-tier (inline `await`) and 0.5-tier (`after()`) defaults for post-request work in Server Actions, the four thresholds that break them, and the `maxDuration` / error-swallow gotchas of running after the response.
 

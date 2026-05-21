@@ -8,7 +8,7 @@ Threads that run through every lesson: the file system is the URL space and ever
 
 ---
 
-## Lesson 1 — File tree, `page.tsx`, and co-location
+## Lesson 1 — File tree, page.tsx, and co-location
 
 Teaches how folders under `app/` become URL segments, how `page.tsx` makes a route routable, and the feature co-location rule that puts route-specific code under `_components/` and `_lib/` private folders.
 

@@ -45,7 +45,7 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 2 — OKLCH, `color-mix()`, and the alpha syntax
+## Lesson 2 — OKLCH, color-mix(), and the alpha syntax
 
 Teaches OKLCH as the token storage form, `color-mix(in oklch, ...)` for runtime mixing, the `bg-blue-500/50` alpha syntax and how it compiles to `color-mix()`, semantic tokens over primitives, `opacity` vs. per-property alpha, and `prefers-color-scheme` vs. the `.dark` class.
 
@@ -118,7 +118,7 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4 — Pseudo-classes and the `:has()` parent selector
+## Lesson 4 — Pseudo-classes and the :has() parent selector
 
 Teaches `:focus-visible` as the canonical focus reflex, `:focus-within` for parent-of-focused, the disabled/checked/invalid state pseudo-classes, `:has()` and the JavaScript class toggles it retired, `:not()`, the `::placeholder` / `::selection` pseudo-elements, and the iOS sticky-hover gate.
 
@@ -155,7 +155,7 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 5 — Motion: transitions, keyframes, and `tw-animate-css`
+## Lesson 5 — Motion: transitions, keyframes, and tw-animate-css
 
 Teaches `transition-*` for property motion (with `transform` and `opacity` as the cheap properties), `animate-*` with `@keyframes` declared in `@theme`, `tw-animate-css` as the shadcn dialog/sheet/accordion dependency, the `data-[state=open]:animate-in` choreography pattern, and `prefers-reduced-motion` with the `motion-reduce:` variant.
 

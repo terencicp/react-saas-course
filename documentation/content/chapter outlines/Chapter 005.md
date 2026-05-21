@@ -47,7 +47,7 @@ Estimated student time: 30 to 35 minutes.
 
 ---
 
-## Lesson 2 — What `===` actually compares
+## Lesson 2 — What === actually compares
 
 Teaches value vs. reference equality, `Object.is` for `NaN` and signed zero, `Number.isNaN` over the coercing global, and why the course never writes `==`.
 
@@ -113,7 +113,7 @@ Estimated student time: 35 to 40 minutes.
 
 ---
 
-## Lesson 4 — Why `.length` lies
+## Lesson 4 — Why .length lies
 
 Teaches code units vs. code points vs. grapheme clusters, `Intl.Segmenter` for user-perceived counts, `normalize` for visually-identical inputs, and the senior string-method surface.
 
@@ -184,7 +184,7 @@ Estimated student time: 20 to 25 minutes.
 
 ---
 
-## Lesson 6 — `const` binds, it doesn't freeze
+## Lesson 6 — const binds, it doesn't freeze
 
 Teaches `const` vs. `let` and when each earns its weight, block scope, the Temporal Dead Zone, hoisting demystified, and why `const` alone doesn't narrow types.
 

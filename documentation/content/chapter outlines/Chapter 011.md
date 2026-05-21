@@ -60,7 +60,7 @@ Estimated student time: 35 to 45 minutes.
 
 ---
 
-## Lesson 2 — Promises: combinators and `withResolvers`
+## Lesson 2 — Promises: combinators and withResolvers
 
 Teaches the Promise three-state model, the four combinators (`all`, `allSettled`, `any`, `race`) with the senior trigger and failure mode for each, and `Promise.withResolvers()` as the modern replacement for the deferred-pattern boilerplate when resolvers must live outside the constructor's executor.
 
@@ -106,7 +106,7 @@ Estimated student time: 35 to 45 minutes.
 
 ---
 
-## Lesson 3 — `async`/`await`: parallel by default, sequential by dependency
+## Lesson 3 — async/await: parallel by default, sequential by dependency
 
 Teaches the dependency-check reflex that picks `Promise.all` over consecutive `await`s when no data flows between them, the N+1 trap inside `.map(async ...)` with its bounded (`Promise.all`), unbounded (`pMap`), and database-batched fixes, `for await...of` for streams and paginated APIs, and the `return await` discipline that preserves stack traces.
 
@@ -154,7 +154,7 @@ Estimated student time: 40 to 50 minutes.
 
 ---
 
-## Lesson 4 — Cancellation with `AbortController` and `AbortSignal`
+## Lesson 4 — Cancellation with AbortController and AbortSignal
 
 Teaches the `{ signal }` parameter shape every modern web API speaks, the canonical user-cancel pattern with `AbortError` discrimination at the catch, `AbortSignal.timeout(ms)` as the 2026 replacement for `Promise.race` timeouts, and `AbortSignal.any([...])` for composing user-cancel, timeout, and shutdown signals into one.
 

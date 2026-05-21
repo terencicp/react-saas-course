@@ -274,7 +274,7 @@ Estimated student time: 55–70 minutes.
 
 ---
 
-## Lesson 5 — Emit `hreflang`, sitemap alternates, and per-locale OG
+## Lesson 5 — Emit hreflang, sitemap alternates, and per-locale OG
 
 Builds `generateAlternates`, transforms marketing's `generateMetadata` with locale-specific canonical plus bidirectional `hreflang` and `x-default`, and emits `app/sitemap.ts` with per-entry locale alternates.
 
@@ -309,7 +309,7 @@ Estimated student time: 50–65 minutes.
 
 ---
 
-## Lesson 6 — Verify the locale switch, DST render, and `hreflang` audit
+## Lesson 6 — Verify the locale switch, DST render, and hreflang audit
 
 Walks every "Done when" clause with deliberate-misuse demos for the load-bearing rules: DST-spanning render, bidirectional `hreflang` with `x-default`, locale-specific canonical, CLDR plurals, and `setRequestLocale` preserving static rendering.
 

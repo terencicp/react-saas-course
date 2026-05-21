@@ -68,7 +68,7 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 3 — `Blob`, `File`, and `URL.createObjectURL`: the upload primitives
+## Lesson 3 — Blob, File, and URL.createObjectURL: the upload primitives
 
 Installs the three binary primitives every file-upload UI builds on — `Blob` as the typed byte sequence, `File` as a `Blob` with `name` and `lastModified`, and the `URL.createObjectURL` / `revokeObjectURL` pair that turns a binary into a renderable URL — together with the canonical pick-to-preview shape and the cleanup discipline that prevents the memory-leak class, foreshadowing the R2 presigned-PUT flow that Unit 13 owns.
 
@@ -99,7 +99,7 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 4 — Web Storage: where `localStorage` earns its weight
+## Lesson 4 — Web Storage: where localStorage earns its weight
 
 Installs the `localStorage` and `sessionStorage` API surface, the SSR safety dance under Next.js 16 (`typeof window` guard for inline reads, `useSyncExternalStore` for the React-aware bind), the `storage` event for cross-tab sync, and the cookie / URL state / server state / `localStorage` / `useState` decision tree that names what `localStorage` is explicitly not for.
 

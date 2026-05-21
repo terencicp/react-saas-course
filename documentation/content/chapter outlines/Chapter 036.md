@@ -74,7 +74,7 @@ Estimated student time: 35 to 45 minutes. Owns the rendering picture every other
 
 ---
 
-## Lesson 3 — The `use cache` directive
+## Lesson 3 — The use cache directive
 
 The three placements (page, component, function) of `use cache`, the compiler-generated cache key, the serializable-arguments-and-return-value contract, and the closure rules cached functions must obey.
 
@@ -142,7 +142,7 @@ Estimated student time: 45 to 55 minutes. Pairs with lesson 3 of chapter 036 as 
 
 ---
 
-## Lesson 5 — Per-request memoization with React `cache()`
+## Lesson 5 — Per-request memoization with React cache()
 
 React's `cache()` as the request-scoped deduplication primitive for work that depends on request data, contrasted with `use cache` for cross-request persistence, with the canonical request-scoped-user pattern.
 

@@ -8,7 +8,7 @@ The threads that run through every lesson: the schema is still the source of tru
 
 ---
 
-## Lesson 1 — Wiring the `auth` instance
+## Lesson 1 — Wiring the auth instance
 
 Installs `better-auth`, defines the server `auth` instance with `nextCookies`, mounts the `[...all]` catch-all route handler, sets up the browser `authClient`, and adds the two required env entries.
 
@@ -136,7 +136,7 @@ Estimated student time: 35 to 45 minutes. Decision-archetype lesson — every co
 
 ---
 
-## Lesson 4 — `getCurrentUser` across the five surfaces
+## Lesson 4 — getCurrentUser across the five surfaces
 
 Establishes the one `auth.api.getSession({ headers: await headers() })` call shape used in proxy, layouts, Server Components, Server Actions, and route handlers, wraps it in `React.cache`-backed `getCurrentUser`/`requireUser` helpers, and stands up the minimum `proxy.ts` gate.
 

@@ -8,7 +8,7 @@ Threads that run through every lesson: prefer file conventions over imperative A
 
 ---
 
-## Lesson 1 — The typed `next.config.ts`
+## Lesson 1 — The typed next.config.ts
 
 Teaches the typed `next.config.ts` surface as a one-screen map (`cacheComponents`, `typedRoutes`, `images`, `headers`, `experimental`) and `serverExternalPackages` as the lever for Node-native SDKs that break Turbopack bundling.
 
@@ -41,7 +41,7 @@ Estimated student time: 25 to 35 minutes.
 
 ---
 
-## Lesson 2 — Images with `next/image`
+## Lesson 2 — Images with next/image
 
 Teaches `next/image` as the platform default for sized, lazy, format-negotiated images, the required `sizes`/`priority`/`placeholder` props, the Next.js 16 `qualities` requirement, and `remotePatterns` as the mandatory security gate for external sources.
 
@@ -110,7 +110,7 @@ Estimated student time: 30 to 40 minutes.
 
 ---
 
-## Lesson 4 — Self-hosted fonts with `next/font`
+## Lesson 4 — Self-hosted fonts with next/font
 
 Teaches `next/font/google` and `next/font/local` as the build-time self-hosting pipeline that eliminates CLS via fallback metrics, the required `subsets`, variable-font defaults, and the Tailwind CSS-custom-property bridge.
 
@@ -143,7 +143,7 @@ Estimated student time: 30 to 40 minutes.
 
 ---
 
-## Lesson 5 — Third-party scripts with `next/script`
+## Lesson 5 — Third-party scripts with next/script
 
 Teaches the four `next/script` strategies (`beforeInteractive`, `afterInteractive`, `lazyOnload`, `worker`), the `onLoad`/`onReady` callbacks, placement and dedup with `id`, and the SDK-over-snippet preference for vendors that ship one.
 
@@ -253,7 +253,7 @@ Estimated student time: 35 to 45 minutes.
 
 ---
 
-## Lesson 8 — `generateStaticParams` for static catalogs
+## Lesson 8 — generateStaticParams for static catalogs
 
 Teaches `generateStaticParams` as the hook that materializes dynamic segments at build time, the `dynamicParams` toggle for closed lists, and the pairing with `use cache` and `cacheTag` for the production content-page shape.
 

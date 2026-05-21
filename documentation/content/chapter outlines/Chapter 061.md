@@ -41,7 +41,7 @@ Estimated student time: 35 to 45 minutes. Decision-plus-mechanics; the role matr
 
 ---
 
-## Lesson 2 — The `authedAction` wrapper
+## Lesson 2 — The authedAction wrapper
 
 Teaches the `authedAction(role, schema, fn)` factory that lifts session, role check, and schema parse out of every Server Action body, the `ctx = { user, orgId, role, db }` payload it threads, the `Result` return contract, and the named carve-out from Principle #5 that justifies the wrapper.
 
@@ -75,7 +75,7 @@ Estimated student time: 50 to 60 minutes. Pattern lesson; the wrong-then-right a
 
 ---
 
-## Lesson 3 — The `authedRoute` twin
+## Lesson 3 — The authedRoute twin
 
 Teaches the route-handler port of the same discipline as `authedRoute(role, schema, fn)`, the 401 / 403 / 422 / 404 status map, RFC 9457 Problem Details responses, and sharing one business function across the Server Action and route handler seams through `/lib`.
 
@@ -142,7 +142,7 @@ Estimated student time: 50 to 60 minutes. Mechanics-heavy with multiple flows; t
 
 ---
 
-## Lesson 5 — The append-only `audit_logs` table
+## Lesson 5 — The append-only audit_logs table
 
 Teaches the audit table's column shape, the three-layer append-only enforcement (RLS policy, table grants, application discipline), the `logAudit(tx, event)` helper whose signature forces a transaction, the canonical event set, and the retention story.
 

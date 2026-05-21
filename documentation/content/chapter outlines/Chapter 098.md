@@ -41,7 +41,7 @@ Estimated student time: 30 to 40 minutes. Concept archetype; the three definitio
 
 ---
 
-## Lesson 2 — `priority` on the LCP element
+## Lesson 2 — priority on the LCP element
 
 How `next/image`'s `priority` prop preloads the LCP element, which exact image gets it, and the ESLint-enforced ban on raw `<img>` that keeps CLS and lazy-loading defaults in place.
 
@@ -161,7 +161,7 @@ Estimated student time: 40 to 50 minutes. Tooling-and-discipline; CI gate plus t
 
 ---
 
-## Lesson 6 — RSC waterfalls and `Promise.all`
+## Lesson 6 — RSC waterfalls and Promise.all
 
 Diagnosing sequential parent-then-child awaits in a Sentry trace, the dependency-check reflex before adding a second `await`, and the `Promise.all` rewrite (with Suspense streaming as a sibling reach) that turns serial waits into parallel ones.
 

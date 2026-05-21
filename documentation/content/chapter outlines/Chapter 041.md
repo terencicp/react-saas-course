@@ -281,7 +281,7 @@ Estimated student time: 40 to 50 minutes. Load-bearing for lesson 3 of chapter 0
 
 ---
 
-## Lesson 10 — `$inferSelect` and `$inferInsert`
+## Lesson 10 — $inferSelect and $inferInsert
 
 Cashes Principle #2 in by deriving every row, insert, and prop type from `typeof table.$inferSelect`/`$inferInsert`, replacing every hand-written row interface in the codebase.
 

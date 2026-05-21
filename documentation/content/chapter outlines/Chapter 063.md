@@ -203,7 +203,7 @@ Estimated student time: 20 to 30 minutes.
 
 ---
 
-## Lesson 3 — Install the organization plugin and `requireOrgUser`
+## Lesson 3 — Install the organization plugin and requireOrgUser
 
 Adding the `organization()` plugin with custom invitation fields, the `session.create` hook that seeds `activeOrganizationId`, regenerating the auth schema, and shipping `roleAtLeast` plus `requireOrgUser`.
 
@@ -231,7 +231,7 @@ Estimated student time: 35 to 45 minutes.
 
 ---
 
-## Lesson 4 — `audit_logs` with RLS deny-write policies
+## Lesson 4 — audit_logs with RLS deny-write policies
 
 Defining the `auditLogs` table and its indexes, declaring tenant SELECT / INSERT and deny UPDATE / DELETE `pgPolicy` rules, and shipping `withTenant` plus the transaction-required `logAudit(tx, event)` signature.
 
@@ -263,7 +263,7 @@ Estimated student time: 40 to 50 minutes.
 
 ---
 
-## Lesson 5 — `tenantDb`, `authedAction`, and the role-change action
+## Lesson 5 — tenantDb, authedAction, and the role-change action
 
 Building the typed `tenantDb(orgId)` facade, the four-step `authedAction(role, schema, fn)` wrapper, and the `changeMemberRoleAction` that refuses owner targets, refuses last-owner demotion, and audits in-transaction.
 

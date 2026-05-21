@@ -46,7 +46,7 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 2 — CSS-first config in `globals.css`
+## Lesson 2 — CSS-first config in globals.css
 
 Teaches the v4 directives — `@import "tailwindcss"`, `@theme` tokens, `@utility`, `@custom-variant`, `@container`, `@source`, `@plugin` — that replace `tailwind.config.ts`.
 
@@ -84,7 +84,7 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 3 — Composing classes with `cn()`
+## Lesson 3 — Composing classes with cn()
 
 Teaches the `clsx` + `tailwind-merge` helper, the defaults-then-`className`-last override pattern, and conditional class forms for component props.
 

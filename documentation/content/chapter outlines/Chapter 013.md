@@ -77,7 +77,7 @@ Estimated student time: 40 to 50 minutes. The "when to reach for `class`" discip
 
 ---
 
-## Lesson 3 — `Date`'s problems and the Temporal pivot
+## Lesson 3 — Date's problems and the Temporal pivot
 
 Teaches the eight production-biting design flaws of `Date`, the senior 2026 pivot to `Temporal` (Stage 4 March 11 2026, unflagged in Node 26 shipped May 5 2026), the polyfill seam for Node 24 LTS, and the chapter-closing rule: `Date` lives at third-party seams only, `Temporal` is the domain type.
 

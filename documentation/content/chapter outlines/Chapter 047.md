@@ -10,7 +10,7 @@ The chapter ships five teaching lessons plus a quiz.
 
 ---
 
-## Lesson 1 — The `"use server"` seam
+## Lesson 1 — The "use server" seam
 
 Defines a Server Action, names the file-level and inline declaration sites, walks the three call shapes, and locks the serializable-args contract that crosses the wire.
 
@@ -120,7 +120,7 @@ Estimated student time: 40 to 50 minutes. Decision archetype. The lesson that lo
 
 ---
 
-## Lesson 4 — Thin actions, pure `/lib`
+## Lesson 4 — Thin actions, pure /lib
 
 Introduces Principle #3 (pure helpers in `/lib`, side effects at named boundaries) and Principle #5 (don't invent a parallel call wrapper), and names the auth and billing carve-outs that earn their weight later.
 

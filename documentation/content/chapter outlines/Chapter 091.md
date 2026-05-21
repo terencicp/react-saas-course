@@ -114,7 +114,7 @@ Estimated student time: 40 to 50 minutes. Pattern lesson; the clock / IDs / RNG 
 
 ---
 
-## Lesson 4 — Type-level tests with `expectTypeOf`
+## Lesson 4 — Type-level tests with expectTypeOf
 
 Teaches `expectTypeOf` and `assertType` in `*.test-d.ts` files run by `vitest --typecheck`, and how to pin discriminated unions, branded IDs, generic inference, and `Result` contracts at compile time.
 
@@ -149,7 +149,7 @@ Estimated student time: 35 to 45 minutes. Mechanics-and-pattern lesson; the type
 
 ---
 
-## Lesson 5 — Async tests without the forgotten-`await` trap
+## Lesson 5 — Async tests without the forgotten-await trap
 
 Teaches `await expect(p).resolves` as the canonical async form, `expect.assertions(n)` for branchy paths, the `*Async` fake-timer variants for microtask flushing, and the Vitest 4 awaited-assertion contract.
 

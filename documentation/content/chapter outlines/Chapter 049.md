@@ -42,7 +42,7 @@ Estimated student time: 25 to 35 minutes. Decision archetype. The chapter's gate
 
 ---
 
-## Lesson 2 — The five primitives: `useForm`, `register`, `Controller`, `handleSubmit`, `formState`
+## Lesson 2 — The five primitives: useForm, register, Controller, handleSubmit, formState
 
 Teaches RHF's core surface — the form root, the uncontrolled and controlled field paths, the submit interceptor, the read-side state, and how the shadcn `<Form>` wrapper consumes the form instance.
 
@@ -75,7 +75,7 @@ Estimated student time: 45 to 55 minutes. Mechanics archetype. The lesson where 
 
 ---
 
-## Lesson 3 — `zodResolver`: one schema, both sides of the wire
+## Lesson 3 — zodResolver: one schema, both sides of the wire
 
 Wires `@hookform/resolvers/zod` so the form and the Server Action validate against the same Zod schema, covering the `z.input` vs `z.output` type bridge, the `FormData` vs typed-object action call shape, and mapping server-returned `fieldErrors` back into RHF via `setError`.
 
@@ -107,7 +107,7 @@ Estimated student time: 40 to 50 minutes. Pattern archetype. The lesson where RH
 
 ---
 
-## Lesson 4 — `useFieldArray`: dynamic lists of fields
+## Lesson 4 — useFieldArray: dynamic lists of fields
 
 Teaches the hook for variable-length row sets — the `append`/`remove`/`move`/`replace` operations, the `field.id` vs domain-ID split, the `z.array(z.object(...))` schema shape with per-row error access, and the action-side insert/update/delete diff inside a transaction.
 
@@ -139,7 +139,7 @@ Estimated student time: 35 to 45 minutes. Mechanics archetype. The lesson instal
 
 ---
 
-## Lesson 5 — Multi-step wizards with `FormProvider`
+## Lesson 5 — Multi-step wizards with FormProvider
 
 Builds an end-to-end wizard with one `useForm` at the root, `useFormContext` per step, `trigger(fieldNames)` plus schema `.pick()` for per-step validation, `shouldUnregister: false` for back-navigation, and the progressive-enhancement casualty named explicitly.
 

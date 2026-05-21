@@ -72,7 +72,7 @@ Estimated student time: 40 to 50 minutes. The chapter's load-bearing rule for an
 
 ---
 
-## Lesson 3 — The `Intl.*` formatter family
+## Lesson 3 — The Intl.* formatter family
 
 The daily-reach `Intl.*` formatters — `NumberFormat`, `DateTimeFormat` (Temporal-native, mandatory `timeZone`), `RelativeTimeFormat`, `Collator`, plus `ListFormat` / `DisplayNames` — and the construct-once-reuse rule.
 

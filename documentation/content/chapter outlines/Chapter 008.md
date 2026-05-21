@@ -45,7 +45,7 @@ Pedagogical approach: Concept archetype with a small Reference moment for the fo
 
 ---
 
-## Lesson 2 — Object shapes: `type`, `interface`, and field modifiers
+## Lesson 2 — Object shapes: type, interface, and field modifiers
 
 Teaches when to default to `type` (always) and reach for `interface` (declaration merging), paired with the per-field `?` and `readonly` modifiers plus the array-level `readonly T[]` and `Readonly<T>` cousins.
 
@@ -100,7 +100,7 @@ Pedagogical approach: Mechanics archetype. Open with the `useState` shape and th
 
 ---
 
-## Lesson 4 — Dynamic keys: index signatures and `Record<K, T>`
+## Lesson 4 — Dynamic keys: index signatures and Record<K, T>
 
 Teaches the two forms for dynamic-keyed objects, the completeness payoff of `Record<LiteralUnion, V>`, and how `noUncheckedIndexedAccess` narrows reads differently across the open-keyed and finite-keyed cases.
 
@@ -185,7 +185,7 @@ Pedagogical approach: Pattern archetype. Open with the `as User` lie and its six
 
 ---
 
-## Lesson 7 — Keeping literals narrow: `as const` and `satisfies`
+## Lesson 7 — Keeping literals narrow: as const and satisfies
 
 Teaches the value-site freeze that keeps literal types from widening, the contract check that validates without losing the narrow, and the combined `as const satisfies T` idiom for typed-config patterns.
 

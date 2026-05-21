@@ -259,7 +259,7 @@ Estimated student time: 50 to 65 minutes.
 
 ---
 
-## Lesson 6 — Real `downloadUrl` for the export
+## Lesson 6 — Real downloadUrl for the export
 
 Retrofits the chapter 071 export task to do a server-side `PutObjectCommand` under the `org/<id>/exports/` prefix, hand a fresh `getSignedGetForKey` URL to the email, and rely on the lifecycle rule for cleanup with no `file_metadata` row written.
 

@@ -329,7 +329,7 @@ What this lesson does not cover:
 
 ---
 
-## Lesson 6 — `data-*`, `aria-*`, and the `<table>` decision
+## Lesson 6 — data-*, aria-*, and the <table> decision
 
 `data-*` for script hooks (delegation, tests, Tailwind state), `aria-*` for assistive-tech signals (`aria-label`, `aria-current`, `aria-expanded`, `aria-pressed`, `role="alert"`), and `<table>` with `<th scope>` and `<caption>` only when the data is genuinely tabular.
 

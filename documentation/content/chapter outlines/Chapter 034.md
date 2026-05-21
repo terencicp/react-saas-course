@@ -74,7 +74,7 @@ Estimated student time: 55 to 70 minutes. Load-bearing for every interactive com
 
 ---
 
-## Lesson 3 — Directives and `server-only` enforcement
+## Lesson 3 — Directives and server-only enforcement
 
 `"use client"` and `"use server"` semantics at the file head, Architectural Principle #6 (prefer explicit over magic), and the `server-only` / `client-only` packages that turn a leaked import into a build error.
 
