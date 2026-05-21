@@ -7,11 +7,11 @@ An optional `<PredictWhy>` slot is revealed on a wrong answer (alongside the exp
 ## Imports
 
 ```ts
-import PredictOutput from '../../../../components/exercises/predict-output/PredictOutput.astro';
-import PredictWhy from '../../../../components/exercises/predict-output/PredictWhy.astro';
+import PredictOutput from '../../../components/exercises/predict-output/PredictOutput.astro';
+import PredictWhy from '../../../components/exercises/predict-output/PredictWhy.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

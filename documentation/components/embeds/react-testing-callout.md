@@ -5,10 +5,10 @@ Collapsible callout that lazy-loads [Testing Playground](https://testing-playgro
 ## Import
 
 ```ts
-import ReactTestingCallout from '../../../../components/embeds/ReactTestingCallout.astro';
+import ReactTestingCallout from '../../../components/embeds/ReactTestingCallout.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

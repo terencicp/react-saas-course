@@ -9,10 +9,10 @@ For schema-design exercises (where the student writes the schema and the grader 
 ## Import
 
 ```ts
-import DrizzleCoding from '../../../../components/live-coding/DrizzleCoding/DrizzleCoding.astro';
+import DrizzleCoding from '../../../components/live-coding/DrizzleCoding/DrizzleCoding.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

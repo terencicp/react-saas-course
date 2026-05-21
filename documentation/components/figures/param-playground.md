@@ -7,13 +7,13 @@ Provides its own outer card — do **not** wrap in `<Figure>`.
 ## Imports
 
 ```ts
-import ParamPlayground from '../../../../components/figures/param-playground/ParamPlayground.astro';
-import Param from '../../../../components/figures/param-playground/Param.astro';
-import Preview from '../../../../components/figures/param-playground/Preview.astro';
-import Readout from '../../../../components/figures/param-playground/Readout.astro';
+import ParamPlayground from '../../../components/figures/param-playground/ParamPlayground.astro';
+import Param from '../../../components/figures/param-playground/Param.astro';
+import Preview from '../../../components/figures/param-playground/Preview.astro';
+import Readout from '../../../components/figures/param-playground/Readout.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

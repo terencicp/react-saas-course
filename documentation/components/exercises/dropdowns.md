@@ -8,11 +8,11 @@ Fill-in-the-blank drill where each blank is a `<select>`. Two authoring modes:
 ## Imports
 
 ```ts
-import Dropdowns from '../../../../components/exercises/dropdowns/Dropdowns.astro';
-import DropdownChoice from '../../../../components/exercises/dropdowns/DropdownChoice.astro';
+import Dropdowns from '../../../components/exercises/dropdowns/Dropdowns.astro';
+import DropdownChoice from '../../../components/exercises/dropdowns/DropdownChoice.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

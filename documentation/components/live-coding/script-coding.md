@@ -10,10 +10,10 @@ Reach for this widget when the exercise is "implement a function and verify it w
 ## Import
 
 ```ts
-import ScriptCoding from '../../../../components/live-coding/ScriptCoding/ScriptCoding.astro';
+import ScriptCoding from '../../../components/live-coding/ScriptCoding/ScriptCoding.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

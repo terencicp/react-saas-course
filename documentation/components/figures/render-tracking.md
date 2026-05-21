@@ -9,13 +9,13 @@ Provides its own outer card — do **not** wrap in `<Figure>`.
 ## Imports
 
 ```ts
-import RenderTracking from '../../../../components/figures/render-tracking/RenderTracking.astro';
-import TrackedNode from '../../../../components/figures/render-tracking/TrackedNode.astro';
-import Trigger from '../../../../components/figures/render-tracking/Trigger.astro';
-import Implementation from '../../../../components/figures/render-tracking/Implementation.astro';
+import RenderTracking from '../../../components/figures/render-tracking/RenderTracking.astro';
+import TrackedNode from '../../../components/figures/render-tracking/TrackedNode.astro';
+import Trigger from '../../../components/figures/render-tracking/Trigger.astro';
+import Implementation from '../../../components/figures/render-tracking/Implementation.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

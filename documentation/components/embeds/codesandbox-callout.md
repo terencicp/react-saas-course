@@ -5,10 +5,10 @@ Collapsible callout that lazy-loads a CodeSandbox sandbox. Thin URL builder over
 ## Import
 
 ```ts
-import CodeSandboxCallout from '../../../../components/embeds/CodeSandboxCallout.astro';
+import CodeSandboxCallout from '../../../components/embeds/CodeSandboxCallout.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

@@ -11,10 +11,10 @@ Three grading modes, all driven by props:
 ## Import
 
 ```ts
-import ReactCoding from '../../../../components/live-coding/ReactCoding/ReactCoding.astro';
+import ReactCoding from '../../../components/live-coding/ReactCoding/ReactCoding.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

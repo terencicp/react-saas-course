@@ -12,13 +12,13 @@ Provides its own outer card — do **not** wrap in `<Figure>`.
 ## Imports
 
 ```ts
-import StateMachineWalker from '../../../../components/figures/state-machine-walker/StateMachineWalker.astro';
-import Question from '../../../../components/figures/state-machine-walker/Question.astro';
-import Branch from '../../../../components/figures/state-machine-walker/Branch.astro';
-import Leaf from '../../../../components/figures/state-machine-walker/Leaf.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 
@@ -114,7 +114,7 @@ Minimal decision tree — no `root` prop, no `kind`, no descriptions or rational
 State machine with topology diagram — `kind="machine"` + `<Figure slot="diagram">`:
 
 ````mdx
-import Figure from '../../../../components/figures/Figure.astro';
+import Figure from '../../../components/figures/Figure.astro';
 
 <StateMachineWalker kind="machine" title="Consent flow">
   <Figure slot="diagram">

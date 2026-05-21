@@ -5,10 +5,10 @@ Inline vocabulary callout. Wraps a word or short phrase in prose with a dashed u
 ## Import
 
 ```ts
-import Term from '../../../../components/ui/Term.astro';
+import Term from '../../../components/ui/Term.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

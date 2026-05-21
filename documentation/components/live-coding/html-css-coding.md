@@ -7,10 +7,10 @@ Optional `tests` run against the rendered DOM with a jest-flavoured `test`/`expe
 ## Import
 
 ```ts
-import HtmlCssCoding from '../../../../components/live-coding/HtmlCssCoding/HtmlCssCoding.astro';
+import HtmlCssCoding from '../../../components/live-coding/HtmlCssCoding/HtmlCssCoding.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

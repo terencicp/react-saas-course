@@ -5,11 +5,11 @@ Stepped walkthrough of a single code block. The block is written **once** as the
 ## Imports
 
 ```ts
-import AnnotatedCode from '../../../../components/code/annotated-code/AnnotatedCode.astro';
-import AnnotatedStep from '../../../../components/code/annotated-code/AnnotatedStep.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

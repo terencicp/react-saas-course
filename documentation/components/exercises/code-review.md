@@ -7,13 +7,13 @@ Two or more `<ReviewFile>` children render inside Starlight's `<Tabs>`; a single
 ## Imports
 
 ```ts
-import CodeReview from '../../../../components/exercises/code-review/CodeReview.astro';
-import ReviewFile from '../../../../components/exercises/code-review/ReviewFile.astro';
-import ReviewIssue from '../../../../components/exercises/code-review/ReviewIssue.astro';
-import ReviewWhy from '../../../../components/exercises/code-review/ReviewWhy.astro';
+import CodeReview from '../../../components/exercises/code-review/CodeReview.astro';
+import ReviewFile from '../../../components/exercises/code-review/ReviewFile.astro';
+import ReviewIssue from '../../../components/exercises/code-review/ReviewIssue.astro';
+import ReviewWhy from '../../../components/exercises/code-review/ReviewWhy.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

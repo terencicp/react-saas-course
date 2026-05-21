@@ -7,7 +7,7 @@ No build step — an inline `<svg>` in MDX is rendered as-is by the browser.
 ## Boilerplate
 
 ```mdx
-import Figure from '../../../../components/figures/Figure.astro';
+import Figure from '../../../components/figures/Figure.astro';
 
 <Figure caption="Short caption (Unit X)">
   <svg

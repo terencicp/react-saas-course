@@ -5,12 +5,12 @@ True/False drill played as a round. Each `<Statement>` carries an `answer` of `'
 ## Imports
 
 ```ts
-import TrueFalse from '../../../../components/exercises/true-false/TrueFalse.astro';
-import Statement from '../../../../components/exercises/true-false/Statement.astro';
-import TfWhy from '../../../../components/exercises/true-false/TfWhy.astro';
+import TrueFalse from '../../../components/exercises/true-false/TrueFalse.astro';
+import Statement from '../../../components/exercises/true-false/Statement.astro';
+import TfWhy from '../../../components/exercises/true-false/TfWhy.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

@@ -5,10 +5,10 @@ Collapsible callout that lazy-loads a TypeScript Playground snippet. Thin URL bu
 ## Import
 
 ```ts
-import TSPlaygroundCallout from '../../../../components/embeds/TSPlaygroundCallout.astro';
+import TSPlaygroundCallout from '../../../components/embeds/TSPlaygroundCallout.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

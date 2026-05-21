@@ -5,11 +5,11 @@ Tabbed side-by-side comparison of two or more versions of the same code. Wraps S
 ## Imports
 
 ```ts
-import CodeVariants from '../../../../components/code/code-variants/CodeVariants.astro';
-import CodeVariant from '../../../../components/code/code-variants/CodeVariant.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

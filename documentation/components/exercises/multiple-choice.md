@@ -9,12 +9,12 @@ To properly help the student self-check its knowledge, it's important that answe
 ## Imports
 
 ```ts
-import MultipleChoice from '../../../../components/exercises/multiple-choice/MultipleChoice.astro';
-import McqChoice from '../../../../components/exercises/multiple-choice/McqChoice.astro';
-import McqWhy from '../../../../components/exercises/multiple-choice/McqWhy.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

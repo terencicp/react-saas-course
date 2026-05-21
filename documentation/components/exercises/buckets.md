@@ -5,12 +5,12 @@ Classification drill. Each `<Bucket>` declares a category; each `<Item bucket=".
 ## Imports
 
 ```ts
-import Buckets from '../../../../components/exercises/buckets/Buckets.astro';
-import Bucket from '../../../../components/exercises/buckets/Bucket.astro';
-import Item from '../../../../components/exercises/buckets/Item.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

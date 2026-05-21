@@ -7,10 +7,10 @@ Two render modes: plain inline iframe (default) for when the trace *is* the less
 ## Import
 
 ```ts
-import PlaywrightEmbed from '../../../../components/embeds/PlaywrightEmbed.astro';
+import PlaywrightEmbed from '../../../components/embeds/PlaywrightEmbed.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

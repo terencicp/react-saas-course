@@ -5,10 +5,10 @@ Token-identification drill on a fenced code block. The student clicks each token
 ## Import
 
 ```ts
-import Tokens from '../../../../components/exercises/Tokens.astro';
+import Tokens from '../../../components/exercises/Tokens.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

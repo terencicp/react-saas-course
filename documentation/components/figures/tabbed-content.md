@@ -9,11 +9,11 @@ Provides its own outer card — do **not** wrap in `<Figure>`.
 ## Imports
 
 ```ts
-import TabbedContent from '../../../../components/figures/tabbed-content/TabbedContent.astro';
-import TabbedItem from '../../../../components/figures/tabbed-content/TabbedItem.astro';
+import TabbedContent from '../../../components/figures/tabbed-content/TabbedContent.astro';
+import TabbedItem from '../../../components/figures/tabbed-content/TabbedItem.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

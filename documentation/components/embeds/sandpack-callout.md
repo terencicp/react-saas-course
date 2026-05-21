@@ -7,10 +7,10 @@ Use this whenever you want an editable React/TS sandbox in a lesson and need the
 ## Import
 
 ```ts
-import SandpackCallout from '../../../../components/embeds/SandpackCallout.tsx';
+import SandpackCallout from '../../../components/embeds/SandpackCallout.tsx';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 `SandpackCallout` is a React component — always mount it as a client island with one of the Astro hydration directives (`client:visible` is the right default; the heavy bundle load is deferred until the user clicks the callout open):
 

@@ -5,10 +5,10 @@ Collapsible callout that lazy-loads a StackBlitz WebContainer sandbox. Thin URL 
 ## Import
 
 ```ts
-import StackBlitzCallout from '../../../../components/embeds/StackBlitzCallout.astro';
+import StackBlitzCallout from '../../../components/embeds/StackBlitzCallout.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

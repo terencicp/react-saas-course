@@ -7,10 +7,10 @@ Reach for this widget when the lesson lands the senior pitch for Zod: "one decla
 ## Import
 
 ```ts
-import ZodCoding from '../../../../components/live-coding/ZodCoding/ZodCoding.astro';
+import ZodCoding from '../../../components/live-coding/ZodCoding/ZodCoding.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

@@ -7,11 +7,11 @@ Provides its own outer card — do **not** wrap in `<Figure>`.
 ## Imports
 
 ```ts
-import DiagramSequence from '../../../../components/figures/diagram-sequence/DiagramSequence.astro';
-import DiagramStep from '../../../../components/figures/diagram-sequence/DiagramStep.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

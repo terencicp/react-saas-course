@@ -7,7 +7,7 @@ No build step — divs and inline styles in MDX render exactly as written. The p
 ## Boilerplate
 
 ```mdx
-import Figure from '../../../../components/figures/Figure.astro';
+import Figure from '../../../components/figures/Figure.astro';
 
 <Figure caption="Short caption (Unit X)">
   <div style="…">

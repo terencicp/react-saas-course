@@ -7,10 +7,10 @@ With `expectedRows`, the result-row checklist flips ✓ when the student's query
 ## Import
 
 ```ts
-import SQLCoding from '../../../../components/live-coding/SQLCoding/SQLCoding.astro';
+import SQLCoding from '../../../components/live-coding/SQLCoding/SQLCoding.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

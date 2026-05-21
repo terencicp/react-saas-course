@@ -5,10 +5,10 @@ Clickable card pointing to an external resource — docs, repos, design files, a
 ## Import
 
 ```ts
-import ExternalResource from '../../../../components/ui/ExternalResource.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 
@@ -29,7 +29,7 @@ None — title and description are props, not slot content.
 Wrap several in Starlight's `<CardGrid>` for a responsive 2-column layout that collapses to one column on narrow viewports.
 
 ```mdx
-import ExternalResource from '../../../../components/ui/ExternalResource.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
 import { CardGrid } from '@astrojs/starlight/components';
 
 <CardGrid>

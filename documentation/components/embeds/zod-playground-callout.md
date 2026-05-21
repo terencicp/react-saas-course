@@ -5,10 +5,10 @@ Collapsible callout that lazy-loads the [marilari88 Zod Playground](https://zod-
 ## Import
 
 ```ts
-import ZodPlaygroundCallout from '../../../../components/embeds/ZodPlaygroundCallout.astro';
+import ZodPlaygroundCallout from '../../../components/embeds/ZodPlaygroundCallout.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

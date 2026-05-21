@@ -7,10 +7,10 @@ Reach for this widget for `satisfies`, branded types, discriminated unions, `key
 ## Import
 
 ```ts
-import TypeCoding from '../../../../components/live-coding/TypeCoding/TypeCoding.astro';
+import TypeCoding from '../../../components/live-coding/TypeCoding/TypeCoding.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

@@ -7,11 +7,11 @@ Optionally place a fenced Expressive Code block before the steps inside the slot
 ## Imports
 
 ```ts
-import Sequence from '../../../../components/exercises/sequence/Sequence.astro';
-import Step from '../../../../components/exercises/sequence/Step.astro';
+import Sequence from '../../../components/exercises/sequence/Sequence.astro';
+import Step from '../../../components/exercises/sequence/Step.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

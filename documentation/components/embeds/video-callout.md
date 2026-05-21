@@ -7,10 +7,10 @@ Uses `youtube-nocookie.com` (privacy-enhanced mode), so tracking is minimised be
 ## Import
 
 ```ts
-import VideoCallout from '../../../../components/embeds/VideoCallout.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

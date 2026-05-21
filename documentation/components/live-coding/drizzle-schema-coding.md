@@ -7,10 +7,10 @@ For query exercises (student writes a query against a fixed schema), use [`Drizz
 ## Import
 
 ```ts
-import DrizzleSchemaCoding from '../../../../components/live-coding/DrizzleSchemaCoding/DrizzleSchemaCoding.astro';
+import DrizzleSchemaCoding from '../../../components/live-coding/DrizzleSchemaCoding/DrizzleSchemaCoding.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

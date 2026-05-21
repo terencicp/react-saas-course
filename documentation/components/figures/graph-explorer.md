@@ -9,13 +9,13 @@ Provides its own outer card — do **not** wrap in `<Figure>`.
 ## Imports
 
 ```ts
-import GraphExplorer from '../../../../components/figures/graph-explorer/GraphExplorer.astro';
-import GraphNode from '../../../../components/figures/graph-explorer/GraphNode.astro';
-import GraphEdge from '../../../../components/figures/graph-explorer/GraphEdge.astro';
-import Traversal from '../../../../components/figures/graph-explorer/Traversal.astro';
+import GraphExplorer from '../../../components/figures/graph-explorer/GraphExplorer.astro';
+import GraphNode from '../../../components/figures/graph-explorer/GraphNode.astro';
+import GraphEdge from '../../../components/figures/graph-explorer/GraphEdge.astro';
+import Traversal from '../../../components/figures/graph-explorer/Traversal.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

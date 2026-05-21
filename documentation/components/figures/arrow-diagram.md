@@ -46,10 +46,10 @@ If you need *direction* (not just identity) and arrows would still overlay text,
 ## Import
 
 ```ts
-import ArrowDiagram from '../../../../components/figures/ArrowDiagram.astro';
+import ArrowDiagram from '../../../components/figures/ArrowDiagram.astro';
 ```
 
-(Relative path from `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative path from `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

@@ -5,11 +5,11 @@ Two-column matching drill. Each `<Pair>` has two named slots — `left` and `rig
 ## Imports
 
 ```ts
-import Matching from '../../../../components/exercises/matching/Matching.astro';
-import Pair from '../../../../components/exercises/matching/Pair.astro';
+import Matching from '../../../components/exercises/matching/Matching.astro';
+import Pair from '../../../components/exercises/matching/Pair.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

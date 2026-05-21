@@ -5,10 +5,10 @@ Hover tooltips on tokens or substrings inside a single Expressive Code block. Us
 ## Import
 
 ```ts
-import CodeTooltips from '../../../../components/code/CodeTooltips.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

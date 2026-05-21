@@ -7,11 +7,11 @@ If Ollama is unreachable or never produces a verdict word, the script falls back
 ## Imports
 
 ```ts
-import TextAnswer from '../../../../components/exercises/text-answer/TextAnswer.astro';
-import AnswerWhy from '../../../../components/exercises/text-answer/AnswerWhy.astro';
+import TextAnswer from '../../../components/exercises/text-answer/TextAnswer.astro';
+import AnswerWhy from '../../../components/exercises/text-answer/AnswerWhy.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

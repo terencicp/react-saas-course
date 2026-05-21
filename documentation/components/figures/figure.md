@@ -5,10 +5,10 @@ Universal wrapper for any diagram or visual on the site. Renders an outer card (
 ## Import
 
 ```ts
-import Figure from '../../../../components/figures/Figure.astro';
+import Figure from '../../../components/figures/Figure.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 

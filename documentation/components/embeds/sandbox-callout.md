@@ -5,10 +5,10 @@ Collapsible callout that lazy-loads an external code sandbox in an iframe.
 ## Import
 
 ```ts
-import SandboxCallout from '../../../../components/embeds/SandboxCallout.astro';
+import SandboxCallout from '../../../components/embeds/SandboxCallout.astro';
 ```
 
-(Relative to a lesson at `src/content/docs/<unit>/<chapter>/<lesson>.mdx`.)
+(Relative to a lesson at `src/content/docs/<chapter>/<lesson>.mdx`.)
 
 ## Props
 
