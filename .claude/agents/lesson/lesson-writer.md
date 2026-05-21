@@ -44,6 +44,8 @@ Use inline prose tooltips, like {/* TODO: Term (String "HTML". Tooltip text: "Hy
 
 For Aside use shorthand: :::note|tip|caution|danger :::
 
+Inside each TODO comment block, wrap any text containing <, >, or {, } in backticks, to prevent MDX parsing errors.
+
 Always introduce components in the prose when it makes sense, even if redundant: "The following link…", "Try this exercise…", "In the following diagram…", etc. Prefer explaining diagrams in the surrounding prose than in captions.
 
 ### 4.3 Code
