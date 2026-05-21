@@ -28,4 +28,4 @@ Write the selected questions to `documentation/content/lesson outlines/<X> <Chap
 
 ## 4 Final message
 
-Return the path of the quiz document and its question count. If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
+Return the path of the quiz outline document. If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
