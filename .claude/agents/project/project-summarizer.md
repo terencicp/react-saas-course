@@ -1,5 +1,5 @@
 ---
-name: project-code-summarizer
+name: project-summarizer
 description: Use this agent once per project chapter after the starter is derived to produce a navigable summary of the codebase.
 tools: Read, Write, Glob, Grep
 model: sonnet

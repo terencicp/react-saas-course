@@ -8,15 +8,17 @@
 
 - `documentation/content/lesson outlines/Chapter <X>/Continuity notes.md`, add just the heading `# Chapter <X> — <Chapter title>`.
 
-## Chapter pre-flight
+## Project code
 
 Pass each subagent only the fields listed, no need to prompt the agent further, it already knows what to do.
 
 1 **project-architect**: chapter id `<X>`. Returns the plan path and the ordered list of slice ids.
-2 **project-coder-precondition**: chapter id `<X>`, plan path.
+2 **project-scaffolding-coder**: chapter id `<X>`, plan path.
 3 **project-slice-coder**: chapter id `<X>`, plan path, slice id. Run a new subagent sequentially for each slice id in the order returned by the architect.
-4 **project-coder-starter**: chapter id `<X>`, plan path.
-5 **project-code-summarizer**: chapter id `<X>`.
+4 **project-start-coder**: chapter id `<X>`, plan path.
+5 **project-reviewer**: chapter id `<X>`, plan path. Returns the list of divergences between the plan and the built solution and start.
+6 **project-corrector**: chapter id `<X>`, plan path, the reviewer's divergence list inline. Run only if the reviewer reported divergences. If the corrector flags an inconsistency in the plan itself surface it in the chat.
+7 **project-summarizer**: chapter id `<X>`.
 
 ## For each lesson
 

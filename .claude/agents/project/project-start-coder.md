@@ -1,5 +1,5 @@
 ---
-name: project-coder-starter
+name: project-start-coder
 description: Use this agent once per project chapter to derive the starter directory from the plan's stub contracts.
 tools: Read, Write, Edit, Bash, Glob, Grep
 model: sonnet

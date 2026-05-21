@@ -1,5 +1,5 @@
 ---
-name: project-coder-precondition
+name: project-scaffolding-coder
 description: Use this agent once per project chapter to initialize the chapter's working solution directory from the plan's precondition recipe.
 tools: Read, Write, Edit, Bash, Glob, Grep
 model: sonnet
