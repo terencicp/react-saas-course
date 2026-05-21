@@ -1,4 +1,4 @@
-# Chapter 067 — Webhook ingestion (SaaS pattern #5)
+# Chapter 067 — Webhook ingestion
 
 ## Chapter framing
 

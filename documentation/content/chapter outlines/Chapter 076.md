@@ -1,4 +1,4 @@
-# Chapter 076 — Cache decisions as architecture (SaaS pattern #8)
+# Chapter 076 — Cache decisions as architecture
 
 ## Chapter framing
 

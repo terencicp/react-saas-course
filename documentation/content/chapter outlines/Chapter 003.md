@@ -1,4 +1,4 @@
-# Chapter 003 — The feedback loop: editor, linter, DevTools
+# Chapter 003 — The feedback loop
 
 ## Chapter framing
 

@@ -1,4 +1,4 @@
-# Chapter 103 — Migrating a live schema without an outage (SaaS pattern #11)
+# Chapter 103 — Migrating a live schema without an outage
 
 ## Chapter framing
 

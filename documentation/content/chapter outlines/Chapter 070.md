@@ -1,4 +1,4 @@
-# Chapter 070 — Background work — climbing the durability ladder
+# Chapter 070 — Background work
 
 ## Chapter framing
 

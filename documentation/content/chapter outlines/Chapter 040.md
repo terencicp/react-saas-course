@@ -1,4 +1,4 @@
-# Chapter 040 — Postgres on Neon: the relational backplane
+# Chapter 040 — Postgres on Neon
 
 ## Chapter framing
 

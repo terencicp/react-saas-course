@@ -1,4 +1,4 @@
-# Chapter 074 — The notification dispatcher (SaaS pattern #10)
+# Chapter 074 — The notification dispatcher
 
 ## Chapter framing
 

@@ -1,4 +1,4 @@
-# Chapter 097 — Product analytics: traffic, events, flags, replay
+# Chapter 097 — Product analytics
 
 ## Chapter framing
 

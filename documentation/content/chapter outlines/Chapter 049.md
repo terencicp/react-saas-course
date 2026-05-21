@@ -1,4 +1,4 @@
-# Chapter 049 — When the platform isn't enough: React Hook Form
+# Chapter 049 — React Hook Form
 
 ## Chapter framing
 

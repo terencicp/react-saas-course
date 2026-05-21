@@ -1,4 +1,4 @@
-# Chapter 021 — JSX and HTML semantics through JSX
+# Chapter 021 — JSX and HTML semantics
 
 ## Chapter framing
 

@@ -17,7 +17,7 @@
 - 3 The lockfile as a contract (Commit `pnpm-lock.yaml` as the deterministic resolution record, enforce `--frozen-lockfile` in CI, and guard against mixed package managers with `only-allow pnpm`.)
 - 4 Three ways to run a .ts file (Partition `.ts` execution into native strip-types as the default, `tsx` past a named trigger (path aliases, JSX, decorators), and `tsc` reserved for library publishing or `--noEmit` type-checking.)
 
-### Chapter 003 — The feedback loop: editor, linter, DevTools
+### Chapter 003 — The feedback loop
 - 1 VS Code as a team artifact (Teaches the editor commitment, the minimum-viable extension set with one senior reason each, and the repo-owned configuration files (`.editorconfig`, `.vscode/extensions.json`, `.vscode/settings.json`) that make editor setup a teammate-shared surface rather than a personal preference.)
 - 2 Biome, the single-binary linter and formatter (Teaches Biome as the 2026 default over ESLint+Prettier (single Rust binary, dependency-aware domains), the `next lint` removal in Next.js 16, the minimum-viable `biome.json` wired to `.editorconfig`, the four daily scripts, and the safe-versus-unsafe fix distinction.)
 - 3 DevTools: the four panels that earn their keep (Teaches the senior workflows in Elements (live DOM and cascade), Network (open before the action, throttle, copy-as-fetch), Console (REPL, `$0`, `console.table`), and Application (cookies, storage, service workers), with React DevTools installed here for its first call in Unit 4.)
@@ -61,7 +61,7 @@
 - 6 Regex: the modern flavor (Write 2026-flavor regex with named capture groups, lookarounds, the `u` and `v` Unicode flags and property escapes, the `.matchAll` iterator surface, and the boundary where a parser replaces the regex.)
 - 7 Quiz
 
-### Chapter 008 — TypeScript: typing the values you already know
+### Chapter 008 — Typing values you know
 - 1 Primitives, literals, and the four corners (The seven primitive types, literal unions as the senior reach for finite domains, and the `any`/`unknown`/`never`/`void` corners with the trigger that earns each.)
 - 2 Object shapes: type, interface, and field modifiers (When to default to `type` (always) and reach for `interface` (declaration merging), paired with the per-field `?` and `readonly` modifiers plus the array-level `readonly T[]` and `Readonly<T>` cousins.)
 - 3 Tuples: positions with labels (Tuple syntax with element labels, optional and rest positions, `readonly` tuples, and the concrete patterns (`useState`, custom hooks, `Object.entries`) where a tuple beats a named-field object.)
@@ -72,7 +72,7 @@
 - 8 Annotate the boundaries, infer the inside (The senior rule for where annotations earn their weight (parameters, exported APIs) and where inference wins (locals, return types, inline callbacks), plus the `import type` discipline that `verbatimModuleSyntax` enforces.)
 - 9 Quiz
 
-### Chapter 009 — TypeScript moves that prevent bug classes
+### Chapter 009 — TypeScript bug-class moves
 - 1 Impossible states, unrepresentable (Teaches the discriminated-union shape, Architectural Principle #7, the canonical SaaS variants (request state, Result, event message, UI variant), and narrowing by a literal discriminant.)
 - 2 States plus transitions (Teaches the flow state-machine pattern as discriminated unions extended with per-transition function signatures, per-state invariants, and the three canonical SaaS machines (optimistic mutation, upload, subscription).)
 - 3 Exhaustiveness, enforced (Teaches type predicates (block-scoped narrow), assertion functions (scope-wide narrow), and the `assertNever` plus `satisfies never` idioms that make a missing variant a compile error.)
@@ -144,7 +144,7 @@
 - 2 Streaming progress with SSE (Read response bodies as `ReadableStream` chunks, emit Server-Sent Events from a Next.js Route Handler, consume them with `EventSource` or `fetch`, and pick between SSE, WebSockets, and polling.)
 - 3 Quiz
 
-### Chapter 020 — Browser capability APIs the SaaS UI reaches for
+### Chapter 020 — Browser capability APIs
 - 1 Web Crypto: random IDs and HMAC signatures (Installs the `crypto` global's three surfaces — `randomUUID`, `getRandomValues`, and the asynchronous `subtle` HMAC sign / verify pair — with constant-time comparison as the timing-attack mitigation for any signature check.)
 - 2 The Clipboard API: the Copy button surface (Installs `navigator.clipboard.writeText` as the senior copy reach, the secure-context-plus-user-activation constraints, and the canonical "Copy" button shape with `'use client'`, `try/catch`, feedback state, and `aria-label`.)
 - 3 Blob, File, and URL.createObjectURL: the upload primitives (Installs the three binary primitives every file-upload UI builds on — `Blob`, `File`, and `URL.createObjectURL` with `revokeObjectURL` cleanup — and foreshadows the R2 presigned-PUT flow from pick to preview to direct upload.)
@@ -155,7 +155,7 @@
 
 ## Unit 4 — React, JSX, and Tailwind
 
-### Chapter 021 — JSX and HTML semantics through JSX
+### Chapter 021 — JSX and HTML semantics
 - 1 JSX is property syntax for HTML (The JSX surface every later lesson rides on: the rename table (`className`, `htmlFor`, camelCase events), curly-brace expressions, fragments, void self-close, list keys tied to data, and the `&&` zero trap.)
 - 2 The Next.js root layout owns the document shell (The `app/layout.tsx` Server Component renders `<html lang>` and `<body>`, the metadata API writes the `<head>`, and `'use client'` belongs on a `<Providers>` child, not the root.)
 - 3 Landmarks and the heading outline (The six landmark elements (`<header>`, `<nav>`, `<main>`, `<aside>`, `<article>`, `<section>`, `<footer>`) plus the strict `<h1>`-through-`<h6>` hierarchy form the page outline assistive tech navigates.)
@@ -192,7 +192,7 @@
 - 9 Stacking context and z-index (How z-index is scoped to its stacking context, the trigger list (`opacity < 1`, `transform`, `filter`, `position: fixed/sticky`, `isolation: isolate`, and friends), the canonical trapped-modal bug, the three fixes (portal to `<body>`, `isolation: isolate`, restructure the DOM), and z-index tier conventions.)
 - 10 Quiz
 
-### Chapter 025 — The visual surface: typography, color, motion, responsive
+### Chapter 025 — The visual surface
 - 1 Type, scale, and the reading surface (Teaches the system-plus-`next/font` stack, Tailwind's `text-*`/`leading-*`/`tracking-*` scales, `text-balance` and `text-pretty` reflexes, `max-w-prose` reading width, and the `truncate` / `line-clamp-*` / `tabular-nums` utilities the student writes daily.)
 - 2 OKLCH, color-mix(), and the alpha syntax (Teaches OKLCH as the token storage form, `color-mix(in oklch, ...)` for runtime mixing, the `bg-blue-500/50` alpha syntax and how it compiles to `color-mix()`, semantic tokens over primitives, `opacity` vs. per-property alpha, and `prefers-color-scheme` vs. the `.dark` class.)
 - 3 Borders, radius, and the elevation scale (Teaches `border` / `border-*` / `divide-*`, the `rounded-*` scale, `outline` vs. `border` for focus rings, `ring-*` as the multi-layer shorthand, the `shadow-*` elevation tiers, `drop-shadow` vs. `box-shadow`, and `backdrop-filter` for glass-morphism headers.)
@@ -299,7 +299,7 @@
 - 7 Async request APIs and legacy segment config (Awaiting `params`, `searchParams`, `cookies()`, `headers()`, and `draftMode()` as Promises with `React.use()` for Client Components, `connection()` as the explicit dynamic opt-in, and the migration away from the deprecated `dynamic`, `revalidate`, and `fetchCache` segment exports.)
 - 8 Quiz
 
-### Chapter 037 — The request surface: server reads, the proxy, and URL state
+### Chapter 037 — The request surface
 - 1 Reading the request with cookies() and headers() (Teaches the async, server-only, read-only `cookies()` and `headers()` APIs from `next/headers`, the senior pattern of reading once at the top and passing resolved values down, the trust-the-platform caveat on proxy headers, and the build-time constraints these reads place on Cache Components.)
 - 2 proxy.ts and the matcher (Teaches the Next.js 16 rename of `middleware.ts` to Node-only `proxy.ts`, the canonical file shape with `NextRequest`/`NextResponse`, the matcher config as the cost-control surface, the proxy-to-route header pattern, and what belongs in the proxy versus the route.)
 - 3 Rewrites and redirects in proxy.ts (Teaches the redirect-vs-rewrite semantic split, 307/308 status codes, the proxy-vs-`next.config.ts`-vs-`redirect()` decision tree, the subdomain-rewrite multi-tenant pattern, and open-redirect prevention on the `?next=` return-URL idiom.)
@@ -330,7 +330,7 @@
 
 ## Unit 6 — Postgres and Drizzle
 
-### Chapter 040 — Postgres on Neon: the relational backplane
+### Chapter 040 — Postgres on Neon
 - 1 Tables, rows, and 3NF (Teaches the relational model — tables, rows, typed columns, primary and foreign keys — and 3NF as the default schema shape, with the three legitimate triggers for denormalization.)
 - 2 Local dev: Docker, Neon branch, or Neon Local (Teaches the three credible local-database options for 2026 — Docker Postgres, a Neon dev branch, and Neon Local — and the offline-vs-prod-parity trade that picks between them under one `DATABASE_URL` contract.)
 - 3 Neon branching and scale-to-zero (Teaches Neon's storage/compute separation, copy-on-write branch-per-preview-deploy via the Vercel integration, and the scale-to-zero pricing model that makes ephemeral preview branches economically sustainable.)
@@ -416,7 +416,7 @@
 - 7 Progressive enhancement for free (Teaches what works without JS (action prop, constraint API, redirect, revalidate) and what doesn't, the five disciplines that preserve PE, and the manual JS-disabled test at feature-launch.)
 - 8 Quiz
 
-### Chapter 049 — When the platform isn't enough: React Hook Form
+### Chapter 049 — React Hook Form
 - 1 The four triggers that flip the choice (Names the four UX shapes that break the native 48 form pattern and justify reaching for React Hook Form, the cost of adopting it, and the 2026 form-library landscape (Conform, TanStack Form) at one paragraph each.)
 - 2 The five primitives: useForm, register, Controller, handleSubmit, formState (Teaches RHF's core surface — the form root, the uncontrolled and controlled field paths, the submit interceptor, the read-side state, and how the shadcn `<Form>` wrapper consumes the form instance.)
 - 3 zodResolver: one schema, both sides of the wire (Wires `@hookform/resolvers/zod` so the form and the Server Action validate against the same Zod schema, covering the `z.input` vs `z.output` type bridge, the `FormData` vs typed-object action call shape, and mapping server-returned `fieldErrors` back into RHF via `setError`.)
@@ -493,7 +493,7 @@
 - 9 Account linking (Teaches `account.accountLinking` config, the `trustedProviders` allowlist as a security decision, link-on-sign-in versus link-from-settings, the `allowDifferentEmails` knob, and the unlink guard that prevents leaving a user with no sign-in method.)
 - 10 Quiz
 
-### Chapter 058 — The signed-in session: gates, credentials, devices, defenses
+### Chapter 058 — The signed-in session
 - 1 The two-layer gate in proxy.ts (Teaches the production-shaped protected-routes proxy — cookie-presence-only checks with `getSessionCookie`, matcher design (allowlist vs matchall-minus-public), the `?next=` round-trip with open-redirect closure, the inverse gate that bounces signed-in users off `/sign-in`, and the rule that keeps authorization decisions at the action boundary rather than the proxy.)
 - 2 Changing the password and the email (Teaches the `/settings/security` credential-mutation surface — `changePassword` with `revokeOtherSessions: true` as the senior default, `changeEmail` verified on the current address with notices to both, the current-password prompt vs `freshAge` elevation distinction, the `'requires-re-authentication'` Result branch, and the OAuth-only-user edge with no `'credential'` row.)
 - 3 Active sessions and revoke-across-devices (Teaches the `/settings/security/sessions` audit surface — `listSessions` with per-row device/location parsing and current-session detection, the `revokeSession` / `revokeOtherSessions` / `revokeSessions` trio with the right copy for each button, the cookie-cache staleness window on revoke, and the "new device signed in" notification that turns the list into real takeover detection.)
@@ -527,7 +527,7 @@
 - 5 The append-only audit_logs table (Teaches the audit table's column shape, the three-layer append-only enforcement (RLS policy, table grants, application discipline), the `logAudit(tx, event)` helper whose signature forces a transaction, the canonical event set, and the retention story.)
 - 6 Quiz
 
-### Chapter 062 — Invitations and the seat-handoff lifecycle (SaaS pattern #3)
+### Chapter 062 — Invitations and the seat-handoff lifecycle
 - 1 The seat reservation that outlives the request (Model Better Auth's `invitation` table with `tokenHash` and `acceptedAt` additions, the `pending` -> `accepted` / `canceled` state machine, the seven-day expiry as a security primitive, and the partial unique index on `(orgId, lower(email))` where `status = 'pending'`.)
 - 2 Minting the signed accept link (Build `sendInvitationAction` with a 32-byte Web Crypto token, SHA-256 hash at rest, HMAC-signed accept URL, Resend dispatch after the DB transaction commits, and the `'invitation.sent'` audit event.)
 - 3 Four arrival shapes on one accept URL (Route signed-in same-email, signed-in different-email, signed-out with account, and signed-out without account through one accept route with a verify order, an explicit Accept-button consent gate, auto-`emailVerified` for invite-sourced signups, and an active-org switch on accept.)
@@ -549,7 +549,7 @@
 
 ## Unit 11 — Lists, URL State, and Soft Delete
 
-### Chapter 064 — URL-state list views (SaaS pattern #7)
+### Chapter 064 — URL-state list views
 - 1 The list-view anatomy (Teaches the four-pillar SaaS list pattern (filter, sort, search, paginate) as URL state with a server-reads-and-writes-client division, `router.replace` over `push`, the share-and-refresh contract, and the `nuqs` `searchParamsCache` setup that becomes the chapter's reference shape.)
 - 2 Filter shapes and sort encoding (Teaches the four filter shapes (single-value enum, multi-value array, range as two parameters, boolean toggle with omitted default), the `-key` sort string with its enum-constrained indexed columns, the cursor-reset invariant on filter or sort change, and active-filter chips with a "clear all" affordance.)
 - 3 Typed input, committed URL (Teaches the typed-vs-committed split for search inputs, React 19's `useDeferredValue` plus `useTransition` for input rhythm, `nuqs` `throttleMs` for URL-write rhythm, the `replace`-only history policy, and the `isPending` loading affordance.)
@@ -574,7 +574,7 @@
 
 ## Unit 12 — Webhooks and Stripe Billing
 
-### Chapter 067 — Webhook ingestion (SaaS pattern #5)
+### Chapter 067 — Webhook ingestion
 - 1 Verify before parse (Teaches the route handler trust boundary for Stripe webhooks — raw body via `request.text()`, HMAC-SHA-256 over `${t}.${rawBody}`, constant-time compare, the 5-minute timestamp tolerance, the `stripe.webhooks.constructEvent` SDK helper, and returning 400 with RFC 9457 problem+json on failure before any business logic runs.)
 - 2 Claim once, mutate once (Teaches the `processed_events(provider, eventId)` ledger with `INSERT ... ON CONFLICT DO NOTHING RETURNING` as atomic check-and-claim, wrapping the dedup insert and the business mutation in one transaction, returning 200 (not 4xx) on lost-claim, and the 30-second Stripe timing budget that pushes side-effects to background jobs.)
 - 3 Newer wins, single writer (Teaches the `event.created` plus `last_event_at` predicate inside the UPDATE WHERE for out-of-order delivery, UPDATE-RETURNING to detect stale no-ops, the "webhook is the only writer" rule, and the success-page read-and-poll via `router.refresh()` that closes the redirect-versus-webhook race without double-writing entitlements.)
@@ -605,7 +605,7 @@
 
 ## Unit 13 — Background Work and Object Storage
 
-### Chapter 070 — Background work — climbing the durability ladder
+### Chapter 070 — Background work
 - 1 Inline, then after() (Teaches the 0-tier (inline `await`) and 0.5-tier (`after()`) defaults for post-request work in Server Actions, the four thresholds that break them, and the `maxDuration` / error-swallow gotchas of running after the response.)
 - 2 Vercel Cron as the schedule default (Teaches the Vercel Cron topology and `vercel.json` shape, `CRON_SECRET` verify-first auth, at-least-once delivery with dedup keys, UTC expressions, and the time-budget threshold that bumps a job up to Trigger.dev.)
 - 3 When Trigger.dev earns its weight (Teaches the five named conditions that justify Trigger.dev (past function time, multi-step orchestration, automatic retries, fan-out, event-driven pauses), the 2026 alternatives, the decision tree, and the org-context separation tasks inherit.)
@@ -623,7 +623,7 @@
 - 5 Send the email, write the audit log (Add the `sendExportEmail` child task guarded by a `${ctx.run.id}:email` key, then close the parent run by updating the `exports` row and writing `export.invoices.completed` to `audit_logs` in one tenant transaction.)
 - 6 Verify: progress, kill-resume, serialization, exactly-once email (Walk each "Done when" clause clause-by-clause: visible per-page progress, the Ctrl-C kill-resume drill, per-org serialization vs. cross-org parallelism, schema-boundary validation, and email-send-once across parent retries.)
 
-### Chapter 072 — Object storage (conditional)
+### Chapter 072 — Object storage
 - 1 Defending the no — when object storage earns its weight (Names the three trigger conditions (user uploads, generated assets the app serves back, third-party media) that put R2 on the table, the conditions that do not, and why R2 beats S3 and the upload SaaS wrappers on unit economics for any read-heavy product.)
 - 2 Standing up R2 — buckets, scoped tokens, and CORS (Sets up the minimum R2 surface a SaaS trusts in production: one bucket per environment, bucket-scoped tokens with minimum operations, the S3-compatible client in `lib/r2.ts`, the CORS rule with explicit origins and headers, and the `org/${orgId}/files/${id}` object-key tenancy convention.)
 - 3 Presigned URLs — signing the upload seam (Teaches the presigned PUT and GET mechanics that move bytes from browser to R2 without touching the function: signed `ContentType` and `ContentLength`, 5-10 minute expiries, the layered size defense, and the sign-then-finalize two-step write with post-upload HEAD verification.)
@@ -644,7 +644,7 @@
 
 ## Unit 14 — Notifications
 
-### Chapter 074 — The notification dispatcher (SaaS pattern #10)
+### Chapter 074 — The notification dispatcher
 - 1 One seam, many channels (The dispatcher pattern, the `notifiable_events` registry, the dispatcher's contract, and the line between user-facing notifications and operator-facing audit logs.)
 - 2 Email and inbox, independent channels (The uniform channel-function signature, the email send via the Unit 8 wrapper, the in-app inbox row written at dispatch, and the rule that one channel's failure never kills the other.)
 - 3 Preferences, read once, default-on (The category-grained `user_notification_preferences` schema, the default-on rule for missing rows, the critical-channel override, and the one-place read inside the dispatcher.)
@@ -663,7 +663,7 @@
 
 ## Unit 15 — Cache and Rate Limiting
 
-### Chapter 076 — Cache decisions as architecture (SaaS pattern #8)
+### Chapter 076 — Cache decisions as architecture
 - 1 Route classes and the tag scheme (Classify every route as fully dynamic, partially cached, or fully static, then design an org-scoped tag scheme (entity, record, org, user) funneled through a `tags.ts` helper so read-side and write-side strings always align.)
 - 2 Picking the right invalidation call (Resolve `updateTag`, `revalidateTag`, `revalidatePath`, and `router.refresh` on two axes (read-your-writes vs. eventual, tag vs. path) and trace the decision tree through worked flows: post-edit lists, post-purchase plan flips, membership changes, webhooks, and background jobs.)
 - 3 Quiz
@@ -692,7 +692,7 @@
 
 ## Unit 16 — TanStack Query and Zustand
 
-### Chapter 080 — TanStack Query (conditional)
+### Chapter 080 — TanStack Query
 - 1 When TanStack Query earns its weight (The four named triggers (polling, cross-view caching, optimistic with rollback into cached queries, infinite scroll with reuse) that justify reaching past Server Components, Server Actions, `useState`, and `nuqs` for a client-side server-state library.)
 - 2 The four primitives the project reaches for (`useQuery` (with `staleTime` and the `isPending`/`isFetching` split), `useMutation` (the five-callback lifecycle), the v5 optimistic-update two-shape decision (via-variables vs. cache-update), and `useInfiniteQuery` with `maxPages` — plus query keys as the cache contract, `refetchInterval` polling, and the `invalidateQueries`/`setQueryData`/`removeQueries` trio.)
 - 3 Wiring without leaking the cache across requests (The `'use client'` `<Providers>` shell, the per-request `getQueryClient()` helper via React's `cache()` (the multi-tenant isolation trap), SSR-hydrated initial data through `prefetchQuery` plus `<HydrationBoundary>`, the senior `staleTime`/`gcTime` defaults, the two-system invalidation reality after a Server Action, and the org-switch `queryClient.clear()` discipline.)
@@ -707,7 +707,7 @@
 - 5 Optimistic add and rollback with useMutation (Writes the `addCommentAction` Server Action with audit-log and `revalidateTag`, then wires the form's `useMutation` with `cancelQueries`, snapshot, `setQueryData`, restore in `onError`, and `invalidateQueries` in `onSettled` — surfacing the two-system invalidation reality at the seam.)
 - 6 Verify against "Done when" (Walks every clause: SSR-hydrated first paint, infinite scroll with `maxPages` cap, cross-session polling arrival within 10 seconds, tab-hide pause, optimistic happy path, forced-500 rollback, two-system invalidation, per-request server `QueryClient` isolation, leaf-scoping, `commentKeys` discipline, route-handler tenancy, Zod-drift recovery, and devtools tree-shaking.)
 
-### Chapter 082 — Zustand (conditional)
+### Chapter 082 — Zustand
 - 1 When Zustand earns its weight (The three triggers that justify reaching for Zustand past the five client-state defaults, the per-feature rule, and the "client-only, never global ambient" framing for SaaS codebases.)
 - 2 Primitives and the per-request provider (The v5 API surface — `createStore`, the slices pattern with `StateCreator`, selector subscriptions with `useShallow`, the `useRef`-pinned Context provider for App Router SSR, and the middleware lineup named once.)
 - 3 The routed wizard, end to end (The four-step customer-onboarding wizard as the in-app trigger — the four-slice store shape, per-step Zod gates, the Server-Action submit boundary, back/forward preserves vs. refresh loses, and reset discipline at submit-success and org-switch.)
@@ -842,7 +842,7 @@
 - 5 Server-side debugging with the inspector (Launch `next dev --inspect`, attach VS Code, and use breakpoints, conditional breakpoints, and logpoints to resolve a failing server action that logs and Sentry alone couldn't crack.)
 - 6 Quiz
 
-### Chapter 097 — Product analytics: traffic, events, flags, replay
+### Chapter 097 — Product analytics
 - 1 The cookieless floor: Vercel Analytics and Speed Insights (Install Vercel Web Analytics and Speed Insights as the cookieless default that ships before any event taxonomy decision, covering traffic, top pages, and Core Web Vitals without a consent banner.)
 - 2 When PostHog earns its weight (Name the four needs (events, flags, replay, experiments) that cross the threshold past Vercel Analytics, and pick PostHog Cloud EU as the one-platform answer over the four-vendor alternative.)
 - 3 Wiring PostHog through the consent gate (Wire `@posthog/next` end-to-end in the App Router with a consent-gated dynamic import, the `/ingest` proxy route, `opt_out_capturing_by_default` as the safety floor, and a verified pre- and post-consent test.)
@@ -851,7 +851,7 @@
 - 6 Session replay with masking by default (Turn on PostHog session replay with the mask-vs-block masking catalog, sampling discipline, consent-gated start, and a replay-to-bug-fix workflow for the UX bugs that throw no error.)
 - 7 Quiz
 
-### Chapter 098 — Performance vigilance (SaaS pattern #15)
+### Chapter 098 — Performance vigilance
 - 1 The Core Web Vitals (Definitions of LCP, INP, and CLS, their p75 thresholds, the primary cause and one structural reach for each, and the field-data-versus-lab-data discipline that anchors the chapter.)
 - 2 priority on the LCP element (How `next/image`'s `priority` prop preloads the LCP element, which exact image gets it, and the ESLint-enforced ban on raw `<img>` that keeps CLS and lazy-loading defaults in place.)
 - 3 The barrel-export trap (Why barrel re-exports defeat tree-shaking, the lucide-react case study, and `optimizePackageImports` plus `sideEffects: false` as the modern fix that keeps imports readable while shipping per-export shape.)
@@ -897,7 +897,7 @@
 - 8 The launch checklist (The eight rows that make a URL defensible — env validation, error monitoring, rate limits, audit logs, security headers, pooled DB with matching region, tested backups, and external uptime monitoring with a human paged.)
 - 9 Quiz
 
-### Chapter 103 — Migrating a live schema without an outage (SaaS pattern #11)
+### Chapter 103 — Migrating a live schema without an outage
 - 1 Expand, migrate, contract (The three-deploy cadence that ships a breaking schema change without an outage: add the new shape alongside the old, dual-write and backfill from app code, then drop the old shape once nothing reads it.)
 - 2 Which migrations need the cadence (The trigger map and three-question decision tree that separate one-deploy additive changes from three-deploy renames, type rewrites, NOT NULL promotions, and FK-required columns.)
 - 3 Rehearsing on a Neon preview branch (The four-check rehearsal that runs each cadence step against production-shaped data before merge, catching FK violations, missed dual-write sites, slow backfills, and leftover reads of the old shape.)

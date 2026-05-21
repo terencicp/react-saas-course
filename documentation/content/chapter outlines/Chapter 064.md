@@ -1,4 +1,4 @@
-# Chapter 064 — URL-state list views (SaaS pattern #7)
+# Chapter 064 — URL-state list views
 
 ## Chapter framing
 

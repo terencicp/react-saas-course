@@ -1,4 +1,4 @@
-# Chapter 058 — The signed-in session: gates, credentials, devices, defenses
+# Chapter 058 — The signed-in session
 
 ## Chapter framing
 

@@ -1,4 +1,4 @@
-# Chapter 082 — Zustand (conditional)
+# Chapter 082 — Zustand
 
 ## Chapter framing
 

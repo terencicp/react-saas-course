@@ -1,4 +1,4 @@
-# Chapter 008 — TypeScript: typing the values you already know
+# Chapter 008 — Typing values you know
 
 ## Chapter framing
 

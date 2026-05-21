@@ -1,4 +1,4 @@
-# Chapter 020 — Browser capability APIs the SaaS UI reaches for
+# Chapter 020 — Browser capability APIs
 
 ## Chapter framing
 

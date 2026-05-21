@@ -1,4 +1,4 @@
-# Chapter 098 — Performance vigilance (SaaS pattern #15)
+# Chapter 098 — Performance vigilance
 
 ## Chapter framing
 

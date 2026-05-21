@@ -1,4 +1,4 @@
-# Chapter 072 — Object storage (conditional)
+# Chapter 072 — Object storage
 
 ## Chapter framing
 

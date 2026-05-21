@@ -1,4 +1,4 @@
-# Chapter 037 — The request surface: server reads, the proxy, and URL state
+# Chapter 037 — The request surface
 
 ## Chapter framing
 

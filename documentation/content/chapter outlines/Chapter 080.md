@@ -1,4 +1,4 @@
-# Chapter 080 — TanStack Query (conditional)
+# Chapter 080 — TanStack Query
 
 ## Chapter framing
 

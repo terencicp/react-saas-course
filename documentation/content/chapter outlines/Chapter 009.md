@@ -1,4 +1,4 @@
-# Chapter 009 — TypeScript moves that prevent bug classes
+# Chapter 009 — TypeScript bug-class moves
 
 ## Chapter framing
 

@@ -1,4 +1,4 @@
-# Chapter 062 — Invitations and the seat-handoff lifecycle (SaaS pattern #3)
+# Chapter 062 — Invitations and the seat-handoff lifecycle
 
 ## Chapter framing
 

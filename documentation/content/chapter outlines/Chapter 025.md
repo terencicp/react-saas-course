@@ -1,4 +1,4 @@
-# Chapter 025 — The visual surface: typography, color, motion, responsive
+# Chapter 025 — The visual surface
 
 ## Chapter framing
 
