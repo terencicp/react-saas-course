@@ -110,6 +110,7 @@ Lesson UI elements.
 | --- | --- | --- |
 | `Term` | Inline word or phrase in prose with a dashed underline and a hover/focus tooltip showing a short definition. | [term.md](./ui/term.md) |
 | `ExternalResource` | Clickable card linking out to an external resource with an icon badge, title, hostname, and short description. | [external-resource.md](./ui/external-resource.md) |
+| `LessonEyebrow` | Auto-rendered above every lesson's H1 via the `PageTitle` override — chapter id, chapter title, lesson number in a small uppercase line. Authored via frontmatter, not by hand in MDX. | [lesson-eyebrow.md](./ui/lesson-eyebrow.md) |
 
 ---
 

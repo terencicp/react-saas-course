@@ -101,6 +101,12 @@ export default defineConfig({
         title: 'React SaaS Course',
         customCss: ['./src/styles/custom.css'],
         plugins: [starlightFullViewMode({}), starlightLinksValidator()],
+        components: {
+            // Renders LessonEyebrow above the default H1 on every page,
+            // reading chapter-id, chapter-title, and sidebar.order from
+            // the lesson's frontmatter.
+            PageTitle: './src/components/overrides/PageTitle.astro',
+        },
         head: [
             {
                 tag: 'script',
