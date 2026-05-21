@@ -32,7 +32,7 @@ Write the lesson outline in `documentation/content/lesson outlines/Chapter <X>/L
 
 ### 4.1 Lesson title
 
-Consider if the title defined in the chapter outline fits the lesson, otherwise think of a better one. Use sentence case, plain text, no markup. Also propose a short title that will be used in the sidebar.
+Consider if the title defined in the chapter outline fits the lesson, otherwise think of a better one. Use sentence case, plain text, remove all markup from the title. Also propose a short title that will be used in the sidebar.
 
 ### 4.2 Lesson framing
 

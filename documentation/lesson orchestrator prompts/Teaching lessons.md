@@ -15,7 +15,7 @@ The folder `src/content/docs` contains nested folders that represent units and c
 
 ### 1. Create folders
 
-Folder and file names: Strip `#`, replace `/` with `-`.
+Folder and file names: Strip # and `, replace / with -, no markup.
 
 - `src/content/docs/<X> <Chapter name>`.
 - `documentation/content/lesson outlines/<X> <Chapter name>`
@@ -35,7 +35,7 @@ Pass each subagent only the fields listed, no need to prompt the agent further, 
 
 ## Quiz
 
-If the lesson title is `Quiz` run a simpler pipeline:
+If the lesson title contains `Quiz` run this pipeline:
 
-1
-2
+1 **quiz-writer**: chapter id `<X>`, chapter name, lesson number `<Y>`. Returns the quiz outline path.
+2 **quiz-coder**: chapter id `<X>`, chapter name, lesson number `<Y>`, quiz outline path.
