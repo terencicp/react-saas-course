@@ -18,8 +18,8 @@ The folder `src/content/docs` contains nested folders that represent units and c
 Folder and file names: Strip # and `, replace / with -, no markup.
 
 - `src/content/docs/<X> <Chapter name>`.
-- `documentation/content/lesson outlines/<X> <Chapter name>`
-- `documentation/content/lesson outlines/<X> <Chapter name>/Continuity notes.md`, add just the heading `# Chapter <X> — <Chapter title>`.
+- `documentation/content/lesson outlines/Chapter <X>`
+- `documentation/content/lesson outlines/Chapter <X>/Continuity notes.md`, add just the heading `# Chapter <X> — <Chapter title>`.
 
 ### 2. Run the agent sequence
 
