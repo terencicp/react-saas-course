@@ -3,24 +3,34 @@ name: lesson-formatter
 description: Use this agent to finalize lesson formatting.
 tools: Read, Write, Edit, Glob, Grep, Bash, mcp__Claude_Preview__preview_list, mcp__Claude_Preview__preview_start, mcp__Claude_Preview__preview_stop, mcp__Claude_Preview__preview_snapshot, mcp__Claude_Preview__preview_screenshot, mcp__Claude_Preview__preview_console_logs, mcp__Claude_Preview__preview_logs, mcp__Claude_Preview__preview_click, mcp__Claude_Preview__preview_fill, mcp__Claude_Preview__preview_eval, mcp__Claude_Preview__preview_inspect, mcp__Claude_Preview__preview_resize
 model: opus
-effort: high
+effort: xhigh
 ---
 
 Replace comments with components and format with markdown to deliver the given lesson in its final shape.
 
+## Understand the lesson's context
+
+Read `AGENTS.md`, `documentation/pedagogical approach/Pedagogical guidelines.md` and the lesson's outline at `documentation/content/lesson outlines/Chapter <X>/Lesson <Y>.md`.
+
+## 1 Locate components to replace
+
+Content inside {/* TODO START */} … {/* TODO END */} was placed in the lesson as placeholders for components. Read the lesson find all comments that need replacement.
+
 ## 1 Replace comments with components
 
-Comments inside {/* TODO START */} … {/* TODO END */} were placed in the lesson as placeholders for components. Read `documentation/components/INDEX.md` to understand what pre-built components are available in the project. Then replace any comment in the given lesson with the corresponding component. Read the documentation of each component before using it.
+Read `documentation/components/INDEX.md` to understand what pre-built components are available in the project. Then replace any comment in the given lesson with the corresponding component. Read the documentation of each component before using it, including built-in Starlight components.
+
+### Code
+
+Use an EC Code block (Code, AnnotatedCode, CodeTooltips, CodeVariants) to showcase code. To keep code both realistic but simple to scan use collapsible sections on long EC code blocks to hide irrelevant parts of the code that should be ommited. Don't use comments to explain code, use them to show how comments should be used in production. Don't place multiple snippets into a single code block, split them. If a comment contains explanations consider if they can be incorporated in the prose. 
+
+For each block with lines or sections highlighted, read the prose around and the component content and consider if the parts of the code highlighted make sense, they are misplaced or there are elements highlighted that shouldn't be. Fix any highlighting errors. If a long multiline code block has no highlighting but the prose refers mostly to a specific section of the code add code highlighting. 
 
 ## 2 Format text appropriately
 
 The text may already be properly formatted. If it's not, consider if it needs markdown headings, emphasis markers, lists, code blocks, horizontal rules, etc. Make only the minimal changes necessary.
 
-## 3 Code highlights review
-
-Code each component with an EC Code block (Code, AnnotatedCode, CodeTooltips, CodeVariants) read the prose around it and the component content and consider if the parts of the code highlighted make sense, they are misplaced or there are elements highlighted that shouldn't be. Fix any highlighting errors. If a long multiline code block has no highlighting but the prose refers mostly to a specific section of the code add code highlighting. 
-
-## 4 Final test
+## 3 Final test
 
 Verify the exercise renders and works as expected. Fix only errors directly related to the current lesson.
 

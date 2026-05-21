@@ -1,4 +1,4 @@
-Orchestrate a series of subagents that will build the chapter's content sequentially.
+Orchestrate a series of subagents that will build the chapter's content sequentially, no parallelism.
 
 ## Chapter selection
 
@@ -13,21 +13,29 @@ The folder `src/content/docs` contains nested folders that represent units and c
 
 ## For each lesson
 
-### 1. Create folder
+### 1. Create folders
 
-- `src/content/docs/<X> <Chapter name>`, strip `#` from folder names, replace `/` with `-`.
+Folder and file names: Strip `#`, replace `/` with `-`.
+
+- `src/content/docs/<X> <Chapter name>`.
+- `documentation/content/lesson outlines/<X> <Chapter name>`
 
 ### 2. Run the agent sequence
 
-1 **lesson-outliner**: Prompt this subagent only with the lesson number and title. After finishing it will return the path of the new lesson outline file.
-2 **lesson-writer**: Prompt this subagent only with the lesson number and title, the lesson outline path, and the path of the `src/content/docs/<X> <Chapter name>` folder. After finishing, it will return the path of the new lesson file, and how many diagrams and exercises it contains and their unique ids.
-3 **lesson-diagramer**: Prompt this subagent with the id of the diagram it should build, the path of the file that contains it and the path of the lesson outline. Run a new subagent sequentially for each diagram.
-4 **lesson-exerciser**: Prompt this subagent with the id of the exercise it should build, the path of the file that contains it and the path of the lesson outline. Run a new subagent sequentially for each exercise or sandbox.
-5 **lesson-resourcer**: Prompt this subagent only with the path of the lesson MDX file.
-6 **lesson-formatter**: Prompt this subagent only with the path of the lesson MDX file.
-7 **lesson-reviewer**: Prompt this subagent only with the lesson outline path and the MDX path.
-8 **lesson-corrector**: Prompt this subagent only with the lesson outline path, the MDX path and the list of issues from the reviewer.
+Pass each subagent only the fields listed, no need to prompt the agent further, it already knows what to do.
+
+1 **lesson-outliner**: chapter id `<X>`, lesson number `<Y>`, lesson title. Returns the lesson outline path and the (possibly revised) title.
+2 **lesson-writer**: chapter id `<X>`, lesson number `<Y>`, lesson title, lesson outline path, chapter folder path. Returns the lesson MDX path plus the count and unique ids of its diagrams and exercises/sandboxes.
+3 **lesson-diagramer**: chapter id `<X>`, lesson number `<Y>`, diagram id, lesson MDX path, lesson outline path. Run a new subagent sequentially for each diagram.
+4 **lesson-exerciser**: chapter id `<X>`, lesson number `<Y>`, exercise/sandbox id, lesson MDX path, lesson outline path. Run a new subagent sequentially for each exercise or sandbox.
+5 **lesson-resourcer**: lesson MDX path.
+6 **lesson-formatter**: lesson MDX path, lesson outline path.
+7 **lesson-reviewer**: chapter id `<X>`, lesson outline path, lesson MDX path. Returns the list of issues.
+8 **lesson-corrector**: chapter id `<X>`, lesson outline path, lesson MDX path, the reviewer's issue list inline.
 
 ## Quiz
 
-If the lesson title is `Quiz` run the `lesson-quiz-maker` agent.
+If the lesson title is `Quiz` run a simpler pipeline:
+
+1
+2

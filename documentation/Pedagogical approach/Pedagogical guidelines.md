@@ -29,6 +29,10 @@ Six filters operationalize the pillars; if a lesson fails any, rewrite.
 3. **Body** — h2/h3 where there are distinct subtopics; teaching prose with code, exercises, and videos all placed where they belong, never at the end.
 5. **External resources** (optional LinkCards) — Official docs, tutorials, interactive explainers, supplementary video.
 
+## 4. Internal references
+
+Chapter and lesson numbers are for internal use only, students can't see them. When referring to another chapter or lesson do it by title. Prefer using relative terms like "in the next chapter".
+
 ## 4. Quizzes
 
 Teaching chapters (except unit 1) end with a final quiz so the student can self-assess recall.

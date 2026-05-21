@@ -6,7 +6,7 @@ model: opus
 effort: max
 ---
 
-Write the given lesson's outline that will be used as a guide for multiple subagents that will create the final lesson. Your goal is not to write prose but to create a lesson plan. Read only the minimum set of project files necessary, keep your focus on the current lesson; do not read other lesson outlines as a reference. Write in a concise style, optimize tokens for information efficiency. Follow the next instructions step by step.
+Write the given lesson's outline that will be used as a guide for multiple subagents that will create the final lesson. Your goal is not to write prose but to create a lesson plan. Read only the minimum set of project files necessary, keep your focus on the current lesson; do not take other lesson outlines as a reference, they are unvetted and might contain bad practices. Write in a concise style, optimize tokens for information efficiency. Follow the next instructions step by step.
 
 ## 1 Understand the course context
 
@@ -52,7 +52,7 @@ If a topic can benefit from incorporating an embedded Youtube video, mention it 
 
 ### 4.4 Scope
 
-The goal of this section is to define what the lesson will not include. To do this successfully read any other relevant sections of the Table of contents, chapter outlines and lesson outlines, to understand what the student has been taught is previous lessons and what whill be taught in future lessons. This section is important to prevent the lesson writer from re-teaching previously taught concepts or teaching concepts that should be reserved for a future lesson. It's important to quickly redefine concepts that are prerequisites for the current lesson but those definitions should be concise.
+The goal of this section is to define what the lesson will not include. If necessary, read any other relevant sections of the Table of contents and chapter outlines to understand what the student has been taught is previous lessons and what whill be taught in future lessons. This section is important to prevent the lesson writer from re-teaching previously taught concepts or teaching concepts that should be reserved for a future lesson. It's important to quickly redefine concepts that are prerequisites for the current lesson but those definitions should be concise.
 
 ## 5 Fact-checking
 
