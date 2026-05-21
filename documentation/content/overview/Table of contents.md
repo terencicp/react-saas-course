@@ -35,18 +35,18 @@
 
 ### Chapter 005 — The JavaScript value model
 - 1 Bindings, not boxes (Teaches what assignment actually does: primitive copy vs. shared object references, function-call pass-by-value-vs-reference, and shallow vs. deep copy with `structuredClone`.)
-- 2 What `===` actually compares (Teaches value vs. reference equality, `Object.is` for `NaN` and signed zero, `Number.isNaN` over the coercing global, and why the course never writes `==`.)
+- 2 What === actually compares (Teaches value vs. reference equality, `Object.is` for `NaN` and signed zero, `Number.isNaN` over the coercing global, and why the course never writes `==`.)
 - 3 Store cents, not dollars (Teaches IEEE 754 at the depth that bites, the integer-cents money rule, the `Number.is*` family, when `BigInt` earns its weight, and the `parseInt` vs. `Number` conversion choice.)
-- 4 Why `.length` lies (Teaches code units vs. code points vs. grapheme clusters, `Intl.Segmenter` for user-perceived counts, `normalize` for visually-identical inputs, and the senior string-method surface.)
+- 4 Why .length lies (Teaches code units vs. code points vs. grapheme clusters, `Intl.Segmenter` for user-perceived counts, `normalize` for visually-identical inputs, and the senior string-method surface.)
 - 5 Backticks and tagged templates (Teaches template literals as the default for interpolation and multi-line strings, the tag-function mechanics, and `sql` and `dedent` as the canonical tagged-template cases.)
-- 6 `const` binds, it doesn't freeze (Teaches `const` vs. `let` and when each earns its weight, block scope, the Temporal Dead Zone, hoisting demystified, and why `const` alone doesn't narrow types.)
+- 6 const binds, it doesn't freeze (Teaches `const` vs. `let` and when each earns its weight, block scope, the Temporal Dead Zone, hoisting demystified, and why `const` alone doesn't narrow types.)
 - 7 Quiz
 
 ### Chapter 006 — Functions, naming, and control flow
 - 1 Arrow by default, declaration on demand (Teaches the three function forms, the senior rule that arrow expressions bound to `const` are the 2026 default, and the narrow triggers (hoisting, named recursion, type-guard signatures) that earn a `function` declaration.)
 - 2 Signatures that stay readable past two parameters (Teaches the two-positional-parameter rule and the options-object pattern, parameter defaults firing only on `undefined`, rest parameters and call-site spread, and the TypeScript ordering of required vs. optional parameters.)
 - 3 Name for intent, not implementation (Teaches Architectural Principle #4 across the four naming surfaces (variables, functions, parameters, types), the boolean-prefix convention, and the three bad-name classes (implementation-leaking, vague abstractions, negated booleans).)
-- 4 Guard clauses, ternaries, and exhaustive `switch` (Teaches flat control flow through early-return guards, expression-level ternaries, `switch` with `noFallthroughCasesInSwitch` and `assertNever`, the lookup-map alternative, and the loop forms a 2026 senior reaches for.)
+- 4 Guard clauses, ternaries, and exhaustive switch (Teaches flat control flow through early-return guards, expression-level ternaries, `switch` with `noFallthroughCasesInSwitch` and `assertNever`, the lookup-map alternative, and the loop forms a 2026 senior reaches for.)
 - 5 The null-safe operator trio (Teaches `?.` for nullable access at each chain link, `??` over `||` for defaults (with the `0` / `''` / `false` trap), and `??=` for lazy initialization, plus the operator-precedence rules that force parentheses.)
 - 6 Destructuring as the API call-shape (Teaches object and array destructuring with rename, defaults, and rest, the signature-level destructure that React and server actions consume, and the destructure-then-rebuild pattern that prevents accidental field forwarding.)
 - 7 Closures: lexical capture by reference (Teaches closures as lexical capture by reference (not by value), the stale-closure trap in async code, and the three production sites the model later explains: Server Actions, `useEffect` cleanups, and route-handler factories.)
@@ -63,12 +63,12 @@
 
 ### Chapter 008 — TypeScript: typing the values you already know
 - 1 Primitives, literals, and the four corners (The seven primitive types, literal unions as the senior reach for finite domains, and the `any`/`unknown`/`never`/`void` corners with the trigger that earns each.)
-- 2 Object shapes: `type`, `interface`, and field modifiers (When to default to `type` (always) and reach for `interface` (declaration merging), paired with the per-field `?` and `readonly` modifiers plus the array-level `readonly T[]` and `Readonly<T>` cousins.)
+- 2 Object shapes: type, interface, and field modifiers (When to default to `type` (always) and reach for `interface` (declaration merging), paired with the per-field `?` and `readonly` modifiers plus the array-level `readonly T[]` and `Readonly<T>` cousins.)
 - 3 Tuples: positions with labels (Tuple syntax with element labels, optional and rest positions, `readonly` tuples, and the concrete patterns (`useState`, custom hooks, `Object.entries`) where a tuple beats a named-field object.)
-- 4 Dynamic keys: index signatures and `Record<K, T>` (The two forms for dynamic-keyed objects, the completeness payoff of `Record<LiteralUnion, V>`, and how `noUncheckedIndexedAccess` narrows reads differently across the open-keyed and finite-keyed cases.)
+- 4 Dynamic keys: index signatures and Record<K, T> (The two forms for dynamic-keyed objects, the completeness payoff of `Record<LiteralUnion, V>`, and how `noUncheckedIndexedAccess` narrows reads differently across the open-keyed and finite-keyed cases.)
 - 5 Composing types: unions and intersections (The `|` and `&` operators across literal, mixed-primitive, shape, and nullable unions plus shape-and-narrowing intersections, with the discriminated-union shape seeded for Chapter 009.)
 - 6 Narrow, don't assert (Control-flow narrowing through `typeof`, equality, `in`, `instanceof`, `Array.isArray`, and discriminant fields, with the three legitimate triggers that earn `as` and `!` named as conditional escape hatches.)
-- 7 Keeping literals narrow: `as const` and `satisfies` (The value-site freeze that keeps literal types from widening, the contract check that validates without losing the narrow, and the combined `as const satisfies T` idiom for typed-config patterns.)
+- 7 Keeping literals narrow: as const and satisfies (The value-site freeze that keeps literal types from widening, the contract check that validates without losing the narrow, and the combined `as const satisfies T` idiom for typed-config patterns.)
 - 8 Annotate the boundaries, infer the inside (The senior rule for where annotations earn their weight (parameters, exported APIs) and where inference wins (locals, return types, inline callbacks), plus the `import type` discipline that `verbatimModuleSyntax` enforces.)
 - 9 Quiz
 
@@ -91,9 +91,9 @@
 
 ### Chapter 011 — Async semantics
 - 1 The event loop and the microtask queue (Teaches the three-part runtime model (call stack, microtask queue, macrotask queue), the tick recipe that drains microtasks before the next macrotask, and `await` as a microtask-paced suspension so the student can predict the order of output in any small async program.)
-- 2 Promises: combinators and `withResolvers` (Teaches the Promise three-state model, the four combinators (`all`, `allSettled`, `any`, `race`) with the senior trigger and failure mode for each, and `Promise.withResolvers()` as the modern replacement for the deferred-pattern boilerplate when resolvers must live outside the constructor's executor.)
-- 3 `async`/`await`: parallel by default, sequential by dependency (Teaches the dependency-check reflex that picks `Promise.all` over consecutive `await`s when no data flows between them, the N+1 trap inside `.map(async ...)` with its bounded (`Promise.all`), unbounded (`pMap`), and database-batched fixes, `for await...of` for streams and paginated APIs, and the `return await` discipline that preserves stack traces.)
-- 4 Cancellation with `AbortController` and `AbortSignal` (Teaches the `{ signal }` parameter shape every modern web API speaks, the canonical user-cancel pattern with `AbortError` discrimination at the catch, `AbortSignal.timeout(ms)` as the 2026 replacement for `Promise.race` timeouts, and `AbortSignal.any([...])` for composing user-cancel, timeout, and shutdown signals into one.)
+- 2 Promises: combinators and withResolvers (Teaches the Promise three-state model, the four combinators (`all`, `allSettled`, `any`, `race`) with the senior trigger and failure mode for each, and `Promise.withResolvers()` as the modern replacement for the deferred-pattern boilerplate when resolvers must live outside the constructor's executor.)
+- 3 async/await: parallel by default, sequential by dependency (Teaches the dependency-check reflex that picks `Promise.all` over consecutive `await`s when no data flows between them, the N+1 trap inside `.map(async ...)` with its bounded (`Promise.all`), unbounded (`pMap`), and database-batched fixes, `for await...of` for streams and paginated APIs, and the `return await` discipline that preserves stack traces.)
+- 4 Cancellation with AbortController and AbortSignal (Teaches the `{ signal }` parameter shape every modern web API speaks, the canonical user-cancel pattern with `AbortError` discrimination at the catch, `AbortSignal.timeout(ms)` as the 2026 replacement for `Promise.race` timeouts, and `AbortSignal.any([...])` for composing user-cancel, timeout, and shutdown signals into one.)
 - 5 Quiz
 
 ### Chapter 012 — Errors as a first-class concern
@@ -104,7 +104,7 @@
 ### Chapter 013 — JSON, classes, and the Temporal pivot
 - 1 JSON at the wire boundary (Teaches `JSON.parse`/`JSON.stringify`, the four serialization gotchas (`undefined`, `Date`, `BigInt`, `NaN`/`Infinity`), and the parse-to-`unknown`-then-validate-with-Zod discipline that closes the type story at every wire seam.)
 - 2 Classes, narrowly (Teaches the three sites where classes still earn their weight in 2026 SaaS code (custom `Error` subclasses, SDK adapters, the rare stateful domain class) and the minimum class surface (constructor, `readonly`/`#field`, arrow-field methods, static factory) — refusing inheritance hierarchies, abstract classes, mixins, decorators, and accessors.)
-- 3 `Date`'s problems and the Temporal pivot (Teaches `Date`'s known design issues (zero-indexed months, in-place mutation, timezone as second-class, no real duration type, the `Invalid Date` sentinel) and the senior 2026 pivot to Temporal — Stage 4 March 2026, unflagged in Node 26, with `temporal-polyfill` for the Node 24 LTS line.)
+- 3 Date's problems and the Temporal pivot (Teaches `Date`'s known design issues (zero-indexed months, in-place mutation, timezone as second-class, no real duration type, the `Invalid Date` sentinel) and the senior 2026 pivot to Temporal — Stage 4 March 2026, unflagged in Node 26, with `temporal-polyfill` for the Node 24 LTS line.)
 - 4 Quiz
 
 ---
@@ -161,13 +161,13 @@
 - 3 Landmarks and the heading outline (The six landmark elements (`<header>`, `<nav>`, `<main>`, `<aside>`, `<article>`, `<section>`, `<footer>`) plus the strict `<h1>`-through-`<h6>` hierarchy form the page outline assistive tech navigates.)
 - 4 Actions, navigations, and item sequences (`<button type>` for actions versus `<a href>` and `<Link>` for navigation, `target="_blank"` paired with `rel="noopener noreferrer"`, `aria-label` on icon-only buttons, and `<ul>`/`<ol>` for related parallel items.)
 - 5 Forms as a contract with the server (`<form>`, typed `<input>`s, `<label htmlFor>`, `<fieldset>`/`<legend>`, the `name` attribute as the `FormData` key, `autoComplete` for autofill, and native constraints as UX paired with server-side Zod.)
-- 6 `data-*`, `aria-*`, and the `<table>` decision (`data-*` for script hooks (delegation, tests, Tailwind state), `aria-*` for assistive-tech signals (`aria-label`, `aria-current`, `aria-expanded`, `aria-pressed`, `role="alert"`), and `<table>` with `<th scope>` and `<caption>` only when the data is genuinely tabular.)
+- 6 data-*, aria-*, and the <table> decision (`data-*` for script hooks (delegation, tests, Tailwind state), `aria-*` for assistive-tech signals (`aria-label`, `aria-current`, `aria-expanded`, `aria-pressed`, `role="alert"`), and `<table>` with `<th scope>` and `<caption>` only when the data is genuinely tabular.)
 - 7 Quiz
 
 ### Chapter 022 — Tailwind v4 inside the React component
 - 1 Utility-first on JSX (Teaches the utility-class families, the theme scale, prefix-and-colon variants, opacity modifiers, and arbitrary values as the escape hatch.)
-- 2 CSS-first config in `globals.css` (Teaches the v4 directives — `@import "tailwindcss"`, `@theme` tokens, `@utility`, `@custom-variant`, `@container`, `@source`, `@plugin` — that replace `tailwind.config.ts`.)
-- 3 Composing classes with `cn()` (Teaches the `clsx` + `tailwind-merge` helper, the defaults-then-`className`-last override pattern, and conditional class forms for component props.)
+- 2 CSS-first config in globals.css (Teaches the v4 directives — `@import "tailwindcss"`, `@theme` tokens, `@utility`, `@custom-variant`, `@container`, `@source`, `@plugin` — that replace `tailwind.config.ts`.)
+- 3 Composing classes with cn() (Teaches the `clsx` + `tailwind-merge` helper, the defaults-then-`className`-last override pattern, and conditional class forms for component props.)
 - 4 Variants that read DOM state (Teaches `data-*`, `aria-*`, `group-*`, `peer-*`, `has-*`, `*:`, `not-*`, and positional variants so state-driven styling skips `useState`.)
 - 5 Dark mode via semantic tokens (Teaches the shadcn-style `@custom-variant dark` plus `@theme` and `.dark` OKLCH token overrides so components ship one theme-agnostic class string.)
 - 6 Theme switching without FOUC (Teaches the `next-themes` `<ThemeProvider>` wiring, `suppressHydrationWarning`, the `useTheme()` hook, and a hydration-safe `<ThemeToggle>`.)
@@ -194,10 +194,10 @@
 
 ### Chapter 025 — The visual surface: typography, color, motion, responsive
 - 1 Type, scale, and the reading surface (Teaches the system-plus-`next/font` stack, Tailwind's `text-*`/`leading-*`/`tracking-*` scales, `text-balance` and `text-pretty` reflexes, `max-w-prose` reading width, and the `truncate` / `line-clamp-*` / `tabular-nums` utilities the student writes daily.)
-- 2 OKLCH, `color-mix()`, and the alpha syntax (Teaches OKLCH as the token storage form, `color-mix(in oklch, ...)` for runtime mixing, the `bg-blue-500/50` alpha syntax and how it compiles to `color-mix()`, semantic tokens over primitives, `opacity` vs. per-property alpha, and `prefers-color-scheme` vs. the `.dark` class.)
+- 2 OKLCH, color-mix(), and the alpha syntax (Teaches OKLCH as the token storage form, `color-mix(in oklch, ...)` for runtime mixing, the `bg-blue-500/50` alpha syntax and how it compiles to `color-mix()`, semantic tokens over primitives, `opacity` vs. per-property alpha, and `prefers-color-scheme` vs. the `.dark` class.)
 - 3 Borders, radius, and the elevation scale (Teaches `border` / `border-*` / `divide-*`, the `rounded-*` scale, `outline` vs. `border` for focus rings, `ring-*` as the multi-layer shorthand, the `shadow-*` elevation tiers, `drop-shadow` vs. `box-shadow`, and `backdrop-filter` for glass-morphism headers.)
-- 4 Pseudo-classes and the `:has()` parent selector (Teaches `:focus-visible` as the canonical focus reflex, `:focus-within` for parent-of-focused, the disabled/checked/invalid state pseudo-classes, `:has()` and the JavaScript class toggles it retired, `:not()`, the `::placeholder` / `::selection` pseudo-elements, and the iOS sticky-hover gate.)
-- 5 Motion: transitions, keyframes, and `tw-animate-css` (Teaches `transition-*` for property motion (with `transform` and `opacity` as the cheap properties), `animate-*` with `@keyframes` declared in `@theme`, `tw-animate-css` as the shadcn dialog/sheet/accordion dependency, the `data-[state=open]:animate-in` choreography pattern, and `prefers-reduced-motion` with the `motion-reduce:` variant.)
+- 4 Pseudo-classes and the :has() parent selector (Teaches `:focus-visible` as the canonical focus reflex, `:focus-within` for parent-of-focused, the disabled/checked/invalid state pseudo-classes, `:has()` and the JavaScript class toggles it retired, `:not()`, the `::placeholder` / `::selection` pseudo-elements, and the iOS sticky-hover gate.)
+- 5 Motion: transitions, keyframes, and tw-animate-css (Teaches `transition-*` for property motion (with `transform` and `opacity` as the cheap properties), `animate-*` with `@keyframes` declared in `@theme`, `tw-animate-css` as the shadcn dialog/sheet/accordion dependency, the `data-[state=open]:animate-in` choreography pattern, and `prefers-reduced-motion` with the `motion-reduce:` variant.)
 - 6 Breakpoints and the mobile-first reflex (Teaches mobile-first as the senior default, the Tailwind `sm`/`md`/`lg`/`xl`/`2xl` scale, breakpoints as content-driven not device-driven, the `prefers-*` media-feature family, `@media (hover: hover)` against the iOS sticky-hover bug, and the `hidden md:block` / `md:hidden` visibility pattern.)
 - 7 Container queries for component-level layout (Teaches `container-type: inline-size` as the senior default, `@container` plus the `@sm:` / `@md:` Tailwind variants, the `cqi` unit with `clamp()` for fluid component typography, named containers for nested structures, and the viewport-vs-container decision rule.)
 - 8 Quiz
@@ -212,30 +212,30 @@
 
 ### Chapter 027 — The render model
 - 1 What triggers a render (Render as a function call re-run, the three triggers (own state, parent, context), `Object.is` on props, inline literals as identity churn, and the React Compiler retiring most manual memoization.)
-- 2 Reconciliation and the `key` prop (How React diffs trees by element type, identifies siblings by position, uses `key` as explicit identity, and why index-as-key breaks reorderable lists.)
+- 2 Reconciliation and the key prop (How React diffs trees by element type, identifies siblings by position, uses `key` as explicit identity, and why index-as-key breaks reorderable lists.)
 - 3 The purity contract (Render as a pure function of props and state, the no-mutation and no-side-effect rules, why concurrent rendering and the React Compiler depend on it, and the DevTools badge as your audit signal.)
 - 4 State is a snapshot (Each render closing over its own state, the `setCount(count + 1)` bug, the updater form for sequential updates, React 19 automatic batching, `flushSync` as the opt-out, and immutable updates that avoid the `Object.is` bailout.)
-- 5 Remounting with `key` (Using a `key` change to discard local state on identity switches, the canonical record-bound form fix, the animation-replay and button-bump variants, and when to lift or derive state instead.)
+- 5 Remounting with key (Using a `key` change to discard local state on identity switches, the canonical record-bound form fix, the animation-replay and button-bump variants, and when to lift or derive state instead.)
 - 6 Synthetic events (The `SyntheticEvent` wrapper, delegation at the React root, typed handlers parameterized by element, `e.currentTarget` over `e.target`, `e.key` and modifiers for keyboard input, and pointer events as the unified mouse/touch/pen primitive.)
 - 7 Quiz
 
 ### Chapter 028 — Hooks for holding state
-- 1 The `useState` surface and lazy initialization (Teaches the `useState` signature, typing pitfalls, the `Object.is` bailout, immutable-update reflex, lazy initializer form, setter stability, and what `useState` is not for.)
+- 1 The useState surface and lazy initialization (Teaches the `useState` signature, typing pitfalls, the `Object.is` bailout, immutable-update reflex, lazy initializer form, setter stability, and what `useState` is not for.)
 - 2 Derive in render, do not mirror into state (Teaches that values computable from existing props and state belong in the function body, names the canonical mirror-prop-into-state-and-sync-with-effect anti-pattern, and lands the three fixes (derive, lift, `key`-reset).)
 - 3 The four homes for state (Teaches the local-lifted-URL-server decision tree, the colocate-then-lift-on-demand reflex, URL state with `nuqs` as the 2026 reach, and the prop-drilling-is-not-a-context-bug distinction.)
-- 4 `useReducer` when transitions multiply (Teaches the threshold where coordinated `useState`s become a reducer, the discriminated-union action shape, the reducer purity contract, lazy init via the `init` argument, and the async-lives-in-the-handler rule.)
-- 5 `useRef` as the non-rendering escape hatch (Teaches the two flavors of ref (DOM nodes and instance values), the state-vs-ref rule ("does the JSX read it?"), the four canonical DOM-ref reaches, the don't-read-or-write-during-render rule, and how refs interact with the React Compiler.)
-- 6 `useId` for ARIA wiring across SSR (Teaches the position-in-the-tree derivation that keeps IDs stable across server and client, composing multiple IDs from one call, the label-input-error wiring pattern, and the not-for-list-keys rule.)
+- 4 useReducer when transitions multiply (Teaches the threshold where coordinated `useState`s become a reducer, the discriminated-union action shape, the reducer purity contract, lazy init via the `init` argument, and the async-lives-in-the-handler rule.)
+- 5 useRef as the non-rendering escape hatch (Teaches the two flavors of ref (DOM nodes and instance values), the state-vs-ref rule ("does the JSX read it?"), the four canonical DOM-ref reaches, the don't-read-or-write-during-render rule, and how refs interact with the React Compiler.)
+- 6 useId for ARIA wiring across SSR (Teaches the position-in-the-tree derivation that keeps IDs stable across server and client, composing multiple IDs from one call, the label-input-error wiring pattern, and the not-for-list-keys rule.)
 - 7 Quiz
 
 ### Chapter 029 — Effects, context, and concurrent hooks
 - 1 Strict Mode is the messenger (How `<StrictMode>` double-invokes renders, initializers, and the effect lifecycle in dev so impurity and missing cleanups surface before production.)
-- 2 `useEffect` as synchronization (The `useEffect` signature, the setup/cleanup/resync lifecycle, the four canonical cleanup pairings, abort and ignore-flag race patterns, and the dependency-array contract.)
-- 3 `useEffectEvent` and the non-reactive seam (How `useEffectEvent` lets an effect read latest props and state without re-running, the reactive vs. non-reactive distinction, and the call-site restrictions that make it safe.)
+- 2 useEffect as synchronization (The `useEffect` signature, the setup/cleanup/resync lifecycle, the four canonical cleanup pairings, abort and ignore-flag race patterns, and the dependency-array contract.)
+- 3 useEffectEvent and the non-reactive seam (How `useEffectEvent` lets an effect read latest props and state without re-running, the reactive vs. non-reactive distinction, and the call-site restrictions that make it safe.)
 - 4 You probably don't need an effect (The five-quadrant audit (derive, handle, server, cache, sync) and the catalog of effect anti-patterns paired with their correctly shaped replacements.)
-- 5 `useContext` without the re-render storm (`useContext` as propagation primitive, the every-consumer-re-renders footgun, and the three mitigations: split contexts, separate state from dispatch, and stable provider values.)
+- 5 useContext without the re-render storm (`useContext` as propagation primitive, the every-consumer-re-renders footgun, and the three mitigations: split contexts, separate state from dispatch, and stable provider values.)
 - 6 Marking updates as non-urgent (`useTransition` and `useDeferredValue` as priority markers (not speed boosts), the wrap-the-setter vs. wrap-the-value cut, async transitions, and the Suspense interaction that keeps old UI visible.)
-- 7 Reading promises with `use()` (The `use()` primitive for unwrapping promises into Suspense and reading context conditionally, the stable-promise rule, and the Server-to-Client streaming pattern that replaces effect-based fetching.)
+- 7 Reading promises with use() (The `use()` primitive for unwrapping promises into Suspense and reading context conditionally, the stable-promise rule, and the Server-to-Client streaming pattern that replaces effect-based fetching.)
 - 8 Rules of hooks and the lint that enforces them (Why hooks must run at the top level in the same order every render (the indexed-slot mechanic), the `use*` naming contract, and the two ESLint rules that enforce structure and dependencies.)
 - 9 Quiz
 
@@ -266,7 +266,7 @@
 ## Unit 5 — Next.js and the App Router
 
 ### Chapter 033 — File-system routing with the App Router
-- 1 File tree, `page.tsx`, and co-location (Teaches how folders under `app/` become URL segments, how `page.tsx` makes a route routable, and the feature co-location rule that puts route-specific code under `_components/` and `_lib/` private folders.)
+- 1 File tree, page.tsx, and co-location (Teaches how folders under `app/` become URL segments, how `page.tsx` makes a route routable, and the feature co-location rule that puts route-specific code under `_components/` and `_lib/` private folders.)
 - 2 Layouts and route groups (Teaches `layout.tsx` as the persistent shell that composes down the tree, the layout/page render boundary, `template.tsx` for the remount case, and route groups (`(folder)`) for organizing siblings under distinct layouts without affecting the URL.)
 - 3 Dynamic and catch-all segments (Teaches `[param]` for single dynamic segments, `[...slug]` and `[[...slug]]` for variable-depth URLs, why `params` is a Promise in Next.js 16, and validating captured strings with Zod before they hit a query.)
 - 4 Navigation primitives (Teaches `<Link>` for client-side soft navigation with intelligent prefetching, `useRouter().push` for programmatic moves, and the throwing trio `redirect()` (307), `permanentRedirect()` (308), and `notFound()` for server-side flow control.)
@@ -277,7 +277,7 @@
 ### Chapter 034 — The server / client boundary
 - 1 Server Components as the default (Renders on the server only, ships zero client JS, supports async bodies with direct DB and filesystem access, and composes with Client Components through import or `children`.)
 - 2 Client Components and pushing the boundary down (The two-render model (server HTML plus browser hydration), what earns a `"use client"` boundary, the cost in client JS, and the senior reflex of keeping the boundary at the smallest interactive leaf.)
-- 3 Directives and `server-only` enforcement (`"use client"` and `"use server"` semantics at the file head, Architectural Principle #6 (prefer explicit over magic), and the `server-only` / `client-only` packages that turn a leaked import into a build error.)
+- 3 Directives and server-only enforcement (`"use client"` and `"use server"` semantics at the file head, Architectural Principle #6 (prefer explicit over magic), and the `server-only` / `client-only` packages that turn a leaked import into a build error.)
 - 4 What crosses the RSC wire (Structured-clone-compatible values plus React extensions (Promises, JSX, Server/Client/Action references), the rejection of functions and class instances, and the secrets-in-props leak the student must catch.)
 - 5 Hydration and its mismatch failure modes (The server-HTML-meets-client-React handshake, the canonical mismatch causes (`Date.now`, `Math.random`, locale, timezone, browser extensions, stale `.next/dev`), and the fixes via `useEffect`, `useId`, and narrow `suppressHydrationWarning`.)
 - 6 Quiz
@@ -292,30 +292,30 @@
 ### Chapter 036 — The Cache Components rendering model
 - 1 Dynamic by default (How `cacheComponents: true` flips every route to dynamic-by-default with per-component opt-in caching, and the explicit signals (`params`, `searchParams`, `cookies()`, `headers()`, `draftMode()`, `connection()`) that mark a code path dynamic.)
 - 2 Shells and holes with PPR (How Partial Prerendering ships a cached static shell from the edge and streams dynamic holes through Suspense boundaries, plus the pure-static and pure-dynamic degenerate cases.)
-- 3 The `use cache` directive (The three placements (page, component, function) of `use cache`, the compiler-generated cache key, the serializable-arguments-and-return-value contract, and the closure rules cached functions must obey.)
+- 3 The use cache directive (The three placements (page, component, function) of `use cache`, the compiler-generated cache key, the serializable-arguments-and-return-value contract, and the closure rules cached functions must obey.)
 - 4 Lifetimes and tags (The three-number `cacheLife` contract (stale, revalidate, expire) with its preset profiles, and `cacheTag` naming conventions for entity-level and record-level invalidation.)
-- 5 Per-request memoization with React `cache()` (React's `cache()` as the request-scoped deduplication primitive for work that depends on request data, contrasted with `use cache` for cross-request persistence, with the canonical request-scoped-user pattern.)
+- 5 Per-request memoization with React cache() (React's `cache()` as the request-scoped deduplication primitive for work that depends on request data, contrasted with `use cache` for cross-request persistence, with the canonical request-scoped-user pattern.)
 - 6 Invalidating after a mutation (The four-tool decision tree — `updateTag` (Server-Action-only, read-your-writes), `revalidateTag` (stale-while-revalidate), `revalidatePath`, and `router.refresh` — picked by the user-expectation question.)
 - 7 Async request APIs and legacy segment config (Awaiting `params`, `searchParams`, `cookies()`, `headers()`, and `draftMode()` as Promises with `React.use()` for Client Components, `connection()` as the explicit dynamic opt-in, and the migration away from the deprecated `dynamic`, `revalidate`, and `fetchCache` segment exports.)
 - 8 Quiz
 
 ### Chapter 037 — The request surface: server reads, the proxy, and URL state
-- 1 Reading the request with `cookies()` and `headers()` (Teaches the async, server-only, read-only `cookies()` and `headers()` APIs from `next/headers`, the senior pattern of reading once at the top and passing resolved values down, the trust-the-platform caveat on proxy headers, and the build-time constraints these reads place on Cache Components.)
-- 2 `proxy.ts` and the matcher (Teaches the Next.js 16 rename of `middleware.ts` to Node-only `proxy.ts`, the canonical file shape with `NextRequest`/`NextResponse`, the matcher config as the cost-control surface, the proxy-to-route header pattern, and what belongs in the proxy versus the route.)
-- 3 Rewrites and redirects in `proxy.ts` (Teaches the redirect-vs-rewrite semantic split, 307/308 status codes, the proxy-vs-`next.config.ts`-vs-`redirect()` decision tree, the subdomain-rewrite multi-tenant pattern, and open-redirect prevention on the `?next=` return-URL idiom.)
-- 4 URL state with `searchParams` and route params (Teaches the URL-vs-component-state decision rule, the `params`-for-identity / `searchParams`-for-view-state split, the async Promise shape in Next.js 16, Zod validation at the boundary, opaque base64 cursors, and `nuqs` as the production layer.)
+- 1 Reading the request with cookies() and headers() (Teaches the async, server-only, read-only `cookies()` and `headers()` APIs from `next/headers`, the senior pattern of reading once at the top and passing resolved values down, the trust-the-platform caveat on proxy headers, and the build-time constraints these reads place on Cache Components.)
+- 2 proxy.ts and the matcher (Teaches the Next.js 16 rename of `middleware.ts` to Node-only `proxy.ts`, the canonical file shape with `NextRequest`/`NextResponse`, the matcher config as the cost-control surface, the proxy-to-route header pattern, and what belongs in the proxy versus the route.)
+- 3 Rewrites and redirects in proxy.ts (Teaches the redirect-vs-rewrite semantic split, 307/308 status codes, the proxy-vs-`next.config.ts`-vs-`redirect()` decision tree, the subdomain-rewrite multi-tenant pattern, and open-redirect prevention on the `?next=` return-URL idiom.)
+- 4 URL state with searchParams and route params (Teaches the URL-vs-component-state decision rule, the `params`-for-identity / `searchParams`-for-view-state split, the async Promise shape in Next.js 16, Zod validation at the boundary, opaque base64 cursors, and `nuqs` as the production layer.)
 - 5 Client-side navigation hooks (Teaches the four `next/navigation` hooks (`useRouter`, `usePathname`, `useSearchParams`, `useParams`), the read-on-server / write-on-client division of labor, `push` vs. `replace` vs. `refresh`, the Suspense requirement on `useSearchParams`, and the chip-list pattern that puts it all together.)
 - 6 Quiz
 
 ### Chapter 038 — Project config, platform primitives, and SEO
-- 1 The typed `next.config.ts` (Teaches the typed `next.config.ts` surface as a one-screen map (`cacheComponents`, `typedRoutes`, `images`, `headers`, `experimental`) and `serverExternalPackages` as the lever for Node-native SDKs that break Turbopack bundling.)
-- 2 Images with `next/image` (Teaches `next/image` as the platform default for sized, lazy, format-negotiated images, the required `sizes`/`priority`/`placeholder` props, the Next.js 16 `qualities` requirement, and `remotePatterns` as the mandatory security gate for external sources.)
+- 1 The typed next.config.ts (Teaches the typed `next.config.ts` surface as a one-screen map (`cacheComponents`, `typedRoutes`, `images`, `headers`, `experimental`) and `serverExternalPackages` as the lever for Node-native SDKs that break Turbopack bundling.)
+- 2 Images with next/image (Teaches `next/image` as the platform default for sized, lazy, format-negotiated images, the required `sizes`/`priority`/`placeholder` props, the Next.js 16 `qualities` requirement, and `remotePatterns` as the mandatory security gate for external sources.)
 - 3 Edge redirects and rewrites (Teaches `redirects()` and `rewrites()` in `next.config.ts` as the edge-applied home for request-independent rules, the `source`/`has`/`missing` pattern syntax, 308-vs-307 SEO consequences, and the decision tree against `proxy.ts` and `redirect()`.)
-- 4 Self-hosted fonts with `next/font` (Teaches `next/font/google` and `next/font/local` as the build-time self-hosting pipeline that eliminates CLS via fallback metrics, the required `subsets`, variable-font defaults, and the Tailwind CSS-custom-property bridge.)
-- 5 Third-party scripts with `next/script` (Teaches the four `next/script` strategies (`beforeInteractive`, `afterInteractive`, `lazyOnload`, `worker`), the `onLoad`/`onReady` callbacks, placement and dedup with `id`, and the SDK-over-snippet preference for vendors that ship one.)
+- 4 Self-hosted fonts with next/font (Teaches `next/font/google` and `next/font/local` as the build-time self-hosting pipeline that eliminates CLS via fallback metrics, the required `subsets`, variable-font defaults, and the Tailwind CSS-custom-property bridge.)
+- 5 Third-party scripts with next/script (Teaches the four `next/script` strategies (`beforeInteractive`, `afterInteractive`, `lazyOnload`, `worker`), the `onLoad`/`onReady` callbacks, placement and dedup with `id`, and the SDK-over-snippet preference for vendors that ship one.)
 - 6 Metadata and dynamic OG cards (Teaches the static `metadata` export, `generateMetadata` with cached resource reads, `metadataBase` and `alternates.canonical`, and `opengraph-image.tsx` with `ImageResponse` for per-resource social cards.)
 - 7 Robots, sitemaps, icons, viewport (Teaches the SEO file conventions (`robots.ts`, `sitemap.ts`, `icon.{ext}`, `apple-icon`, `manifest.ts`), the separate `viewport` export with `themeColor`, env-aware robots, and post-deploy OG cache warming.)
-- 8 `generateStaticParams` for static catalogs (Teaches `generateStaticParams` as the hook that materializes dynamic segments at build time, the `dynamicParams` toggle for closed lists, and the pairing with `use cache` and `cacheTag` for the production content-page shape.)
+- 8 generateStaticParams for static catalogs (Teaches `generateStaticParams` as the hook that materializes dynamic segments at build time, the `dynamicParams` toggle for closed lists, and the pairing with `use cache` and `cacheTag` for the production content-page shape.)
 - 9 Quiz
 
 ### Chapter 039 — Project: list-plus-detail with parallel routes
@@ -347,7 +347,7 @@
 - 7 UNIQUE and CHECK constraints (Pushes invariants into the database with single-column, composite, partial, and case-insensitive UNIQUE constraints plus `CHECK` predicates as the safety net Zod can't replace.)
 - 8 Many-to-many junction tables (Models N:M with two FKs and a composite PK, names the junction-vs-entity trigger, and shows the promotion path when the relationship grows metadata.)
 - 9 Drizzle Relations v2 (Declares the TS-side traversal graph with `defineRelations` in `db/relations.ts` — one/many/through shapes — that enables `db.query.…({ with: … })` nested reads in 042.3.)
-- 10 `$inferSelect` and `$inferInsert` (Cashes Principle #2 in by deriving every row, insert, and prop type from `typeof table.$inferSelect`/`$inferInsert`, replacing every hand-written row interface in the codebase.)
+- 10 $inferSelect and $inferInsert (Cashes Principle #2 in by deriving every row, insert, and prop type from `typeof table.$inferSelect`/`$inferInsert`, replacing every hand-written row interface in the codebase.)
 - 11 Quiz
 
 ### Chapter 042 — Querying and mutating
@@ -399,10 +399,10 @@
 - 8 Quiz
 
 ### Chapter 047 — Server Actions
-- 1 The `"use server"` seam (Defines a Server Action, names the file-level and inline declaration sites, walks the three call shapes, and locks the serializable-args contract that crosses the wire.)
+- 1 The "use server" seam (Defines a Server Action, names the file-level and inline declaration sites, walks the three call shapes, and locks the serializable-args contract that crosses the wire.)
 - 2 Parse on entry, every time (Installs the five-seam action shape and the `safeParse`-on-`Object.fromEntries(formData)` discipline that runs before any cookie read, database call, or log statement.)
 - 3 Result, or throw (Locks the canonical `Result<T>` discriminated-union return shape, the `ok` / `err` helpers, the throw-at-the-framework-edge rule, and the standardized error codes every action shares.)
-- 4 Thin actions, pure `/lib` (Introduces Principle #3 (pure helpers in `/lib`, side effects at named boundaries) and Principle #5 (don't invent a parallel call wrapper), and names the auth and billing carve-outs that earn their weight later.)
+- 4 Thin actions, pure /lib (Introduces Principle #3 (pure helpers in `/lib`, side effects at named boundaries) and Principle #5 (don't invent a parallel call wrapper), and names the auth and billing carve-outs that earn their weight later.)
 - 5 After the write (Teaches `revalidatePath` as the basic post-mutation move, the `db.transaction` wrapping pattern with its no-external-calls rule, and foreshadows the idempotency-key slot for Chapter 067.)
 - 6 Quiz
 
@@ -418,10 +418,10 @@
 
 ### Chapter 049 — When the platform isn't enough: React Hook Form
 - 1 The four triggers that flip the choice (Names the four UX shapes that break the native 48 form pattern and justify reaching for React Hook Form, the cost of adopting it, and the 2026 form-library landscape (Conform, TanStack Form) at one paragraph each.)
-- 2 The five primitives: `useForm`, `register`, `Controller`, `handleSubmit`, `formState` (Teaches RHF's core surface — the form root, the uncontrolled and controlled field paths, the submit interceptor, the read-side state, and how the shadcn `<Form>` wrapper consumes the form instance.)
-- 3 `zodResolver`: one schema, both sides of the wire (Wires `@hookform/resolvers/zod` so the form and the Server Action validate against the same Zod schema, covering the `z.input` vs `z.output` type bridge, the `FormData` vs typed-object action call shape, and mapping server-returned `fieldErrors` back into RHF via `setError`.)
-- 4 `useFieldArray`: dynamic lists of fields (Teaches the hook for variable-length row sets — the `append`/`remove`/`move`/`replace` operations, the `field.id` vs domain-ID split, the `z.array(z.object(...))` schema shape with per-row error access, and the action-side insert/update/delete diff inside a transaction.)
-- 5 Multi-step wizards with `FormProvider` (Builds an end-to-end wizard with one `useForm` at the root, `useFormContext` per step, `trigger(fieldNames)` plus schema `.pick()` for per-step validation, `shouldUnregister: false` for back-navigation, and the progressive-enhancement casualty named explicitly.)
+- 2 The five primitives: useForm, register, Controller, handleSubmit, formState (Teaches RHF's core surface — the form root, the uncontrolled and controlled field paths, the submit interceptor, the read-side state, and how the shadcn `<Form>` wrapper consumes the form instance.)
+- 3 zodResolver: one schema, both sides of the wire (Wires `@hookform/resolvers/zod` so the form and the Server Action validate against the same Zod schema, covering the `z.input` vs `z.output` type bridge, the `FormData` vs typed-object action call shape, and mapping server-returned `fieldErrors` back into RHF via `setError`.)
+- 4 useFieldArray: dynamic lists of fields (Teaches the hook for variable-length row sets — the `append`/`remove`/`move`/`replace` operations, the `field.id` vs domain-ID split, the `z.array(z.object(...))` schema shape with per-row error access, and the action-side insert/update/delete diff inside a transaction.)
+- 5 Multi-step wizards with FormProvider (Builds an end-to-end wizard with one `useForm` at the root, `useFormContext` per step, `trigger(fieldNames)` plus schema `.pick()` for per-step validation, `shouldUnregister: false` for back-navigation, and the progressive-enhancement casualty named explicitly.)
 - 6 Quiz
 
 ### Chapter 050 — Route handlers and API contracts
@@ -475,10 +475,10 @@
 - 4 Quiz
 
 ### Chapter 056 — Better Auth setup
-- 1 Wiring the `auth` instance (Installs `better-auth`, defines the server `auth` instance with `nextCookies`, mounts the `[...all]` catch-all route handler, sets up the browser `authClient`, and adds the two required env entries.)
+- 1 Wiring the auth instance (Installs `better-auth`, defines the server `auth` instance with `nextCookies`, mounts the `[...all]` catch-all route handler, sets up the browser `authClient`, and adds the two required env entries.)
 - 2 Schema and the four core tables (Wires the Drizzle adapter, generates the canonical `user`, `session`, `account`, and `verification` tables via the Better Auth CLI, walks their load-bearing columns and cascades, and ships the first migration through Drizzle Kit.)
 - 3 Session lifetimes and cookie hardening (Configures `expiresIn`, `updateAge`, and `freshAge`, sets the `__Host-` cookie prefix and SameSite defaults, weighs the cookie-cache staleness trade, and names `secondaryStorage` and `trustedOrigins` as deferred reaches.)
-- 4 `getCurrentUser` across the five surfaces (Establishes the one `auth.api.getSession({ headers: await headers() })` call shape used in proxy, layouts, Server Components, Server Actions, and route handlers, wraps it in `React.cache`-backed `getCurrentUser`/`requireUser` helpers, and stands up the minimum `proxy.ts` gate.)
+- 4 getCurrentUser across the five surfaces (Establishes the one `auth.api.getSession({ headers: await headers() })` call shape used in proxy, layouts, Server Components, Server Actions, and route handlers, wraps it in `React.cache`-backed `getCurrentUser`/`requireUser` helpers, and stands up the minimum `proxy.ts` gate.)
 - 5 Quiz
 
 ### Chapter 057 — Authentication flows
@@ -494,7 +494,7 @@
 - 10 Quiz
 
 ### Chapter 058 — The signed-in session: gates, credentials, devices, defenses
-- 1 The two-layer gate in `proxy.ts` (Teaches the production-shaped protected-routes proxy — cookie-presence-only checks with `getSessionCookie`, matcher design (allowlist vs matchall-minus-public), the `?next=` round-trip with open-redirect closure, the inverse gate that bounces signed-in users off `/sign-in`, and the rule that keeps authorization decisions at the action boundary rather than the proxy.)
+- 1 The two-layer gate in proxy.ts (Teaches the production-shaped protected-routes proxy — cookie-presence-only checks with `getSessionCookie`, matcher design (allowlist vs matchall-minus-public), the `?next=` round-trip with open-redirect closure, the inverse gate that bounces signed-in users off `/sign-in`, and the rule that keeps authorization decisions at the action boundary rather than the proxy.)
 - 2 Changing the password and the email (Teaches the `/settings/security` credential-mutation surface — `changePassword` with `revokeOtherSessions: true` as the senior default, `changeEmail` verified on the current address with notices to both, the current-password prompt vs `freshAge` elevation distinction, the `'requires-re-authentication'` Result branch, and the OAuth-only-user edge with no `'credential'` row.)
 - 3 Active sessions and revoke-across-devices (Teaches the `/settings/security/sessions` audit surface — `listSessions` with per-row device/location parsing and current-session detection, the `revokeSession` / `revokeOtherSessions` / `revokeSessions` trio with the right copy for each button, the cookie-cache staleness window on revoke, and the "new device signed in" notification that turns the list into real takeover detection.)
 - 4 CSRF and XSS: the defaults and the footguns (Teaches the structural browser-security defenses the 2026 stack already ships — `SameSite=Lax` plus the Server Actions origin check for CSRF, React 19's auto-escaping plus `HttpOnly` cookies for XSS — paired with the one footgun per category (`SameSite=None`, `dangerouslySetInnerHTML`), the `DOMPurify` sanitization shape, and CSP / full security headers named as Chapter 086's territory.)
@@ -514,17 +514,17 @@
 
 ### Chapter 060 — Organizations as the tenancy model
 - 1 Standing up organizations and the active-org slot (Install Better Auth's organization plugin, extend the session with `activeOrganizationId`, and wire the create / switch / list flows that move a user between orgs without leaking stale cache.)
-- 2 `tenantDb(orgId)`: making the missing-`where` not compile (Wrap Drizzle's relational query API in a typed `tenantDb(orgId)` factory that injects the org predicate on every read and write so the missing-org-filter bug class is structurally impossible.)
+- 2 tenantDb(orgId): making the missing-where not compile (Wrap Drizzle's relational query API in a typed `tenantDb(orgId)` factory that injects the org predicate on every read and write so the missing-org-filter bug class is structurally impossible.)
 - 3 The threshold where RLS earns its cost (Frame Postgres Row-Level Security as a conditional power tool — the three triggers (highest-stakes data, many writer paths, external writers) that push past application-layer scoping, and the per-table decision tree that lands RLS on `audit_logs` and nowhere else for this stack.)
-- 4 Wiring RLS on `audit_logs`: policies, `SET LOCAL`, and the `withTenant` helper (Author the policy through Drizzle's `pgPolicy` / `crudPolicy`, enable and force RLS on the table, set `app.org_id` via `SET LOCAL` inside an explicit transaction with a `withTenant(orgId, fn)` wrapper, and prove the isolation with an integration test that runs as the app role.)
+- 4 Wiring RLS on audit_logs: policies, SET LOCAL, and the withTenant helper (Author the policy through Drizzle's `pgPolicy` / `crudPolicy`, enable and force RLS on the table, set `app.org_id` via `SET LOCAL` inside an explicit transaction with a `withTenant(orgId, fn)` wrapper, and prove the isolation with an integration test that runs as the app role.)
 - 5 Quiz
 
 ### Chapter 061 — Roles, action wrappers, and the audit trail
 - 1 Owner, admin, member (Teaches the year-1 three-role RBAC default, the authority gradient between roles, the single-owner invariant, the `roleAtLeast` helper, and extending `requireOrgUser()` to return the current member's role.)
-- 2 The `authedAction` wrapper (Teaches the `authedAction(role, schema, fn)` factory that lifts session, role check, and schema parse out of every Server Action body, the `ctx = { user, orgId, role, db }` payload it threads, the `Result` return contract, and the named carve-out from Principle #5 that justifies the wrapper.)
-- 3 The `authedRoute` twin (Teaches the route-handler port of the same discipline as `authedRoute(role, schema, fn)`, the 401 / 403 / 422 / 404 status map, RFC 9457 Problem Details responses, and sharing one business function across the Server Action and route handler seams through `/lib`.)
+- 2 The authedAction wrapper (Teaches the `authedAction(role, schema, fn)` factory that lifts session, role check, and schema parse out of every Server Action body, the `ctx = { user, orgId, role, db }` payload it threads, the `Result` return contract, and the named carve-out from Principle #5 that justifies the wrapper.)
+- 3 The authedRoute twin (Teaches the route-handler port of the same discipline as `authedRoute(role, schema, fn)`, the 401 / 403 / 422 / 404 status map, RFC 9457 Problem Details responses, and sharing one business function across the Server Action and route handler seams through `/lib`.)
 - 4 The five member-management flows (Teaches the listing query and the four privileged actions — change role, remove member, leave org, transfer ownership — the invariants that live in the helpers, the multi-row transactions they run inside, and how a removed member's stale session resolves itself on the next request.)
-- 5 The append-only `audit_logs` table (Teaches the audit table's column shape, the three-layer append-only enforcement (RLS policy, table grants, application discipline), the `logAudit(tx, event)` helper whose signature forces a transaction, the canonical event set, and the retention story.)
+- 5 The append-only audit_logs table (Teaches the audit table's column shape, the three-layer append-only enforcement (RLS policy, table grants, application discipline), the `logAudit(tx, event)` helper whose signature forces a transaction, the canonical event set, and the retention story.)
 - 6 Quiz
 
 ### Chapter 062 — Invitations and the seat-handoff lifecycle (SaaS pattern #3)
@@ -538,9 +538,9 @@
 ### Chapter 063 — Project: org, RBAC, and invitations end-to-end
 - 1 Brief and finished screenshot (Framing of the multi-tenant SaaS build, the inspector verification surface, the "Done when" list, the explicit scope cuts, and the starter `degit`.)
 - 2 Tour the starter and the broken inspector (Tour of the provided files, the stubbed modules, the seed script, the Better Auth CLI flow, and the inspector page that throws until `requireOrgUser` exists.)
-- 3 Install the organization plugin and `requireOrgUser` (Adding the `organization()` plugin with custom invitation fields, the `session.create` hook that seeds `activeOrganizationId`, regenerating the auth schema, and shipping `roleAtLeast` plus `requireOrgUser`.)
-- 4 `audit_logs` with RLS deny-write policies (Defining the `auditLogs` table and its indexes, declaring tenant SELECT / INSERT and deny UPDATE / DELETE `pgPolicy` rules, and shipping `withTenant` plus the transaction-required `logAudit(tx, event)` signature.)
-- 5 `tenantDb`, `authedAction`, and the role-change action (Building the typed `tenantDb(orgId)` facade, the four-step `authedAction(role, schema, fn)` wrapper, and the `changeMemberRoleAction` that refuses owner targets, refuses last-owner demotion, and audits in-transaction.)
+- 3 Install the organization plugin and requireOrgUser (Adding the `organization()` plugin with custom invitation fields, the `session.create` hook that seeds `activeOrganizationId`, regenerating the auth schema, and shipping `roleAtLeast` plus `requireOrgUser`.)
+- 4 audit_logs with RLS deny-write policies (Defining the `auditLogs` table and its indexes, declaring tenant SELECT / INSERT and deny UPDATE / DELETE `pgPolicy` rules, and shipping `withTenant` plus the transaction-required `logAudit(tx, event)` signature.)
+- 5 tenantDb, authedAction, and the role-change action (Building the typed `tenantDb(orgId)` facade, the four-step `authedAction(role, schema, fn)` wrapper, and the `changeMemberRoleAction` that refuses owner targets, refuses last-owner demotion, and audits in-transaction.)
 - 6 Send an invitation with a signed accept URL (Generating the 32-byte token, hashing at rest, HMAC-signing the URL, writing the row plus the `invitation.sent` audit event in one transaction, sending the React Email after commit, and translating the partial-unique-index collision into `already-invited`.)
 - 7 Accept the invitation across four arrival shapes (Server-Component accept page that verifies signature → row → hash → expiry → status and branches on session and email, plus the `acceptInvitationAction` that joins, switches active org, auto-verifies email, and audits inside one transaction.)
 - 8 Verify RBAC, append-only, and cross-tenant probes (Clause-by-clause rehearsal of the "Done when" list — RBAC refusals, `psql` UPDATE / DELETE refusals on `audit_logs`, cross-tenant probes through both `tenantDb` and the unwrapped client, and the full invite handshake on a real inbox.)
@@ -606,7 +606,7 @@
 ## Unit 13 — Background Work and Object Storage
 
 ### Chapter 070 — Background work — climbing the durability ladder
-- 1 Inline, then `after()` (Teaches the 0-tier (inline `await`) and 0.5-tier (`after()`) defaults for post-request work in Server Actions, the four thresholds that break them, and the `maxDuration` / error-swallow gotchas of running after the response.)
+- 1 Inline, then after() (Teaches the 0-tier (inline `await`) and 0.5-tier (`after()`) defaults for post-request work in Server Actions, the four thresholds that break them, and the `maxDuration` / error-swallow gotchas of running after the response.)
 - 2 Vercel Cron as the schedule default (Teaches the Vercel Cron topology and `vercel.json` shape, `CRON_SECRET` verify-first auth, at-least-once delivery with dedup keys, UTC expressions, and the time-budget threshold that bumps a job up to Trigger.dev.)
 - 3 When Trigger.dev earns its weight (Teaches the five named conditions that justify Trigger.dev (past function time, multi-step orchestration, automatic retries, fan-out, event-driven pauses), the 2026 alternatives, the decision tree, and the org-context separation tasks inherit.)
 - 4 Tasks, schemaTask, queues, schedules (Teaches the v4 API surface — `task` and `schemaTask` with Zod payloads, `tasks.trigger` versus `triggerAndWait`, code-defined queues as the v3-to-v4 break, per-tenant dynamic queues, and static and dynamic schedules.)
@@ -637,7 +637,7 @@
 - 3 Sign the PUT, no DB write (Builds the `presignedPut` Server Action with Zod-validated input, server-generated `uploadId`, a server-constructed `objectKey`, and a 5-minute signed `PutObjectCommand`, verified end-to-end by `curl`-PUTting bytes straight to R2.)
 - 4 Browser PUT, HEAD, then insert (Lands the `file_metadata` migration, the `finalizeUpload` action that HEADs the object for true size and content-type before inserting the row inside a `tenantDb` transaction, and the XHR-driven client form that streams bytes direct to R2 with a live progress bar.)
 - 5 Fresh-per-render GETs (Writes `getFileDownloadUrl`, `listFiles`, and the un-cached `/files` server component that signs a new GET per row per render, then proves the discipline by watching a copied URL die at 11 minutes while a refreshed page keeps working.)
-- 6 Real `downloadUrl` for the export (Retrofits the 71 export task to do a server-side `PutObjectCommand` under the `org/<id>/exports/` prefix, hand a fresh `getSignedGetForKey` URL to the email, and rely on the lifecycle rule for cleanup with no `file_metadata` row written.)
+- 6 Real downloadUrl for the export (Retrofits the 71 export task to do a server-side `PutObjectCommand` under the `org/<id>/exports/` prefix, hand a fresh `getSignedGetForKey` URL to the email, and rely on the lifecycle rule for cleanup with no `file_metadata` row written.)
 - 7 Verify (Walks each "Done when" clause as a runnable check — the 11-minute URL-death proof, function-side byte-pipe inspection, cross-org GET denial, `SIZE_MISMATCH` from a lying client, CORS preflight on a non-allowed host, and the exports-have-no-row SQL.)
 
 ---
@@ -671,13 +671,13 @@
 ### Chapter 077 — Project: caching the invoices list with tag-driven invalidation
 - 1 Brief and the finished cache shape (Frame the build: two `use cache` reads (list and per-org summary), a three-helper `tags.ts`, `updateTag` fan-out from four actions, `revalidateTag` from a Trigger.dev summary task, and the `<FetchedAtStrip />` as the on-page cache-state readout.)
 - 2 Starter tour and inspector surface (Walk the 66-based starter, the new `org_invoice_summaries` table, the empty stubs (`tags.ts`, queries directives, action invalidations, task body), and every inspector panel that will verify later lessons.)
-- 3 Tag helpers, cached reads, and `fetchedAt` (Write `tags.ts`, annotate `listInvoices`, `getOrgInvoiceSummary`, and `getInvoiceDetail` with `'use cache'` + `cacheLife` + `cacheTag`, return `fetchedAt`, and verify hits through the inspector's hit/miss probe.)
+- 3 Tag helpers, cached reads, and fetchedAt (Write `tags.ts`, annotate `listInvoices`, `getOrgInvoiceSummary`, and `getInvoiceDetail` with `'use cache'` + `cacheLife` + `cacheTag`, return `fetchedAt`, and verify hits through the inspector's hit/miss probe.)
 - 4 Wiring both invalidation paths (Fan out three `updateTag` calls after commit in the four lifecycle actions, implement the `summaryRecomputeTask` that calls `revalidateTag`, and wire the deliberate misuse-`revalidateTag`-from-action branch as the failure-mode demo.)
 - 5 Verify clause-by-clause (Walk every "Done when" clause via the inspector: cache hits, read-your-writes through `updateTag`, record-level scoping, cross-org isolation, lifecycle fan-out, eventual via `revalidateTag`, the misuse demo, and the tag-string and closure-rule disciplines.)
 
 ### Chapter 078 — Rate limiting with Upstash Redis
 - 1 Two layers: edge WAF and application limiter (Teaches the layering of Vercel WAF (per-IP edge controls) and `@upstash/ratelimit` (per-key application controls), the public-URL-with-auth trigger that makes Upstash non-negotiable, why Upstash Redis is the 2026 default, and the fail-open-on-auth policy.)
-- 2 The `@upstash/ratelimit` API surface (Teaches the connectionless `Redis.fromEnv()` client, the module-scope `Ratelimit` declaration with prefix and analytics, the three algorithms (sliding window default, token bucket, fixed window), the `limit(key)` return shape, key design, and the `pending` analytics flush via `waitUntil`.)
+- 2 The @upstash/ratelimit API surface (Teaches the connectionless `Redis.fromEnv()` client, the module-scope `Ratelimit` declaration with prefix and analytics, the three algorithms (sliding window default, token bucket, fixed window), the `limit(key)` return shape, key design, and the `pending` analytics flush via `waitUntil`.)
 - 3 Dual-keying the auth endpoints (Teaches the three module-scope limiters for sign-in, sign-up, and password reset, the per-IP-and-per-email dual-keying rule that defeats credential stuffing without lockout, the gate-first-work-second seam inside the action, the RFC-shape `RateLimit-*` headers, the user-safe 429 body, and the fail-open `safeLimit` wrapper.)
 - 4 Quiz
 
@@ -704,7 +704,7 @@
 - 2 Tour the starter and the inspector (Walks the provided file tree, the new `invoice_comments` schema and seed, the route-handler scaffolding, the shared Zod schemas, the in-process `listCommentsPage` read, and every inspector panel and debug toggle.)
 - 3 Provider, per-request factory, and the SSR-hydrated first page (Wires `getQueryClient()` with the `typeof window` branch and React `cache()`, the `commentKeys` helper, the `<Providers>` shell with senior defaults and gated devtools, the in-process fetcher branch, and the invoice page's `prefetchInfiniteQuery` plus `<HydrationBoundary>` so the seeded thread paints with no client loading state.)
 - 4 Infinite scroll, polling, and the route handler (Fills the client fetcher branch, the `authedRoute` `GET` handler as the public read seam, and the leaf's `useInfiniteQuery` with cursor paging, `maxPages: 10`, 10-second `refetchInterval`, and `refetchIntervalInBackground: false` so "Load older" and cross-session arrival both work.)
-- 5 Optimistic add and rollback with `useMutation` (Writes the `addCommentAction` Server Action with audit-log and `revalidateTag`, then wires the form's `useMutation` with `cancelQueries`, snapshot, `setQueryData`, restore in `onError`, and `invalidateQueries` in `onSettled` — surfacing the two-system invalidation reality at the seam.)
+- 5 Optimistic add and rollback with useMutation (Writes the `addCommentAction` Server Action with audit-log and `revalidateTag`, then wires the form's `useMutation` with `cancelQueries`, snapshot, `setQueryData`, restore in `onError`, and `invalidateQueries` in `onSettled` — surfacing the two-system invalidation reality at the seam.)
 - 6 Verify against "Done when" (Walks every clause: SSR-hydrated first paint, infinite scroll with `maxPages` cap, cross-session polling arrival within 10 seconds, tab-hide pause, optimistic happy path, forced-500 rollback, two-system invalidation, per-request server `QueryClient` isolation, leaf-scoping, `commentKeys` discipline, route-handler tenancy, Zod-drift recovery, and devtools tree-shaking.)
 
 ### Chapter 082 — Zustand (conditional)
@@ -764,7 +764,7 @@
 ### Chapter 088 — Internationalization
 - 1 Keys, catalogs, and the no-concatenation rule (Translation keys in code, per-locale JSON catalogs with named placeholders, one-string-per-key, and the `t.rich` pattern for embedded markup.)
 - 2 ICU MessageFormat: plurals, select, gendered forms (ICU `plural` with CLDR categories and exact-match overrides, `selectordinal` for ordinals, `select` for free enums, and nested plural-inside-select for gendered counts.)
-- 3 The `Intl.*` formatter family (The daily-reach `Intl.*` formatters — `NumberFormat`, `DateTimeFormat` (Temporal-native, mandatory `timeZone`), `RelativeTimeFormat`, `Collator`, plus `ListFormat` / `DisplayNames` — and the construct-once-reuse rule.)
+- 3 The Intl.* formatter family (The daily-reach `Intl.*` formatters — `NumberFormat`, `DateTimeFormat` (Temporal-native, mandatory `timeZone`), `RelativeTimeFormat`, `Collator`, plus `ListFormat` / `DisplayNames` — and the construct-once-reuse rule.)
 - 4 The locale resolution chain (The five-input negotiation order (URL prefix, profile, cookie, `Accept-Language` best-match, default), BCP 47 `Lookup` via `@formatjs/intl-localematcher`, and `users.locale` paired with `users.timeZone`.)
 - 5 Wiring next-intl into Next.js 16 (The next-intl file shape — `defineRouting`, `createMiddleware`, `getRequestConfig`, `setRequestLocale`, `generateStaticParams`, `useTranslations` / `getTranslations`, `useFormatter`, typed navigation, and the `IntlMessages` global type.)
 - 6 hreflang, per-locale canonicals, and SEO (The `alternates.languages` metadata surface with self-reference and bidirectionality, `x-default`, locale-specific canonicals, per-locale sitemaps, and OG `og:locale` with locale-aware OG images.)
@@ -775,8 +775,8 @@
 - 2 Tour the starter (Walks the provided file tree, the English source catalog, the four seeded locale/tz user combinations, and the inspector panels that map to each verification clause.)
 - 3 Wire next-intl and ship three catalogs (Fills `routing.ts`, `navigation.ts`, `request.ts`, `formats.ts`, `proxy.ts`, and `app/[locale]/layout.tsx`, writes the en-GB and fr-FR catalogs with CLDR plurals, and routes every UI string through `t()`.)
 - 4 Format dates in profile tz, currency from data (Routes every invoice date through `useFormatter().dateTime` with the user's profile `timeZone` and every amount through `format.number` with the invoice's stored `currency`, plus a Temporal-driven relative-due column.)
-- 5 Emit `hreflang`, sitemap alternates, and per-locale OG (Builds `generateAlternates`, transforms marketing's `generateMetadata` with locale-specific canonical plus bidirectional `hreflang` and `x-default`, and emits `app/sitemap.ts` with per-entry locale alternates.)
-- 6 Verify the locale switch, DST render, and `hreflang` audit (Walks every "Done when" clause with deliberate-misuse demos for the load-bearing rules: DST-spanning render, bidirectional `hreflang` with `x-default`, locale-specific canonical, CLDR plurals, and `setRequestLocale` preserving static rendering.)
+- 5 Emit hreflang, sitemap alternates, and per-locale OG (Builds `generateAlternates`, transforms marketing's `generateMetadata` with locale-specific canonical plus bidirectional `hreflang` and `x-default`, and emits `app/sitemap.ts` with per-entry locale alternates.)
+- 6 Verify the locale switch, DST render, and hreflang audit (Walks every "Done when" clause with deliberate-misuse demos for the load-bearing rules: DST-spanning render, bidirectional `hreflang` with `x-default`, locale-specific canonical, CLDR plurals, and `setRequestLocale` preserving static rendering.)
 
 ---
 
@@ -789,12 +789,12 @@
 - 4 Arrange, act, assert one behavior (Installs the AAA shape with descriptive `it('<outcome> when <conditions>')` names and the rule that asserts the contract the caller observes, not private helpers.)
 - 5 Quiz
 
-### Chapter 091 — Unit tests for `/lib`
+### Chapter 091 — Unit tests for /lib
 - 1 Pure-function tests, the daily shape (Teaches the `name.ts` / `name.test.ts` colocation rule, AAA in three lines, matcher selection by value shape, sparing `describe` nesting, and why `/lib` tests need no mocks or `beforeEach`.)
 - 2 Factories over shared fixtures (Teaches the `buildEntity(overrides)` factory pattern returning fresh instances with valid defaults, where factories live, when to use static JSON for external payloads, and how factories differ from fixtures and seeds.)
 - 3 Pinning time, IDs, and randomness (Teaches the `lib/clock.ts`, `lib/ids.ts`, and `lib/random.ts` seams, `vi.useFakeTimers` setup and teardown, Temporal's decoupled clock, frozen-instant conventions, and the spy-versus-mock decision.)
-- 4 Type-level tests with `expectTypeOf` (Teaches `expectTypeOf` and `assertType` in `*.test-d.ts` files run by `vitest --typecheck`, and how to pin discriminated unions, branded IDs, generic inference, and `Result` contracts at compile time.)
-- 5 Async tests without the forgotten-`await` trap (Teaches `await expect(p).resolves` as the canonical async form, `expect.assertions(n)` for branchy paths, the `*Async` fake-timer variants for microtask flushing, and the Vitest 4 awaited-assertion contract.)
+- 4 Type-level tests with expectTypeOf (Teaches `expectTypeOf` and `assertType` in `*.test-d.ts` files run by `vitest --typecheck`, and how to pin discriminated unions, branded IDs, generic inference, and `Result` contracts at compile time.)
+- 5 Async tests without the forgotten-await trap (Teaches `await expect(p).resolves` as the canonical async form, `expect.assertions(n)` for branchy paths, the `*Async` fake-timer variants for microtask flushing, and the Vitest 4 awaited-assertion contract.)
 - 6 Asserting the unhappy path (Teaches the two-path rule, `toThrow(ClassName)` and structured-code matching over message strings, `toMatchObject` and custom matchers for `Result.err`, Zod issue inspection, and `Error.cause` chain assertions.)
 - 7 Quiz
 
@@ -853,11 +853,11 @@
 
 ### Chapter 098 — Performance vigilance (SaaS pattern #15)
 - 1 The Core Web Vitals (Definitions of LCP, INP, and CLS, their p75 thresholds, the primary cause and one structural reach for each, and the field-data-versus-lab-data discipline that anchors the chapter.)
-- 2 `priority` on the LCP element (How `next/image`'s `priority` prop preloads the LCP element, which exact image gets it, and the ESLint-enforced ban on raw `<img>` that keeps CLS and lazy-loading defaults in place.)
+- 2 priority on the LCP element (How `next/image`'s `priority` prop preloads the LCP element, which exact image gets it, and the ESLint-enforced ban on raw `<img>` that keeps CLS and lazy-loading defaults in place.)
 - 3 The barrel-export trap (Why barrel re-exports defeat tree-shaking, the lucide-react case study, and `optimizePackageImports` plus `sideEffects: false` as the modern fix that keeps imports readable while shipping per-export shape.)
 - 4 Reading the bundle treemap (Installing `@next/bundle-analyzer`, the four scan passes for reading its treemap (biggest tile, per-route chunks, duplicates, shared chunk), and the triage decision tree from finding to fix.)
 - 5 Lighthouse as the pre-launch gate (The two pre-launch audit surfaces (marketing page and one authenticated screen), `@lhci/cli` as the CI regression gate with performance budgets, and the threshold cheat sheet that calibrates lab scores against field data.)
-- 6 RSC waterfalls and `Promise.all` (Diagnosing sequential parent-then-child awaits in a Sentry trace, the dependency-check reflex before adding a second `await`, and the `Promise.all` rewrite (with Suspense streaming as a sibling reach) that turns serial waits into parallel ones.)
+- 6 RSC waterfalls and Promise.all (Diagnosing sequential parent-then-child awaits in a Sentry trace, the dependency-check reflex before adding a second `await`, and the `Promise.all` rewrite (with Suspense streaming as a sibling reach) that turns serial waits into parallel ones.)
 - 7 Indexes and N+1 in production (Revisiting the two SQL failure classes at production scale: missing composite `(org_id, ...)` indexes diagnosed via `EXPLAIN ANALYZE`, N+1 fixed with Drizzle relations or joins, plus the pre-launch DB checklist and weekly slow-query review.)
 - 8 Quiz
 
@@ -967,5 +967,5 @@
 - 2 Starter walkthrough (Tours the starter file tree, the provided `lib/llm/models.ts`, the `usage_quota_daily` and `llm_audit_events` tables, and the inspector's verification toggles before any code is written.)
 - 3 Streaming route under auth with the agentic loop (Wraps `streamText` in `authedRoute('member', …)` with `stopWhen(stepCountIs(5))`, the tool-grounded system prompt, `convertToModelMessages`, `toUIMessageStreamResponse`, and an `onFinish` audit write.)
 - 4 Tool with closure-scoped tenancy and the daily quota (Defines `getInvoiceStats` with a closure over `ctx.orgId` (never input), aggregate `outputSchema`, "return don't throw" errors, and wires `reserveQuotaOrRefuse` plus `onStepFinish` token accounting against a 100k daily cap.)
-- 5 Typed `useChat`, tool parts, and the usage panel (Builds the client: `useChat<InvoiceUIMessage>` with manually managed input state, a parts-switch rendering text bubbles and `tool-getInvoiceStats` cards across all four lifecycle states with a per-tool skeleton, plus a 10s-polling token-usage panel.)
+- 5 Typed useChat, tool parts, and the usage panel (Builds the client: `useChat<InvoiceUIMessage>` with manually managed input state, a parts-switch rendering text bubbles and `tool-getInvoiceStats` cards across all four lifecycle states with a per-tool skeleton, plus a 10s-polling token-usage panel.)
 - 6 Verify (Walks every "Done when" clause: grounded answers cite real Drizzle numbers, forged `orgId` is refused, the loop caps at 5 steps, the quota returns 429, tools return typed errors instead of throwing, and the `authedRoute` wrap holds.)
