@@ -28,7 +28,7 @@ Folder and file names: Strip # and `, replace / with -, no markup.
 
 Pass each subagent only the fields listed, no need to prompt the agent further, it already knows what to do.
 
-1 **lesson-outliner**: chapter id `<X>`, lesson number `<Y>`, lesson title, continuity notes path. Returns the lesson outline path and the (possibly revised) title.
+1 **lesson-outliner**: chapter id `<X>`, lesson number `<Y>`, lesson title, continuity notes path. Returns the lesson outline path and the updated lesson title that should be used from now on.
 2 **lesson-writer**: chapter id `<X>`, lesson number `<Y>`, lesson title, lesson outline path, chapter folder path. Returns the lesson MDX path plus the count and unique ids of its diagrams and exercises/sandboxes.
 3 **lesson-diagramer**: chapter id `<X>`, lesson number `<Y>`, diagram id, lesson MDX path, lesson outline path. Run a new subagent sequentially for each diagram.
 4 **lesson-exerciser**: chapter id `<X>`, lesson number `<Y>`, exercise/sandbox id, lesson MDX path, lesson outline path. Run a new subagent sequentially for each exercise or sandbox.
