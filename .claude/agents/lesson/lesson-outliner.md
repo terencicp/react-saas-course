@@ -54,12 +54,16 @@ If a topic can benefit from incorporating an embedded Youtube video, mention it 
 
 The goal of this section is to define what the lesson will not include. If necessary, read any other relevant sections of the Table of contents and chapter outlines to understand what the student has been taught is previous lessons and what whill be taught in future lessons. This section is important to prevent the lesson writer from re-teaching previously taught concepts or teaching concepts that should be reserved for a future lesson. It's important to quickly redefine concepts that are prerequisites for the current lesson but those definitions should be concise.
 
-## 5 Fact-checking
+## 5 Code conventions
+
+Skim only the sections of `documentation/code standards/Code conventions.md` relevant to the lesson's topics, and make the necessary changes to align with them, if it makes sense given the lesson's goals. When pedagogy demands a simpler or staged shape, diverge (but note it so downstream agents know this is deliberate).
+
+## 6 Fact-checking
 
 After the file is saved to disk, do some quick online research to verify any claims you made you are unsure about, given your training data is not up to date, like current versions, defaults, API surfaces, deprecations, recommended patterns, and platform features. Consider only sources dated from the last 6 months.
 
 If your research surfaces any severe discrepancies between your initial lesson outline and the current best practices, update the file accordingly. The goal of this step is to avoid teaching the student outdated patterns or deprecated technologies.
 
-## 6 Final message
+## 7 Final message
 
 Finally, return the path of the newly created lesson outline file and its title. If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
