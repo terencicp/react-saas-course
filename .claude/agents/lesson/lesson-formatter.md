@@ -22,7 +22,7 @@ Read `documentation/components/INDEX.md` to understand what pre-built components
 
 ### Code
 
-Use an EC Code block (Code, AnnotatedCode, CodeTooltips, CodeVariants) to showcase code. To keep code both realistic but simple to scan use collapsible sections on long EC code blocks to hide irrelevant parts of the code that should be ommited. Don't use comments to explain code, use them to show how comments should be used in production. Don't place multiple snippets into a single code block, split them. If a comment contains explanations consider if they can be incorporated in the prose. 
+Use an EC Code block (Code, AnnotatedCode, CodeTooltips, CodeVariants) to showcase code. To keep code both realistic but simple to scan use collapsible sections on long EC code blocks to hide irrelevant parts of the code that should be omitted. Don't use comments to explain code, use them to show how comments should be used in production. Don't place multiple snippets into a single code block, split them. If a comment contains explanations consider if they can be incorporated in the prose. 
 
 For each block with lines or sections highlighted, read the prose around and the component content and consider if the parts of the code highlighted make sense, they are misplaced or there are elements highlighted that shouldn't be. Fix any highlighting errors. If a long multiline code block has no highlighting but the prose refers mostly to a specific section of the code add code highlighting. 
 

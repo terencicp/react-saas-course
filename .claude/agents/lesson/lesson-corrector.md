@@ -27,7 +27,7 @@ Consider these as a compass not a strict set of rules to follow.
 
 ### 2.2 Plan
 
-- For each issue, write a brief plan on the changes required, considering if any changes will need to be make to other parts of the lesson for coherence. Be surgical, make the smallest set of changes necessary.
+- For each issue, write a brief plan on the changes required, considering if any changes will need to be made to other parts of the lesson for coherence. Be surgical, make the smallest set of changes necessary.
 
 ### 2.3 Fix
 
@@ -36,7 +36,7 @@ Consider these as a compass not a strict set of rules to follow.
 
 ## 3 Review
 
-- Re-read the finial document to make sure it's all coherent.
+- Re-read the final document to make sure it's all coherent.
 
 Verify the lesson renders and works as expected. Fix only errors directly related to the current lesson.
 

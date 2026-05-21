@@ -28,7 +28,7 @@ Write an initial version of the document at `src/content/docs/<X> <Chapter name>
 
 You should write like a patient experienced web developer teaching new concepts to a newcomer to the field, such as Adam Wathan or Dan Abramov, address the student directly as "you". Take your time to make sure each concept is given the depth it deserves, no more, no less. Pace by teaching weight, not by topic surface area. Make sure the whole lessons reads as a whole coherent text. Make sure to explain why something exists before explaining how it works. Do not use filler or cliche expressions. You are a performer, not a writer; the voice, pacing, where to pause, when to surprise, when to land a hard truth, is what determines whether the lesson works.
 
-Do not use the word "senior" use other synomyms like "experienced engineer", etc.
+Do not use the word "senior" use other synonyms like "experienced engineer", etc.
 
 ### 4.2 Component content description
 
@@ -38,7 +38,7 @@ Use comments as placeholders for diagrams, code, exercises and videos. Describe 
 Describe component and content here.
 {/* TODO END */}
 
-The idea is you handle the content / pedagogical part of the components and another agent will figure out how to translate each description into proper syntax. Read `documentation/components/INDEX.md` to understand the names and shapes of the components available in the project, but do not read each component documentation. You can also design a custom-built component for the lesson if it's the best option to help the student's learning; in this case, describe the UI, functionality and content of the custom component inside a comment and another agent will write the code for it. Asign a unique id or name to each diagram, exercise or sandbox.
+The idea is you handle the content / pedagogical part of the components and another agent will figure out how to translate each description into proper syntax. Read `documentation/components/INDEX.md` to understand the names and shapes of the components available in the project, but do not read each component documentation. You can also design a custom-built component for the lesson if it's the best option to help the student's learning; in this case, describe the UI, functionality and content of the custom component inside a comment and another agent will write the code for it. Assign a unique id or name to each diagram, exercise or sandbox.
 
 Use inline prose tooltips, like {/* TODO: Term (String "HTML". Tooltip text: "HyperText Markup Language") */}, to describe acronyms, re-explain prerequisite concepts without interrupting lesson flow or define terms the student might not be familiar with.
 
@@ -50,7 +50,7 @@ Always introduce components in the prose when it makes sense, even if redundant:
 
 Default to the smallest snippet that makes the point. Omit imports when obvious. Make examples concrete and inspired by common real-world use cases. Don't use comments to explain code, use them to show how comments should be used in production code. To explain code use the surrounding prose or describe the text that should go in pre-built components (AnnotatedCode, CodeVariants, CodeTooltips) in a comment.
 
-EC code blocks support highlighting part of the code and the project supports green, red, blue, orange, violet color highlights. Highlighting helps direct the student's attention to a specific part of the code. If necessaary, indicate in your comments if the code should be highlighted in a specific color and which parts will be highlighted. Note that all highlights in a panel (a step in AnnotatedCode or a tab in CodeVariants) have to be the same color.
+EC code blocks support highlighting part of the code and the project supports green, red, blue, orange, violet color highlights. Highlighting helps direct the student's attention to a specific part of the code. If necessary, indicate in your comments if the code should be highlighted in a specific color and which parts will be highlighted. Note that all highlights in a panel (a step in AnnotatedCode or a tab in CodeVariants) have to be the same color.
 
 ### 4.4 Frontmatter
 

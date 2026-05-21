@@ -18,7 +18,7 @@ Read `documentation/diagrams/INDEX.md` to understand the diagram engines availab
 
 ## 3 Brainstorm
 
-Consider 2–3 candidate compositions and pick the one that showcases the concepts better. Consider feasability and cognitive load: very complex diagrams will have more points of failure and will be harder to read, keep diagrams simple unless complexity is the lesson. Consider what is the goal of the diagram. 
+Consider 2–3 candidate compositions and pick the one that showcases the concepts better. Consider feasibility and cognitive load: very complex diagrams will have more points of failure and will be harder to read, keep diagrams simple unless complexity is the lesson. Consider what is the goal of the diagram. 
 
 ## 4 Plan diagram
 
