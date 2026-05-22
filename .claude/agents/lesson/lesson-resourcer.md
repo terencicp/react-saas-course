@@ -27,6 +27,8 @@ The goal is to have a Youtube video for every topic in the lesson, when it makes
 4 Add them add the end of the lesson in an h2 section "External resources" using ExternalResource: `documentation/components/ui/external-resource.md`. Use a 2 column grid if more than one resource. Pick a unique icon for each domain, and set the color for each icon matching its brand.
 5 Fetch all the URLs added to the lesson to make sure they are working and lead to the information you expect. Replace them if something is wrong.
 
+Note: External resources might not make sense for some lessons that don't teach new concepts, consider this an optional section.
+
 ## 3 Final message
 
 After finishing respond with "Resources added". If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
