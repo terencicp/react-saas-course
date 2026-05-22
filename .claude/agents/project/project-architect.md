@@ -40,15 +40,15 @@ Write `documentation/content/project plans/Chapter <X>.md` with the following h2
 
 - **Project goals**: Paragraph describing what the project aims to teach and how the coding helps the student develop these skills.
 - **Scaffolding recipie**: Either forking a prior solution codebase, or merging multiple ones, or scaffold a fresh project. Include dependencies to add (with versions), files to add or remove, etc.
-- **Slices**: Contains an h3 section for each numbered slice, "Slice S1". Intended as instructions for the agent that will code this slice. Clearly defines the scope of each slice, what it contains and what it excludes. Defines the contracts it creates or modifies. Make sure each slice closes on a runnable state.
-- locked decisions
+- **Slices**: Contains an h3 section for each numbered slice, "Slice S1". Intended as instructions for the agent that will code this slice. Clearly defines the scope of each slice, what it contains and what it excludes. Defines the contracts it creates or modifies. Make sure each slice closes on a runnable state. Optionally describe a verification procedure.
+- **Locked decisions**: Cross-cutting calls every slice must honor, anything that would cause drift if each slice coder decided on its own.
 - **File tree**: Complete tree after the last slice. Indicates which slice creates the file and which modifies it: "page.tsx [created by: S1, edited by: S3]"
 - **Starter derivation**: Instructions on how to derive the starter codebase from the final code after all slices are done.
-- **Verification**: Define concrete step by step tests according to the project. Run-from-clean recipe, static checks, file-tree assertions, public contract assertions, behavioral flows, cross-slice integration points, etc.
+- **Verification**: Minimal programmatic set of checks for the reviewer to execute. Each check states scope (`solution/`, `start/`, or both), the action, and the expected outcome.
 
 ## 7 Code conventions review
 
-After writing the plan file, read the section headers of `documentation/code standards/Code conventions.md`; read sections related to the surface slices touch. If the project plan you wrote disagrees with the conventions file, read the relevant lesson of the previous chapters (up to the previous project) where the syntax was introduced. Always use the syntax taught in the lesson if it disagrees with the conventions. Make the necessary changes to the project plan.
+After writing the plan file, read the section headers of `documentation/code standards/Code conventions.md`; read sections related to the surface slices touch. If the project plan you wrote disagrees with the conventions file, read the relevant lesson of the previous chapters (up to the previous project) where the syntax was introduced. Always use the syntax taught in the lesson if it disagrees with the conventions. Make the necessary changes to the project plan, add relevant code conventions to **Locked decisions**.
 
 ## 8 Fact-checking
 

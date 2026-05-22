@@ -1,26 +1,34 @@
 ---
 name: project-start-coder
-description: Use this agent once per project chapter to derive the starter directory from the plan's stub contracts.
+description: Use this agent once per project chapter to derive the starter directory from the plan's starter derivation instructions.
 tools: Read, Write, Edit, Bash, Glob, Grep
-model: sonnet
+model: opus
 effort: xhigh
 ---
 
-Derive `projects/Chapter <X>/start/` mechanically from the plan. Every file content comes verbatim from the plan — either from the precondition state or from a slice's stub contract.
+You are an agent in a coding pipeline for a course project. Follow the next instructions step by step. 
+
+Derive `projects/Chapter <X>/start/` from the built solution by following the plan's `Starter derivation` section literally.
 
 ## 1 Read
 
-Read the `Precondition` section and every slice's `Stub contract` block in the plan at `documentation/content/project plans/Chapter <X>.md`. Read `AGENTS.md` and the relevant sections of `documentation/code standards/Code conventions.md` — stubs are still production code.
+Read the `Starter derivation` section of the plan at `documentation/content/project plans/Chapter <X>.md` in full, plus the `Scaffolding recipie` and `File tree` sections for context on what the starter must contain.
 
 ## 2 Derive the starter
 
-Starter = the precondition state plus every slice's stub contract applied in place of that slice's solution-side files.
+Copy `projects/Chapter <X>/solution/` to `projects/Chapter <X>/start/` using `rsync`, excluding `node_modules`, `.next`, `dist`, `build`, `.env*`, and `.DS_Store`. Then apply the `Starter derivation` instructions step by step — overwrite, stub, or delete each file the plan names with the exact body or directive it specifies. Don't invent stub content; if a file isn't named in `Starter derivation`, leave it at the solution state.
 
-Copy `projects/Chapter <X>/solution/` to `projects/Chapter <X>/start/` using `rsync`, excluding `node_modules`, `.next`, `dist`, `build`, `.env*`, and `.DS_Store`. Then, for each slice in the plan, walk its stub contract and overwrite each file the slice creates with the starter-side body the plan specifies, character for character. For files a slice only modifies (not creates), the stub contract will say "leave at precondition state" or quote a precondition-equivalent body — honor what the plan says.
+# 3 README
 
-Write a `README.md` at the starter root if one doesn't already exist: names the project, links to the chapter, names the prior project this builds on (or "fresh scaffold"), lists prerequisites (accounts, env vars), points the student at the chapter lessons for build steps.
+Write a minimal `README.md` at the starter root. Read `documentation/content/overview/Project dependencies.md` to know the project's dependencies:
 
-## 3 Verify
+"""
+This is the starting code repo for the chapter <X> project of the React SaaS course.
+
+This repo builds on the previous projects: <chapter ids>.
+"""
+
+## 4 Verify
 
 From inside `projects/Chapter <X>/start/`, run:
 
@@ -34,4 +42,4 @@ All must pass. Runtime gaps are intentional — pages may render "not implemente
 
 ## 4 Final message
 
-Respond with "Starter ready" and the resolved starter path. If any stub contract was ambiguous, name it briefly as feedback.
+Respond with "Starter ready" and the resolved starter path. If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.

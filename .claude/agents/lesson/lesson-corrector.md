@@ -52,3 +52,4 @@ Verify the lesson renders and works as expected. Fix only errors directly relate
 In your final message:
 - Path of the file.
 - One line per issue: severity, one-line restatement, one-line fix summary, status (`fixed` / `skipped — reason`).
+- If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.

@@ -10,17 +10,17 @@ Write the given project lesson's outline that will be used as a guide for the su
 
 ## 1 Understand the course context
 
-Read `AGENTS.md`, the `Chapter framing` section and the corresponding lesson section of the chapter outline `documentation/content/chapter outlines/Chapter <X>.md`. Read the chapter's continuity notes — this lesson must stay coherent with the previous lessons. You can optionally read `documentation/content/overview/Units.md` and the corresponding chapter section of `documentation/content/overview/Table of contents.md` if you need broader context.
+Read `AGENTS.md`, the `Chapter framing` section and the corresponding lesson section of the chapter outline `documentation/content/chapter outlines/Chapter <X>.md` — the chapter outline has been realigned to the built code by the project-chapter-outliner, so it names the slices this lesson walks. Read the chapter's continuity notes — this lesson must stay coherent with the previous lessons. You can optionally read `documentation/content/overview/Units.md` and the corresponding chapter section of `documentation/content/overview/Table of contents.md` if you need broader context.
 
 ## 2 Read the project plan
 
-Read the project plan at `documentation/content/project plans/Chapter <X>.md`. The `Lesson-to-slice mapping` row for this lesson tells you which slices the lesson walks. The mapping has three natural shapes:
+Read the project plan at `documentation/content/project plans/Chapter <X>.md`. A project lesson falls into one of three natural shapes:
 
 - The first lesson: no slices — frames the project, names the verifications it will close on, and tours the starter the student fetches via `degit`.
 - A middle lesson: one or more slice ids — walks the student through building those slices, one section per slice, with senior decisions and a verify step.
-- The last lesson: no slices — verifies the chapter's acceptance criteria one by one and forward-references later units.
+- The last lesson: no slices — walks the chapter's `Verification` criteria one by one and forward-references later units.
 
-Read the relevant slice sections of the plan (or, for the last lesson, all acceptance criteria; for the first lesson, the precondition + starter contents). The plan is the source of truth — full inline file content, senior decisions, runnable verify, acceptance subset all live there.
+Read the sections of the plan relevant to the lesson shape: for a middle lesson, the named `### Slice S<n>` sections plus the `Locked decisions` rows they touch; for the last lesson, the `Verification` section in full; for the first lesson, the `Scaffolding recipie`, `Starter derivation`, and `File tree`.
 
 ## 3 Project context
 
@@ -49,7 +49,7 @@ One paragraph naming what the student walks away with — the senior decision in
 
 ### 5.4 Lesson sections
 
-The h2 and h3 headers of the lesson and what each contains. Most middle lessons follow a section-per-slice rhythm: senior decision paragraph, code block(s) with `// new` / `// changed` annotations, verify line. The first lesson tours the starter file by file with file-tree snippets. The last lesson walks the acceptance criteria one by one, naming the failure mode each protects against.
+The h2 and h3 headers of the lesson and what each contains. Most middle lessons follow a section-per-slice rhythm: senior decision paragraph, code block(s) with `// new` / `// changed` annotations, runnable-state demonstration. The first lesson tours the starter file by file with file-tree snippets. The last lesson walks each `Verification` criterion one by one, naming the failure mode each protects against.
 
 Describe how code samples should be handled: Code for simple blocks, AnnotatedCode when the student focus needs to be directed to multiple parts of the file, CodeVariants for before/after comparisons, CodeTooltips for inferred types, FileTree for starter tours.
 
@@ -57,11 +57,11 @@ If a diagram genuinely clarifies a flow that prose can't carry, brief it in the 
 
 ### 5.5 Senior calls and watch-outs
 
-Harvest the chapter outline's "Senior calls and watch-outs" bullets for this lesson, one line each. These are the calls the writer surfaces in prose.
+Harvest the chapter outline's "Senior calls and watch-outs" bullets for this lesson, cross-checked against the plan's `Locked decisions`, one line each. These are the calls the writer surfaces in prose.
 
 ### 5.6 Acceptance criteria for this lesson
 
-For middle lessons, the subset of the project's acceptance criteria the student satisfies by the end of this lesson, pulled from the plan's slice "Acceptance subset" entries. For the last lesson, the full list. For the first lesson, none.
+For middle lessons, the subset of the plan's `Verification` criteria the student satisfies once the slices walked in this lesson are shipped. For the last lesson, the full `Verification` list. For the first lesson, none.
 
 ### 5.7 Scope
 

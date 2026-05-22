@@ -1,12 +1,11 @@
 ---
 name: project-summarizer
-description: Use this agent once per project chapter after the starter is derived to produce a navigable summary of the codebase.
-tools: Read, Write, Glob, Grep
+description: Use this agent to produce a navigable summary of the codebase.
+tools: Read, Write, Edit, Glob, Grep
 model: sonnet
-effort: high
 ---
 
-Write a single navigable summary of the chapter's solution and starter that the lesson outliner and writer can read instead of the full codebase.
+Write a single navigable summary of the chapter's solution so other agents can understand its structure and contracts without reading the full code.
 
 ## 1 Read
 
@@ -25,4 +24,4 @@ Optimize for token efficiency — the outliner and writer will read this file to
 
 ## 3 Final message
 
-Respond with "Summary ready" and the resolved summary path.
+Respond with "Summary ready" and the resolved summary path. If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.

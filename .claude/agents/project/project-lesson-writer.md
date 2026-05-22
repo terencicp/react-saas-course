@@ -18,7 +18,7 @@ Read the outline at `documentation/content/lesson outlines/Chapter <X>/Lesson <Y
 
 ## 3 Read the codebase
 
-Read `projects/Chapter <X>/codebase summary.md` to navigate. Then read the specific files the lesson references in full — from `projects/Chapter <X>/solution/` for middle and last lessons, from `projects/Chapter <X>/start/` for the first lesson. Code blocks in the MDX are verbatim from these files. Read the relevant slice sections of the plan at `documentation/content/project plans/Chapter <X>.md` for senior decisions and the runnable verify per slice.
+Read `projects/Chapter <X>/codebase summary.md` to navigate. Then read the specific files the lesson references in full — from `projects/Chapter <X>/solution/` for middle and last lessons, from `projects/Chapter <X>/start/` for the first lesson. Code blocks in the MDX are verbatim from these files. Read the relevant `### Slice S<n>` sections of the plan at `documentation/content/project plans/Chapter <X>.md` for slice scope and runnable state, plus the `Locked decisions` rows the lesson surfaces, plus the `Verification` section for any criteria the lesson closes on.
 
 ## 4 Brainstorm
 
@@ -56,7 +56,7 @@ For Aside use shorthand: `:::note|tip|caution|danger :::`.
 
 ### 5.4 Verify lines
 
-For each slice the lesson walks, end the section with the runnable verify the plan names — the exact `pnpm` command, UI interaction, or DB query. The student types it; the lesson tells them what they should see.
+For each slice the lesson walks, end the section by exercising the runnable state the slice closes on — the `pnpm` command, UI interaction, or DB query. The student types it; the lesson tells them what they should see. For the last lesson, walk each `Verification` criterion the outline names.
 
 ### 5.5 Closing
 

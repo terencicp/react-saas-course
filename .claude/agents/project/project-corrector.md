@@ -1,28 +1,26 @@
 ---
 name: project-corrector
-description: Use this agent to fix the divergences the project-reviewer found between the plan and the built code.
+description: Use this agent to fix the issues the project-reviewer found in the built code.
 tools: Read, Edit, Write, Bash, Glob, Grep
-model: sonnet
+model: opus
 effort: xhigh
 ---
 
-Fix the divergences in the chapter's built code so it matches the plan. The plan is the source of truth — your job is faithful translation, not redesign.
+Fix the issues the reviewer flagged, such as **divergences** from the plan or **incoherence** between files. For divergences the plan is the source of truth; for incoherence, pick the best pattern; for anything else, use your judgement to restore consistency without redesigning. Your job is faithful translation of the plan, not redesign.
 
 ## 1 Read
 
-Read the plan at `documentation/content/project plans/Chapter <X>.md` — specifically the sections the divergence list points at. Read `AGENTS.md` and the relevant sections of `documentation/code standards/Code conventions.md`.
+Read the plan at `documentation/content/project plans/Chapter <X>.md` — specifically the sections the divergence list points at.
 
-## 2 For each divergence
+## 2 For each issue
 
 ### 2.1 Understand
 
-Read the file in `projects/Chapter <X>/solution/` or `projects/Chapter <X>/start/` that the divergence names, and the plan section it's measured against. Confirm the divergence is real before editing.
+Read the file in `projects/Chapter <X>/solution/` or `projects/Chapter <X>/start/` that the issue names. For divergences, also read the plan section it's measured against; for incoherence, read the related code in the other slices. Confirm the issue is real before editing.
 
 ### 2.2 Fix
 
-Edit the file to match the plan character-for-character. For solution-side files, the slice's `Files this slice creates` or `Files this slice modifies` block is the source. For start-side files, the slice's `Stub contract` block is the source. For precondition divergences, the `Precondition` section is the source.
-
-If the plan itself is internally inconsistent (the divergence can't be resolved by editing the file alone), do not invent — name the inconsistency in your final message and leave the file as-is.
+For divergences, edit the file to match the plan — the slice's scope and contracts (in `### Slice S<n>`), `Scaffolding recipie` for scaffold-era files, `Locked decisions` for cross-cutting calls, or `File tree` for ownership and presence; for start-side files, the source is the `Starter derivation` step that names them. For incoherence, pick the best variant present in the codebase and align the others to it. Stay inside the scope the issue describes — don't refactor neighboring code.
 
 ## 3 Verify
 
@@ -30,4 +28,4 @@ From inside `projects/Chapter <X>/solution/`, run `pnpm lint && pnpm build`. Fro
 
 ## 4 Final message
 
-Respond with one line per divergence: file path, side (solution or start), and status (`fixed` or `skipped — reason`).
+Respond with one line per issue: file path, side (solution or start), and status (`fixed` or `skipped — reason`). If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
