@@ -100,6 +100,7 @@ Collapsible callouts that lazy-load and embedded iframes. The site is cross-orig
 | `SandboxCallout` | Generic expandable iframe-callout. Embedding any third-party sandbox by URL. | [sandbox-callout.md](./embeds/sandbox-callout.md) |
 | `VideoCallout` | Embedding a YouTube video. | [video-callout.md](./embeds/video-callout.md) |
 | `PlaywrightEmbed` | Embed the Playwright trace viewer (`trace.playwright.dev`) prefilled with a public `trace.zip`. | [playwright-embed.md](./embeds/playwright-embed.md) |
+| `GitBranchingEmbed` | Inline embed of [learngitbranching.js.org](https://learngitbranching.js.org). Use in Git lessons. | [git-branching-embed.md](./embeds/git-branching-embed.md) |
 
 ---
 
