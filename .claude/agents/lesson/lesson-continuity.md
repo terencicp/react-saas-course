@@ -22,7 +22,7 @@ Record only what future lessons might need to know, as terse facts:
 
 - **Taught** — the concepts the lesson delivered, one sentence.
 - **Cut** — anything significant dropped from the lesson's chapter-outline scope, one sentence.
-- **Deferred** — concepts this lesson promised a later lesson would cover.
+- **Debts** — concepts this lesson promised a later lesson would cover or refered to an earlier lesson.
 - **Terminology** — specific syntax, metaphors, mental models later lessons need to reference.
 - **Patterns and best practices** — reference for the next project chapter to make sure that the project codebase follows the same high standards taught in the lessons.
 - **Misc.** — any other decisions and information future lesson writers will need to make sure lessons are coherent.
