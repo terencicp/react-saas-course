@@ -1,12 +1,12 @@
 ---
 name: lesson-continuity
 description: Use this agent to record a lesson's cross-lesson decisions in the chapter's continuity notes.
-tools: Read, Write, Edit
+tools: Read, Write, Edit, Glob
 model: opus
 effort: high
 ---
 
-Append an entry for the given lesson to the chapter's continuity notes, a running record that lets later lessons in the chapter and unit stay coordinated without reading every prior lesson. Be as concise as possible, optimize for token efficiency.
+Append an entry for the given lesson to the chapter's continuity notes, a running record that lets later lessons in the chapter and unit stay coordinated without reading every prior lesson. Write in a concise style, optimize tokens for information efficiency.
 
 ## 1 Read
 
