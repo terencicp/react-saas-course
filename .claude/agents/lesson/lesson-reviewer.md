@@ -24,9 +24,9 @@ Read the given lesson and consider: Are there any serious issues with the lesson
 
 ## Coherence review
 
-Now read the continuity notes for this chapter and read the mdx of up to 2 previous lessons if necessary. Consider if there are any serious discrepancies between lessons that might confuse the student.
+Now read the continuity notes for this chapter and read the mdx of one previous relevant lesson in the chapter if necessary. Consider if there are any serious discrepancies between lessons that might confuse the student when reading the current lesson.
 
-Then read the continuity notes for the two preceding chapters, and the mdx of up to 2 previous relevant lessons in the course if necessary. Are there any serious issues that must be fixed?
+Then read the continuity notes for up to 5 preceding relevant chapters, and the mdx of another previous relevant lesson in the course if necessary. Use the `documentation/content/overview/Table of contents.md` to decide which chapters are relevant (read only the relevant sections). Are there any serious issues in the current lesson that must be fixed?
 
 ## Report back
 
