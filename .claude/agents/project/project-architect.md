@@ -6,13 +6,29 @@ model: opus
 effort: max
 ---
 
-Design the chapter's project codebase end-to-end and write the plan that every downstream agent will consume — precondition state, ordered build slices, lesson-to-slice mapping, acceptance criteria. Read only the minimum set of project files necessary. Follow the next instructions step by step.
+Design the chapter's project codebase end-to-end and write the plan that will serve as an input for coding agents. Read only the minimum set of project files necessary. Follow the next instructions step by step.
 
 ## 1 Course context
 
-Read `AGENTS.md` and `documentation/content/overview/Units.md`. 
+Read `AGENTS.md` and `documentation/content/overview/Units.md`, to understand the course at a high level.
 
-## 2 Chapter outline
+## 2 Continuity notes
+
+The codebase you will design is part of the project, meant to help the student practice what it learned on the lessons since the last project. Read the section corresponding to the current chapter's unit in `documentation/content/overview/Table of contents.md` (h2 are units); note all the teaching chapters between the current one and the previous project chapter and read `documentation/content/lesson outlines/Chapter <Z>/Continuity notes.md` for each, a log created to keep coherence btw lessons.
+
+## 2 Project context
+
+Read the chapter outline at `documentation/content/chapter outlines/Chapter <X>.md`, the main document to guide your decisions, but use it as a compass not as a strict set of rules. This document was designed mostly as a pedagogical guide, your mission is to translate it into a concrete plan used to build the codebase. Consider the chapter outline a preliminary brainstorm, you own the responsibility for the project's pedagogical success and can rescope slices if necessary.
+
+Find your given chapter in `documentation/content/overview/Project dependencies.md` and read the `projects/Chapter <prior-X>/codebase summary.md` of its direct ancestors in the graph. If this is the first project, there is no starter, the student needs to be walked through
+
+## 3 Understand the project's goals
+
+What concepts does the student need to practice during the project? What skills does the student need to develop? How will the project help the student assimilate the concepts? How will the project help the student develop those skills? Define the main goals of the project.
+
+## 4 Brainstorm
+
+What will the initial state of the starter project? Are the slices defined in each lesson of the chapter outline correct? What will each slice build? What will be the final state of the codebase (solution)?
 
 
 
@@ -23,18 +39,15 @@ Read `AGENTS.md` and `documentation/content/overview/Units.md`.
 
 
 
+***** TODO later: 
 
-## 1 Understand the course context
 
-Read `AGENTS.md`, `documentation/content/overview/Units.md`. Read `documentation/content/overview/Project dependencies.md` to identify the prior project this chapter builds on (if any). Read the chapter outline at `documentation/content/chapter outlines/Chapter <X>.md`, use it as a compass to guide your decisions not as strict blueprint.
 
-Read the section headers of `documentation/code standards/Code conventions.md`; drill into a section only when a slice you are planning touches that surface.
+***** TODO later: Read the section headers of `documentation/code standards/Code conventions.md`; drill into a section only when a slice you are planning touches that surface.
 
-## 2 Prior project context
 
-If a prior project is named in `Project dependencies.md`, read its `projects/Chapter <prior-X>/codebase summary.md`. Then read every `documentation/content/lesson outlines/Chapter <Z>/Continuity notes.md` for the teaching chapters between the prior project and this one, so you know which concepts the project should exercise.
 
-If there is no prior project (Chapter 032 or any independent chapter), plan a fresh scaffold using canonical Next.js 16 defaults.
+
 
 ## 3 Design the plan
 
