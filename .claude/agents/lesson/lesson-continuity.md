@@ -24,7 +24,8 @@ Record only what future lessons might need to know, as terse facts:
 - **Cut** — anything significant dropped from the lesson's chapter-outline scope, one sentence.
 - **Deferred** — concepts this lesson promised a later lesson would cover.
 - **Terminology** — specific syntax, metaphors, mental models later lessons need to reference.
-- **Misc** — any other decisions and information future lesson writers will need to make sure lessons are coherent.
+- **Patterns and best practices** — reference for the next project chapter to make sure that the project codebase follows the same high standards taught in the lessons.
+- **Misc.** — any other decisions and information future lesson writers will need to make sure lessons are coherent.
 
 Omit any field that has nothing worth recording.
 
