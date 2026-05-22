@@ -12,7 +12,7 @@ Run this agent sequence once, before writing the lessons:
 6 **project-corrector**: Prompt with chapter id `<X>`, plan path, the reviewer's divergence list inline. Run only if the reviewer reported divergences. If the corrector flags an inconsistency in the plan itself surface it in the chat.
 7 **project-summarizer**: Prompt with chapter id `<X>`.
 
-TODO: Add project chapter outliner
+TODO: Add project chapter outliner (rewrites chapter outline)
 
 ## Lessons
 
