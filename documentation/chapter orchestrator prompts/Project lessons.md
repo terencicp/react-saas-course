@@ -12,6 +12,8 @@ Run this agent sequence once, before writing the lessons:
 6 **project-corrector**: Prompt with chapter id `<X>`, plan path, the reviewer's divergence list inline. Run only if the reviewer reported divergences. If the corrector flags an inconsistency in the plan itself surface it in the chat.
 7 **project-summarizer**: Prompt with chapter id `<X>`.
 
+TODO: Add project chapter outliner
+
 ## Lessons
 
 Run this agent sequence for each lesson:
@@ -21,4 +23,3 @@ Run this agent sequence for each lesson:
 3 **project-lesson-formatter**: Prompt with lesson MDX path, lesson outline path.
 4 **lesson-reviewer**: Prompt with chapter id `<X>`, lesson outline path, lesson MDX path, the continuity notes paths for this chapter and the two preceding chapters. Returns the list of issues.
 5 **lesson-corrector**: Prompt with chapter id `<X>`, lesson outline path, lesson MDX path, the reviewer's issue list inline. Its goal is to fix the current lesson only, if there's an issue with a previous lesson surface it in the chat, do not share them with the corrector.
-6 **lesson-continuity**: Prompt with chapter id `<X>`, lesson number `<Y>`, lesson MDX path, lesson outline path, continuity notes path.
