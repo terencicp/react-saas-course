@@ -6,9 +6,9 @@ A web development course for junior devs from other fields with some previous ex
 
 **Stack core, May 2026.** React 19, Next.js 16.
 
-Read project files only if essential to your current task:
-
 ## Repo layout
+
+Read project files only if essential to your current task. Read only the relevant sections from each file.
 
 ### Components
 

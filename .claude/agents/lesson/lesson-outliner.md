@@ -53,6 +53,8 @@ Exercises are helpful to allow the student to check its understanding or practic
 
 If a topic can benefit from incorporating an embedded Youtube video, mention it in the appropriate section.
 
+List terms that would benefit from Tooltip explanations. The best candidates are non-obvious acronyms, re-explaining prerequisite concepts without interrupting lesson flow or defining terms the student might not be familiar with. Be strategic, list only terms that support the lesson's goals.
+
 ### 4.4 Scope
 
 The goal of this section is to define what the lesson will not include. If necessary, read any other relevant sections of the Table of contents and chapter outlines to understand what the student has been taught is previous lessons and what whill be taught in future lessons. This section is important to prevent the lesson writer from re-teaching previously taught concepts or teaching concepts that should be reserved for a future lesson. It's important to quickly redefine concepts that are prerequisites for the current lesson but those definitions should be concise.

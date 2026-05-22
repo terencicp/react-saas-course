@@ -42,11 +42,9 @@ Describe component and content here.
 
 The idea is you handle the content / pedagogical part of the components and another agent will figure out how to translate each description into proper syntax. Read `documentation/components/INDEX.md` to understand the names and shapes of the components available in the project, but do not read each component documentation. You can also design a custom-built component for the lesson if it's the best option to help the student's learning; in this case, describe the UI, functionality and content of the custom component inside a comment and another agent will write the code for it. Assign a unique id or name to each diagram, exercise or sandbox.
 
-Use inline prose tooltips, like {/* TODO: Term (String "HTML". Tooltip text: "HyperText Markup Language") */}, to describe acronyms, re-explain prerequisite concepts without interrupting lesson flow or define terms the student might not be familiar with.
+Use double parentheses to indicate term tooltips to add, like "HTML ((Hypertext Markup Language))", once when each concept is introduced.
 
 For Aside use shorthand: :::note|tip|caution|danger :::
-
-Inside each TODO comment block, wrap any text containing <, >, or {, } in backticks, to prevent MDX parsing errors.
 
 Always introduce components in the prose when it makes sense, even if redundant: "The following link…", "Try this exercise…", "In the following diagram…", etc. Prefer explaining diagrams in the surrounding prose than in captions.
 
