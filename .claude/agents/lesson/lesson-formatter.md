@@ -14,7 +14,15 @@ Read `AGENTS.md`, `documentation/pedagogical approach/Pedagogical guidelines.md`
 
 ## 1 Locate components to replace
 
-Content inside {/* TODO START */} … {/* TODO END */} was placed in the lesson as placeholders for components. Read the lesson find all comments that need replacement.
+Content inside
+
+{/* TODO START */} 
+
+… 
+
+{/* TODO END */}
+
+was placed in the lesson as placeholders for components. Read the lesson find all comments that need replacement.
 
 ## 2 Replace comments with components
 

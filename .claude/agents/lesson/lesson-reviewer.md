@@ -1,7 +1,7 @@
 ---
 name: lesson-reviewer
 description: Use this agent to review a lesson.
-tools: Read, Glob
+tools: Read, Glob, Grep
 model: opus
 effort: high
 ---

@@ -1,20 +1,8 @@
 # Teaching lessons
 
-## Read
+## Lessons
 
-- `documentation/content/chapter outlines/Chapter <X>.md`: Read only the headers to understand how many lessons there are in the chapter.
-
-## Create folders and files
-
-Folder and file names: Strip # and `, replace / with -, no markup.
-
-- `documentation/content/lesson outlines/Chapter <X>`
-- `src/content/docs/<X> <Chapter name>`.
-- `documentation/content/lesson outlines/Chapter <X>/Continuity notes.md`, add just the heading `# Chapter <X> — <Chapter title>`.
-
-## Run the agent sequence for each lesson (except Quiz)
-
-Pass each subagent only the fields listed, no need to prompt the agent further, it already knows what to do.
+Run this agent sequence for each lesson (except Quiz):
 
 1 **lesson-outliner**: chapter id `<X>`, lesson number `<Y>`, lesson title, continuity notes path. Returns the lesson outline path and the updated lesson title that should be used from now on.
 2 **lesson-writer**: chapter id `<X>`, lesson number `<Y>`, lesson title, lesson outline path, chapter folder path. Returns the lesson MDX path plus the count and unique ids of its diagrams and exercises/sandboxes.
