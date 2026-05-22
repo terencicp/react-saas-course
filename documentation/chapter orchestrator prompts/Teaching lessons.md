@@ -4,20 +4,15 @@
 
 - `documentation/content/chapter outlines/Chapter <X>.md`: Read only the headers to understand how many lessons there are in the chapter.
 
-## Create continuity notes
-
-- `documentation/content/lesson outlines/Chapter <X>/Continuity notes.md`, add just the heading `# Chapter <X> — <Chapter title>`.
-
-## For each lesson (except Quiz)
-
-### 1. Create folders and files
+## Create folders and files
 
 Folder and file names: Strip # and `, replace / with -, no markup.
 
-- `src/content/docs/<X> <Chapter name>`.
 - `documentation/content/lesson outlines/Chapter <X>`
+- `src/content/docs/<X> <Chapter name>`.
+- `documentation/content/lesson outlines/Chapter <X>/Continuity notes.md`, add just the heading `# Chapter <X> — <Chapter title>`.
 
-### 2. Run the agent sequence
+## Run the agent sequence for each lesson (except Quiz)
 
 Pass each subagent only the fields listed, no need to prompt the agent further, it already knows what to do.
 
