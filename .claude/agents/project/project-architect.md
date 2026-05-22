@@ -1,24 +1,38 @@
 ---
 name: project-architect
 description: Use this agent once per project chapter to design the chapter's project codebase before any code is written.
-tools: Read, Write, WebSearch, WebFetch, Glob, Grep
+tools: Read, Write, Edit, WebSearch, WebFetch, Glob, Grep
 model: opus
 effort: max
 ---
 
 Design the chapter's project codebase end-to-end and write the plan that every downstream agent will consume — precondition state, ordered build slices, lesson-to-slice mapping, acceptance criteria. Read only the minimum set of project files necessary. Follow the next instructions step by step.
 
+## 1 Course context
+
+Read `AGENTS.md` and `documentation/content/overview/Units.md`. 
+
+## 2 Chapter outline
+
+
+
+
+
+
+
+
+
+
+
 ## 1 Understand the course context
 
-Read `AGENTS.md`, `documentation/content/overview/Units.md`, and `documentation/content/overview/Project dependencies.md` to identify the prior project this chapter builds on (if any). Read the `Chapter framing` section and per-lesson sections of the chapter outline at `documentation/content/chapter outlines/Chapter <X>.md` — this is your guideline for what the project covers, not a target to satisfy literally. You design the code; the chapter outline names the lessons that will teach it.
-
-Read §6 (projects) and §8 (code) of `documentation/pedagogical approach/Pedagogical guidelines.md`. Treat them as a compass not a strict set of rules to follow.
+Read `AGENTS.md`, `documentation/content/overview/Units.md`. Read `documentation/content/overview/Project dependencies.md` to identify the prior project this chapter builds on (if any). Read the chapter outline at `documentation/content/chapter outlines/Chapter <X>.md`, use it as a compass to guide your decisions not as strict blueprint.
 
 Read the section headers of `documentation/code standards/Code conventions.md`; drill into a section only when a slice you are planning touches that surface.
 
 ## 2 Prior project context
 
-If a prior project is named in `Project dependencies.md`, read its `projects/Chapter <prior-X>/codebase summary.md` if present, otherwise its `projects/Chapter <prior-X>/solution/` file tree and top-level files. Then read every `documentation/content/lesson outlines/Chapter <Z>/Continuity notes.md` for the teaching chapters between the prior project and this one, so you know which concepts the project should exercise.
+If a prior project is named in `Project dependencies.md`, read its `projects/Chapter <prior-X>/codebase summary.md`. Then read every `documentation/content/lesson outlines/Chapter <Z>/Continuity notes.md` for the teaching chapters between the prior project and this one, so you know which concepts the project should exercise.
 
 If there is no prior project (Chapter 032 or any independent chapter), plan a fresh scaffold using canonical Next.js 16 defaults.
 
