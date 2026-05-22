@@ -1,329 +1,328 @@
-# Chapter 041 — Schema as source of truth with Drizzle
+# Chapter 041 — Project: the org-scoped invoicing data layer
 
 ## Chapter framing
 
-Chapter 041 turns the relational model from chapter 040 into a Drizzle schema file, the artifact the rest of the course derives from. By the end the student writes a `db/schema.ts` for a small SaaS domain — organizations, invoices, line items, tags — with the right columns, the right types, the right constraints, and the right relationship graph; runs no migrations yet (Chapter 044 owns Drizzle Kit); writes no queries yet (Chapter 042 owns the data-access surface); and can hand the file's `$inferSelect` types to a Server Component, a Server Action, or a Zod schema (Unit 7) without restating the shape. The chapter installs Architectural Principle #2 — the schema is the source of truth — at lesson one and cashes it in at the last teaching lesson when the inferred types replace every hand-written row interface in the codebase.
+Chapter 041 cashes in everything Unit 5 installed: the relational model and the unpooled-URL discipline (chapter 036), the schema authoring vocabulary — `pgTable`, types, modifiers, UUIDv7 PKs, FK + `ON DELETE`, unique/check, junction tables, Relations v2, `$inferSelect`/`$inferInsert` (chapter 037) — the query toolkit — joins, the relational query API, cursor pagination with the n+1 trick, `EXPLAIN ANALYZE` (chapter 038, chapter 039) — and the migration + seed workflow (chapter 040). The student ships the canonical org-scoped invoicing data layer: `organizations`, `users` (Better Auth tables stubbed for now), `org_members`, `customers`, `invoices`, `invoice_lines`. They generate and run the migration against local Docker Postgres, write a deterministic `drizzle-seed` script that produces two orgs with overlapping members and 50+ invoices each, and write the two reads every later unit will reuse: a cursor-paginated org-scoped invoice list with a status filter, and a single-round-trip "one invoice with lines and customer" detail load.
 
-Threads that run through every lesson: Drizzle is the only data-access layer the course teaches; `db/schema.ts` is the single source of truth — column names, types, defaults, and constraints flow from this file into migrations (chapter 044), queries (chapter 042), Zod via drizzle-zod (lesson 8 of chapter 046), and RLS (chapter 060); TS camelCase maps to SQL snake_case via Drizzle's `casing: 'snake_case'` config; `timestamptz` with `defaultNow()` is the only timestamp type; UUIDv7 via Postgres 18's built-in `uuidv7()` is the default PK for user-facing entities, `bigint generatedAlwaysAsIdentity` is the reach for high-volume internal tables; FKs declared column-level via `references(() => other.id, { onDelete: 'cascade' })`, with the cascade rule a deliberate per-relationship decision; NOT NULL is the senior default, nullability is opt-in; the Drizzle Relations v2 API (`defineRelations`) sits next to the schema, separate from FK declaration, and feeds the relational query API in lesson 3 of chapter 042; `$inferSelect` / `$inferInsert` are the canonical row types — a hand-typed `Invoice` interface is the smell that says Principle #2 was skipped. The chapter ships ten teaching lessons plus a quiz, ordered by dependency: principle, schema file anatomy, types, column modifiers, primary keys, foreign keys, constraints, junction tables, the relations API, and inferred types.
+Threads that run through every lesson: the schema is the source of truth — types, queries, the inspector page, and every later unit derive from `db/schema.ts`; every tenant-owned row carries an `organization_id` FK and every read on a tenant table starts with `where eq(organizationId, ...)` — Unit 9's `tenantDb` helper is the structural enforcement, this chapter just installs the manual discipline so the helper has something to wrap; FK `ON DELETE` is a decision per edge, defaulted to `cascade` for owned-children edges and `restrict` for referenced-entity edges; indexes earn their weight by being demanded by a query the chapter actually ships — composite `(organization_id, created_at, id)` for the cursor list, `customer_id` for the detail join; the seed is idempotent (`reset` then `seed` with a fixed seed number) so re-runs produce the same data, and FK-aware so parents land before children; `EXPLAIN ANALYZE` is the proof step, not a feeling. The chapter ships 1 brief + 1 starter walkthrough + 3 build lessons + 1 verify lesson, each build ending on a runnable state.
+
+### Dependency carry-in
+
+- **From lesson 2 of chapter 036 / lesson 4 of chapter 036:** Docker Postgres compose file for local; the unpooled `DATABASE_URL_UNPOOLED` wired for Drizzle Kit, the pooled `DATABASE_URL` wired for the app's `db` client.
+- **From lesson 2 of chapter 037–lesson 10 of chapter 037:** `pgTable`, `casing: 'snake_case'`, the Postgres types (`uuid`, `numeric(12, 2)`, `timestamptz`, `text`, `jsonb`, enum via `pgEnum`), `NOT NULL` / `DEFAULT` / `$defaultFn`, UUIDv7 primary keys via `$defaultFn(() => uuidv7())`, FK + `ON DELETE`, `unique()` + `check()`, junction-table shape for `org_members`, `defineRelations` in `db/relations.ts`, `$inferSelect` / `$inferInsert`.
+- **From lesson 1 of chapter 038 / lesson 2 of chapter 038 / lesson 3 of chapter 038 / lesson 6 of chapter 038:** `select` + `where eq(...)` + `orderBy` + `limit` parameterization; `innerJoin` mechanics; `db.query.invoices.findFirst({ with: { lines: true, customer: true } })` for the detail load; cursor pagination's `or(lt(sortKey, x), and(eq(sortKey, x), lt(id, y)))` predicate with the `limit(pageSize + 1)` "has next page" trick.
+- **From lesson 1 of chapter 039 / lesson 3 of chapter 039:** Composite index ordering matches the query's `orderBy`; B-tree as the default; `EXPLAIN ANALYZE` reading bottom-up.
+- **From lesson 1 of chapter 040 / lesson 3 of chapter 040:** `drizzle-kit generate --name ...`, the meta snapshot, `db:migrate` / `db:seed` scripts, `seed(db, schema, { seed: 1 }).refine(...)` shape with `weightedRandom`, `valuesFromArray`, `with`, the `reset(db, schema)` idempotency move.
+- **From chapter 035 / chapter 033:** The Next.js App Router scaffold and server-side data reads — the inspector page is a Server Component.
+- **From chapter 004 / chapter 005:** Zod schemas for the cursor and the status filter at the read boundary.
+
+### Better Auth carry-out
+
+The Unit 8 Better Auth Drizzle adapter owns `users`, `sessions`, `accounts`, `verifications`. This project stubs `users` as a minimal table (`id` UUIDv7, `email` unique, `name`) so `org_members.user_id` and `invoices.created_by` have a target; the stub schema matches Better Auth's table name and the columns later layers read. Unit 8's project drops the stub and switches to Better Auth's generated tables — the FK targets stay the same so the migration is additive, not destructive.
+
+### Starter file tree (stubs marked with TODO)
+
+```
+docker-compose.yml             # provided: postgres:18 service on :5432
+drizzle.config.ts              # provided: dialect, schema path, out, dbCredentials, casing
+.env.example                   # provided: DATABASE_URL, DATABASE_URL_UNPOOLED, SEED
+package.json                   # provided: db:generate, db:migrate, db:seed, db:studio scripts
+src/
+  db/
+    client.ts                  # provided: pooled `db` instance + relations
+    schema.ts                  # TODO student: every table
+    relations.ts               # TODO student: defineRelations
+    cursor.ts                  # provided: base64url encode/decode + Zod cursor schema
+  lib/
+    invoices/
+      queries.ts               # TODO student: listInvoices, getInvoiceDetail
+      schema.ts                # provided: statusSchema, listInvoicesInputSchema
+  app/
+    inspector/
+      page.tsx                 # provided: server component, reads ?orgId & ?cursor & ?status, renders list + detail
+      seed-button.tsx          # provided: client form -> server action that calls the seed script
+scripts/
+  seed.ts                      # TODO student: reset + seed.refine with two orgs, 50+ invoices each
+drizzle/                       # generated by db:generate, committed
+```
+
+### Reference solution signatures lessons display
+
+- `organizations`: `id uuid pk`, `name text not null`, `slug text not null unique`, `createdAt timestamptz default now()`.
+- `users` (stub for Unit 8): `id uuid pk`, `email text not null unique`, `name text not null`, `createdAt timestamptz default now()`.
+- `orgMembers` (junction): composite PK `(organizationId, userId)`, `role` pgEnum `('owner', 'admin', 'member')` not null, `createdAt timestamptz default now()`, both FKs `on delete cascade`.
+- `customers`: `id uuid pk`, `organizationId uuid not null references organizations(id) on delete cascade`, `name text not null`, `email text not null`, `createdAt timestamptz default now()`, `unique (organizationId, email)`.
+- `invoices`: `id uuid pk`, `organizationId uuid not null references organizations(id) on delete cascade`, `customerId uuid not null references customers(id) on delete restrict`, `createdBy uuid not null references users(id) on delete restrict`, `number text not null`, `status` pgEnum `('draft', 'sent', 'paid', 'overdue')` not null default `'draft'`, `total numeric(12, 2) not null`, `currency text not null default 'USD'`, `issuedAt timestamptz not null`, `dueAt timestamptz not null`, `createdAt timestamptz not null default now()`, `unique (organizationId, number)`, `check (total >= 0)`.
+- `invoiceLines`: `id uuid pk`, `invoiceId uuid not null references invoices(id) on delete cascade`, `description text not null`, `quantity numeric(12, 2) not null`, `unitPrice numeric(12, 2) not null`, `position integer not null`, `unique (invoiceId, position)`.
+- Indexes (named): `invoices_org_status_created_id_idx` on `(organizationId, status, createdAt desc, id desc)`; `invoices_org_created_id_idx` on `(organizationId, createdAt desc, id desc)`; `invoices_customer_id_idx` on `(customerId)`.
+- `defineRelations` exports: `organization -> many(orgMembers, customers, invoices)`, `user -> many(orgMembers, invoices via createdBy)`, `invoice -> one(organization), one(customer), one(createdBy), many(invoiceLines)`.
+- Cursor type: `{ createdAt: string; id: string }`, base64url-encoded JSON, validated with Zod.
+- `listInvoices({ organizationId: string, status?: InvoiceStatus, cursor?: Cursor, pageSize?: number }): Promise<{ rows: Invoice[]; nextCursor: string | null }>` — uses `db.query.invoices.findMany` with `where`, `orderBy: [desc(createdAt), desc(id)]`, `limit(pageSize + 1)`, includes `customer: true` for the list cell.
+- `getInvoiceDetail({ organizationId: string, invoiceId: string }): Promise<InvoiceWithRelations | null>` — uses `db.query.invoices.findFirst` with `with: { lines: { orderBy: asc(position) }, customer: true }` and a `where` that AND-includes `organizationId` (tenant guard).
+- Env entries (in `.env.example`): `DATABASE_URL=postgres://postgres:postgres@localhost:5432/app?sslmode=disable`, `DATABASE_URL_UNPOOLED=postgres://postgres:postgres@localhost:5432/app?sslmode=disable` (same URL locally; the variable split exists so the deploy story in Unit 20 plugs Neon in without renaming), `SEED=1`.
+
+### Inspector page spec
+
+A single Server Component at `/inspector` with these surfaces, all read from `searchParams`:
+
+- **Header:** Org switcher (two seeded orgs, `?orgId=...`), status filter buttons (`all` / `draft` / `sent` / `paid` / `overdue`), a "Reset and re-seed" form that posts to a Server Action calling the student's seed script.
+- **List panel (left):** Calls `listInvoices` with the current `orgId`, `status`, `cursor`. Renders the rows (number, customer name, status badge, total, due date). Footer shows "Next page" `<Link>` carrying the `nextCursor` in the URL, disabled when null.
+- **Detail panel (right):** When `?invoiceId=...` is present, calls `getInvoiceDetail` and renders the invoice header, the customer, the line items ordered by `position`. When absent, shows an empty-state.
+- **Plan panel (bottom):** A `<details>` that, when expanded, fires the detail query wrapped in `db.execute(sql\`explain (analyze, buffers, format text) ...\`)` and renders the plan text in a `<pre>`. Pre-built so the student doesn't write it; verifies that the index gets used.
+- **Verification banner:** Renders the row counts (`organizations`, `users`, `org_members`, `invoices`, `invoice_lines`, `customers`) at the top so re-running the seed and counting is one glance.
+
+The inspector is provided in full; the student fills the queries it imports.
+
+### Verify recipe mapped to "Done when"
+
+| Done-when clause | Verify step |
+| --- | --- |
+| `drizzle-kit migrate` runs cleanly on an empty database | Drop the local `app` database, `pnpm db:migrate`, no errors; `__drizzle_migrations` has one row. |
+| Seed populates two orgs with overlapping members and 50+ invoices each | After `pnpm db:seed`, the inspector banner shows `organizations: 2`, `org_members: 5+` (with at least one user belonging to both orgs), `invoices: ≥ 100`. |
+| Seed is idempotent | Run `pnpm db:seed` twice; row counts and a sampled row's primary key set are identical between runs. |
+| Inspector paginates one org's invoices | Click "Next page" 3 times; URL carries a fresh `?cursor=...` each time, list rows don't repeat. |
+| `?status=paid` filters server-side | Click "paid"; URL shows `?status=paid`, list only shows paid rows, hard reload preserves. |
+| Detail loads in a single round trip | Click an invoice; the plan panel shows one query plan with one outer `Index Scan` on `invoices`, joined to `customers` and `invoice_lines` in the same plan. |
+| `EXPLAIN ANALYZE` on the detail query uses the right indexes | The list query plan shows `Index Scan using invoices_org_status_created_id_idx` (or the no-status variant) — not `Seq Scan`. |
+
+### Concepts demonstrated → owning lesson
+
+- Architectural Principle #2 (schema is the source of truth) — lesson 1 of chapter 037.
+- `pgTable`, casing — lesson 2 of chapter 037. Postgres types via Drizzle (`uuid`, `numeric`, `timestamptz`, `jsonb`, `pgEnum`) — lesson 3 of chapter 037.
+- Column modifiers (NOT NULL, DEFAULT, `$defaultFn` for UUIDv7) — lesson 4 of chapter 037. UUIDv7 PKs — lesson 5 of chapter 037.
+- FK + `ON DELETE` decisions — lesson 6 of chapter 037. UNIQUE + CHECK — lesson 7 of chapter 037. Junction tables (`org_members`) — lesson 8 of chapter 037.
+- `defineRelations` v2 declarative API — lesson 9 of chapter 037. `$inferSelect` / `$inferInsert` — lesson 10 of chapter 037.
+- Joins (relational query API does the work) — lesson 2 of chapter 038. Relational query API nested reads — lesson 3 of chapter 038.
+- Cursor pagination with the n+1 trick — lesson 6 of chapter 038.
+- Composite index ordering matching `orderBy` — lesson 1 of chapter 039. `EXPLAIN ANALYZE` — lesson 3 of chapter 039.
+- `drizzle-kit generate` / `migrate` / studio — lesson 1 of chapter 040. `drizzle-seed` with `.refine`, `weightedRandom`, `with`, the reset-then-seed idempotent pattern — lesson 3 of chapter 040.
+- Server-side `searchParams` reads, Zod at the boundary (cursor validation) — lesson 4 of chapter 033.
 
 ---
 
-## Lesson 1 — Principle #2: schema is the source of truth
+## Lesson 1 — The brief: what we're building and what we're not
 
-Establishes Architectural Principle #2 by naming `db/schema.ts` as the canonical root from which row types, insert types, Zod validators, form fields, and RLS column names all derive.
+Frames the org-scoped invoicing surface, the seven "Done when" verifications, the explicit scope cuts (no mutations, no real auth, no RBAC yet), and the senior payoff of installing tenant-aware schema discipline now.
+
+Goals:
+
+- Frame the SaaS shape being built: org-scoped invoicing is the canonical relational surface every later unit (CRUD, auth gates, RBAC, billing) layers on top of; this chapter ships the schema and the two reads, nothing else.
+- State the seven "Done when" verifications in one paragraph (clean migrate, two orgs, idempotent seed, paginated list, server-side status filter, single-round-trip detail, indexed plans).
+- Name the scope cut: no mutations (Unit 6 owns Server Actions and CRUD on top of this schema), no real Better Auth tables (Unit 8 swaps the stub), no RBAC at the query layer (Unit 9 wraps these reads with `authedAction` and `tenantDb`).
+- Set the senior payoff: the schema decisions made now — `organizationId` on every tenant-owned row, the composite index for cursor pagination, the relations declaration that turns "one invoice with lines and customer" into one query — are the foundation that makes the rest of the course's data layer cheap. Skipping them surfaces three units later as N+1s, full table scans, and tenant-leak bugs.
+- Show the end UX: one screenshot of the inspector with the org switcher, the paginated list, an expanded detail, and the visible plan panel.
+- Link the starter via `degit`.
+
+Senior calls and watch-outs:
+
+- The "schema is the source of truth" decision means the project's row types come from `$inferSelect`, not hand-written types — anything else drifts.
+- `organizationId` on every tenant-owned row is non-negotiable. Skipping it on one table is the failure mode that turns into a multi-day RLS migration two units later. Name the structural rule.
+
+Codebase state at entry: empty repo (student runs `degit`).
+Codebase state at exit: starter cloned, `docker compose up -d` running Postgres, `pnpm install` clean, `pnpm dev` shows the inspector with empty banners (no tables exist yet).
+
+Estimated student time: 10 to 15 minutes.
+
+---
+
+## Lesson 2 — Type-safe environment variables with @t3-oss/env-nextjs
+
+Wire build-time env validation with `@t3-oss/env-nextjs` and Zod 4 so a missing `DATABASE_URL` fails `pnpm build` before deploy, covering the `server`/`client` split, the `NEXT_PUBLIC_*` convention, the `.env.example` → `.env.local` pattern, and `SKIP_ENV_VALIDATION` as a deliberate escape hatch — the first project where env vars carry a real secret.
 
 Topics to cover:
 
-- **The senior question.** When the same row shape appears in five places — Drizzle insert, Server Action args, Zod validator, form field set, Server Component prop — which one is canonical and which four derive? Answer: `db/schema.ts` is the root, every other shape is generated, hand-written restatements drift.
-- **Principle #2 stated.** The schema is the source of truth for every typed shape downstream. Row types from `$inferSelect`; insert types from `$inferInsert`; Zod validators from drizzle-zod (lesson 8 of chapter 046); form field sets from the same Zod; RLS policies (chapter 060) reference the same column names. One file changes, every downstream layer's type checker catches the drift.
-- **What the principle prevents.** The four-way drift: column renamed in Postgres, migration applied, Drizzle schema updated — but a hand-typed `Invoice` interface in `lib/types.ts` left stale; Server Action accepts a payload Drizzle no longer maps; form posts a field Zod doesn't know about; production 500s on next deploy.
-- **Where the principle bites later.** Named ahead, not taught: chapter 042 queries return `$inferSelect` types; lesson 8 of chapter 046 drizzle-zod turns schema into Zod; chapter 047 Server Actions parse with that Zod; chapter 051 forms read the Zod; chapter 060 RLS reads column names; 16 API contracts derive from the schema.
-- **The carve-out.** Two legitimate divergences: external API DTOs (Chapter 16) — a public shape intentionally narrower than the row; derived view shapes (a "dashboard summary") — built from `$inferSelect` pieces, not hand-typed. Named so the student doesn't read the principle as "never write a type."
-- **The order of operations.** Change the column in `db/schema.ts` first; generate the migration (lesson 1 of chapter 044); the type checker walks the codebase and surfaces every consumer; ship.
-- **Watch-outs:** hand-typed row interfaces rot silently; `as any` to bridge a stale type and a new schema amplifies the bug; copying a Zod schema's field list from Drizzle instead of generating via drizzle-zod is the same drift in slow motion.
+- The senior question, posed plainly. A SaaS app reads secrets and configuration from environment variables — `DATABASE_URL`, third-party API keys, public-vs-server flags. The failure mode every senior has seen at least once: deploy succeeds, the app boots, the first request crashes because `process.env.STRIPE_SECRET_KEY` is `undefined` and the call to Stripe throws inside a request handler. The user sees a 500; the team sees the alert ten minutes later; the fix is to redeploy with the variable set, which means the outage lasts as long as the deploy. The right place to catch this is **build time, not first-request time.** Chapter 041 is the first project where env vars carry a real secret (the Postgres connection string), and this lesson installs the discipline from line one.
+- `@t3-oss/env-nextjs` as the 2026 default. One paragraph: a thin, well-maintained wrapper around a Standard Schema-compliant validator (Zod 4 in this course; Valibot also supported) that runs at build time, enforces the Next.js naming convention (`NEXT_PUBLIC_` for client-visible variables, no prefix for server-only), and produces typed exports the rest of the app imports instead of touching `process.env` directly. Alternatives named in one sentence: hand-written `process.env` checks scattered across the code (no central enforcement), or no validation at all (the failure mode above). The trigger that would flip the choice: a non-Next.js runtime where the package's framework integration doesn't fit; the principle of validation-at-the-boundary stays the same.
+- The starter's `env.ts` file, read in full. The shape:
+  - `import { createEnv } from '@t3-oss/env-nextjs'` and `import { z } from 'zod'`.
+  - `export const env = createEnv({ server, client, experimental__runtimeEnv })`.
+  - `server` block — Zod schemas for the server-only variables. For chapter 041 this is `DATABASE_URL: z.url()` (the Postgres connection string the lessons that follow consume).
+  - `client` block — Zod schemas for `NEXT_PUBLIC_*` variables. Empty in this project; populated when PostHog (Unit 19) and others land.
+  - The `runtimeEnv` map that explicitly threads `process.env.X` to each schema. Why the map exists: Next.js inlines `NEXT_PUBLIC_*` at build time but leaves server vars dynamic, and the explicit map lets the validator know which is which without surprises. The student does not need the mechanics in depth; they need to know the map exists and why.
+- The Next.js naming convention, restated. `NEXT_PUBLIC_*` is shipped to the client bundle; everything else stays on the server. The `@t3-oss/env-nextjs` package refuses to validate a `NEXT_PUBLIC_*` variable in the `server` block and vice versa — structural enforcement that makes the "I accidentally leaked the API key" bug hard to write. Named here, revisited under the security baseline in Unit 16.
+- The build-time fire. A worked example: the starter ships `DATABASE_URL` in `.env.local` (which this lesson teaches the student to create from `.env.example`, see below). The student runs `pnpm build` — succeeds. The student removes `DATABASE_URL` from `.env.local`, runs `pnpm build` again — fails with a clear error naming the missing variable and the file it was expected in. The student adds it back, the build succeeds. The discipline is mechanical, not theoretical.
+- The `.env.example` and `.env.local` pattern. Two files, two purposes.
+  - `.env.example` lives in the repo, committed, names every variable the app expects with a dummy value or empty string. The starter ships it. The next contributor (or the student themselves on a second machine) copies it to `.env.local`, fills in real values, and the app boots.
+  - `.env.local` lives on the developer's machine, never committed, holds the real secrets. The `.gitignore` excludes `.env*.local`.
+  - The Vercel deploy story is named in one line: production env vars are set in the Vercel dashboard, the build still validates them at build time via `env.ts`, and a missing variable fails the deploy before traffic shifts. Unit 20 owns the deploy chapter; this lesson states the connection so the student knows what they're protecting against.
+- The import-side rule. Application code imports from `~/env` (or the project's path), never from `process.env`. Two senior reasons named: typed exports (`env.DATABASE_URL` is `string`, not `string | undefined`) and the seam where validation actually fires (importing from `~/env` runs the validation; bypassing it doesn't).
+- The `SKIP_ENV_VALIDATION` escape hatch. One paragraph: the package supports `SKIP_ENV_VALIDATION=true` to bypass validation for the specific case of a CI step that builds without the secrets present (e.g. a Docker image build that injects env at runtime). The senior watch-out: the flag is for the build that doesn't need to type-check the env shape, not for "make the error go away." Set it deliberately, in the script that needs it, never as a default.
+- Forward links. Architectural Principle #3 (pure `/lib`, side effects at named boundaries) — `env.ts` is the first concrete instance of a named boundary, surfaced here and named again in Unit 6. Security baseline (Unit 16) revisits env hygiene as part of the audit.
 
 What this lesson does not cover:
 
-- The `pgTable` API surface and the schema file's anatomy — lesson 2 of chapter 041.
-- drizzle-zod and the schema-to-Zod pipeline — lesson 8 of chapter 046.
-- `$inferSelect` / `$inferInsert` mechanics — lesson 10 of chapter 041.
-- RLS policies reading the schema — Chapter 060.
-- Public API DTOs and the carve-out at depth — Chapter 16.
+- Authoring Zod schemas in depth (chapter 042).
+- Connecting Drizzle to `DATABASE_URL` — that's lesson 5 of chapter 041, where the schema and the first migration land.
+- The Vercel deploy flow for env vars (Unit 20).
+- Secret-rotation discipline, env per environment, or staging-vs-production separation (Unit 16 and Unit 20).
+- Valibot as the alternative validator. Named in one line; the course commits to Zod.
 
-Estimated student time: 20 to 25 minutes. Short by design; this is a principle lesson, not a mechanics lesson. Load-bearing for every later lesson in the chapter and for Chapters 7, 10, and 16.
+Pedagogical approach:
 
----
+Pattern archetype. The lesson teaches a failure mode and the structural enforcement that prevents it; `@t3-oss/env-nextjs` is the enforcement, the missing-variable production crash is the failure. Open with the 500-on-first-request scenario in prose — concrete, lived-experience framing, no abstraction. Show the starter's `env.ts` as one labeled code block, then walk it section by section in adjacent prose (not in comments inside the block — the prose owns the explanation, the code owns the shape). The worked example is the lesson's center: a `Steps` block with three commands. `pnpm build` succeeds. The student edits `.env.local` to remove `DATABASE_URL`. `pnpm build` fails with an error message the student reads. The student restores the variable. `pnpm build` succeeds again. Each step has its labeled output block; the student watches the build catch the missing variable cause-and-effect. Close with a small `Buckets` exercise sorting eight variable names ("`DATABASE_URL`," "`NEXT_PUBLIC_POSTHOG_KEY`," "`STRIPE_SECRET_KEY`," "`NEXT_PUBLIC_SITE_URL`," "`RESEND_API_KEY`," "`NODE_ENV`," "`NEXT_PUBLIC_GA_ID`," "`SESSION_SECRET`") into "server block," "client block," or "framework-owned, don't put in env.ts." That exercise is the senior-reflex confirmation — the student should leave knowing where each new env variable belongs before they ever add one.
 
-## Lesson 2 — pgTable and the snake_case bridge
-
-Introduces the `db/` folder layout, the minimal `pgTable` call, column builders, and the `casing: 'snake_case'` config that maps TS camelCase to SQL snake_case.
-
-Topics to cover:
-
-- **The senior question.** Given an empty `db/schema.ts`, what does the smallest valid table look like and what casing convention bridges TS and Postgres? The lesson establishes the file's shape, the `pgTable` call, and the `casing: 'snake_case'` config that maps TS camelCase to SQL snake_case automatically.
-- **The `db/` folder layout.** `db/schema.ts` for tables, `db/relations.ts` for the Relations v2 declarations (lesson 9 of chapter 041), `db/index.ts` for the `db` client (wired in chapter 044 setup). Lives at project root — schema is shared by every feature.
-- **`pgTable` — the signature.** `pgTable(name, columns)`: `name` is the SQL table name (snake_case, plural), `columns` maps camelCase TS properties to column builders. The exported `const` is what queries import.
-- **The minimal table.** A four-line `organizations` with an `id` and a `name text` — the smallest thing that runs before any modifier or relationship enters.
-- **Column builders.** Each Postgres type has a builder from `drizzle-orm/pg-core` (`text`, `integer`, `boolean`, …). The first argument (SQL column name) is optional when `casing: 'snake_case'` is set. Modifiers chain: `.notNull()`, `.default(…)`, `.primaryKey()`, `.references(…)` — each owned later.
-- **The `casing` config.** `drizzle({ casing: 'snake_case' })` wired once in `db/index.ts` (foreshadowed). TS `createdAt` becomes SQL `created_at`; queries read `users.createdAt` in TS and emit `users.created_at` in SQL. Without it, the student types snake_case strings in every builder or pollutes the database with camelCase column names.
-- **The `logger` option.** `drizzle({ casing, logger: true })` is the opt-in flag that logs every emitted SQL statement to stdout — invaluable for N+1 diagnosis (lesson 2 of chapter 043) and the EXPLAIN-copy reflex (lesson 3 of chapter 043); off by default, dev-only.
-- **Naming convention for tables.** Plural snake_case (`organizations`, `invoice_line_items`); the exported `const` matches.
-- **Where the file's exports flow.** `db/schema.ts` exports tables; `db/relations.ts` imports them; `db/index.ts` re-exports as a namespace for the Drizzle client; Drizzle Kit (lesson 1 of chapter 044) reads the file for migrations; drizzle-zod (lesson 8 of chapter 046) reads the same exports.
-- **Schema namespaces named, dropped.** Postgres `SCHEMA` qualifier maps to Drizzle's `pgSchema('marketing')` for multi-schema setups; the course pins everything to `public`.
-- **Watch-outs:** mixing the SQL-name argument with `casing` config silently drifts between tables — pick one; bare `text()` is nullable (lesson 4 of chapter 041 fixes the default); Drizzle Kit treats the schema file as input — unexported tables do not exist for migrations.
-
-What this lesson does not cover:
-
-- Specific Postgres data types and which to reach for — lesson 3 of chapter 041.
-- Column modifiers (`.notNull()`, `.default()`, generated columns) — lesson 4 of chapter 041.
-- Primary keys, foreign keys, unique/check constraints — Lessons lesson 5 of chapter 041–lesson 7 of chapter 041.
-- Many-to-many junction tables — lesson 8 of chapter 041.
-- The Relations v2 API — lesson 9 of chapter 041.
-- The `db` client wiring, `drizzle({ casing })`, `db/index.ts` — Chapter 044 setup walkthrough.
-- Drizzle Kit migrations from the schema — lesson 1 of chapter 044.
-
-Estimated student time: 35 to 45 minutes. Load-bearing for every later lesson in the chapter.
+Estimated student time: 30 to 35 minutes.
 
 ---
 
-## Lesson 3 — Postgres data types, the 2026 subset
+## Lesson 3 — Tour of the starter and the inspector contract
 
-Surveys the durable `pg-core` types — `text`, `numeric` for money, `timestamptz`, `uuid`, `jsonb` with `$type<…>`, `pgEnum`, arrays — with a "reach for it when" rule per type.
+Walks the provided file tree (`drizzle.config.ts`, the pooled `db` client, the cursor helpers, the inspector page, the `db:*` scripts), brings up Docker Postgres, and pins the contracts the student's queries must satisfy.
 
-Topics to cover:
+Goals:
 
-- **The senior question.** For each column in the domain — names, prices, timestamps, IDs, enums, payloads — what Postgres type is correct and which Drizzle builder maps to it? Reference/survey of the durable `pg-core` subset for 2026, with a "reach for it when" line per type.
-- **Text and strings.** `text` is the default — variable-length, no length cap, identical performance to `varchar(n)` in Postgres. Length limits belong in Zod, not the column. `varchar(n)` and `char(n)` named once; never the right answer.
-- **Numbers — the four-way decision.** `integer` (32-bit) for counts and small IDs; `bigint` (64-bit) for IDs past 2 billion, counters, Unix ms; `numeric(precision, scale)` for money and any value where binary rounding corrupts the answer — the only safe currency type; `real` / `double precision` named once for analytics. Course default for prices: `numeric(12, 2)`.
-- **Boolean.** `boolean`. Senior reach: two booleans over a three-state enum when meanings are orthogonal; enum when states are mutually exclusive.
-- **Timestamps — `timestamptz` only.** `timestamp('createdAt', { withTimezone: true })` maps to Postgres `timestamptz` — stores UTC, converts on I/O. `timestamp` without `withTimezone` is never the right answer. Narrow exception: a recurring local time-of-day ("opens at 9am local") — store as `time` plus a separate `timezone` text column. `.defaultNow()` on `createdAt`; every SaaS table carries `createdAt`/`updatedAt` (reusable-columns pattern in lesson 4 of chapter 041).
-- **Date and time-only.** `date` for calendar dates (birthdate, billing date). `time` and `interval` named once.
-- **UUID.** `uuid` for surrogate keys; `.defaultRandom()` generates UUIDv4, Postgres 18's `uuidv7()` is the senior reach for time-sortable keys (lesson 5 of chapter 041 owns the decision). Drizzle maps `uuid` to a string.
-- **JSON — `jsonb` only.** `jsonb('payload').$type<WebhookEvent>()` for structured data that's still indexable. `$type<…>` tells Drizzle the TS shape; Zod still validates on the way in. `json` (non-binary) named once; never the right answer. Reach for `jsonb` when: third-party webhook bodies, audit-log details, flexible metadata. Skip when: anything you'd filter or sort on — promote those to real columns.
-- **Enums via `pgEnum`.** `pgEnum('invoice_status', ['draft', 'sent', 'paid', 'void'])` returns a Postgres enum type and a Drizzle column builder. Reach when: small, stable, mutually-exclusive states. Use a lookup table when the set grows, rows need metadata, or it's user-editable.
-- **Arrays.** `text('tags').array()` for a small ordered list of primitives where a junction table would be overkill. Watch-out: arrays can't be foreign-keyed; the moment you'd join, switch to a junction table.
-- **Geographic, full-text, binary — named, deferred.** `point`/`polygon`/`geography` (PostGIS, out of scope); `tsvector` + generated columns (lesson 8 of chapter 042); `bytea` (the course stores binary in R2, keeps a URL).
-- **Network addresses — `inet`.** `inet('actor_ip')` maps to Postgres `inet` for IPv4/IPv6 addresses; the right reach for audit-log actor IPs and request-origin columns. Indexed and queryable as a real network type rather than a `text` column.
-- **Per-column defaults — the lookup.** Names: `text`. IDs: `uuid` + `uuidv7()`. Money: `numeric(12, 2)`. Counts: `integer`. Timestamps: `timestamp({ withTimezone: true }).defaultNow().notNull()`. Status: `pgEnum`. Flexible payloads: `jsonb` with `$type<…>`.
-- **Watch-outs:** `varchar(n)` is a Postgres anti-pattern dressed up as type safety; `timestamp` without `withTimezone` is the most common Drizzle timezone bug; `numeric` arrives in TS as a string for arbitrary precision — money math handles that boundary; `jsonb` filter predicates that proliferate are a normalization debt; `pgEnum` values are easy to add but painful to remove.
+- Walk the file tree, calling out provided vs. stubbed. Linger on three files: `drizzle.config.ts` (the one config that drives `generate`, `migrate`, `push`, `studio` — point at the unpooled URL, casing, schema path), `src/db/client.ts` (the pooled `db` exported with the relations bag attached), `src/db/cursor.ts` (the encode/decode helpers and Zod schema the queries reuse — provided because the encoding contract is not the lesson).
+- Read `src/lib/invoices/schema.ts` — the `statusSchema` enum, the `listInvoicesInputSchema` (orgId, optional status, optional cursor, pageSize default 20, cap 100). The Zod input is what the inspector page calls with; the same shape will be reused in Unit 6's Server Action.
+- Read `src/app/inspector/page.tsx` end-to-end — the searchParams reads, the call sites for `listInvoices` and `getInvoiceDetail`, the plan-panel `<details>` that runs `EXPLAIN ANALYZE`. Name what each call expects so the student knows the contract their queries must satisfy.
+- Read the `package.json` scripts — `db:generate`, `db:migrate`, `db:seed`, `db:studio` — and the env loading path (`dotenv-cli` wraps Drizzle Kit invocations because Drizzle Kit doesn't read `.env` by itself, lesson 1 of chapter 040).
+- Bring up Postgres: `docker compose up -d`, `psql` in to confirm the empty `app` database exists. `pnpm db:migrate` will succeed against it (no tables yet, just creates `__drizzle_migrations`).
+- Open `pnpm db:studio`, confirm an empty schema browser.
 
-What this lesson does not cover:
+Senior calls and watch-outs:
 
-- Column modifiers (`.notNull()`, `.default()`, generated columns) — lesson 4 of chapter 041.
-- Primary keys and the UUIDv7 vs. bigserial decision at depth — lesson 5 of chapter 041.
-- `jsonb` query syntax (`->`, `->>`, `@>`) — lesson 9 of chapter 042.
-- Full-text search columns — lesson 8 of chapter 042.
-- Zod validation of payload shapes at the boundary — Chapter 046.
-- Object storage for binary — Chapter 14.
+- The pooled URL drives the app's runtime queries; the unpooled URL drives Drizzle Kit. Running migrations against the pooled URL silently truncates long DDL — this is the lesson from lesson 4 of chapter 036 made concrete. The starter wires both correctly; the watch-out is reaching for the pooled URL in any new script the student writes later.
+- The cursor encoder/decoder lives in `db/cursor.ts`, not duplicated per query. Same shape every paginated list will reuse — Architectural Principle #3 (named seams) starting early.
 
-Estimated student time: 45 to 55 minutes. Load-bearing for every column the student writes in this chapter, in chapter 045's project, and in every later schema.
+Codebase state at entry: starter cloned, Postgres running.
+Codebase state at exit: student has read every provided file, run `db:migrate` against the empty DB once, opened Studio. No code written. The inspector still renders empty.
+
+Estimated student time: 20 to 25 minutes.
 
 ---
 
-## Lesson 4 — NOT NULL, defaults, and generated columns
+## Lesson 4 — Authoring the schema and shipping the init migration
 
-Teaches the three per-column decisions — nullability, defaults (`.default`, `.defaultNow`, `.$defaultFn`, `$onUpdate`), and `generatedAlwaysAs` — plus the reusable-columns pattern.
+Fills `db/schema.ts` and `db/relations.ts` with the six tables (`organizations`, `users` stub, `org_members`, `customers`, `invoices`, `invoice_lines`) including UUIDv7 PKs, FK `ON DELETE` decisions, tenant-scoped uniques, the three composite indexes, and the `$inferSelect` row types, then generates and runs the initial migration.
 
-Topics to cover:
+Goals:
 
-- **The senior question.** Every column needs three decisions: can it be null, does it carry a default, is it derived? The lesson covers `.notNull()`, `.default(…)` / `.defaultNow()` / `.$defaultFn(…)`, and `.generatedAlwaysAs(…)`.
-- **NOT NULL is the senior default.** `.notNull()` on every column unless "this fact is genuinely unknown" applies. Without it, `text()` is nullable and `string | null` propagates downstream — every read site pays the narrowing cost. Rule: type the absence (a `deletedAt` that's null on live rows) only when "absent" is a meaningful state.
-- **The Zod boundary parallel.** Same default at the validation layer (chapter 046) — `.optional()` is opt-in. drizzle-zod (lesson 8 of chapter 046) reads NOT NULL from the schema and emits the matching required/optional Zod field.
-- **DEFAULT — three forms.** `.default(literal)` for a constant (`status` defaulting to `'draft'`); `.defaultNow()` for `timestamptz` where Postgres fills `now()` (canonical for `createdAt`); `.$defaultFn(() => …)` for application-side defaults computed in TS. The first two emit SQL `DEFAULT` clauses; `.$defaultFn(…)` runs in the Drizzle client before insert and is invisible to direct SQL.
-- **`.$defaultFn(…)` vs. `.default(…)`.** App-side when the value needs TS code (UUIDv7 generator, slug from another field). SQL-side when Postgres can compute it. Senior reach: prefer SQL-side — they apply to migrations, psql, and any tool bypassing the app.
-- **The `updatedAt` pattern.** `timestamp({ withTimezone: true }).defaultNow().notNull().$onUpdate(() => new Date())`. `$onUpdate` runs at the Drizzle layer — direct SQL bypasses it. Prod-grade reach: a Postgres trigger (named once; chapter 044 setup adds it as a one-time migration).
-- **Reusable columns pattern.** Every table carries `id`, `createdAt`, `updatedAt`, often `deletedAt`. Define once in `db/columns.ts` and spread into each `pgTable`. Removes repetition across 30 tables and centralizes the choice.
-- **Generated columns — `.generatedAlwaysAs(…)`.** A column Postgres computes from other columns. `STORED` (persisted, indexable, costs disk) is the production default; `VIRTUAL` (Postgres 18, computed on read) is named but newer. Senior reaches: lowercased email for case-insensitive uniqueness; `tsvector` for full-text (lesson 8 of chapter 042); derived totals. Trade-off: read-only — inserts can't supply it; updating inputs recomputes.
-- **Worked example — case-insensitive email.** `email text not null` plus `emailLowercased text generatedAlwaysAs(sql\`lower(email)\`)`. A unique index on `emailLowercased` (lesson 7 of chapter 041) enforces case-insensitive uniqueness without application code.
-- **Watch-outs:** nullable columns proliferate narrowing across the codebase; `.defaultNow()` is correct only on `timestamptz` — on plain `timestamp` it stores server-local time and the bug hides until a region changes; `.$defaultFn(…)` does not run when raw SQL bypasses Drizzle; generated columns can't be inserted (`$inferInsert` knows; raw inserts will reject); STORED generated columns recompute on every input update.
+- Fill `src/db/schema.ts` table by table in the order FKs demand: `organizations`, `users` (stub), `orgMembers` (composite PK referencing the two), `customers`, `invoices`, `invoiceLines`. Each table calls out the senior decisions inline:
+  - `id uuid` with `$defaultFn(() => uuidv7())` (UUIDv7 from lesson 5 of chapter 037 — sortable, no cross-table guess-leak).
+  - `timestamptz` for every timestamp, never `timestamp` (the lesson 3 of chapter 037 rule).
+  - `numeric(12, 2)` for money, never `real` or `double precision`.
+  - `pgEnum` for `role` and `status` (DB-enforced).
+  - FK `ON DELETE`: `cascade` on `org_members → organizations/users`, `cascade` on `customers → organizations`, `cascade` on `invoices → organizations`, `restrict` on `invoices → customers` (customers shouldn't disappear under an invoice — the lesson 6 of chapter 037 decision), `restrict` on `invoices → users`, `cascade` on `invoice_lines → invoices`.
+  - `unique(organizationId, number)` on invoices, `unique(organizationId, email)` on customers, `unique(invoiceId, position)` on invoice_lines — every uniqueness scope is tenant-aware (the structural rule).
+  - `check(sql\`total >= 0\`)` on invoices — DB-enforced invariant (lesson 7 of chapter 037).
+  - Indexes declared at the bottom of each table: composite `(organizationId, status, createdAt desc, id desc)`, `(organizationId, createdAt desc, id desc)`, `(customerId)`. Order matches the query's `orderBy` direction — the rule from lesson 1 of chapter 039.
+- Fill `src/db/relations.ts` using `defineRelations` v2: `organization` → many of `orgMembers`/`customers`/`invoices`, `user` → many `orgMembers` and `invoices` (via `createdBy`), `customer` → many `invoices` and one `organization`, `invoice` → one `organization`/`customer`/`createdBy`, many `invoiceLines`, `invoiceLine` → one `invoice`. Two relations from `invoices` to two different roles must be named (e.g., `creator` for the user-side join) — the senior call from lesson 9 of chapter 037.
+- Export `Invoice = typeof invoices.$inferSelect`, `NewInvoice = typeof invoices.$inferInsert`, same for the other tables — the canonical row types that flow into `queries.ts` and the inspector.
+- Run `pnpm db:generate --name init_schema`. Open the emitted SQL. Read it together: confirm every `CREATE TABLE`, every FK with the right `ON DELETE`, every index, every constraint. This is the review step from lesson 1 of chapter 040.
+- Run `pnpm db:migrate`. Confirm in Studio: six tables, indexes visible, FKs visible.
+- Re-run `db:generate` immediately: emits an empty migration ("no changes"). The senior signal that the snapshot is in sync.
 
-What this lesson does not cover:
+Senior calls and watch-outs:
 
-- Primary-key generation specifically — lesson 5 of chapter 041.
-- Foreign keys and cascade — lesson 6 of chapter 041.
-- UNIQUE indexes that pair with generated columns — lesson 7 of chapter 041.
-- `$inferInsert` type behavior with defaults and generated columns — lesson 10 of chapter 041.
-- Postgres triggers for `updatedAt` — Chapter 044 setup mentions, not in this chapter.
-- Full-text `tsvector` generated columns — lesson 8 of chapter 042.
+- Every tenant-owned table carries `organizationId` as a NOT NULL FK. The one table that doesn't carry it is `users` (which is global across orgs); that's the structural distinction membership tables make explicit (`org_members` joins them).
+- The composite index column order matches the `where` + `orderBy` of the list query, not alphabetical or random — the cursor query's plan depends on it. Name the rule, then verify with `EXPLAIN ANALYZE` in lesson 7 of chapter 041.
+- `cascade` vs. `restrict` is a decision per edge, not a default to copy. The mental model: cascade for owned children that lose meaning without the parent, restrict for referenced entities whose absence the schema can't make sense of. Name it once at `customers → invoices` and the student carries it through.
+- Don't reach for `drizzle-kit push` here — even on a fresh database, the generate-and-commit loop is the muscle. The push-as-prototype lane is lesson 2 of chapter 040's escape hatch, not the project's default.
 
-Estimated student time: 40 to 50 minutes. Load-bearing for every table in the chapter.
+Codebase state at entry: empty `db/schema.ts`, no migration files.
+Codebase state at exit: schema and relations committed; one migration file (`0000_init_schema.sql`) plus its `meta/` snapshot committed; six tables exist in Postgres; `db:generate` reports no further changes. Inspector still renders empty (no rows yet).
 
----
-
-## Lesson 5 — Primary keys: UUIDv7 and identity bigint
-
-Lands the surrogate-key decision tree — UUIDv7 for user-facing entities, `bigint generatedAlwaysAsIdentity` for high-volume internals, natural keys only for immutable external identifiers.
-
-Topics to cover:
-
-- **The senior question.** Which primary-key strategy does a 2026 SaaS pick for each table — user-visible IDs, internal join tables, high-volume logs? The lesson lands on UUIDv7 for user-facing entities, `bigint generatedAlwaysAsIdentity` for high-volume internal, and the narrow natural-key carve-out.
-- **Primary keys, restated.** A column (or composite) that uniquely identifies a row; Postgres enforces uniqueness and indexes it for free; every foreign key points at one. Declared with `.primaryKey()`.
-- **Surrogate vs. natural.** Surrogate: a meaningless ID the database mints (UUID, bigint). Natural: a domain value (email, slug, ISO-3166 code). Default is surrogate everywhere user-facing; naturals only for genuinely immutable, externally-defined identifiers (country codes, ISBN). Reason: domain values change — an email rotates, a slug is renamed — and a changing PK cascades through every FK.
-- **UUIDv4 vs. UUIDv7.** v4 is fully random — terrible B-tree locality, write amplification climbs with table size. v7 prefixes a millisecond timestamp — inserts go to the end of the index like a sequence, matching `bigserial` behavior. RFC 9562 standardized v7 in May 2024; Postgres 18 (September 2025) ships native `uuidv7()`. Course default: `uuid('id').primaryKey().default(sql\`uuidv7()\`)`.
-- **`bigint generatedAlwaysAsIdentity` — the high-volume reach.** Modern SQL standard, replaces legacy `bigserial`. Smaller (8 vs. 16 bytes), faster on B-tree. Reach when: high-volume internal table (event log, analytics, junction), no system-boundary ID exposure, no sharding on the roadmap. Shape: `bigint('id', { mode: 'number' }).primaryKey().generatedAlwaysAsIdentity()`.
-- **The decision tree.** User-facing ID in URLs or API responses → UUIDv7. High-volume internal nobody sees by ID → `bigint identity`. Externally-defined immutable domain key → natural PK.
-- **Composite primary keys.** Junction tables and only them: `primaryKey({ columns: [t.invoiceId, t.tagId] })` in `pgTable`'s third argument. Full pattern in lesson 8 of chapter 041; mechanic introduced here so the next two lessons can use it.
-- **What `.primaryKey()` does for free.** Implicit NOT NULL, UNIQUE, and INDEX. Never add a separate unique index on a PK column.
-- **UUID exposure as a side benefit.** Sequential integer IDs leak business volume (`/invoices/47` tells a competitor your count); UUIDs don't.
-- **Watch-outs:** UUIDv4 as a PK is a write-amplification trap that compounds with table size — choose v7 from day one; `bigserial` still works but `generatedAlwaysAsIdentity` is the modern shape; sequence-based IDs leak counts; mutable natural keys (email, slug) cascade pain through every FK — the rule is "would I be comfortable if this value changed?"; composite PKs belong on junction tables and almost nowhere else — `(orgId, slug)` as an entity's PK is a tenancy-modeling smell, use surrogate `id` plus unique constraint.
-
-What this lesson does not cover:
-
-- Foreign keys, `references()`, and cascade — lesson 6 of chapter 041.
-- UNIQUE constraints that aren't primary keys — lesson 7 of chapter 041.
-- Junction tables at depth — lesson 8 of chapter 041.
-- The `db.transaction` shape for monotonic ID assignment — lesson 4 of chapter 043.
-- Snowflake / KSUID / ULID variants — named once for recognition, not taught.
-
-Estimated student time: 35 to 45 minutes. Load-bearing for the project schema in chapter 045 and every later table the student creates.
+Estimated student time: 50 to 70 minutes.
 
 ---
 
-## Lesson 6 — Foreign keys and ON DELETE
+## Lesson 5 — A deterministic, idempotent seed for two orgs
 
-Covers `.references(() => other.id, { onDelete })` and the four-way cascade/set null/restrict/set default decision per relationship, plus the hard-delete vs. soft-delete split.
+Writes `scripts/seed.ts` using `reset` plus `seed().refine(...)` with `weightedRandom`, `valuesFromArray`, and `with` to produce two orgs with overlapping members and 100+ invoices, dropping to direct `db.insert` where the seeder's shape doesn't fit.
 
-Topics to cover:
+Goals:
 
-- **The senior question.** When a parent row goes away — an org deleted, a user offboarded, an invoice voided — what happens to its children? The lesson teaches the four-way `onDelete` decision (`CASCADE`, `SET NULL`, `SET DEFAULT`, `RESTRICT`/`NO ACTION`).
-- **Declaring a foreign key.** Column-level: `organizationId: uuid('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' })`. The callback form avoids circular-import traps. Multi-column FKs use table-level `foreignKey(...)` — rare, named for recognition.
-- **What an FK buys.** Postgres rejects writes pointing at a non-existent parent; column types must match the PK type exactly; an index on the FK column is not automatic (lesson 1 of chapter 043 owns indexing).
-- **The four `onDelete` behaviors.**
-  - `CASCADE` — child has no meaning without parent (line items, junction rows). Ownership relationships.
-  - `SET NULL` — relationship is optional, orphaning is desired (assignee on a task). Requires the column to be nullable.
-  - `RESTRICT` / `NO ACTION` — parent must not be deleted while children exist (a customer with invoices). Postgres default when no clause is given.
-  - `SET DEFAULT` — named once; rarely worth the wiring.
-- **`onUpdate`.** Almost always unused — PKs are immutable in this course (UUIDv7, bigint identity), so `onUpdate` never fires. Named once for natural-key edge cases.
-- **Hard-delete vs. soft-delete.** Cascade assumes hard delete. Many SaaS domains soft-delete with a `deletedAt` column and queries filter tombstoned rows. Course teaches both: cascade for genuinely scrubbing relationships (tenant offboarding); soft-delete for everything else. Per-table decision; full pattern in chapter 043.
-- **Orphan prevention.** FKs reject dangling references at the database boundary — the safety net that lets app code stay clean.
-- **Worked example — invoices' four relationships.** `invoices.organizationId` → `organizations.id` (`restrict`); `invoice_line_items.invoiceId` → `invoices.id` (`cascade`); `invoices.createdById` → `users.id` (`set null`); `invoice_tags.*` (cascade on both — lesson 8 of chapter 041 owns).
-- **Multi-tenancy foreshadowed.** Every tenant-owned table carries an `organizationId` FK with `restrict`; tenancy enforcement at the query layer is Chapter 10.
-- **Watch-outs:** missing `onDelete` means `NO ACTION` — the app handles cleanup every time, in every code path; cascade can wipe more than expected when relationship graphs branch — model first; missing FK indexes make cascade deletes table scans (lesson 1 of chapter 043); circular FKs need deferrable constraints — the course breaks cycles by structure instead.
+- Fill `scripts/seed.ts`: import `db`, the schema bag, `seed` and `reset` from `drizzle-seed`. The script's shape is `await reset(db, schema); await seed(db, schema, { seed: Number(process.env.SEED ?? 1) }).refine(...)`.
+- Refine table by table:
+  - `organizations`: `count: 2`, columns `name` from a curated `valuesFromArray` (`Acme`, `Globex`), `slug` matching.
+  - `users`: `count: 4`, `email` unique (`valuesFromArray` with 4+ curated values), `name` from name generators.
+  - `orgMembers`: insert explicitly after the seed call — `drizzle-seed`'s `with` doesn't model the overlapping-membership shape cleanly. Use a small follow-up `db.insert(orgMembers).values([...])` block to assign: user 1 → org 1 (owner), user 2 → org 1 (member), user 3 → org 2 (owner), user 4 → org 2 (member), user 1 → org 2 (admin) — the overlap that the Unit 9 RBAC project will exercise. Name the senior call: when the seeder's shape doesn't fit, drop to direct inserts; mixing both is the pattern.
+  - `customers`: `count: 30`, `with: { invoices: 4-7 }` per customer — drives the invoice count past 100 organically. Columns: `name` from `companyName`, `email` unique-ish per org. Distribute customers across the two orgs via `organizationId` from `valuesFromArray` of the two org IDs (read after the orgs land — done by splitting the seed into two `.refine` calls, or by manual inserts; the lesson teaches the split).
+  - `invoices`: `count` driven by `with` from customers, columns: `status` via `weightedRandom` (`paid` 50%, `sent` 25%, `draft` 15%, `overdue` 10% — realistic distribution from lesson 3 of chapter 040), `total` `f.number({ minValue: 100, maxValue: 25000, precision: 100 })`, `number` from a sequence helper (`INV-0001`...), `issuedAt` `f.date` spread over the last 90 days, `dueAt` 30 days after `issuedAt` (computed post-seed or via a small follow-up update). `createdBy` from `valuesFromArray` of the relevant org's members.
+  - `invoiceLines`: `with: { count: 1-5 }` per invoice, `quantity`, `unitPrice`, `description` from `valuesFromArray` of curated service descriptions, `position` 1..N per invoice (post-seed update to renumber within each invoice).
+- Add the `db:seed` script: `dotenv -e .env -- tsx scripts/seed.ts`. The script `process.exit(0)`s on success.
+- Run it. Open Studio; eyeball: two orgs visible, the membership rows show the overlap, customers have a realistic spread, invoices show status distribution, line items count.
+- Run it again. Confirm row counts and a sampled invoice's `id` are identical — the determinism guarantee. This is the idempotency the inspector banner will read.
+- Update the inspector banner to count rows (already wired; just confirm).
 
-What this lesson does not cover:
+Senior calls and watch-outs:
 
-- UNIQUE and CHECK constraints — lesson 7 of chapter 041.
-- Junction tables (the canonical many-to-many shape) — lesson 8 of chapter 041.
-- Indexing foreign-key columns — lesson 1 of chapter 043.
-- The Drizzle Relations v2 API (separate from `references()`) — lesson 9 of chapter 041.
-- Soft-delete patterns and `deletedAt` filtering at depth — Chapter 043.
-- Multi-tenancy scoping with `organizationId` — Chapter 10.
+- `drizzle-seed`'s `with` is per-parent count, not total. `customers` with `with: { invoices: 4-7 }` and `count: 30` produces 120-210 invoices, not 4-7. Name the trap from lesson 3 of chapter 040.
+- When `drizzle-seed`'s shape doesn't fit (overlapping memberships, computed columns), drop to direct `db.insert(...)` after the `seed(...)` call. The seeder is the bulk shape; manual inserts are the targeted corrections. Mixing both inside one script is the senior pattern, not the smell.
+- The fixed seed number is the determinism contract. Bumping it intentionally shifts the data shape; changing the `.refine` config without bumping the number silently breaks the contract — the watch-out from lesson 3 of chapter 040.
+- `reset(db, schema)` uses `TRUNCATE ... CASCADE` which holds locks; fine against local Docker, would be a problem against a shared dev branch. Local-only is the rule.
+- The script reaches the unpooled URL via `DATABASE_URL_UNPOOLED` to handle the longer transaction the seed produces — the same rule as migrations.
 
-Estimated student time: 40 to 50 minutes. Load-bearing for the project schema in chapter 045 and every later table that has a parent.
+Codebase state at entry: schema and migration in place, but the database is empty (or holds only the `__drizzle_migrations` row).
+Codebase state at exit: running `pnpm db:seed` populates the database; the inspector banner shows the expected counts; running it twice produces identical state. The list and detail panels still don't render (queries still TODO).
 
----
-
-## Lesson 7 — UNIQUE and CHECK constraints
-
-Pushes invariants into the database with single-column, composite, partial, and case-insensitive UNIQUE constraints plus `CHECK` predicates as the safety net Zod can't replace.
-
-Topics to cover:
-
-- **The senior question.** Beyond primary keys, what invariants does the senior push into the database instead of relying on app code? The lesson covers `UNIQUE` (single-column, composite, partial, case-insensitive) and `CHECK` (predicate constraints).
-- **The principle.** A database constraint can't be accidentally skipped. Application-side checks (Zod, custom validators) hold only on the path that runs them — a raw SQL migration, a third-party tool, or a future code path that forgets, will violate silently. The database is the last line.
-- **`UNIQUE` — single-column.** Column-level `.unique()` adds the constraint and an auto-named unique index. Optional name argument: `.unique('slug_unique')` — name explicitly once the schema settles.
-- **`UNIQUE` — composite.** Table-level third argument: `unique('org_slug_unique').on(t.organizationId, t.slug)`. Canonical use: "slug unique within an organization."
-- **Partial unique indexes — `.where(…)`.** `uniqueIndex(...).on(...).where(sql\`…\`)` enforces uniqueness only for rows matching a predicate. Canonical use: "one primary contact per org where `isPrimary = true`." This is technically a unique index (lesson 1 of chapter 043 owns indexes), not a `UNIQUE` constraint — same correctness.
-- **Case-insensitive uniqueness — generated-column pattern.** `emailLowercased` as STORED generated column (lesson 4 of chapter 041), then `.unique()` on it. Cleaner than `LOWER(email)` expression indexes; emits a real column the app can read.
-- **`CHECK` — the predicate constraint.** Table-level `check('positive_total', sql\`${t.total} > 0\`)`. Reaches: monetary positivity, date ordering (`endDate >= startDate`), array length bounds. (Enum-like text values: prefer `pgEnum`.)
-- **Drizzle Kit `CHECK` support.** Generated automatically in current pinned versions; older Drizzle Kit needs a hand-written `ALTER TABLE` in the migration. Course's pins support it.
-- **The Zod parallel.** Length caps, ranges, regex — Zod (chapter 046) catches them at the API boundary with friendly errors; database `CHECK` catches them if Zod is bypassed. Both correct: database is the safety net, Zod is the user experience. drizzle-zod does not generate Zod from `CHECK` — that's hand-wired.
-- **What these are not for.** Cross-row invariants ("revenue per org under quota") — application logic plus a transaction (lesson 4 of chapter 043); not constraints. Multi-table predicates — same.
-- **Watch-outs:** unnamed `.unique()` produces auto-names that are stable only while column names are stable — name them explicitly once the schema settles; composite uniques on nullable columns surprise — `NULL ≠ NULL` in SQL, so multiple `(orgId, NULL)` rows pass; `CHECK` runs on every write — keep expressions cheap; constraint-violation errors surface with the constraint name in the message — name them well so action-boundary error handling can map cleanly.
-
-What this lesson does not cover:
-
-- Many-to-many junction tables and their composite primary keys (which double as uniques) — lesson 8 of chapter 041.
-- The Drizzle Relations v2 API — lesson 9 of chapter 041.
-- Index strategy beyond what unique constraints add for free — lesson 1 of chapter 043.
-- Transactions for cross-row invariants — lesson 4 of chapter 043.
-- Zod refinement at the API boundary — Chapter 046.
-- Error catching at the Server Action layer when a constraint fires — Chapter 047.
-
-Estimated student time: 35 to 45 minutes. Load-bearing for the project schema in chapter 045 and every later table with multi-column invariants.
+Estimated student time: 55 to 75 minutes.
 
 ---
 
-## Lesson 8 — Many-to-many junction tables
+## Lesson 6 — Writing the two tenant-scoped reads
 
-Models N:M with two FKs and a composite PK, names the junction-vs-entity trigger, and shows the promotion path when the relationship grows metadata.
+Implements `listInvoices` (cursor pagination with the composite tiebreaker predicate and the `limit(pageSize + 1)` trick) and `getInvoiceDetail` (relational `findFirst` with `lines` and `customer`), with the `organizationId` tenant guard baked into every `where`.
 
-Topics to cover:
+Goals:
 
-- **The senior question.** When an invoice carries many tags and a tag applies to many invoices, what does that look like in tables? The junction-table pattern — two FKs with a composite PK — is the only correct shape for N:M, and metadata on the junction is the upgrade path to a first-class entity.
-- **The shape.** Two parents (`invoices`, `tags`). One junction (`invoice_tags`) with two FK columns; composite PK on `(invoiceId, tagId)`; both FKs `onDelete: 'cascade'` — junction rows depend entirely on both endpoints.
-- **Composite PK in Drizzle.** Table-level third argument: `(t) => [primaryKey({ columns: [t.invoiceId, t.tagId] })]`. Replaces individual `.primaryKey()` calls; supplies the implicit unique-and-indexed pair.
-- **Naming.** `{parent1}_{parent2}` alphabetized (`invoice_tags`) when the relationship is pure; a domain name when it has identity (`memberships`, `subscriptions`).
-- **Upgrading to entity-with-metadata.** When the relationship carries data — `joinedAt`, `role`, `quantity` — promote: add a surrogate `id` (UUIDv7) so other rows can FK to it; demote the composite to a `unique(...).on(...)` constraint; add `createdAt`/`updatedAt`. Trigger: if anything would FK to the relationship, or it has temporal/role/quantity data, it's an entity.
-- **Worked examples.** `invoice_tags` as pure junction (two FKs + composite PK, no metadata). `memberships` as entity (surrogate `id`, `userId` + `organizationId` FKs, `role` enum, `joinedAt`, `unique(...)` on the pair) — foreshadowed for Unit 10 tenancy.
-- **Relations v2 cliff-hanger.** The junction is data; lesson 9 of chapter 041 wires `db.query.invoices.findFirst({ with: { tags: true } })` to traverse it automatically.
-- **What the database enforces.** Composite PK rejects duplicate pairs; both FKs reject orphans; cascade on both cleans junction rows when either endpoint goes.
-- **Watch-outs:** three-or-more FK junctions are almost always two relationships hiding as one — split them; FK indexes aren't automatic — the composite PK indexes `(invoiceId, tagId)` and serves `WHERE invoiceId = …` but not `WHERE tagId = …`, so add the second index (lesson 1 of chapter 043); cascade on both is right for ownership but switch to `restrict` if either endpoint should block deletion while the relationship exists; adding `createdAt` is the trigger that says "promote to entity."
+- Fill `src/lib/invoices/queries.ts` with `listInvoices`. The shape:
+  - Validate inputs against `listInvoicesInputSchema` (orgId required, status optional, cursor optional decoded via `cursor.decode`, pageSize default 20 cap 100).
+  - Use `db.query.invoices.findMany`: `where` AND-combines `eq(invoices.organizationId, organizationId)`, optional `eq(invoices.status, status)`, and the cursor predicate `or(lt(invoices.createdAt, cursor.createdAt), and(eq(invoices.createdAt, cursor.createdAt), lt(invoices.id, cursor.id)))` when cursor is present. `orderBy: [desc(invoices.createdAt), desc(invoices.id)]`. `limit(pageSize + 1)`. `with: { customer: true }` because the list cell shows the customer's name and that's still a single query through the relational API (the join is one round trip).
+  - Slice the first `pageSize` rows; `nextCursor = rows.length > pageSize ? cursor.encode({ createdAt, id } of the last returned) : null`. Return `{ rows, nextCursor }`.
+- Fill `getInvoiceDetail`:
+  - Validate inputs (`organizationId`, `invoiceId`).
+  - `db.query.invoices.findFirst({ where: and(eq(invoices.id, invoiceId), eq(invoices.organizationId, organizationId)), with: { lines: { orderBy: asc(invoiceLines.position) }, customer: true } })`. The tenant guard is `eq(organizationId, ...)` in the `where`, not "load and then check" — security at the query, not the post-condition.
+  - Return `null` if not found.
+- The inspector page already calls both; refresh the page. The list panel paginates, the detail loads. Click "Next page", confirm a new `?cursor=...` in the URL. Click an invoice, confirm the detail loads with its lines and customer in one paint.
+- Switch the org in the org switcher; confirm rows differ. Try `?status=paid`; confirm filtering. Try `?invoiceId=<id-from-org-A>&orgId=<org-B>`; confirm the detail returns `null` (the tenant guard holds).
 
-What this lesson does not cover:
+Senior calls and watch-outs:
 
-- The Drizzle Relations v2 API and `db.query.…({ with: … })` traversal — lesson 9 of chapter 041.
-- Indexing the second column of a junction — lesson 1 of chapter 043.
-- Querying through junctions with explicit joins — lesson 2 of chapter 042 / lesson 3 of chapter 042.
-- Multi-tenancy via memberships at depth — Chapter 10.
+- Cursor pagination requires the tiebreaker — sorting only by `createdAt` skips or duplicates rows when two invoices share a timestamp. The composite predicate is mandatory, not optional. The lesson 6 of chapter 038 rule made concrete.
+- Tenant filter goes in the `where`, not after the load. The "load then check" pattern is the failure mode that surfaces as IDOR — anyone with a valid invoice ID from any org reads it. The structural rule is `where: and(eq(organizationId), eq(id))`; this is what Unit 9's `tenantDb` will enforce structurally but the manual discipline starts here.
+- The relational query API (`with: { ... }`) issues either one query or a small batch under the hood — well within "single round trip" territory because the planner sees the joins. Compare to a manual loop of `getCustomer(invoice.customerId)` + `getLines(invoice.id)` which would be 3 round trips. Name the contrast, point at lesson 2 of chapter 039 for the N+1 deep dive.
+- The `nextCursor` is null when fewer than `pageSize + 1` rows came back; the inspector's "Next page" link is disabled in that case. The n+1 trick avoids a separate `count()` round trip — the lesson 6 of chapter 038 punchline.
+- The Zod parse on `listInvoicesInputSchema` is the same shape Unit 6 will reuse against a Server Action `formData`. Architectural Principle #3 at work — the schema is in `/lib`, callers compose it.
 
-Estimated student time: 35 to 45 minutes. Load-bearing for tag relationships, user-org memberships, and every later N:M relationship in the course.
+Codebase state at entry: schema and seeded data ready; inspector renders empty list and empty detail.
+Codebase state at exit: inspector fully functional. List paginates with cursors, filters by status, switches between orgs; detail loads with relations; tenant guard verified by attempting a cross-org `invoiceId`. Plan panel `<details>` still un-inspected — that's lesson 7 of chapter 041's verification step.
 
----
-
-## Lesson 9 — Drizzle Relations v2
-
-Declares the TS-side traversal graph with `defineRelations` in `db/relations.ts` — one/many/through shapes — that enables `db.query.…({ with: … })` nested reads in lesson 3 of chapter 042.
-
-Topics to cover:
-
-- **The senior question.** FKs connect rows; how does the application traverse them? `references()` (lesson 6 of chapter 041) declares the database constraint but does not enable Drizzle's relational query API. The v2 declarative relations layer (`defineRelations(...)` in `db/relations.ts`) does, feeding `db.query.invoices.findFirst({ with: { lineItems: true, tags: true } })` in lesson 3 of chapter 042.
-- **Two layers.** `db/schema.ts` says what's in the database; `db/relations.ts` says how the relational query API walks it. Postgres only sees the FKs from lesson 6 of chapter 041; the relations file is a TS-side traversal graph.
-- **The v2 API — `defineRelations`.** `defineRelations(schema, (r) => ({ … }))` returns an object the `db` client consumes. The callback's relation builder declares each table's relations to others. v2 terminology: `from` (this table's column) and `to` (the other's) — replacing v1 `fields`/`references` (the course teaches v2 only).
-- **The four shapes.** Declared with `r.one.tableName(...)` or `r.many.tableName(...)`. One-to-many: `invoices: r.many.invoices()` on the org. Many-to-one (the reverse): `organization: r.one.organizations({ from: r.invoices.organizationId, to: r.organizations.id })`. Both ends usually declared so traversal works either direction.
-- **Many-to-many through a junction.** `tags: r.many.tags({ through: r.invoiceTags })` — the API walks the junction automatically.
-- **Self-referential relations.** A table pointing at itself (replies thread, category tree) — same API, both ends on the same table. Brief mention.
-- **v2 vs. v1, why v2 only.** v1 (`relations(table, …)`) compiles but is deprecated. v2 is more compact, infers better types, and is what `db.query` (lesson 3 of chapter 042) reads; v1's query helper moved to `db._query` as compatibility.
-- **Where the file plugs in.** `db/index.ts` wires `drizzle(connectionString, { schema, relations })` so the client sees both columns and traversal graph (chapter 044 setup ties it).
-- **What lesson 3 of chapter 042 buys.** `db.query.invoices.findMany({ where: …, with: { lineItems: true, tags: true, organization: { columns: { name: true } } } })` returns a typed nested object — the join graph as data. Without `defineRelations`, the same result needs hand-written joins (lesson 2 of chapter 042). Both work; relational API is the senior reach for nested reads.
-- **When to skip the relations layer.** Aggregates, complex predicates across joined tables, non-tree shapes — drop to `db.select(...).leftJoin(...)` (lesson 2 of chapter 042).
-- **Watch-outs:** `references()` alone does not declare a relation — `db.query.…` returns undefined without `defineRelations`; both directions of a one-to-many usually declared so the next reader doesn't have to guess; v1 and v2 in one project produce inconsistent call shapes — pick one; the relational API plans its own SQL — large joins can surprise on performance, `EXPLAIN ANALYZE` (lesson 3 of chapter 043) is the diagnostic.
-
-What this lesson does not cover:
-
-- Actually writing queries through the relational API (`db.query.…`) — lesson 3 of chapter 042.
-- Hand-written joins via `db.select(...).leftJoin(...)` — lesson 2 of chapter 042.
-- The N+1 problem at the relations layer — lesson 2 of chapter 043.
-- `db/index.ts` wiring of `drizzle(...)` with `schema` and `relations` — Chapter 044 setup.
-- The v1 relations API at depth — the course teaches v2 only.
-
-Estimated student time: 40 to 50 minutes. Load-bearing for lesson 3 of chapter 042 (the relational query API), lesson 2 of chapter 043 (N+1 at this layer), and every nested read in Units 7 through 23.
+Estimated student time: 50 to 70 minutes.
 
 ---
 
-## Lesson 10 — $inferSelect and $inferInsert
+## Lesson 7 — Verifying the seven "Done when" clauses
 
-Cashes Principle #2 in by deriving every row, insert, and prop type from `typeof table.$inferSelect`/`$inferInsert`, replacing every hand-written row interface in the codebase.
+Runs each Done-when check end-to-end (clean migrate, idempotent seed, cursor pagination, server-side status filter, cross-org tenant guard, single-round-trip detail, `EXPLAIN ANALYZE` showing the right indexes) and forward-references Units 6, 8, 9, and 10.
 
-Topics to cover:
+Goals:
 
-- **The senior question.** The schema is the source of truth — what's the call site that hands a row's TS type to a Server Component, action, or helper? Answer: `typeof table.$inferSelect` and `typeof table.$inferInsert`. The lesson cashes Principle #2 in.
-- **`$inferSelect` — the read shape.** `type Invoice = typeof invoices.$inferSelect` produces the TS type of a row returned by a Drizzle select. Each Postgres type maps: `text` → string, `numeric` → string (arbitrary precision), `timestamp` → Date, `jsonb` → the `$type<…>` annotation or `unknown`.
-- **`$inferInsert` — the write shape.** `type NewInvoice = typeof invoices.$inferInsert` is what `db.insert(invoices).values(...)` accepts. `.default(…)`, `.defaultNow()`, `.$defaultFn(…)` columns become optional; generated columns are omitted; `.notNull()` without a default stays required.
-- **Why the two differ.** Read returns everything stored; write accepts the subset the app must supply. The asymmetry is what the schema knows and TS couldn't infer otherwise.
-- **Canonical placement.** Re-export next to the table: `export type Invoice = typeof invoices.$inferSelect; export type NewInvoice = typeof invoices.$inferInsert`. Naming: entity name for select, `New` prefix for insert.
-- **The "do not hand-write" rule.** A `type Invoice = { id: string; total: string; … }` anywhere is the Principle-#2 smell. Standard: if a row type appears in a file, it came from `$inferSelect` or it's wrong.
-- **Composing derived shapes.** Summary types still root in inferred types: `type InvoiceSummary = Pick<Invoice, 'id' | 'total' | 'status'> & { organizationName: Organization['name'] }` — no field name restated.
-- **Prop pattern.** Page reads `Invoice[]` from a query, hands it to a Client Component whose prop type is `Invoice[]`. One type, one source. Updates accept `Partial<NewInvoice>`; the matching Zod via drizzle-zod (lesson 8 of chapter 046) ships from the same table — every layer aligns.
-- **drizzle-zod foreshadowed.** lesson 8 of chapter 046 owns `createInsertSchema(invoices)` / `createSelectSchema(invoices)` — same field names, same nullability, same enums. Chain: Drizzle schema → `$inferInsert` for the type → drizzle-zod for the validator → both consumed by the Server Action.
-- **When inference is wrong — refinements.** `jsonb` without `$type<…>` infers as `unknown` — supply `$type<WebhookEvent>()` when the app knows the shape; `numeric` stays as string in the schema (precision claim honest); enum-like text columns should be `pgEnum` instead.
-- **The capstone — Principle #2 cashed in.** Change a column in `db/schema.ts`, run the type checker, every consumer surfaces. The codebase rewrites itself.
-- **Watch-outs:** `$inferSelect` returns the full-row shape — partial selects produce narrower inferred shapes, don't restate them; `$inferInsert` makes defaulted columns optional, not nullable (passing `undefined` is fine, `null` only if the column is nullable); `Partial<NewInvoice>` for updates is fine, `Required<Pick<Invoice, 'id'>> & Partial<NewInvoice>` is more accurate; inferred types don't include relations — the relational query API has its own inferred shapes (lesson 3 of chapter 042).
+- Walk every "Done when" clause as a verification step (the table in the framing).
+- Drop and re-create the database (`docker compose down -v && docker compose up -d && pnpm db:migrate`) — confirm a clean migrate on a fresh database with no errors and one row in `__drizzle_migrations`.
+- `pnpm db:seed` twice in a row — confirm the banner shows identical row counts and a sampled invoice's `id` is the same across runs (the determinism guarantee).
+- Inspector pagination: click "Next page" three times against one org; copy each cursor value; confirm no row repeats across the three pages (open Studio if needed).
+- Status filter: click `paid`; URL shows `?status=paid`; only paid rows render; hard reload preserves; URL share to a second tab reproduces the view.
+- Cross-org tenant guard: hand-construct an inspector URL with `orgId` of org A and `invoiceId` from org B (read from Studio); confirm the detail panel renders empty-state, not the leaked invoice.
+- Expand the plan panel on the detail load — confirm the plan shows `Index Scan using invoices_pkey` (the PK lookup) joined to `customers` and `invoice_lines` in one plan. Read the plan bottom-up using the lesson 3 of chapter 039 vocabulary. Note the `actual time` per node and the buffer hit/read counts.
+- Switch the plan panel to the list query (provided control). Confirm without `?status=...` the plan uses `invoices_org_created_id_idx`; with `?status=paid` the plan uses `invoices_org_status_created_id_idx`. If either falls back to `Seq Scan`, the index column order is wrong — point at lesson 4 of chapter 041 and the lesson 1 of chapter 039 rule.
+- Name the senior calls one more time:
+  - Schema is the source of truth: types, queries, the inspector, every later layer flow from `db/schema.ts`.
+  - Every tenant-owned read filters by `organizationId` in the `where`, never after the load.
+  - Cursor pagination requires the tiebreaker; the composite index column order matches the `orderBy`.
+  - `EXPLAIN ANALYZE` is the proof of "this query is fast for the reason I think it is" — feel doesn't count.
+  - Seeds are deterministic and idempotent; the reset-then-seed shape is the contract.
+- Forward references:
+  - Unit 6 will add Server Actions that mutate this schema with Zod validation at the action boundary, and `useOptimistic` on top of `listInvoices`.
+  - Unit 8 will drop the `users` stub and switch to Better Auth's tables — additive migration, the FK targets stay.
+  - Unit 9 will wrap `listInvoices` and `getInvoiceDetail` in a `tenantDb(orgId)` helper that makes the missing `organizationId` filter structurally impossible to write — this chapter built the discipline manually so the wrapper has something to enforce.
+  - Unit 10 will turn the inspector's URL-state into the production list view with soft delete, sort controls, and optimistic concurrency.
 
-What this lesson does not cover:
+Senior calls and watch-outs:
 
-- drizzle-zod and the Zod-from-schema pipeline — lesson 8 of chapter 046.
-- Inferring result types from custom `db.select(...)` shapes — lesson 1 of chapter 042.
-- The relational query API's nested-result types — lesson 3 of chapter 042.
-- Server Action argument typing and the Result return shape — Chapter 047.
-- Branded ID types layered on `$inferSelect` — Chapter 009 (recap site if needed).
+- The verify lesson is the rehearsal of the failure modes — running each one and naming what would break without the discipline the student just installed.
+- If a verification fails, the lesson points at the owning build lesson, not at "debug it yourself."
 
-Estimated student time: 30 to 40 minutes. Load-bearing as the chapter's capstone — every later unit consumes types through these two helpers.
+Codebase state at entry: full schema, seed, and queries working.
+Codebase state at exit: same surface, verified clause-by-clause; the plan output proves the indexes earn their weight; the student can articulate every schema decision and which later unit will lean on it.
 
----
-
-## Lesson 11 — Quizz
-
-Top 10 topics to quiz:
-
-- Principle #2 — the schema is the source of truth, what it prevents (four-way drift), where it bites downstream (queries, Zod, forms, RLS).
-- `pgTable` — the call shape, the `casing: 'snake_case'` config mapping TS camelCase to SQL snake_case, why the `db/schema.ts` file is the only thing Drizzle Kit reads.
-- Postgres data types — the durable per-column defaults: `text`, `numeric(12, 2)` for money, `timestamp({ withTimezone: true })` for timestamps, `uuid` for IDs, `jsonb` with `$type<…>` for flexible payloads, `pgEnum` for stable states.
-- Column modifiers — NOT NULL as the senior default; `.defaultNow()` vs. `.$defaultFn(…)` and when the SQL-side default wins; generated columns (`STORED`) for derived data like lowercased emails and full-text vectors.
-- Primary keys — UUIDv7 (via Postgres 18's `uuidv7()`) as the default for user-facing entities; `bigint generatedAlwaysAsIdentity` for high-volume internal; the surrogate-vs-natural decision and why mutable naturals cascade pain.
-- Foreign keys — `.references(() => other.id, { onDelete: … })`; the four `onDelete` modes and when each is right (`cascade` for ownership, `set null` for optional relations, `restrict` for "must not orphan", `set default` rarely).
-- UNIQUE constraints — column-level, composite (table-level), partial (with `.where(…)`), case-insensitive via generated columns; the principle that the database is the safety net the application can't skip.
-- CHECK constraints — predicate-level invariants (`total > 0`, `endDate >= startDate`); the Drizzle Kit support story; the Zod parallel at the API boundary.
-- Many-to-many junctions — two foreign keys with composite primary key, cascade on both; the upgrade to entity-with-metadata when the relationship gains its own data; naming convention for the junction table.
-- The Drizzle Relations v2 API — `defineRelations` in a separate file; the difference between `references()` (database FK) and a relation (TS-side traversal hint); how the relations file enables `db.query.…({ with: … })` nested reads in lesson 3 of chapter 042.
-- `$inferSelect` and `$inferInsert` — the canonical row and insert types; the asymmetry (defaults and generated columns affect `$inferInsert` only); the "never hand-write a row type" rule.
+Estimated student time: 25 to 35 minutes.

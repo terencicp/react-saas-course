@@ -1,152 +1,182 @@
-# Chapter 012 — Errors as a first-class concern
+# Chapter 012 — URLs, origins, and security boundaries
 
 ## Chapter framing
 
-Chapter 011 closed the async substrate — the event loop, the four Promise combinators, parallel-by-default rewrites, and the `AbortSignal` cancellation surface — and named the abort/error seam without teaching it. This chapter installs the error channel as a first-class design decision rather than a `try`/`catch` reflex bolted onto control flow. Two questions sit at the center. **Which failures throw and which return?** A senior reads each potential failure, asks whether the caller can reasonably recover, and routes the failure into one of two channels: a `Result<T, E>` discriminated union the caller must inspect (from lesson 1 of chapter 009) or a throw the framework boundary catches. **Once a throw happens, how does the catch read it safely?** TypeScript's strict catch types every caught value as `unknown`; the senior reflex narrows with `instanceof Error` (or `Error.isError()` in 2026), reaches for a literal-typed `name` discriminant on custom subclasses, and walks `Error.cause` chains when a failure was rewrapped.
+Chapter 010 traced one request from URL bar to interactive pixel, and Chapter 011 read the HTTP envelope every endpoint signs. This chapter zooms into the URL itself and the trust boundaries the browser enforces around it. Three load-bearing ideas thread every lesson. First, **the URL is a structured value, not a string** — `new URL()` and `URLSearchParams` are the senior reach, and string concatenation is the bug factory the chapter retires. Second, **the origin is the unit the browser uses to scope trust** — the same-origin policy gates *responses*, not *requests*, and protects the user, not the server. Third, **CORS is the opt-in that loosens the default**, with `credentials: 'include'` plus `Access-Control-Allow-Credentials: true` as the load-bearing pair, and the wildcard-with-credentials trap as the most common production foot-gun.
 
-Threads that must run through every lesson:
-
-- **Two channels, one decision per failure.** Throw the unexpected; return the expected. The "expected vs. unexpected" cut is the senior question, and the chapter installs it as the reading reflex behind every async function the student writes from Unit 7 onward.
-- **The `Result<T, E>` shape is named here, locked in at lesson 3 of chapter 047.** This chapter introduces the discriminated-union return shape and the `ok`/`err` helpers; Unit 7 turns it into the Server Action contract. No re-teaching at that point.
-- **Catch typed as `unknown`, narrow before reading.** Every snippet that catches obeys the `strict` + `useUnknownInCatchVariables` shape. `err.message` access without narrowing is a compile error, not a lint warning.
-- **Domain errors carry a literal `name`, not a custom class hierarchy.** The 2026 senior shape is small custom `Error` subclasses with a `readonly name = 'BillingError' as const` discriminant, optional structured fields, and `Error.cause` for the original failure. No abstract base classes, no error taxonomies for their own sake.
-- **The cross-realm gotcha is structural.** `instanceof Error` fails across realms (workers, vm contexts, edge runtime boundaries); 2026 ships `Error.isError()` (Stage 4 / ES2026) and the `error.name` fallback. Named once, used consistently.
-- **Async throws are still throws.** A rejected Promise is the throw at the `await` site. The same `try`/`catch` rules apply, with the `return await` stack-trace discipline from lesson 3 of chapter 011 as the only extra reflex.
-- **No history.** Callback-style `(err, result)` signatures, custom error-event emitters, the `domain` module — gone. The chapter writes the form a 2026 SaaS engineer writes and names the legacy only at third-party-SDK seams.
-
-The student finishes the chapter able to route any new failure into the correct channel (`Result` or throw) by reading the caller's recovery path, write a `try`/`catch`/`finally` that satisfies the strict-mode `unknown` catch type, narrow with `instanceof` and the `error.name` fallback, author a small custom `Error` subclass with a literal `name` discriminant and an `Error.cause` link, and recognize `Error.isError()` as the 2026 cross-realm reach. The chapter does not teach refusal-as-error-discipline at the route/action seam (Unit chapter 084) or the wire-format error shape (RFC 9457 Problem Details, owned by lesson 2 of chapter 015 and lesson 2 of chapter 050) — it installs the language-level substrate those chapters land on.
+The chapter ships no application code beyond illustrative snippets and a small CORS Route Handler in lesson 3 of chapter 012 that the student can paste into the starter from Chapter 004. Cookie attributes (`Secure`, `SameSite`, `__Host-`, `Partitioned`) belong to Chapter 013 and are named here only at the points where they intersect with origin and site comparisons. `fetch` itself is Chapter 015; this chapter touches `fetch` only to name the `credentials`, `mode`, and `Origin`-header surface that the cross-origin contract reads. The student leaves able to parse and build URLs without escaping bugs, articulate origin versus site precisely, predict whether any given cross-origin call needs preflight, write the four `Access-Control-Allow-*` response headers that production needs, and diagnose a CORS browser error from its exact wording.
 
 ---
 
-## Lesson 1 — Two channels: throw the unexpected, return the expected
+## Lesson 1 — Parse, don't concatenate
 
-Teaches the `try`/`catch`/`finally` mechanics, the async-throw flow, the "only throw `Error`" rule, and the heuristic for routing each failure into either a `Result<T, E>` return or a throw the framework boundary catches.
+Teach the URL as a structured value with `origin` / `pathname` / `search` / `hash`, `new URL()` and `URLSearchParams` as the senior reach, percent-encoding rules including the `%20`-vs-`+` split, and the bug classes string concatenation produces.
 
 Topics to cover:
 
-- The senior question. `parseInvoiceCsv(file)` can fail four ways: the file is empty, a row is malformed, a column exceeds the numeric range, the disk read itself errors. Which of those should throw and which should return? A junior writes `throw new Error(...)` for all four and the caller wraps the whole call in `try`/`catch`. A senior reads each failure, asks "can the caller reasonably do something different per case?", and splits: malformed-row and out-of-range become a `Result<Invoice[], ParseError>` the caller inspects; the disk-read failure throws because no caller of `parseInvoiceCsv` can recover from "the file vanished." The lesson installs that split as the reading reflex.
-- The two channels, stated plainly.
-  - **Return the expected.** Failures the caller is expected to handle as part of normal flow — validation errors, "not found" for an optional lookup, business-rule rejections (insufficient balance, role too low, plan limit hit). These are part of the function's contract. The shape: a `Result<T, E>` discriminated union the type system forces the caller to inspect.
-  - **Throw the unexpected.** Failures the caller cannot reasonably recover from inside its own logic — the database is down, the request was canceled, an invariant was violated, the disk is full. These bubble up to a framework boundary (the `error.tsx` boundary, the route-handler catch, the audit-log seam) that decides on the user-visible response. The shape: a thrown `Error`.
-- The "can the caller do something different per case?" heuristic. The one-question test that routes any new failure.
-  - **Yes, the caller branches on the cause.** Return. The cause is part of the contract; the discriminant lets the caller render a different message, retry differently, or fall back.
-  - **No, the caller would log-and-rethrow or display "something went wrong."** Throw. The cause is operational, not domain. The framework boundary handles it.
-- The `try`/`catch`/`finally` mechanics, in the strict-mode shape.
-  - **`try { ... }`** — the guarded block. Synchronous throws inside it are caught; throws inside nested `async` functions that aren't awaited are not.
-  - **`catch (err) { ... }`** — `err` is typed `unknown` under `strict` + `useUnknownInCatchVariables` (the 2026 default). lesson 2 of chapter 012 owns the narrowing; here, the student should leave knowing `err.message` is a compile error before narrowing.
-  - **`finally { ... }`** — runs after the `try` completes or after the `catch` runs. The canonical reach: releasing resources (connection.release, controller.abort on shutdown), counter increments, observability spans. The watch-out: a `return` or `throw` from `finally` overrides the `try`/`catch` outcome. Senior reflex: `finally` is for side effects, not control flow.
-  - The bare `catch` shape — `try { ... } catch { ... }` with no parameter — is legal and the right reach when the catch genuinely doesn't read the error (a fire-and-forget cleanup wrapper).
-- The async-throw flow. The senior takeaway in one line: **a rejected Promise becomes a throw at the `await` site.** Three consequences named.
-  - `try`/`catch` around `await someAsync()` catches the rejection just like a synchronous throw. The Promise-level `.catch` is the chained equivalent.
-  - `try`/`catch` around an `async` function that isn't `await`ed catches nothing — the rejection escapes as an unhandled rejection (lesson 2 of chapter 011 named the consequence).
-  - `return await getX()` inside `try` is mandatory; `return getX()` lets the rejection escape past the `catch` because the function has already returned (the discipline from lesson 3 of chapter 011 lands here).
-- The "only throw `Error`" rule. JavaScript permits `throw 'something went wrong'` and `throw { code: 'BILLING' }`; both are footguns. The senior rule: **the throwable is always an `Error` instance (or a subclass).** The reasons named.
-  - **The catch can rely on the shape.** `instanceof Error` narrows the catch to a known surface (`message`, `name`, `stack`, `cause`). Throwing a string forces every catch site to type-check the value.
-  - **Stack traces.** Only `Error` instances carry a stack. Throwing a plain object means the failure point is unrecoverable from the trace alone.
-  - **The `ensureError` normalizer (forward link to lesson 2 of chapter 012)** exists specifically to recover from third-party code that breaks this rule. Inside the course's own code, the rule is absolute.
-- The `Result<T, E>` shape, named here, locked at lesson 3 of chapter 047. The discriminated union from lesson 1 of chapter 009 applied to the return channel.
-  - Canonical shape: `type Result<T, E> = { ok: true; value: T } | { ok: false; error: E }`.
-  - The `ok`/`err` helpers: `const ok = <T>(value: T): Result<T, never> => ({ ok: true, value })` and `const err = <E>(error: E): Result<never, E> => ({ ok: false, error })`. The `never` on the absent side is what makes the union narrow correctly at the call site.
-  - The `E` channel is a discriminated union of literal-tagged variants (`{ code: 'INVALID_ROW'; row: number } | { code: 'OUT_OF_RANGE'; column: string }`), not a generic `string`. The point of `Result` is that the caller branches on `error.code` and the compiler enforces exhaustiveness via `assertNever` (lesson 3 of chapter 009).
-  - The senior watch-out: `Result` for *every* failure is overuse. The rule is "expected and the caller branches"; a function that returns `Result<T, 'DATABASE_DOWN' | 'TIMEOUT' | 'INVALID'>` is doing operator-error reporting in the return channel — those belong in throws.
-- The `try`/`catch` placement reflex. Where should the catch live? Two answers, both stated.
-  - **At the framework boundary** for unexpected failures. Server Actions, route handlers, page-level loaders, and the `error.tsx` boundary catch the throws that escaped business code. The audit log and the user-vs-operator message split land there. Unit chapter 084 owns the deep treatment.
-  - **At the call site that has a non-throw alternative.** A `try`/`catch` that wraps a third-party SDK call to translate a vendor-shaped throw into a domain `Result.err(...)`. The catch exists to *convert* the channel, not to swallow.
-  - The anti-pattern: a `try`/`catch` that logs and continues with no remediation. Either the failure is recoverable (and the catch converts to `Result.err`) or it isn't (and the catch shouldn't exist; let the boundary catch it).
-- The fire-and-forget catch (one paragraph, named once). lesson 3 of chapter 011 introduced `void logEvent(...).catch(...)` for the fire-and-forget pattern. The senior rule restated: **every Promise not awaited has either a `.catch` or is fed to a combinator that handles rejection.** Unhandled rejections crash Node in 2026; the course writes the explicit `.catch` even on logging calls.
-- Forward references named in one line each. The `Result` shape lands as the Server Action contract in lesson 3 of chapter 047. The framework-boundary catch (the route handler, the `error.tsx` boundary, the audit-log seam) is chapter 084. The wire shape for thrown errors that cross the network is RFC 9457 Problem Details, taught at lesson 2 of chapter 015 and lesson 2 of chapter 050.
+- The senior framing. URLs look like strings and aren't. Every URL has a parser inside it (the WHATWG URL spec), and the senior move is to use that parser instead of treating the URL as a template. The lesson retires `\`${base}/users?id=${id}\`` and installs `new URL()` plus `URLSearchParams` as the reach for every URL construction the student will write in Units 3 through 7.
+- The URL anatomy named once against the WHATWG model. A URL is six fields: `protocol`, `host` (which decomposes into `hostname` and `port`), `pathname`, `search`, `hash`, plus the read-only `origin` shorthand. The `username`/`password` fields exist and are intentionally ignored — they're deprecated for navigation and unsafe to ship. One line on `searchParams` as the live `URLSearchParams` view of `search`, so mutating it updates the URL string. An inline annotated example like `https://api.acme.com:8443/v1/invoices?status=paid&limit=20#row-7` with arrows to each field is the load-bearing visual.
+- `new URL(input, base)` as the senior constructor. The two-argument form resolves relative paths against a base — `new URL('/v1/invoices', 'https://api.acme.com')` is the canonical pattern for assembling API URLs from an env-derived base. It throws on invalid input; the senior pattern is to let it throw at boot for misconfigured envs (fail fast) rather than catch silently. Name the static `URL.canParse(input, base)` as the boolean-returning safe-check for user input where throwing would be wrong.
+- `URLSearchParams` as the senior reach for query strings. The four shapes of construction (`new URLSearchParams(stringOrRecordOrEntries)`, `url.searchParams`, `new URLSearchParams({ status: 'paid' })`, `new URLSearchParams([['tag','a'], ['tag','b']])`), the multi-value model (`getAll`, `append` vs. `set`), iteration order preservation, and `toString()` as the encoded output. The student writes `params.set('q', userInput)` and never thinks about escaping again — that's the win.
+- Percent-encoding rules, two encoding contexts at once. The WHATWG URL spec uses *different* percent-encode sets for different positions in the URL. The two the student must internalize:
+  - **Path segments and the URL fragment** encode space as `%20`. `encodeURIComponent` matches this set most of the time.
+  - **`application/x-www-form-urlencoded` query strings** — the format `URLSearchParams` produces and the format HTML form submissions use — encode space as `+`. On decode, `+` is interpreted as space, and a literal `+` must be encoded as `%2B`.
+  This is the `%20`-vs-`+` split. The bug class it produces: building a URL with `\`?q=${encodeURIComponent(s)}\`` and decoding it with `URLSearchParams` reads a `+` in `s` as a space; or building it with `URLSearchParams` and decoding it with `decodeURIComponent` reads a `+` as a literal `+`. Senior rule: *encode and decode with the same model end to end*. The simplest rule is to do both with `URLSearchParams`.
+- `encodeURI` vs. `encodeURIComponent` vs. `URLSearchParams`. `encodeURI` preserves URL structural characters (`:`, `/`, `?`, `#`, `&`, `=`) and is for whole URLs that the caller already trusts as well-formed — rarely the right tool. `encodeURIComponent` escapes those structural characters and is for single field values being interpolated into a path segment or a query value — correct for path segments. `URLSearchParams` is correct for any query-string construction. A three-row decision table is the right teaching shape.
+- The bug classes string concatenation produces, each in one line.
+  - Double-encoding (`encodeURIComponent` on a value already escaped by `URLSearchParams`).
+  - Forgetting to escape user input — `\`?q=${q}\`` with `q = 'a&admin=true'` injecting a parameter.
+  - Path-traversal-shaped values (`'../admin'`) treated as path syntax by the server.
+  - Whitespace and Unicode in hostnames — the URL parser handles IDN (Unicode hostnames) via Punycode normalization; manual templating doesn't.
+  - Trailing-slash drift — `'https://api.acme.com'` plus `'/v1'` versus `'https://api.acme.com/'` plus `'v1'` produces different strings; the `URL` constructor resolves both deterministically.
+- The Node and Next.js context. `URL` and `URLSearchParams` are globals in every runtime the course ships on — the browser, the Node.js server runtime, and the Vercel Edge runtime. No imports. One line on `next/navigation`'s `useSearchParams()` hook returning a read-only `URLSearchParams` instance, so the same vocabulary carries from URL strings into the React rendering tree.
+- The 2026 `URLPattern` reach, named once. `URLPattern` is the standardized URL-matching primitive (path-to-regexp-shaped) now shipping in every evergreen browser and on the Node and Edge runtimes. The student does not write `URLPattern` in this chapter — Next.js's file-system router covers route matching — but it earns a one-line forward link because Unit 4's middleware uses pattern objects under the hood.
+- Senior watch-outs.
+  - Mutating `url.searchParams` mutates `url.search`. Reassigning `url.search` rebuilds `url.searchParams`. Pick one mental model per code path.
+  - `new URL('/path')` with no base throws. The base is required for relative inputs; absolute inputs ignore the second argument.
+  - The `URL` constructor lowercases the hostname and normalizes the default port off (`:80` for http, `:443` for https). This matters for origin comparisons in lesson 2 of chapter 012.
 
 What this lesson does not cover:
 
-- Narrowing inside the catch (lesson 2 of chapter 012 owns the `instanceof`/`name` discrimination and the `ensureError` helper).
-- Authoring custom `Error` subclasses (lesson 2 of chapter 012).
-- `Error.cause` chaining (lesson 2 of chapter 012).
-- The `error.tsx` React boundary or the action-level wrapper (Unit chapter 084).
-- RFC 9457 Problem Details and the on-the-wire error body (lesson 2 of chapter 015, lesson 2 of chapter 050).
-- `neverthrow`, `effect`, `fp-ts`, or any other Result-library. The course rolls its own minimal `Result<T, E>` shape because the discipline is the lesson, not the library.
-- Logging frameworks (Unit chapter 096).
-- Refuse-by-default at the gate (lesson 1 of chapter 084).
+- The same-origin policy and how the browser uses `origin` — lesson 2 of chapter 012 owns it.
+- CORS headers and the cross-origin opt-in — lesson 3 of chapter 012 owns it.
+- Cookie attributes and the cookie trust model — Chapter 013.
+- The `fetch` body, methods, and `AbortSignal` shape — Chapter 015.
+- Next.js route matching, `params`, and `searchParams` in Server Components — Unit 4.
+- The `nuqs` URL-state library for typed search-params state in React — Unit chapter 024 names it.
+- Legacy `escape`/`unescape` globals. Deprecated; the lesson does not surface them.
 
-Pedagogical approach: Decision archetype. Open with the `parseInvoiceCsv` four-failure scenario in prose, and refuse to write the function signature until the channel split lands — the student should feel the routing decision. Walk the two channels as one tight comparison table (channel / what it carries / who handles it / canonical site) and name the "can the caller do something different per case?" heuristic explicitly. Walk the `try`/`catch`/`finally` mechanics with one small labeled snippet that demonstrates the strict-mode `unknown` catch type — leave `err.message` underlined as a compile error to motivate lesson 2 of chapter 012. Walk the async-throw flow with a two-snippet pair: the `await` inside `try` that catches, and the un-awaited `async` call that escapes; mark the difference in the surrounding prose. The "only throw `Error`" rule gets one wrong-then-right snippet. Walk the `Result<T, E>` shape with one labeled block showing the type, the `ok`/`err` helpers, and a `parseInvoiceCsv` return whose `E` is a discriminated union of two tagged variants; the call site `switch`es on `result.error.code` with `assertNever` (forward-link to lesson 3 of chapter 009). Close with a `Buckets` or `Dropdowns` exercise: given eight failure scenarios ("CSV row out of range", "Postgres connection refused", "Stripe API key rotated mid-request", "user submitted a duplicate email", "S3 returned 503", "Zod parse failed on form input", "invariant violated: tenant ID mismatch", "OAuth provider returned an unknown error code"), the student routes each to `Result` or `throw`. Optional short `script-coding` exercise where the student takes a function that throws on validation errors and refactors it to return `Result<T, E>` with a tagged-union `E`.
+Pedagogical approach:
 
-Estimated student time: 40 to 50 minutes.
+Mechanics archetype. Open with one paragraph on parse-don't-concatenate and the bug class it retires. The URL anatomy is a hand-authored SVG with arrows to each field on a single example URL, captioned with the property name. The `URLSearchParams` and `new URL()` material is short prose with three or four tight code snippets — never the full surface, the senior subset. The `%20`-vs-`+` split lives in a small `CodeVariants` block showing the same input encoded both ways with the decoded round-trip labeled. The encoding decision table (encodeURI / encodeURIComponent / URLSearchParams) is a three-row `Table`. Close with one live exercise: the student is handed a record `{ q: 'a+b', tags: ['x', 'y'] }` and a base URL, and must produce the correct encoded URL with `URLSearchParams`, with a test that checks the decoded round trip. Optional `SandboxCallout` with a `new URL()` playground for the student to paste any URL and see the parsed fields.
+
+Estimated student time: 35 to 45 minutes.
 
 ---
 
-## Lesson 2 — Narrowing the catch and authoring domain errors
+## Lesson 2 — Origin is the unit of browser trust
 
-Teaches the `unknown`-in-catch narrow with `instanceof Error` and the `ensureError` normalizer, small custom `Error` subclasses with literal-typed `name` discriminants, `Error.cause` for re-wrap and chain walking, and the `error.name` fallback for `AbortError`, `TimeoutError`, and the cross-realm `instanceof` gotcha.
+Teach origin as the `(scheme, host, port)` tuple versus site as `(scheme, eTLD+1)`, what the same-origin policy blocks versus what it always allows, and the load-bearing point that the policy protects the *user* (not the server) by gating the *response*, not the request.
 
 Topics to cover:
 
-- The senior question. A `chargeInvoice(invoiceId)` Server Action calls Stripe, writes a row, and enqueues an email. Any of three failures can land at the action's catch: a Stripe network error (retryable, log and rethrow for the framework boundary), a Stripe `card_declined` (a domain failure the user should see as "Your card was declined"), and an `AbortError` if the user navigated away (silent no-op). The catch parameter is typed `unknown`. How does the catch tell the three apart, and how does it carry the original failure forward so the operator log has the full chain? The lesson installs the four moves: narrow with `instanceof Error`, discriminate with `error.name` (or a literal-typed `name` on a custom subclass), normalize unknown shapes through `ensureError`, and walk `Error.cause` to read the chain.
-- The `unknown`-in-catch narrow, the strict-mode shape. Under `strict` plus `useUnknownInCatchVariables` (TS chapter 024+, the 2026 default), `catch (err)` types `err` as `unknown`. The compiler refuses `err.message`. Two narrows named, both senior reflexes.
-  - **`instanceof Error`** — the cheapest narrow. After the check, `err` is `Error` and `err.message` / `err.name` / `err.stack` / `err.cause` are typed. Works for everything thrown by application code that obeys the "only throw `Error`" rule.
-  - **`Error.isError(value)`** — ES2026 / Stage 4, Node 24+. The cross-realm-safe equivalent of `instanceof Error`. The senior reach in any code that crosses a realm boundary (workers, `vm` contexts, the edge-runtime split, iframes). Named in one paragraph with the trigger; 2026-current and available unflagged in Node 26.
-- The cross-realm `instanceof` gotcha, stated plainly. Each JavaScript realm has its own `Error` constructor; an error thrown in a Web Worker and caught in the main thread fails `instanceof Error` because the two `Error` references are different objects. Three sites where this bites in 2026 SaaS code.
-  - **Web Workers and `MessageChannel` boundaries** — rare in app code, common in observability libraries.
-  - **The `vm` module in Node** — used by test runners and sandboxes.
-  - **The edge / Node runtime boundary in Next.js** (Next.js runtime split — covered in Unit 5) — errors thrown in middleware (edge) and caught in a Server Component (Node) cross realms.
-  - The fix: `Error.isError(err)` in 2026, or the `error.name` fallback (next bullet) where realms are an issue.
-- The `error.name` fallback, the portable form. Every `Error` subclass sets `name`. Discriminating on `err.name === 'AbortError'` or `err.name === 'TimeoutError'` works across realms because strings are values, not constructor references. The canonical sites.
-  - **`AbortError`** — `DOMException` in browsers, varies in Node depending on the API. lesson 4 of chapter 011 named the discrimination; here, name the realm-safe form.
-  - **`TimeoutError`** — fired by `AbortSignal.timeout(ms)` in 2026.
-  - **Custom domain errors** — when the catch is in a different module than the throw site, the `name` literal is the durable contract; the class itself may not be importable.
-- The `ensureError` normalizer. A small helper that turns any `unknown` into an `Error`. The shape:
-  - `const ensureError = (value: unknown): Error => value instanceof Error ? value : new Error(typeof value === 'string' ? value : JSON.stringify(value), { cause: value })`.
-  - The reach: every catch around a third-party SDK that may break the "only throw `Error`" rule (legacy callback adapters, some browser APIs, the `unknown` rejection from a Promise constructed inside a SDK). The catch becomes `catch (err) { const error = ensureError(err); ... }` and the rest of the block treats `error` as `Error` safely.
-  - The senior placement: in `/lib/errors.ts` next to the `Result` helpers, imported at every catch that touches a vendor seam.
-- Authoring custom `Error` subclasses, the 2026 minimum-surface shape. Two paragraphs, one code block.
-  - The canonical shape: `class BillingError extends Error { readonly name = 'BillingError' as const; readonly code: 'card_declined' | 'insufficient_funds' | 'authentication_required'; constructor(code: 'card_declined' | 'insufficient_funds' | 'authentication_required', message: string, options?: { cause?: unknown }) { super(message, options); this.code = code; } }`.
-  - The senior moves named.
-    - **Literal-typed `name`.** `readonly name = 'BillingError' as const` — not `super('BillingError', ...)`. The literal is the discriminant; `err.name === 'BillingError'` narrows the type when combined with `instanceof Error`.
-    - **Structured fields (`code`, `cause`, ...).** The class carries the data the catch needs to branch. No string parsing.
-    - **`{ cause }` passed through to `super(message, options)`.** The `Error.cause` chain is part of the contract.
-    - **No abstract base class.** Domain errors are flat. A `BillingError` extends `Error` directly, not `AppError extends Error`. The taxonomy is the literal `name` set, not an inheritance tree.
-- `Error.cause` and chain walking. The 2026-current standard for "this failure was caused by that one." Two patterns named.
-  - **Rewrap at the seam.** A function that catches a vendor error and rethrows a domain error preserves the original: `throw new BillingError('card_declined', 'Card declined by issuer', { cause: stripeError })`. The operator log walks the chain; the user-facing message stays clean.
-  - **Walking the chain.** The structured-log helper recursively reads `err.cause`, stopping when undefined or when it loops. The shape: `const causes = []; let current: unknown = err; while (current instanceof Error && !causes.includes(current)) { causes.push(current); current = current.cause }`. The loop guard exists because cause cycles, while rare, crash the walker. The course's `logError` in chapter 096 owns the production version; the chapter installs the pattern.
-- The `instanceof` narrow with custom errors. The full discriminate pattern, demonstrated once.
-  - The shape: `if (err instanceof BillingError) { switch (err.code) { case 'card_declined': ...; case 'insufficient_funds': ... } } else if (err instanceof Error && err.name === 'AbortError') { return } else if (err instanceof Error) { throw err } else { throw ensureError(err) }`.
-  - The senior watch-out: order matters. Specific subclasses before the generic `Error` check. The trailing `ensureError` is the catch-all for the "third-party threw a string" case.
-- The "what about `AggregateError`?" aside, in one paragraph. `Promise.any` rejects with an `AggregateError` carrying an `errors` array. The narrow is `err instanceof AggregateError`. The catch reads `err.errors` (typed `Error[]` if every input obeyed the rule) to decide on the response. Named once because the `Promise.any` reach was installed in lesson 2 of chapter 011 and the catch needs the discriminator.
-- Naming conventions for the literal `name` set. One short paragraph. The course uses `PascalCase` matching the class name (`BillingError`, `RateLimitError`, `TenancyError`), one error class per domain concern, and a flat namespace in `/lib/errors.ts`. The pattern installs at Unit chapter 084; here, the convention is named so the student sees the shape consistently across chapters.
-- The `error.message` discipline, named in one paragraph. The `message` field is for *operators*, not users. It carries the technical detail (the SQL constraint name, the Stripe error code, the Zod path). The user-facing message lives elsewhere — on the `Result.err.code` discriminant the UI maps to a translation key. lesson 2 of chapter 084 owns the two-audience split; here, the rule "don't render `err.message` to users" is named once.
+- The senior framing. The browser carries the user's credentials (cookies, basic auth, client certs) automatically with every request to a host. Without a security policy, any page could make a request to `bank.acme.com`, the browser would attach the session cookie, and the page would read the response. The same-origin policy is the rule that makes the read fail. The lesson installs origin as the unit the rule scopes by and frames every later question (cookies, CORS, CSRF, postMessage) against it.
+- Origin defined precisely. Origin is the tuple `(scheme, host, port)`. `https://app.acme.com` and `https://api.acme.com` are *different origins* (different host). `https://app.acme.com` and `http://app.acme.com` are *different origins* (different scheme). `https://app.acme.com` and `https://app.acme.com:8443` are *different origins* (different port — the default port `:443` collapses to no port, but any non-default port differs). The `URL` object's read-only `origin` property returns this string.
+- Site defined precisely, and why it's the looser cousin. Site is `(scheme, eTLD+1)` — scheme plus the registrable domain. The **eTLD** (effective top-level domain) is taken from the Public Suffix List: for `app.acme.com` the eTLD is `.com` and eTLD+1 is `acme.com`; for `project.github.io` the eTLD is `github.io` and eTLD+1 is `project.github.io`. So `https://app.acme.com` and `https://api.acme.com` are *different origins* but the *same site* — both share scheme `https` and eTLD+1 `acme.com`. Ports are not part of site. This distinction is load-bearing for cookies: `SameSite=Lax` uses the *site* boundary, not the origin boundary, which Chapter 013 will lean on heavily.
+- The senior mental anchor: same-site is permissive (subdomains share), same-origin is strict (subdomains don't share). The course calls this *the two boundaries* and the student should be able to classify any pair of URLs along both axes in five seconds.
+- What the same-origin policy actually blocks. The single sentence to internalize: *the browser sends the request and lets the response come back, but it refuses to let the cross-origin page read the response.* The request still hits the server; cookies are still attached (subject to `SameSite`); the server still processes it and returns a body. The browser then checks `Access-Control-Allow-Origin` on the response and decides whether the calling page may read it. If not, the page sees an opaque error and zero of the body.
+- The load-bearing implication. Same-origin protects **confidentiality of the response from the user's perspective** — it stops `evil.com` from reading `bank.acme.com/balance` on the user's behalf. It does not stop the request itself, so it does not protect the server from *write* side effects — that's what CSRF tokens and `SameSite` cookies are for, in their respective chapters. The bug class this framing prevents: building a state-changing GET endpoint and thinking the same-origin policy protects it. It doesn't. State-changing endpoints use POST/PUT/DELETE/PATCH, idempotency keys, and `SameSite` cookies.
+- What the same-origin policy always allows (the carve-outs every senior knows).
+  - **Top-level navigation** — clicking a link to a cross-origin URL, submitting a `<form>` to a cross-origin action. The browser navigates; the new page is loaded under that origin's trust.
+  - **`<script src>`, `<link rel="stylesheet">`, `<img>`, `<video>`, `<audio>`, `<iframe>`** — cross-origin resources can be embedded, but the page typically cannot read their internals. (CORS unlocks reading; `crossorigin` attribute is the opt-in.)
+  - **CSS, font, and image use** — the browser renders them; JavaScript cannot read pixel data from a cross-origin `<canvas>` drawn from a cross-origin image without CORS.
+  - **Form submissions** — a `<form action="https://other.com/...">` is allowed. This is exactly the surface CSRF exploits and that `SameSite` cookies and CSRF tokens defend.
+  The senior watch-out: the carve-outs exist because they predate the policy (the embed-everything web). They are *navigation and embed* permissions, not *read* permissions.
+- Cross-origin object access on the page. Two pages from different origins can hold references to each other (via `window.open` or `<iframe>`), but the same-origin policy restricts which properties they can touch. The cross-origin-accessible subset is short: `location.href` (write-only for navigation), `location.replace`, `postMessage`, `closed`, `close`. Everything else throws. `postMessage` is the load-bearing primitive for cross-origin window communication — named here in one line; Chapter 014 owns the event model that fires `message`.
+- The 2026 site-isolation reality. Chrome and Firefox isolate each site (eTLD+1) into its own renderer process. The student does not write code that depends on this; they should know that `process.env`-style information leaks between origins on the same site are still mostly possible and that the *origin* — not the site — is the unit the senior reasons about for confidentiality. The conditional power-tool name: **Cross-Origin Resource Policy** (`Cross-Origin-Resource-Policy: same-origin`) lets a server opt resources out of cross-origin embedding entirely; **Cross-Origin Opener Policy** (`Cross-Origin-Opener-Policy: same-origin`) breaks `window.opener` for cross-origin openers. Named in one line each, deferred to Unit 16's security baseline.
+- The `Origin` request header named here. When a browser makes a cross-origin request (any non-`GET`/`HEAD` request, or any CORS-eligible request), it attaches an `Origin: https://app.acme.com` header. The server reads it and decides what to return. This is the single line that connects lesson 2 of chapter 012 to lesson 3 of chapter 012: CORS is the protocol the server uses to *answer* `Origin`.
 
 What this lesson does not cover:
 
-- The two-audiences user-vs-operator split at depth (lesson 2 of chapter 084).
-- The framework-boundary catch and the `error.tsx` boundary (lesson 3 of chapter 084, Unit 4 React error boundaries).
-- Logging-framework wiring (`pino`, Sentry — Unit chapter 096).
-- The wire format for thrown errors (RFC 9457 Problem Details — lesson 2 of chapter 015, lesson 2 of chapter 050).
-- Sourcemaps for production stack traces (Unit chapter 096).
-- Async stack traces under Node (`--async-stack-traces` is on by default in Node 22+; named once, no deep treatment).
-- Custom `Symbol.for('nodejs.util.inspect.custom')` for pretty-printing in the REPL. Niche.
-- Re-throwing with `Error.captureStackTrace` for vendor SDKs that lose traces. Out of scope.
+- CORS headers themselves, preflight, and credentials — lesson 3 of chapter 012.
+- Cookie `SameSite`, `Secure`, `HttpOnly`, `Partitioned` — Chapter 013.
+- CSRF token patterns — chapter 081.
+- `Cross-Origin-Resource-Policy`, `Cross-Origin-Opener-Policy`, `Cross-Origin-Embedder-Policy` headers in depth — Unit 16.
+- `postMessage` event-handler shape and origin validation — Chapter 014 names it.
+- Content Security Policy — Unit 16.
+- IFrame sandboxing flags — out of scope on this stack.
+- The history of XHR before CORS — no historical detour.
 
-Pedagogical approach: Pattern archetype with one structural code block at the center. Open with the `chargeInvoice` three-failure scenario in prose to motivate the four moves. Walk the `unknown`-in-catch narrow with a two-step paired snippet: the wrong shape (`catch (err) { console.log(err.message) }` — compile error) and the right one (`catch (err) { if (err instanceof Error) console.log(err.message) }`). Name `Error.isError()` in one paragraph with the trigger; show the cross-realm scenario with a small `ArrowDiagram` (main thread, worker, the `Error` constructor mismatch). Walk the `ensureError` helper with one labeled snippet in `/lib/errors.ts`. The `BillingError` class is the lesson's center of gravity — one labeled block showing the full shape (literal `name`, typed `code`, `{ cause }` passthrough) with side annotations highlighting the four senior moves. Walk `Error.cause` with two adjacent snippets: the rewrap-at-the-seam pattern (catching Stripe, throwing `BillingError`) and the chain-walking helper. The full discriminate pattern (specific subclass, then `error.name`, then generic `Error`, then `ensureError`) gets one labeled block as the canonical catch shape. Use a `code-review` exercise where the student is given three catch blocks and identifies the bugs (unguarded `err.message`, `instanceof` reach across a worker boundary, missing `ensureError` for a vendor seam). Close with a short `script-coding` exercise: the student authors a `RateLimitError` subclass with a literal `name`, a `retryAfter: number` field, and a `{ cause }` passthrough, then writes the catch block that discriminates it from `BillingError` and a generic `Error`. Optional `SandboxCallout` with a working `Error.cause` chain the student can walk.
+Pedagogical approach:
 
-Estimated student time: 45 to 55 minutes.
+Concept archetype. The center of gravity is a single comparison diagram: a `Table` listing six URL pairs in the left column and two columns ("same origin?", "same site?") with a check or cross in each, so the student practices the classification before any policy text lands. The same-origin definition is one paragraph plus a Mermaid `flowchart` showing the request crossing the boundary, the response coming back, and the browser interposing at the *response* read. The carve-outs (navigation, embeds, form submissions) are a short `BulletList` with one line per carve-out. Close with a `Buckets` exercise: the student sorts twelve scenarios ("page A reads JSON from API B," "page A embeds an image from CDN B," "page A submits a form to bank.acme.com," "page A reads a font from another origin," etc.) into "allowed by default," "blocked by default, needs CORS," or "always allowed (navigation/embed)." No sandbox — the lesson is conceptual.
+
+Estimated student time: 30 to 40 minutes.
 
 ---
 
-## Lesson 3 — Quizz
+## Lesson 3 — The preflight dance
 
-Top 10 topics to quiz:
+Teach CORS as the opt-in that loosens same-origin, the simple-vs-preflighted decision, the `Access-Control-Allow-*` response-header palette, the wildcard-with-credentials trap, and the canonical browser error messages with their fixes.
 
-1. The two-channel routing decision: expected failures the caller branches on go through `Result<T, E>`; unexpected operational failures throw and bubble to the framework boundary.
-2. The "can the caller do something different per case?" heuristic as the one-question test that routes any new failure.
-3. The `try`/`catch`/`finally` mechanics under `strict` + `useUnknownInCatchVariables`: `err` typed `unknown`, the `finally` side-effects-only rule, and the bare `catch` shape.
-4. The async-throw flow: a rejected Promise is the throw at the `await` site, un-awaited `async` calls escape the surrounding `try`, and `return await` inside `try` is mandatory.
-5. The "only throw `Error`" rule with the three consequences (predictable catch shape, stack traces, the `ensureError` recovery for vendor seams).
-6. The `Result<T, E>` shape with `ok`/`err` helpers, a discriminated `E` channel, and the `assertNever` exhaustiveness at the call site.
-7. The `unknown`-in-catch narrow with `instanceof Error`, the `Error.isError()` cross-realm 2026 replacement, and the `error.name` fallback for portable discrimination.
-8. The custom `Error` subclass shape: literal-typed `readonly name`, structured fields (`code`), `{ cause }` passed through `super(message, options)`, and no abstract base class.
-9. `Error.cause` for rewrap-at-the-seam and the chain-walking pattern (with the loop-guard against cycles).
-10. The canonical catch ordering: specific subclasses first, then `error.name` for cross-realm errors like `AbortError` and `TimeoutError`, then a generic `Error` branch, then `ensureError` as the catch-all.
+Topics to cover:
+
+- The senior framing. Same-origin is the default; CORS is the server's way to say "this response may be read by these other origins." The protocol has two shapes: simple requests, where the browser sends the request and checks the response headers after the fact; and preflighted requests, where the browser sends an `OPTIONS` request first and waits for the server to authorize before sending the real one. The senior knows which path any given `fetch` will trigger and what the four production response headers need to say.
+- The simple-request criteria. A request is "simple" (no preflight) when *all* of these hold:
+  - Method is `GET`, `HEAD`, or `POST`.
+  - Headers are limited to the CORS-safelisted set (`Accept`, `Accept-Language`, `Content-Language`, `Content-Type`, `Range`).
+  - `Content-Type`, if present, is one of `application/x-www-form-urlencoded`, `multipart/form-data`, `text/plain`.
+  - No `ReadableStream` body.
+  In practice, **any `fetch` with `Content-Type: application/json` preflights**, and that's almost every API call the SaaS UI makes. The student should treat "JSON API calls always preflight" as the working reality.
+- The preflight `OPTIONS` request, byte by byte. The browser sends:
+  - `OPTIONS /resource HTTP/...`
+  - `Origin: https://app.acme.com`
+  - `Access-Control-Request-Method: POST`
+  - `Access-Control-Request-Headers: content-type, authorization`
+  The server responds with the matching `Access-Control-Allow-*` headers; if they don't match, the browser cancels the real request and surfaces the CORS error.
+- The four production response headers, named with the failure mode they prevent.
+  - **`Access-Control-Allow-Origin: https://app.acme.com`** — the exact echoed origin (or a list reduced to one). Tells the browser which origin may read the response. *Failure mode: the browser refuses the read; the page sees a CORS error.* Wildcards (`*`) work but disable credentials; see the trap below.
+  - **`Access-Control-Allow-Methods: GET, POST, PUT, DELETE, PATCH`** — preflight only. Lists allowed methods. *Failure mode without it: a non-`GET`/`POST` method is rejected.*
+  - **`Access-Control-Allow-Headers: content-type, authorization`** — preflight only. Lists request headers the actual request may send. *Failure mode without it: any custom header (including the json content-type) trips the preflight.*
+  - **`Access-Control-Allow-Credentials: true`** — opts the response into being readable on credentialed requests. Paired with `fetch(..., { credentials: 'include' })` on the client. *Failure mode without it: cookies and auth headers aren't attached, or the response is blocked from being read.*
+  Two supporting headers earn a line each: **`Access-Control-Max-Age: 86400`** caches the preflight result so the browser stops re-`OPTIONS`-ing every request, and **`Access-Control-Expose-Headers: X-Total-Count, X-Page`** lets JS read non-safelisted response headers (default is the safelist `Cache-Control`, `Content-Language`, `Content-Type`, `Expires`, `Last-Modified`, `Pragma`).
+- The wildcard-with-credentials trap. `Access-Control-Allow-Origin: *` is legal *only* when the request is not credentialed. If the client sends `credentials: 'include'` and the server returns `*`, the browser refuses the response and the page sees a CORS error. The fix: echo the exact `Origin` value back (validated against an allow-list) and add `Vary: Origin` so the cached response doesn't bleed across origins. This is the most common production CORS bug, and naming it once is half the lesson.
+- The `Vary: Origin` reflex. When the server's response depends on the request's `Origin` (which it does, the moment you echo it), the server must send `Vary: Origin` so any CDN or browser cache keys the response by origin. Without it, a response cached for one origin is served to a different origin and the browser rejects it. One paragraph; the rule is mechanical.
+- The client surface, named once. `fetch(url, options)` has three knobs that interact with CORS:
+  - `mode` defaults to `'cors'` for cross-origin; `'same-origin'` rejects cross-origin; `'no-cors'` lets the request go but the response is opaque (useless for reading). Senior never sets it manually.
+  - `credentials` defaults to `'same-origin'` (cookies attached only same-origin); `'include'` attaches on cross-origin too; `'omit'` never attaches. The default is the senior pick for first-party SaaS; `'include'` is the explicit reach for a deliberate cross-origin authenticated call.
+  - The `Origin` header is set by the browser automatically; the application never writes it. (Servers can validate it but can't trust it from a non-browser client.)
+- The four canonical browser error messages and their fixes, paired one-to-one.
+  - *"...has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource."* → Server didn't return the header. Fix the server route handler.
+  - *"...the value of the 'Access-Control-Allow-Origin' header in the response must not be the wildcard '*' when the request's credentials mode is 'include'."* → The wildcard-with-credentials trap. Echo the exact origin and add `Vary: Origin`.
+  - *"...Response to preflight request doesn't pass access control check: It does not have HTTP ok status."* → The OPTIONS handler returned non-2xx. Make the OPTIONS handler return 204 with the headers.
+  - *"...Request header field 'authorization' is not allowed by Access-Control-Allow-Headers in preflight response."* → Add `authorization` (or `content-type`, etc.) to `Access-Control-Allow-Headers`.
+  These messages are the production reality; reading them is half the skill.
+- Next.js Route Handler shape. The file lives at `app/api/<path>/route.ts` and named-export functions (`GET`, `POST`, `OPTIONS`, etc.) dispatch by HTTP method; full depth in Chapter 046. The student writes a tiny `route.ts` exporting `OPTIONS` and `GET`/`POST` handlers, each returning the response with the four headers. The Next.js 16 idiom is to set headers on the `Response` constructor or via `NextResponse.json(body, { headers })`; the lesson shows a `withCors` helper that wraps any handler and adds the four headers and `Vary: Origin`. No mention of `next.config.ts` `headers()` — that's a coarser tool; per-route is the senior reach because the allow-list belongs next to the route. The same handler also covers the `OPTIONS` preflight by returning 204 with the same headers and an empty body.
+- Edge cases worth one line each.
+  - **Same-origin app calling its own backend** — no CORS at all, no headers needed. The SaaS-on-Next-monolith default. The student should know that the chapter's CORS work *only* applies to cross-origin calls (third-party API, dedicated API subdomain, browser extension, marketing site calling app).
+  - **API subdomain pattern** (`api.acme.com` ↔ `app.acme.com`) — cross-origin but same-site; CORS still required, but cookies with `SameSite=Lax` still travel.
+  - **Browser extensions and `null` origin** — content scripts send `Origin: null`; allow-list it explicitly or refuse it.
+  - **Preflight cache poisoning** — a too-permissive `Access-Control-Max-Age` plus a `Allow-Origin: *` bug compounds; senior pairs short max-age with an exact-echo origin in development.
+- The non-CORS bypass paths, named so the student doesn't confuse them with the policy.
+  - **A server-to-server fetch** (Next.js Server Action or Route Handler calling a third-party API) has no `Origin` header, no CORS check, and no browser between client and server. CORS does not apply.
+  - **A reverse proxy** that exposes a third-party API under your own origin (Next.js `rewrites()`) collapses cross-origin to same-origin; CORS becomes unnecessary at the cost of a hop. Senior reach when a third party doesn't ship CORS and a server-side proxy is overkill.
+
+What this lesson does not cover:
+
+- The cookie attribute surface — Chapter 013. CORS-with-credentials cross-references `SameSite`; the cookie chapter owns the full attribute table.
+- CSRF token patterns and double-submit cookies — chapter 081.
+- Server Actions vs. Route Handlers as a design decision — Unit 4 and Unit 6.
+- The `fetch` request body, methods, status, and `AbortSignal` — Chapter 015.
+- `next.config.ts` `headers()` for app-wide headers — Unit 16 owns the security-header baseline.
+- API gateways, service mesh, mTLS — out of scope.
+- `Cross-Origin-Resource-Policy`, `Cross-Origin-Opener-Policy`, `Cross-Origin-Embedder-Policy` — Unit 16.
+
+Pedagogical approach:
+
+Pattern archetype with a heavy Mechanics body. Open with one paragraph on CORS as the opt-in. The simple-vs-preflighted criteria are a `Table` with the three columns (method, headers, content-type) and one line under it telling the student the working reality: JSON APIs preflight. The preflight is a Mermaid `sequenceDiagram` showing the browser sending `OPTIONS`, receiving `Access-Control-Allow-*`, then sending the real request — labeled so the student can point at each lane in a DevTools waterfall. The four response headers are a `Table` keyed on header name with three columns (purpose, failure mode without it, example value). The wildcard-with-credentials trap and the `Vary: Origin` reflex each get a tight `Aside` callout. The Next.js handler is one labeled multi-file block (`app/api/.../route.ts` plus a tiny `lib/cors.ts` helper). The four canonical error messages are a `Matching` exercise — six messages, six fixes — that the student completes inline. Optional `SandboxCallout` with a Route Handler stub the student can paste into the starter and hit from a different origin (e.g. `http://localhost:5500` against the dev server) to watch the preflight in DevTools.
+
+Estimated student time: 50 to 65 minutes.
+
+---
+
+## Lesson 4 — Quizz
+
+Top 10 topics that should be quizzed:
+
+1. The URL anatomy — `origin`, `protocol`, `host`, `hostname`, `port`, `pathname`, `search`, `hash` — and `new URL(input, base)` as the senior constructor including its throw-on-invalid behavior and `URL.canParse` as the safe-check.
+2. `URLSearchParams` as the senior reach for query strings — the four construction shapes, `get` vs. `getAll`, `append` vs. `set`, and `toString()` as the encoded output.
+3. The `%20`-vs-`+` split — path/fragment encoding versus form-urlencoded query encoding — and the round-trip rule that encode and decode must use the same model.
+4. `encodeURI` vs. `encodeURIComponent` vs. `URLSearchParams` — which tool fits which position in a URL.
+5. Origin as `(scheme, host, port)` versus site as `(scheme, eTLD+1)` — including classifying URL pairs along both axes and the role of the Public Suffix List.
+6. What the same-origin policy blocks (cross-origin response reads) versus what it always allows (top-level navigation, `<script>`/`<img>`/`<iframe>` embeds, cross-origin form submissions) and the implication that it protects the user and not the server.
+7. The simple-vs-preflighted decision and the working reality that `Content-Type: application/json` preflights.
+8. The four production CORS response headers — `Access-Control-Allow-Origin`, `Access-Control-Allow-Methods`, `Access-Control-Allow-Headers`, `Access-Control-Allow-Credentials` — and the role of `Access-Control-Max-Age` and `Access-Control-Expose-Headers`.
+9. The wildcard-with-credentials trap, the exact-echo-with-`Vary: Origin` fix, and `fetch`'s `credentials: 'include'` requirement on the client side.
+10. The four canonical browser CORS error messages and their fixes, including the OPTIONS-handler-returns-non-2xx case.
 
 ---
 
 ## Total chapter time
 
-Roughly 85 to 105 minutes across the two content lessons plus the quiz. The chapter fits one or two evenings — lesson 1 of chapter 012 (channel decision and mechanics) and lesson 2 of chapter 012 (narrowing and domain errors) split naturally if the student wants two sittings, but both can run together as a single 90-minute session. At the end the student can route any new failure into the correct channel (`Result` or throw) by reading the caller's recovery path, write a `try`/`catch` that satisfies the strict-mode `unknown` catch type, narrow with `instanceof Error` and the `error.name` fallback, reach for `Error.isError()` at realm boundaries, normalize unknown throws through `ensureError`, author small custom `Error` subclasses with literal-typed `name` discriminants and `Error.cause` passthrough, and walk a cause chain without looping. Chapter 013 lands on this floor with the wire-boundary error story (JSON parse failures as a `Result`-channel candidate) and the `Date`-to-Temporal pivot. lesson 3 of chapter 047 locks the `Result` contract into Server Actions; Unit chapter 084 turns the catch reflexes into a refuse-by-default error-discipline pass; Unit chapter 096 turns the `Error.cause` walker into the production structured-log pipeline.
+Roughly 115 to 150 minutes across the three teaching lessons plus the quiz. The chapter splits naturally across two evenings — lesson 1 of chapter 012 + lesson 2 of chapter 012 (the parser and the policy) as one sitting, lesson 3 of chapter 012 + the quiz (the cross-origin opt-in) as the second since the preflight lesson carries the chapter's mechanics weight. The student finishes with a working `URLSearchParams` reflex for every URL they will build in Units 3 through 7, a precise origin-versus-site vocabulary that Chapter 013 will lean on for `SameSite`, and a Next.js CORS Route Handler shape they can paste into any production allow-list. Chapter 013 lands on this foundation and teaches the cookie attribute table without restating origin or site.

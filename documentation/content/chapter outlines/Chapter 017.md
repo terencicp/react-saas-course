@@ -1,102 +1,416 @@
-# Chapter 017 — Cookies and the trust model
+# Chapter 017 — JSX and HTML semantics
 
 ## Chapter framing
 
-Chapters 014, chapter 015, and chapter 016 built the request-to-pixel pipeline, the HTTP contract, and the origin-and-CORS trust boundary. This chapter installs the cookie — the small piece of state the browser attaches to every same-site request, and the substrate every session, every CSRF defense, every server-set preference rides on. The center of gravity is a single `Set-Cookie` attribute table and one senior default the student will paste into every cookie-writing call for the rest of the course: `HttpOnly; Secure; SameSite=Lax; Path=/`, with `__Host-` prefixing the name when the cookie is host-locked. Every attribute earns its place by the failure mode it prevents — XSS exfiltration, plaintext sniffing, cross-site request forgery, scope leaks across subdomains, third-party tracking. The lesson is a Reference/survey of the attribute palette wrapped around one Decision (the default) with the failure modes inline.
+Unit 3 opens here, bridging the substrate of Units 1–2 to the UI layer. JSX and HTML are taught as one surface viewed from two sides: the student writes JSX, the browser receives HTML, and every prop, element, and attribute is a decision read by the browser, the accessibility tree, the crawler, and React's reconciler. Core threads run through every lesson: semantics over visuals (reach for `<button>`, `<a>`, `<nav>`, `<main>`, `<ul>`, `<table>` first; reach for `<div>`/`<span>` only when no semantic element fits); accessibility installed at the call site (Chapter 027 picks up the cross-cutting baseline on top); the JSX-as-property-syntax model and rename table from lesson 2 of chapter 014 (`className`, `htmlFor`, camelCase events, boolean attributes); lists with stable data-tied keys (`key={row.id}`, never the index); forms as a contract where `name` attributes key the `FormData` Chapter 044 will read; and the Elements panel plus the accessibility tree as the daily recognition instruments. The chapter installs the minimum viable element vocabulary a 2026 SaaS UI ships — document structure, landmarks, headings, buttons, links, lists, forms, `data-*` and `aria-*`, tables — and refuses the long-tail HTML catalog.
 
-Two threads run through every paragraph. First, **cookies are an ambient-credential mechanism, which is what makes them powerful and dangerous**. The browser attaches them automatically; the application code never sees them being sent. That's why `SameSite`, `HttpOnly`, and `Secure` exist — they constrain the ambient transmission and the JavaScript surface, not the server-side use. Second, **the 2026 third-party-cookie reality is a partial deprecation, not a clean cut**. Safari and Firefox block third-party cookies by default; Chrome retreated from forced deprecation but still ships `Partitioned` (CHIPS) as the path forward for legitimate cross-site embeds. The senior knows when to reach for `Partitioned; SameSite=None; Secure` (embedded widget, payment iframe) and when the answer is "don't use a cookie, use a token in postMessage." The chapter does not teach session design, CSRF token patterns, or authentication flows — Chapter 9 (auth) and Unit 17 (security baseline) own those. This chapter lands the attribute vocabulary they'll lean on.
-
-The student finishes with: a precise reading of every attribute on a `Set-Cookie` header, the senior default committed to muscle memory and the conditions that flip each attribute off it, the `__Host-` and `__Secure-` prefix discipline, the `Partitioned` (CHIPS) reach for the cross-site-embed case, the Next.js 16 `cookies()` helper for reading in Server Components and writing in Server Actions and Route Handlers, and a clear forward link to the auth chapter that will use this surface to hold the session.
+Six teaching lessons plus a quiz, ordered by dependency: lesson 1 of chapter 017 installs the JSX surface every later lesson rides on; lesson 2 of chapter 017 the Next.js root layout (which lands again at Server Components, the metadata API, and `next-themes`); lesson 3 of chapter 017 semantic landmarks and the heading hierarchy; lesson 4 of chapter 017 buttons, links, and lists; lesson 5 of chapter 017 forms as the element contract Chapter 044 will wire; lesson 6 of chapter 017 folds tables into the data-and-aria lesson because tables are short enough in 2026 SaaS code that a standalone lesson would be padding, and they share the "structural markup for assistive tech" frame with `aria-*`. Senior anchors seeded here land again across later units (reconciliation in lesson 2 of chapter 023, resetting state with key in lesson 5 of chapter 023, Server Components in chapter 030, the metadata API in lesson 9 of chapter 034, native forms in chapter 044, security headers in lesson 1 of chapter 081, the full ARIA treatment in lesson 3 of chapter 027). The deliverable is fluency: the student writes a root layout, a navigation surface, and a sign-in form in JSX with the right elements, the right props, the right ARIA, and the right keys — and recognizes each of those choices as a decision, not a default.
 
 ---
 
-## Lesson 1 — Set-Cookie attributes and the safe default
+## Lesson 1 — JSX is property syntax for HTML
 
-Read the `Set-Cookie` header attribute by attribute — `HttpOnly`, `Secure`, `SameSite`, `Path`, `Domain`, `Max-Age` / `Expires`, the `__Host-` and `__Secure-` prefixes, and the `Partitioned` (CHIPS) attribute — name the senior default (`HttpOnly; Secure; SameSite=Lax; Path=/`), map each attribute to the failure mode it prevents, and thread the Next.js `cookies()` helper and the 2026 third-party-cookie reality.
+The JSX surface every later lesson rides on: the rename table (`className`, `htmlFor`, camelCase events), curly-brace expressions, fragments, void self-close, list keys tied to data, and the `&&` zero trap.
 
 Topics to cover:
 
-- The senior framing. A cookie is a key-value pair the server writes once with `Set-Cookie` and the browser then attaches automatically on every matching request as a `Cookie:` header. That automatic attachment is the feature (sessions stay logged in without app code) and the threat (a cross-site request the user never authored carries their cookie too). Every attribute on `Set-Cookie` exists to constrain when the browser attaches, who can read it on the page, and where it survives. The lesson is the attribute table; the senior default is the line the student copies into every cookie-writing call.
-
-- The anatomy of `Set-Cookie`. One header sets one cookie. The shape is `Set-Cookie: name=value; Attribute1; Attribute2=value; ...`. The server can send multiple `Set-Cookie` headers in one response (the one HTTP header that legitimately appears multiple times in a response). One inline example: `Set-Cookie: sid=abc123; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=2592000` with the attributes labeled.
-
-- **`HttpOnly`** — the cookie is invisible to `document.cookie` and any JavaScript on the page. The browser still attaches it to requests; only the JS read API is blocked. *Failure mode it prevents:* XSS (cross-site scripting — untrusted content executing as script in the page; depth in lesson 4 of chapter 058) that finds an unescaped `innerHTML` sink can read every non-`HttpOnly` cookie and exfiltrate the session. `HttpOnly` does not stop XSS from making authenticated requests with the cookie attached — defense-in-depth, not a silver bullet — but it cuts off the most common exfiltration path. Senior rule: every session-bearing cookie is `HttpOnly`. The only cookies without `HttpOnly` are ones the client UI legitimately needs to read (a `theme=dark` preference, a CSRF double-submit token).
-
-- **`Secure`** — the cookie is only attached on requests over HTTPS. *Failure mode it prevents:* on an HTTP network leg (rare in 2026, but coffee-shop wifi and corporate proxies still produce them), the browser would attach the cookie in plaintext and any on-path attacker reads it. Modern browsers treat `http://localhost` as a secure context for most APIs but `Secure` cookies behavior on plain localhost is inconsistent across browsers — lesson 3 of chapter 014's `mkcert` HTTPS setup makes this a non-issue locally. Senior rule: every cookie is `Secure`. The only context that flips it off is a legacy HTTP test fixture, which is rare on this stack.
-
-- **`SameSite`** — the load-bearing attribute. Three values:
-  - **`Strict`** — the cookie is *only* attached on requests originating from the same site. Even a top-level navigation from a third party (clicking a link from `gmail.com` to `app.acme.com`) does not attach the cookie on the first request. This is the strongest CSRF defense and the worst UX for sign-in links (the user clicks a magic link and the server doesn't see them as logged in until they refresh). Reserved for highly sensitive sub-cookies; not the default.
-  - **`Lax`** — the cookie is attached on same-site requests and on **top-level safe-method navigations** from a third party (a `<a href>` click, a `<form method="get">` submission). The cookie is *not* attached on cross-site `POST`, `<img>`, `<iframe>`, or `fetch` requests. This is the senior default for session cookies because it preserves the magic-link UX while blocking the CSRF surface (a state-changing endpoint refuses cross-site POSTs because the cookie isn't attached). One line on the 2020 Chrome shift that made `SameSite=Lax` the *implicit* default when the attribute is absent — but senior never omits the attribute; they write it explicitly.
-  - **`None`** — the cookie is attached on every request, same-site or cross-site, including cross-site embeds and third-party fetches. Requires `Secure`. Reserved for legitimate cross-site use (a payment iframe, an embedded widget the user has authenticated with). In 2026, `SameSite=None` cookies without the `Partitioned` attribute are blocked by Safari and Firefox by default and increasingly degraded in Chrome; `Partitioned` is the senior pair-with — see below.
-  *Failure mode `SameSite=Lax` prevents:* the entire classic CSRF attack surface — a malicious page POSTs to `app.acme.com/transfer` and the browser would attach the session cookie. With `Lax`, the cookie doesn't go, the server sees an unauthenticated request, and the transfer fails. This is why `SameSite=Lax` plus state-changing endpoints using POST/PUT/DELETE retires the bulk of the CSRF problem.
-
-- **`Path`** — the cookie is only attached on requests whose pathname starts with this prefix. Default is the path of the page that set the cookie, which is usually a sub-path and produces surprising bugs (a cookie set on `/admin/login` doesn't attach on `/admin/users`). Senior default: `Path=/`. The cookie is scoped by `Domain`/`Origin` rules and by the cookie name; `Path` is not a security boundary — any same-origin script can read across paths if they share a name. One line: `Path` exists for cookie scoping convenience, not for security; do not treat it as one.
-
-- **`Domain`** — the cookie is attached on requests to the named host *and all its subdomains*. **The senior default is to omit `Domain` entirely** so the cookie is host-only (attached only to the exact host that set it). The moment you write `Domain=acme.com`, every subdomain (`app.acme.com`, `api.acme.com`, *and* `marketing.acme.com`) receives the cookie. *Failure mode this prevents:* a session cookie scoped to `app.acme.com` should not be readable by `marketing.acme.com` (which may have a CMS with a lower security bar). Omit `Domain` unless cross-subdomain attachment is the explicit feature.
-
-- **`Max-Age` / `Expires`** — `Max-Age` is seconds-from-now (`Max-Age=2592000` is 30 days). `Expires` is an absolute HTTP-date. **Without either, the cookie is a session cookie** — it lives until the browser closes (which on mobile and tab-restore browsers is "approximately forever," not "the actual session"). Senior default for a session cookie that should expire predictably: `Max-Age` with a value matching the session lifetime. `Max-Age=0` deletes the cookie. The browser ceiling: Chrome and Firefox cap cookie lifetimes at **400 days** (RFC 6265bis); any larger value is clamped silently. Name the cap once.
-
-- **`__Host-` and `__Secure-` prefixes** — naming conventions the browser enforces. A cookie name starting with `__Host-` must be set with `Secure`, no `Domain` attribute, and `Path=/`. A cookie starting with `__Secure-` must be set with `Secure` (but `Domain` and `Path` are unrestricted). The browser rejects the `Set-Cookie` if the attributes don't match. *Failure mode they prevent:* a subdomain attacker setting a cookie that the parent domain reads — `__Host-` makes the cookie host-locked at the browser level, so a write from `evil.acme.com` cannot land a `__Host-sid` cookie that `app.acme.com` reads. Senior rule: prefix session cookies with `__Host-` whenever you don't need cross-subdomain attachment. The `__Host-` prefix is the 2026 default for new code; `__Secure-` is the relaxed alternative for the cross-subdomain case.
-
-- **`Partitioned` (CHIPS)** — the 2026 attribute for legitimate cross-site embeds. A `Partitioned` cookie is keyed not just by its own origin but by the *top-level site* that embeds it; the same widget on `news.com` and `blog.com` sees two completely separate cookie jars. *Failure mode it prevents:* cross-site tracking via shared third-party cookies, which is why Safari and Firefox already block unpartitioned third-party cookies and why `Partitioned` is the path forward. Must be combined with `Secure` and `SameSite=None`. Senior rule: when shipping an embedded widget, a payment iframe, or any legitimate cross-site cookie, set `__Host-` (optional but recommended), `Secure; SameSite=None; Partitioned`. The pair `SameSite=None; Secure` alone is degraded by browsers; `Partitioned` is what restores it.
-
-- **The 2026 third-party-cookie reality.** Safari and Firefox block third-party cookies by default and have for years. Google retreated from forced deprecation in 2024–2025 and announced in April 2025 that Chrome would keep cookie controls inside existing settings rather than ship a separate prompt; in October 2025 Google retired most of the Privacy Sandbox effort. The senior reading: third-party cookies are not dead in Chrome but cannot be relied on, and `Partitioned` is the only mechanism that survives across all browsers. The chapter does not teach analytics tracking, ad attribution, or cross-site identity — that work is mostly being rebuilt on FedCM, first-party data, and server-to-server channels; out of scope here.
-
-- **The senior default written once.** For a session cookie set by the SaaS app on its own domain: `Set-Cookie: __Host-sid=<value>; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=2592000`. Read aloud: host-locked name, no JavaScript read, HTTPS only, attached on top-level same-site navigations, scoped to the whole app, expires in 30 days. The student should be able to recite this and explain each attribute.
-
-- **The Next.js 16 `cookies()` helper.** The three call sites below — **Server Components**, **Server Actions**, and **Route Handlers** — are the three Next.js execution contexts where server code runs in the App Router (owned in depth by Units 5 and 7); they are the canonical call sites for `cookies()`. Three call sites, three behaviors.
-  - **Read in a Server Component or Route Handler:** `const sid = (await cookies()).get('__Host-sid')?.value`. `cookies()` is async in App Router; the `await` is mandatory.
-  - **Write in a Server Action or Route Handler:** `(await cookies()).set({ name: '__Host-sid', value, httpOnly: true, secure: true, sameSite: 'lax', path: '/', maxAge: 60 * 60 * 24 * 30 })`. The shape mirrors the attribute table. The `partitioned: true` option is the CHIPS opt-in when needed.
-  - **Delete:** `(await cookies()).delete('__Host-sid')` or set `maxAge: 0`.
-  - The senior constraint, named once: cookies can only be written in contexts that have not yet started streaming the response — Server Actions and Route Handlers, never Server Components rendering markup. Calling `set` from a Server Component throws. Chapter 5 owns the boundary; this lesson states the constraint and moves on.
-
-- **The client side, named in one line.** `document.cookie` reads non-`HttpOnly` cookies as a single semicolon-separated string. The student does not write `document.cookie` parsers; the senior reach when the client must read a cookie is to use a Server Action / Route Handler to read the cookie server-side and pass the value down, or to read it via a small parser if the cookie was deliberately set non-`HttpOnly`. The lesson does not show the parser.
-
-- **Senior watch-outs.**
-  - A cookie set with `SameSite=None` *without* `Secure` is rejected silently by the browser. Pair them or skip both.
-  - A cookie set with `Domain` cannot use `__Host-`. Pick one — host-locked or shared.
-  - Cookie size cap is 4 KB per cookie, 50 cookies per domain in most browsers. Sessions should hold an opaque ID, not user state. State lives server-side.
-  - The `Cookie:` request header concatenates every matching cookie into one comma-prefixed string; large cookies tax every request. Treat the cookie as expensive bandwidth.
-  - Setting a cookie and reading it in the same response cycle does not work — the cookie lands on the *next* request. Plan for the round trip.
-  - The "browser deletes session cookies on tab close" model is fictional on mobile; treat unbounded session cookies as effectively permanent and prefer `Max-Age`.
+- **The senior question.** The student writes `<button className="btn" onClick={handleSubmit}>Save</button>` and the browser receives `<button class="btn">Save</button>` with a click handler attached at the React root. The lesson names JSX as property-syntax sugar that compiles through the JSX transform into element descriptors React renders into the DOM, and walks the differences from HTML — each one a specific bug class.
+- **JSX in one paragraph.** JavaScript with an XML-like element syntax. The React automatic runtime (run by Turbopack) turns `<div className="row">Hello</div>` into `jsx('div', { className: 'row', children: 'Hello' })`. The student writes JSX; the transform handles the rest.
+- **Element name as tag vs. component.** Lowercase names (`<div>`, `<button>`) are HTML tags; uppercase names (`<Button>`, `<SignInForm>`) are React components. The capitalization rule is structural. Chapter 022 owns components in depth.
+- **Props are property syntax** — the rename table from lesson 2 of chapter 014 operating on the JSX surface:
+  - **`className`** (not `class` — reserved word; DOM property is `className`).
+  - **`htmlFor`** (not `for` — reserved word).
+  - **`tabIndex`, `readOnly`, `maxLength`, `colSpan`, `rowSpan`** — camelCase matches the DOM property name, not the HTML attribute.
+  - **`data-*` and `aria-*`** — stay kebab-case in JSX; passed through to the DOM as-is.
+  - **Event props** — `onClick`, `onChange`, `onSubmit`, `onKeyDown`, `onFocus`, `onBlur`. CamelCase, value is a function. lesson 6 of chapter 023 owns synthetic events; lesson 3 of chapter 014 owns the DOM event model.
+- **JavaScript in `{}`.** The expression slot. Valid uses: interpolation as a prop value (`href={profileUrl}`), interpolation as a child (`{user.name}`), conditional rendering with `&&` (`{isAdmin && <AdminPanel />}`), ternaries for two-branch rendering (`{user ? <Dashboard /> : <SignInPrompt />}`), nested function calls (`{formatCurrency(amount)}`). Statements are not allowed.
+- **The `&&` short-circuit and the `0` trap.** `{items.length && <List />}` renders the literal `0` when the array is empty. Senior fix: explicit boolean coercion (`items.length > 0 && ...`) or a ternary.
+- **Rendering lists with `.map` and the key rule.**
+  - **The pattern.** `{rows.map(row => <Row key={row.id} {...row} />)}`.
+  - **The key rule.** Keys must be stable, sibling-unique, and tied to the data — usually `key={row.id}`.
+  - **The array-index trap** — the canonical wrong key; bug fires on filter/sort/reorder (the row at position 0 changes but React reuses the same DOM node and stale state).
+  - **When data has no natural ID** — generate one at fetch time and persist (senior default), or `crypto.randomUUID()` at creation (lesson 1 of chapter 016). Never `Math.random()`, never the index.
+  - **Forward references.** lesson 2 of chapter 023 owns reconciliation; lesson 5 of chapter 023 owns the resetting-state-with-`key` pattern.
+- **Fragments — `<>...</>`.** Group siblings without a wrapping `<div>`. Use `<React.Fragment key={...}>` when the fragment itself needs a key (fragments in a `.map`). A `<div>` wrap purely to satisfy JSX's "one root" rule pollutes the DOM tree and breaks CSS/a11y assumptions.
+- **Void elements and self-closing.** `<img>`, `<input>`, `<br>`, `<hr>`, `<meta>`, `<link>`, `<source>`, `<col>`, `<area>`, `<base>`, `<embed>`, `<param>`, `<track>`, `<wbr>` must self-close in JSX. Non-void elements may self-close when childless.
+- **`dangerouslySetInnerHTML`** — the explicit XSS escape hatch. JSX children are escaped by default; legitimate sites are sanitized Markdown (`react-markdown`) and CMS-sanitized rich text (`dompurify` for user input). lesson 4 of chapter 054 owns the security depth.
+- **Comments in JSX.** `{/* ... */}` inside JSX trees; usual `//` and `/* */` outside.
+- **The JSX type system.** TypeScript types JSX via `JSX.IntrinsicElements` for built-ins and the component's prop type for components — autocomplete on props, compile-time errors on typos like `classname`.
+- **`children` as a prop.** Content between a component's opening and closing tags arrives as `children`. lesson 1 of chapter 022 owns the children-as-API pattern.
+- **The `style` prop** — an object with camelCase CSS property names, not a string. Rare in the course's stack (Tailwind utilities are the default — Chapter 018); reserved for dynamic values that don't fit a utility.
+- **The watch-outs a senior names:**
+  - The `&&` `0` trap — coerce to boolean when the left-hand side is numeric.
+  - The array-index key trap — keys tied to data, never to position.
+  - Forgetting the self-close on void elements (JSX parse error).
+  - `className` not `class`, `htmlFor` not `for` — the two most-common typos.
+  - Numbers vs. strings — `<div data-count={5}>` produces `data-count="5"` (attributes are strings); `<div>{5}</div>` produces a text node.
+  - `null`/`undefined`/`false`/`true` render nothing; accessing properties on `undefined` throws (guard with `?.` or `&&`).
+  - Multiple roots without a fragment is a syntax error.
+  - `onClick={handleClick()}` calls on every render — pass the reference or wrap in an arrow.
+  - The whitespace rule — JSX collapses whitespace between elements; use explicit `{' '}` when spacing matters.
+  - JSX expressions accept expressions, not statements — use ternaries, `&&`, or extract above the return.
 
 What this lesson does not cover:
 
-- Session design — what the cookie value *is* (opaque ID vs. JWT), how it's signed, how it's rotated. Chapter 056 (Better Auth setup) owns this; the senior 2026 default is opaque server-stored sessions with the cookie carrying only an unguessable ID.
-- CSRF token patterns and double-submit cookies — Chapter 085 (security baseline) owns these. `SameSite=Lax` plus state-changing methods retires most of the surface; tokens cover the rest.
-- Authentication flows (sign-in, sign-out, magic links, OAuth) — Unit 9 owns these end-to-end; this chapter only names cookies as the storage substrate.
-- The `cookies()` helper's full API surface (the `RequestCookies` vs. `ResponseCookies` distinction) — Unit 5 owns the App Router request surface in depth.
-- Cookie consent banners, GDPR/CCPA categorization, analytics opt-in flows — Unit 17 and out of scope for the SaaS-app-cookie surface; cookies set for session and CSRF are "strictly necessary" and exempt from consent.
-- Cross-site tracking, FedCM, Privacy Sandbox APIs (Topics, Attribution Reporting) — out of scope on this stack.
-- Cookie-store API (`cookieStore.set` on the browser) — niche; the senior reach is server-side `Set-Cookie`.
-- Legacy `Set-Cookie2`, `expires`-vs-`max-age` history — no historical detour.
-- The full RFC 6265bis spec — the senior subset above is what production needs.
-
-Pedagogical approach:
-
-Reference/survey archetype with a Decision-shaped opening (the senior default) and a Pattern-shaped closing (the Next.js helper). The center of gravity is one large attribute table — eight rows (`HttpOnly`, `Secure`, `SameSite`, `Path`, `Domain`, `Max-Age`/`Expires`, prefixes, `Partitioned`) and four columns (attribute, what it controls, failure mode without it, senior default). Open with one paragraph on the ambient-credential framing and the senior default line; the student commits the default to memory before the table lands. Each attribute then gets one short prose section keyed to its row in the table, with a tiny `Set-Cookie` snippet showing it in context. The `SameSite` section is the longest because it carries the most weight; a small Mermaid `flowchart` or `Table` comparing `Strict`/`Lax`/`None` against three request shapes (same-site fetch, cross-site top-level nav, cross-site POST) drives the cause-and-effect home. The `Partitioned` and prefixes sections each get an `Aside` callout. The Next.js helper is a labeled multi-file snippet — one Server Action setting the cookie, one Server Component reading it, with the constraint named in surrounding prose. Close with one `Matching` exercise pairing six `Set-Cookie` headers (some correct, some with the `SameSite=None`-without-`Secure` bug, some with `Domain` and `__Host-` together, some missing `HttpOnly` on a session) to the failure mode each produces or the fix. Optional `SandboxCallout` with a Route Handler stub setting a cookie, so the student can paste it into the starter, hit it from DevTools, and inspect the cookie jar in the Application panel.
-
-Estimated student time: 50 to 65 minutes.
+- The HTML document structure at the Next.js root layout (lesson 2 of chapter 017).
+- Semantic landmarks and heading hierarchy (lesson 3 of chapter 017).
+- The button/link/list element families (lesson 4 of chapter 017).
+- Forms (lesson 5 of chapter 017).
+- `data-*` and `aria-*` at depth (lesson 6 of chapter 017).
+- React components, props, and composition at depth (Chapter 022).
+- The render model and reconciliation (Chapter 023).
+- Synthetic events at depth (lesson 6 of chapter 023).
+- `children` as an API (lesson 1 of chapter 022).
+- The Tailwind class composition surface and `cn()` (lesson 3 of chapter 018).
+- The full XSS treatment and `dangerouslySetInnerHTML` security depth (lesson 4 of chapter 054).
+- The JSX transform mechanics, classic vs. automatic runtime configuration — out of scope; Next.js handles it.
 
 ---
 
-## Lesson 2 — Quizz
+## Lesson 2 — The Next.js root layout owns the document shell
 
-Top 10 topics that should be quizzed:
+The `app/layout.tsx` Server Component renders `<html lang>` and `<body>`, the metadata API writes the `<head>`, and `'use client'` belongs on a `<Providers>` child, not the root.
 
-1. The senior default cookie line — `HttpOnly; Secure; SameSite=Lax; Path=/` with `__Host-` prefix and `Max-Age` — and the failure mode each attribute prevents.
-2. `HttpOnly` and the XSS exfiltration path it cuts off, plus the load-bearing point that it does not stop XSS from *using* the cookie.
-3. `SameSite=Lax` vs. `Strict` vs. `None` — which requests attach the cookie under each, and why `Lax` is the default for session cookies (top-level safe-method navigations still work, cross-site POSTs don't).
-4. The CSRF-defense logic of `SameSite=Lax` combined with state-changing methods (POST/PUT/DELETE), and what it doesn't cover.
-5. `Path=/` as the senior default and why `Path` is a scoping convenience, not a security boundary.
-6. The `Domain` attribute and the host-only-by-omission default — why writing `Domain=acme.com` leaks the cookie to every subdomain.
-7. The `__Host-` prefix — the three attribute constraints the browser enforces (`Secure`, no `Domain`, `Path=/`) and the subdomain-attacker failure mode it prevents.
-8. `Partitioned` (CHIPS) — when to use it (legitimate cross-site embeds), what to pair it with (`Secure; SameSite=None`), and the 2026 third-party-cookie reality across Safari, Firefox, and Chrome.
-9. `Max-Age` vs. `Expires` vs. session cookies, and the 400-day browser cap on cookie lifetime.
-10. The Next.js 16 `cookies()` helper — `await cookies()` in async App Router contexts, reading in Server Components / Route Handlers, writing only in Server Actions / Route Handlers, the option-bag shape, and the "set lands on the next request" round-trip rule.
+Topics to cover:
+
+- **The senior question.** A component returns `<h1>Welcome</h1>` and the browser renders a full page — `<html>`, `<head>` (with `<title>`, `<meta charset>`), `<body>`, the React tree, bundle scripts. In Next.js 16 App Router, `app/layout.tsx` and the metadata API author each piece. The lesson installs the document-structure model and names the senior watch-outs (hydration mismatches, third-party `<script>` injection, the misplaced `'use client'`).
+- **The HTML document structure in one paragraph.** Every page has the same outer shape: `<!DOCTYPE html>` then `<html lang>` wrapping `<head>` (with `<meta charset>`, `<meta viewport>`, `<title>`, other metadata) and `<body>` (visible content).
+  - **`<!DOCTYPE html>`** — standards-mode declaration. Next.js emits it.
+  - **`<html lang="en">`** — root element with document language; always set `lang`. For i18n (Chapter 084), rendered dynamically per locale.
+  - **`<head>`** — non-rendered metadata (`<meta>`, `<title>`, `<link>`, rare `<script>`).
+  - **`<body>`** — visible content; React tree mounts here.
+- **The Next.js App Router root layout.** `app/layout.tsx` defines the outermost shell: a default-exported `RootLayout` taking `{ children }: { children: React.ReactNode }` and returning `<html lang="en"><body>{children}</body></html>`. `React.ReactNode` is the type for anything React can render — JSX, strings, numbers, arrays, `null`/`undefined`; full treatment in lesson 1 of chapter 022.
+  - **Server Component by default** (lesson 1 of chapter 030) — no `'use client'`, no hooks, renders on the server to HTML.
+  - **Owns `<html>` and `<body>`**, exclusively. Nested layouts (lesson 4 of chapter 029) return JSX that slots inside `<body>`.
+  - **The `children` prop** — Next.js injects the page (or nested layout) via the framework convention.
+  - **The `lang` attribute** belongs here; for i18n, rendered from the URL/session locale.
+- **Metadata — the `<head>` content, declaratively.** Export a `metadata` object (typed as `Metadata` from `next`, with fields like `title`, `description`, `icons`) or a `generateMetadata` async function for dynamic per-route metadata. Next.js renders `<title>`, `<meta name="description">`, `<link rel="icon">`, Open Graph and Twitter tags. lesson 9 of chapter 034 owns the full surface.
+- **The `<meta charset>` and `<meta viewport>` defaults.** Next.js emits both automatically (UTF-8; `width=device-width, initial-scale=1`). `generateViewport` (lesson 7 of chapter 034) is the senior reach when per-route variation is needed — rare. lesson 6 of chapter 021 (responsive design) cashes in.
+- **The `<body>` and the React tree.** Three patterns inside `<body>`:
+  - The `{children}` slot.
+  - Global providers wrapping `{children}` — theme (`next-themes`, lesson 6 of chapter 018), query client (TanStack Query, Chapter 076), i18n (`next-intl`, Chapter 084).
+  - Persistent UI — navbar, toaster portal target (`<div id="toast-root" />`), global error boundary. Keep the root layout lean; push feature UI into nested layouts (lesson 4 of chapter 029).
+- **Font and style integrations.**
+  - **`next/font`** — load fonts at the root layout (`import { Inter } from 'next/font/google'`), invoke with `subsets`, apply the resulting `className` to `<html>` or `<body>`. Self-hosted by Next.js, subsetted, preloaded, CSS-variable-ready. lesson 7 of chapter 034 owns the depth.
+  - **Global styles** — the root layout imports `globals.css` (Tailwind v4 entry point — Chapter 018).
+- **The `'use client'` boundary doesn't belong on the root layout.** It poisons the whole tree as a client subgraph. Client concerns wrap in a `<Providers>` Client Component imported from a separate file and rendered as a child of `<body>`.
+- **What does NOT belong in the root layout.**
+  - Per-page metadata — overridden per-route by the page's `metadata` export.
+  - Per-page UI — use nested layouts.
+  - Heavy data fetching — every navigation pays; keep close to the page that needs it.
+  - Direct `<head>` JSX — use the metadata API (handles dedup, ordering, overrides).
+  - Client-only logic — push into `<Providers>`.
+- **Hydration and the root layout.** Renders on the server to HTML; React hydrates by walking the same tree client-side and attaching handlers. Per-request randomness or time-dependent content (`Date.now()`, `crypto.randomUUID()`, server-only API calls) in the root layout produces mismatch warnings. Fix: scope to a Client Component, or `suppressHydrationWarning` on the specific element (rare; `next-themes` in lesson 6 of chapter 018 uses it on `<html>` because the theme class is set by an inline script before hydration). lesson 5 of chapter 030 owns the depth.
+- **The `lang` attribute and i18n.** Hardcoded `<html lang="en">` for monolingual SaaS; dynamic from URL/session for i18n. Chapter 084 wires the depth.
+- **The watch-outs a senior names:**
+  - No `'use client'` on the root layout — poisons the tree.
+  - No `<head>` JSX directly — use the metadata API. Rare exceptions for `<link rel="preconnect">`/`dns-prefetch` performance hints that the API doesn't fully cover (use the metadata `other` field).
+  - Don't forget `lang` — missing it is an a11y regression.
+  - No dynamic per-request content in the root layout without the SSR-safety pattern — push into a Client Component.
+  - Don't import heavy server-only modules into the root layout — every navigation pays the cost.
+  - The metadata API is the source of truth for `<head>` — manual tags risk dedup/ordering issues.
+  - `<title>` belongs in the metadata API, not inline JSX.
+  - `<html>` and `<body>` only in the root layout; nested layouts render inside `<body>`.
+  - `React.ReactNode` is the type for `children`.
+
+What this lesson does not cover:
+
+- Semantic landmarks and heading hierarchy inside `<body>` (lesson 3 of chapter 017).
+- Per-page metadata, `generateMetadata`, OG/Twitter tags, dynamic OG images (lesson 9 of chapter 034).
+- SEO file conventions — `robots.ts`, `sitemap.ts`, favicons (lesson 7 of chapter 034).
+- `next/font` at depth (lesson 7 of chapter 034).
+- The full Server / Client Component boundary treatment (Chapter 030).
+- Hydration at depth and the full hydration-mismatch surface (lesson 5 of chapter 030).
+- Nested layouts and the layout/page render boundary (lesson 4 of chapter 029).
+- `next-themes` integration (lesson 6 of chapter 018).
+- The `next-intl` integration (lesson 5 of chapter 084).
+
+---
+
+## Lesson 3 — Landmarks and the heading outline
+
+The six landmark elements (`<header>`, `<nav>`, `<main>`, `<aside>`, `<article>`, `<section>`, `<footer>`) plus the strict `<h1>`-through-`<h6>` hierarchy form the page outline assistive tech navigates.
+
+Topics to cover:
+
+- **The senior question.** A dashboard with a top nav, sidebar, main content, footer. Naive reach: four `<div>`s. Senior reach: `<header>`, `<nav>`, `<aside>`, `<main>`, `<footer>`. Landmarks form a navigable map for screen readers (JAWS `D` key, VoiceOver rotor), guide crawlers to the main content, support reader-mode, and keep the page legible without CSS.
+- **The six landmark elements.**
+  - **`<header>`** — introductory content for the page or a section. One page-level `<header>`; nested `<header>`s allowed inside `<article>`/`<section>` for their own intros.
+  - **`<nav>`** — navigation. One primary `<nav>`; secondary navs (sidebar links, footer sitemap) also `<nav>` with `aria-label` to distinguish. Reserved for *navigation* — not every list of links.
+  - **`<main>`** — the unique main content. Exactly one per page; not nested inside header/nav/aside/footer. Enables the "skip to main content" affordance.
+  - **`<aside>`** — tangentially related content (related-articles sidebar, tip callout, contextual help). Not "the app's sidebar" if that sidebar holds navigation — that's `<nav>`.
+  - **`<article>`** — self-contained content (blog post, comment, forum reply, product card). The test: would it make sense pasted elsewhere?
+  - **`<section>`** — generic thematic grouping with a heading. Senior reach pairs it with `aria-labelledby` pointing at the heading's `id`.
+  - **`<footer>`** — closing content for the page or a section. One page-level `<footer>`; nested allowed (`<article>` footers carry author/date/tags).
+- **The page outline.** The landmark tree is the structural map a screen reader user navigates. Canonical SaaS shell: `<body>` containing `<header>` (with site name link and `<nav aria-label="Primary">`), `<main>` (with `<h1>` and two `<section aria-labelledby>`s each opened by `<h2 id>`), and `<footer>` (with `<nav aria-label="Footer">` and copyright).
+- **The heading hierarchy (`<h1>` through `<h6>`).**
+  - **`<h1>`** — the page's primary heading. Exactly one per page.
+  - **`<h2>` through `<h6>`** — subsections in strictly decreasing significance. No skipped levels (`<h1>` → `<h3>` is an a11y violation).
+  - **Senior reach.** Level is determined by outline position, not visual size. Style with Tailwind utilities; pick the level by content structure.
+  - **The bug.** A `<div className="text-2xl font-bold">` styled to look like a heading produces a page with no navigable outline. Fix: use the right heading; style with utilities.
+  - **Recognition tools.** NVDA's heading list, the Chrome Accessibility extension's outline view.
+- **The `<p>` element.** The default block-level text container. Body text goes in `<p>` (not `<div>`, not raw text in `<main>`). `<br />` reserved for semantically meaningful hard line breaks; visual spacing uses CSS.
+- **The `<ul>`, `<ol>`, `<li>` list elements.**
+  - **`<ul>`** — unordered.
+  - **`<ol>`** — ordered (`start` for starting number, `reversed` to count down).
+  - **`<li>`** — direct child of `<ul>` or `<ol>` only.
+  - **Senior reach.** Any sequence of related items is a list. Visual treatment (bullets, numbers, none) is independent — Tailwind's `list-none` strips markers; the semantic list remains announced.
+  - **Watch-out.** A nav-as-flex-of-anchors without the `<ul>`/`<li>` wrap loses the "list of N items" announcement.
+- **The `<div>` and `<span>` fallbacks.** `<div>` block-level, `<span>` inline. Use only when no semantic element fits. Avoid "div soup" — every level of nesting is a decision.
+- **The `<br />` and `<hr />` elements.** `<br />` for semantically meaningful hard line breaks (addresses, poems); `<hr />` for thematic breaks. Rare in modern SaaS UI — a Tailwind border utility usually handles the visual divider.
+- **The accessibility tree.** A parallel tree to the DOM (computed roles, names, states) that screen readers consume. Chrome DevTools → Elements → Accessibility shows it for the selected element. The recognition reach for "is this `<button>` actually announced as a button?" Chapter 027 owns the a11y baseline in depth.
+- **`aria-labelledby` and `aria-label` for landmark naming.**
+  - **`aria-labelledby="id"`** — name from a referenced element's text (section labelled by its heading). Avoids text duplication.
+  - **`aria-label="text"`** — literal text as the name (`<nav aria-label="Primary">` vs. `<nav aria-label="Footer">`).
+  - **Senior reach.** `aria-labelledby` when a visible heading exists; `aria-label` otherwise. Multiple same-type landmarks each get a distinguishing name.
+- **The watch-outs a senior names:**
+  - No `<div>`s where semantic elements fit — Tailwind styles any element.
+  - Exactly one `<h1>` per page.
+  - No skipped heading levels — fix by inserting or downgrading.
+  - One `<main>` per page; no nested same-type landmarks at the same level.
+  - `<section>` needs a heading; without one, downgrade to `<div>`.
+  - Multiple `<nav>`s need `aria-label`s to disambiguate.
+  - `<article>` for self-contained content only — a dashboard card is not an article.
+  - Landmarks don't replace headings — the two systems cooperate.
+  - "Skip to main content" link as the senior-level a11y affordance — a visually hidden link to `#main`, revealed on focus. lesson 4 of chapter 027 owns focus management.
+
+What this lesson does not cover:
+
+- The full accessibility baseline (Chapter 027) — keyboard navigation, focus management, contrast, reduced motion.
+- ARIA roles, states, properties (lesson 6 of chapter 017 covers the basics; lesson 3 of chapter 027 the depth).
+- Button and link elements (lesson 4 of chapter 017).
+- Form elements (lesson 5 of chapter 017).
+- Tables (lesson 6 of chapter 017 covers tables alongside data attributes).
+- The Open Graph / Twitter metadata for sharing (lesson 9 of chapter 034).
+- The `<dialog>` element for modals — out of scope here; modals via Radix in lesson 5 of chapter 022.
+
+---
+
+## Lesson 4 — Actions, navigations, and item sequences
+
+`<button type>` for actions versus `<a href>` and `<Link>` for navigation, `target="_blank"` paired with `rel="noopener noreferrer"`, `aria-label` on icon-only buttons, and `<ul>`/`<ol>` for related parallel items.
+
+Topics to cover:
+
+- **The senior question.** Three things on a page: a "Save" action, a navigation to `/dashboard`, a list of features. Naive reaches: `<div onClick>`, `<button>` for nav, a stack of `<div>`s. Senior reaches: `<button>`, `<a href>`, `<ul>`/`<ol>`. Each choice is a decision the keyboard, screen reader, autofill, right-click "Open in new tab," `Cmd+F`, and the accessibility tree all read.
+- **Buttons in one paragraph.** A control that performs an *action* (form submit, modal open, row delete, toggle). Not navigation — that's a link. Browser handles keyboard activation for free (`Tab` focuses, `Enter`/`Space` activates, focus ring renders). Default styling stripped by Tailwind Preflight (lesson 3 of chapter 019); utilities or shadcn `<Button>` (lesson 1 of chapter 027) paint the visual.
+- **`<button type>` and the form-submit default** — the load-bearing senior reflex. A `<button>` inside a `<form>` defaults to `type="submit"`. The three types: `submit` (default — submits the form), `button` (inert; runs `onClick`), `reset` (rare, anti-pattern). Senior reflex: every `<button>` declares its `type` explicitly. Recognition signal: a Cancel/Close button inside a form triggering an unintended submit.
+- **`<button>` vs. `<a>` vs. `<div role="button">` — the decision.**
+  - **`<button>`** for same-page actions (submit, modal open, delete, sort toggle).
+  - **`<a href>`** for URL navigation. Gets `Cmd+click`, right-click "copy address," `Tab+Enter`, link announcement for free.
+  - **`<div role="button">`** — the explicit anti-pattern. Requires manual keyboard activation (`onKeyDown` for `Enter`/`Space`), `tabIndex={0}`, focus-ring CSS, `aria-pressed` for toggles, cursor styling. Never; reach for `<button>` styled differently.
+- **`<a href>` — the link element.**
+  - **`href`** — required for activatability. Without it, `<a>` is inert (no focus, no activation).
+  - **`<a target="_blank">`** — opens in a new tab. Pairs with `rel="noopener noreferrer"` (security against tabnabbing, privacy against `Referer` leak). Browser defaults are improving; explicit `rel` is still senior practice.
+  - **`<a download>`** — file links; optional value renames the download.
+  - **`<a rel>`** — common values `noopener noreferrer` (for `_blank`), `nofollow` (user-generated links), `external` (mostly stylistic).
+- **Next.js `<Link>` and the navigation model.** `<Link href="/dashboard">` (from `next/link`) wraps `<a>` and adds soft client-side navigation; renders as plain `<a href>` in HTML (for SEO, `Cmd+click`, JS-off fallback). Internal links use `<Link>`; external use plain `<a target="_blank" rel="noopener noreferrer">`. lesson 4 of chapter 029 owns the depth.
+- **Tailwind buttons and links — styling, not semantics.** Visual treatment via utilities (Chapter 018) or shadcn `<Button>` (lesson 1 of chapter 027), both composing into the same `<button>` or `<a>`. A button styled as a link is still a `<button>` (it acts); a link styled as a button is still an `<a>` (it navigates).
+- **Lists in one paragraph.** `<ul>` unordered, `<ol>` ordered, `<li>` direct child of either. Any sequence of related items is a list — navs, feature grids, comment threads, audit entries.
+- **Lists and the JSX surface.**
+  - **`.map` over data, key per `<li>`** — `{items.map(item => <li key={item.id}>...</li>)}`. Pattern from lesson 1 of chapter 017.
+  - **Nesting lists** for hierarchical content (file browser, threaded comments).
+  - **`<ol>` attributes** — `start`, `reversed`, `type` (usually leave to CSS).
+- **The `list-none` reset and the link-list pattern.** Tailwind Preflight strips default list styling (lesson 3 of chapter 019). The canonical nav: `<nav aria-label="Primary">` wrapping a `<ul className="flex gap-4">` of `<li>` items each containing a `<Link>` — semantic list, custom visual.
+- **Lists vs. a flex of `<div>`s — the decision.** Related-and-parallel items (nav links, feature cards, comments) are lists. Unrelated visually-arranged items (hero + CTA, header + button) are not. The test: "would a screen reader user usefully know 'list of N items' here?"
+- **Anchor-link best practice — `<a href="#section-id">`.** Native scroll-into-view and URL hash update. Senior reach for TOCs, skip-to-main links. Target needs a unique `id`. Smooth scrolling via CSS `scroll-behavior: smooth` (Tailwind `scroll-smooth`).
+- **The `<button>` as a JSX form member.** Inside a `<form>`: `<button type="submit">` is the primary submit; `Enter` on any text input also submits. Cancel/Reset/Toggle buttons must be `type="button"` to avoid surprise submit. Chapter 044 wires the Server Action.
+- **Disabled state on buttons.** `disabled` is a boolean prop; non-activatable; browser dims by default (Tailwind/shadcn give a refined state). A11y consequence: disabled buttons may be skipped in tab order — never put critical actions behind one without surfacing why (tooltip, inline message, `aria-describedby`).
+- **`aria-label` and icon-only buttons.** Buttons whose only child is an icon (trash, copy, X) need `aria-label` for the accessible name. Common in toolbars and table rows. lesson 3 of chapter 027 owns ARIA depth.
+- **The watch-outs a senior names:**
+  - Every `<button>` declares its `type`.
+  - `<a target="_blank">` pairs with `rel="noopener noreferrer"`.
+  - Internal links use `<Link>` from `next/link`; external links use plain `<a>`.
+  - Icon-only buttons need `aria-label`.
+  - Disabled buttons aren't a substitute for explaining unavailability — surface the reason.
+  - Semantic element matches behavior, not look — a link styled as a button is still a link; a button styled as a link is still a button.
+  - `<a>` without `href` is inert; if the intent is action-on-click, it's a button.
+  - `<button onClick={() => router.push('/dashboard')}>` is a navigation in button clothing — use `<Link>`.
+  - `<div role="button">` requires manual a11y plumbing — never.
+  - Lists inside `<nav>` are the canonical shape; bare anchors lose "list of N items."
+  - `<button>` type values are lowercase (`type="button"`, not `"Button"`).
+  - `formAction`, `formMethod`, `formEncType`, `formNoValidate`, `formTarget` on `<button>` override the parent form's attributes per-submit. Rare; named for recognition.
+
+What this lesson does not cover:
+
+- Forms in depth — `<form>` element, `<input>` types, `<label>`, the form contract (lesson 5 of chapter 017).
+- The Constraint Validation API and `setCustomValidity` (lesson 7 of chapter 044).
+- The shadcn `<Button>` component and CVA variants (lesson 1 of chapter 027, lesson 3 of chapter 022).
+- Focus management at depth (lesson 4 of chapter 027).
+- The full ARIA treatment (lesson 3 of chapter 027).
+- Tailwind utilities for buttons and links (Chapter 018).
+- Next.js `<Link>` at depth — prefetching, the navigation model, scroll restoration (lesson 4 of chapter 029).
+- The `<dialog>` element — out of scope; Radix/shadcn handle modals.
+
+---
+
+## Lesson 5 — Forms as a contract with the server
+
+`<form>`, typed `<input>`s, `<label htmlFor>`, `<fieldset>`/`<legend>`, the `name` attribute as the `FormData` key, `autoComplete` for autofill, and native constraints as UX paired with server-side Zod.
+
+Topics to cover:
+
+- **The senior question.** A sign-up form (email, password, confirmation checkbox, submit). Naive reach: controlled `<input>`s everywhere with `useState` and a custom submit handler. Senior reach: a `<form>` with `<label>` + `<input>`s carrying `name` attributes, a `<button type="submit">`, and server-side Zod validation reading from `FormData`. The lesson installs the form element surface as a *contract*; Chapter 044 wires the Server Action.
+- **The `<form>` element.** Container for input controls submitted together.
+  - **`action`** — URL or function (Chapter 044 wires the Server Action reference; plain HTML takes a URL string). Default: current URL.
+  - **`method`** — `"get"` (default — query string) or `"post"` (request body). Any state-mutating form: `post`.
+  - **`encType`** — default `application/x-www-form-urlencoded`; `multipart/form-data` for file uploads; `text/plain` rare.
+  - **2026 reality.** `<form action={serverAction}>` is the senior default (lesson 3 of chapter 044) — the action is a function; React handles the wiring.
+- **The `<input>` element — the typed-input surface.** The `type` attribute determines behavior, mobile keyboard, autofill suggestions. SaaS-relevant types:
+  - **`text`** — default; names, addresses, free-form.
+  - **`email`** — basic shape validation, email keyboard.
+  - **`password`** — masked input; pairs with password manager.
+  - **`number`** — numeric keyboard, `min`/`max`/`step`. Returns a *string* in `FormData`.
+  - **`tel`** — phone-pad keyboard; no format validation.
+  - **`url`** — URL-optimized keyboard.
+  - **`date`** — date picker; value is ISO `yyyy-mm-dd`. Chapter 083 owns Temporal.
+  - **`time`** — time picker; `hh:mm` or `hh:mm:ss`.
+  - **`datetime-local`** — combined picker; `yyyy-mm-ddThh:mm`.
+  - **`checkbox`** — single boolean; `checked` initial state.
+  - **`radio`** — one of N in a group sharing `name`; `value` is what `FormData` receives.
+  - **`file`** — file picker (lesson 3 of chapter 016 owns Blob/File).
+  - **`hidden`** — not displayed but submitted; carries record IDs through submit.
+  - **`submit`** — legacy submit-as-input; prefer `<button type="submit">` (more flexible content).
+- **The `name` attribute as the contract.** The key under which the input value appears in `FormData`. Missing `name` silently drops the value from submission. Naming convention: pick one (`camelCase` is the senior reach in a Server Actions + Zod codebase to align with TypeScript) and stick.
+- **The `<label>` element and form-element association.**
+  - **Two patterns.** Explicit: `<label htmlFor="email">Email</label>` + sibling `<input id="email" name="email" type="email" />`. Implicit: a `<label>` wrapping both the text and the `<input>`.
+  - **Why labels matter.** Screen-reader announcement on focus; expanded click target (mobile + motor difficulties); autofill identification.
+  - **Senior reach.** Explicit `htmlFor` — works regardless of DOM nesting; integrates cleanly with form libraries.
+  - **Placeholder is not a label.** 2010-era anti-pattern — screen readers ignore it, context disappears on focus, contrast is too low.
+- **`<fieldset>` and `<legend>` for grouping.** `<fieldset>` groups related controls; `<legend>` (its first child) names the group, announced before each input. Default border stripped by Tailwind Preflight. Canonical site: a `<fieldset>` of `<input type="radio">` buttons.
+- **The form input subset a senior reaches for daily.**
+  - **`<textarea>`** — multi-line text. `name`, `rows`, `cols`, `maxLength`. `defaultValue` (uncontrolled) or `value` + `onChange` (controlled, lesson 1 of chapter 044).
+  - **`<select>` with `<option>` children** — dropdowns. `name` on `<select>`; `value` on each `<option>`; `selected` for default; `multiple` for multi-select.
+  - **`<input type="checkbox">`** — single boolean. Explicit `value` (default `"on"`) is the senior reach.
+  - **`<input type="radio">` groups** — shared `name`; only one checked; `value` is what gets submitted.
+- **Native constraints — the Constraint Validation API (light).**
+  - **`required`** — blocks submission; native message per locale.
+  - **`type`-based validation** — `email`, `url`, `number` enforce shape.
+  - **`min` / `max`** — numeric and date ranges.
+  - **`minLength` / `maxLength`** — string bounds. Watch-out: `maxLength` doesn't apply to `type="number"` — use `min`/`max`.
+  - **`pattern`** — regex match. Rare in 2026 SaaS (Zod is more legible); named for completeness.
+  - **Senior call.** Native constraints are UX, not security — pair with server-side Zod (lesson 7 of chapter 044) always. lesson 7 of chapter 044 owns the depth.
+- **Submit without JavaScript — the progressive-enhancement frame.** With JS disabled, a `<form action method="post">` still submits via the browser default. The Server Action pattern (lesson 3 of chapter 044) preserves this; JS-disabled fallback works.
+- **The `FormData` API** (lesson 1 of chapter 015 introduced; lesson 2 of chapter 044 cashes in). The browser builds `FormData` from named inputs on submit.
+  - Values are strings — `type="number"` still yields a string; Zod's `z.coerce.number()` parses.
+  - Checkboxes contribute their `value` when checked, nothing when unchecked.
+  - Radio groups contribute the checked radio's `value` once under the shared `name`.
+  - Multi-select contributes multiple entries (`FormData.getAll`).
+  - The form's elements and `name` attributes define the `FormData` shape; the Zod schema validates it — the two are designed together.
+- **The `autoComplete` attribute — the autofill contract.** The browser and password managers read it.
+  - **Canonical SaaS values.** `email`, `username`, `current-password`, `new-password`, `given-name`, `family-name`, `name`, `street-address`, `postal-code`, `country`, `tel`, `organization`, `cc-number`, `cc-name`, `cc-exp`.
+  - **Senior reach.** Every input that maps to a known category gets the right `autoComplete`. `autoComplete="off"` on passwords is a UX regression — use the semantic value.
+- **Disabled and readonly inputs.** `disabled` — non-interactive and *not* submitted. `readOnly` — non-interactive but *is* submitted. Most "show but don't allow edit" cases are `readOnly`.
+- **The watch-outs a senior names:**
+  - Every input needs a `name` — missing it drops the value silently.
+  - Every input needs a `<label>` — explicit `htmlFor`; placeholder is not a label.
+  - `<button>` inside a `<form>` defaults to `type="submit"` (named in lesson 4 of chapter 017).
+  - Native constraints are UX, not security — server-side Zod always (lesson 7 of chapter 044).
+  - `<input type="number">` produces strings; Zod coerces.
+  - `autoComplete="off"` is a UX regression — use the semantic value.
+  - `<form>` inside `<form>` is illegal HTML — the browser drops the inner; refactor.
+  - `Enter` on any text input submits — for forms where that's wrong, the input handles its own keydown.
+  - `onSubmit` handlers need `event.preventDefault()` for custom JS handling; Server Actions handle it via the `action` prop.
+  - `defaultValue` (initial, uncontrolled) vs. `value` + `onChange` (controlled) — uncontrolled is the Server Actions default; controlled is the React Hook Form conditional (Chapter 045). lesson 2 of chapter 014 installed the distinction.
+  - File inputs are uncontrolled — `<input type="file">` can't have `value` set by React; read via `inputRef.current?.files?.[0]`.
+  - `Enter` submits a form with no visible submit button too — include one (visually hidden if needed) or capture on the input.
+
+What this lesson does not cover:
+
+- The native React 19 form pattern with Server Actions (lesson 3 of chapter 044).
+- `useActionState`, `useFormStatus`, `useOptimistic` (lesson 4 of chapter 044 through lesson 6 of chapter 044).
+- Controlled vs. uncontrolled inputs at depth (lesson 1 of chapter 044).
+- The Constraint Validation API at depth — `setCustomValidity`, `ValidityState`, `:invalid` (lesson 7 of chapter 044).
+- Zod schema authoring (Chapter 042).
+- React Hook Form as the conditional past the native pattern (Chapter 045).
+- File uploads — `<input type="file">` mechanics, `Blob`/`File` primitives (lesson 3 of chapter 016).
+- The shadcn `<Form>` primitives (lesson 1 of chapter 027, lesson 2 of chapter 047).
+- Multi-step wizards (Chapter 079 conditional project).
+
+---
+
+## Lesson 6 — data-*, aria-*, and the <table> decision
+
+`data-*` for script hooks (delegation, tests, Tailwind state), `aria-*` for assistive-tech signals (`aria-label`, `aria-current`, `aria-expanded`, `aria-pressed`, `role="alert"`), and `<table>` with `<th scope>` and `<caption>` only when the data is genuinely tabular.
+
+Topics to cover:
+
+- **The senior question.** A delegated click handler that needs to know which row was clicked (`data-row-id`), an icon-only button screen readers need to announce as "Delete" (`aria-label`), a sort-state toggle whose pressed state assistive tech needs (`aria-pressed`), and an audit-log view that's genuinely tabular (`<table>`). Three attribute families and one element family — none individually a full lesson, but each is the senior reflex in its corner.
+- **`data-*` attributes — the model.**
+  - **The pattern.** Custom attributes the browser stores but doesn't render. JavaScript reads via `element.dataset.fooBar` (lesson 1 of chapter 014 introduced the API). Canonical site: delegation hooks (`event.target.closest('[data-action]')`).
+  - **Kebab-case to camelCase translation.** `data-row-id` in HTML reads as `dataset.rowId` in JS — the DOM API translates.
+  - **The 2026 consumers.** Delegation (lesson 3 of chapter 014), test selectors (Playwright in Chapter 090 — `data-testid`), analytics (`data-event-name`), Tailwind structural variants (lesson 4 of chapter 018 — `data-[state=...]`).
+  - **Senior reflexes.** `data-*` for structural hooks — not display content, not what `aria-*` is for. Always the `data-` prefix; never invented attributes.
+  - **The JSX form.** Kebab-case in JSX (`data-row-id`), camelCase in the reader (`dataset.rowId`).
+- **`aria-*` attributes — the basics.** lesson 3 of chapter 027 owns the full ARIA treatment; this lesson installs the daily-reach surface.
+  - **The first rule of ARIA** — no ARIA is better than bad ARIA. Reach for the semantic element first; ARIA fills gaps the native semantics don't cover.
+  - **`aria-label`** — accessible name for an element with no visible text. Canonical sites: icon-only buttons (lesson 4 of chapter 017), multi-instance `<nav>` regions (lesson 3 of chapter 017), inputs without an associated label (rare — prefer `<label>`).
+  - **`aria-labelledby="id"`** — name by reference to another element's text (e.g., a section labelled by its heading). Avoids duplication.
+  - **`aria-describedby="id"`** — extended description by reference (form field paired with an error message `<p id role="alert">`).
+  - **`aria-current="page"`** — current item in a set (nav link pointing at the current page).
+  - **`aria-expanded="true|false"`** — disclosure toggle (panel, accordion, dropdown). Pairs with `aria-controls="id"`.
+  - **`aria-pressed="true|false"`** — toggle button (bold/italic, favorite).
+  - **`aria-hidden="true"`** — hide from the accessibility tree (decorative icons whose meaning is conveyed by adjacent text). Never on interactive elements — creates an unreachable trap.
+  - **`role="..."`** — overrides the default role. Rarely the right reach in 2026; legitimate uses are `role="alert"` (urgent live region), `role="status"` (non-urgent), `role="dialog"` on modal containers (though `<dialog>` is the more modern choice).
+- **Live regions for dynamic content** — named once; lesson 3 of chapter 027 cashes in. `aria-live="polite"` (idle announcement — toasts, "saved"), `aria-live="assertive"` (interrupts — critical alerts), `role="alert"` (shorthand for assertive — senior reach for inline form errors).
+- **Tables — the senior decision.** When is `<table>` right?
+  - **For tabular data only** — rows and columns of related info indexed by (R, C). Canonical SaaS sites: audit logs, invoice line items, billing breakdowns, metrics dashboards.
+  - **Not for layout, card lists, or forms.** Use CSS grid, `<ul>` with grid layout, or `<form>` with `<fieldset>` respectively.
+  - **Decision test.** Could rows and columns be swapped as a meaningful transposition? Are rows heterogeneous "things" with a shared attribute structure?
+- **The `<table>` element family.** `<table>` container; `<thead>`/`<tbody>`/`<tfoot>` row groups (multiple `<tbody>`s rare; `<tfoot>` rare in dashboards, common in invoices); `<tr>` row; `<th scope="col|row">` header cell; `<td>` data cell. `<thead>` stays visible on scroll with `position: sticky` (Tailwind utility).
+- **The canonical SaaS table shape.** `<table>` with a `<thead>` row of `<th scope="col">` cells, and a `<tbody>` mapping rows where each `<tr>` keys on `row.id` (React reconciliation), carries `data-row-id` (delegation), opens with a `<th scope="row">` for the row's identifier column, and uses `<td>` for the rest. Numeric columns use `className="text-right"`.
+- **`<caption>`** — table title (above by default; `caption-side: bottom` flips it). Announced before column headers. Every standalone table has one (visible or visually hidden).
+- **`colspan` / `rowspan`** — span across columns/rows. Rare in 2026 SaaS; canonical use is a `<tfoot>` "Total" row. In JSX: `colSpan`/`rowSpan` (camelCase).
+- **`<colgroup>` / `<col>`** — column-level styling/spanning. Rarely written by hand; named for recognition.
+- **Tables and accessibility.**
+  - **`<th scope>`** is load-bearing for header-to-cell association.
+  - **Row and column counts** are announced to screen reader users navigating the table ("table, 8 columns, 50 rows").
+  - **`<caption>`** provides the table name.
+  - **Empty cells** — render an explicit em-dash (`—`) or `aria-label="No value"` for "intentionally empty."
+- **When to drop the `<table>`.** Card list / grid of items → `<ul>` with grid layout. Two-column form layout → CSS grid on `<form>`. Product comparison → could be a table; depends on whether rows-and-columns is the natural model.
+- **Responsive tables.** Wrap in `<div className="overflow-x-auto">` for horizontal scroll. For complex tables, switch to a card-per-row layout below `md` (Tailwind responsive variants — lesson 6 of chapter 021). Don't `display: block` on `<tr>`/`<td>` — breaks the accessibility-tree structure.
+- **The watch-outs a senior names:**
+  - `data-*` for structural hooks, `aria-*` for assistive-tech signals — not interchangeable.
+  - No ARIA is better than bad ARIA — semantic element first.
+  - `aria-label` on a `<button>` with visible text *overrides* the text (and risks mismatch) — only label icon-only buttons.
+  - `aria-hidden` on focusable elements creates an unreachable trap — only on decorative elements (icons next to text labels, ornamental SVGs).
+  - `role="button"` on a `<div>` is wrong — use `<button>`. Same for `role="link"`, `role="checkbox"`, `role="textbox"`.
+  - `<table>` for layout is a 1990s reflex — use CSS grid (lesson 4 of chapter 020).
+  - `<th scope>` is non-negotiable in data tables.
+  - `data-row-id` for delegation hooks; the HTML `id` attribute is for unique identifiers (anchor links, label associations).
+  - `data-testid` is fine for Playwright but the senior reach is accessible queries (`getByRole`, `getByLabelText`) first (Chapter 089).
+  - Kebab in JSX `data-*`, camelCase in `dataset` reader — translation is automatic.
+  - Mobile tables: wrap or switch to a card layout; never break semantics with `display: block`.
+
+What this lesson does not cover:
+
+- The full ARIA treatment (lesson 3 of chapter 027) — every role, every state, the WAI-ARIA Authoring Practices.
+- Focus management at depth (lesson 4 of chapter 027) — focus trap, focus restoration on route change.
+- Live regions at depth — when to use `polite` vs. `assertive`, screen reader behavior across browsers.
+- The full table accessibility specification — `headers` attribute (manual header references), `<col>` and `<colgroup>` styling at depth.
+- TanStack Table or the data-grid component family — out of scope.
+- Sorting, filtering, virtualized tables — out of scope for this lesson.
+- The `<dialog>` element — out of scope; Radix-managed dialogs in lesson 5 of chapter 022.
+
+---
+
+## Lesson 7 — Quizz
+
+Top ten topics to quiz:
+
+1. JSX is property syntax — compiles to `jsx(...)` calls producing element descriptors that React renders into the DOM. The prop names follow the DOM property names, not the HTML attribute names: `className`, `htmlFor`, `tabIndex`, `readOnly`, `colSpan`. `data-*` and `aria-*` stay kebab-case in JSX.
+2. List rendering needs keys; keys must be stable, unique among siblings, tied to the data. The array index is the canonical wrong key — the bug fires when the list is filtered, sorted, or reordered. The senior default is `key={row.id}`.
+3. The `&&` short-circuit's `0` trap — `{items.length && <List />}` renders `0` when the array is empty. The senior reach is explicit boolean coercion (`{items.length > 0 && ...}` or a ternary).
+4. Void elements (`<img>`, `<input>`, `<br>`, `<hr>`, `<meta>`) must self-close in JSX (`<img />`). Fragments (`<>...</>`) group siblings without an extra wrapping element.
+5. The Next.js root layout (`app/layout.tsx`) is a Server Component that owns the `<html>` and `<body>` tags; the `metadata` export (or `generateMetadata` for dynamic) generates the `<head>` content. Don't put `'use client'` on the root layout — wrap client concerns in a `<Providers>` child.
+6. The six landmark elements — `<header>`, `<nav>`, `<main>`, `<aside>`, `<article>`, `<section>`, `<footer>` — form the page outline assistive tech navigates. Multiple `<nav>` regions need `aria-label`s to distinguish them. Headings (`<h1>` through `<h6>`) follow a strict hierarchy — exactly one `<h1>` per page, no skipped levels; the level is determined by outline position, not visual size.
+7. `<button>` is for actions, `<a href>` is for navigation. `<button>` inside a `<form>` defaults to `type="submit"` — every button declares its `type` explicitly. `<a target="_blank">` always pairs with `rel="noopener noreferrer"`. Internal Next.js navigation uses `<Link>`; external links use plain `<a>`. Icon-only buttons need `aria-label`.
+8. Form elements form a contract — `name` attributes are the keys into `FormData`, `<label htmlFor>` associates labels to inputs (placeholder is not a label), `<fieldset>` + `<legend>` group related inputs, `<button type="submit">` is the senior reflex. Native constraints (`required`, `type`, `pattern`, `minLength`) are UX, not security — always pair with server-side Zod (lesson 7 of chapter 044).
+9. `data-*` for script hooks (delegation, tests, CSS state) vs. `aria-*` for assistive-tech signals (`aria-label`, `aria-labelledby`, `aria-describedby`, `aria-current`, `aria-expanded`, `aria-pressed`, `aria-hidden`, `role="alert"`). The first rule of ARIA — no ARIA is better than bad ARIA. Reach for the semantic element first.
+10. `<table>` for tabular data only — rows and columns of related information indexed by (R, C). The semantic structure: `<table>`, `<caption>`, `<thead>` with column-header `<th scope="col">`, `<tbody>` with `<tr>` rows where the row identifier is `<th scope="row">` and other cells are `<td>`. Wrap in `overflow-x-auto` for responsive layouts; don't `display: block` the table elements (breaks the accessibility tree).
 
 ---
 
 ## Total chapter time
 
-Roughly 60 to 80 minutes across the single teaching lesson plus the quiz — a one-evening chapter. The lesson runs long because the attribute table is the lesson, and the student leaves with a memorized senior default and a precise reading of every attribute they'll see on real `Set-Cookie` headers for the rest of the course. Chapter 018 lands on this without restating the cookie surface; Unit 9 (auth) and Unit chapter 085 (security baseline) are the downstream chapters that lean hardest on this vocabulary.
+Roughly 275 to 335 minutes across the six teaching lessons plus the quiz. The chapter fits across three to four evenings — JSX-as-HTML in the first sitting (50-60 minutes); the root layout in a second short sitting (35-45 minutes); landmarks and headings in a third sitting (45-55 minutes); buttons-links-lists and forms across two sittings (95-115 minutes total); data-and-ARIA-and-tables in a final sitting (50-60 minutes plus the quiz). The student finishes the chapter able to write JSX with `className`/`htmlFor`/event props/curly-brace expressions/list keys/fragments/void elements by reflex, configure the Next.js root layout with the right `<html lang>` and `metadata` export, structure a page with the six landmark elements and a clean heading hierarchy, pick `<button>` vs. `<a>` vs. `<Link>` by intent, write forms whose elements are a contract with the server-side Zod schema, place `data-*` and `aria-*` attributes at the right call sites with the right consumers in mind, and reach for `<table>` only when the data is actually tabular. Chapter 018 opens on the other side with Tailwind — the styling surface that paints the semantic elements this chapter just installed.

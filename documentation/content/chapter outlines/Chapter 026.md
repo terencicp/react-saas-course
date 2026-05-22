@@ -1,224 +1,161 @@
-# Chapter 026 — Components and composition
+# Chapter 026 — Custom hooks and the compiler-era memoization cut
 
 ## Chapter framing
 
-Chapters 021 through 025 taught how to write a single styled element. Chapter 026 is the chapter where the student stops writing elements and starts writing *components* — units of UI that take props, accept children, expose composition seams, and forward refs. The senior framing is that the 2026 React component is a small, opinionated function with a typed props contract, `children` as the universal slot, named children for compound layouts, the Radix `Slot` + `class-variance-authority` pair for polymorphic shadcn-style components, `ref` as a regular prop (no more `forwardRef`), and `createPortal` as the only escape hatch from the React tree. Everything in this chapter is the API surface every shadcn component in Chapter 031 uses — the lessons here teach the reader of those components how to write them.
+Chapter 025 closed the built-in hook surface. Chapter 026 is the wrap-up of Unit 3's hook arc: how to compose hooks into reusable behaviors (custom hooks) and how the React Compiler reshapes the rules around manual memoization. The senior framing is that the React 19 + Next.js 16 + Compiler stack of 2026 has eliminated 90% of what used to be daily React performance work — `useMemo`, `useCallback`, and `React.memo` are no longer the first reach, custom hooks are no longer the only way to share stateful logic, and `dynamic()` is no longer the default answer to bundle size. Every lesson lands what's now automatic, what remains a deliberate senior reach, and the precise threshold that separates the two.
 
-Several threads run through every lesson. **Composition over configuration**: a long prop list is a smell; the senior reach is `children` plus named slots. **The render model is held off until chapter 027** — this chapter treats components as functions of props, names re-rendering only where the discussion demands it (key prop on portals, ref stability for callbacks), and trusts the next chapter to formalize. **Tailwind composition (`cn()`, `cva`, the `dark:` variant) lands as the styling form** for every component, building on lesson 3 of chapter 022 and lesson 5 of chapter 022. **`asChild` and `Slot` are the polymorphism pattern** the course commits to — generic `as` props with TypeScript gymnastics are named once as the alternative and rejected. **Refs are a prop, not a forward** — React 19's model is the only one taught; `forwardRef` is named once for legacy recognition. **Portals are the layout-escape** for modals, toasts, and anchored popovers, paired with the stacking-context fix from lesson 9 of chapter 024 and a forward reference to CSS anchor positioning (chapter 031). The chapter ships five teaching lessons plus the quiz, in dependency order: components and props (lesson 1 of chapter 026), composition patterns and `children` (lesson 2 of chapter 026), polymorphic components with `Slot` and CVA (lesson 3 of chapter 026), refs in React 19 (lesson 4 of chapter 026), and portals (lesson 5 of chapter 026). Forward references land in chapter 027 (the render model), lesson 6 of chapter 028 (`useRef` at depth), chapter 031 (shadcn components and accessibility), and chapter 032 (the project that cashes in CVA variants, portal modals, and the polymorphic button).
+Several threads run through every lesson. **Custom hooks are about composition, not abstraction** — they exist when a stateful behavior is reused or when extracting clarifies a complex component, not as a default refactor. **The React Compiler is opt-in but the default for new SaaS projects in 2026** — the lesson teaches the wiring explicitly per "explicit over magic." **Manual memoization is now an escape hatch, not a discipline** — the four narrow cases where `useMemo`/`useCallback`/`memo` still earn their weight are named precisely, and everything else gets cut. **The compiler doesn't change the rules of hooks or the effect contract** — earlier chapters' purity guarantees and dependency arrays still hold; the compiler simply removes the manual memoization wrapper. **What to stop hand-tuning matters as much as what to keep** — `useMemo` everywhere, premature `dynamic()`, and reference-equality gymnastics are 2020 reflexes that hurt 2026 codebases. The chapter ships three teaching lessons plus the quiz: custom hooks (lesson 1 of chapter 026), the React Compiler (lesson 2 of chapter 026), manual memoization thresholds (lesson 3 of chapter 026). Forward references: chapter 027 (shadcn/ui composition patterns), chapter 028 (chapter project consuming `useLockBodyScroll`), Unit 4 (Server Components and the data path), Chapter 11 (TanStack Query and server-state caching), Unit 19 (Profiler and performance vigilance).
 
 ---
 
-## Lesson 1 — The typed props contract
+## Lesson 1 — Extracting custom hooks
 
-Teaches how to write a React 19 component as a typed function of props, using `ComponentProps`, variant unions, default destructuring, and the `className`-plus-`...rest` discipline.
+The `use*` naming contract, the share-code-not-state rule, the three-condition extraction threshold, canonical hook shapes and generics, and the 2026 catalog of useful custom hooks.
 
 Topics to cover:
 
-- **The senior question.** A `<Button variant="primary" size="lg">Save</Button>` reads as one thing because its contract is small and named; a `<Button isPrimary isLarge withIcon iconName="save" iconPosition="left" loading={false}>Save</Button>` reads as a coffin because every prop is a boolean or a stringly-typed enum. The lesson installs the form a senior writes a React component in 2026 — destructured props, an inferred or explicit type, sensible defaults, and a deliberate API surface.
-- **The component as a typed function.** A React component is a function from props to JSX. The 2026 form: arrow function, destructured props in the parameter, and an inline `type Props = { ... }` either above or via an inline annotation. Inference handles the return type. Components are PascalCase; the file usually matches.
-- **Typing props — `type` over `interface` for component props, plus the standard primitives.** The convention: `type Props = { ... }` for component props (not extended across files; `interface` reserved for cases where declaration merging or class implementation earns it). Strings, numbers, booleans, unions of string literals for variants (`variant: 'primary' | 'secondary' | 'destructive'`), optional props with `?`, function props typed by their signature (`onClick: (event: MouseEvent<HTMLButtonElement>) => void`).
-- **Default values via parameter destructuring.** `({ variant = 'primary', size = 'md' }: Props)` is the 2026 default form. `defaultProps` is gone in function components. The senior reach is to default at the destructure, never via a falsy check inside the body.
-- **The boolean-prop smell and the variant union.** Three booleans (`isPrimary`, `isDestructive`, `isGhost`) collapse into one `variant: 'primary' | 'destructive' | 'ghost'` union — exhaustive, mutually exclusive, and type-safe. Same logic for size: `'sm' | 'md' | 'lg'` over `isSmall` / `isLarge`. The pattern foreshadows CVA (lesson 3 of chapter 026) where these unions are the source of the variant table.
-- **The `...rest` spread for native HTML attributes.** A `<Button>` that wraps a native `<button>` should accept every standard `<button>` attribute — `disabled`, `aria-label`, `onClick`, `type`. The form: `type Props = ComponentProps<'button'> & { variant?: ... }`, then `({ variant, className, ...rest }: Props) => <button className={cn(...)} {...rest} />`. The student stops re-typing every native handler.
-- **`ComponentProps<T>` vs. `HTMLAttributes<HTMLButtonElement>` vs. `ButtonHTMLAttributes`.** `ComponentProps<'button'>` is the 2026 reach — it pulls *everything* the JSX element accepts, including `ref` and event handlers, in one alias. `HTMLAttributes` and the per-element `*Attributes` types are the older form and still work; the lesson lands `ComponentProps` as the default.
-- **`ComponentProps<typeof OtherComponent>` — typing a wrapper.** A `<SubmitButton>` that wraps `<Button>` types its props as `ComponentProps<typeof Button> & { ... }`. The wrapper inherits every variant and HTML attribute the inner component exposes. Reach: building thin specializations (a confirm button that wraps a destructive button).
-- **`ComponentType<P>` — the dual, for typing a component reference.** Where `ComponentProps<typeof X>` extracts the *props* of a component, `ComponentType<P>` is the type of a *component itself* — the function or class that accepts props `P` and returns JSX. The reach: storing a component in a registry (`const widgets: Record<string, ComponentType<WidgetProps>> = { ... }`) or accepting a component as a prop (`icon: ComponentType<{ className?: string }>`). Used at depth in lesson 3 of chapter 075.
-- **`className` as the styling contract.** Every component the project ships accepts an optional `className` and merges it with `cn(...)` (cross-reference to lesson 3 of chapter 022). The lesson names this as a discipline: never lock down styling, always allow a caller-side override at the outermost element.
-- **Discriminated unions for mutually-exclusive props.** When two props can't both be set — `{ href: string } | { onClick: () => void }` — a discriminated union beats two optionals plus a runtime guard. The senior reach for polymorphic-but-typed components before CVA enters in lesson 3 of chapter 026.
-- **Generic components (light).** A `<List<Item>>` that takes a `data: Item[]` and `render: (item: Item) => ReactNode` is the canonical generic-component example. Syntax is `<Item,>(props: ListProps<Item>) => ...` in `.tsx` (the trailing comma disambiguates from a JSX tag). Reach: data-driven generic list and form-row helpers; rare elsewhere.
-- **Component file conventions.** One component per file by default; the file is named after the component (`Button.tsx`). Internal subcomponents live in the same file. The shadcn convention (a single file exporting the surface — `<Card>`, `<CardHeader>`, `<CardContent>`, `<CardFooter>`) is named as the canonical exception when components compose tightly.
+- **The senior question.** Three components each track an `IntersectionObserver` to lazy-load images. The same six lines of `useEffect` + `useRef` + `useState` appear in each. A junior copies and pastes; a senior extracts a `useIntersection` hook. The lesson lands the *when* — a behavior is reused, or extraction clarifies a tangled component — and the *how* — naming, composition, and what custom hooks share vs. don't.
+- **What a custom hook is.** A plain JavaScript function whose name starts with `use` and that calls one or more hooks. No special API, no registration. The naming is the contract: the `use*` prefix tells the lint and the reader "this obeys the rules of hooks."
+- **What custom hooks share — and what they don't.** Calling the same custom hook in two components shares the *code*, not the *state*. Each call gets its own `useState`, its own `useEffect`, its own ref. The mental model: a custom hook is a recipe for wiring, executed fresh per consumer. State sharing requires lifting (lesson 3 of chapter 024), context (lesson 5 of chapter 025), or an external store (Unit 15).
+- **The canonical extraction shape.** Inputs as arguments; outputs as the return (a single value, a tuple, or an object). Tuples for "state plus actions" patterns (`const [value, setValue] = useLocalStorage(key, initial)`); objects when there are three or more outputs (`const { data, loading, error } = useFetch(url)`). Pick one and hold to it across the codebase.
+- **When a custom hook earns its weight — the threshold.** (1) The behavior is used in two or more components and the wiring is non-trivial. (2) A single component has a tangled hook block where extraction reveals intent (the component file is the *only* user, but readability wins). (3) An external system (browser API, third-party SDK) needs effect + state + ref wiring that should be encapsulated. Anything short of these is premature.
+- **When a custom hook is the wrong move.** A two-line `useState` "wrapped" in `useToggle` adds friction without revelation. A "hook" with no internal hooks is just a function — drop the `use*` prefix and ship it as a utility. A custom hook that takes a callback as input and calls it from an effect almost always wants `useEffectEvent` (lesson 3 of chapter 025) inside.
+- **Canonical examples — the catalog of useful custom hooks in 2026.** Each named with its shape and the failure it prevents:
+  - `useLocalStorage(key, initial)` — synchronized read/write to `localStorage` with SSR-safe initial value via `useSyncExternalStore`. Used by the project in chapter 028.
+  - `useMediaQuery(query)` — `matchMedia` subscription with cleanup. Reach for it over `window.innerWidth` polling.
+  - `useIntersection(ref, options)` — `IntersectionObserver` for lazy-load and scroll-spy patterns.
+  - `useDebounced(value, delay)` and `useThrottled(value, delay)` — value-shaped, not callback-shaped, so deferred values flow through deps naturally.
+  - `useLockBodyScroll()` — toggles `overflow: hidden` on `body` with cleanup. The chapter 028 project consumes this.
+  - `usePrevious(value)` — the legitimate effect-driven previous-value pattern from lesson 4 of chapter 025.
+  - `useCopyToClipboard()` — wraps the Clipboard API with a transient "copied" state.
+  - `useOnClickOutside(ref, handler)` — pointer-down listener with the `useEffectEvent` (lesson 3 of chapter 025) inside for the non-reactive handler.
+- **Composing hooks — the second-order pattern.** Custom hooks call other custom hooks. A `useFilteredList(items, filterKey)` might internally call `useDeferredValue` and `useMemo`. A `usePaginatedData(query)` might call `useSearchParams` (lesson 5 of chapter 033 — the Next.js hook that reads the URL query string) and a fetch hook. Composition is the daily mode; flatten only when nesting hides intent.
+- **Effect Event inside a custom hook.** When a custom hook takes a callback prop (`useOnClickOutside(ref, onOutsideClick)`), the consumer doesn't memoize. Inside the hook, wrap `onOutsideClick` with `useEffectEvent` so the effect doesn't re-run when the callback identity changes. The pattern that makes hook APIs ergonomic.
+- **Generic typing.** Use generics for hooks that pass values through: `function useLocalStorage<T>(key: string, initial: T): [T, (v: T) => void]`. The type flows from the call site (`useLocalStorage('draft', '')` infers `T = string`).
+- **Testing custom hooks.** The hook lives outside React's tree, so unit tests render it inside a small test component or use a library wrapper. Recognition only here — Unit 18 owns the testing surface.
+- **The `additionalHooks` lint hook-up.** Custom hooks that take a dep array (`useDebounced(value, delay)` doesn't, `useInterval(callback, deps)` might) should be added to the `react-hooks/exhaustive-deps` `additionalHooks` regex so the lint enforces deps on them too (cross-ref lesson 8 of chapter 025).
+- **The compiler interaction.** The React Compiler analyzes custom hooks like any function. A pure custom hook gets auto-memoization. The compiler does not change *how* you write them — same rules of hooks, same dep arrays. Forward to lesson 2 of chapter 026.
 - **Watch-outs:**
-  - Don't type props as `any`; reach for `ComponentProps<'tag'>` or `unknown` and narrow.
-  - Don't put both `onClick` and `href` on a single `<Button>` API — pick one or use a discriminated union.
-  - The `key` prop is not part of `Props` — it's a React-side reconciliation prop (covered in lesson 2 of chapter 027) and isn't passed through. Trying to read `props.key` returns `undefined`.
-  - The `ref` prop in React 19 *is* now passed through to the component (covered in lesson 4 of chapter 026) — but unlike `key`, it's an actual function parameter the component can name.
-  - Spreading `{...rest}` before `className` clobbers the merged class; spread first, then set the className you computed.
-  - Components must be PascalCase or React treats them as DOM elements and ignores props.
+  - A `use*`-prefixed function that doesn't call any hooks is misnamed — drop the prefix.
+  - A hook returning a different shape across calls (sometimes a tuple, sometimes an object) breaks call sites — pick one signature and hold.
+  - A hook reading values from outside its arguments leaks the consumer's render scope into the hook — pass values in as arguments.
+  - A custom hook that "wraps" `useEffect` and accepts a callback re-runs the effect every render when the callback identity changes — wrap the callback with `useEffectEvent` inside.
+  - Calling a custom hook conditionally is the same rules-of-hooks violation as calling a built-in hook conditionally.
+  - "Make a hook for everything" reflex — premature extraction is the same kind of wrong as premature optimization.
+  - Naming `useGetUser` vs. `useCurrentUser` — name for the behavior, not the implementation. `useCurrentUser` reads like English; `useGetUser` leaks the verb.
 
 What this lesson does not cover:
 
-- The render model (when and why a component re-runs) — Chapter 027.
-- State and hooks — Chapters 028 and chapter 029.
-- Children and slot composition — lesson 2 of chapter 026.
-- Polymorphic components with `asChild` — lesson 3 of chapter 026.
-- Refs as props — lesson 4 of chapter 026.
-- Class components — out of scope; the course only teaches function components.
-- Higher-order components (HOCs) — named once as a legacy pattern that hooks and composition retired; no airtime.
-- Prop-validation libraries (`PropTypes`) — gone; TypeScript is the contract.
+- The React Compiler and auto-memoization — lesson 2 of chapter 026.
+- Manual `useMemo`/`useCallback`/`memo` thresholds — lesson 3 of chapter 026.
+- `useSyncExternalStore` at depth — lesson 2 of chapter 025 (recognition).
+- `useEffectEvent` mechanics — lesson 3 of chapter 025.
+- Testing hooks — Unit 18.
+- TanStack Query as a server-state hook system — Chapter 11.
+- Zustand / Jotai as cross-component state — Unit 15.
 
 ---
 
-## Lesson 2 — Children and compound components
+## Lesson 2 — The React Compiler
 
-Teaches `children: ReactNode`, the shadcn-style compound-component pattern for multi-region UIs, prop-as-slot for single named regions, render props as a recognition-only fallback, and the conditional-render `0`-falsy trap.
+What the compiler auto-memoizes, how to enable it in Next.js 16 (`reactCompiler: true` plus `babel-plugin-react-compiler`), the annotation mode for incremental adoption, the `'use no memo'` escape hatch, and how to verify it via the DevTools `Memo` badge.
 
 Topics to cover:
 
-- **The senior question.** A `<Card title="..." body={<p>...</p>} footer={<Button>...</Button>}>` works but the props list grows with every new region; the same card written as `<Card><CardHeader>...</CardHeader><CardContent>...</CardContent><CardFooter>...</CardFooter></Card>` lets the consumer place arbitrary JSX in each slot and reads as HTML. The lesson installs the composition patterns a senior reaches for in 2026 — `children` as the universal slot, named children via subcomponents (the shadcn pattern), the render-prop form when `children` needs data, and the prop-as-slot form when a component owns one named region.
-- **`children` as a typed prop.** `children: ReactNode` is the canonical type. `ReactNode` accepts JSX, strings, numbers, arrays, fragments, portals, booleans (rendered as nothing), and `null`/`undefined`. Reach: nearly every component that wraps content (`<Card>`, `<Section>`, `<Dialog>`). `children` is destructured like any other prop.
-- **The `ReactNode` vs. `ReactElement` distinction.** `ReactNode` is the wide type (anything renderable); `ReactElement` is the narrow type (a single JSX element). The lesson names `ReactNode` as the 99% default and `ReactElement` only when the component must call `cloneElement` or inspect props on its child (rare in 2026, named once for context).
-- **The compound-component pattern — the 2026 shadcn shape.** A `<Card>` ships as a tightly-coupled set: `<Card>`, `<CardHeader>`, `<CardTitle>`, `<CardDescription>`, `<CardContent>`, `<CardFooter>`. Each subcomponent is a thin wrapper around a `<div>` with its own classes and accepts its own `className`. The consumer composes them with JSX rather than passing a `header` prop. The lesson names this as the form every modern component library (shadcn, Radix, Ariakit) uses and trusts chapter 031 for the surface.
-- **Why compound components beat prop-as-slot.** The compound form scales: adding a `<CardBadge>` is a new file, not a new optional prop. The consumer controls ordering, can omit slots, and can wrap subcomponents (`<CardHeader className="bg-muted">`). Prop-as-slot is fine for *one* named region (`label`, `icon`) but breaks down past two.
-- **Prop-as-slot — the case where one named region wins.** A `<Button leftIcon={<TrashIcon />}>Delete</Button>` is cleaner than `<Button><ButtonIcon><TrashIcon /></ButtonIcon>Delete</Button>` because the button only has one icon slot. The decision rule: zero or one named region → prop-as-slot; two or more → compound. Both forms accept `ReactNode`; both forward classes via `cn()`.
-- **Children-as-a-function (render-prop) — the narrow modern case.** The form `<DataLoader>{(data) => <List items={data} />}</DataLoader>` survives in 2026 but is rare. The reach: a component owns state or a subscription and wants to pass the value into a render that the consumer controls. Most cases that used to need render props are now custom hooks (Chapter 030). The lesson names render props as a recognition-level pattern with one canonical example.
-- **Multiple children as an array — `Children.map` and `Children.toArray`.** The `React.Children` utilities exist but the 2026 senior reach is to *not* iterate children; instead, expose a data prop. `Children.toArray` is named once as the form that gives stable keys when a component must inspect its children — for a custom `<Tabs>` that reads `<Tab>` subcomponents, for example. The lesson names this reach as rare and intentional.
-- **`React.Fragment` and the `<>` shorthand.** Fragments group children without a wrapper DOM node. The `<>...</>` form is the daily reach; `<React.Fragment key={...}>` is the keyed form for lists that need fragment items.
-- **Conditional rendering with children.** `{condition && <Thing />}` for the on/off case; `{condition ? <A /> : <B />}` for the pick-one. The lesson names the `&&` zero-vs-empty-string trap: `{count && <List />}` renders `0` when count is `0` because `0` is falsy but renderable. Reach `{count > 0 && <List />}` or `{!!count && <List />}`. (Same lesson cashes in the JSX rendering rules from lesson 1 of chapter 021.)
-- **Component composition as the alternative to context — preview only.** The "lifting state up" alternative to passing a prop through five layers is to *compose* — accept a `<Toolbar>` as `children` of the layout, so the consumer wires the props at the call site instead of every intermediate component drilling them. Cross-reference forward to lesson 4 of chapter 029 where context enters and lesson 4 of chapter 028 where lifting state is taught.
+- **The senior question.** A 2024 React codebase carries `useMemo` and `useCallback` on every value and callback, `React.memo` on every leaf component, and still re-renders too much because the wrapping has gaps. The React Compiler — stable in React 19 and Next.js 16 as of late 2025 — analyzes components and auto-inserts memoization at the boundaries that actually matter. The lesson installs it, lands what it does, and frames the mental shift: memoization is no longer something the engineer writes.
+- **Status in May 2026.** React Compiler 1.0 is stable. In Next.js 16, `reactCompiler` is a stable config option but not on by default — the senior turns it on as a deliberate choice. Next.js ships a custom SWC-based optimization that runs the compiler only on relevant files for faster builds compared to the raw Babel plugin. Named explicitly per "explicit over magic": you opt in, you understand what changes.
+- **What the compiler does — the contract.** Static analysis of component and hook bodies. Wraps values, JSX, and callbacks in compiler-managed memo slots that behave identically to `useMemo`/`useCallback`/`memo` at runtime but are driven by the compiler's data-flow analysis. The output is regular memoized React code; nothing magical at runtime.
+- **What gets auto-memoized.** Derived values (the in-render computations from lesson 2 of chapter 024 and lesson 4 of chapter 025). Object and array literals passed as props (`<Child config={{ ... }} />` no longer reference-tanks the child). Callbacks defined inside the component (`<Child onClick={() => ...} />` is stable across renders when its deps don't change). Provider values (`<Context value={{ a, b }}>` is auto-stabilized). JSX subtrees that don't depend on changed values get reused.
+- **Enabling it in Next.js 16.** Install `babel-plugin-react-compiler`. Set `reactCompiler: true` in `next.config.ts`. That's the full wiring — no per-file annotation needed for full-coverage mode. Verify in DevTools: the Components panel shows `Memo ✨` badges on auto-memoized components.
+- **Incremental adoption — the annotation mode.** For migrating large legacy codebases, set `reactCompiler: { compilationMode: 'annotation' }` so only files starting with `'use memo'` are processed. Validate on a small subset, expand, eventually flip to full coverage. For greenfield SaaS in 2026 the default is full coverage from day one.
+- **The opt-out — `'use no memo'`.** A file-level directive that disables the compiler for that file. Reach for it when a component breaks under the compiler (almost always because of a rules-of-hooks or purity violation the compiler exposes). Use as a *temporary* escape while you fix the underlying violation, not a permanent waiver.
+- **What the compiler does not do.** It does not rewrite effects. It does not change the rules of hooks. It does not eliminate `useEffect` dependency arrays. It does not memoize impure code — if the analysis detects a rules-of-React violation (mutation during render, hook called conditionally, side-effectful initializer), it *skips* the component and warns. Cross-reference: the purity contract from lesson 3 of chapter 023 is the price of admission.
+- **What the compiler exposes.** Codebases that "worked" because manual memoization papered over impurity reveal their bugs under the compiler. A component mutating a prop, an initializer pushing to a module-level array, a render call to a side-effectful function — the compiler refuses to optimize and the warning surfaces the underlying issue. The lesson frames this as a feature, not a friction: the compiler is the messenger.
+- **Compiler + `exhaustive-deps`.** With the compiler on, `exhaustive-deps` is less critical for `useMemo`/`useCallback` (you stop writing them), but it still owns `useEffect` and custom hooks with dep arrays. Keep the rule on. Cross-ref lesson 8 of chapter 025.
+- **Compiler + `useEffectEvent`.** No conflict. `useEffectEvent` carves the non-reactive seam; the compiler doesn't touch it. Together they handle the two halves of the effect problem.
+- **Compiler + ref forwarding.** React 19 removed `forwardRef`'s ceremony — `ref` is a normal prop. The compiler handles components reading `ref` from props transparently.
+- **Verifying it's working — the senior workflow.** Open React DevTools Components panel; auto-memoized renders show the `Memo ✨` badge. Use the Profiler to confirm a child no longer re-renders when an unrelated parent state changes. The badge presence is the contract; the Profiler is the proof.
+- **Performance — what to expect.** Typical SaaS apps see modest baseline wins (5–15% fewer re-renders, faster interactions). Apps with measurable wasted-render problems can see large wins. Apps already manually memoized see no meaningful change. The win isn't always speed; it's the deletion of memoization ceremony from the codebase.
+- **Build cost.** SWC-based path is fast. Babel-only path (non-Next projects) adds noticeable compile time. Next.js 16's integration is the senior default.
+- **Library compatibility.** Compatible with shadcn/ui (chapter 027), Better Auth (Unit 8), Drizzle queries through Server Components (Unit 4), TanStack Query (Chapter 11). Incompatibilities are rare and surface as compiler warnings, not silent breakage.
 - **Watch-outs:**
-  - `ReactNode` accepts `boolean`, `null`, `undefined` — all render as nothing. Useful for `{condition && <Thing />}` but the `0` trap is real.
-  - Don't reach for `cloneElement` and `Children.map` to inject props into children — `asChild` (lesson 3 of chapter 026) does the same with a typed contract.
-  - The compound-component pattern requires consumers to use the subcomponents — there's no compile-time enforcement that `<CardFooter>` only renders inside `<Card>`. Document the surface; trust the convention.
-  - Render props are not deprecated, but the cases that used them are now custom hooks. Don't reach for them when a hook would do.
-  - A component that takes `children: ReactElement` (narrow) instead of `ReactNode` breaks on strings and fragments — the constraint is rarely worth the friction.
-  - Don't put a `key` on a fragment unless the fragment is part of a list; fragments are otherwise key-free.
+  - "I'll keep my `useMemo`s just in case" — leaving manual memoization in place can change the compiler's output in subtle ways and effects relying on reference stability can over-fire. Don't mass-delete blind, but plan a deliberate cleanup as you touch files.
+  - The compiler does not retrofit purity. Components with mutation, side-effectful renders, or rules-of-hooks violations get skipped — the fix is the violation, not `'use no memo'`.
+  - DevTools without `Memo ✨` badges in compiled code = the file is being skipped. Audit for purity issues.
+  - "Use the compiler everywhere including legacy code" — annotation mode is the migration path for legacy; full coverage is for greenfield and audited code.
+  - Auto-memoization doesn't help if the *parent* of an expensive subtree keeps changing its identity — the compiler optimizes within each component, not across boundaries it can't see.
+  - `'use no memo'` at the top of a file the compiler chokes on silences the warning but ships the original perf characteristics. Treat as TODO.
 
 What this lesson does not cover:
 
-- The `asChild` polymorphism pattern and Radix `Slot` — lesson 3 of chapter 026.
-- Refs threaded through `children` — lesson 4 of chapter 026 covers refs as props; `Slot` covers the merging.
-- The render model and key-driven reconciliation — Chapter 027.
-- Context as an alternative to prop drilling — lesson 4 of chapter 029.
-- State management beyond local state — out of scope; the lesson assumes the consumer composes static UI.
-- Higher-order components — named once in lesson 1 of chapter 026 and not revisited.
-- Slot props in routing (parallel route slots, `@slot`) — Next.js territory (lesson 5 of chapter 033); same word, different concept.
+- Custom hook composition — lesson 1 of chapter 026.
+- Manual memoization escape hatches — lesson 3 of chapter 026.
+- The purity contract — lesson 3 of chapter 023.
+- Rules of hooks — lesson 8 of chapter 025.
+- React DevTools Profiler at depth — Chapter 094.
+- Bundle splitting and `dynamic()` decisions — lesson 3 of chapter 026 (the cut), Chapter 094 (depth).
 
 ---
 
-## Lesson 3 — Polymorphism with Slot and CVA
+## Lesson 3 — Memoization as escape hatch
 
-Teaches the shadcn-style polymorphic component built from `@radix-ui/react-slot` plus `asChild`, the `class-variance-authority` variant table with `VariantProps` and `compoundVariants`, and why this pair beats a generic `as` prop.
+The four narrow cases where `useMemo` / `useCallback` / `React.memo` still earn their weight, the 2020-era reflexes to stop (blanket memoization, premature `dynamic()`, blanket `<Suspense>`), and the measure-then-memoize workflow with comment discipline.
 
 Topics to cover:
 
-- **The senior question.** A `<Button>` should sometimes render as a real `<button>` for actions and sometimes as an `<a>` for navigation — but rebuilding the variant table for every element is duplication, and a generic `as` prop forces the author into seven layers of TypeScript gymnastics that still doesn't quite work. The 2026 answer is `<Button asChild><Link href="/dashboard">Open</Link></Button>` — Radix's `Slot` merges the button's classes and props onto the inner `<Link>`, keeps the inner element's types intact, and lives in one line. The lesson installs `asChild` plus `cva` as the polymorphic component pattern the course commits to.
-- **The `asChild` problem.** Without `asChild`, a `<Button>` rendering as a link requires either a duplicated `<LinkButton>` component, a generic `as` prop with brittle types, or wrapping `<a><Button /></a>` (which produces invalid nested interactive HTML). All three lose. The senior reach is composition: let the consumer pass the inner element and let the component merge its styling onto it.
-- **`@radix-ui/react-slot` — what `Slot` does.** `Slot` from `@radix-ui/react-slot` is a component that takes one child and merges the parent's props onto that child. The form: `<Slot {...props}><Child /></Slot>` renders `<Child {...mergedProps} />`. Class names are merged (the parent's `className` is concatenated with the child's), event handlers are composed (both fire), and refs are forwarded. The student installs once, then reads the API.
-- **The `asChild` pattern as the consumer-facing surface.** The component author writes the `asChild` branch internally:
-  - When `asChild` is true, render `<Slot>` and pass props to `Slot`, which merges them onto the single child.
-  - When `asChild` is false, render the default element (e.g., `<button>`).
-  The consumer writes `<Button asChild><Link href="/">Home</Link></Button>` and the rendered DOM is `<a class="...button-classes..." href="/">Home</a>`. The lesson shows the canonical implementation in 8–10 lines and trusts it as the template.
-- **`class-variance-authority` (CVA) — the variant table.** A `<Button>` with `variant: 'primary' | 'destructive' | 'ghost' | 'outline'` and `size: 'sm' | 'md' | 'lg'` becomes a multiplication problem — 4 × 3 = 12 combinations. `cva` declares the variant table once: a base class, a `variants` object keyed by prop name, and `defaultVariants`. The function returns a string of classes for any combination of variants. shadcn ships every component built on CVA.
-- **The `cva` API in one read.** `const buttonVariants = cva('inline-flex items-center ...base...', { variants: { variant: { primary: '...', destructive: '...' }, size: { sm: '...', md: '...' } }, defaultVariants: { variant: 'primary', size: 'md' } })`. Then `buttonVariants({ variant, size })` returns the joined class string. Combined with `cn(...)` to merge a caller's `className` override: `className={cn(buttonVariants({ variant, size }), className)}`.
-- **`VariantProps<typeof buttonVariants>` — typing the variants automatically.** CVA's `VariantProps` helper extracts the variant prop types from the `cva` call. The component types become `ComponentProps<'button'> & VariantProps<typeof buttonVariants> & { asChild?: boolean }`. The student writes the variants in one place; the types follow.
-- **`compoundVariants` — variant combinations that need special handling.** Some variant combinations need extra classes — a `variant: 'primary'` `size: 'lg'` button that also gets a slight padding bump, for example. `compoundVariants: [{ variant: 'primary', size: 'lg', class: 'px-8' }]` handles the case. Rare; the lesson names it as the escape valve for design-system edge cases.
-- **The full canonical Button — `Slot` + `cva` + `cn()` + `asChild`.** The lesson walks the template every shadcn component follows: `cva` for the variants, `Slot` vs. `<button>` via `asChild`, `cn(buttonVariants({ variant, size }), className)` for the merge, `...props` spread, ref-as-prop wired through. The student leaves with the form they'll see in every shadcn file in Chapter 031.
-- **The generic `as` prop — named once as the rejected alternative.** Some libraries (Chakra v1, Mantine, MUI) ship a generic `as` prop that retypes the component as the passed element. TypeScript can do this with generics and conditional types, but the errors are unreadable and the inferred props get lost. `asChild` plus `Slot` is the senior cut — the consumer brings the element, the component contributes classes and behavior, and types stay clean because the inner element is just its own JSX.
-- **The accessibility implication of polymorphism.** A `<Button asChild><a>...</a></Button>` produces an anchor styled as a button — semantically it's a link, navigates with Cmd+click, opens in new tabs, gets read by screen readers as "link." A button styled as an anchor (`<Button>` with `onClick` that navigates) loses all of that. The senior rule: pick the element that matches the behavior; use `asChild` to vary the *element*, not to fake one.
-- **`tailwind-merge` and the variant collision problem.** When the variant table says `bg-primary` and the caller passes `className="bg-destructive"`, `cn()` (which uses `tailwind-merge` under the hood) keeps only the destructive class — the same conflict-resolution rule from lesson 3 of chapter 022 cashes in here. Without `tailwind-merge`, both classes ship to the DOM and the last one wins per cascade, which is brittle.
+- **The senior question.** With the React Compiler on, when does an engineer in 2026 still reach for `useMemo`, `useCallback`, or `React.memo`? And what 2020-era performance reflexes should they stop using altogether? The lesson names the narrow surface where manual memoization still earns its weight and cuts the rest — `useMemo` everywhere, premature `dynamic()`, and reference-equality gymnastics that the compiler now handles automatically.
+- **The mental shift.** Manual memoization went from *discipline* (wrap everything, never re-render unnecessarily) to *escape hatch* (reach for it when you need a *specific* memoization guarantee the compiler can't provide). The default is no wrapper; the reach is justified by a measured cause.
+- **The four cases where manual memoization still earns its weight.**
+  1. **Reference-stable value feeding a `useEffect` dep array.** When an effect depends on an object or function whose identity matters (not just its content) — e.g., an SDK that re-subscribes on identity change. `useMemo` guarantees the reference; the compiler may or may not, depending on analysis. Code review red flag: `useMemo` here without a comment naming the consumer.
+  2. **Integration with libraries that read by reference equality.** `react-hook-form`'s `watch` callbacks, some chart libraries' option objects, certain Zustand selectors. The library's contract demands a stable reference; the compiler can't know that. Wrap the value with `useMemo`/`useCallback` at the integration point.
+  3. **Measured expensive computation the compiler skipped.** A heavy sort, a tokenizer, a fuzzy-match build — and the Profiler confirms it runs every render. The compiler may skip when it can't prove purity or when inputs are complex. Manual `useMemo` is the patch. Cross-ref Chapter 094 for the Profiler workflow.
+  4. **A leaf component that must never re-render unless specific props change.** Truly hot paths — a virtualized list row, a canvas drawing component, a chart that re-paints expensively. `React.memo` with a custom comparator gives the guarantee. Rare; document the measurement.
+- **`useMemo` — the signature, briefly.** `const memoized = useMemo(() => compute(a, b), [a, b])`. Returns the same reference when deps are unchanged by `Object.is`. The compiler usually beats it for in-render derived values; the residual case is reference-stability for downstream consumers.
+- **`useCallback` — the signature, briefly.** `const handler = useCallback((e) => doThing(e, value), [value])`. Sugar for `useMemo` returning a function. Same compiler-eaten default; same residual escape-hatch role.
+- **`React.memo` — the signature, briefly.** `const Row = memo(function Row({ item }) { ... })`. Skips re-render when props are shallowly equal. The compiler memoizes JSX subtrees automatically when prop references stabilize; `memo` is the explicit guarantee at a boundary you've measured.
+- **The `memo` comparator.** Second arg: `memo(Row, (prev, next) => prev.item.id === next.item.id)`. Reach when the default shallow check is wrong (an object prop where only one key matters). Rare and code-smelly; usually the fix is restructuring props to pass the primitive.
+- **Stop hand-tuning: `useMemo` on every value.** The 2020 reflex of wrapping every derived value in `useMemo` is now actively counterproductive — adds noise, can interfere with the compiler's analysis, and trains the brain to write ceremony instead of code. The lesson explicitly names this as the largest cleanup opportunity in legacy codebases.
+- **Stop hand-tuning: `useCallback` on every handler.** Same shape, same reflex, same cut. `onClick={() => setOpen(true)}` is fine without `useCallback`. The compiler handles stability where it matters.
+- **Stop hand-tuning: `memo` on every component.** Wrapping every leaf in `React.memo` is a pattern from a pre-compiler era. The compiler memoizes JSX subtrees automatically; `memo` is now a targeted instrument.
+- **Stop hand-tuning: premature `dynamic()`.** `next/dynamic` for code-splitting was the 2020 reflex for any component imagined as "heavy." In 2026 the defaults are different: Server Components don't ship to the client, route-level code splitting is automatic, and the App Router lazy-loads route segments. Reach for `dynamic()` only when a measured client bundle includes a component the user rarely renders (a modal opened by 5% of sessions, a chart library only used on one tab). Cross-ref Chapter 094.
+- **Stop hand-tuning: blanket `<Suspense>` boundaries.** A `<Suspense>` around every component imagined as slow is the same reflex. Place boundaries at meaningful UX boundaries — a route segment, a slot in a parallel route, a region with its own loading state. Cross-ref Chapter 031.
+- **The senior workflow — measure, then memoize.** The order matters: turn on the compiler, run the Profiler, find the actual hot spot, apply the targeted escape hatch with a comment. Never the reverse. "Performance work" without measurement is decoration.
+- **Profiler primer.** React DevTools Profiler records renders, shows which components rendered, why, and how long. The senior workflow: record interaction → look for components rendering when their props didn't change → audit. Recognition only here; Chapter 094 owns the full surface.
+- **Comment discipline.** Every manual memoization in a 2026 codebase should carry a one-line comment naming the reason — "SDK requires stable ref," "Profiler shows X ms in sorting," "Library reads by reference equality." Without it, the next reader assumes 2020 reflex and deletes.
+- **Migrating from a manual-memoization codebase — the order.** (1) Enable the compiler in annotation mode. (2) Add `'use memo'` to a small audited file. (3) Delete its manual `useMemo`/`useCallback`/`memo` ceremony, run tests, profile. (4) Expand. (5) Flip to full coverage. (6) Final pass: delete remaining ceremony, leaving only the four-case residual.
 - **Watch-outs:**
-  - `Slot` expects *one* child element — passing two children or a fragment throws. For multi-child slots, restructure or use a different composition.
-  - `asChild` forwards every prop including event handlers — the child's `onClick` and the parent's both run. Composition is the senior reach but be aware.
-  - Don't reach for `asChild` to swap *kinds* of elements (button to div); the variant should match the semantics.
-  - `cva` returns a string of classes; passing it to a non-Tailwind component does nothing. The pattern assumes a Tailwind project.
-  - `compoundVariants` runs *after* the base variants — its classes win conflicts via `tailwind-merge`.
-  - `VariantProps<typeof buttonVariants>` types include `null` for each variant (the "unset" branch). The default-via-`defaultVariants` handles it at runtime; types still allow explicit `null`.
-  - When `asChild` is true, the component's own DOM element doesn't render — so a `<button type="button">` default doesn't reach the rendered `<a>`. The consumer's child element is responsible for its own semantics.
-  - `Slot` doesn't merge styles intelligently — only `className` (via concat) and event handlers (via composition). Inline `style` props are last-write-wins.
+  - `useMemo` "for safety" with no consumer that needs reference stability is dead weight.
+  - `useCallback` wrapping a handler that's only ever attached to one element is dead weight.
+  - `memo` on a component whose parent never re-renders is dead weight.
+  - `dynamic(() => import('./Modal'))` for a 2 KB component on a hot path costs more in a roundtrip than it saves in bundle.
+  - Reaching for memoization before measuring is the inverse of senior practice.
+  - Memoizing around library quirks without comment leaves the next reader to re-discover the integration constraint.
+  - `useMemo(() => fetch(...), [])` is not a cache — it's a closure trick that breaks under suspense and concurrent rendering. The right tool is `cache()` or TanStack Query.
+  - "The compiler can't possibly be right" — trust DevTools' badge; if it's not memoizing, the cause is in your code, not the compiler.
 
 What this lesson does not cover:
 
-- The shadcn component library surface — Chapter 031.
-- Refs through `Slot` — covered in lesson 4 of chapter 026 (Slot already forwards refs; the mechanism is taught there).
-- Tailwind variant ordering and arbitrary values — lesson 1 of chapter 022 owns them.
-- `clsx` and `tailwind-merge` internals — lesson 3 of chapter 022 owns them.
-- Styled-components, Emotion, and CSS-in-JS — out of scope; the project is Tailwind-only.
-- Compound components with shared state via context — lesson 4 of chapter 029 owns context.
-- Polymorphic generic-`as` typing with conditional types — named once and rejected.
+- Custom hooks — lesson 1 of chapter 026.
+- React Compiler config and behavior — lesson 2 of chapter 026.
+- Profiler workflow at depth — Chapter 094.
+- `dynamic()` and bundle analysis at depth — Chapter 094.
+- `<Suspense>` boundary placement — Chapter 031.
+- Server Component bundle elimination — Chapter 030.
+- TanStack Query and server-state caching — Chapter 11.
 
 ---
 
-## Lesson 4 — Refs as a regular prop
-
-Teaches React 19's ref-as-prop model, the `Ref<T>` and `RefObject<T>` types, ref callbacks with the new cleanup return, merging multiple refs onto one node, and `useImperativeHandle` as the rare escape valve.
-
-Topics to cover:
-
-- **The senior question.** A `<Input>` that the parent wants to focus on mount used to require `forwardRef`, a typed ref forwarding signature, and a six-line ceremony per component. The React 19 form is `function Input({ ref, ...props }: ComponentProps<'input'>) { return <input ref={ref} {...props} />; }` — `ref` is a regular prop, the same as `onClick` or `className`. The lesson installs the React 19 ref-as-prop model, covers the typed ref types, names ref callbacks with their new cleanup return, and lands the `useImperativeHandle` reach for the rare component that wants to expose methods rather than a DOM node.
-- **The ref-as-prop model in React 19.** Function components in React 19 accept `ref` as a regular prop. No `forwardRef`, no wrapper, no type gymnastics. The form is `({ ref, ...props }: ComponentProps<'input'>) => <input ref={ref} ... />` — the component destructures `ref` and forwards it to the inner DOM element. `ComponentProps<'input'>` already includes the `ref` prop typed against the input element.
-- **`forwardRef` is legacy.** The lesson names `forwardRef` once for recognition — every codebase before 2024 used it, every shadcn file before mid-2025 used it, every React tutorial before React 19 used it. It still works in React 19 (deprecated, not removed). The student reads it, doesn't write it. The eslint-plugin-react `no-forward-ref` rule and React's codemod are the migration path.
-- **`Ref<T>` — the type of a ref.** `Ref<HTMLInputElement>` is the type accepted by an element's `ref` prop. It's a union of `RefObject<T> | RefCallback<T> | null`. The student rarely names this type directly because `ComponentProps<'input'>['ref']` resolves to the right thing. When typing custom-component ref props explicitly, the form is `ref?: Ref<HTMLInputElement>`.
-- **`RefObject<T>` vs. `MutableRefObject<T>` vs. the new types in React 19.** `RefObject<T>` historically meant "the ref's `.current` is readonly"; `MutableRefObject<T>` meant "you can write to `.current`." React 19 simplified — `RefObject<T>` now has a writable `.current` by default. The lesson names this so students reading older TypeScript types don't get confused, but the writable RefObject is the only form they write.
-- **Ref callbacks — `ref={(node) => { ... }}`.** A function-form ref runs on mount with the DOM node and on unmount with `null`. The 2026 reach: setting up an `IntersectionObserver` on a child, measuring an element on mount, or wiring multiple refs to one node (`<input ref={(node) => { internalRef.current = node; if (typeof forwardedRef === 'function') forwardedRef(node); else if (forwardedRef) forwardedRef.current = node; }} />`).
-- **Ref callback cleanup — the React 19 addition.** A ref callback can now `return` a cleanup function, the same way `useEffect` does. React 19 calls the returned function on unmount instead of invoking the callback again with `null`. `IntersectionObserver` watches when a DOM node enters the viewport (covered later in Unit 4 for lazy-loading); the form: `ref={(node) => { const observer = new IntersectionObserver(...); observer.observe(node); return () => observer.disconnect(); }}`. The reach: any teardown that should pair with the mount of a DOM node, without `useEffect` ceremony.
-- **The `useRef` lesson, foreshadowed.** lesson 6 of chapter 028 owns `useRef` for DOM access and instance values. This lesson covers the *prop* shape — how refs travel through components — and trusts lesson 6 of chapter 028 for the hook. The two work together: parent calls `useRef`, passes it as the `ref` prop, child destructures and forwards to a DOM element.
-- **Merging refs — the `useImperativeHandle` and external-ref pattern.** When one component needs *its own* ref on a DOM node *and* needs to forward a ref to the parent, both refs need the same node. The 2026 reach: a ref callback that writes both refs, or a `mergeRefs` utility (a 5-line function commonly shipped in a `lib/refs.ts`). The lesson shows the callback form and trusts utility libraries (`react-merge-refs`) as the imported alternative.
-- **`useImperativeHandle` — the rare escape valve.** A component that wants to expose methods to the parent (`inputRef.current.focus()`, `inputRef.current.scrollToBottom()`) but doesn't want to expose a raw DOM node uses `useImperativeHandle(ref, () => ({ focus, scrollToBottom }))`. The reach is genuinely rare — most cases that reach for it should expose the DOM node directly via ref-as-prop. Named once as the form that exists; the lesson lands the rule "prefer exposing the node."
-- **The `Slot` and `asChild` ref story.** Radix `Slot` (from lesson 3 of chapter 026) already forwards the parent's ref onto the child element. The senior takeaway: when a component is built on `Slot`, refs work end-to-end without ceremony — `<Button asChild ref={btnRef}><Link href="/">Open</Link></Button>` puts the ref on the `<a>` element.
-- **Why React 19 made this change — the senior frame.** `forwardRef` existed because `ref` was magic — reserved by the React runtime, like `key`. Making it a regular prop removes the magic, eliminates the wrapper, and lets the React Compiler reason about it like any other prop. The pattern is consistent with React 19's broader move toward "less magic, more contract" (cross-reference to the `"use client"` / `"use server"` directives in lesson 3 of chapter 034 as the same principle in another shape).
-- **Watch-outs:**
-  - Class components still can't accept `ref` as a prop — the course doesn't ship class components, but reading older code requires recognition.
-  - Don't try to read `ref` from `props` when destructuring rest — `({ ref, ...rest })` works because `ref` is now a regular prop, but spreading `{...rest}` won't include it (it's been destructured out).
-  - A ref-as-prop on a component that doesn't accept a `ref` prop in its type just gets ignored at runtime — the type system catches the misuse.
-  - The cleanup-from-ref-callback runs *before* the next render's ref callback runs; it's the same lifecycle as `useEffect` cleanup.
-  - Don't reach for `useImperativeHandle` when the parent just needs to focus a child input — pass the ref through and call `ref.current.focus()` directly.
-  - `Ref<T>` is `RefObject<T> | RefCallback<T> | null` — passing a ref callback works wherever a ref prop is accepted.
-
-What this lesson does not cover:
-
-- `useRef` for instance values and DOM access — lesson 6 of chapter 028.
-- `useImperativeHandle` at depth — recognition only here; the API is documented in chapter 030 territory if a custom hook earns it.
-- Refs in class components — the course doesn't teach class components.
-- The legacy callback-ref form before React chapter 082 — out of scope.
-- Refs for measuring DOM (`useResizeObserver`, `useElementSize`) — Chapter 030 if a custom hook earns it.
-- Stale refs in closures — Chapter 029 territory (effects and external systems).
-- React DevTools' ref inspection — lesson 3 of chapter 003 introduced DevTools.
-
----
-
-## Lesson 5 — Portals and the layout escape
-
-Teaches `createPortal` for modals, toasts, and anchored popovers, the SSR `document` guard, the accessible-modal contract (focus trap, scroll lock, `Esc`), the native `<dialog>` and CSS anchor-positioning alternatives, and why events still bubble through the React tree.
-
-Topics to cover:
-
-- **The senior question.** A `<Dialog>` rendered inside a card with `transform: translate-y` (from lesson 9 of chapter 024) gets trapped — its `position: fixed` inset stops respecting the viewport because the transformed ancestor created a containing block; even worse, `overflow: hidden` on a parent clips the dialog. The 2026 fix is a portal: render the dialog into `<body>`, escaping every ancestor's stacking context and overflow. The lesson installs `createPortal` as the layout escape, names the three canonical reaches (modals, toasts, anchored popovers), wires the accessibility companions (focus trap, scroll lock, `Esc` close, `aria-modal`), and forward-references CSS anchor positioning as the popover surface.
-- **`createPortal(children, container)` — the API.** From `react-dom`: `createPortal(<Dialog />, document.body)` renders the dialog's DOM into `<body>` while keeping it in the React tree at its original location. Context flows down through portals; events bubble *through the React tree* (not the DOM tree); state updates propagate normally. The two arguments are the children and a DOM node; the second is usually `document.body` or a dedicated portal root.
-- **The portal target — `document.body` vs. a named root.** `document.body` is the daily reach for modals and toasts. A named root (`<div id="portal-root" />` in `RootLayout`) is the senior reach when a project wants to keep portal content under a specific ancestor for CSS-variable inheritance (a `.dark` theme on `<html>` reaches portals attached to `<body>`, but a portal attached to `<html>` itself would not inherit the theme tokens). Most SaaS projects attach to `<body>`.
-- **Where portals matter — the three canonical reaches.** (1) **Modals and dialogs** that need to overlay the entire page regardless of ancestor `overflow: hidden` or stacking-context traps. (2) **Toast notifications** that anchor to a corner of the viewport via `position: fixed` and stack vertically. (3) **Anchored popovers, tooltips, and menus** that need to escape parent overflow (a dropdown in a scrollable table). The lesson treats these as the surface; bespoke portal reaches are rare and project-specific.
-- **The Next.js / SSR caveat — `document` is not defined on the server.** Server-rendered components can't reference `document.body` because `document` doesn't exist server-side. The senior reach: gate the portal on the client. The forms — `'use client'` directive on the component file (cross-reference forward to lesson 2 of chapter 034) and either a `useEffect` mount flag (`const [mounted, setMounted] = useState(false); useEffect(() => setMounted(true), [])`) (useState: lesson 1 of chapter 028; useEffect: lesson 2 of chapter 029) or `typeof window !== 'undefined'`. The lesson names the pattern, then trusts shadcn's Dialog (which handles this internally) as the production answer.
-- **The accessible-modal contract — the WAI-ARIA APG checklist.** A modal needs: (1) `role="dialog"` and `aria-modal="true"`, (2) `aria-labelledby` pointing at the title and `aria-describedby` at the description, (3) focus moved into the dialog on open, (4) focus trapped inside while open, (5) focus restored to the trigger on close, (6) `Esc` closes the dialog, (7) clicks on the backdrop close (unless the dialog is destructive), (8) the body scroll is locked while the dialog is open. The lesson names the contract; Chapter 031 owns the discipline-level treatment; the project chapter (lesson 5 of chapter 032) builds a focus trap and scroll lock from primitives.
-- **The native `<dialog>` element — the 2026 platform alternative.** `<dialog>` shipped with `showModal()` and built-in focus trap, `Esc` handling, and the top-layer rendering that bypasses every stacking context. Production-safe in 2026. The senior call: native `<dialog>` is the right reach when the project wants the platform behavior and shadcn-style styling is fine; the Radix Dialog (which uses `createPortal` plus manual focus management) is the right reach when the project needs animated entrance/exit choreography or custom backdrop interaction. The lesson names the alternative and trusts shadcn's Dialog for the project's daily reach.
-- **Toasts — the portal-plus-fixed pattern.** A toast container lives in `<body>` via a portal; each toast is `position: fixed` to the viewport corner with `gap-2` stacking; entrance animation uses `tw-animate-css` (lesson 5 of chapter 025); the toast auto-dismisses after a timeout. The lesson names `sonner` as the canonical 2026 toast library shadcn ships with — the student installs and reads, doesn't reimplement.
-- **Anchored popovers and the `position: fixed` problem.** A dropdown menu attached to a button needs to track the button's position even while scrolling; `position: absolute` inside the trigger is broken by parent `overflow: hidden`; `position: fixed` plus a portal escapes overflow but needs JavaScript to track scroll. Two production answers: (1) `@floating-ui/react` (the Radix dependency) for full positioning logic with collision detection and flip; (2) **CSS anchor positioning** (Baseline 2026) for the platform-native form when the trigger and the popover share a layout root — `anchor-name`, `position-anchor`, and `position-area` retire the JavaScript. Forward reference to chapter 031 for the shadcn surface; recognition here.
-- **Portals and the stacking-context fix from lesson 9 of chapter 024.** The canonical bug: a modal inside a card with `transform: translate(...)` gets trapped because `transform` on an ancestor creates a containing block for `position: fixed`. The senior fix is portal-to-body; the alternative is `isolation: isolate` on the trapping ancestor (which doesn't help for `position: fixed` containing blocks but does for `z-index` traps). Portals are the canonical answer when the modal needs to escape *both* overflow and containing block.
-- **Event bubbling through the React tree, not the DOM tree.** A `<Card>` with an `onClick` handler that contains a portaled `<Tooltip>` will see clicks on the tooltip — because the React tree still has the tooltip as a descendant of the card. The senior frame: portals only escape *layout*, not *React event flow*. The lesson names this as the surprise and the design intent.
-- **Scroll lock — preventing the page from scrolling behind a modal.** The body needs `overflow: hidden` while the modal is open; on iOS, also `position: fixed` with the current scroll position preserved (the iOS body-scroll bug). The lesson names the requirement; the `useLockBodyScroll` custom hook is built in the project chapter (lesson 5 of chapter 032). shadcn's Dialog handles this internally.
-- **Watch-outs:**
-  - Don't render a portal during SSR — `document` is undefined. Mount-flag, `useEffect`, or `'use client'` plus client-only logic. shadcn's Dialog already does this; bespoke portals don't.
-  - Portals don't escape *React* — context flows through, errors bubble through, events bubble through the tree. The DOM is the only thing that moves.
-  - A portal target that doesn't exist (`document.getElementById('does-not-exist')`) returns `null` and `createPortal` throws. Provide the target or default to `document.body`.
-  - `position: fixed` inside a portal works against the viewport because the ancestor chain in the DOM is now `<body>` — no transformed ancestor in the way.
-  - The native `<dialog>` element uses the *top layer*, which is above every stacking context — no portal needed, no z-index management. The trade-off is less styling flexibility on the backdrop pseudo-element (though CSS support is improving).
-  - Scroll lock without preserving scroll position causes the page to jump to the top — measure `window.scrollY`, set `top: -<scrollY>px`, restore on close.
-  - Toast containers attached to `document.body` survive route changes (good for cross-route notifications); per-page portal targets reset on navigation.
-  - Animated portals need entrance and exit choreography — the exit animation must run before the React tree unmounts. shadcn's Dialog uses Radix's `data-state="open"` / `"closed"` pattern (cross-reference to lesson 5 of chapter 025) which keeps the DOM around through the exit transition.
-
-What this lesson does not cover:
-
-- The shadcn Dialog, Sheet, Popover, Tooltip surfaces — Chapter 031.
-- Focus trap and scroll lock implementations — lesson 5 of chapter 032 (the project chapter cashes in).
-- CSS anchor positioning at depth — Chapter 031 territory.
-- `@floating-ui/react` API — recognition only here; shadcn wraps it.
-- Toast library internals (`sonner`, `react-hot-toast`) — recognition only; the library is installed and read.
-- ARIA roles and live regions at depth — lesson 3 of chapter 031 owns ARIA basics.
-- The history-API and modal-as-URL pattern — lesson 6 of chapter 033 (intercepting routes).
-- Top-layer CSS and the `::backdrop` pseudo-element at depth — recognition only.
-- The `popover` HTML attribute and `<button popovertarget>` — Baseline 2026, named once as the platform anchor-positioning companion.
-
----
-
-## Lesson 6 — Quizz
+## Lesson 4 — Quizz
 
 Top 10 topics to quiz:
 
-- The typed component contract — `type Props` over `interface`, `ComponentProps<'tag'>` and `ComponentProps<typeof Component>` for native attribute inheritance and wrapper typing, default values via destructuring, the variant-union over boolean-prop reflex, the `className` plus `...rest` discipline.
-- `children` and the `ReactNode` type — `ReactNode` vs. `ReactElement`, the `{0 && <Thing />}` zero-vs-falsy trap, fragments and the `<>` shorthand, conditional rendering reflexes.
-- Compound components vs. prop-as-slot — the decision rule (zero/one named region → prop-as-slot; two or more → compound), the shadcn `<Card><CardHeader>...</CardHeader></Card>` pattern, why composition beats configuration as the prop list grows.
-- Render-prop and `Children.map` recognition — when render-as-function survives in 2026 (data-loader exposing state to the consumer's render) and when a custom hook is the better reach.
-- The `asChild` + `Slot` polymorphism pattern — `@radix-ui/react-slot` merging classes, props, and refs onto the consumer's child element; why `asChild` beats a generic `as` prop on both ergonomics and TypeScript clarity; the accessibility rule "match the element to the behavior."
-- `class-variance-authority` — the variant table API (`cva(base, { variants, defaultVariants })`), `VariantProps<typeof variants>` for automatic typing, `compoundVariants` for combination-specific tweaks, the canonical Button template with `Slot` + `cva` + `cn()`.
-- React 19 refs as a regular prop — destructuring `ref` from props, `ComponentProps<'tag'>` already including the ref type, `forwardRef` named once as deprecated, the eslint and codemod migration path.
-- Ref callbacks and the React 19 cleanup return — the callback runs with the node on mount, the returned cleanup runs on unmount; merging multiple refs via a callback or `react-merge-refs`; `useImperativeHandle` as the rare escape valve.
-- Portals — `createPortal(children, document.body)` for layout escape, the three canonical reaches (modals, toasts, anchored popovers), the stacking-context-trap fix from lesson 9 of chapter 024, events bubbling through the React tree not the DOM tree, the SSR `document` guard.
-- The accessible-modal contract — `role="dialog"`, `aria-modal`, focus management on open and close, focus trap, `Esc` close, scroll lock, backdrop click behavior; the native `<dialog>` element with `showModal()` and the top-layer as the platform alternative; recognition that shadcn's Dialog ships these baseline.
+- Custom hook fundamentals — the `use*` naming convention, the lint contract that the prefix carries, the rule that custom hooks share code not state.
+- When a custom hook earns its weight — the three-condition threshold (reused, clarifies, encapsulates) vs. the premature-extraction reflex.
+- Custom hook shapes — tuple vs. object return, generic typing, accepting callbacks and wrapping them with `useEffectEvent` to keep effect dep arrays stable.
+- The 2026 canonical custom-hook catalog — `useLocalStorage`, `useMediaQuery`, `useIntersection`, `useDebounced`, `useLockBodyScroll`, `usePrevious`, `useOnClickOutside` — and what each prevents.
+- React Compiler — what it is (Babel-plugin-based static analyzer), what it auto-memoizes (derived values, callbacks, JSX subtrees, provider values, object/array literal props), and what it doesn't touch (effects, rules of hooks).
+- Enabling the compiler in Next.js 16 — install `babel-plugin-react-compiler`, set `reactCompiler: true`, verify via the `Memo ✨` badge in DevTools; annotation mode for incremental migration.
+- What the compiler exposes — purity violations get skipped with warnings, surfacing latent rules-of-React bugs; `'use no memo'` is a temporary escape, not a fix.
+- The four cases where manual memoization still earns its weight — feeding a `useEffect` dep, integrating reference-equality-sensitive libraries, measured expensive computations the compiler skipped, hot-path `React.memo` guarantees.
+- What to stop hand-tuning — `useMemo` everywhere, `useCallback` on every handler, blanket `React.memo`, premature `dynamic()`, blanket `<Suspense>` boundaries; the measure-then-memoize workflow.
+- Migration from manual-memoization codebases — annotation-mode entry, file-by-file cleanup, profile-driven validation, the comment discipline that documents every residual escape hatch.

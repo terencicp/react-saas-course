@@ -1,204 +1,339 @@
-# Chapter 067 — Webhook ingestion
+# Chapter 067 — Project: Durable CSV export with Trigger.dev
 
 ## Chapter framing
 
-Chapter 067 lands the production webhook seam — the async edge where a third party (Stripe, Resend, anyone) calls into the app and where careless code becomes expensive in production. The student arrives with route handlers from Chapter 050, Drizzle transactions and `ON CONFLICT` from Chapter 042, Web Crypto and HMAC primitives from lesson 1 of chapter 020, Server Action idempotency hints from Chapter 047, and the `email_suppressions` discipline from lesson 4 of chapter 052. This chapter completes the loop: every untrusted POST goes through a signature check, every event lands at most once even under retries and out-of-order delivery, and the same unique-on-key constraint pattern that protects webhooks is named as the unifying idempotency discipline across Server Actions, retried jobs, and public route handlers.
+Chapter 067 takes the Trigger.dev primitives lessons lesson 3 of chapter 066–lesson 6 of chapter 066 installed (schemaTask, code-defined queues, `wait.for`, run-level retries, idempotency keys, lifecycle hooks) and lands them as one runnable durable job: a paginated CSV export of an org's invoices that survives a worker kill, serializes per-org via a dynamic queue, and ends in a `ExportReadyEmail` send through the Unit 7 Resend adapter. The student writes the task body, not the surrounding infrastructure — the cloud-linked project, the local-dev CLI, the inspector page that triggers and polls runs, and the React Email template are all provided. Each "Build it" lesson closes on a runnable state: lesson lesson 3 of chapter 067 ends with a fireable empty task validated by Zod; lesson 4 of chapter 067 ends with a full multi-page run completing and `console.log`-ing the would-be URL; lesson 5 of chapter 067 ends with the email landing in the student's inbox. The verify lesson then walks the three deterministic proofs — visible run progress, mid-run kill resumes, per-org serialization — clause by clause against the project's "Done when."
 
-Threads that run through every lesson: the route handler is the trust boundary — verify before parse, return 400 on signature failure with no body work, log nothing user-controlled before verification; the raw body is sacred — `await request.text()` once, HMAC the exact bytes, never re-stringify JSON; the dedup INSERT and the business work live in one transaction so a crash mid-handler can never leave partial state and a replay never mutates twice; the webhook is the single writer for the entities it owns (subscription status, suppression list), and the rest of the app reads-and-polls; out-of-order delivery is the default assumption, not a corner case — `event.created` plus a `last_event_at` predicate in the UPDATE WHERE makes "newer wins" structural; idempotency is a single discipline expressed through unique-on-key DB constraints, applied identically to webhooks (`event.id`), Server Actions (client-supplied UUID), retried jobs (stable run ID), and public route handlers (RFC `Idempotency-Key` header). The chapter ships five teaching lessons plus a quiz, ordered by dependency: verify at the boundary, dedup-and-transact, handle out-of-order and the redirect race, generalize idempotency, apply to Resend, then quiz.
+Threads that run through every lesson: every Server Action call site triggers a task and returns immediately — the user never waits on the export; the task receives `organizationId` in its payload because it has no request context, and re-derives tenancy via `tenantDb(organizationId)` inside the body; `schemaTask` validates the payload at the trigger boundary, never inside the body; the queue is declared in code (`trigger.config.ts`), never at trigger time (the v3-to-v4 break from lesson 4 of chapter 066); per-org serialization uses dynamic queues keyed by `organizationId`, not the static queue; durability lives at step boundaries — every page is its own `triggerAndWait` child run with `idempotencyKey = ${ctx.run.id}:page:${page}`, so a retried parent re-issues the same keys and the runtime returns prior results instead of re-running; the email send is its own `triggerAndWait` child with `idempotencyKey = ${ctx.run.id}:email`, guarding the Resend call against a parent-level retry; `run.metadata` carries live progress (`{ pagesDone, pagesTotal }`) for the inspector's poller; the inspector reads run state via the Trigger.dev REST API by `run.id`, never by scanning logs; the local CLI (`npx trigger.dev@latest dev`) is the only worker that can be killed mid-run, so the durability proof requires it specifically.
 
----
+### Dependency carry-in
 
-## Lesson 1 — Verify before parse
+- **From lesson 4 of chapter 066 (Trigger.dev v4 primitives):** the `src/trigger/` folder convention, `trigger.config.ts` with `queues:` declared in code, `schemaTask` with Zod payloads, `tasks.trigger` (fire-and-forget) vs `tasks.triggerAndWait` (in-task, returns the child's result), `ctx.run.id` / `ctx.attempt.number` / `ctx.run.metadata`, dynamic per-tenant queues via `queue: { name: \`org-${organizationId}\`, concurrencyLimit: 1 }`.
+- **From lesson 5 of chapter 066 (durable execution):** checkpoints at every `wait.*` and `triggerAndWait`, run-level retries with exponential backoff and jitter (declared in `retry: {...}`), `AbortTaskRunError` for permanent failures, `idempotencyKey` + `idempotencyKeyTTL` on `tasks.trigger` / `triggerAndWait` / `wait.for`, `idempotencyKeys.create([...keyArray])`, the `${ctx.run.id}:step:...` cross-step key shape.
+- **From lesson 7 of chapter 066 (workload picking):** the three Trigger.dev-bound jobs named (CSV export is the one this chapter builds; Stripe reconciliation and notification dispatcher are forward references), the `TRIGGER_SECRET_KEY` + `TRIGGER_PROJECT_REF` env surface, the deploy-Trigger-first-then-app order.
+- **From chapter 050 (Resend):** `sendEmail({ to, subject, react })` lives in `lib/email.ts`; the React Email runtime is installed; the verified domain is configured in `.env.local`; the suppression read is wired (skipped sends return an `err('suppressed', ...)` Result, i.e. `{ ok: false, error: { code: 'suppressed', ... } }`).
+- **From chapter 059 (tenancy):** `organizations` and `org_members` tables, `tenantDb(orgId)` returning a Drizzle handle scoped to the org, `audit_logs` and `logAudit(tx, event)`.
+- **From chapter 062 (list queries):** the invoices schema with cursor-paginatable reads; the project ships a thin starter wrapper `listInvoicesPage` over `listInvoices` from chapter 062 as the source of CSV rows.
+- **From chapter 043 (Server Actions + Result):** the canonical `{ ok: true, data } | { ok: false, error: { code, userMessage } }` shape returned by the `startExport` action; `authedAction('member', schema, fn)` wraps the trigger call.
+- **From chapter 041 (schema) and chapter 062 (concurrency):** no schema changes in this chapter beyond a small `exports` table the starter ships (id, organizationId, status, runId, requestedBy, requestedAt, completedAt, idempotencyKey unique on `(organizationId, requestedBy, dayBucket)`).
+- **From chapter 009 (Error classes):** `ExportError` subclass with codes `EMPTY_RESULTSET | UNKNOWN_PLAN` (the latter forward-referenced, named here so the union is open).
 
-Teaches the route handler trust boundary for Stripe webhooks — raw body via `request.text()`, HMAC-SHA-256 over `${t}.${rawBody}`, constant-time compare, the 5-minute timestamp tolerance, the `stripe.webhooks.constructEvent` SDK helper, and returning 400 with RFC 9457 problem+json on failure before any business logic runs.
+### Starter file tree (stubs marked with TODO)
 
-Stripe Node SDK primer (singleton wiring): install with `pnpm add stripe`; create `src/lib/stripe.ts` exporting a singleton `export const stripe = new Stripe(env.STRIPE_SECRET_KEY)` so every call site reuses the same client; add `STRIPE_SECRET_KEY` to `env.ts` alongside `STRIPE_WEBHOOK_SECRET`. The `stripe.webhooks.constructEvent` example below uses this singleton; the deeper SDK surface is owned by lesson 1 of chapter 068.
+```
+docker-compose.yml              # provided: postgres:18
+drizzle.config.ts               # provided
+trigger.config.ts               # TODO student: declare the `notifications` queue,
+                                #              the project ref + runtime — most of file scaffolded
+.env.example                    # provided: DATABASE_URL, BETTER_AUTH_SECRET, RESEND_API_KEY,
+                                #           TRIGGER_SECRET_KEY, TRIGGER_PROJECT_REF, APP_URL
+package.json                    # provided: db:migrate, db:seed, trigger:dev, trigger:deploy, dev
+scripts/
+  seed.ts                       # provided: three orgs, each with 200+ seeded invoices
+src/
+  db/
+    schema.ts                   # provided: organizations, org_members, invoices, audit_logs,
+                                #           and an `exports` table (id, orgId, status, runId,
+                                #           idempotencyKey unique, requestedBy, ...)
+  lib/
+    tenant-db.ts                # provided
+    authed-action.ts            # provided
+    audit-log.ts                # provided
+    email.ts                    # provided (Unit 7)
+    invoices/
+      list-page.ts              # provided: listInvoicesPage({ orgId, cursor, limit }) — starter-only wrapper over listInvoices from chapter 062
+    exports/
+      to-csv.ts                 # provided: pure rowsToCsv(rows): string
+      errors.ts                 # provided: ExportError class
+      start.ts                  # TODO student: startExport authedAction → tasks.trigger
+    trigger-client.ts           # provided: typed runs.retrieve, runs.list-for-org helpers
+  trigger/
+    export-invoices.ts          # TODO student: the schemaTask — payload, queue, body
+    send-export-email.ts        # TODO student: child task — render template + sendEmail
+    paginate-page.ts            # TODO student: child task — read one page, accumulate CSV
+  emails/
+    ExportReadyEmail.tsx        # provided: React Email template, takes { orgName, rowCount, downloadUrl }
+  app/
+    inspector/
+      page.tsx                  # provided: per-org "Export invoices" button, run-status panel
+                                #           polling /api/exports/[runId] every 1s,
+                                #           pagesDone/pagesTotal progress bar from run.metadata,
+                                #           "Trigger 2 parallel exports" debug button
+    api/
+      exports/
+        [runId]/route.ts        # provided: GET reads runs.retrieve, returns
+                                #           { status, metadata, completedAt, error }
+```
 
-Topics to cover:
+### Reference solution signatures lessons display
 
-- **The senior question.** A public POST endpoint at `/api/webhooks/stripe` accepts unauthenticated traffic. Anyone on the internet can call it. What's the trust contract that lets the rest of the handler treat the payload as Stripe-sent, and what happens at the boundary before any business logic runs? The lesson lands signature verification as the first and only thing the route handler does before deciding whether to process.
-- **The threat model — what a forged webhook would do.** Without verification, an attacker posts a `checkout.session.completed` JSON to the endpoint and gets a free entitlement. The signature scheme makes the call only-Stripe-can-have-sent — HMAC-SHA-256 over `${timestamp}.${rawBody}` keyed by the webhook secret. The senior anchor: the secret is the trust root; treat it like a session secret.
-- **The Stripe signature scheme — `t=...,v1=...` in the `stripe-signature` header.** Parsed into a timestamp `t` and one or more `v1` digests. The signed payload is the literal string `${t}.${rawBody}`. Verifying means computing the HMAC and constant-time-comparing against `v1`. Closes the Web Crypto thread from lesson 1 of chapter 020 — `crypto.subtle.importKey` plus `sign` plus `timingSafeEqual` (or the constant-time-compare helper).
-- **The raw body rule — `await request.text()` once.** Next.js 16 App Router gives the raw body via `request.text()`. JSON-parsing before verification is a verification bug — any reserialization changes whitespace or key order and the HMAC no longer matches. The senior pattern: `const body = await request.text()`, verify, then `JSON.parse(body)` only after the signature passes. Names the failure mode (`request.json()` silently re-stringifies on some setups), the fix (read text, parse later).
-- **The Stripe SDK shortcut — `stripe.webhooks.constructEvent`.** The Stripe Node SDK exposes `stripe.webhooks.constructEvent(body, signature, secret)` which encapsulates the timestamp parse, HMAC compute, constant-time compare, and tolerance check. The course uses the SDK helper for Stripe and the Svix SDK helper for Resend (lesson 5 of chapter 067), and the hand-rolled HMAC version once (this lesson) so the student understands what's inside the box.
-- **Timestamp tolerance — the replay window.** The signed payload includes a Unix timestamp; the handler rejects any signature with `|now - t| > 300s` (Stripe's default). Without the tolerance check, a captured signature is replayable forever. The lesson names 5 minutes as the canonical window and the trade-off: tighter is safer but breaks under clock skew, looser is permissive but enlarges the replay window.
-- **Constant-time comparison — why `===` is a bug.** A naive `===` comparison short-circuits on the first mismatched byte, leaking timing information. `crypto.timingSafeEqual` (Node) or a constant-time `subtle`-based compare iterates over the full buffer. Restates the discipline from lesson 1 of chapter 020 and lands it in production code.
-- **The route handler shape — verify first, return early.** A worked `POST` handler for `/api/webhooks/stripe`: read raw body, read `stripe-signature` header, call `constructEvent`, catch the verification error, return `400` with RFC 9457 problem+json on failure (titled "invalid_signature", no body echo, no detail leakage). On success, continue to dedup (lesson 2 of chapter 067). The shape is the chapter's canonical handler skeleton.
-- **The 400-versus-401 question.** Signature failure is a "bad request" (malformed proof), not "unauthorized" (no proof at all). The course uses `400` for signature failures uniformly because the third party retries on 5xx and treats 4xx as terminal — a 401 invites retry storms from misconfigured senders, a 400 cleanly signals "stop sending this." Names the rule.
-- **RFC 9457 problem+json for the error body.** The course's error contract from Chapter 050 applies here: `Content-Type: application/problem+json`, `{ type, title, status, instance }`. Restates briefly; doesn't re-teach.
-- **The `runtime: 'nodejs'` reach for crypto.** Next.js 16 route handlers default to Node runtime in App Router, but the senior anchor names this explicitly because the Edge runtime's Web Crypto is fine for HMAC verify and either choice is defensible; the course picks Node for the Stripe SDK availability. The lesson states the choice and the consequence.
-- **What `request.headers.get('stripe-signature')` returns and when it's null.** The header is required; null means the request didn't come from Stripe (or a misconfiguration). Treat null as a verification failure — same 400, same problem+json. No "let me give them the benefit of the doubt" branch.
-- **The local development loop — `stripe listen` and `stripe trigger`.** `stripe listen --forward-to localhost:3000/api/webhooks/stripe` opens a tunnel and prints the webhook signing secret to use locally. `stripe trigger checkout.session.completed` sends a synthetic event. The lesson names this as the daily iteration loop and ties it to the `STRIPE_WEBHOOK_SECRET` env entry — the local secret is different from the dashboard-configured production secret.
-- **The webhook-secret-rotation question.** Stripe lets you have multiple signing secrets active during a rotation. The handler can try the new secret first, fall back to the old. The SDK's `constructEvent` doesn't natively multi-secret; the senior pattern is to maintain two env entries during a rotation window and `try { new } catch { old }`. Names the pattern; doesn't drill.
-- **Watch-outs:** `request.json()` before `request.text()` consumes the body stream and the second read returns empty — read once as text, parse later; logging the body before verification surfaces attacker-controlled strings in your logs — verify first; `===` on the signature is a timing leak; missing the timestamp tolerance check makes captured signatures replayable forever; using the test-mode secret in production silently fails every event with a 400 — verify the secret matches the mode; trusting `request.ip` or the source IP for verification is a smell — the HMAC is the proof, IP allowlists are theater behind a CDN; double-stringifying JSON between body parse and HMAC sign is the canonical "but it works locally" bug — the raw bytes are the source of truth.
+- **`trigger.config.ts`** — exports default config with `project: env.TRIGGER_PROJECT_REF`, `runtime: 'node'`, `queues: [{ name: 'notifications', concurrencyLimit: 5 }]` (static queue named but unused this chapter; the export queue is dynamic per-org), and `retries: { default: { maxAttempts: 3, factor: 1.8, minTimeoutInMs: 1000, maxTimeoutInMs: 60_000, randomize: true } }`.
+- **`startExport`** (`lib/exports/start.ts`) — `authedAction('member', z.strictObject({}), async (_, ctx) => ...): Promise<Result<{ runId: string }>>`. Inserts an `exports` row with `status: 'queued'`, calls `tasks.trigger<typeof exportInvoices>('export-invoices', { organizationId: ctx.orgId, requestedBy: ctx.user.id }, { idempotencyKey: \`org:${ctx.orgId}:user:${ctx.user.id}:${dayBucket()}\`, idempotencyKeyTTL: '24h' })`, updates the `exports` row with the returned `runId`, returns `{ ok: true, data: { runId } }`.
+- **`exportInvoices`** (`trigger/export-invoices.ts`) — `schemaTask({ id: 'export-invoices', schema: z.strictObject({ organizationId: z.uuid(), requestedBy: z.uuid() }), queue: ({ payload }) => ({ name: \`org-${payload.organizationId}\`, concurrencyLimit: 1 }), retry: { maxAttempts: 3 }, run: async ({ organizationId, requestedBy }, { ctx, metadata }) => ... })`. Body: count total pages via a `count(*)` read, set `metadata.set('pagesTotal', total)`, loop pages 0..n calling `paginatePage.triggerAndWait(...)` with per-page idempotency key, accumulate CSV strings, then `sendExportEmail.triggerAndWait(...)` with the email idempotency key.
+- **`paginatePage`** (`trigger/paginate-page.ts`) — `schemaTask({ id: 'paginate-page', schema: z.strictObject({ organizationId: z.uuid(), page: z.int().nonnegative(), cursor: z.string().nullable() }), run: async ({ organizationId, page, cursor }) => { const { rows, nextCursor } = await listInvoices({ orgId: organizationId, view: 'active', cursor, pageSize: 500 }); return { csv: rowsToCsv(rows), nextCursor, rowCount: rows.length }; } })`.
+- **`sendExportEmail`** (`trigger/send-export-email.ts`) — `schemaTask({ id: 'send-export-email', schema: z.strictObject({ organizationId: z.uuid(), recipientUserId: z.uuid(), rowCount: z.int(), downloadUrl: z.string() }), run: async ({ organizationId, recipientUserId, rowCount, downloadUrl }) => { /* read org, read recipient email, render template, sendEmail */ } })`.
+- **Per-page idempotency key** — `\`${ctx.run.id}:page:${page}\`` (cross-step shape from lesson 5 of chapter 066).
+- **Per-email idempotency key** — `\`${ctx.run.id}:email\``.
+- **Env entries** (`.env.example`):
+  - `TRIGGER_SECRET_KEY=tr_dev_...` (per environment)
+  - `TRIGGER_PROJECT_REF=proj_...`
+  - `APP_URL=http://localhost:3000`
+  - existing `DATABASE_URL`, `RESEND_API_KEY`, `BETTER_AUTH_SECRET`
 
-What this lesson does not cover:
+### Inspector page spec
 
-- The dedup transaction and `processed_events` table — lesson 2 of chapter 067.
-- Out-of-order event handling — lesson 3 of chapter 067.
-- The full Stripe billing flow and event types — Chapter 068.
-- Web Crypto fundamentals (HMAC, `subtle.sign`, constant-time compare) — lesson 1 of chapter 020.
-- Route handler shape and error contracts — Chapter 050.
-- The `email_suppressions` schema — lesson 4 of chapter 052.
+A single Server Component at `/inspector` provided in full; the student writes only the task code and `startExport` action it exercises.
 
-Estimated student time: 50 to 60 minutes. The chapter's trust boundary — every later lesson assumes verification has run.
+- **Header:** active-org switcher (three seeded orgs each with 200+ invoices), session-user switcher (one admin per org), the active org's last export status read from the `exports` table.
+- **"Export invoices" button per org:** calls `startExport()` Server Action, on `{ ok: true }` the run panel below switches to the returned `runId` and starts polling `/api/exports/[runId]` every 1s.
+- **Run panel:** shows `runId`, status (`queued | executing | completed | failed | retrying`), `attempt.number`, a progress bar driven by `run.metadata.pagesDone / run.metadata.pagesTotal`, the duration since trigger, and (on completion) the `downloadUrl` from `run.output` plus a deep-link to the Trigger.dev dashboard run page.
+- **"Trigger 2 parallel exports for this org" debug button:** fires `startExport` twice with hand-rolled distinct idempotency keys (the debug bypasses the natural daily key) so the per-org queue serialization is observable — the second run shows `status: queued` until the first finishes.
+- **"Trigger 3 parallel exports across orgs" debug button:** fires for orgs A, B, C simultaneously; all three should reach `status: executing` immediately (different dynamic queues).
+- **Audit-log tail:** last 20 `audit_logs` rows for the active org; every completed export writes one (`export.invoices.completed`) and every fired-but-deduped action writes none (the idempotency-key short-circuit returns the prior run handle, no second audit row).
+- **No log scraping** — the panel reads run state structurally via the Trigger.dev REST API (`runs.retrieve` in `lib/trigger-client.ts`), so the verify lesson can assert against state, not log strings.
 
----
+### Verify recipe mapped to "Done when"
 
-## Lesson 2 — Claim once, mutate once
+| Done-when clause | Verify step |
+| --- | --- |
+| Firing the inspector "Export invoices" button kicks off a run that visibly progresses across pages in the Trigger.dev dashboard | Click the button for org A. Inspector run panel switches to `runId`, status moves `queued → executing`, progress bar advances `1/N → 2/N → ... → N/N` within the polling window. Open the Trigger.dev dashboard at the deep-link — each `paginatePage.triggerAndWait` shows as a child run with payload + output. |
+| Killing the local dev worker mid-run resumes after restart | Start `pnpm trigger:dev` in a side terminal. Trigger an export. When the inspector shows `pagesDone: 2 / 7`, hit Ctrl-C in the trigger terminal. Wait 5s. Re-run `pnpm trigger:dev`. The inspector panel resumes advancing from page 3; previously-completed pages return cached on the parent's retry-issued keys; the final state is `completed` with the same `runId`. |
+| Firing the same export twice for the same org enqueues the second behind the first | Click "Trigger 2 parallel exports for this org" (debug). Two runs appear in the panel list; the first goes `executing`, the second sits at `queued`. When the first hits `completed`, the second transitions `queued → executing`. The dashboard confirms both ran on the `org-<id>` queue with concurrency 1. |
+| Firing parallel exports across orgs runs them in parallel | Click "Trigger 3 parallel exports across orgs" (debug). All three runs transition to `executing` within ~1s; the dashboard shows three distinct dynamic queues `org-A`, `org-B`, `org-C`. |
+| Idempotency key short-circuits a duplicate same-day trigger | Click "Export invoices" twice in quick succession (no debug bypass). The second click's `startExport` returns the same `runId` as the first; the inspector does not add a second row to the run list; the `exports` table shows one row with the unchanged `idempotencyKey`. |
+| The email lands in the student's inbox with the right rowCount and a working download URL | After a completed run, the student's Resend-verified inbox receives the `ExportReadyEmail` render with `orgName`, `rowCount`, and the placeholder `downloadUrl` (a `https://example.com/exports/{runId}.csv` URL for this chapter — R2 lands in chapter 069). The audit-log tail in the inspector shows `export.invoices.completed`. |
+| The body validates payload structurally before any work | Use the Trigger.dev dashboard's "Run task" tool to fire `export-invoices` with `{ organizationId: 'not-a-uuid' }`. The dashboard shows the run failing immediately with a Zod error, no body work attempted, no `paginate-page` child runs spawned. |
 
-Teaches the `processed_events(provider, eventId)` ledger with `INSERT ... ON CONFLICT DO NOTHING RETURNING` as atomic check-and-claim, wrapping the dedup insert and the business mutation in one transaction, returning 200 (not 4xx) on lost-claim, and the 30-second Stripe timing budget that pushes side-effects to background jobs.
+### Concepts demonstrated → owning lesson
 
-Topics to cover:
-
-- **The senior question.** Stripe retries any webhook that doesn't get a 2xx within the timeout, and at-least-once delivery is the documented contract. The same event will arrive more than once. How does the handler process the event exactly once even under concurrent retries, network partitions, and crashes between the dedup check and the business work? The lesson lands the dedup-and-transact pattern as the structural answer.
-- **The `processed_events` table — the dedup ledger.** Schema: `provider text not null`, `eventId text not null`, `eventType text not null`, `receivedAt timestamptz default now()`, with `unique(provider, eventId)` as the composite constraint. One row per (Stripe, Resend, future-provider) event ever seen. The composite key lets a single table serve all providers without ID-space collisions. The senior anchor: the table is append-only — no updates, no deletes outside a retention sweep.
-- **`INSERT ... ON CONFLICT DO NOTHING` as both check and claim.** The naive shape — `select` from `processed_events`, decide, `insert` — has a race window where two concurrent retries both find the row missing, both proceed, both succeed. The atomic shape — `insert into processed_events (...) values (...) on conflict (provider, "eventId") do nothing returning id` — combines check and claim into one statement. The `RETURNING` row tells you whether you won the claim (one row) or lost it (zero rows). Closes the loop with the upsert mechanics from lesson 5 of chapter 042.
-- **Why the simple `select-then-insert` is broken.** The race window is real even on a single Postgres connection because Stripe retries can be concurrent on different workers. The lesson shows the broken shape, names the failure mode (double-processing, double-charging in the worst case), and the fix (atomic claim) as the structural answer. Wrong-then-right per the pedagogical conventions.
-- **The outer transaction — dedup INSERT and business work together.** `await db.transaction(async (tx) => { const claimed = await tx.insert(processedEvents)...returning(); if (!claimed.length) return; await applyBusinessLogic(tx, event); })`. The transaction guarantees: either both the dedup row and the business mutations commit, or neither does. A crash between the dedup INSERT and the UPDATE rolls both back; the retry re-claims and re-processes cleanly.
-- **Why a single transaction beats "claim, then process" outside.** If the claim INSERT commits but the business work fails after, the event ID is marked processed but the subscription never updated. The retry sees "already processed" and skips, leaving the data wrong. The wrap-everything-in-one-transaction shape makes this impossible — same commit boundary for the receipt and the consequence.
-- **Transaction isolation — `read committed` is enough.** The dedup pattern doesn't need `serializable` or `repeatable read` because the uniqueness constraint does the heavy lifting. Two concurrent transactions both attempt the INSERT; one wins, the other gets a constraint violation and rolls back. The senior anchor: lean on constraints, not isolation levels. Restates from lesson 4 of chapter 043 briefly.
-- **The "lost the claim" branch — return 200, not 4xx.** If the INSERT returns zero rows, the event was already processed. Return 200 immediately. Returning a 4xx tells Stripe to stop retrying (correct) but a 5xx tells it to retry (incorrect — there's nothing to do). The senior anchor: the dedup short-circuit is a success path, not an error.
-- **Handler timing budget — Stripe's 30-second window.** Stripe waits up to 30 seconds for a 2xx before treating the request as failed. Heavy business work risks timeouts and unwanted retries. The senior reach: do the minimum mutation synchronously; queue everything else (sending an email, computing analytics) to the background job system (Chapter 070). Names the threshold and the pattern.
-- **`processed_events` retention.** Rows accumulate forever without bound. A background cleanup deletes rows older than 30 to 90 days (longer than any provider's retry window). The senior reach: a scheduled job, not a foreground delete; the retention policy is documented in the schema comment. Names the discipline; doesn't drill.
-- **The `eventType` column — why store it.** Not load-bearing for dedup (the unique constraint is on `(provider, eventId)`). Stored for observability — the analyst can answer "how many `checkout.session.completed` did we process last week" without an external system. Costs nothing; pays off the first time you need it.
-- **What the handler returns to Stripe.** `200 OK` on dedup-hit (already processed), `200 OK` on processed-now, `400` on signature failure (lesson 1 of chapter 067), `5xx` only on genuine server error (DB down, code crash) so Stripe retries. The lesson maps the full status code surface and pins the rule: never 5xx as a "soft retry" signal — that's the dedup ledger's job.
-- **Logging the event ID — observability hooks.** Every code path logs the event ID and the disposition (claimed/duplicate/error) with the structured logger from Chapter 096. The senior anchor: webhook handlers are debug-hostile by default — the log is what you have when production misbehaves at 2am. Names the rule.
-- **Worked example — the full handler scaffold.** Verify (from lesson 1 of chapter 067) → parse the event → open a transaction → claim via `ON CONFLICT DO NOTHING RETURNING` → if not claimed, return 200 → switch on `event.type` → call the typed handler (`onCheckoutCompleted(tx, event)`) → commit → return 200. The reference shape for the rest of the chapter and for the project (chapter 069).
-- **Watch-outs:** the `processed_events` insert outside the transaction is a partial-state bug — keep them together; using `ON CONFLICT (eventId)` without `provider` collides Stripe and Resend IDs that happen to overlap — composite key; treating a "lost the claim" as a 4xx makes Stripe retry forever — 200; doing the SDK call (Resend send, Stripe API call) inside the transaction holds DB connections across network IO — split: do DB-only work inside the transaction, queue side-effects to background jobs; long-running event handlers exceeding 30 seconds get retried and double-processed if the second one also takes too long — split work; using `serializable` isolation under heavy webhook load produces serialization failures and retries — `read committed` plus unique constraints is enough; `processed_events` without retention sweep becomes the largest table in the database over time — schedule the cleanup.
-
-What this lesson does not cover:
-
-- Out-of-order event ordering and the `last_event_at` predicate — lesson 3 of chapter 067.
-- Server Action idempotency and the public-route `Idempotency-Key` header — lesson 4 of chapter 067.
-- Background jobs for offloaded post-webhook work — Chapter 070.
-- The `ON CONFLICT` and `RETURNING` mechanics — lesson 5 of chapter 042.
-- Transactions and isolation level mechanics — lesson 4 of chapter 043.
-- Specific Stripe event types and what `applyBusinessLogic` does — Chapter 068 and the project.
-
-Estimated student time: 50 to 60 minutes. The structural backbone of every webhook handler in the course.
-
----
-
-## Lesson 3 — Newer wins, single writer
-
-Teaches the `event.created` plus `last_event_at` predicate inside the UPDATE WHERE for out-of-order delivery, UPDATE-RETURNING to detect stale no-ops, the "webhook is the only writer" rule, and the success-page read-and-poll via `router.refresh()` that closes the redirect-versus-webhook race without double-writing entitlements.
-
-Topics to cover:
-
-- **The senior question.** Two webhooks arrive: `customer.subscription.updated` at status `active`, then a moment later `customer.subscription.updated` at status `past_due`. Network reorders them and `past_due` lands first, then `active`. The naive handler applies both in arrival order and ends up at `active` — wrong. Separately, the user gets redirected from Stripe Checkout to `/success` before the `checkout.session.completed` webhook lands; the success page renders before the entitlement exists. The lesson lands both ordering problems and the structural fixes.
-- **Stripe's ordering contract — there is none.** Events are emitted in roughly the order they happen, but delivery is at-least-once and unordered. The Stripe docs name this explicitly. The senior anchor: assume out-of-order is the default, not an edge case, and design for it.
-- **The `event.created` timestamp — what Stripe ships with every event.** Every event carries `created` (Unix seconds). Two events for the same subscription have monotonically increasing `created` values — they were emitted in order, even if they arrive out of order. The handler uses `created` as the ordering predicate.
-- **The `last_event_at` column on the mutated entity.** Add a `lastEventAt timestamptz` column to entities the webhook mutates (`organizations`, `plan_entitlements`, whatever the subscription state lives on). The UPDATE statement carries `where ... and (last_event_at is null or last_event_at < ${event.created})`. Stale events (older `created` than the row's `lastEventAt`) update zero rows and are silently no-op. Newer events update and set `lastEventAt = event.created` in the same statement.
-- **Why this is structural, not procedural.** A naive "if newer, update" branch in application code has the same race window as the naive dedup check — two concurrent handlers both read `lastEventAt`, both find theirs newer, both update, the older one wins. The WHERE-clause predicate inside the UPDATE is atomic; the database evaluates the condition under row-lock, no race. Same shape as the dedup atomicity argument from lesson 2 of chapter 067 applied to ordering.
-- **The UPDATE-RETURNING pattern to detect no-op.** `update ... set ... where ... returning id` returns zero rows when the predicate didn't match. The handler logs the no-op (observability) and returns 200 — the event was a stale ordering, not an error.
-- **Pairing with dedup — both predicates in the same transaction.** The full handler shape: claim via `processed_events` INSERT (idempotency), then mutate with the `lastEventAt` predicate (ordering). Both inside the outer transaction. The two are orthogonal: dedup protects against the same event arriving twice, ordering protects against different events arriving in the wrong order.
-- **The redirect-versus-webhook race — what it is.** Stripe Checkout completes; the user gets redirected to `${app}/success?session_id=...`; the success page renders; meanwhile, the `checkout.session.completed` webhook is in flight and hasn't arrived. The page reads `plan_entitlements` and sees the old value. The user sees "you're on the free plan" after paying.
-- **The wrong fix — "let the success page write the entitlement."** Tempting because it removes the race. Wrong because it creates two writers (success page + webhook) for the same row, and the race comes back as a write-write conflict, with subtler bugs. The senior anchor: the webhook is the only writer for entitlement state. Restates a principle.
-- **The right fix — read-and-poll on the success page.** The success page is a Server Component that reads the entitlement; if the entitlement isn't yet updated, render a "finalizing" state and trigger `router.refresh()` via a Client Component that polls every 500ms with a 30-second budget. After 30 seconds, surface "this is taking longer than expected — check your email." The webhook lands, the row updates, the next poll sees the new state.
-- **An alternative — Stripe's `retrieve` API call as a fast path.** If the redirect happens before the webhook, the success page can call `stripe.checkout.sessions.retrieve(sessionId)` to confirm payment, then write the entitlement directly. This violates the single-writer principle but is sometimes shipped. The course names it as the conditional reach for product reasons (user perception of speed) but defaults to read-and-poll because correctness beats perceived latency.
-- **`router.refresh()` as the polling primitive.** A Client Component on the success page uses a `setInterval` to call `router.refresh()`, which re-runs the Server Component fetch. Cheaper than full client-side fetching, integrates with the cache layer from Chapter 036. Names the API; restates briefly.
-- **Stale-event observability — what to log and what to alert on.** A handler that drops 1-in-10000 events as stale is normal; 1-in-10 means an upstream ordering issue or a clock-skew problem. Log every stale event with `event.id`, `event.type`, `event.created`, `row.lastEventAt`. Alert on the rate, not the absolute count.
-- **What about events without a clear "entity to order against"?** A `payment_intent.payment_failed` doesn't update a long-lived entity — it appends to a payment-attempts log. No ordering predicate needed; dedup alone is the discipline. Names the asymmetry: ordering matters for *state*, not for *facts*.
-- **Worked example — the `customer.subscription.updated` handler.** Pulled apart line by line: dedup claim, then `update plan_entitlements set status = ${new}, last_event_at = ${event.created} where org_id = ${id} and (last_event_at is null or last_event_at < ${event.created})` (schema sketch: `plan_entitlements(org_id, status, last_event_at)`; the table is wired in lesson 4 of chapter 068 — the example here demonstrates the conflict-resolution shape). The same statement does both the ordering check and the write atomically. The handler returns 200 on no-op-due-to-stale and logs the disposition.
-- **Watch-outs:** comparing `event.created` against `now()` instead of the row's last event time is a clock-skew bug — compare row-against-event, not event-against-clock; storing `lastEventAt` as a separate UPDATE after the entity write opens the same race the predicate is meant to close — one statement; reading the entitlement on the success page without polling locks the user into the stale state until the next navigation — poll or render a finalizing state; writing the entitlement from the success page in addition to the webhook duplicates the writer and produces lost-update bugs; dropping events as stale silently with no log makes upstream issues invisible — log every no-op; for entities like `payment_intent` that are facts, not state, the ordering predicate doesn't apply and adding it is over-engineering; thirty seconds is the standard polling budget — longer is bad UX, shorter risks giving up before the webhook lands on a slow day.
-
-What this lesson does not cover:
-
-- The `processed_events` schema and the dedup INSERT — lesson 2 of chapter 067.
-- The `plan_entitlements` derived view and the full Stripe state model — Chapter 068.
-- `router.refresh` and cache invalidation mechanics — Chapter 036.
-- Background polling alternatives (websockets, server-sent events, real-time) — out of scope for this chapter.
-- Server Action idempotency and public route handlers — lesson 4 of chapter 067.
-- Observability and structured logging — Chapter 096.
-
-Estimated student time: 45 to 55 minutes. The "money seam" lesson — the bugs taught here are the ones that show up in incident postmortems.
-
----
-
-## Lesson 4 — One pattern, four surfaces
-
-Promotes the unique-on-key constraint plus atomic insert into a portable idempotency discipline applied identically to webhooks (`event.id`), Server Actions (Client-Component `crypto.randomUUID()` form key), retried background jobs (stable `runId`), and public route handlers (the RFC `Idempotency-Key` header with scoped-per-client response caching).
-
-Topics to cover:
-
-- **The senior question.** The webhook handler protects against duplicate delivery with a unique constraint and atomic claim. The same shape applies to other "could happen twice" surfaces: a Server Action submitted twice from a double-click, a background job retried by the runtime, a public API POST replayed by a flaky client. Is there one discipline that unifies all of these, or four ad-hoc patterns? The lesson lands the single discipline: unique-on-key DB constraint plus atomic insert as the universal idempotency primitive.
-- **The pattern, stated once.** For any operation where "exactly once" matters, choose a key that identifies "this attempt", store it under a unique constraint, do the work in the same transaction as the insert. On replay, the unique violation (or `ON CONFLICT DO NOTHING` returning zero rows) tells you the work already happened; return the prior result if you cached it, return success otherwise. Names the pattern as the chapter's unifying mental model.
-- **Webhooks — `processed_events(provider, eventId)`.** Restates from lesson 2 of chapter 067 as the canonical instance. The key comes from the sender (Stripe's `event.id`); the table is the ledger; the constraint is the structural guarantee.
-- **Server Actions — the form-supplied UUID.** Closes the thread from Chapter 047. A form action that creates a row generates a UUID client-side (or hidden-input-injected on first render) and the action inserts the row with that UUID as the primary key (or a separate `idempotencyKey` column with a unique constraint). A double-submit either succeeds the first and conflicts the second cleanly. The senior anchor: `crypto.randomUUID()` in the Client Component, hidden input, action reads it from the form.
-- **Why the client-supplied UUID beats server-generated.** Server-generated UUIDs on each invocation defeat the point — every submit is a fresh key. The key has to be stable across the submit and its replay. The Client Component generates once per form-render; React 19 form state preserves it through pending and re-submission.
-- **Retried background jobs — the stable run ID.** Foreshadows Chapter 070. The job runtime (Trigger.dev) gives every retry of a job the same `runId`. The job body inserts results keyed by that ID; a retry conflicts cleanly. Same pattern, different key source. Names the parallel and points forward.
-- **Public route handlers — the `Idempotency-Key` HTTP header.** A public POST endpoint (`/api/invoices` consumed by external integrations) accepts an `Idempotency-Key` header (RFC draft, widely adopted — Stripe and others do this). The handler stores `(client_id, idempotencyKey, response_body, status)` keyed unique on `(client_id, idempotencyKey)`. A replay with the same key returns the cached prior response, byte-identical. Cache horizon: 24 hours is the common contract.
-- **What the cached response includes.** The full HTTP status and body. A second call with the same key gets the same status and body, even if the underlying state has since changed. The senior anchor: idempotency caches the *response*, not the *state* — the response is the contract the client trusts.
-- **Key generation — UUID is the default, but any opaque string works.** The RFC recommends UUID; in practice any opaque string the client can re-send is fine. The course defaults to `crypto.randomUUID()` for both server-action and route-handler keys.
-- **The key-collision threat — why scoping matters.** Two different clients submitting the same `Idempotency-Key` value would step on each other if the table keyed only on the key. The constraint is `(clientId, idempotencyKey)`; for webhooks it's `(provider, eventId)`; for Server Actions, the `userId` or `orgId` scopes it. Names the pattern: idempotency keys are scoped to whoever's claiming them.
-- **The `Idempotency-Key` route handler shape.** Pseudo-code-ish: read the header (return 400 if missing on an endpoint that requires it), open a transaction, attempt `insert into idempotency_keys ... on conflict do nothing returning *`, if claimed, do the work and update the row with the response; if not claimed, read the row and return the cached response. The same dedup-and-transact shape from lesson 2 of chapter 067 with a response cache attached.
-- **What endpoints require it — the policy question.** Not every POST does. Idempotency keys earn their weight on operations that have external side effects (payments, sends, creates) and not on operations that are naturally idempotent (PUT replacing a value, DELETE). The senior anchor: require it on writes that "would be bad to do twice" and document the requirement in the API contract.
-- **`Idempotency-Key` versus webhook signatures — the orthogonality.** Signatures answer "is this from a trusted sender" (lesson 1 of chapter 067); idempotency keys answer "is this the same attempt as before". A webhook has both: the signature proves provenance, the event ID is the idempotency key. A public route handler has both: auth proves identity, the header is the key.
-- **The 90% test — pick the smallest version.** A new Server Action that creates a row: does it need full idempotency? Often a unique constraint on the natural key (the `slug`, the `email`, the `(orgId, name)` pair) does the same job without an explicit `idempotencyKey` column. The lesson names the cost-of-discipline question: an explicit `idempotencyKey` column is overhead the row pays forever; rely on natural uniqueness when it's there, add the column when it isn't.
-- **The webhook-to-action-to-job mental model — one diagram.** A Mermaid sequence-style or three-column compare diagram: same shape, different key source, different replay trigger. Webhook: provider sends, key is `event.id`. Action: user submits, key is the form UUID. Job: runtime retries, key is the run ID. Public API: client retries, key is the header. One pattern, four surfaces.
-- **Watch-outs:** generating the idempotency key server-side per request defeats the point — generate at the source that owns the "attempt" definition; not scoping the key by tenant/user lets keys collide across customers — composite constraint; caching the response body means storing user-visible data in the idempotency table — apply the same retention as `processed_events` and the same redaction rules from observability; reusing an idempotency key across semantically different operations confuses the cache — keys are per-operation; ignoring the `Idempotency-Key` header on an endpoint that accepts it makes the contract a lie — implement or remove; not bounding the cache window means stale responses persist forever — 24 hours is the common contract, name and document it; treating a missing header as success (instead of 400) lets non-idempotent clients silently double-charge — require the header on the endpoints that require it.
-
-What this lesson does not cover:
-
-- Webhook-specific dedup (already covered) — lesson 2 of chapter 067.
-- The full Server Action mechanics — Chapter 047.
-- Background job retries and `runId` mechanics — Chapter 070.
-- API contract design and route handler error contracts — Chapter 050.
-- The full RFC draft for `Idempotency-Key` — referenced, not drilled.
-- Distributed-system theory of idempotency beyond the SaaS surface — out of scope.
-
-Estimated student time: 45 to 55 minutes. The lesson that promotes the webhook pattern into a portable senior discipline.
+- Inline `await` vs. `after()` vs. Vercel Cron vs. Trigger.dev as the four-tier ladder, with the five trigger conditions — lesson 3 of chapter 066.
+- `schemaTask` for Zod-validated payloads at the trigger boundary — lesson 4 of chapter 066.
+- `tasks.trigger` (fire-and-forget from Server Actions) vs `tasks.triggerAndWait` (in-task child runs) — lesson 4 of chapter 066.
+- Queues declared in code (the v3-to-v4 break) — lesson 4 of chapter 066.
+- Dynamic per-tenant queues keyed by `organizationId` (the SaaS pattern) — lesson 4 of chapter 066.
+- `ctx.run.id`, `ctx.attempt.number`, `ctx.run.metadata` — lesson 4 of chapter 066 / lesson 5 of chapter 066.
+- Durable checkpoints at every `triggerAndWait` boundary — lesson 5 of chapter 066.
+- Run-level retries with exponential backoff and jitter (declared in `retry`) — lesson 5 of chapter 066.
+- `idempotencyKey` on `tasks.trigger` (business-key at the action) and `triggerAndWait` (cross-step `${ctx.run.id}:page:N`) — lesson 5 of chapter 066.
+- `idempotencyKeyTTL` to scope the dedup window — lesson 5 of chapter 066.
+- `AbortTaskRunError` for permanent failures (the empty-resultset case) — lesson 5 of chapter 066.
+- Mutable `run.metadata` as the live-progress channel for an inspecting client — lesson 6 of chapter 066.
+- Task body has no request context — payload carries `organizationId`, `tenantDb(orgId)` re-derives tenancy inside the body — lesson 3 of chapter 066 / lesson 7 of chapter 066.
+- `authedAction(role, schema, fn)` wrapping the trigger call from app code — chapter 057.
+- `tenantDb(orgId)` for org-scoped reads inside the task — chapter 056.
+- Canonical Server Action Result shape returned by `startExport` — chapter 043.
+- `audit_logs` append-only on every completed run, written from the task body inside the same transaction as the `exports` row update — chapter 059.
+- Resend send through `lib/email.ts` from inside a task (no request context) — chapter 050.
+- React Email template render passed as `react:` to `sendEmail` — chapter 050.
 
 ---
 
-## Lesson 5 — Resend bounces and complaints
+## Lesson 1 — The export job, end to end
 
-Ships the second instance of the pattern — Svix signature verification (`svix-id` / `svix-timestamp` / `svix-signature`), the `email.bounced` and `email.complained` handlers writing to `email_suppressions` with `ON CONFLICT DO NOTHING`, and the audited `bypassSuppression` carve-out for password-reset and other critical transactional sends.
+Frame the durable paginated CSV export, state the "Done when" clauses, name the scope cuts (no R2 yet, no streaming, no schedule), and clone the starter.
 
-Topics to cover:
+Goals:
 
-- **The senior question.** Resend webhooks announce `email.bounced` and `email.complained` events. These are the inbound side of the deliverability discipline from lesson 4 of chapter 052 — every bounced or complained address gets added to `email_suppressions` and the application never sends to it again. The handler is the same shape as Stripe's: verify, dedup-and-transact, mutate. What changes is the signature scheme (Svix instead of Stripe) and the business work (insert into suppressions). The lesson lands the second instance of the pattern and pins the shape as portable.
-- **Resend's webhook signature scheme — Svix, not Stripe.** Resend uses Svix (the webhooks-as-a-service standard) for signing. Headers: `svix-id`, `svix-timestamp`, `svix-signature` (the signed payload is `${svix-id}.${svix-timestamp}.${rawBody}` HMACed with the secret, base64-encoded `v1,<digest>`). The Svix SDK (`svix` npm package) exposes `Webhook.verify(body, headers)` with the same boundary contract as Stripe's `constructEvent`. Same discipline; different SDK.
-- **The secret format — `whsec_...` and what to strip.** Svix secrets are stored as `whsec_<base64>`. The SDK handles the prefix; hand-rolling HMAC requires stripping it and base64-decoding the remainder as the HMAC key. The lesson uses the SDK uniformly and names the format as the env-entry shape.
-- **The route handler shape — `app/api/webhooks/resend/route.ts`.** Same canonical skeleton as Stripe: read raw body, read Svix headers, `wh.verify(body, headers)` → parsed event or thrown verification error, return 400 on failure with problem+json, dedup-claim with `processed_events(provider: 'resend', eventId: event.data.email_id /* or similar */)`, switch on event type, apply business work, return 200. The lesson highlights the few diff lines from the Stripe handler — provider string, signature SDK, event-type switch — to land that the rest is identical.
-- **The event-type surface — what Resend ships.** The course handles two events: `email.bounced` and `email.complained`. Other Resend events (`email.delivered`, `email.opened`, `email.clicked`) are reachable for analytics but not load-bearing for the suppression discipline. The senior reach: subscribe only to the events the application acts on — every subscribed event is a maintenance cost.
-- **`email.bounced` — what to do.** A bounce can be permanent (hard) or transient (soft). The Resend payload carries the bounce type. Hard bounces add the recipient to `email_suppressions` with `reason: 'bounce'`, `permanent: true`. Soft bounces are logged and a counter incremented; after N soft bounces in a window, escalate to suppression. The course's default: suppress on hard, log soft, name the escalation as a per-product call.
-- **`email.complained` — what to do.** A complaint (the recipient clicked "report spam") adds to `email_suppressions` with `reason: 'complaint'`, `permanent: true`. Complaints are always treated as permanent — re-sending to a complaining recipient damages sender reputation across all customers. The senior anchor: complaints are catastrophic, not informational.
-- **The suppression INSERT — `ON CONFLICT DO NOTHING` again.** The pattern recurs: `insert into email_suppressions (email, reason, suppressed_at) values (...) on conflict (email) do nothing`. Same atomic claim, same idempotency story. A bounce of an already-suppressed address is a silent no-op.
-- **The full transaction shape.** `db.transaction(async (tx) => { claim in processed_events; if not claimed return; insert into email_suppressions on conflict do nothing; })`. Dedup at the event level, idempotent at the suppression level. Both protections compose.
-- **The `bypassSuppression` carve-out.** Some transactional flows must send even to suppressed addresses — the password-reset email to an account that has bounced is the canonical case (the user needs the reset to recover the account; suppressing it locks them out). The `sendEmail` helper from Chapter 8 accepts a `bypassSuppression: true` flag, used sparingly and audited. The senior anchor: the carve-out is a named, documented exception, not a per-call ergonomic — three or four call sites in the codebase, each justified in a comment.
-- **The send-time suppression check — where it lives.** Restates from lesson 4 of chapter 052 briefly: `sendEmail(to, ...)` queries `email_suppressions` before calling Resend; returns `{ ok: false, reason: 'suppressed' }` without sending unless `bypassSuppression` is set. The webhook handler populates the table; the send helper reads it. Closes the loop with Chapter 8.
-- **What about un-suppression?** A user contacts support saying "I unsubscribed but I want emails again." Manual un-suppression is a support flow — delete the row from `email_suppressions` or set an `unsuppressed_at` timestamp. The course doesn't ship a self-serve un-suppression because the legal and deliverability calculus is product-specific. Names the surface; doesn't drill.
-- **Stripe and Resend in one handler vs. two — the design call.** One unified handler at `/api/webhooks` with provider-detection logic, or two at `/api/webhooks/stripe` and `/api/webhooks/resend`. The course picks two — separate routes, separate verification config, separate observability. The unification is in the shared helpers (`claimEvent`, `processedEventsTable`), not in the route file.
-- **The portability test.** Adding a third webhook provider (Trigger.dev callbacks, a future integration) means: a new route file, a new signature-verification SDK call, the same `processed_events(provider, eventId)` claim, the same outer transaction, a new event-type switch. The lesson names this as the proof the pattern scales.
-- **Worked example — the Resend handler end to end.** The full route file, including the Svix verify, the dedup claim, the bounce/complaint handlers, the `email_suppressions` insert, the 200/400 returns. Twenty-five to thirty lines; reuses the helpers introduced in lesson 2 of chapter 067.
-- **Watch-outs:** the Svix headers are case-sensitive in some adapters — read via `request.headers.get('svix-id')` (Node lowercases them); subscribing to every Resend event "because it might be useful" wastes handler invocations and grows the dedup ledger — subscribe to what you act on; treating soft bounces as permanent suppression alienates users with transient inbox issues — distinguish at the handler; bypassing suppression for marketing email is a deliverability bomb — the carve-out is transactional-only and audited; deleting from `email_suppressions` to "fix" a stuck recipient without addressing root cause (the address really does bounce) triggers cascading suppression on the next send — verify before un-suppressing; the suppression check at send time is the structural guard — the webhook populates the table but the send must always read it, no shortcuts.
+- Frame what is being built: a paginated, durable CSV export task fired from a Server Action, serialized per-org via a dynamic queue, ending in a `ExportReadyEmail` send. One screenshot of the inspector showing a run completed, progress bar at `7/7`, the audit-log row, and the email arriving in the student's inbox.
+- State the "Done when" in one paragraph (runs visibly progress, mid-run worker kill resumes, parallel triggers per org serialize, parallel across orgs parallelize, idempotency key short-circuits same-day duplicate, email arrives with the right rowCount, payload validates structurally).
+- Name the scope cuts: no R2 upload yet — the email's `downloadUrl` is a placeholder `https://example.com/exports/{runId}.csv` and the project notes chapter 069 wires the real upload; no streaming generation — the CSV is materialized in memory across pages because the rows-per-org cap keeps this safe (the senior call is named, the streaming alternative referenced); no schedule — exports fire from the inspector, the scheduled-export pattern is a forward note to Chapter 14; no per-user rate limit on `startExport` — Unit 15b lands that; no failure-email path — a permanently-failed export logs but does not email the student a failure notification (Unit 13's dispatcher will).
+- Set the senior payoff: this is the canonical Trigger.dev shape every later durable job (Stripe reconciliation in Unit 11 forward note, notification dispatcher in chapter 071) will copy — `schemaTask` at the boundary, dynamic per-tenant queue for back-pressure, `triggerAndWait` per step for durability, cross-step idempotency keys guarding side effects across retries, `run.metadata` for live progress to the watching client. The student writes one job here and can defend every primitive.
+- Show the end UX: a short animated capture of clicking Export → progress bar advancing → the Ctrl-C-and-restart drill resuming cleanly → email arriving.
+- Link the starter via `degit`.
 
-What this lesson does not cover:
+Senior calls and watch-outs:
 
-- Resend setup, DKIM/SPF/DMARC, and sender identity — Chapter 052.
-- React Email composition — Chapter 053.
-- The `email_suppressions` schema (already shipped in lesson 4 of chapter 052) — restated briefly; not re-taught.
-- Signature verification fundamentals — lesson 1 of chapter 067.
-- Dedup mechanics — lesson 2 of chapter 067.
-- Background job orchestration for retries — Chapter 070.
+- The Trigger.dev cloud project must be created first (`npx trigger.dev@latest init` in the starter folder runs the interactive flow); the starter ships the project skeleton but the student's account creates the project ref and pastes it into `.env.local`. Named here so it does not surprise them in lesson 2 of chapter 067.
+- Local dev requires the trigger CLI side terminal (`pnpm trigger:dev`) running alongside `pnpm dev` — without it tasks queue forever. The lesson names the daily two-terminal rhythm.
+- Re-running the starter's seed is idempotent (the seed checks `organizations.id` existence first) — students can reset state safely. Trigger.dev's run history is not reset by the seed; old runs accumulate in the dashboard.
+- The free tier covers everything this chapter runs (3 runs × ~10 pages × 3 orgs = 90 child runs total). Named so the student is not anxious about hitting the cap during the kill-resume drill.
 
-Estimated student time: 35 to 45 minutes. The application lesson — proves the pattern is portable and ships the second instance students will reach for.
+Codebase state at entry: empty repo (student runs `degit`).
+Codebase state at exit: starter cloned, `pnpm install` clean, `docker compose up -d` running Postgres, `pnpm db:migrate && pnpm db:seed` populated three orgs, Trigger.dev account created and `npx trigger.dev@latest init` linked, `TRIGGER_SECRET_KEY` and `TRIGGER_PROJECT_REF` pasted into `.env.local`, `pnpm dev` shows the inspector with the per-org Export buttons, `pnpm trigger:dev` running in a side terminal showing "Waiting for tasks" — clicking Export returns an error because the task file is empty.
+
+Estimated student time: 15 to 25 minutes.
 
 ---
 
-## Lesson 6 — Quizz
+## Lesson 2 — Tour the starter and the two-terminal loop
 
-Top 10 topics to quiz:
+Walk the provided files and the three TODO task stubs, read the inspector and `exports` table, and run the `pnpm trigger:dev` + `pnpm dev` loop to confirm the cloud link.
 
-- Signature verification at the route handler boundary — raw body via `request.text()`, HMAC over `${t}.${rawBody}`, constant-time comparison, timestamp tolerance, 400 with RFC 9457 on failure; verify before parse before log.
-- The `processed_events(provider, eventId)` composite unique key and why a single-provider key collides; `INSERT ... ON CONFLICT DO NOTHING RETURNING` as atomic check-and-claim that closes the `select-then-insert` race.
-- The outer transaction wrapping the dedup INSERT and the business work — partial-state impossibility, the lost-claim path returning 200 not 4xx, why 5xx is for genuine errors only.
-- Out-of-order delivery as the default assumption — `event.created` plus a `last_event_at` predicate in the UPDATE WHERE; UPDATE-RETURNING to detect no-op-due-to-stale; ordering protection vs. dedup protection as orthogonal.
-- The redirect-versus-webhook race and the "webhook is the only writer" rule; success-page read-and-poll via `router.refresh()` as the structural fix; why double-writing from the success page is wrong.
-- Idempotency as a unifying discipline — unique-on-key constraint plus atomic insert, applied identically to webhooks (`event.id`), Server Actions (client-supplied UUID), retried jobs (stable run ID), and public route handlers (`Idempotency-Key` header).
-- The `Idempotency-Key` HTTP header contract — scoped per client, 24-hour cache horizon, caches the response not the state, returns the cached body on replay.
-- Server Action idempotency keys generated at the source (Client Component `crypto.randomUUID()` once per form render) and not at the server per invocation; natural-uniqueness shortcut when a domain unique already exists.
-- The Resend webhook shape — Svix signature verification, the `email.bounced` and `email.complained` events, the `email_suppressions` ON CONFLICT insert, the `bypassSuppression` carve-out for password reset and other critical transactional flows.
-- The Stripe handler timing budget (30 seconds), the split-work pattern (DB-only inside the transaction, side effects to background jobs), and 200-on-dedup-hit as the success path, never as an error code.
+Goals:
+
+- Walk the file tree, calling out provided vs. stubbed. Linger on the three TODO task files (`trigger/export-invoices.ts`, `trigger/paginate-page.ts`, `trigger/send-export-email.ts`), the stub `startExport` in `lib/exports/start.ts`, and `trigger.config.ts` (mostly scaffolded — the student fills the queue declaration in lesson 3 of chapter 067).
+- Read the provided pieces end-to-end: `lib/email.ts` (Unit 7 carry-in), `lib/invoices/list-page.ts` (cursor-paginated reader the task calls), `lib/exports/to-csv.ts` (pure function the student does not need to write), `emails/ExportReadyEmail.tsx` (the React Email template with `{ orgName, rowCount, downloadUrl }` props), `lib/trigger-client.ts` (the typed REST helper the inspector route uses to read run state).
+- Read the inspector: confirm the per-org Export buttons, the run-status polling panel, the progress bar wired to `run.metadata`, the parallel-debug buttons, the audit-log tail.
+- Read the `exports` table in `db/schema.ts`: `id`, `organizationId`, `requestedBy`, `status` (`queued | running | completed | failed`), `runId`, `idempotencyKey` (unique on `(organizationId, requestedBy, dayBucket)`), `requestedAt`, `completedAt`. Names the rule: the row exists for app-side audit and dedup; Trigger.dev's run record is the operational truth, the `exports` row is the app's reference.
+- Run the local CLI loop once: in one terminal, `pnpm trigger:dev`; in another, `pnpm dev`. Visit `/inspector`. Click "Export invoices" for org A — `startExport` throws because the action is empty, the inspector renders the error fallback. Names the next step.
+- Verify the dashboard link: the `pnpm trigger:dev` terminal prints a `https://cloud.trigger.dev/orgs/<...>/projects/<ref>/dashboard` URL; open it once to confirm the project is linked and shows zero runs.
+
+Senior calls and watch-outs:
+
+- The `TRIGGER_SECRET_KEY` is per-environment (dev / staging / production). The starter ships only the dev key; trying to run `pnpm trigger:deploy` requires the production key in CI — named, not exercised this chapter.
+- The local dev CLI registers tasks via filesystem watch — saving any file in `src/trigger/` re-registers; do not move task files around mid-run, the CLI logs "task not found" until restart.
+- The `paginate-page` and `send-export-email` files are stubs because each becomes its own `triggerAndWait` child task (durability lives at the boundaries between steps — lesson 5 of chapter 066). The lesson names the alternative ("one long body with `wait.for` between pages") and the trade-off: child tasks give dashboard-visible per-page progress and free per-step retries.
+- The inspector reads run state by `runId` through the Trigger.dev REST API, not by tailing logs. Names the rule from the framing: state-based verification is the senior shape.
+- The starter does not ship `npx trigger.dev@latest init` — the student runs it once before this lesson. The CLI writes `trigger.config.ts` defaults and registers `src/trigger/` as the task folder; the starter ships a version of `trigger.config.ts` that matches what the init produces plus a TODO marker for the queue declaration in lesson 3 of chapter 067.
+
+Codebase state at entry: starter cloned, deps installed, Postgres up, schema migrated and seeded, Trigger.dev project linked, both terminals running.
+Codebase state at exit: student has read every provided file, confirmed the inspector renders, fired one click that errored cleanly (action empty), confirmed the dashboard shows the project with zero runs. No task code written.
+
+Estimated student time: 20 to 30 minutes.
+
+---
+
+## Lesson 3 — The task boundary: schemaTask and the per-org queue
+
+Write the `exportInvoices` `schemaTask` with a Zod payload and a dynamic per-org queue, plus the `startExport` Server Action that fires it with a daily idempotency key.
+
+Goals:
+
+- Write `trigger/export-invoices.ts` as a `schemaTask` per the reference signature. Payload schema: `z.strictObject({ organizationId: z.uuid(), requestedBy: z.uuid() })`. `id: 'export-invoices'` — names the rule from lesson 4 of chapter 066 that `id` is the durable API.
+- Declare the dynamic queue inline: `queue: ({ payload }) => ({ name: \`org-${payload.organizationId}\`, concurrencyLimit: 1 })`. Names the per-tenant pattern from lesson 4 of chapter 066: serialize within an org, parallelize across orgs, no one tenant starves another.
+- Body for this lesson is a placeholder: read `organizationId` from the payload, log it via the structured logger, write a `run.metadata.set('pagesDone', 0)` so the inspector's progress bar has something to read, return `{ ok: true, organizationId }`. The body grows in lesson 4 of chapter 067.
+- Fill `lib/exports/start.ts` with the `startExport` action per the reference signature: `authedAction('member', z.strictObject({}), ...)`, insert the `exports` row, call `tasks.trigger<typeof exportInvoices>('export-invoices', { organizationId: ctx.orgId, requestedBy: ctx.user.id }, { idempotencyKey, idempotencyKeyTTL: '24h' })`. The `idempotencyKey` is built via `idempotencyKeys.create([ctx.orgId, ctx.user.id, dayBucket()])` (helper in the starter, returns the calendar-day string in the org's tz).
+- Update the `exports` row with the returned `runId`. Return `{ ok: true, data: { runId } }`.
+- Verify:
+  - Click "Export invoices" for org A. The inspector run panel switches to the new `runId`, the dashboard shows one run with `status: completed`, payload `{ organizationId, requestedBy }`, the structured log line. Progress bar reads `0/?` — `pagesTotal` not set yet, that lands in lesson 4 of chapter 067.
+  - Click "Export invoices" twice in quick succession. The second click's `startExport` returns the same `runId` (idempotency-key short-circuit at trigger boundary). The `exports` table shows one row. The dashboard shows one run.
+  - Use the Trigger.dev dashboard's "Run task" tool to fire `export-invoices` with `{ organizationId: 'not-a-uuid' }`. The dashboard immediately shows the run failed at the schema-parse boundary with a Zod error; the body never executed. Names the rule: `schemaTask` validates before retries are spent.
+  - Click "Trigger 2 parallel exports for this org" (debug, which bypasses the natural daily key by injecting a synthetic `idempotencyKey` suffix). Two runs appear. The first is `executing`, the second is `queued`. After the first completes, the second transitions to `executing`. Names the per-org serialization proof — fully demonstrated even before the body does real work.
+  - Click "Trigger 3 parallel exports across orgs". All three transition to `executing` within ~1s. The dashboard shows three distinct dynamic queues.
+
+Senior calls and watch-outs:
+
+- The `queue:` callback receives `payload`, parsed; the function shape is structural. Static queues would put `queue: { name: 'exports', concurrencyLimit: 5 }`; the per-tenant dynamic shape is the v4-native pattern from lesson 4 of chapter 066. Copy-pasting v3 examples that declare queues at trigger time (`tasks.trigger('export-invoices', payload, { queue: {...} })`) will not work in v4 — names the v3-to-v4 break once more.
+- The `concurrencyLimit: 1` per dynamic queue is the back-pressure choice — the export is read-heavy, one-at-a-time per org keeps the DB pool friendly. Doubling to 2 would let two concurrent exports per org run; the senior call is "stay at 1 unless a specific tenant repeatedly stacks up."
+- `tasks.trigger` is called from a Server Action — this is the correct shape (fire-and-forget, action returns immediately). Calling `tasks.triggerAndWait` from a Server Action would block the request until the run completes and time out — the inverted-model failure mode named in lesson 4 of chapter 066. The lesson restates the rule.
+- The `idempotencyKey` on `tasks.trigger` lives at the trigger boundary; the cross-step keys land in lesson 4 of chapter 067. Two different shapes, same discipline (lesson 5 of chapter 066).
+- The `dayBucket()` helper is intentional — the natural-key shape `(orgId, userId, day)` means a user who hits Export twice on the same calendar day gets one run; a user who hits it next day gets a new run (and yesterday's `exports` row carries its own key, still unique). The debug button injects a `:debug:<random>` suffix to bypass for proof-of-serialization tests.
+- The `exports` row write happens *before* `tasks.trigger`, but the `runId` is only known after. The row is inserted with `runId: null` first and updated immediately after the trigger returns. Names the small two-step write; production hardening would wrap both in a transaction and accept the rare orphan-row-on-trigger-failure (Trigger.dev's API throws on failure, the catch-and-cleanup is named, not built).
+- `authedAction('member', ...)` — the role is `member`, not `admin`. Exports are a member-level capability per the SaaS norms (chapter 057); the role-pinning here is the structural enforcement.
+
+Codebase state at entry: empty task, empty action.
+Codebase state at exit: `export-invoices` task fires end-to-end with a placeholder body, the per-org dynamic queue serializes correctly, schema validation rejects malformed payloads at the boundary, the inspector's idempotency-key short-circuit works, parallel-across-orgs runs in parallel. The body does no real work yet — that lands in lesson 4 of chapter 067. **Runnable.**
+
+Estimated student time: 45 to 55 minutes.
+
+---
+
+## Lesson 4 — One checkpoint per page
+
+Spawn each page as a `paginatePage.triggerAndWait` child with `${ctx.run.id}:page:N` keys, drive progress through `metadata.set`, and abort permanently on empty resultsets with `AbortTaskRunError`.
+
+Goals:
+
+- Write `trigger/paginate-page.ts` as its own `schemaTask` per the reference signature. Payload: `{ organizationId, page, cursor }`. Body: call `listInvoices({ orgId: organizationId, view: 'active', cursor, pageSize: 500 })`, pipe rows through `rowsToCsv`, return `{ csv, nextCursor, rowCount }`. The function is short (10 lines); the senior value is "every page is its own checkpointed child run."
+- Grow the `exportInvoices` body to drive the page loop:
+  - Read the page count: `const { total } = await tenantDb(organizationId).invoices.countAll()` (helper provided), then `const pagesTotal = Math.ceil(total / 500)`. Throw `new AbortTaskRunError('EMPTY_RESULTSET')` if `total === 0` — names the permanent-failure-no-retry shape from lesson 5 of chapter 066.
+  - Write `metadata.set('pagesTotal', pagesTotal)` and `metadata.set('pagesDone', 0)` — the inspector's progress bar reads these.
+  - Loop pages 0 to `pagesTotal - 1`: `const { csv, nextCursor } = await paginatePage.triggerAndWait({ organizationId, page, cursor }, { idempotencyKey: \`${ctx.run.id}:page:${page}\` })`. Append `csv` to an accumulator string. Update `cursor = nextCursor`. `metadata.set('pagesDone', page + 1)`.
+  - After the loop, `console.log` the CSV size and a placeholder URL (`https://example.com/exports/${ctx.run.id}.csv`) — the real upload to R2 lands in chapter 069. Store the URL on `metadata.set('downloadUrl', url)` so the inspector picks it up and so the next lesson (lesson 5 of chapter 067) can pass it to the email step.
+- Verify:
+  - Click "Export invoices" for org A (200+ seeded invoices, ~5-7 pages at limit 500). The inspector progress bar advances `0/N → 1/N → 2/N → ... → N/N` over ~10-20s; the dashboard shows N child `paginate-page` runs, each with payload + output, parented under the export run.
+  - **Kill-resume drill:** start an export. When the panel shows `pagesDone: 2 / 7`, hit Ctrl-C in the `pnpm trigger:dev` terminal. Wait 5s. Re-run `pnpm trigger:dev`. The inspector resumes; the dashboard shows the parent run picked up after the failed worker, the previously-completed `paginate-page` child runs were not re-executed (idempotency-key cache hit returned the prior outputs), pages 3 onward execute fresh. Final state: `completed` with the same `runId`. **This is the durability proof of the chapter.**
+  - Trigger an export against an empty-data org (use a debug button that creates an empty fourth org). The body throws `AbortTaskRunError('EMPTY_RESULTSET')`; the dashboard shows the run failed once with no retry attempts. Names the senior call.
+- (Optional senior reach.) Inspect the dashboard to confirm one `paginate-page` child's `idempotencyKey` is exactly `${parent.id}:page:0`; restart the parent (force a retry by throwing transient error inside a synthetic debug path) and confirm the same key returns the cached output rather than re-executing.
+
+Senior calls and watch-outs:
+
+- Every `triggerAndWait` is a durable checkpoint (lesson 5 of chapter 066). A 7-page export has 7 checkpoints; a crash between pages 3 and 4 resumes at page 4, not page 0. Restarting the parent run re-issues the same idempotency keys; the runtime returns prior results for completed children instead of re-executing. This is the load-bearing pattern of the chapter.
+- The cross-step key shape is `${ctx.run.id}:page:${page}`. Using `${page}` alone (no `ctx.run.id` prefix) would collide across runs — every export would return the first export's page-0 result. Using `Date.now()` would break the cache on retry. The lesson shows the broken shape and the fix.
+- `AbortTaskRunError` is the only "stop retrying" signal. A naked `throw new Error('empty')` would retry three times (the configured `maxAttempts`) before failing; the empty-resultset case is permanent on the same inputs, so wasted retries cost runtime and dashboard noise. Names the rule from lesson 5 of chapter 066: `AbortTaskRunError` for permanents, plain throws for transients.
+- `listInvoices` uses cursor pagination (from chapter 062); the cursor is the natural restart point. If a row is inserted between pages 3 and 4, the page-4 cursor still covers it correctly (cursor-keyed reads are stable across writes). The lesson restates the rule from chapter 038 once.
+- Accumulating CSV strings in memory across pages is bounded by `pagesTotal × 500 × avg-row-size`. For the project's seed (~200 invoices), the accumulator fits in a few MB; for a production org of 100k+ invoices, this would need a streaming write to R2 inside each page's child task. Names the threshold and points to chapter 069 for the real upload.
+- The `metadata.set` channel is "fire and forget" — the runtime persists it, the dashboard renders it, the inspector reads it. Setting `pagesDone` from the parent run, not from the child, is intentional — the parent's view of progress is the user-facing one.
+- The body is `async function` and uses `await` throughout — `tasks.triggerAndWait`-inside-loop is the durable parallel-or-sequential decision point. Sequential (`for...of` + `await`) is the safe default; parallel (`Promise.all` of `triggerAndWait`) would race the queue concurrency limit and reorder pages — the senior call is "sequential unless the rows-by-page have no order requirement and concurrency is fine to consume."
+- Forgetting `metadata.set('pagesDone', ...)` is the common bug — the inspector still completes correctly but the progress bar stays at zero. The lesson names the symptom and the fix.
+
+Codebase state at entry: skeleton task, empty page child task.
+Codebase state at exit: full paginated body, runs progress through all pages, kill-resume drill resumes cleanly, empty-resultset orgs abort without retries, the `metadata.downloadUrl` is a `console.log`-shaped placeholder. The email step is empty. **Runnable.**
+
+Estimated student time: 60 to 75 minutes. The chapter's heaviest lesson — the durability proof lives here.
+
+---
+
+## Lesson 5 — Send the email, write the audit log
+
+Add the `sendExportEmail` child task guarded by a `${ctx.run.id}:email` key, then close the parent run by updating the `exports` row and writing `export.invoices.completed` to `audit_logs` in one tenant transaction.
+
+Goals:
+
+- Write `trigger/send-export-email.ts` as the third `schemaTask`. Payload: `{ organizationId, recipientUserId, rowCount, downloadUrl }`. Body: read the org name and the recipient email via `tenantDb(organizationId)` (read-only), render `ExportReadyEmail({ orgName, rowCount, downloadUrl })`, call `sendEmail({ to: recipientEmail, subject: \`Your ${orgName} export is ready\`, react: <ExportReadyEmail .../>, idempotencyKey: \`export-email:${ctx.run.id}\` })` from the Unit 7 adapter, return `{ id }`.
+- Add the final step to the parent task body: after the page loop, `const downloadUrl = ...`, then `await sendExportEmail.triggerAndWait({ organizationId, recipientUserId: requestedBy, rowCount: totalRows, downloadUrl }, { idempotencyKey: \`${ctx.run.id}:email\` })`. The per-run email idempotency key guards the send across parent retries.
+- Open a `tenantDb(organizationId).transaction` and: update the `exports` row to `status: 'completed', completedAt: now()`, write `audit_logs` `{ action: 'export.invoices.completed', subjectType: 'export', subjectId: ctx.run.id, actorUserId: requestedBy, orgId: organizationId, payload: { runId: ctx.run.id, rowCount } }` via `logAudit(tx, ...)`. Return `{ ok: true, runId: ctx.run.id, rowCount }` from the parent body.
+- Verify:
+  - Run a full export against org A. The progress bar runs to completion; the inspector's run panel flips to `status: completed` with the `downloadUrl` rendered; the audit-log tail gains one row; the student's Resend-verified inbox receives the `ExportReadyEmail` render within ~10 seconds (Resend's typical p99).
+  - Force a parent retry (use the dashboard's "Replay run" or a debug button that throws a transient error after `sendExportEmail.triggerAndWait` returns). The parent retries; the email child task's `triggerAndWait` returns the cached `{ id }` from the idempotency-key cache; no second email is sent. The structured log inside the email child shows "cached return, did not call Resend." Names the proof.
+  - Confirm the email lands once even when the parent retries — the idempotency-key short-circuit lives at the child-task boundary, the email send happens exactly once per parent run.
+  - Confirm a Resend suppression on the recipient (use the seeded suppression row from chapter 050 — temporarily move the seeded user's email into the suppression list) returns an `err('suppressed', ...)` Result (i.e. `{ ok: false, error: { code: 'suppressed', ... } }`) from `sendEmail`; the email child task returns the suppressed result, the parent run still completes (the suppressed-recipient case is not a failure), the audit-log notes the suppression.
+
+Senior calls and watch-outs:
+
+- The email step is a child task, not inline in the parent body, for two reasons: (1) durability — a Resend transient failure retries with backoff via the child's own retry policy; (2) idempotency — the per-step key `${ctx.run.id}:email` guards against parent retries re-issuing the send. Inlining the `sendEmail` call in the parent body would lose both; the lesson shows the inline-shaped wrong version and the child-task right version.
+- The audit-log write lives inside a `tenantDb` transaction in the parent body, *after* the email returns. Writing the audit log before the email risks claiming "completed" when the email never sent; writing after gives at-least-once "we sent the email and audited it" semantics. The senior call is "audit the user-facing outcome, not the intent."
+- The email payload carries `downloadUrl` from the parent's `metadata.downloadUrl`, not a re-derivation. The parent owns the URL; the child consumes it. Forecasts chapter 069 where the URL becomes a real R2 presigned link.
+- The Resend suppression path is named explicitly so the student sees how an "expected failure" composes with Trigger.dev — the child task does not throw on suppression, it returns the suppressed Result; the parent treats the run as completed-but-skipped-email. A different choice (throw on suppression to surface in the dashboard) is named as alternative.
+- The `recipientUserId` is `requestedBy` from the original payload — the user who clicked Export gets the email. A future variant (email the org owner regardless of who triggered) is named, not implemented. The senior call is "default to the triggering user; allow an override at the action level."
+- The structured log inside the email child shows `messageId`, `to` (hashed in production), and `disposition`. The lesson restates the 3am-rule discipline from chapter 080: useful enough to debug, no PII.
+
+Codebase state at entry: page loop runs, no email.
+Codebase state at exit: full end-to-end run — Server Action triggers parent, parent loops paginate-page children, parent loops sendExportEmail child, parent updates `exports` row + writes audit log, inspector reflects every state. Email lands in inbox. **Runnable end-to-end.**
+
+Estimated student time: 45 to 60 minutes.
+
+---
+
+## Lesson 6 — Verify: progress, kill-resume, serialization, exactly-once email
+
+Walk each "Done when" clause clause-by-clause: visible per-page progress, the Ctrl-C kill-resume drill, per-org serialization vs. cross-org parallelism, schema-boundary validation, and email-send-once across parent retries.
+
+Goals:
+
+- Walk every "Done when" clause as a verification step (the table in the framing).
+- Visible run progress:
+  - Click "Export invoices" for org A. The inspector run panel polling cycle (every 1s) shows status `queued → executing`, progress bar advancing `1/N → ... → N/N`, then `executing → completed`. The Trigger.dev dashboard deep-link shows the parent run with N `paginate-page` children + 1 `send-export-email` child, each with payload, output, and duration. Confirm the audit-log tail gained one `export.invoices.completed` row.
+- Mid-run kill resumes:
+  - Trigger an export against org B. When the inspector shows `pagesDone: 2 / 7`, Ctrl-C the `pnpm trigger:dev` terminal. The dashboard shows the parent run paused (no active worker). Restart `pnpm trigger:dev`. Within 5-10s, the parent run picks up on the new worker, pages 3-7 execute fresh, the email child sends, final state `completed`. The `runId` is unchanged. Confirm one row in `audit_logs`, one row in `exports`, one email in inbox. **The chapter's load-bearing proof — every paginate-page child completed before the kill returned its cached output from the idempotency-key cache; no row was double-counted.**
+- Per-org queue serialization:
+  - Click "Trigger 2 parallel exports for this org" (debug bypass of the daily key). Two runs appear in the panel list; the first is `executing`, the second is `queued`. Wait. When the first hits `completed`, the second transitions `queued → executing`. The dashboard shows both runs on the same dynamic queue `org-<id>` with `concurrency: 1`.
+- Across-org parallelism:
+  - Click "Trigger 3 parallel exports across orgs". All three transition to `executing` within ~1s. The dashboard shows three distinct dynamic queues. All three complete in roughly the same wall-clock window — proves the per-org queue is per-org, not global.
+- Idempotency-key short-circuit:
+  - Click "Export invoices" twice in quick succession (no debug). The second click's `startExport` returns the same `runId` as the first; the inspector shows one run, not two; the `exports` table shows one row. The `tasks.trigger` idempotency-key short-circuit happens at the SDK boundary, before any task runs.
+  - Wait until the next calendar day (or change the system clock for the test); click "Export invoices" again. A new `runId` returns, a new `exports` row lands. The day-bucket scope of the key is the lifetime control.
+- Payload validation:
+  - Use the Trigger.dev dashboard's "Run task" tool to fire `export-invoices` with `{ organizationId: 'not-a-uuid', requestedBy: 'also-not' }`. The dashboard immediately shows the run failed at the schema-parse boundary; the body never executed; no `paginate-page` child runs spawned; no `exports` row appears. Names the rule from lesson 4 of chapter 066: `schemaTask` validates *before* retries are spent.
+- Permanent-failure shape:
+  - Trigger an export against the empty fourth org (debug). The body throws `AbortTaskRunError('EMPTY_RESULTSET')`; the dashboard shows one attempt, no retries, status `failed`. No email is sent. No audit-log row is written. The `exports` row sits at `status: 'failed'`. Contrast: throw a plain `Error` in the same path and watch three retries fire before failure.
+- Email idempotency:
+  - Force a parent retry after the email step (debug button injects a transient throw at the very end of the parent body). The parent retries; the email child's `triggerAndWait` returns the cached `messageId` from the idempotency-key cache; no second email lands in the inbox. The structured log on the cached return shows "from cache, did not call Resend."
+- Cross-tenant defense:
+  - Click Export as a member of org A. The action's `authedAction('member', ...)` reads `ctx.orgId` from the session — there is no way to pass a different org from the action's call site. Try fabricating a `tasks.trigger` call from the dashboard's "Run task" tool with `organizationId` pointing at org B: the task runs (Trigger.dev does not enforce app tenancy), so the lesson names the structural defense — the body trusts the payload (no choice in a worker context), the only entry point that takes user input is `startExport`, and `authedAction` is the boundary. Trigger.dev's project is treated as a privileged service inside the trust boundary; the dashboard's "Run task" UI is admin-only and the senior call is "rotate `TRIGGER_SECRET_KEY` like any privileged secret."
+- Forward references the chapter project hands off:
+  - **Unit 13b (R2 upload, chapter 069):** the parent body's `console.log`-shaped `downloadUrl` becomes a real R2 presigned PUT; the `paginate-page` child task pipes its CSV directly to R2 via the presigned URL; the email's `downloadUrl` is the matching presigned GET. The `metadata.downloadUrl` channel stays unchanged.
+  - **Unit 13 (notifications):** the `export.invoices.completed` audit log fires the notification dispatcher (one event, the dispatcher fans out to email-or-inbox-or-both per user preferences). The current direct `sendExportEmail` child task becomes redundant; the dispatcher owns the channel choice.
+  - **Unit 15a (cache):** the inspector's `exports` list reads (`use cache` + `cacheTag('exports', orgId)`) gets `updateTag('exports', orgId)` from the parent task after every completion; the user's next visit shows fresh state without a hand-rolled refresh.
+  - **Unit 15b (rate limit):** `startExport` gets wrapped in an Upstash limiter (`5 per user per hour`) so a misbehaving client cannot fill the dynamic queue with synthetic-key debug runs.
+  - **Stripe reconciliation (12 forward note):** the per-org dynamic queue shape lifts directly — `org-reconcile-${organizationId}` with `concurrency: 1`, a nightly `schedules.task` cron triggers one run per org, the body reads `subscriptions.list` and reconciles drift against `plan_entitlements`.
+- Name the senior calls one more time:
+  - The task body has no request context — payload carries `organizationId`, `tenantDb(orgId)` re-derives.
+  - `schemaTask` validates before retries — invalid payloads fail at the boundary, not three minutes in.
+  - Dynamic per-tenant queues serialize within an org and parallelize across orgs.
+  - Durability lives at `triggerAndWait` boundaries — every page is a checkpoint.
+  - Cross-step idempotency keys (`${ctx.run.id}:step:identifier`) guard side effects against parent retries.
+  - `AbortTaskRunError` is for permanents only; plain throws are for transients.
+  - `run.metadata` is the live-progress channel for the watching client.
+  - `tasks.trigger` (fire-and-forget) is for app-side calls; `tasks.triggerAndWait` (durable wait) is for in-task children.
+
+Senior calls and watch-outs:
+
+- The verify lesson rehearses each failure mode and names what would break without the disciplines installed. If a verification fails, the lesson points at the owning build lesson, not at "debug it yourself."
+- The kill-resume drill is the chapter's headline proof — running it slowly enough to actually time the Ctrl-C in the middle of a page is the senior call. Killing during a `paginate-page` body (not between pages) is also durable but resumes by re-executing that one page (the cache miss is at the in-flight child, not the parent boundary).
+- Running the parallel-across-orgs proof needs all three orgs seeded — the lesson confirms the seed populated three distinct orgs each with 200+ invoices.
+
+Codebase state at entry: full export job wired (parent + page child + email child + audit log).
+Codebase state at exit: every "Done when" clause verified clause-by-clause; the student can articulate every primitive (payload validation, dynamic per-tenant queues, `triggerAndWait` durability, cross-step idempotency keys, `AbortTaskRunError`, `metadata`-driven live progress, fire-and-forget action-side triggers) and which forward unit will lean on it.
+
+Estimated student time: 30 to 45 minutes.

@@ -1,170 +1,348 @@
-# Chapter 055 — The auth mental model
+# Chapter 055 — Project: email+password auth with verification
 
 ## Chapter framing
 
-Unit 9 wires identity onto the data backplane: Better Auth, Drizzle-adapted, with sessions read in middleware, layouts, and Server Actions. Chapter 055 lands the conceptual ground before any code calls `auth.api.*`. The student arrives knowing what cookies are (Chapter 017), what same-origin and CORS mean (Chapter 016), what Web Crypto and constant-time compare buy (lesson 1 of chapter 020), and what a Server Action and middleware look like (Chapters 034, chapter 037, chapter 047). What they don't yet have is the senior mental model that lets them read Better Auth's surface without confusion: *what* the system is proving (authn) versus *what* it lets the proven identity do (authz); *how* the proof travels across requests (session-id-in-cookie vs. self-contained token, and the consequences of each for revocation, storage, and reputation); and *why* the social-login button in the corner is, underneath, an OAuth chapter 005 authorization-code flow with PKCE, with `state`, redirect-URI rules, and a tokens-versus-userinfo exchange the senior must be able to describe.
+Chapter 055 cashes in everything Unit 8 installed: the conceptual ground (chapter 051) — authn versus authz, server-stored opaque sessions in `__Host-`-prefixed cookies, the OAuth/PKCE shape named for downstream; the running Better Auth setup (chapter 052) — the `auth` instance, the catch-all handler, the Drizzle adapter and four canonical tables (`user`, `session`, `account`, `verification`), the session config with `freshAge` and the cookie cache, the `getCurrentUser()` / `requireUser()` helpers; the email+password sign-in surface (lesson 1 of chapter 053–lesson 3 of chapter 053) — `signUp.email`, `signIn.email`, the email-verification gate via `requireEmailVerification`; the request-time gate (lesson 1 of chapter 054) — the two-layer pattern with `proxy.ts` doing cookie-presence redirects and the layout doing the validating read. The student ships the canonical first auth flow: sign up with email and password, receive a verification email through the Unit 7 Resend pipeline, click the link to verify, sign in, land on a protected `/dashboard`, sign out and watch the `session` row disappear. Nothing more — no OAuth, no passkeys, no 2FA, no password reset (those live in lesson 4 of chapter 053–lesson 8 of chapter 053 chapter material; the project deliberately stays in the email+password lane).
 
-Threads that must run through every lesson: terminology is precise — *authentication* proves identity, *authorization* gates capability, and conflating them produces the recurring "I logged the user in, why can't they edit?" misframe; the default in this stack is server-stored opaque session IDs in `__Host-` prefixed `HttpOnly; Secure; SameSite=Lax` cookies, with JWT-shaped sessions named as the threshold tool for stateless edge reads and explicitly *not* the default for browser sessions; revocation is the load-bearing property — server-stored sessions revoke instantly via a row delete, JWTs cannot until they expire (or a denylist undoes the statelessness); the cookie attributes from Chapter 017 get applied here at the call site, not re-derived; OAuth is a *delegated-authorization* protocol the app uses for *authentication* by reading the provider's `userinfo` after the code-for-tokens exchange, and PKCE is mandatory in 2026 regardless of client type (OAuth chapter 005, draft-15, March 2026); Better Auth is named once as "what implements this in Unit 9," but no Better Auth API is taught yet — the student leaves with the model, not the syntax. Three teaching lessons plus a chapter quiz.
+Threads that run through every lesson: Better Auth's API is consumed directly per Principle #5 — the only thin modules are `lib/auth.ts` (server) and `lib/auth-client.ts` (browser); the catch-all route handler at `/api/auth/[...all]/route.ts` is the only auth route file the project writes — never per-action route files; the `nextCookies()` plugin is non-negotiable in Next.js 16 (without it, sign-up succeeds server-side but the cookie never reaches the browser — the canonical silent failure); the cookie defaults from lesson 2 of chapter 051 are honored at the call site (`__Host-`-prefixed, `HttpOnly`, `Secure`, `SameSite=Lax`); the verification email rides the existing Unit 7 send pipeline — the project does not re-implement Resend, only the `WelcomeVerification.tsx` React Email template and the `sendVerificationEmail` callback; `requireEmailVerification: true` is the senior reflex — unverified users cannot sign in, full stop, no half-state; the `proxy.ts` gate does cookie-presence only and the layout does the validating read (the lesson 1 of chapter 054 rule honored); sign-out is a Server Action that calls `auth.api.signOut`, and the session row's absence is the verification. Five build/walkthrough lessons plus a verify lesson, each ending on a runnable state.
 
----
+### Dependency carry-in
 
-## Lesson 1 — Authn, authz, and the 401/403 split
+- **From chapter 036 / chapter 037 / chapter 040:** Drizzle wired against Postgres, the `db` client in `src/db/client.ts`, the migration pipeline (`pnpm db:generate`, `pnpm db:migrate`), the existing `src/db/schema/` directory ready for `auth.ts` to land alongside domain tables. The `users` stub from chapter 041 is dropped in this project — Better Auth's generated `user` table takes its place; FK targets in any `users`-referencing domain tables (created in chapter 047) remain valid because the column shape and PK type match.
+- **From chapter 050:** `src/lib/email.ts` exposing `sendEmail({ to, subject, react, idempotencyKey })`, the `RESEND_API_KEY` env entry, the verified-domain `EMAIL_FROM` sender, the `email_suppressions` read built into the send function. The student's `WelcomeVerification.tsx` template lives next to the Unit 7 `WelcomeEmail.tsx`.
+- **From chapter 029 / chapter 030 / chapter 033 / lesson 1 of chapter 034:** The Next.js 16 App Router scaffold; the `'use server'` / `'use client'` boundary; `proxy.ts` at the project root; the `'server-only'` reflex; `lib/env.ts` Zod-validated env loading.
+- **From chapter 043 / chapter 044:** `<form action={serverAction}>` + `useActionState` for pending state and result; the canonical `Result<T>` discriminant shape (`{ ok: true, data }` vs. `{ ok: false, error: { code, userMessage, fieldErrors? } }`); Zod parse at the action boundary; `redirect()` after success.
+- **From lesson 2 of chapter 051:** `__Host-` cookie prefix, `HttpOnly`, `Secure`, `SameSite=Lax`, the opaque server-stored session model.
+- **From lesson 1 of chapter 052–lesson 4 of chapter 052:** `betterAuth({ database, plugins: [nextCookies()], secret, baseURL })`, the catch-all handler via `toNextJsHandler(auth)`, the `authClient` from `better-auth/react`, the Drizzle adapter, the four-table schema, `cookieCache` enabled, `auth.api.getSession({ headers })` shape, the `getCurrentUser()` and `requireUser()` helpers.
+- **From lesson 1 of chapter 053 / lesson 2 of chapter 053 / lesson 3 of chapter 053:** `signUp.email` / `signIn.email` call shapes, `emailAndPassword: { enabled, requireEmailVerification, minPasswordLength, autoSignIn }`, `emailVerification: { sendVerificationEmail, sendOnSignUp, autoSignInAfterVerification, expiresIn }`, the `verification` table reused.
+- **From lesson 1 of chapter 054:** The two-layer gate — `proxy.ts` for cookie-presence redirects (`getSessionCookie` from `better-auth/cookies`), the layout for the validating read (`requireUser()`), the matcher pattern, the `?next=` round-trip with open-redirect closure, the inverse gate (signed-in users bounced from `/sign-in`).
 
-Distinguishes authentication from authorization, places each check at its proper boundary in the request lifecycle, and catalogues the misframes (identification-vs-authentication, signed-in-vs-allowed, paid-vs-authorized) that produce the 401-versus-403 bugs seniors must recognize.
+### Starter file tree (stubs marked with TODO)
 
-Topics to cover:
+```
+.env.example                       # provided: DATABASE_URL, BETTER_AUTH_SECRET, BETTER_AUTH_URL, RESEND_API_KEY, EMAIL_FROM, EMAIL_REPLY_TO, NEXT_PUBLIC_APP_NAME, APP_URL
+docker-compose.yml                 # provided: postgres:18 from Unit 5 carry-in
+drizzle.config.ts                  # provided: schema path includes src/db/schema/*
+package.json                       # provided: scripts including db:generate, db:migrate, auth:generate (Better Auth CLI)
+proxy.ts                           # TODO student: matcher + cookie-presence gate + ?next= handling + inverse gate
+src/
+  lib/
+    auth.ts                        # TODO student: betterAuth({ database, emailAndPassword, emailVerification, plugins: [nextCookies()] })
+    auth-client.ts                 # TODO student: createAuthClient({ baseURL })
+    auth-helpers.ts                # TODO student: getCurrentUser, requireUser
+    auth/
+      error-mapping.ts             # provided: mapAuthError — maps Better Auth error codes to the Result taxonomy (validation/conflict/invalid-credentials/email-not-verified)
+    email.ts                       # provided: sendEmail wrapper from Unit 7
+    env.ts                         # provided: Zod-validated env with the entries above
+  db/
+    client.ts                      # provided: pooled db instance
+    schema/
+      auth.ts                      # generated by Better Auth CLI on first run; student commits
+  app/
+    api/
+      auth/
+        [...all]/
+          route.ts                 # TODO student: toNextJsHandler(auth) — 3 lines
+    (auth)/
+      sign-up/
+        page.tsx                   # provided: shell + form layout; TODO student: action wiring
+        actions.ts                 # TODO student: signUpAction (calls auth.api.signUpEmail)
+      sign-in/
+        page.tsx                   # provided: shell + form layout; TODO student: action wiring
+        actions.ts                 # TODO student: signInAction (calls auth.api.signInEmail; reads ?next=)
+      verify-email/
+        page.tsx                   # provided: "check your inbox" screen; reads ?email= from search params
+    (protected)/
+      layout.tsx                   # TODO student: calls requireUser(), renders nav with user.email + sign-out
+      dashboard/
+        page.tsx                   # provided: simple "Hello {user.name}" with a list of session metadata
+      sign-out-action.ts           # TODO student: signOutAction (calls auth.api.signOut; redirects)
+  emails/
+    WelcomeVerification.tsx        # TODO student: React Email template — heading, body, CTA button to verifyURL
+```
 
-- **The senior question.** A user clicks "Sign in," types an email and password, the page redirects to a dashboard. The next click — "Delete this invoice" — returns 403. Where does each step live in the system, what gets decided where, and why is the recurring "I logged the user in, why can't they do X?" question almost always a category error between two separate concerns? The lesson installs the authn/authz vocabulary that the rest of Unit 9 (and Unit 10's RBAC) leans on.
-- **Authentication — proving identity.** The system answers *who is this request from?* Inputs: something the user knows (password), has (a device with a passkey, a TOTP authenticator), or is (biometric, behind a passkey gesture). Output: a verified principal — a user row — and a session that carries that identity forward on subsequent requests. Authn is binary: the request is either authenticated as user X or it isn't. The bar is the strength of the proof and the protection of the credential at rest (Argon2id / bcrypt with a cost factor sized for 2026 hardware; never plaintext; never reversible encryption).
-- **Authorization — gating capability.** The system answers *is this principal allowed to do this thing on this resource?* Inputs: the authenticated principal, the action (read invoice, delete invoice, invite a teammate), the resource (this specific invoice in this specific org), and the rules (role, ownership, plan tier, feature flag). Output: allow or deny. Authz is not binary at the system level — it's per-action, per-resource, evaluated at the action boundary every time. Unit 10's RBAC owns the full surface; this lesson plants the frame.
-- **Where each check lives in this stack.** Authn lives at the session-read boundary — `proxy.ts` middleware (Chapter 037, formerly `middleware.ts`) for protected-route gating, layouts for sign-in-required surfaces, Server Actions and route handlers for per-call identity reads. Authz lives at the action boundary — the `authedAction` wrapper around every mutating Server Action checks the role and the org scope (Chapter 061). The two checks compose: authn establishes the principal, authz reads the principal plus the request and decides. The senior reflex: never put authz checks in components or layouts; layouts get bypassed under partial pre-rendering and component-level checks invite "rendered but not allowed" bugs.
-- **Identification, authentication, authorization — the three-way distinction the senior keeps straight.** *Identification* is the claim ("I am `ada@acme.com`"). *Authentication* is the proof of the claim (the password matches, the passkey signed the challenge). *Authorization* is the permission to act under the verified identity. A username on a sign-in form is identification; the password check is authentication; the role lookup at the action handler is authorization. Most "auth bugs" in production code are identification-versus-authentication confusions (treating an unverified email as if it were proven) or authentication-versus-authorization confusions (treating "signed in" as "allowed").
-- **Anonymous, authenticated, and elevated.** Three principal states the system handles distinctly: anonymous (no session — public pages, the sign-in surface itself), authenticated (session present, identity proven, baseline capabilities), and elevated (recent re-authentication — required for credential changes, billing changes, destructive admin actions; full coverage in lesson 2 of chapter 058). The elevation re-prompt is *authentication* triggered by an *authorization* policy that says "this capability requires recent proof." Worth naming because Better Auth surfaces this directly and Unit 10's RBAC writes the policy that requires it.
-- **The 2026 factor landscape — what counts as proof.** Knowledge factor (password) on its own clears the bar for low-value SaaS but not for admin, billing, or PII access; possession factor (passkey, TOTP) is the senior baseline-add for those surfaces; biometrics are platform-level inputs into the possession factor (the passkey on the device), not a separate protocol. The framing: passwords are the historical default, passkeys are the 2026 default-when-the-user-has-them, TOTP is the universal fallback. The full sign-in-method surface is Chapter 057 — this lesson states the line, not the syntax.
-- **The misframe-catalog the senior recognizes.** "The user is signed in, so they can edit" — that's authn confused for authz. "Their email is in the database, so they're authenticated" — that's identification confused for authentication. "They paid, so they're authorized" — billing entitlements are a slice of authz, not the whole policy (org-scoping and role still apply). "Once authenticated, the session can do anything for 30 days" — ignoring the elevation tier collapses high-value actions into the baseline. Each misframe maps to a specific bug class that ships if the vocabulary stays fuzzy.
-- **Why the order matters in the request lifecycle.** Every request runs authn first, authz second. Authn fails → 401 (unauthenticated, the client can fix by signing in). Authz fails → 403 (authenticated but forbidden, the client cannot fix by retrying). Returning 403 when no session is present, or 401 when the session is fine but the role is wrong, hides the real cause from clients, monitoring, and incident response. The Server Action `Result` shape (Chapter 047) carries `'unauthenticated'` and `'forbidden'` as distinct discriminants for the same reason.
-- **What this lesson does not name yet.** The cookie attributes, the session table shape, the JWT alternative, the OAuth flow, the role model, the audit trail — all are downstream. This lesson is the dictionary.
-- **Watch-outs.** Treating "the cookie exists" as authentication (a forged or stolen cookie is exactly that — the proof has to be cryptographically tied to the server's session record or signed by a server key); putting authz checks inside React components rather than at the action boundary (a Server Component that renders nothing for a forbidden user is a UX problem, not a security boundary — Chapter 061 writes the boundary); collapsing identification and authentication in account-recovery flows (a password-reset link sent to an unverified email gives anyone who typed the email control of the account); mixing 401 and 403 in API contracts so clients can't distinguish "sign in" from "ask for access."
+### Reference solution signatures lessons display
 
-What this lesson does not cover:
+- **`auth` instance config (`src/lib/auth.ts`):**
+  - `betterAuth({ database: drizzleAdapter(db, { provider: 'pg' }), secret: env.BETTER_AUTH_SECRET, baseURL: env.BETTER_AUTH_URL, plugins: [nextCookies()], emailAndPassword: { enabled: true, requireEmailVerification: true, minPasswordLength: 12, autoSignIn: false }, emailVerification: { sendVerificationEmail: async ({ user, url }) => { await sendEmail({ to: user.email, subject: 'Verify your email', react: <WelcomeVerification firstName={user.name} verifyUrl={url} />, idempotencyKey: `verify:${user.id}:${url}` }); }, sendOnSignUp: true, autoSignInAfterVerification: true, expiresIn: 60 * 60 } })`
+- **`authClient` (`src/lib/auth-client.ts`):** `createAuthClient({ baseURL: env.NEXT_PUBLIC_APP_URL })`.
+- **Catch-all handler (`src/app/api/auth/[...all]/route.ts`):** `export const { POST, GET } = toNextJsHandler(auth);`.
+- **`getCurrentUser()`** — `async () => { const s = await auth.api.getSession({ headers: await headers() }); return s?.user ?? null; }`.
+- **`requireUser()`** — `async () => { const u = await getCurrentUser(); if (!u) redirect('/sign-in'); return u; }`.
+- **`signUpAction`** — `async (state, formData) => { const parsed = SignUpSchema.safeParse(...); if (!parsed.success) return err('validation', 'Check the highlighted fields.', z.treeifyError(parsed.error).properties); try { await auth.api.signUpEmail({ body: { email, password, name } }); redirect('/verify-email?email=' + encodeURIComponent(email)); } catch (e) { return mapAuthError(e); } }`. Returns `Result<never, 'validation' | 'conflict'>`.
+- **`signInAction`** — `async (state, formData) => { ... await auth.api.signInEmail({ body: { email, password } }); const next = sanitizeNext(formData.get('next')); redirect(next ?? '/dashboard'); }`. Returns `Result<never, 'validation' | 'invalid-credentials' | 'email-not-verified'>`.
+- **`signOutAction`** — `'use server'; async () => { await auth.api.signOut({ headers: await headers() }); redirect('/sign-in'); }`.
+- **`proxy.ts`** — exports `default` async function reading `getSessionCookie(request)`; on protected matcher hit without cookie, redirect to `/sign-in?next=` with sanitized path; on auth-page matcher hit with cookie, redirect to `/dashboard`; matcher config `['/dashboard/:path*', '/sign-in', '/sign-up']`.
+- **`SignUpSchema`** (Zod) — `{ email: z.string().email(), password: z.string().min(12), name: z.string().min(1).max(80) }`.
+- **`SignInSchema`** — `{ email: z.string().email(), password: z.string().min(1), next: z.string().optional() }`.
+- **Env entries (`.env.example`):**
+  - `DATABASE_URL=postgres://postgres:postgres@localhost:5432/app?sslmode=disable`
+  - `BETTER_AUTH_SECRET=` (32+ bytes, generate via `openssl rand -base64 32`)
+  - `BETTER_AUTH_URL=http://localhost:3000`
+  - `NEXT_PUBLIC_APP_URL=http://localhost:3000`
+  - `RESEND_API_KEY=re_...` (carry-in from chapter 050)
+  - `EMAIL_FROM='Acme <verify@<student-verified-domain>>'` (carry-in from chapter 050 — Display Name format preserved)
+  - `EMAIL_REPLY_TO=support@<student-verified-domain>` (carry-in from chapter 050)
+  - `NEXT_PUBLIC_APP_NAME=Acme` (carry-in from chapter 050 — read by `EmailLayout.tsx`)
 
-- Session storage, cookie attributes, and the wire format that carries the proven identity (lesson 2 of chapter 055).
-- OAuth as the authorization-code-for-authentication flow (lesson 3 of chapter 055).
-- Sign-in surfaces — passwords, passkeys, TOTP, magic-links (Chapter 057).
-- Better Auth's API or table layout (Chapter 056).
-- RBAC roles, the `authedAction` wrapper, audit trail (Chapter 061).
-- Password hashing parameters, brute-force defenses, rate limits (lesson 2 of chapter 057 and Unit chapter 078).
-- Elevation flows in implementation (lesson 2 of chapter 058 for re-auth on credential change).
+### Verify recipe mapped to "Done when"
 
-Estimated student time: 25 to 35 minutes. Concept-archetype lesson — vocabulary and the misframe catalog do the work; one decision-tree diagram (request → authn → authz → 401/403) earns its weight.
+| Done-when clause | Verify step |
+| --- | --- |
+| A new account can be created | Submit `/sign-up` with a fresh email; `user` row exists in Postgres with `emailVerified: false`; `verification` row exists with the token |
+| The verification email arrives and the link verifies the user | Inbox shows the React Email template with the CTA; clicking it lands on `/dashboard` (via `autoSignInAfterVerification: true`); `user.emailVerified` flips to `true` in Postgres; the consumed `verification` row is deleted |
+| A protected route redirects to sign-in when signed out | Open `/dashboard` in a fresh incognito window; redirected to `/sign-in?next=%2Fdashboard`; signing in lands back on `/dashboard` |
+| Signing out invalidates the session row in the database | Click sign-out on `/dashboard`; redirected to `/sign-in`; the `session` row for that token is gone from Postgres (one-row delete); refreshing `/dashboard` redirects again |
+| Sign-in refuses an unverified user | Sign up, ignore the email, attempt sign-in — action returns `'email-not-verified'`; UI surfaces "verify your email" inline with a resend link; no session cookie set |
+| `proxy.ts` does cookie-presence only | Inspect the proxy code path — no `auth.api.getSession` call; only `getSessionCookie(request)` |
+| `?next=` survives a malicious value | Hit `/sign-in?next=//evil.com`; after sign-in, redirected to `/dashboard` (fallback), not `evil.com`; `?next=/dashboard/billing` (valid relative path) is honored |
+| Inverse gate works | Signed-in user navigating to `/sign-in` is bounced to `/dashboard` instead of seeing the form |
 
----
+### Concepts demonstrated → owning lesson
 
-## Lesson 2 — Sessions versus JWTs, and the cookie that carries them
-
-Compares server-stored opaque sessions against signed JWTs with revocation as the load-bearing trade, then specifies the `__Host-` cookie defaults, the session row's load-bearing columns, and the issue/refresh/revoke/expire lifecycle that the rest of Unit 9 assumes.
-
-Topics to cover:
-
-- **The senior question.** Authn happens once, at the sign-in click. Every later request also needs to know "who is this?" without making the user re-type a password. What travels between browser and server to carry that proven identity, where does it live on each side, and what's the 2026 default for a Next.js SaaS — a server-stored opaque session ID in a cookie, or a self-contained signed JWT? The lesson names the two shapes, the trade matrix that picks between them, and the cookie discipline that any browser-side choice inherits from Chapter 017.
-- **What a "session" is, conceptually.** A server-side record that says "this opaque ID maps to user X, created at time T, last-used at time U, expires at time E, on this device fingerprint." The browser holds the opaque ID only — never the user data. Each request presents the ID, the server looks it up, and the request runs as the mapped user. The senior framing: a session is a *handle*; the source of truth lives on the server.
-- **The two session shapes — server-stored opaque sessions vs. JWTs.**
-  - **Server-stored opaque sessions (the 2026 default for browser-driven SaaS).** The cookie carries a random unguessable token (e.g., `crypto.randomUUID()` or a 32-byte URL-safe random) that's the primary key of a `session` row. Server validates by `SELECT ... WHERE token = ?` on every protected request. Properties: instant revocation (delete the row), arbitrary metadata on the row (last-used, IP, user-agent, current org), index-lookup cost per request (typical 1–3 ms on a connected pool), stateful by definition. Better Auth's default and the path the rest of Unit 9 takes.
-  - **JWTs / signed tokens (the conditional alternative).** The cookie carries a JSON payload `{sub, iat, exp, ...}` signed with the server's secret (HS256) or a private key (RS256/EdDSA). Server validates by verifying the signature and the `exp` claim — no database read. Properties: faster per-request validation (no I/O), portable across services (the same token authenticates against a separate API), no instant revocation (the token is valid until `exp` unless a denylist is layered in, which reintroduces the state JWTs claimed to escape), payload visible to any holder of the cookie. The threshold: edge-rendered routes or service-to-service calls where the database round-trip per request is the bottleneck and revocation can be eventual (15-minute access tokens with refresh-token rotation).
-  - **Hybrid (the production-grade reach).** Short-lived access JWT (5–15 min) for fast reads, refresh token stored server-side for revocation. Named once; the senior call for early-stage SaaS is "don't reach for it yet — the operational overhead of refresh-token rotation doesn't pay off until the database round-trip is a measured bottleneck."
-- **The revocation property as the load-bearing trade.** Revocation is what the senior trades when picking JWT. With server-stored sessions, "sign me out everywhere" is one DELETE statement, "this account is compromised" is one DELETE statement, "this stolen cookie must stop working in the next second" is one DELETE statement. With JWTs, every reach above is impossible without a denylist that re-introduces a per-request database read — at which point the stateless advantage is gone. The 2026 default for browser-driven SaaS is sessions, period; JWTs are the special-case reach.
-- **The cookie is the carrier — `__Host-` prefix and the senior defaults.** Chapter 017 taught the cookie attribute palette; this lesson names the auth-cookie configuration the rest of the unit assumes:
-  - `__Host-` prefix on the name (`__Host-session`) — the browser enforces `Secure`, `Path=/`, and rejects `Domain=` on set. The prefix moves "is this cookie scoped tightly?" from "the developer remembered" to "the browser refused to accept a misscope."
-  - `HttpOnly` — JS cannot read it via `document.cookie`. XSS that runs arbitrary script in the page still can't exfiltrate the session token. Non-negotiable for auth cookies.
-  - `Secure` — HTTPS-only transport. Implied by `__Host-` but stated.
-  - `SameSite=Lax` — sent on top-level navigations, withheld on cross-site `POST`s. The 2026 CSRF mitigation that lesson 4 of chapter 058 names; `SameSite=Strict` is too aggressive for sign-in-from-external-link flows (the user clicks a link from email and lands logged-out on the dashboard), `SameSite=None` re-opens the CSRF vector and is reserved for third-party-embed use cases this SaaS doesn't have.
-  - `Path=/` — implied by `__Host-`; the cookie is sent on every same-origin request.
-  - Expiration — session lifetime (e.g., 30 days) with sliding renewal on use. Persistent vs. session-only is a UX call; "remember me" toggles the cookie's `Max-Age`.
-- **Token entropy and the constant-time compare.** The session token must be unguessable to a network attacker — at least 128 bits of entropy from a CSPRNG. `crypto.randomUUID()` is fine (122 bits of entropy in a v4 UUID); 32 bytes from `crypto.getRandomValues()` (lesson 1 of chapter 020) is more. When verifying, compare tokens in constant time — never with `===` on raw bytes, because string comparison short-circuits on the first mismatched byte and leaks length-prefix information through timing. The library does the right thing by default; the senior recognizes it when reviewing custom code.
-- **What's on the session row — the load-bearing fields.** Beyond `(id, userId, expiresAt)`, the columns that earn their weight in 2026:
-  - `lastActiveAt` — for the "last seen 3 hours ago" UI in lesson 3 of chapter 058 and for idle-timeout policies.
-  - `userAgent` / `ipAddress` — for the active-sessions list (lesson 3 of chapter 058) and anomaly detection.
-  - `activeOrganizationId` — the multi-tenancy hook (Unit 10) that lets the session remember which org's data to show.
-  - `impersonatedBy` — admin support reach; named, not built here.
-  Full Drizzle schema is lesson 1 of chapter 056; this lesson names the columns and *why* each.
-- **Session lifecycle — issue, refresh, revoke, expire.** *Issue* on successful authentication: insert row, set cookie. *Refresh* on activity: update `lastActiveAt`, optionally rotate the token (defense-in-depth against session fixation); Better Auth rotates on a configurable cadence (default ~24h). *Revoke* on sign-out, password change, or admin action: delete the row; the next request from the stale cookie fails authn cleanly. *Expire* by `expiresAt`: the server treats expired rows as absent and a background job (or a query-time `WHERE expires_at > now()`) prevents stale rows from accumulating.
-- **The session-fixation defense.** When a user signs in, regenerate the session token — never reuse a pre-auth session ID for the post-auth session. The attack: a sign-in form that races a victim's browser into using an attacker-controlled session ID, so post-sign-in the attacker holds the authenticated cookie. Better Auth handles this by issuing a fresh token at sign-in; the senior recognizes the pattern when reviewing hand-rolled auth.
-- **Multi-device sessions and the active-sessions list.** Each browser/device gets its own session row. The user UI at "Settings → Security" reads `WHERE userId = ? ORDER BY lastActiveAt DESC` and shows the list with revoke buttons (lesson 3 of chapter 058). "Sign out everywhere" is `DELETE WHERE userId = ?`. The model is straightforward exactly because sessions are stateful.
-- **Where the cookie gets read in this stack.**
-  - **`proxy.ts` middleware** (Next.js 16) — runs before the route renders, reads the cookie, does the protected-routes redirect; fast path because the lookup is one indexed query.
-  - **Layouts and Server Components** — read via `auth.api.getSession({ headers: await headers() })` (lesson 4 of chapter 056) to drive UI based on identity.
-  - **Server Actions and route handlers** — read on every mutating call to enforce identity at the action boundary.
-  - The thread is the same — same cookie, same lookup, same `User | null` result; the difference is where the lookup happens and what the caller does with the answer.
-- **CSRF, lightly — the SameSite reflex and the full coverage downstream.** A `SameSite=Lax` cookie is not sent on cross-site form `POST`s, which kills the classic CSRF vector for the Server Action surface. The framing here: same-site cookies are the default mitigation; lesson 4 of chapter 058 names the residual cases (e.g., a cross-origin `GET` that triggers a state change — which the API design already prohibits, since GETs don't mutate). No separate CSRF tokens needed in this stack's default shape.
-- **Storage anti-patterns — what not to do.** Storing the session token (or a JWT) in `localStorage` exposes it to any XSS that runs in the page (lesson 4 of chapter 020 already taught the line). Storing user data in the cookie itself (instead of an opaque ID) breaks "single source of truth" and lets a stale cookie show stale data after a server-side change. Putting the user's email or role in the JWT and then trusting it at the action boundary lets a stale token act with stale capabilities — the action boundary always re-reads from the database for authz.
-- **Watch-outs.** Reaching for JWTs because "stateless is modern" — the operational cost of revocation will be paid eventually, and paying it via session rows is cheaper than via a denylist; using a non-`__Host-` cookie name and forgetting `Secure` in production — the prefix is the structural enforcement, not a style choice; comparing session tokens with `===` instead of `timingSafeEqual` in custom paths; rotating the session token on every request (defeats the multi-device model and creates a race condition with concurrent tabs); reading the session in a leaf React Server Component and trusting the result for authz at deep render time (the boundary is the action, not the render) — covered in Chapter 061 but the seed is here.
-
-What this lesson does not cover:
-
-- The Drizzle schema for `user` / `session` / `account` (lesson 1 of chapter 056).
-- The `auth.api.getSession` call shape and where to call it (lesson 4 of chapter 056).
-- The OAuth code-for-tokens exchange (lesson 3 of chapter 055).
-- Password hashing parameters and credential storage (lesson 1 of chapter 057).
-- CSRF in detail and the `dangerouslySetInnerHTML` opt-out (lesson 4 of chapter 058).
-- Rate limiting and brute-force defenses (Chapter 078).
-- Cookie attribute mechanics — taught in Chapter 017.
-
-Estimated student time: 35 to 45 minutes. Concept-archetype lesson; a comparison table for session-vs-JWT and a small sequence diagram for "sign-in → cookie set → next request" earn their weight.
-
----
-
-## Lesson 3 — OAuth chapter 005, PKCE, and the code-for-tokens exchange
-
-Walks the eight-step authorization-code-with-PKCE flow end-to-end — verifier/challenge derivation, `state` for CSRF, exact-match redirect URIs, the token exchange, `id_token` verification against JWKS — and names the OAuth-chapter 005 hardenings that make the 2026 social-login button legible.
-
-Topics to cover:
-
-- **The senior question.** Sign in with Google. Under the button, what actually happens between the app, the browser, and Google's servers? Why does the redirect URL contain `?code=...&state=...`, what's the exchange that turns the `code` into the user's email, and why does every public client — including this Next.js SaaS — need PKCE in 2026 even though the server holds a client secret? The lesson installs the mental model that lets the student read Better Auth's social-provider config (lesson 8 of chapter 057) without confusion.
-- **OAuth, the precise name.** *Open Authorization*. The protocol's *job* is delegated authorization — letting a third-party app act on a resource owner's behalf at a resource server with the user's consent and without sharing the user's password. The protocol's *common use* in SaaS is authentication — "sign in with Google" leverages the OAuth flow to read the provider's `userinfo` endpoint and treat "Google says this is `ada@acme.com`" as proof of identity. OAuth itself is authz; the authentication layer on top is OpenID Connect (OIDC), which standardizes the `id_token` and the `userinfo` shape. The senior says "OAuth login" knowing it's "OIDC over OAuth" underneath.
-- **The four roles, named once.** *Resource owner* — the human user. *Client* — the application requesting access (this SaaS). *Authorization server* — Google's identity endpoint. *Resource server* — the API the access token unlocks (Google APIs; for pure-login flows the only resource read is `userinfo`). The same servers often play multiple roles in practice; the role names exist so the spec can describe what each party does without ambiguity.
-- **OAuth chapter 005 status, May 2026.** OAuth chapter 005 is `draft-ietf-oauth-v2-1-15` (March 2026) — still an Internet Draft, not yet an RFC, but the security guidance is universally adopted by the major identity providers and by every library the student will use. The three things chapter 005 hardens versus 2.0:
-  - **PKCE is mandatory for all clients**, not just public ones (2.0 made it optional and recommended for SPAs/mobile; chapter 005 makes it required everywhere — including server-side web apps with a client secret).
-  - **Implicit grant (`response_type=token`) is removed.** It returned the access token in the URL fragment; the security model never survived browser history, server logs, and analytics scripts.
-  - **Resource-Owner Password Credentials grant is removed.** Sending the user's password to a third-party app defeats the point of delegation.
-  - **Redirect URIs must be compared by exact string match** — no prefix matching, no query-string flexibility. The senior recognizes this when configuring Google/GitHub OAuth apps: the redirect URI in the dashboard must match the app's URL down to the trailing slash.
-- **The grant taxonomy in 2026 — what's alive.**
-  - **Authorization code with PKCE** — the only browser-side flow that survives chapter 005. The full focus of this lesson.
-  - **Client credentials** — service-to-service, no user involved. Named once; out of scope for this chapter (the SaaS uses it to talk to Stripe, but Stripe's SDK abstracts it).
-  - **Refresh token** — paired with authorization code; rotates short-lived access tokens. Named at the bottom of this lesson.
-  - **Device code** — TVs and CLI tools; not in scope for the web SaaS.
-- **The authorization-code flow with PKCE, end to end.** The student should be able to draw this from memory.
-  1. **Client prepares the request.** Generate a `code_verifier` — a high-entropy random string (43–128 characters from `[A-Z][a-z][0-9]-._~`). Derive the `code_challenge` = `BASE64URL(SHA256(code_verifier))`. Generate a `state` — random nonce stored server-side in the pre-auth session, used to verify the callback isn't a CSRF reply. Optionally generate a `nonce` (OIDC) for the `id_token` binding.
-  2. **Client redirects the browser to the authorization server.** URL: `https://accounts.google.com/o/oauth2/v2/auth?response_type=code&client_id=...&redirect_uri=https://app.example.com/api/auth/callback/google&scope=openid+email+profile&state=...&code_challenge=...&code_challenge_method=S256`. The browser navigates (full-page redirect); the user sees Google's consent screen, picks an account, approves the scopes.
-  3. **Authorization server redirects back to the client's `redirect_uri`** with `?code=AUTH_CODE&state=...`. The `code` is a one-time, short-lived (typically 30–60 seconds) handle.
-  4. **Client verifies `state`** against the server-stored value, rejecting on mismatch. Without this check, an attacker can trick a victim into accepting an attacker-issued `code` and binding the attacker's identity to the victim's app account.
-  5. **Client exchanges the `code` for tokens** at the authorization server's token endpoint: `POST /token` with `grant_type=authorization_code&code=AUTH_CODE&redirect_uri=...&client_id=...&client_secret=...&code_verifier=...`. The server validates the code, the redirect-URI match, the client credentials, *and* that `SHA256(code_verifier)` equals the originally sent `code_challenge` — closing the PKCE loop.
-  6. **Authorization server returns the tokens.** `{ access_token, refresh_token?, id_token?, expires_in, token_type: 'Bearer', scope }`. For pure-login flows, the client reads the `id_token` (a JWT containing `sub`, `email`, `email_verified`, `name`, `picture`) or calls the `userinfo` endpoint with the access token to get the same data.
-  7. **Client provisions or links the local account.** Look up by `(provider, providerAccountId)`. If a row exists in the `account` table, sign that user in; if not, create a `user` row plus an `account` row binding the provider identity (lesson 9 of chapter 057 covers account linking; lesson 1 of chapter 056 covers the schema).
-  8. **Client issues its own session** (the cookie-carried session ID from lesson 2 of chapter 055). The OAuth tokens themselves are *not* the app's session — they're the proof-of-identity input that the local session is built on top of. Storing the access/refresh tokens depends on whether the app needs to call Google APIs later; for a pure-login flow, they can be discarded after `userinfo`.
-- **PKCE — the mechanism, the threat, the chapter 005 mandate.**
-  - **The mechanism.** Code verifier (kept by the client, never transmitted) and code challenge (sent in the authorization request) are bound at the authorization server. Only the holder of the verifier can complete the token exchange.
-  - **The threat it closes.** Authorization-code interception — an attacker who captures the `code` in transit (a malicious browser extension, a network attacker, a logging proxy) cannot redeem it without the verifier. In 2.0, this protection was optional for confidential clients (server-side apps with a secret); the assumption was that the client secret was enough. The 2024–2025 wave of attacks (PKCE downgrade, code injection variants) showed that adding PKCE everywhere costs nothing and closes attack classes that the secret alone doesn't.
-  - **Why chapter 005 makes it universal.** A confidential client running in Node behind a CDN with logging, replay attacks against staging environments, and shared secrets across deployments — all of these survive the "client secret is enough" model only theoretically. The senior call: PKCE on every flow, regardless of client type. Every library default in 2026 is PKCE-on.
-- **The `state` parameter — CSRF for the callback.** The authorization-code flow's callback is, structurally, a cross-site request the browser makes. Without `state`, an attacker can force a victim's browser to hit the app's callback with the attacker's code, and the app — believing the code came from its own redirect — links the attacker's Google identity to the victim's logged-in app account. The fix: the client generates a random `state`, stashes it in a server-side pre-auth session (or in a short-lived signed cookie), includes it in the authorization request, and rejects callbacks where `state` doesn't match. `state` is mandatory; libraries that omit it are broken.
-- **Redirect URI hygiene — exact match, no wildcards.** OAuth chapter 005 mandates exact string comparison. The implications:
-  - Register every environment's redirect URI explicitly: `https://app.example.com/api/auth/callback/google`, `https://staging.example.com/api/auth/callback/google`, `http://localhost:3000/api/auth/callback/google` for dev.
-  - Path matters; trailing slashes matter; query strings cannot be added at runtime.
-  - Open redirects on the app's domain (a `?next=https://attacker.com` in the redirect URI) are the senior's pet failure mode — never reflect untrusted input into the URL the OAuth callback redirects to post-sign-in; allowlist the post-sign-in destination against a fixed set of paths.
-- **Scopes — least privilege by default.** Request only what the app reads. For sign-in: `openid email profile`. Adding `https://www.googleapis.com/auth/drive` to the consent screen makes the user grant Drive access to a sign-in flow, which scares users and fails app-review for sensitive scopes. The senior reflex: scopes are part of the user's trust judgment, and the consent screen reveals what you ask for — ask narrowly. If a later feature needs Drive access, run a separate consent flow at that feature's entry point.
-- **Tokens — access, refresh, ID — and what each is for.**
-  - **Access token.** Bearer credential for calling the resource server's APIs. Short-lived (minutes to ~1 hour). Opaque or JWT depending on provider; the client treats it as opaque.
-  - **Refresh token.** Long-lived credential for getting new access tokens without re-prompting the user. Server-side only — never touches the browser in this stack. For pure-login flows, the app often skips storing refresh tokens entirely; needed only when the app calls provider APIs on a schedule.
-  - **ID token (OIDC).** A signed JWT containing the user's identity claims (`sub`, `email`, `email_verified`, `aud`, `iss`, `iat`, `exp`). Verifying the signature (against the provider's JWKS endpoint) and the `aud`/`iss`/`exp` claims is *required* before trusting the contents. Better Auth handles this; the senior recognizes the verification step when reading the library's source.
-- **OIDC versus raw OAuth — the line.** OAuth gives you tokens; OIDC tells you who the user is. The `openid` scope opts into OIDC, returns an `id_token`, and standardizes the `userinfo` endpoint. The senior says "OAuth" in conversation, but every "sign in with X" flow this stack uses is OIDC-shaped. Providers that don't speak OIDC (a few legacy APIs) require a non-standard call to read user info; Better Auth's adapters paper over the difference.
-- **Where the flow lives in this stack — Better Auth handles it, the senior reads the config.** The student doesn't hand-write the redirect, the PKCE handshake, or the token exchange — Better Auth's social-provider configuration (lesson 8 of chapter 057) does all of it. The point of this lesson is that when the student configures `google: { clientId, clientSecret, scope: ['openid', 'email', 'profile'] }`, they understand what those values *mean*, why the redirect URI registered at Google must exactly match the callback path, why the consent screen shows what it shows, and what arrives at the callback (a `code` and a `state`, exchanged for tokens, mapped to a local user). The mental model survives the framework; the framework call doesn't.
-- **The provider quirks — named once, deferred to lesson 8 of chapter 057.** Google requires the consent screen to be configured for the project (publishing status, sensitive-scope review for non-OIDC scopes); GitHub returns the primary email only when `user:email` is requested and the user may have set it to private (requires a separate API call); Apple's flow has its own response shape (`form_post` mode, the email returned only on first sign-in); Microsoft separates personal accounts and organizational accounts via the `tenant` parameter. The senior expects each provider to have surface-level quirks and reads the provider docs; the underlying flow is the one in this lesson.
-- **Watch-outs.** Treating the access token as the app's session — they're independent; the session lives in a cookie, the access token (if kept at all) lives server-side keyed by user; trusting the `id_token` payload without verifying the signature against the provider's JWKS endpoint and checking `aud`/`iss`/`exp`; missing `state` validation, so the callback accepts any attacker-supplied code; reflecting `?next=` into the post-sign-in redirect without allowlisting; configuring the redirect URI with a trailing slash in one environment and without in another — exact-match rules mean one of the two breaks silently; reusing the same `client_secret` across `dev`/`staging`/`production` (a staging breach exposes prod); requesting more scopes than needed because a future feature might want them — the user's trust judgment happens at the consent screen, not at the feature; logging the `code` or the `id_token` in request logs (treat both as secrets, with the same redaction discipline as passwords).
-
-What this lesson does not cover:
-
-- Better Auth's `socialProviders` config and the provider-specific quirks list (lesson 8 of chapter 057).
-- The `account` table schema that stores provider identities (lesson 1 of chapter 056).
-- Account linking — multiple providers on one user (lesson 9 of chapter 057).
-- The OAuth callback route in App Router (lesson 8 of chapter 057 covers `/api/auth/callback/[provider]`).
-- Hand-implementing the flow without a library (out of scope — every production SaaS uses a library; the lesson teaches the model so the library config is legible).
-- Service-to-service OAuth and client-credentials flows (out of scope — Stripe, Resend, etc. handle their own).
-- Token revocation endpoints and full OIDC RP-initiated logout (named once as the senior reach for enterprise SSO; out of scope for this chapter).
-
-Estimated student time: 45 to 55 minutes. Concept-archetype, the densest of the three — a Mermaid sequence diagram for the eight-step flow is load-bearing.
+- Authn vs. authz; sessions as opaque server-stored handles; `__Host-` cookie defaults — lesson 1 of chapter 051, lesson 2 of chapter 051.
+- `betterAuth({ ... })` config, the catch-all handler, the `authClient`, `'server-only'` on `lib/auth.ts` — lesson 1 of chapter 052.
+- Drizzle adapter, the four canonical tables (`user`, `session`, `account`, `verification`), Better Auth CLI `generate` — lesson 2 of chapter 052.
+- Session config (`expiresIn`, `updateAge`, `freshAge`, `cookieCache`), cookie surface tuning — lesson 3 of chapter 052.
+- `auth.api.getSession({ headers })`, `getCurrentUser`, `requireUser` — lesson 4 of chapter 052.
+- `signUp.email` / `signIn.email`, `emailAndPassword` config, `requireEmailVerification`, `autoSignIn`, `minPasswordLength` — lesson 1 of chapter 053, lesson 2 of chapter 053.
+- `emailVerification` config block, `sendVerificationEmail` callback, `autoSignInAfterVerification`, the `verification` table token row — lesson 3 of chapter 053.
+- The two-layer gate — `proxy.ts` cookie-presence + layout validating read, `?next=` round-trip with open-redirect closure, inverse gate — lesson 1 of chapter 054.
+- React Email template composition, transactional send through Resend with verified domain — chapter 049, chapter 050.
+- Server Actions with `useActionState`, Zod at the action boundary, the `Result` discriminant — chapter 043.
+- Zod-validated env via `lib/env.ts` — lesson 1 of chapter 034.
+- The `nextCookies()` plugin requirement in Next.js 16 — lesson 1 of chapter 052.
 
 ---
 
-## Lesson 4 — Quizz
+## Lesson 1 — Project brief
 
-Top 10 topics to quiz:
+What the project ships, the eight "Done when" verifications, the scope cuts (no OAuth, passkeys, 2FA, magic links, password reset), and the senior payoff each call earns.
 
-- Authentication versus authorization — the precise dictionary, the request-lifecycle order (authn first, authz second), and the 401/403 distinction at the action boundary.
-- Identification, authentication, authorization as three distinct things — the canonical misframes (email-in-DB ≠ authenticated; signed-in ≠ allowed; paid ≠ authorized).
-- Anonymous, authenticated, elevated as the three principal states; what triggers elevation and why credential changes require it.
-- Server-stored sessions versus JWTs — the trade matrix, with revocation as the load-bearing property, and why the 2026 default for browser-driven SaaS is server-stored sessions.
-- The `__Host-` cookie prefix and the senior auth-cookie defaults — `HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`, with the rationale for each.
-- The session row's load-bearing columns — `lastActiveAt`, `userAgent`, `ipAddress`, `activeOrganizationId` — and how each feeds a downstream feature (active-sessions list, multi-tenancy, anomaly detection).
-- Session-fixation defense — regenerating the token on sign-in — and the constant-time-compare reflex on token verification.
-- OAuth's precise name and job (delegated authorization), the four roles, and how OIDC adds the authentication layer on top.
-- The chapter 005 hardenings versus 2.0 — PKCE mandatory for all clients, implicit grant removed, ROPC removed, redirect URIs exact-match — and why each closes a real attack class.
-- The eight-step authorization-code-with-PKCE flow end-to-end — code verifier/challenge derivation, `state` for CSRF, redirect-URI exact match, the code-for-tokens exchange, `id_token` verification against JWKS, and provisioning the local session on top of the verified identity.
+Goals:
+
+- Frame the SaaS shape being built: a runnable email+password auth flow with a verification gate, the foundation every later unit (Unit 9 orgs, Unit 10 list views with `requireUser`, Unit 11 billing, Unit 13 notifications) builds on top of.
+- State the eight "Done when" verifications in one paragraph (account creation, email arrives + verifies, protected redirect, sign-out deletes row, unverified refusal, proxy cookie-only, `?next=` open-redirect closure, inverse gate).
+- Name the scope cut: no OAuth providers (lesson 8 of chapter 053 chapter material), no passkeys (lesson 7 of chapter 053), no 2FA (lesson 6 of chapter 053), no magic links (lesson 5 of chapter 053), no password reset (lesson 4 of chapter 053), no account linking (lesson 9 of chapter 053), no rate limiting (Unit chapter 074 owns), no organization scoping (Unit 9 owns), no audit log (Unit chapter 057). The project deliberately stays in the email+password lane.
+- Set the senior payoff: the choices made here — `requireEmailVerification: true`, `nextCookies()` plugin, the catch-all handler shape, the two-layer gate — are the ones that distinguish a working flow from one that ships footguns to production. Skipping the verification gate means anyone who types a stranger's email starts that stranger's account; skipping `nextCookies()` means sign-up "works" but the cookie never lands; conflating proxy and layout means a DB read per prefetch.
+- Show the end UX: one screenshot strip — sign-up form, inbox arrival of the verification email, the verify click landing on `/dashboard`, the sign-out button in the protected layout.
+- Link the starter via `degit react-saas-course-projects/chapter 055-email-password-auth/starter`.
+
+Senior calls and watch-outs:
+
+- The verified domain from chapter 050 is non-negotiable. Resend's sandbox sender bounces verification emails into spam folders and the verification flow looks broken for reasons that have nothing to do with the code. The chapter 050 prereq paragraph flagged this; reconfirm before starting.
+- `requireEmailVerification: true` is the senior default, not a teaching toggle. Production SaaS that ships with verification off leaks accounts to typo-squatters and to people who type "your-email@gmail.com" by accident.
+
+Codebase state at entry: empty directory (student runs `degit`).
+Codebase state at exit: starter cloned, `docker compose up -d` running Postgres, `pnpm install` clean, `.env` filled from `.env.example` with the carry-in Resend keys and a fresh `BETTER_AUTH_SECRET`, `pnpm dev` boots but `/sign-up` and `/sign-in` are empty shells; `/dashboard` 500s because `requireUser` isn't wired yet.
+
+Estimated student time: 10 to 15 minutes.
+
+---
+
+## Lesson 2 — Tour the starter
+
+Walk the provided file tree, confirm the Zod-validated env entries, bring up Postgres, and prove the Unit 7 Resend pipeline still works before any code is written.
+
+Goals:
+
+- Walk the file tree, calling out provided vs. stubbed. Linger on five files:
+  - `proxy.ts` (empty file with a TODO header; framing the two-layer gate before the build).
+  - `src/lib/auth.ts` (the spine — imports stubbed, the `betterAuth({...})` body is TODO).
+  - `src/lib/email.ts` (carry-in from chapter 050, provided; the `sendEmail({ to, subject, react })` signature the student calls from the verification callback).
+  - `src/app/(auth)/sign-up/page.tsx` (provided form layout with `name`/`email`/`password` inputs, a `useActionState`-shaped submit, and a TODO marker on the action import).
+  - `src/app/(protected)/layout.tsx` (TODO body; the file the layout-level validating read lives in).
+- Read `src/lib/env.ts` — confirm `DATABASE_URL`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `RESEND_API_KEY`, `EMAIL_FROM`, `NEXT_PUBLIC_APP_URL` are all parsed with Zod. The senior reflex: any env entry the project depends on is in `lib/env.ts`, never `process.env.X` at the call site. From lesson 1 of chapter 034.
+- Read `package.json` scripts — `db:generate`, `db:migrate`, `db:studio` from Unit 5 carry-in; new: `auth:generate` (`npx @better-auth/cli generate`) which the next lesson runs.
+- Bring up Postgres: `docker compose up -d`, `pnpm db:migrate` runs the existing migrations (Unit 5 domain tables if any are seeded for the starter — the project ships with just `__drizzle_migrations`). Open `pnpm db:studio`, confirm no auth tables yet.
+- Walk the Resend verification: send a test email via `sendEmail` to the student's own address using the existing `WelcomeEmail.tsx` from chapter 050 (a small one-liner in a `scripts/smoke-email.ts` provided in the starter) — confirms DKIM/SPF pass and the verified domain still works. This is the chapter 050 carry-in proven, not re-taught.
+
+Senior calls and watch-outs:
+
+- `BETTER_AUTH_SECRET` must be at least 32 bytes from a CSPRNG. Generated via `openssl rand -base64 32` and stored in `.env` (gitignored). Reusing across environments is the failure mode from lesson 1 of chapter 052.
+- The starter does *not* commit `src/db/schema/auth.ts` — Better Auth's CLI generates it on first run in the next lesson. Committing the generated file *after* generation is the senior pattern (schema as source of truth, no runtime generation in CI).
+- The two `_URL` env entries (`BETTER_AUTH_URL` and `NEXT_PUBLIC_APP_URL`) point at the same origin in this project. The split exists because the auth-server URL might differ from the public app URL in some deploy shapes (subdomain split); for this project they're identical.
+
+Codebase state at entry: starter cloned, Postgres running, env filled, dev server running with empty auth shells.
+Codebase state at exit: student has read every provided file, run the Resend smoke test (one email arrived in inbox), confirmed Studio shows no auth tables. No code written. `pnpm dev` still shows empty shells.
+
+Estimated student time: 20 to 25 minutes.
+
+---
+
+## Lesson 3 — Wire the auth spine
+
+Configure the `betterAuth` instance with `nextCookies()`, generate the four-table schema, mount the catch-all handler, and ship a first unverified sign-up that lands a `__Host-` cookie.
+
+Goals:
+
+- Fill `src/lib/auth.ts`:
+  - `import 'server-only';` first line (the lesson 1 of chapter 052 reflex).
+  - `betterAuth({ database: drizzleAdapter(db, { provider: 'pg' }), secret: env.BETTER_AUTH_SECRET, baseURL: env.BETTER_AUTH_URL, plugins: [nextCookies()] })`.
+  - `emailAndPassword: { enabled: true, requireEmailVerification: false, minPasswordLength: 12, autoSignIn: false }` — *temporarily* off for this lesson's sign-up smoke test; flipped to `true` in the next lesson once the email send is wired. The student sees both states and understands the toggle.
+  - Session config: `session: { expiresIn: 60 * 60 * 24 * 30, updateAge: 60 * 60 * 24, freshAge: 60 * 60 * 24, cookieCache: { enabled: true, maxAge: 5 * 60 } }` — 30-day expiry, 1-day sliding renewal, 1-day fresh window, 5-minute cookie cache (the lesson 3 of chapter 052 defaults).
+  - `advanced: { cookiePrefix: '__Host-', useSecureCookies: process.env.NODE_ENV === 'production' }` — `__Host-` prefix from lesson 2 of chapter 051; `Secure` flips off only in localhost dev (the browser refuses `Secure` cookies on `http://localhost` otherwise).
+- Run `pnpm auth:generate` — the Better Auth CLI reads `lib/auth.ts`, knows Drizzle + Postgres, and writes `src/db/schema/auth.ts` with `user`, `session`, `account`, `verification`. Read the generated file column by column (revisit lesson 2 of chapter 052's walkthrough). Commit it.
+- Run `pnpm db:generate --name auth_init` and `pnpm db:migrate`. Open Studio; confirm the four tables, indexes, and FK cascades.
+- Fill `src/app/api/auth/[...all]/route.ts` — three lines: `import { auth } from '@/lib/auth'; import { toNextJsHandler } from 'better-auth/next-js'; export const { POST, GET } = toNextJsHandler(auth);`.
+- Fill `src/lib/auth-client.ts` — `import { createAuthClient } from 'better-auth/react'; export const authClient = createAuthClient({ baseURL: env.NEXT_PUBLIC_APP_URL });`.
+- Fill `src/lib/auth-helpers.ts` — `getCurrentUser()` and `requireUser()` per the reference signatures. `'server-only'` first line.
+- Fill `src/app/(auth)/sign-up/actions.ts`:
+  - `'use server';` first line.
+  - Zod `SignUpSchema` parse on `formData`.
+  - On parse failure, return `err('validation', 'Check the highlighted fields.', z.treeifyError(parsed.error).properties)`.
+  - On parse success, `try { await auth.api.signUpEmail({ body: { email, password, name } }); }` — without `headers`, the framework sets the cookie because `nextCookies()` is loaded.
+  - On unique-violation error, return `err('conflict', 'An account with that email already exists.')`. The mapping from Better Auth's error codes to the `Result` taxonomy is centralized in the provided `src/lib/auth/error-mapping.ts` (`mapAuthError`), which the action calls in its `catch` block.
+  - On success, `redirect('/dashboard')` — because `requireEmailVerification` is off for this lesson, the user lands signed in immediately.
+- Wire the sign-up page form's `action={signUpAction}` and read `state.reason` for the inline error.
+- Smoke test: `/sign-up`, submit `you@example.com` + a 12-char password + a name. Inspect: `user` row created, `account` row created with `providerId: 'credential'` and a bcrypt hash in `password`, `session` row created, `__Host-better-auth.session_token` cookie set in browser devtools, redirected to `/dashboard` (but `/dashboard` still 500s because `requireUser` isn't called there yet — that's fine; the cookie landing is the win).
+
+Senior calls and watch-outs:
+
+- `nextCookies()` is the line that prevents the silent-failure pattern from lesson 1 of chapter 052. Forgetting it means the `signUp.email` server-side succeeds but the `Set-Cookie` header doesn't make it onto the Server Action response, and the user is "signed up but not signed in" with no indication of the bug.
+- `requireEmailVerification: false` here is *only* for this lesson's smoke test. The next lesson flips it to `true` and a regression would mean anyone who typed a stranger's email controls that stranger's account. Flagged with a `// TODO: flip to true in lesson 4 of chapter 055` comment in the code itself.
+- `minPasswordLength: 12` is the senior default in 2026, not 8. The library accepts 8 by default; 12 is the call.
+- The catch-all `[...all]` segment is *not* optional. Writing `/api/auth/sign-up/route.ts` instead and trying to route manually breaks every endpoint the library expects to expose. The lesson 1 of chapter 052 rule honored.
+
+Codebase state at entry: empty `lib/auth.ts`, no auth schema, no catch-all handler, sign-up form does nothing.
+Codebase state at exit: `auth` instance and `authClient` working, four tables in Postgres, catch-all handler responding, sign-up creates a user + session, cookie lands in the browser, `/dashboard` still 500s because the layout doesn't read the session yet. `pnpm dev` is runnable, the sign-up smoke flow is end-to-end visible.
+
+Estimated student time: 55 to 75 minutes.
+
+---
+
+## Lesson 4 — Lock the verification gate
+
+Build the React Email verification template, flip `requireEmailVerification` on, wire `sendVerificationEmail` through the Unit 7 pipeline, and add the sign-in action with opaque errors and `?next=` sanitization.
+
+Goals:
+
+- Build `src/emails/WelcomeVerification.tsx`:
+  - React Email template using the components carry-in from chapter 049 (`<Html>`, `<Head>`, `<Body>`, `<Container>`, `<Heading>`, `<Text>`, `<Button>`, `<Link>`).
+  - Props: `{ firstName: string; verifyUrl: string }`.
+  - Body: heading "Verify your email", greeting using `firstName`, a paragraph explaining the click, a prominent `<Button href={verifyUrl}>Verify email</Button>`, a plain-text fallback line ("If the button doesn't work, paste this link: {verifyUrl}"), and a small expiry notice ("This link expires in 1 hour.").
+  - Preview prop set for the inbox preview pane.
+- Flip `lib/auth.ts`:
+  - `emailAndPassword.requireEmailVerification: true` (the gate the next sign-in honors).
+  - Add the `emailVerification` block: `{ sendVerificationEmail: async ({ user, url }) => { await sendEmail({ to: user.email, subject: 'Verify your email', react: <WelcomeVerification firstName={user.name} verifyUrl={url} />, idempotencyKey: `verify:${user.id}:${url}` }); }, sendOnSignUp: true, autoSignInAfterVerification: true, expiresIn: 60 * 60 }` — 1-hour token expiry, auto-send on signup, auto-sign-in on verify.
+- Update `signUpAction`:
+  - Instead of `redirect('/dashboard')` on success, `redirect('/verify-email?email=' + encodeURIComponent(email))`.
+  - On `'email-not-verified'` error class from any retry path, surface it via `err('email-not-verified', 'Verify your email before signing in.')` (the action keeps returning the canonical Result shape from chapter 047).
+- Update `src/app/(auth)/verify-email/page.tsx` (provided shell):
+  - Reads `?email=` from search params.
+  - Renders "Check your inbox" with the email shown and a "resend" button wired to `authClient.sendVerificationEmail({ email })` (client-side call — re-issues the token and re-sends).
+- Build `src/app/(auth)/sign-in/actions.ts`:
+  - Same shape as sign-up — `SignInSchema` Zod parse on `formData`.
+  - `await auth.api.signInEmail({ body: { email, password } })`.
+  - Catch the error classes — `err('invalid-credentials', 'Invalid email or password.')` (same opaque message regardless of whether email is wrong or password is wrong — the enumeration discipline from lesson 2 of chapter 053), `err('email-not-verified', 'Verify your email before signing in.')` (returned because `requireEmailVerification: true` blocks the sign-in).
+  - `next` sanitization: `formData.get('next')` runs through a `sanitizeNext()` helper that rejects anything starting with `//`, anything containing a `:`, anything not starting with `/`, falling back to `/dashboard`.
+  - On success, `redirect(next ?? '/dashboard')`.
+- Wire `/sign-in` form's `action={signInAction}`, render `state.reason` inline. Pass `next` from `searchParams.next` as a hidden input.
+- Smoke flow:
+  - Hit `/sign-up` with a fresh email; redirect to `/verify-email`; inbox arrival of the React Email template; click the verify button; verification token consumed in the `verification` table; `user.emailVerified` flips to `true`; auto-sign-in via `autoSignInAfterVerification: true` lands on `/dashboard` (still 500s — next lesson fixes).
+  - Hit `/sign-up` with a second fresh email but don't click the link; hit `/sign-in` with those credentials; action returns `err('email-not-verified', ...)`; UI surfaces "verify your email" inline with a resend link. No session cookie set.
+
+Senior calls and watch-outs:
+
+- The verification email goes through *the same* `sendEmail` from chapter 050. No re-implementation. The `react` field accepts the React Email template directly. The `email_suppressions` read inside `sendEmail` still applies — a suppressed verification address returns `{ ok: false }` and the sign-up still creates the user but the email never sent; the resend button on `/verify-email` is the user's escape hatch in that case.
+- `autoSignInAfterVerification: true` is the senior call for SaaS — the user clicked the verify link from their email, that's strong proof of email control, dropping them at the sign-in form to re-type a password they just typed is a UX regression. The library handles the session issue on the verify-callback request directly.
+- Returning the same opaque `'invalid-credentials'` for both "email not found" and "wrong password" closes the enumeration vector (lesson 2 of chapter 053's rule). Returning `'email-not-verified'` as a distinct reason is fine — that information leaks only after the password matched, which is itself the proof of identity.
+- The `expiresIn: 60 * 60` (1 hour) on `emailVerification` is the senior default. Long enough that an inbox triage doesn't expire the link; short enough that a stolen email forward doesn't grant indefinite access.
+- The `?next=` sanitization must reject `//evil.com` (protocol-relative URLs that the browser resolves to `https://evil.com`) and `javascript:` and any absolute URL. The `sanitizeNext` helper is a small allowlist function — paths starting with `/` and not `//`, no colons. From the lesson 1 of chapter 054 watch-out list.
+
+Codebase state at entry: sign-up works but lands unverified; no email sent; no sign-in surface; `requireEmailVerification` is off.
+Codebase state at exit: sign-up sends the verification email; verify link flips the user verified and auto-signs-in; sign-in works for verified users; sign-in refuses unverified users with `'email-not-verified'`; `/dashboard` still 500s because the layout doesn't read the session yet. The full mail-in-the-loop flow is visible end-to-end.
+
+Estimated student time: 55 to 75 minutes.
+
+---
+
+## Lesson 5 — Gate the protected surface
+
+Write the `proxy.ts` cookie-presence gate with inverse redirect, install the layout-level `requireUser()` validating read, and ship the sign-out Server Action that deletes the session row.
+
+Goals:
+
+- Fill `proxy.ts` at the project root:
+  - `import { NextResponse, type NextRequest } from 'next/server';`
+  - `import { getSessionCookie } from 'better-auth/cookies';`
+  - `export default async function proxy(request: NextRequest) { const cookie = getSessionCookie(request); const path = request.nextUrl.pathname; const isProtected = path.startsWith('/dashboard'); const isAuthPage = path === '/sign-in' || path === '/sign-up'; if (isProtected && !cookie) { const next = encodeURIComponent(path + request.nextUrl.search); return NextResponse.redirect(new URL('/sign-in?next=' + next, request.url)); } if (isAuthPage && cookie) { return NextResponse.redirect(new URL('/dashboard', request.url)); } return NextResponse.next(); }`
+  - `export const config = { matcher: ['/dashboard/:path*', '/sign-in', '/sign-up'] };`
+- Fill `src/app/(protected)/layout.tsx`:
+  - `'use server'`-shaped server component.
+  - `const user = await requireUser();` at the top.
+  - Renders a nav strip with `{user.email}` and a sign-out `<form action={signOutAction}><button>Sign out</button></form>`.
+  - `<main>{children}</main>` below.
+  - `/dashboard/page.tsx` (provided) renders "Hello {name}" using `getCurrentUser()` again (the layout has already gated; this is just to show the call shape — two reads in one request hit the cookie cache, no extra DB round trip).
+- Fill `src/app/(protected)/sign-out-action.ts`:
+  - `'use server';`
+  - `await auth.api.signOut({ headers: await headers() });`
+  - `redirect('/sign-in');`
+  - The library clears the `__Host-better-auth.session_token` cookie and deletes the `session` row in one call (per lesson 4 of chapter 052 / chapter 053 closeout). The student verifies the row's absence in Studio after sign-out.
+- Smoke test:
+  - Signed-out: hit `/dashboard` → proxy redirects to `/sign-in?next=%2Fdashboard`.
+  - Sign in via `/sign-in` → redirected to `/dashboard` (the `?next=` honored).
+  - Signed-in: hit `/sign-in` directly → proxy bounces to `/dashboard` (inverse gate).
+  - Click sign-out → cookie cleared, `session` row gone, redirected to `/sign-in`.
+  - Refresh `/dashboard` → proxy redirects again (cookie gone).
+- Walk the two-layer model one more time at the watch-out level: the proxy's `getSessionCookie` does *not* hit the database, *not* call `auth.api.getSession`; the layout's `requireUser` (which calls `auth.api.getSession`) is the validating read. Inspect the Postgres logs (or Drizzle's query log) on a signed-in `/dashboard` request — one session read per request, hitting the cookie cache (within the 5-min window) most of the time.
+
+Senior calls and watch-outs:
+
+- The proxy reads *only* the cookie. Any reach for `auth.api.getSession` inside `proxy.ts` collapses the two-layer model — the lesson 1 of chapter 054 rule honored at the call site. Inspect the imports in `proxy.ts` to confirm: `getSessionCookie` only, never `auth`.
+- The layout calls `requireUser()` — which calls `redirect('/sign-in')` when the session is null. The proxy might pass the request through if the cookie cache is stale and the cookie was revoked server-side; the layout catches the stale-cookie case. Defense in depth.
+- The sign-out form is a `<form action={signOutAction}>`, not an `onClick={() => fetch(...)}`. Progressive enhancement holds; the action runs without JS; the redirect lands cleanly.
+- The matcher list is explicit. Adding a new protected segment later means adding it to the matcher *and* gating it with `requireUser` in its layout. The senior reflex: every protected segment has both.
+
+Codebase state at entry: sign-up + sign-in + verification work, but `/dashboard` 500s because the layout doesn't read the session.
+Codebase state at exit: the full flow is end-to-end runnable. Signed-out → `/sign-in?next=…` → sign-in → `/dashboard` with user nav and sign-out → click sign-out → cookie gone, row gone, back to `/sign-in`. Inverse gate works. The application is in the runnable end state the project promises.
+
+Estimated student time: 45 to 60 minutes.
+
+---
+
+## Lesson 6 — Verify the cycle
+
+Walk every "Done when" clause against Postgres rows, browser cookies, and inbox arrivals, run adversarial probes against `?next=` and the inverse gate, and name the production checklist for shipping.
+
+Goals:
+
+- Walk every "Done when" clause as a verification step (the table in the framing). Each step is a concrete observable: row state in Postgres (via Studio), browser cookie state (via DevTools), inbox state (via Resend dashboard or the actual inbox).
+- Drop the database (`docker compose down -v && docker compose up -d && pnpm db:migrate`); run through the full flow with a fresh email; confirm clean state at every step:
+  - Sign up → `user` row exists with `emailVerified: false`; `account` row with `providerId: 'credential'` and a bcrypt hash; `verification` row with the token; one email in inbox.
+  - Click verify → `user.emailVerified: true`; the `verification` row is deleted (consumed); a `session` row appears (the auto-sign-in landing); cookie is in DevTools with `__Host-` prefix, `HttpOnly`, `Secure: false` (local dev), `SameSite: Lax`, `Path: /`.
+  - Open `/dashboard` directly → renders the user's name and email.
+  - Sign-out → `session` row gone; cookie cleared; redirected to `/sign-in`; refreshing `/dashboard` redirects with `?next=`.
+- Adversarial probes:
+  - Hit `/sign-in?next=//evil.com`, sign in → land on `/dashboard` (the `sanitizeNext` fallback works).
+  - Hit `/sign-in?next=https://evil.com`, sign in → land on `/dashboard`.
+  - Hit `/sign-in?next=/dashboard/billing` — even though `/dashboard/billing` doesn't exist in this project, confirm the redirect goes there (Next.js 404 is the right answer; the *redirect target* is what the test confirms).
+  - Sign up with an email + don't click verify; attempt to sign in; receive `'email-not-verified'`; hit the resend button on `/verify-email`; receive a fresh email; click; flow completes.
+  - Signed-in, navigate to `/sign-in` → bounced to `/dashboard` (inverse gate).
+  - Open two browsers signed in as the same user; sign out from browser A; refresh browser B; redirected to `/sign-in` because the `session` row is gone (cookie cache might briefly mask this within the 5-min window — name the trade from lesson 3 of chapter 054).
+- Inspect the proxy: `cat proxy.ts | grep getSession` should hit `getSessionCookie` only, never `auth.api.getSession`. The two-layer rule structurally enforced.
+- Name the senior calls one more time:
+  - `requireEmailVerification: true` is the production default. Shipping with it off is the canonical first-week SaaS bug.
+  - `nextCookies()` is the line that prevents the silent-failure pattern. Inspect the plugin array in `lib/auth.ts` and confirm.
+  - The catch-all `[...all]` is the only auth route; never write per-action route files.
+  - The proxy reads the cookie; the layout reads the session. Two layers, two responsibilities.
+  - `?next=` is sanitized at the action boundary, never reflected raw into `redirect()`.
+  - Sign-out deletes the session row — the opaque-server-session model from lesson 2 of chapter 051 made concrete; the row's absence is the revocation.
+- Forward references:
+  - Chapter 053 (chapter material) layered passwords, magic links, TOTP, passkeys, OAuth providers on this same setup; none of them required re-shaping the schema.
+  - lesson 2 of chapter 054 added credential changes and the elevation tier; the `freshAge` knob configured in lesson 3 of chapter 055 is what the change-password and change-email actions read.
+  - lesson 3 of chapter 054 added the active-sessions list; the `ipAddress` / `userAgent` columns on `session` populated automatically.
+  - lesson 4 of chapter 054 named the CSRF and XSS defaults that this setup already encoded — `SameSite=Lax` on the cookie + Server Actions origin check + React 19 auto-escape.
+  - Unit 9 will wrap `requireUser` with org scoping (`activeOrganizationId`), add the `authedAction` wrapper for authz, and shift the destructive-action discipline to the action boundary.
+  - Unit 10's list views call `requireUser()` in their server-side reads and never re-implement the cookie check.
+  - Unit chapter 074 adds Upstash rate limiting to the sign-in, sign-up, and verify-resend endpoints — non-negotiable the moment this project ships to a public URL.
+
+Senior calls and watch-outs:
+
+- The verify lesson is the rehearsal of the failure modes — running each one and naming what would break without the discipline the student just installed. If any verification fails, the lesson points at the owning build lesson, not at "debug it yourself."
+- Production checklist (named, not built): rotate `BETTER_AUTH_SECRET` on a cadence and on every staff turnover; configure Resend's bounce/complaint webhooks (Unit 11 owns the webhook handler) to write `email_suppressions` so verification emails to bouncing addresses don't burn the domain's reputation; add rate limits before deploy (Unit chapter 074).
+
+Codebase state at entry: full flow works.
+Codebase state at exit: same surface, verified clause-by-clause; every Postgres row, every cookie, every email arrival accounted for; the student can articulate every decision and which later unit will lean on it.
+
+Estimated student time: 30 to 40 minutes.

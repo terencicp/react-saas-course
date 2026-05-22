@@ -1,214 +1,193 @@
-# Chapter 033 — File-system routing with the App Router
+# Chapter 033 — The request surface
 
 ## Chapter framing
 
-Chapter 033 teaches the App Router as a contract between the file system and the URL space: a folder under `app/` is a route segment, `page.tsx` is the leaf, `layout.tsx` is the shell every nested page renders inside, `[id]` is a parameter, `(marketing)` is organization without URL impact, `@sidebar` is a slot, and `(.)photo` is an interception. By the end the student recognizes each convention on sight, knows what shape the corresponding default export must take, and reaches for the file the framework offers before inventing a JavaScript workaround. The chapter owns the URL surface — Server vs. Client Components (chapter 034), async UI primitives like `loading.tsx` and `error.tsx` (chapter 035), and the rendering and caching model (chapter 036) are named in context but owned elsewhere. Next.js 16 (February 2026, Turbopack default) is the pinned version; the App Router is the only router the course teaches; Pages Router gets one line for recognition.
+Chapter 033 covers the request surface that sits between routing (chapter 029) and Server Actions (Unit 6): how a Server Component reads the request (`cookies()`, `headers()`), how code can run before the route does (`proxy.ts`), how URL state flows through `searchParams` and dynamic params, and how Client Components read and write the URL. The student leaves with one mental model — the route's inputs are the URL, the headers, the cookies, and nothing else; everything dynamic the route renders flows from those four channels — and the syntactic vocabulary to consume each on either side of the server/client boundary.
 
-Threads that run through every lesson: the file system is the URL space and every convention is framework-enforced; co-location by feature is Architectural Principle #1, with route-specific code living under `_components/` or `_lib/` inside the route folder; layouts compose down the tree while pages are leaves; route groups (`(folder)`) organize without URL impact; dynamic segments hand `params` to the page as a Promise (Next.js 16 async-request APIs); parallel routes (`@slot`) render independent slots at one URL with `default.tsx` as the hard-navigation fallback; intercepting routes (`(.)`, `(..)`, `(...)`) ship the modal-with-real-URL pattern paired with a non-intercepting sibling; navigation is `<Link>` plus `redirect`/`notFound`/`permanentRedirect`. The chapter ships six teaching lessons plus a quiz, ordered by dependency: scaffolding and basic routing first, then layouts and route groups, dynamic segments, navigation primitives, parallel routes, and intercepting routes — Chapter 039 wires them into a project.
+Threads that run through every lesson: under Cache Components (lesson 1 of chapter 032), reading request data does not flip a route dynamic any more — every route is dynamic by default, and the explicit signal is the `await` itself; all request-reading APIs return Promises and must be awaited in Server Components or unwrapped with `React.use()` in Client Components; the senior reflex is to read on the server first and pass resolved values down as props, reaching for Client navigation hooks only when interaction is the lesson; `middleware.ts` was renamed to `proxy.ts` in Next.js 16 and the runtime is Node-only (the Edge runtime is no longer the deployment target); the proxy is a network-boundary tool, not a place to run application logic, and the cost question (every matched request pays the proxy roundtrip) dictates the matcher config; URL state is the canonical place to hold filter, sort, pagination, and tab state for any view a user can share or refresh, and the URL is the source of truth that server components read on each render; transient state (open/closed dropdowns, hover, focus) belongs in component state, not the URL; the chapter sets the foundations the URL-state list project in Chapter 060 builds on, and the auth and RBAC chapters (Unit 8, Unit 9) lean on `cookies()` and the proxy. The chapter ships five teaching lessons plus a quiz.
 
 ---
 
-## Lesson 1 — File tree, page.tsx, and co-location
+## Lesson 1 — Reading the request with cookies() and headers()
 
-Teaches how folders under `app/` become URL segments, how `page.tsx` makes a route routable, and the feature co-location rule that puts route-specific code under `_components/` and `_lib/` private folders.
+Teaches the async, server-only, read-only `cookies()` and `headers()` APIs from `next/headers`, the senior pattern of reading once at the top and passing resolved values down, the trust-the-platform caveat on proxy headers, and the build-time constraints these reads place on Cache Components.
 
 Topics to cover:
 
-- **The senior question.** Given the starter's `app/`, what files does the student create to add `/dashboard` and `/dashboard/invoices`? The lesson establishes that the file system *is* the route table: a folder becomes a URL segment, a `page.tsx` becomes the route's leaf.
-- **`pnpm create next-app` — for recognition, not for use.** The course's starter (lesson 1 of chapter 004) is the source of truth; the wizard is named so the student recognizes its output (TypeScript, Tailwind v4, App Router, Turbopack, Biome, `@/*` alias, `AGENTS.md`) when seen elsewhere.
-- **The App Router file tree at a glance.** Every folder under `app/` is a route segment; `page.tsx` makes it routable; `layout.tsx` makes it a shell every nested route renders inside; folders without `page.tsx` are valid but produce no URL.
-- **`page.tsx` — the route leaf.** Default export required; component name doesn't affect routing; Server Component by default; must live inside a folder under `app/` (bare `app/page.tsx` is the index route).
-- **The Pages Router named once, dropped.** Recognition only; the course does not teach it. A `pages/` folder in a legacy codebase is "pre-App-Router; migration out of scope."
-- **Architectural Principle #1 — co-locate by feature, not by layer.** Organize by purpose, not by file kind. A feature's components, hooks, helpers, and actions live inside its route folder (`app/dashboard/_components/`, `app/dashboard/_lib/`, `app/dashboard/_actions.ts`); the "by-layer" alternative (top-level `components/`, `hooks/`, `lib/`, `services/`) is named once as the legacy form the App Router rejects.
-- **Private folders (`_folder`) — the senior form for non-routable colocation.** A folder prefixed with an underscore is invisible to the routing system. Any non-routable supporting file (`_components/`, `_lib/`, `_actions.ts`) goes under a private folder; bare files in a route folder compete with future framework conventions.
-- **What lives outside `app/`.** The project-root surface for genuinely shared code: `lib/` (helpers used by 2+ features), `db/` (Drizzle, Unit 6), `components/` (app-wide UI, often shadcn), `actions/` (rare; shared server actions), `env.ts` (lesson 5 of chapter 004), config files. Threshold for top-level: "used by two or more features."
-- **`@/*` and the import-alias contract.** `tsconfig.json` maps `@/*` to project root; the senior reach is `@/` for everything except intra-feature relative imports.
-- **Top-level files in the `app/` directory.** Framework-read file conventions at `app/`'s root: `favicon.ico`, `globals.css`, plus the SEO conventions `robots.ts`, `sitemap.ts`, `opengraph-image.{ext}`, `twitter-image.{ext}`, `icon.{ext}`, `apple-icon.{ext}` (Chapter 038 owns the SEO set).
-- **`route.ts` named once.** A `route.ts` in a route folder makes it a route handler (HTTP responses, not UI); Chapter 050 owns the full surface. Named here to prevent confusing it with `page.tsx`.
-- **Watch-outs:** a folder without `page.tsx` is a 404; `app/page.tsx` is the index route; bare files in a route folder mix routing and non-routing concerns; `app/` and `pages/` can coexist but the course doesn't teach the mix; only `app/` is scanned; the default export from `page.tsx` is what renders.
+- **The senior question.** A Server Component needs the user's session token, their preferred locale, the request's IP for rate-limiting, and the `User-Agent` for analytics. Where do those values come from in the App Router, what's the syntax, and what does reading them cost? The lesson names `cookies()` and `headers()` from `next/headers` as the canonical server-side reads, both async, both Promise-returning in Next.js 16.
+- **The two primitives — what each returns.** `await cookies()` returns a read-only `ReadonlyRequestCookies` store with `get(name)`, `getAll()`, `has(name)`. `await headers()` returns a read-only `Headers` instance (the same web-platform `Headers` API the student knows from chapter 015). Both are scoped to the current request and discarded after the render.
+- **Read-only by default, mutation lives in Server Actions and route handlers.** From a Server Component, `cookies()` cannot `set` or `delete` — the response has already started streaming. Setting cookies requires a Server Action context or a route handler where the response is still composable. The same applies to `headers()` (response headers are written via the platform, not via this read API). The lesson names the constraint and points to Server Actions (Chapter 043) for write paths.
+- **The async shape and `React.use()` on the client.** Both APIs return Promises; `await` them in Server Components. Client Components don't have direct access — values must be passed as props or threaded through context. If a Promise is passed across the boundary, `React.use()` unwraps it (the same shape from lesson 4 of chapter 030 and lesson 7 of chapter 032).
+- **The senior pattern — read once at the top.** Read `cookies()` and `headers()` at the layout or page level, derive what's needed (session, locale, IP), pass resolved values down to children. Avoid reading the same store in deep components — pair with `cache()` from lesson 5 of chapter 032 when a derived value (like the current user) is read from many places.
+- **Common reads — the SaaS reference list.** Session cookie (auth layer, Unit 8), CSRF cookie (Better Auth handles, named here), locale preference (Unit 17), feature-flag cookie, A/B-test cookie. Headers: `x-forwarded-for` for client IP (with the trust-the-platform caveat), `User-Agent` for analytics, `Accept-Language` for locale fallback, `referer` for navigation analytics.
+- **Trust boundaries on headers.** `x-forwarded-for` and related proxy headers are user-controllable upstream of a trusted proxy. The right reach: trust them only when behind a known proxy (Vercel, Cloudflare) and consult the platform's documented header (Vercel uses `x-forwarded-for` and `x-real-ip`). The senior anchor: never use raw headers for authorization — use the session.
+- **What reading these does to caching.** Under Cache Components (lesson 1 of chapter 032), reading `cookies()` or `headers()` is one of the explicit dynamic signals — placing such a read inside a `use cache` function is a build error. The route is dynamic by default anyway, so the read costs nothing relative to "no read"; what it prevents is making that subtree static. The senior reach: keep the read in the dynamic part of the tree and lift cached chrome outside.
+- **The contrast with the Client Component pattern.** A Client Component cannot call `cookies()` or `headers()` — both are server-only. The client gets cookies via `document.cookie` (for non-`HttpOnly` cookies) and headers only via inspecting `Response` objects from `fetch`. The senior reflex is to read on the server and pass down; reaching for `document.cookie` is rare and usually signals an architecture mistake.
+- **Worked example — reading session and locale at the root layout.** A `RootLayout` reads `cookies()` for the session token and `headers()` for `Accept-Language`, derives `user` (via the cached `getCurrentUser`) and `locale`, and renders the shell with those values resolved. Children consume `user` via the cached function; locale flows as a prop or context. The example is the production shape the chapter and Unit 8 build on.
+- **Watch-outs.** Synchronous access (`cookies().get(...)` without `await`) is a build error in 16 — the codemod from lesson 7 of chapter 032 fixes most cases; `cookies()` and `headers()` in a Client Component is a build error — the imports are server-only; setting a cookie from a Server Component (no Action context) throws — move the write to a Server Action or route handler; reading raw `x-forwarded-for` outside a trusted proxy is a security mistake — read the platform-provided header; large header values (oversized JWTs, fat cookies) bloat every request — name the size budget once, keep cookies small, use `HttpOnly` and `Secure` flags by default; reading the same cookie store in many components without `cache()` is fine in 16 (the read is per-request anyway) but `cache()` lets you put expensive derivation behind it.
 
 What this lesson does not cover:
 
-- Layouts, nested layouts, and the layout/page render boundary (lesson 2 of chapter 033).
-- Route groups and how they organize layouts (lesson 2 of chapter 033).
-- Dynamic segments and catch-all routes (lesson 3 of chapter 033).
-- Navigation between routes (lesson 4 of chapter 033).
-- Parallel routes and slots (lesson 5 of chapter 033).
-- Intercepting routes (lesson 6 of chapter 033).
-- Server Components vs. Client Components in depth — Chapter 034.
-- `loading.tsx`, `error.tsx`, `not-found.tsx` — Chapter 035.
-- The `metadata` export and `<head>` content — lesson 2 of chapter 021 introduced, Chapter 038 owns.
-- `route.ts` and route handlers — Chapter 050.
-- The `middleware.ts`-replaced-by-`proxy.ts` migration — Chapter 037.
-- The Pages Router — named once for recognition, never taught.
+- Setting cookies from Server Actions (Chapter 043).
+- `draftMode()` for CMS preview (lesson 7 of chapter 032 named once).
+- The Better Auth session shape (Unit 8).
+- Rate-limiting using the client IP (Chapter 073).
+- Locale resolution and ICU (Unit 17).
+- The `proxy.ts` request-time reads (lesson 2 of chapter 033).
 
-Estimated student time: 50 to 65 minutes. Load-bearing for every later lesson in the chapter, every route in Chapters 034 through 039, and the entire project structure in Units 6 through 23.
+Estimated student time: 25 to 35 minutes. Short, foundational, and the dependency for every later lesson that says "read the session."
 
 ---
 
-## Lesson 2 — Layouts and route groups
+## Lesson 2 — proxy.ts and the matcher
 
-Teaches `layout.tsx` as the persistent shell that composes down the tree, the layout/page render boundary, `template.tsx` for the remount case, and route groups (`(folder)`) for organizing siblings under distinct layouts without affecting the URL.
+Teaches the Next.js 16 rename of `middleware.ts` to Node-only `proxy.ts`, the canonical file shape with `NextRequest`/`NextResponse`, the matcher config as the cost-control surface, the proxy-to-route header pattern, and what belongs in the proxy versus the route.
 
 Topics to cover:
 
-- **The senior question.** How to share a shell across dashboard pages without re-rendering on every navigation, while letting `/sign-in` and `/marketing/about` have a completely different shell? The 2026 answer names two conventions: `layout.tsx` for the shared shell and route groups (`(folder)`) for organizing routes under different layouts without URL impact.
-- **`layout.tsx` — the shell every nested route renders inside.** Default export required; takes `children`; Server Component by default. Only the root layout (`app/layout.tsx`) owns `<html>` and `<body>` — nested layouts return fragments or wrappers that go inside the root's `<body>`.
-- **Layouts compose down the tree.** The framework matches root layout → nested layout → page, wrapping each level like nested function calls.
-- **The layout/page render boundary — what re-renders on navigation.** Layouts stay mounted across navigations within their subtree; only the page changes. State in a Client Component inside a layout survives navigation; state in the page does not. The senior reach: persistent UI (sidebar toggle, in-corner player) lives in the layout.
-- **Nested layouts.** Multiple layout levels compose like Russian dolls (e.g., dashboard layout wrapping an invoice-specific tab bar wrapping the invoice page).
-- **`template.tsx` — when "this should remount" is the senior call.** Same shape as `layout.tsx` but remounts on every navigation (state reset, effects re-fire). Narrow use cases: route-level animation, per-page analytics. 99% of the time the student wants `layout.tsx`.
-- **Route groups — `(folder)` for organization without URL impact.** A folder name wrapped in parentheses is invisible to the URL. Three uses: sharing a layout among siblings without a URL prefix; multiple distinct layouts in one app (e.g., `(marketing)` and `(app)` with no `/marketing/` or `/app/` prefix); organizing routes by domain or team.
-- **Multiple root layouts — when each group has its own root.** Rare; when two groups need truly independent `<html>`/`<body>` shells, `app/layout.tsx` is dropped and a `layout.tsx` is placed inside each group. The senior reach for a SaaS app: one root, multiple group-level layouts.
-- **Route group conflict.** Two pages in different groups resolving to the same URL crash the build at compile time.
-- **Co-locate layout-specific code with the layout** — Principle #1 applied: `(app)/_components/Sidebar.tsx`, not a top-level `components/`.
-- **Watch-outs:** layouts don't re-render in their subtree (this is the feature, not a bug); `children` is filled by the framework, not the developer; only the root has `<html>`/`<body>`; don't put deep-child data fetching in a high layout; route groups are invisible to URLs; URL collisions across groups crash the build; `template.tsx` and `layout.tsx` can coexist; Client-Component state inside a layout survives subtree navigations.
+- **The senior question.** A request to `/dashboard` lands on the server. Before the route renders, the app needs to verify the session, redirect unauthenticated users to `/login`, and rewrite legacy `/billing/old/*` URLs to the new structure. Where does that code live, what's the cost of running it on every request, and what's the rename the student will see in older codebases? The lesson names `proxy.ts` as the Next.js 16 file convention, the rename of `middleware.ts`, and the matcher as the cost-control surface.
+- **The rename — `middleware.ts` to `proxy.ts`.** Next.js 16 renamed the file convention to clarify intent: this code is a network proxy in front of the app, not an application-layer middleware in the Express sense. The exported function is now `proxy`, not `middleware`. `middleware.ts` is deprecated and warns at build; the codemod renames the file and the function automatically.
+- **Runtime — Node-only in 16.** `proxy.ts` runs on the Node runtime. The Edge runtime is no longer the deployment target for new code; the legacy `middleware.ts` retains Edge support for the deprecation window but should be migrated. The senior anchor: Vercel ships `proxy.ts` to a fast Node serverless function near the user, and the cold-start and capability story is now uniform with the rest of the app.
+- **File location and the canonical shape.** `proxy.ts` lives at the project root (or under `src/` if the project uses the `src/` layout). It exports a default `proxy` function that receives a `NextRequest` and returns a `NextResponse` (or `undefined`/`NextResponse.next()` to pass through). Returning a response with a status code short-circuits the request — the route never runs.
+- **The matcher config — the cost-control surface.** Every request matched by the matcher pays the proxy roundtrip. Default behavior matches every path; the senior reach is to declare an explicit `config.matcher` array that names only the routes that need the proxy. Without a tight matcher, the proxy runs on every static asset, every image, every API route — burning latency and cost. The lesson names the matcher as the first knob to tune.
+- **Matcher syntax — paths, regexes, missing/has clauses.** Strings (`'/dashboard/:path*'`), arrays of strings (`['/dashboard/:path*', '/billing/:path*']`), and object form (with `source`, `has`, `missing` clauses to gate by cookie presence, header value, query string). The object form is the production shape for "run only on authenticated routes" — `missing: [{ type: 'cookie', key: 'next-auth.session-token' }]` flips the predicate.
+- **What proxy.ts is for — the senior list.** The four legitimate reaches: auth gating (redirect unauthenticated users), URL rewrites and redirects (lesson 3 of chapter 033), request enrichment (set a header the app reads via `headers()`), and feature-flag routing (A/B test bucketing via cookie writes that downstream routes read). Anything else (heavy auth checks, database calls, complex business logic) belongs in the route, not in the proxy.
+- **What proxy.ts is *not* for.** Not a place for database queries on every request — the latency multiplies; not a place for complex business logic — debugging across the proxy/route boundary is painful; not a substitute for route-level auth — the proxy is a fast gate, the route still enforces the real check (defense in depth). The senior reach: do the cheap thing in the proxy (cookie presence, simple JWT decode), do the authoritative thing in the route.
+- **`NextRequest` — what's available.** The request's `url`, `cookies` (read and write via `request.cookies` / `response.cookies`), `headers`, `geo` (Vercel-provided geolocation), `ip`. The shape mirrors the platform's `Request` (Chapter 015) with Next.js extensions. The lesson lists the surface; the student doesn't memorize, they recognize.
+- **`NextResponse` — the shape of a proxy reply.** `NextResponse.next()` passes through; `NextResponse.redirect(url, status)` short-circuits with a redirect; `NextResponse.rewrite(url)` rewrites internally without changing the visible URL; `new NextResponse(body, { status, headers })` for arbitrary responses (rare in `proxy.ts`, more common in route handlers). Setting cookies on the response and reading them on the next request is how state flows from proxy to route.
+- **The proxy-to-route header pattern.** The proxy decodes the JWT, attaches `x-user-id` and `x-org-id` as request headers via `response.headers.set` and `NextResponse.next({ request: { headers } })`, and the route reads them via `headers()`. The route never re-decodes the token. The pattern centralizes the cheap auth check in one place and the headers propagate via the platform.
+- **Auth gating — the canonical shape.** The proxy reads the session cookie, calls a fast verification (Better Auth's session check, or a JWT signature verify), redirects to `/login?next=...` on failure. The full auth wiring lands in Unit 8; this lesson sets the proxy slot.
+- **Diagram — the request lifecycle through the proxy.** Client request to proxy (matcher decides) to either (a) short-circuit response, (b) rewrite to a different internal route, or (c) pass through to the matched route. The diagram pins where the proxy sits in the platform stack.
+- **Watch-outs.** A missing or overly broad matcher runs the proxy on static assets and images — performance regression that's invisible until the bill arrives; database queries in the proxy are a latency mistake — keep the proxy cheap; setting a cookie from the proxy doesn't make the *current* request's `cookies()` read see the new value — the next request reads the new cookie; throwing in the proxy returns a 500 for every matched request — wrap in `try/catch` and pass through on the error path; the `middleware.ts` rename codemod handles the easy cases but custom imports may need manual cleanup; `proxy.ts` runs on Node — the Edge runtime is named once and rejected for new code in 2026.
 
 What this lesson does not cover:
 
-- The root layout's `<html>` and `<body>` and the metadata API (lesson 2 of chapter 021).
-- Dynamic segments and catch-all (lesson 3 of chapter 033).
-- Parallel routes and slots — a different model from nested layouts (lesson 5 of chapter 033).
-- `loading.tsx`, `error.tsx`, `not-found.tsx` at the layout level — Chapter 035.
-- Server Components vs. Client Components — Chapter 034.
-- Multiple root layouts at depth (rare; named only).
-- Routing in middleware / `proxy.ts` — Chapter 037.
+- Rewrites and redirects in depth (lesson 3 of chapter 033).
+- Auth verification specifics (Unit 8).
+- Rate limiting at the proxy (Chapter 073).
+- Internationalization routing (Unit 17).
+- `next.config.ts` rewrites and redirects (lesson 3 of chapter 034) — the static-config alternative.
 
-Estimated student time: 50 to 65 minutes. Load-bearing for every multi-page surface in the course, the `<auth>` and `<app>` split in Unit 9, and the project in Chapter 039.
+Estimated student time: 45 to 55 minutes. Sets the file convention every later auth and routing lesson references.
 
 ---
 
-## Lesson 3 — Dynamic and catch-all segments
+## Lesson 3 — Rewrites and redirects in proxy.ts
 
-Teaches `[param]` for single dynamic segments, `[...slug]` and `[[...slug]]` for variable-depth URLs, why `params` is a Promise in Next.js 16, and validating captured strings with Zod before they hit a query.
+Teaches the redirect-vs-rewrite semantic split, 307/308 status codes, the proxy-vs-`next.config.ts`-vs-`redirect()` decision tree, the subdomain-rewrite multi-tenant pattern, and open-redirect prevention on the `?next=` return-URL idiom.
 
 Topics to cover:
 
-- **The senior question.** How to ship a detail page per invoice without hand-writing a `page.tsx` per ID? The answer names the dynamic-segment convention: `[id]` captures the URL part as a parameter the page reads from `params`, which in Next.js 16 is a Promise.
-- **`[param]` — the dynamic segment.** Folder `[id]` produces `/invoices/:id`; `params.id` is a string; the parameter name in the folder determines the property name; the page is `async` and awaits `params`.
-- **Why `params` is a Promise — the 2026 change.** Next.js 16 made `params`, `searchParams`, `cookies()`, `headers()`, and `draftMode()` Promises to enable Partial Prerendering. In Server Components, `await`; in Client Components, `React.use(params)`. Chapter 036 owns the rendering model.
-- **Multiple dynamic segments.** Nested brackets (e.g., `app/orgs/[orgSlug]/invoices/[id]/page.tsx`) produce `/orgs/:orgSlug/invoices/:id` with `params` resolving to `{ orgSlug: string; id: string }`. Each segment name must be unique within the route.
-- **Catch-all segments — `[...slug]`.** Matches any number of path segments and produces a string array. Senior reach is narrow: docs sites, CMS-driven content, editorial slugs. Does *not* match the parent URL alone.
-- **Optional catch-all segments — `[[...slug]]`.** Same as catch-all but also matches the parent URL; `params.slug` is `string[] | undefined`. Use when one page should serve both the parent and depth-N children.
-- **The decision tree.** Single segment for known-depth single variable (canonical: detail pages); multiple single segments for multi-axis scoping (tenant-scoped resources); catch-all for genuinely variable depth with separate parent; optional catch-all for one-page-serves-all; literal segments when enumerable.
-- **`generateStaticParams` — pre-rendering dynamic routes at build time.** Named as a forward-reference; the route exports an array of params and the framework generates a static HTML per entry. lesson 11 of chapter 038 owns it in full.
-- **Validating `params` with Zod — the senior shape.** The URL is untrusted input; the page often expects a number, UUID, or constrained value. Zod 4 (Chapter 046) at the entry; parse failure throws into the surrounding error boundary (Chapter 035).
-- **`notFound()` when the resource doesn't exist.** Named in context; the framework catches the thrown signal and renders the closest `not-found.tsx`. Full treatment in lesson 4 of chapter 033.
-- **Watch-outs:** `params` is always a Promise — forgetting `await` produces a runtime Promise; captured values are always strings (coerce or parse); catch-all produces an array; catch-all doesn't match the parent; duplicate segment names crash the build; catch-all and dynamic siblings at the same level conflict; always validate `params` before queries; mismatched segment names crash silently.
+- **The senior question.** A SaaS launches a v2 of its billing surface and the URL changes from `/billing/manage` to `/settings/billing`. Some links in old emails point to the old URL; the app needs a permanent redirect, search engines need to see 308, and the user lands on the right page. Separately, the app multi-tenants on subdomains — `acme.app.com/dashboard` should serve `app.com/[org]/dashboard` internally without the URL changing. The lesson names redirects as the user-visible URL change (browser navigates, history updates, SEO sees 301/308) and rewrites as the internal URL swap (browser address bar unchanged, user sees one URL, app renders another).
+- **The two operations — semantic difference.** Redirect: the response is a 3xx with a `Location` header; the browser issues a new request to the new URL; the URL in the address bar changes; bookmarks update; search engines treat 308 (permanent) as the canonical replacement. Rewrite: the response is the content of a different internal route; the URL in the address bar stays the same; the user sees one URL, the server renders another. Neither is "better" — they answer different product questions.
+- **Status codes — the SEO and history surface.** `307` (temporary) preserves the request method; `308` (permanent) is the senior reach for legacy-URL migration. `301` and `302` exist but lose method semantics on POST — modern code uses 307/308. `NextResponse.redirect(url)` defaults to 307; the `status` argument promotes to 308 for permanent.
+- **Redirects in `proxy.ts` — the conditional case.** The proxy decides at request time based on cookies, headers, geo, or query — anything that's request-dependent. The canonical reach: redirect by user state (e.g., already-logged-in user on `/login` lands on `/dashboard`), by feature flag, by A/B test bucket. The cost: every matched request runs the proxy.
+- **Redirects in `next.config.ts` — the static case (forward reference).** When the redirect rule is static (always-true, request-independent), the `redirects()` config in `next.config.ts` is cheaper — the platform handles it at the CDN edge without invoking the proxy. The decision rule: static-and-known goes in the config (lesson 3 of chapter 034); request-conditional goes in `proxy.ts`.
+- **Rewrites in `proxy.ts` — the multi-tenant pattern.** `NextResponse.rewrite(new URL('/orgs/acme/dashboard', request.url))` serves the org-scoped route for the subdomain `acme.app.com/dashboard`. The proxy extracts the subdomain from `request.headers.get('host')`, validates it against the org table (cheap check, no DB call in production — use a cached lookup), rewrites internally. The user's address bar shows the original URL.
+- **The proxy-rewrite + dynamic-segment pattern.** A subdomain rewrite hits a route group `[org]/(routes)/dashboard/page.tsx`; the `[org]` param is the subdomain. The route reads `params.org`, validates against the database, queries scoped data. The same pattern works for path-based tenancy (`app.com/orgs/acme/...`) — the rewrite is optional in that case.
+- **The redirect-loop pitfall.** A rewrite that targets a path that itself matches the proxy's matcher re-enters the proxy. Without a guard, this loops to a 500. The senior reach: the matcher excludes the rewrite target, or the proxy checks a header it sets on the rewrite (`x-internal-rewrite: 1`) and short-circuits on second pass. The framework throws a recursion-detected error after a fixed depth.
+- **Setting cookies during a redirect.** `const response = NextResponse.redirect(url); response.cookies.set('locale', 'es'); return response;` writes the cookie *and* redirects. The pattern is used for "set a preference, navigate to the next step" flows. The cookie is visible on the next request.
+- **The `next` parameter pattern for post-login return.** A redirect to `/login?next=${encodeURIComponent(request.nextUrl.pathname)}` lets the login flow return to the originally-requested URL after auth. The login action validates the `next` param (must be a relative URL on the same origin to prevent open-redirect attacks) and uses it as the redirect target. Named here as the canonical pattern; full auth flow lands in Unit 8.
+- **Open-redirect prevention.** Never redirect to a URL that came from user-controlled input without validation — a `?next=https://attacker.com` is the classic open-redirect bug. Validate by parsing as `URL`, checking the origin matches, or by allowing only paths (starts with `/`, no `//`, no protocol). The senior reach: a small `safeNext(input)` helper used at every redirect site.
+- **Decision tree — proxy vs. next.config vs. route-level redirect.** Always-static (legacy URL migration, marketing-URL changes): `next.config.ts` redirects (lesson 3 of chapter 034). Request-conditional (auth gating, A/B buckets, locale routing): `proxy.ts`. Per-action server-side (after a Server Action completes): `redirect()` from `next/navigation` (lesson 4 of chapter 029). Per-route server-side (route exists but resource is gone): `notFound()` or `permanentRedirect()`. The student leaves with a clear sorting rule.
+- **Worked example — a small `proxy.ts` that does three jobs.** Matcher gates the relevant paths. Auth check redirects unauthenticated `/dashboard` requests to `/login?next=...`. Subdomain rewrite maps `*.app.com/dashboard` to `/orgs/[subdomain]/dashboard`. Legacy URL redirect maps `/billing/manage` to `/settings/billing` with 308. The file is under fifty lines and shows the full shape.
+- **Watch-outs.** Rewriting to a path the matcher also covers causes a loop — exclude the rewrite target; redirecting with 302 or 301 instead of 307/308 silently changes POST to GET — use the modern statuses; cookies set on a redirect response are not visible until the *next* request, not the redirect target's render; open-redirect via `?next=...` is the classic security hole — validate; subdomain extraction from `host` includes the port in development (`localhost:3000`) — strip before lookup; in dev, the proxy runs on every page reload and slow logic is noticeable — keep the work tight.
 
 What this lesson does not cover:
 
-- Navigation to dynamic routes via `<Link>` (lesson 4 of chapter 033).
-- `notFound`, `redirect`, `permanentRedirect` — named in context, owned by lesson 4 of chapter 033.
-- `not-found.tsx` and the error boundary — Chapter 035.
-- `searchParams` and URL state — Chapter 037.
-- `generateStaticParams` at depth and the rendering model — Chapters 036 and chapter 038.
-- The full async-request-API surface (`cookies()`, `headers()`, `draftMode()`) — lesson 8 of chapter 036.
-- Zod 4 at depth — Chapter 046.
+- The proxy.ts file convention and matcher in full (lesson 2 of chapter 033).
+- Static redirects and rewrites in `next.config.ts` (lesson 3 of chapter 034).
+- Auth verification (Unit 8).
+- The full subdomain-tenancy pattern (Unit 9 — multi-tenancy).
+- `redirect()` and `notFound()` from `next/navigation` (lesson 4 of chapter 029).
 
-Estimated student time: 45 to 55 minutes. Load-bearing for every dynamic-route page in the course, the `searchParams` model in Chapter 037, and the project in Chapter 039.
+Estimated student time: 40 to 50 minutes. Pairs with lesson 2 of chapter 033 as the two-part anatomy of the proxy file.
 
 ---
 
-## Lesson 4 — Navigation primitives
+## Lesson 4 — URL state with searchParams and route params
 
-Teaches `<Link>` for client-side soft navigation with intelligent prefetching, `useRouter().push` for programmatic moves, and the throwing trio `redirect()` (307), `permanentRedirect()` (308), and `notFound()` for server-side flow control.
+Teaches the URL-vs-component-state decision rule, the `params`-for-identity / `searchParams`-for-view-state split, the async Promise shape in Next.js 16, Zod validation at the boundary, opaque base64 cursors, and `nuqs` as the production layer.
 
 Topics to cover:
 
-- **The senior question.** How to soft-navigate between pages, render "not found" for missing resources, send unauthenticated users to `/sign-in`, and permanently redirect a moved URL? The four mechanisms: `<Link>` for client-side soft navigation, `redirect()` (307) for server-side temporary, `permanentRedirect()` (308) for permanent moves, `notFound()` for missing resources.
-- **`<Link>` from `next/link` — client-side soft navigation.** Extends `<a>`; the framework intercepts the click, fetches the destination's bundle and data, swaps the page without a reload. Bare `<a>` reserved for external links.
-- **Prefetching — the navigation performance model.** Default (`prefetch={null}`) prefetches static parts on viewport intersection and dynamic parts on hover; `true` always prefetches everything; `false` disables. The default is the senior reach unless the route is expensive to prefetch or rate-limit constrained.
-- **Programmatic navigation — `useRouter` from `next/navigation`.** Used when navigation runs from a handler (form submit, conditional). Client Component only; `push`/`replace`/`back`/`refresh`. Full surface in lesson 5 of chapter 037.
-- **`redirect()` — server-side temporary redirect (307).** Works in Server/Client Components, route handlers, and Server Actions; throws (no code runs after). 307 by default, 303 in Server Actions, `<meta refresh>` in streaming contexts. Senior reach: auth gates, post-action redirects.
-- **`permanentRedirect()` — HTTP 308 for permanent URL moves.** SEO and browser bfcache treat 308 as canonical. Use only when search engines should update their index.
-- **`notFound()` — the "resource doesn't exist" signal.** Throws; the framework renders the closest `not-found.tsx`; HTTP 404. Every dynamic route is a candidate. Full `not-found.tsx` in Chapter 035.
-- **Where each mechanism earns its weight.** `<Link>` for clicked navigation; `useRouter().push` for programmatic; `redirect()` for server-side conditional (auth, post-action); `permanentRedirect()` for URL migrations only; `notFound()` for missing resources.
-- **`redirect()` vs. `permanentRedirect()`.** The 2026 reach is overwhelmingly `redirect()`; `permanentRedirect()` earns its weight for URL migrations and brand changes only.
-- **Watch-outs:** `<Link>` for in-app, `<a>` for external; the throwing trio (`redirect`/`notFound`/`permanentRedirect`) doesn't execute code after them — don't `try/catch`; `redirect()` in Server Actions is 303; `useRouter` is `next/navigation`, not `next/router`; don't `prefetch={true}` blindly; `router.refresh()` is the post-mutation reach (lesson 6 of chapter 036); `<Link>` to external loses prefetching; `<Link replace>` skips history; `<Link scroll={false}>` preserves scroll.
+- **The senior question.** A dashboard list shows invoices filtered by status, sorted by date, paginated with a cursor. The user shares the URL with a coworker; the coworker opens it and sees the same view. The user refreshes; the view persists. The user hits back; the previous filter returns. Where does that state live, and what's the syntax for reading it on the server and writing it from the client? The lesson names URL state as the canonical home for filter, sort, pagination, and tab state — anything that should survive a refresh or a share.
+- **The decision rule — URL vs. component state.** State that should survive a refresh, be shareable, or appear in browser history belongs in the URL. State that's transient (open/closed dropdowns, hover, focus, in-progress form input pre-submit) belongs in component state. The reflex question: would the user expect this state to come back if they refreshed? If yes, URL.
+- **Two URL-state vehicles — `params` and `searchParams`.** Route `params` carry identity (which invoice, which org); `searchParams` carry view state (filter, sort, page). A URL like `/orgs/acme/invoices?status=paid&sort=-date&cursor=eyJpZCI6NDJ9` has both: `params.org = 'acme'`, `searchParams = { status: 'paid', sort: '-date', cursor: '...' }`. The lesson pins the distinction.
+- **The async shape — Promises in Next.js 16.** Page and layout receive `params` and `searchParams` as Promises. `const { status } = await props.searchParams;` in a Server Component; `React.use(props.searchParams)` in a Client Component (lesson 7 of chapter 032 covered the syntax — this lesson is about the usage pattern).
+- **Validate before use — Zod at the boundary.** `searchParams` are user-controlled — anyone can type anything in the URL. Validate every read with a Zod schema: `status: z.enum(['draft', 'paid', 'overdue']).optional()`, `sort: z.enum(['-date', 'date', '-total', 'total']).default('-date')`. Invalid values fall back to a sensible default; the schema documents the contract. The senior shape: one `parseSearchParams(input)` helper per route, called once at the top of the page.
+- **The Server-Component pattern — read on the server, render the filtered result.** The page reads and validates `searchParams`, calls the database with the parsed filters, renders the table. No client state, no `useEffect`, no waterfall. The user changes the filter, the URL updates (lesson 5 of chapter 033), the page re-renders on the server with the new params. The lesson sets the canonical shape Chapter 060 builds.
+- **The shape of repeated keys — strings vs. arrays.** A URL `?tag=billing&tag=urgent` produces `searchParams.tag = ['billing', 'urgent']`. The shape is `string | string[] | undefined`. Zod's `z.union([z.string(), z.array(z.string())]).transform(...)` normalizes; the production helper does this once.
+- **Encoding cursors — opaque base64.** A pagination cursor encodes the last-row sort key plus tiebreaker as opaque base64 JSON. The URL shows `cursor=eyJpZCI6NDJ9` — opaque to the user, deterministic for the server. Decoding lives in the route's parse helper; the database query consumes the decoded shape. lesson 6 of chapter 038 covers cursors at depth; the lesson names the URL shape.
+- **The cost question — does reading searchParams flip caching?** Under Cache Components, every route is dynamic by default, and reading `searchParams` is one of the explicit dynamic signals — but the route was dynamic anyway. The relevant interaction: a `use cache` function that awaits `searchParams` fails the build. The senior reach: keep cached chrome (sidebar, header) outside the dynamic table; the table reads `searchParams` and runs at request time, the chrome streams from the static cache (PPR, lesson 2 of chapter 032).
+- **nuqs as the type-safe URL-state layer — when it earns its weight.** `nuqs` provides typed parsers, default values, and a Client-side `useQueryState` hook that keeps URL state synced. The threshold: when the project has more than two or three URL-state surfaces and the parse/serialize code is becoming a tax, `nuqs` pays for itself. For a single filter or a one-off page, plain `searchParams` reading plus Zod is fine. The lesson names nuqs as the canonical pick for production lists.
+- **`createSearchParamsCache` on the server — the nuqs server pattern.** `createSearchParamsCache({ status: parseAsString, sort: parseAsString.withDefault('-date') })` produces a typed parser. Inside a Server Component, `await searchParamsCache.parse(props.searchParams)` returns the typed object. The same cache is read across the render via `searchParamsCache.get('status')`. The lesson names the API; Chapter 060 uses it in the project.
+- **Writing URL state — the Client-side surface.** Reading is server-side; writing happens from a Client Component via `router.push(\`?status=paid\`)` or via `useQueryState` (nuqs). The lesson points to lesson 5 of chapter 033 for the navigation hooks and leaves the writing pattern there.
+- **What URL state is not.** Not a place for secrets — anything in the URL leaks to logs, referrer headers, browser history; not a place for large blobs — keep it under a kilobyte; not a place for ephemeral UI state that the user doesn't want bookmarked.
+- **Worked example — a filtered invoice list.** The route `/orgs/[org]/invoices` reads `params.org` and `searchParams = { status, sort, cursor }`, validates, queries `db.invoices.findForOrg(orgId, { status, sort, cursor })`, renders. The same URL, on refresh, produces the same view. The user clicks a filter chip; a Client Component (covered next lesson) calls `router.push` with the new params; the page re-renders.
+- **Watch-outs.** Reading `searchParams` without validation lets malicious or malformed input crash the query — always parse; the `string | string[]` shape surprises code that assumes `string` — pin it at the parser; the URL grows quickly with state — keep parameter names short, default values implicit (omit defaults from the URL); putting object-shaped state in JSON-stringified params is brittle — use flat parameters or invest in nuqs; the cursor cannot be reused across schema changes — version cursors or accept the migration; `searchParams` change between renders without re-mounting the page — derived state must reset via `key` (lesson 5 of chapter 023) if the visual needs a hard reset.
 
 What this lesson does not cover:
 
-- The full `useRouter` / `usePathname` / `useSearchParams` / `useParams` surface — lesson 5 of chapter 037.
-- Server Actions and the post-action `redirect()` pattern — Chapter 047.
-- `not-found.tsx`, `error.tsx`, `global-error.tsx` — Chapter 035.
-- Middleware-level redirects in `proxy.ts` — lesson 3 of chapter 037.
-- The full mutation-revalidation tree (`revalidatePath`, `revalidateTag`, `router.refresh`) — lesson 6 of chapter 036.
-- `next.config.ts` redirects for project-wide URL maps — lesson 3 of chapter 038.
+- Client-side navigation hooks for writing URL state (lesson 5 of chapter 033).
+- Cursor pagination at the database layer (lesson 6 of chapter 038).
+- The full URL-state list view pattern (Chapter 060).
+- Zod schemas in full (Chapter 042).
+- The async-API syntax basics (lesson 7 of chapter 032).
 
-Estimated student time: 50 to 60 minutes. Load-bearing for every navigation in the course, the auth guard pattern in Unit 9, and the project in Chapter 039.
+Estimated student time: 45 to 60 minutes. The conceptual center of the chapter; sets up the URL-state list project in chapter 060.
 
 ---
 
-## Lesson 5 — Parallel routes and slots
+## Lesson 5 — Client-side navigation hooks
 
-Teaches `@slot` folders as named props on a layout that render and stream independently, `default.tsx` as the unmatched-slot fallback, and the canonical list-plus-detail surface where both panes live under one URL.
+Teaches the four `next/navigation` hooks (`useRouter`, `usePathname`, `useSearchParams`, `useParams`), the read-on-server / write-on-client division of labor, `push` vs. `replace` vs. `refresh`, the Suspense requirement on `useSearchParams`, and the chip-list pattern that puts it all together.
 
 Topics to cover:
 
-- **The senior question.** How to build a list-plus-detail surface where both panes share one URL, each with its own loading, error, and not-found behavior? The answer names parallel routes: named slots in a layout that render independently.
-- **`@slot` — the named-slot folder convention.** A folder prefixed `@` defines a slot the layout receives as a prop alongside `children`. Each slot is its own mini route tree (its own `page.tsx`, dynamic segments, `loading.tsx`, `error.tsx`); multiple slots can coexist in one layout.
-- **`default.tsx` — the unmatched-slot fallback.** When a slot has no match on direct visit, refresh, or `Cmd+click`, the framework needs a fallback or the entire route 404s. Soft navigation keeps the previous match; hard navigation needs `default.tsx`. Every parallel slot ships a `default.tsx` — forgetting this is the single most common parallel-routes bug.
-- **Slots stream independently with Suspense.** Each slot with its own `loading.tsx` streams as an independent boundary; the layout shell appears immediately. Chapter 035 owns Suspense in full.
-- **The canonical list-plus-detail pattern.** A `/invoices` URL renders the list; `/invoices/42` updates only the detail slot; the list stays mounted. The student gets the UI shape the SaaS world has hand-rolled for a decade, with a real URL.
-- **`searchParams` for the list filter, `params` for the detail.** Each slot receives its slice of URL state independently and awaits its async APIs. `searchParams` model is lesson 4 of chapter 037.
-- **When parallel routes earn their weight.** Use when 2+ independent areas need their own URL state, loading, error, or not-found behavior; when refreshability of combined state matters; or as the foundation for the intercepting-route modal pattern (lesson 6 of chapter 033). Don't reach when a single page suffices or when two separate routes happen to share a layout (that's nested layouts).
-- **Watch-outs:** every slot needs `default.tsx`; `@` is a slot convention, not a route group; slots are invisible to the URL; the layout's prop name matches the slot folder name; slots are scoped to one layout; adding a slot changes the layout's type; each slot has its own loading/error boundary; `children` is the regular `page.tsx` in the same segment; hard navigation rebuilds slot state from URL only.
+- **The senior question.** A Client Component renders a filter chip. The user clicks it; the URL should update from `?status=draft` to `?status=paid` without a full page load; the server re-renders the list; the back button returns to the previous filter. What hooks make that work, where do they live, and what's the cost of each? The lesson names the four hooks from `next/navigation` — `useRouter`, `usePathname`, `useSearchParams`, `useParams` — and the read-on-server, write-on-client division of labor.
+- **The four hooks — what each gives you.** `useRouter` returns the router object with `push`, `replace`, `back`, `forward`, `refresh`, and `prefetch`. `usePathname` returns the current path as a string (no query, no hash). `useSearchParams` returns a `ReadonlyURLSearchParams` instance for the current query. `useParams` returns the current route's dynamic segments as an object. All four are Client Component hooks; calling them from a Server Component is a build error.
+- **The senior division of labor — read on the server, navigate on the client.** Server Components read `params` and `searchParams` from props (lesson 4 of chapter 033). Client Components use the hooks only when interaction is the lesson — clicking a chip, typing in a search box, toggling a sort. The reflex: if the component doesn't need to write to the URL or react to URL changes for animation, it doesn't need the hooks.
+- **`useRouter().push` — soft client navigation.** Updates the URL, pushes a history entry, fetches and renders the new route's Server Components, scrolls to top by default. `router.push('/dashboard?status=paid')` is the equivalent of clicking a `<Link>` programmatically. The `scroll: false` option preserves scroll for in-page state changes (filter chips, sort toggles).
+- **`router.push` vs. `router.replace`.** `push` adds a history entry; `replace` swaps the current one. The senior reach: `replace` for filter/sort/pagination changes (so the back button skips intermediate states), `push` for genuine navigation between distinct views. A list page with frequent filter changes should `replace` — the user expects "back" to leave the page, not undo the last chip.
+- **`router.refresh` — re-render the current route.** Tells the router to re-fetch the current route's Server Components without changing the URL. The reach: after a Client-side action (like a manual "refresh" button) that should re-pull server data. Does not invalidate caches (lesson 6 of chapter 032); pair with `revalidateTag` in the action if cache invalidation is needed.
+- **`router.prefetch` — manual prefetch.** Tells the router to prefetch a route's data and code before the user navigates. The reach: when `<Link>`'s automatic prefetch (on viewport, on hover) doesn't fit — e.g., a "next item" button that's not a link, a wizard flow with known next step. Rare in practice; `<Link>` covers most cases.
+- **`useSearchParams` — reading the URL query from the client.** Returns a `ReadonlyURLSearchParams` instance; `get('status')`, `getAll('tag')`, `has('cursor')`. The Client read is the right reach when the component needs to *react* to URL changes (animating a chip into the active state, syncing local state to URL). For pure reads at render time, the server-side `searchParams` prop is cheaper.
+- **The Suspense requirement on `useSearchParams`.** A Client Component that calls `useSearchParams` must be wrapped in a `<Suspense>` boundary at the parent level — without it, the build fails. The reason: the search params are not available until hydration, and the suspense boundary handles the rendering gap. The error message points to the missing boundary.
+- **`usePathname` — current path for active-link styling.** Returns the path without query or hash. The canonical reach: a navigation component that highlights the active item. `<NavItem href="/invoices" isActive={pathname.startsWith('/invoices')} />`. Fast, side-effect-free, common.
+- **`useParams` — dynamic segments on the client.** Same shape as the server `params` (an object keyed by segment name), but resolved synchronously on the client (the route has already matched). The reach: a Client Component deep in the tree that needs the org slug without threading it as a prop. The senior anchor: prefer threading as a prop when the prop tree is shallow; reach for `useParams` when the depth makes prop-drilling painful.
+- **The chip-list pattern — putting it together.** A Client Component takes the current filter as a prop, renders chips, on click calls `router.replace(\`?status=${value}\`, { scroll: false })`. The server re-renders the list with the new filter. The chip's active state is derived from the prop (passed from the server), not from `useSearchParams` — simpler and equivalent.
+- **Building a URL with `URLSearchParams`.** `const params = new URLSearchParams(searchParams); params.set('status', 'paid'); router.replace(\`?${params.toString()}\`)`. The pattern preserves other params; setting one without resetting the others is the senior shape. Common helper: `withParam(searchParams, key, value)` returning the new query string.
+- **The interaction with nuqs (forward reference).** nuqs's `useQueryState('status', parseAsString)` returns `[value, setValue]` where `setValue` writes to the URL and triggers re-render. It wraps `useSearchParams` and `router.replace` into a typed hook. The lesson names nuqs as the production layer for non-trivial URL state; the bare hooks are the foundation.
+- **What these hooks don't do.** They don't read response headers, cookies, or anything server-side — those are server reads only (lesson 1 of chapter 033). They don't trigger Server Actions — those are called directly. They don't fetch arbitrary URLs — `fetch` is the tool for that. They are scoped to the Next.js router's responsibilities: read what's in the URL, navigate to a new URL, refresh the current one.
+- **Watch-outs.** Calling any of these in a Server Component is a build error — the hooks are client-only; missing `<Suspense>` around a component that uses `useSearchParams` fails the build with a specific message — wrap or move the call up the tree; `router.push` with a same-URL target is a no-op — guard with `if (newUrl !== currentUrl)` if the side effect matters; mutating `searchParams` from `useSearchParams` is forbidden (the type is `Readonly`) — construct a new `URLSearchParams` from the current one and update; the hooks re-render on every URL change — heavy work in the component (large derived lists, expensive memo) needs the same patterns as the rest of React; `router.refresh` is a no-op on a fully static route — combine with `revalidateTag` when the cache needs busting.
 
 What this lesson does not cover:
 
-- Intercepting routes — the modal pattern (lesson 6 of chapter 033).
-- Suspense, streaming, `loading.tsx`, `error.tsx` at depth — Chapter 035.
-- `searchParams` at depth and the URL-state SaaS pattern — lesson 4 of chapter 037.
-- The list-plus-detail project — Chapter 039.
-- Routing in `proxy.ts` for tenant-scoped slot rendering — Chapter 037.
+- The full Server-Action wiring (Chapter 043).
+- The cache-invalidation surface — `revalidateTag`, `router.refresh` interaction (lesson 6 of chapter 032).
+- `<Link>` prefetching internals (lesson 4 of chapter 029 covered the surface).
+- nuqs in depth (Chapter 060 project).
+- The Server Component read of `searchParams` and `params` (lesson 4 of chapter 033).
 
-Estimated student time: 50 to 65 minutes. Load-bearing for lesson 6 of chapter 033 (intercepting routes build on the slot model), Chapter 035 (Suspense at the slot boundary), and Chapter 039 (the project wires the full list-plus-detail surface).
-
----
-
-## Lesson 6 — Intercepting routes and URL-backed modals
-
-Teaches the `(.)`, `(..)`, `(..)(..)`, and `(...)` prefixes for intercepting soft navigations, the always-paired non-intercepting sibling for direct visits, and the combined parallel-plus-intercepting pattern that gives modals a real, shareable, refreshable URL.
-
-Topics to cover:
-
-- **The senior question.** How to ship a feed where clicking a photo opens a modal at `/photo/42`, while a direct visit to the same URL renders a full photo page? The answer names intercepting routes: a folder `(.)photo/[id]` intercepts soft navigations and renders the modal in-place; the non-intercepting `app/photo/[id]/page.tsx` handles direct visits.
-- **The intercepting prefixes.** `(.)folder` intercepts at the same level, `(..)folder` one level up, `(..)(..)folder` two levels up, `(...)folder` from the root `app/` directory. The prefix is URL-segment-relative, not file-system-relative.
-- **The always-paired non-intercepting route.** An intercepting route is the soft-navigation render path; the same URL on direct visit, refresh, or `Cmd+click` renders the non-intercepter. Every intercepting route ships its non-intercepting sibling — forgetting this is the most common bug.
-- **The combined pattern — intercepting + parallel routes for a URL-driven modal.** A `@modal` slot in the feed's layout holds the `(.)photo/[id]/page.tsx` intercepter; `@modal/default.tsx` is empty (closed); a sibling `app/photo/[id]/page.tsx` handles hard navigation. Student gets URL persistence, refreshability, shareability, working back/forward, and proper `Cmd+click` behavior.
-- **Closing the modal — back navigation and `@modal/default.tsx`.** Close button calls `router.back()` or navigates to the parent route; `@modal` loses its match and renders the empty default. Closing is navigation, not state toggle.
-- **Implementation watch-outs.** `(.)` is URL-relative, not file-system-relative; route groups in the path don't count for interception; the intercepter must live inside a parallel slot; the non-intercepting sibling must exist; the two routes can share a component with different wrappers; interception fires only on in-app soft navigation.
-- **The modal UI itself.** Wrapped in a `<Modal>`/`<Dialog>` (Client Component, Radix or shadcn — lesson 1 of chapter 031) for open/close, focus, and `Esc`-to-close. The data and content come from a shared `<PhotoDetail />` used in both renders.
-- **When intercepting routes earn their weight.** "Show details without leaving context" UI that needs a real URL (photo viewers, message threads, in-context edits). Not for ephemeral dialogs or app-internal flows without URL persistence.
-- **Watch-outs:** always pair with the non-intercepter; soft navigation only; must be inside a parallel slot; share a component across intercepter and full page; `(.)` is URL-relative; closing is navigation; mobile back works automatically; don't use interception for non-modal UI.
-
-What this lesson does not cover:
-
-- Parallel routes — installed in lesson 5 of chapter 033.
-- Modal implementation details, focus management, `Esc`-to-close — Chapters lesson 1 of chapter 031 and lesson 3 of chapter 031.
-- `loading.tsx`, `error.tsx`, `not-found.tsx` at the slot level — Chapter 035.
-- The list-plus-detail project — Chapter 039.
-- Animations and transitions for the modal opening — lesson 5 of chapter 025.
-
-Estimated student time: 50 to 65 minutes. Load-bearing for Chapter 039 (the project's intercepting modal), Chapter 064 (URL-state list views), and the senior reflex of reaching for URL-backed UI in every later SaaS pattern.
+Estimated student time: 40 to 50 minutes. Closes the client/server pair on URL state.
 
 ---
 
-## Lesson 7 — Quizz
+## Lesson 6 — Quizz
 
 Top 10 topics to quiz:
 
-- File-system routing — what makes a folder a route, what makes a file a routable leaf (`page.tsx`, `route.ts`), what makes a folder non-routable (`_underscore` private folders, missing `page.tsx`).
-- Architectural Principle #1 — co-locate by feature, not by layer.
-- Layouts and the layout/page render boundary — layouts stay mounted across navigations within their subtree; state in a Client Component inside a layout survives navigation; pages re-mount.
-- Route groups — `(folder)` is invisible to the URL; used for organizing routes under different layouts.
-- Dynamic segments — `[param]` captures a URL part; `params` is a Promise in Next.js 16; captured values are always strings; validate before use (Zod).
-- Catch-all vs. optional catch-all — `[...slug]` matches one-or-more and does not match the parent; `[[...slug]]` matches zero-or-more and matches the parent.
-- Navigation primitives — `<Link>` for in-app soft navigation, `useRouter().push` for programmatic, `<a>` for external; `redirect()` (307), `permanentRedirect()` (308), `notFound()`.
-- `<Link>` prefetching — the `null`/`auto` default prefetches static parts on viewport, dynamic on hover; `true` always; `false` disables.
-- Parallel routes — `@slot` folders become named props in the layout; every slot needs `default.tsx`; slots stream independently; canonical use case is list-plus-detail.
-- Intercepting routes — `(.)`, `(..)`, `(..)(..)`, `(...)` intercept soft navigations to render in-context; always paired with the non-intercepting sibling; canonical use case is modals with real URLs.
+- `cookies()` and `headers()` as async, server-only, read-only by default; setting cookies requires a Server Action or route handler context.
+- The `proxy.ts` rename from `middleware.ts` in Next.js 16, Node-only runtime, the matcher as the cost-control surface.
+- What `proxy.ts` is for (auth gating, rewrites, request enrichment, A/B routing) versus what it's not for (DB queries on every request, complex business logic, the authoritative auth check).
+- Redirect vs. rewrite — user-visible URL change versus internal swap, 307 vs. 308, when to use each.
+- The decision tree — `proxy.ts` for conditional rules, `next.config.ts` for static rules, `redirect()` from `next/navigation` for action-time redirects.
+- Open-redirect prevention on the `?next=` pattern — validate that the target is a same-origin path.
+- URL-state vs. component-state decision rule — what survives a refresh or share belongs in the URL.
+- `params` for identity, `searchParams` for view state — both async in Next.js 16, both validated with Zod at the boundary.
+- The read-on-server, write-on-client division — Server Components read `props.searchParams`, Client Components use `useRouter().push`/`replace` to write.
+- The Client-side hooks — `useRouter`, `usePathname`, `useSearchParams`, `useParams` — each's role, the Suspense requirement on `useSearchParams`, when `replace` beats `push`.
 
 ---
 

@@ -1,276 +1,152 @@
-# Chapter 008 — Typing values you know
+# Chapter 008 — Errors as a first-class concern
 
 ## Chapter framing
 
-Chapters 005 through 007 taught the value model — primitives, references, equality, money, strings, the container surface. The student now writes JavaScript fluently and recognizes the bug classes the language admits. This chapter is the first place the course treats TypeScript as a system, not as scattered annotations. It teaches the **type vocabulary** that maps cleanly onto those values: literal unions for finite domains, `type` for shapes, tuples for positional records, `Record` and index signatures for dynamic keys, unions and intersections for composition, narrowing for runtime branching, `as const` and `satisfies` for keeping literals literal, and the senior rule for where annotations earn their weight. Chapter 009 takes those primitives and builds **patterns that prevent whole bug classes** (discriminated unions, branded IDs, exhaustiveness, generics). This chapter is the vocabulary; chapter 009 is the grammar.
+Chapter 007 closed the async substrate — the event loop, the four Promise combinators, parallel-by-default rewrites, and the `AbortSignal` cancellation surface — and named the abort/error seam without teaching it. This chapter installs the error channel as a first-class design decision rather than a `try`/`catch` reflex bolted onto control flow. Two questions sit at the center. **Which failures throw and which return?** A senior reads each potential failure, asks whether the caller can reasonably recover, and routes the failure into one of two channels: a `Result<T, E>` discriminated union the caller must inspect (from lesson 1 of chapter 005) or a throw the framework boundary catches. **Once a throw happens, how does the catch read it safely?** TypeScript's strict catch types every caught value as `unknown`; the senior reflex narrows with `instanceof Error` (or `Error.isError()` in 2026), reaches for a literal-typed `name` discriminant on custom subclasses, and walks `Error.cause` chains when a failure was rewrapped.
 
 Threads that must run through every lesson:
 
-- **Decisions before syntax.** Each lesson opens with a production failure mode TypeScript prevents — an `any` that swallowed a `null`, a `string` that should have been a literal union, a `readonly` that wasn't, an `as` that lied. The syntax follows the failure.
-- **Type the value, don't restate it.** Inference is the default; annotations live at the boundaries (exported APIs, function parameters, the public surface of a module). The senior reflex is to write the value clearly, let TypeScript read it, and add a type only where it adds information or constraint the value alone can't carry.
-- **Narrow, don't assert.** `as` and `!` are conditional escape hatches. The chapter installs control-flow narrowing as the default and names the three legitimate triggers for an assertion.
-- **`verbatimModuleSyntax` is on.** From the strict tsconfig of Chapter 003, `import type` is mandatory for type-only imports. The discipline lands in lesson 8 of chapter 008 but is named everywhere imports appear.
-- **Forward links land softly.** Discriminated unions are seeded in lesson 5 of chapter 008 and built out in lesson 1 of chapter 009. Branded IDs are mentioned in lesson 1 of chapter 008 as a one-line trigger for `unique symbol` and recovered in lesson 4 of chapter 009. Utility types are named when they earn a mention but reserved for lesson 6 of chapter 009 as a chapter. No re-teaching.
+- **Two channels, one decision per failure.** Throw the unexpected; return the expected. The "expected vs. unexpected" cut is the senior question, and the chapter installs it as the reading reflex behind every async function the student writes from Unit 6 onward.
+- **The `Result<T, E>` shape is named here, locked in at lesson 3 of chapter 043.** This chapter introduces the discriminated-union return shape and the `ok`/`err` helpers; Unit 6 turns it into the Server Action contract. No re-teaching at that point.
+- **Catch typed as `unknown`, narrow before reading.** Every snippet that catches obeys the `strict` + `useUnknownInCatchVariables` shape. `err.message` access without narrowing is a compile error, not a lint warning.
+- **Domain errors carry a literal `name`, not a custom class hierarchy.** The 2026 senior shape is small custom `Error` subclasses with a `readonly name = 'BillingError' as const` discriminant, optional structured fields, and `Error.cause` for the original failure. No abstract base classes, no error taxonomies for their own sake.
+- **The cross-realm gotcha is structural.** `instanceof Error` fails across realms (workers, vm contexts, edge runtime boundaries); 2026 ships `Error.isError()` (Stage 4 / ES2026) and the `error.name` fallback. Named once, used consistently.
+- **Async throws are still throws.** A rejected Promise is the throw at the `await` site. The same `try`/`catch` rules apply, with the `return await` stack-trace discipline from lesson 3 of chapter 007 as the only extra reflex.
+- **No history.** Callback-style `(err, result)` signatures, custom error-event emitters, the `domain` module — gone. The chapter writes the form a 2026 SaaS engineer writes and names the legacy only at third-party-SDK seams.
 
-The student finishes the chapter able to read and author the TypeScript that the rest of the course writes without commentary — function signatures, exported types, configuration objects, dynamic-keyed records, narrowed control flow — and able to defend the choice between a literal union and a string, a tuple and an object, `as const` and an annotation, `type` and `interface`.
+The student finishes the chapter able to route any new failure into the correct channel (`Result` or throw) by reading the caller's recovery path, write a `try`/`catch`/`finally` that satisfies the strict-mode `unknown` catch type, narrow with `instanceof` and the `error.name` fallback, author a small custom `Error` subclass with a literal `name` discriminant and an `Error.cause` link, and recognize `Error.isError()` as the 2026 cross-realm reach. The chapter does not teach refusal-as-error-discipline at the route/action seam (Unit chapter 080) or the wire-format error shape (RFC 9457 Problem Details, owned by lesson 2 of chapter 011 and lesson 2 of chapter 046) — it installs the language-level substrate those chapters land on.
 
 ---
 
-## Lesson 1 — Primitives, literals, and the four corners
+## Lesson 1 — Two channels: throw the unexpected, return the expected
 
-Teaches the seven primitive types, literal unions as the senior reach for finite domains, and the `any`/`unknown`/`never`/`void` corners with the trigger that earns each.
+Teaches the `try`/`catch`/`finally` mechanics, the async-throw flow, the "only throw `Error`" rule, and the heuristic for routing each failure into either a `Result<T, E>` return or a throw the framework boundary catches.
 
 Topics to cover:
 
-- The senior question. Two bugs the lesson prevents. First: a `status: string` field accepts any string the caller invents, so a typo like `'pendng'` ships and silently fails downstream checks. Second: an `any` that crept into a payload swallows a `null` and crashes three callers later. Both are vocabulary failures — the student reached for the widest type when a narrower one would have caught the bug at compile time.
-- The seven primitive types, terse. `string`, `number`, `boolean`, `bigint`, `symbol`, `null`, `undefined`. Pair each with its JavaScript primitive from chapter 005; the names are identical to `typeof` results except for `null` (which `typeof` calls `'object'`, a legacy bug). No deep tour; the student already wrote values in each shape.
-- Literal types as the bridge to finite domains. A literal type is a primitive type narrowed to a single value: `'pending'`, `42`, `true`. A union of literals (`'pending' | 'sent' | 'paid'`) is the senior reach for any field that holds one of a finite set of values. State the rule: **if the runtime values are finite and known at design time, the type is a literal union, not the primitive**. Show the invoice status example and the typo caught at compile time.
-- Where literal types come from. Three sources named with one-line triggers: a written annotation (`status: 'draft' | 'sent'`), a `const` binding on a primitive (`const status = 'draft'` infers `'draft'`), and `as const` (covered in lesson 7 of chapter 008). The non-source: `const config = { status: 'draft' }` infers `{ status: string }` because object property types widen — the bug lesson 7 of chapter 008 fixes.
-- The four corners. Each is a top or bottom of the type lattice; each has exactly one production trigger.
-  - **`any`** — the unsound escape. Disables type checking on the value and propagates outward. The course never writes `any`. Biome's `noExplicitAny` rule (lesson 2 of chapter 003) catches it; if a library forces an `any`, use `unknown` and narrow.
-  - **`unknown`** — the sound top. The right type for any value that arrived from outside the type system: JSON from the wire, `localStorage`, `catch` clause bindings, third-party APIs without types. The student cannot read or call an `unknown` value without narrowing first; that's the feature.
-  - **`never`** — the bottom. The type with no inhabitants. Produced by impossible code paths (a function that always throws, a fully-narrowed-away union). The senior reach for `never` is the exhaustiveness check (`assertNever`), covered in lesson 3 of chapter 009; named here as the foreshadow.
-  - **`void`** — function-return-only. Means "the caller should not rely on the return value." Distinct from `undefined` (a value the caller can read). The trigger: callback parameters where the framework explicitly throws the return away (event handlers, `Array.prototype.forEach`).
-- Branded primitives, named once. A `string` that represents a user ID and a `string` that represents an org ID are the same type at the compile level — `getUser(orgId)` compiles. The fix is a brand (`unique symbol` form), built out in lesson 4 of chapter 009. One sentence; the student should know the trigger exists.
-- Forward link. Discriminated unions (lesson 5 of chapter 008 and lesson 1 of chapter 009) lean on literal-union discriminants. The reach for a literal type today is the seed for the pattern next chapter.
+- The senior question. `parseInvoiceCsv(file)` can fail four ways: the file is empty, a row is malformed, a column exceeds the numeric range, the disk read itself errors. Which of those should throw and which should return? A junior writes `throw new Error(...)` for all four and the caller wraps the whole call in `try`/`catch`. A senior reads each failure, asks "can the caller reasonably do something different per case?", and splits: malformed-row and out-of-range become a `Result<Invoice[], ParseError>` the caller inspects; the disk-read failure throws because no caller of `parseInvoiceCsv` can recover from "the file vanished." The lesson installs that split as the reading reflex.
+- The two channels, stated plainly.
+  - **Return the expected.** Failures the caller is expected to handle as part of normal flow — validation errors, "not found" for an optional lookup, business-rule rejections (insufficient balance, role too low, plan limit hit). These are part of the function's contract. The shape: a `Result<T, E>` discriminated union the type system forces the caller to inspect.
+  - **Throw the unexpected.** Failures the caller cannot reasonably recover from inside its own logic — the database is down, the request was canceled, an invariant was violated, the disk is full. These bubble up to a framework boundary (the `error.tsx` boundary, the route-handler catch, the audit-log seam) that decides on the user-visible response. The shape: a thrown `Error`.
+- The "can the caller do something different per case?" heuristic. The one-question test that routes any new failure.
+  - **Yes, the caller branches on the cause.** Return. The cause is part of the contract; the discriminant lets the caller render a different message, retry differently, or fall back.
+  - **No, the caller would log-and-rethrow or display "something went wrong."** Throw. The cause is operational, not domain. The framework boundary handles it.
+- The `try`/`catch`/`finally` mechanics, in the strict-mode shape.
+  - **`try { ... }`** — the guarded block. Synchronous throws inside it are caught; throws inside nested `async` functions that aren't awaited are not.
+  - **`catch (err) { ... }`** — `err` is typed `unknown` under `strict` + `useUnknownInCatchVariables` (the 2026 default). lesson 2 of chapter 008 owns the narrowing; here, the student should leave knowing `err.message` is a compile error before narrowing.
+  - **`finally { ... }`** — runs after the `try` completes or after the `catch` runs. The canonical reach: releasing resources (connection.release, controller.abort on shutdown), counter increments, observability spans. The watch-out: a `return` or `throw` from `finally` overrides the `try`/`catch` outcome. Senior reflex: `finally` is for side effects, not control flow.
+  - The bare `catch` shape — `try { ... } catch { ... }` with no parameter — is legal and the right reach when the catch genuinely doesn't read the error (a fire-and-forget cleanup wrapper).
+- The async-throw flow. The senior takeaway in one line: **a rejected Promise becomes a throw at the `await` site.** Three consequences named.
+  - `try`/`catch` around `await someAsync()` catches the rejection just like a synchronous throw. The Promise-level `.catch` is the chained equivalent.
+  - `try`/`catch` around an `async` function that isn't `await`ed catches nothing — the rejection escapes as an unhandled rejection (lesson 2 of chapter 007 named the consequence).
+  - `return await getX()` inside `try` is mandatory; `return getX()` lets the rejection escape past the `catch` because the function has already returned (the discipline from lesson 3 of chapter 007 lands here).
+- The "only throw `Error`" rule. JavaScript permits `throw 'something went wrong'` and `throw { code: 'BILLING' }`; both are footguns. The senior rule: **the throwable is always an `Error` instance (or a subclass).** The reasons named.
+  - **The catch can rely on the shape.** `instanceof Error` narrows the catch to a known surface (`message`, `name`, `stack`, `cause`). Throwing a string forces every catch site to type-check the value.
+  - **Stack traces.** Only `Error` instances carry a stack. Throwing a plain object means the failure point is unrecoverable from the trace alone.
+  - **The `ensureError` normalizer (forward link to lesson 2 of chapter 008)** exists specifically to recover from third-party code that breaks this rule. Inside the course's own code, the rule is absolute.
+- The `Result<T, E>` shape, named here, locked at lesson 3 of chapter 043. The discriminated union from lesson 1 of chapter 005 applied to the return channel.
+  - Canonical shape: `type Result<T, E> = { ok: true; value: T } | { ok: false; error: E }`.
+  - The `ok`/`err` helpers: `const ok = <T>(value: T): Result<T, never> => ({ ok: true, value })` and `const err = <E>(error: E): Result<never, E> => ({ ok: false, error })`. The `never` on the absent side is what makes the union narrow correctly at the call site.
+  - The `E` channel is a discriminated union of literal-tagged variants (`{ code: 'INVALID_ROW'; row: number } | { code: 'OUT_OF_RANGE'; column: string }`), not a generic `string`. The point of `Result` is that the caller branches on `error.code` and the compiler enforces exhaustiveness via `assertNever` (lesson 3 of chapter 005).
+  - The senior watch-out: `Result` for *every* failure is overuse. The rule is "expected and the caller branches"; a function that returns `Result<T, 'DATABASE_DOWN' | 'TIMEOUT' | 'INVALID'>` is doing operator-error reporting in the return channel — those belong in throws.
+- The `try`/`catch` placement reflex. Where should the catch live? Two answers, both stated.
+  - **At the framework boundary** for unexpected failures. Server Actions, route handlers, page-level loaders, and the `error.tsx` boundary catch the throws that escaped business code. The audit log and the user-vs-operator message split land there. Unit chapter 080 owns the deep treatment.
+  - **At the call site that has a non-throw alternative.** A `try`/`catch` that wraps a third-party SDK call to translate a vendor-shaped throw into a domain `Result.err(...)`. The catch exists to *convert* the channel, not to swallow.
+  - The anti-pattern: a `try`/`catch` that logs and continues with no remediation. Either the failure is recoverable (and the catch converts to `Result.err`) or it isn't (and the catch shouldn't exist; let the boundary catch it).
+- The fire-and-forget catch (one paragraph, named once). lesson 3 of chapter 007 introduced `void logEvent(...).catch(...)` for the fire-and-forget pattern. The senior rule restated: **every Promise not awaited has either a `.catch` or is fed to a combinator that handles rejection.** Unhandled rejections crash Node in 2026; the course writes the explicit `.catch` even on logging calls.
+- Forward references named in one line each. The `Result` shape lands as the Server Action contract in lesson 3 of chapter 043. The framework-boundary catch (the route handler, the `error.tsx` boundary, the audit-log seam) is chapter 080. The wire shape for thrown errors that cross the network is RFC 9457 Problem Details, taught at lesson 2 of chapter 011 and lesson 2 of chapter 046.
 
 What this lesson does not cover:
 
-- `enum`. The course does not use TypeScript enums — string-literal unions cover every case more cleanly, integrate with JSON, and don't emit runtime code. Named in one line so the student recognizes the form in legacy code.
-- The `object` type vs. `{}` vs. `Record<string, unknown>`. Niche; surfaced in lesson 4 of chapter 008 where dynamic keys land.
-- `unique symbol` syntax at depth (lesson 4 of chapter 009).
-- `bigint` literal types (`123n` as a type). Rare; named in one sentence.
+- Narrowing inside the catch (lesson 2 of chapter 008 owns the `instanceof`/`name` discrimination and the `ensureError` helper).
+- Authoring custom `Error` subclasses (lesson 2 of chapter 008).
+- `Error.cause` chaining (lesson 2 of chapter 008).
+- The `error.tsx` React boundary or the action-level wrapper (Unit chapter 080).
+- RFC 9457 Problem Details and the on-the-wire error body (lesson 2 of chapter 011, lesson 2 of chapter 046).
+- `neverthrow`, `effect`, `fp-ts`, or any other Result-library. The course rolls its own minimal `Result<T, E>` shape because the discipline is the lesson, not the library.
+- Logging frameworks (Unit chapter 092).
+- Refuse-by-default at the gate (lesson 1 of chapter 080).
 
-Pedagogical approach: Concept archetype with a small Reference moment for the four corners. Open with the `'pendng'` typo bug and the `any`-swallows-`null` bug as paired snippets. Walk the literal-union pattern in a tight prose-plus-code section. Use a `Buckets` exercise sorting eight values ("HTTP method," "invoice status," "user-entered text," "JSON from the wire," "a callback return," "an impossible branch," "a third-party value with no types," "a 64-bit external ID") into "primitive," "literal union," "`unknown`," "`never`," "`void`," "needs a brand." That sort is the senior-vocabulary install.
+Pedagogical approach: Decision archetype. Open with the `parseInvoiceCsv` four-failure scenario in prose, and refuse to write the function signature until the channel split lands — the student should feel the routing decision. Walk the two channels as one tight comparison table (channel / what it carries / who handles it / canonical site) and name the "can the caller do something different per case?" heuristic explicitly. Walk the `try`/`catch`/`finally` mechanics with one small labeled snippet that demonstrates the strict-mode `unknown` catch type — leave `err.message` underlined as a compile error to motivate lesson 2 of chapter 008. Walk the async-throw flow with a two-snippet pair: the `await` inside `try` that catches, and the un-awaited `async` call that escapes; mark the difference in the surrounding prose. The "only throw `Error`" rule gets one wrong-then-right snippet. Walk the `Result<T, E>` shape with one labeled block showing the type, the `ok`/`err` helpers, and a `parseInvoiceCsv` return whose `E` is a discriminated union of two tagged variants; the call site `switch`es on `result.error.code` with `assertNever` (forward-link to lesson 3 of chapter 005). Close with a `Buckets` or `Dropdowns` exercise: given eight failure scenarios ("CSV row out of range", "Postgres connection refused", "Stripe API key rotated mid-request", "user submitted a duplicate email", "S3 returned 503", "Zod parse failed on form input", "invariant violated: tenant ID mismatch", "OAuth provider returned an unknown error code"), the student routes each to `Result` or `throw`. Optional short `script-coding` exercise where the student takes a function that throws on validation errors and refactors it to return `Result<T, E>` with a tagged-union `E`.
+
+Estimated student time: 40 to 50 minutes.
 
 ---
 
-## Lesson 2 — Object shapes: type, interface, and field modifiers
+## Lesson 2 — Narrowing the catch and authoring domain errors
 
-Teaches when to default to `type` (always) and reach for `interface` (declaration merging), paired with the per-field `?` and `readonly` modifiers plus the array-level `readonly T[]` and `Readonly<T>` cousins.
+Teaches the `unknown`-in-catch narrow with `instanceof Error` and the `ensureError` normalizer, small custom `Error` subclasses with literal-typed `name` discriminants, `Error.cause` for re-wrap and chain walking, and the `error.name` fallback for `AbortError`, `TimeoutError`, and the cross-realm `instanceof` gotcha.
 
 Topics to cover:
 
-- The senior question. The student joins a codebase and sees both `type User = { ... }` and `interface User { ... }` in different files. Which is right? The answer is one rule with one narrow exception. The second bug the lesson prevents: a field that should have been `readonly` got mutated by a downstream component, and the bug bled across two render cycles before anyone noticed.
-- The senior default: `type` everywhere. `type` aliases handle objects, unions, intersections, primitives, tuples, generics, conditional types, and mapped types. `interface` handles only object shapes and classes. The course defaults to `type` because it scales to every type-system construct without the student having to remember which form supports which feature.
-- The one trigger that earns `interface`: **declaration merging**. When the student needs to extend a third-party type from a package (Better Auth's `Session`, `next-intl`'s `messages`, Drizzle's relation types), `declare module` plus an `interface` declaration merges into the original. lesson 4 of chapter 010 owns the full pattern; named here as the only trigger.
-- The non-differences. `interface` vs. `type` syntactic differences (`extends` vs. `&`, the trailing semicolon) are cosmetic and not the lesson. Performance differences across very large unions exist but don't bite at the course's scale; named in one line and dropped.
-- Per-field modifiers, two only.
-  - **`?` (optional)** — the field may be missing or `undefined`. Pair with the senior rule from chapter 005: `?` means the property is absent; `| undefined` means the property is present with the value `undefined`. The two differ at `'key' in obj` and at `Object.keys` enumeration; the student needs to know the distinction. Under `strict` alone the distinction is conceptual — the language collapses the two at assignment sites — and `exactOptionalPropertyTypes` (the opt-in flag parked in lesson 3 of chapter 004 as a conditional) is what lets the compiler enforce the difference where the value flows.
-  - **`readonly`** — the field cannot be reassigned after construction. Locks the binding (per lesson 6 of chapter 005's `const`-binds-not-freezes), not the value: `readonly user: { name: string }` still allows `obj.user.name = 'x'`. The fix is recursive immutability, named in one line and reserved for the rare reach.
-- Array-level readonly cousins. `readonly T[]` (or `ReadonlyArray<T>`) forbids `.push`, `.pop`, `.splice`, and index-write on the array. `Readonly<T>` is the utility-type form for objects, named here in one line as the per-field-`readonly`-everywhere shorthand. The full utility-type surface is lesson 6 of chapter 009.
-- Excess property checks, named once. Object literals assigned to a known type are checked for extra properties; values flowing through variables are not. The student should know the rule produces friendly errors at the literal site but lets unsafe data through a variable — the fix is to type the source, not to defeat the check with `as`.
-- Index signatures and `Record` are the next lesson. One-sentence forward link to lesson 4 of chapter 008.
+- The senior question. A `chargeInvoice(invoiceId)` Server Action calls Stripe, writes a row, and enqueues an email. Any of three failures can land at the action's catch: a Stripe network error (retryable, log and rethrow for the framework boundary), a Stripe `card_declined` (a domain failure the user should see as "Your card was declined"), and an `AbortError` if the user navigated away (silent no-op). The catch parameter is typed `unknown`. How does the catch tell the three apart, and how does it carry the original failure forward so the operator log has the full chain? The lesson installs the four moves: narrow with `instanceof Error`, discriminate with `error.name` (or a literal-typed `name` on a custom subclass), normalize unknown shapes through `ensureError`, and walk `Error.cause` to read the chain.
+- The `unknown`-in-catch narrow, the strict-mode shape. Under `strict` plus `useUnknownInCatchVariables` (TS chapter 020+, the 2026 default), `catch (err)` types `err` as `unknown`. The compiler refuses `err.message`. Two narrows named, both senior reflexes.
+  - **`instanceof Error`** — the cheapest narrow. After the check, `err` is `Error` and `err.message` / `err.name` / `err.stack` / `err.cause` are typed. Works for everything thrown by application code that obeys the "only throw `Error`" rule.
+  - **`Error.isError(value)`** — ES2026 / Stage 4, Node 24+. The cross-realm-safe equivalent of `instanceof Error`. The senior reach in any code that crosses a realm boundary (workers, `vm` contexts, the edge-runtime split, iframes). Named in one paragraph with the trigger; 2026-current and available unflagged in Node 26.
+- The cross-realm `instanceof` gotcha, stated plainly. Each JavaScript realm has its own `Error` constructor; an error thrown in a Web Worker and caught in the main thread fails `instanceof Error` because the two `Error` references are different objects. Three sites where this bites in 2026 SaaS code.
+  - **Web Workers and `MessageChannel` boundaries** — rare in app code, common in observability libraries.
+  - **The `vm` module in Node** — used by test runners and sandboxes.
+  - **The edge / Node runtime boundary in Next.js** (Next.js runtime split — covered in Unit 4) — errors thrown in middleware (edge) and caught in a Server Component (Node) cross realms.
+  - The fix: `Error.isError(err)` in 2026, or the `error.name` fallback (next bullet) where realms are an issue.
+- The `error.name` fallback, the portable form. Every `Error` subclass sets `name`. Discriminating on `err.name === 'AbortError'` or `err.name === 'TimeoutError'` works across realms because strings are values, not constructor references. The canonical sites.
+  - **`AbortError`** — `DOMException` in browsers, varies in Node depending on the API. lesson 4 of chapter 007 named the discrimination; here, name the realm-safe form.
+  - **`TimeoutError`** — fired by `AbortSignal.timeout(ms)` in 2026.
+  - **Custom domain errors** — when the catch is in a different module than the throw site, the `name` literal is the durable contract; the class itself may not be importable.
+- The `ensureError` normalizer. A small helper that turns any `unknown` into an `Error`. The shape:
+  - `const ensureError = (value: unknown): Error => value instanceof Error ? value : new Error(typeof value === 'string' ? value : JSON.stringify(value), { cause: value })`.
+  - The reach: every catch around a third-party SDK that may break the "only throw `Error`" rule (legacy callback adapters, some browser APIs, the `unknown` rejection from a Promise constructed inside a SDK). The catch becomes `catch (err) { const error = ensureError(err); ... }` and the rest of the block treats `error` as `Error` safely.
+  - The senior placement: in `/lib/errors.ts` next to the `Result` helpers, imported at every catch that touches a vendor seam.
+- Authoring custom `Error` subclasses, the 2026 minimum-surface shape. Two paragraphs, one code block.
+  - The canonical shape: `class BillingError extends Error { readonly name = 'BillingError' as const; readonly code: 'card_declined' | 'insufficient_funds' | 'authentication_required'; constructor(code: 'card_declined' | 'insufficient_funds' | 'authentication_required', message: string, options?: { cause?: unknown }) { super(message, options); this.code = code; } }`.
+  - The senior moves named.
+    - **Literal-typed `name`.** `readonly name = 'BillingError' as const` — not `super('BillingError', ...)`. The literal is the discriminant; `err.name === 'BillingError'` narrows the type when combined with `instanceof Error`.
+    - **Structured fields (`code`, `cause`, ...).** The class carries the data the catch needs to branch. No string parsing.
+    - **`{ cause }` passed through to `super(message, options)`.** The `Error.cause` chain is part of the contract.
+    - **No abstract base class.** Domain errors are flat. A `BillingError` extends `Error` directly, not `AppError extends Error`. The taxonomy is the literal `name` set, not an inheritance tree.
+- `Error.cause` and chain walking. The 2026-current standard for "this failure was caused by that one." Two patterns named.
+  - **Rewrap at the seam.** A function that catches a vendor error and rethrows a domain error preserves the original: `throw new BillingError('card_declined', 'Card declined by issuer', { cause: stripeError })`. The operator log walks the chain; the user-facing message stays clean.
+  - **Walking the chain.** The structured-log helper recursively reads `err.cause`, stopping when undefined or when it loops. The shape: `const causes = []; let current: unknown = err; while (current instanceof Error && !causes.includes(current)) { causes.push(current); current = current.cause }`. The loop guard exists because cause cycles, while rare, crash the walker. The course's `logError` in chapter 092 owns the production version; the chapter installs the pattern.
+- The `instanceof` narrow with custom errors. The full discriminate pattern, demonstrated once.
+  - The shape: `if (err instanceof BillingError) { switch (err.code) { case 'card_declined': ...; case 'insufficient_funds': ... } } else if (err instanceof Error && err.name === 'AbortError') { return } else if (err instanceof Error) { throw err } else { throw ensureError(err) }`.
+  - The senior watch-out: order matters. Specific subclasses before the generic `Error` check. The trailing `ensureError` is the catch-all for the "third-party threw a string" case.
+- The "what about `AggregateError`?" aside, in one paragraph. `Promise.any` rejects with an `AggregateError` carrying an `errors` array. The narrow is `err instanceof AggregateError`. The catch reads `err.errors` (typed `Error[]` if every input obeyed the rule) to decide on the response. Named once because the `Promise.any` reach was installed in lesson 2 of chapter 007 and the catch needs the discriminator.
+- Naming conventions for the literal `name` set. One short paragraph. The course uses `PascalCase` matching the class name (`BillingError`, `RateLimitError`, `TenancyError`), one error class per domain concern, and a flat namespace in `/lib/errors.ts`. The pattern installs at Unit chapter 080; here, the convention is named so the student sees the shape consistently across chapters.
+- The `error.message` discipline, named in one paragraph. The `message` field is for *operators*, not users. It carries the technical detail (the SQL constraint name, the Stripe error code, the Zod path). The user-facing message lives elsewhere — on the `Result.err.code` discriminant the UI maps to a translation key. lesson 2 of chapter 080 owns the two-audience split; here, the rule "don't render `err.message` to users" is named once.
 
 What this lesson does not cover:
 
-- `extends` on interfaces at depth — the course uses `&` for type composition (covered in lesson 5 of chapter 008).
-- The `class` form as a type. Named in lesson 2 of chapter 013 where classes earn their narrow reach.
-- Deep immutability libraries (Immer, immutable.js). Not the 2026 default.
-- Property descriptors and `Object.defineProperty`. Not in the SaaS path.
+- The two-audiences user-vs-operator split at depth (lesson 2 of chapter 080).
+- The framework-boundary catch and the `error.tsx` boundary (lesson 3 of chapter 080, Unit 3 React error boundaries).
+- Logging-framework wiring (`pino`, Sentry — Unit chapter 092).
+- The wire format for thrown errors (RFC 9457 Problem Details — lesson 2 of chapter 011, lesson 2 of chapter 046).
+- Sourcemaps for production stack traces (Unit chapter 092).
+- Async stack traces under Node (`--async-stack-traces` is on by default in Node 22+; named once, no deep treatment).
+- Custom `Symbol.for('nodejs.util.inspect.custom')` for pretty-printing in the REPL. Niche.
+- Re-throwing with `Error.captureStackTrace` for vendor SDKs that lose traces. Out of scope.
 
-Pedagogical approach: Decision archetype. Open with the codebase-uses-both confusion in two sentences. State the rule (`type` always; `interface` only for declaration merging) and give the example of each. Walk the `?` and `readonly` modifiers in adjacent code blocks with the `?` vs. `| undefined` divergence shown conceptually under `strict`, naming `exactOptionalPropertyTypes` (lesson 3 of chapter 004) as the opt-in that turns the distinction into an assignment-site error. Close with a `MultipleChoice` exercise: five field-modifier scenarios where the student picks the correct combination of `?`, `readonly`, and `| undefined`.
+Pedagogical approach: Pattern archetype with one structural code block at the center. Open with the `chargeInvoice` three-failure scenario in prose to motivate the four moves. Walk the `unknown`-in-catch narrow with a two-step paired snippet: the wrong shape (`catch (err) { console.log(err.message) }` — compile error) and the right one (`catch (err) { if (err instanceof Error) console.log(err.message) }`). Name `Error.isError()` in one paragraph with the trigger; show the cross-realm scenario with a small `ArrowDiagram` (main thread, worker, the `Error` constructor mismatch). Walk the `ensureError` helper with one labeled snippet in `/lib/errors.ts`. The `BillingError` class is the lesson's center of gravity — one labeled block showing the full shape (literal `name`, typed `code`, `{ cause }` passthrough) with side annotations highlighting the four senior moves. Walk `Error.cause` with two adjacent snippets: the rewrap-at-the-seam pattern (catching Stripe, throwing `BillingError`) and the chain-walking helper. The full discriminate pattern (specific subclass, then `error.name`, then generic `Error`, then `ensureError`) gets one labeled block as the canonical catch shape. Use a `code-review` exercise where the student is given three catch blocks and identifies the bugs (unguarded `err.message`, `instanceof` reach across a worker boundary, missing `ensureError` for a vendor seam). Close with a short `script-coding` exercise: the student authors a `RateLimitError` subclass with a literal `name`, a `retryAfter: number` field, and a `{ cause }` passthrough, then writes the catch block that discriminates it from `BillingError` and a generic `Error`. Optional `SandboxCallout` with a working `Error.cause` chain the student can walk.
 
----
-
-## Lesson 3 — Tuples: positions with labels
-
-Teaches tuple syntax with element labels, optional and rest positions, `readonly` tuples, and the concrete patterns (`useState`, custom hooks, `Object.entries`) where a tuple beats a named-field object.
-
-Topics to cover:
-
-- The senior question. `useState` returns `[value, setter]` — a position-indexed pair the caller destructures. Why a tuple, not an object? The lesson answers: when the caller will destructure-and-rename on every use site, a tuple is the right shape; the rename happens at the destructure, so position carries no naming penalty.
-- Tuple syntax. `[string, number]` is a tuple of length 2 with fixed positional types. Distinct from `(string | number)[]` (an array of either type, any length). The student should leave able to read the difference at a glance.
-- Element labels. `[name: string, age: number]` adds documentation at the type level; the labels appear in editor tooltips and at destructure sites. Senior reach for any tuple longer than two elements — without labels, the call site can't tell which position is which.
-- Optional and rest positions. `[string, number?]` allows a length-1 or length-2 tuple. `[string, ...number[]]` is a string followed by any number of numbers. The patterns: optional for "this callback can return either form," rest for variadic factories. Both are rare in SaaS code; named so the student recognizes them in library types.
-- `readonly` tuples. `readonly [string, number]` forbids index-write and array-mutation methods. The companion `as const` on a tuple-shaped literal produces a `readonly` tuple of literal types — `[1, 2, 3] as const` is `readonly [1, 2, 3]`, not `number[]`. Forward link to lesson 7 of chapter 008.
-- The three sites tuples earn their weight in 2026 SaaS code.
-  - **`useState`-like hook returns.** The React idiom; covered in Unit 4. The signature: `const [value, setValue] = useState(...)`. Custom hooks that follow the pattern return tuples for the same reason.
-  - **`Object.entries` and `Map` iteration.** `Object.entries(obj)` yields `[key, value]` pairs; `map.entries()` does the same. Knowing the result is a tuple lets the student destructure in the `for...of` head: `for (const [key, value] of Object.entries(obj))`.
-  - **Result-shaped returns where naming wouldn't help.** Returning `[error, value]` from a wrapper is the Go-style idiom. The course prefers a discriminated `Result` type (lesson 1 of chapter 012) for new code; the tuple form is named so the student reads it correctly in libraries that use it.
-- When to prefer an object. The flip rule: if the call site won't destructure-and-rename, or if the positions are easy to swap by accident, use a named-field object. Three coordinates is the rough boundary; past three positions, the object is the senior call.
-
-What this lesson does not cover:
-
-- Variadic tuple types and tuple-spread at the type level. The pattern exists for advanced library types; out of the senior-SaaS reach.
-- Tuple manipulation utility types (e.g., `[...T, U]`). Niche; reserved for library authors.
-- The `[number, number, number]` pattern for coordinates — named in one line as the obvious literal use.
-
-Pedagogical approach: Mechanics archetype. Open with the `useState` shape and the question "why a tuple here." Walk the syntax in three short code blocks (positional, labeled, optional/rest, `readonly`). Use a `script-coding` exercise where the student types a custom `useToggle` hook's return as a labeled `readonly` tuple. Close with one `MultipleChoice` asking which of four data shapes (`[x, y, z]` coordinates, a user record, a key-value pair from a Map, a payload with five named fields) want a tuple vs. an object.
+Estimated student time: 45 to 55 minutes.
 
 ---
 
-## Lesson 4 — Dynamic keys: index signatures and Record<K, T>
-
-Teaches the two forms for dynamic-keyed objects, the completeness payoff of `Record<LiteralUnion, V>`, and how `noUncheckedIndexedAccess` narrows reads differently across the open-keyed and finite-keyed cases.
-
-Topics to cover:
-
-- The senior question. The student needs to type a cache keyed by user ID, a lookup table from status to label, and a JSON object with arbitrary keys parsed from the wire. Three different shapes, three different correct types — and the student who reaches for the same form for all of them ships subtle bugs.
-- The two forms.
-  - **Index signature** — `{ [key: string]: User }`. The right reach when the set of keys is genuinely open (a cache, an arbitrary JSON shape). All keys are `string`; all values are the same type. Companions: `[key: number]` for numeric-indexed objects (rare; arrays cover most cases), `[key: symbol]` for symbol keys (rare).
-  - **`Record<K, V>`** — the utility-type form. With `K extends string` (`Record<string, User>`) it's interchangeable with the index signature, semantically. With `K extends a literal union` (`Record<'draft' | 'sent' | 'paid', string>`) it requires every key in the union to be present. That completeness check is the senior payoff.
-- The senior call: use `Record<LiteralUnion, V>` when the keys are finite and known; use the index signature when the keys are genuinely open. The two forms are interchangeable for the open case; the course writes `Record<string, V>` for legibility and reserves the index-signature syntax for cases where additional named fields coexist with the dynamic surface.
-- `noUncheckedIndexedAccess` interaction. From the strict tsconfig (lesson 2 of chapter 003), every read through an index signature returns `T | undefined`. The senior reflex: narrow the result before using it. `Record<LiteralUnion, V>` reads return `V` directly (no `| undefined`) because every key is guaranteed present — that's the second payoff of the literal-union form.
-- The mixed shape. `{ name: string; [key: string]: string | number }` — a known field plus an open dynamic surface. Rare; the rule is that every named field's type must be assignable to the index signature's value type. Named so the student recognizes the constraint when TypeScript flags it.
-- Read vs. write asymmetry. The `in` operator is the most reliable existence check for an index-signature object; `obj[key] !== undefined` works under `noUncheckedIndexedAccess`. Forward link to lesson 6 of chapter 008 where narrowing lands.
-- Forward links. Drizzle's typed-row return values are `Record`-shaped (Unit 6). Better Auth's session shape and `next-intl`'s messages use module augmentation over `Record`-typed surfaces (lesson 4 of chapter 010).
-
-What this lesson does not cover:
-
-- Mapped types (`{ [K in keyof T]: ... }`). Reserved for lesson 6 of chapter 009 where the utility types live.
-- `Map<K, V>` vs. `Record<K, V>`. The runtime distinction is covered in lesson 4 of chapter 007; the type-level summary: `Map` for runtime keyed lookup at scale, `Record` for type-shape-of-an-object.
-- `keyof` and `typeof` operators on the value. Reserved for lesson 5 of chapter 009.
-- `PropertyKey` (`string | number | symbol`). Named in one line.
-
-Pedagogical approach: Decision archetype. Open with the three-shapes scenario and ask the student to pick a type for each. Walk the two forms in adjacent code blocks. Show the `noUncheckedIndexedAccess` divergence in two output blocks — the index-signature read with `| undefined`, the `Record<LiteralUnion, V>` read without. Close with one `Buckets` exercise sorting six dynamic-keyed shapes ("cache by user ID," "status-to-label lookup," "JSON parsed at the wire," "HTTP method to handler," "i18n messages keyed by locale," "Drizzle row by primary key") into "index signature" and "`Record<LiteralUnion, V>`."
-
----
-
-## Lesson 5 — Composing types: unions and intersections
-
-Teaches the `|` and `&` operators across literal, mixed-primitive, shape, and nullable unions plus shape-and-narrowing intersections, with the discriminated-union shape seeded for Chapter 009.
-
-Topics to cover:
-
-- The senior question. The student needs to type a value that's either a `User` or a `Guest`, a function parameter that accepts a `string` or a `number`, and a `Pick<User, 'id' | 'email'> & { token: string }` payload. Three composition shapes, one operator each, and the senior reflex is to reach for the right one without thinking.
-- Unions, `|`. The set-union of inhabitants. Literal unions (`'draft' | 'sent'`), mixed-primitive unions (`string | number`), shape unions (`User | Guest`), and nullable unions (`User | null`, `User | undefined`, `User | null | undefined`). The student must internalize that a union value is one of the alternatives, not all of them — to read a field on a `User | Guest`, the field must exist on both, or the value must be narrowed first.
-- Nullable unions and the strict tsconfig. `strictNullChecks` (lesson 2 of chapter 003) makes `null` and `undefined` first-class members of the type system. The student treats `User | null` as the union it is; the narrowing happens at the read site. The pattern `?:` for optional fields and `| undefined` for optional values lands here paired.
-- Intersections, `&`. The set-intersection of constraints. With shape types, an intersection has all the fields of both: `{ id: string } & { email: string }` is `{ id: string; email: string }`. With incompatible types, the intersection is `never` (`string & number` is uninhabited). The senior reach: composing a request payload from a base type plus a discriminating extension, or extending a third-party type with project-local fields.
-- The shape-union landmine. A shape union allows reading only fields common to all variants. The student who writes `function render(value: User | Guest) { return value.email }` gets an error if `Guest` doesn't have `email`. The fix is narrowing (next lesson), not a wider type. State the rule: **never widen a shape union to access a non-shared field; narrow it instead.**
-- The discriminated-union shape, seeded. A union of object types where each variant carries a literal field that names it: `{ status: 'loading' } | { status: 'success'; data: User } | { status: 'error'; error: Error }`. Narrowing on the `status` field separates the cases at compile time. lesson 1 of chapter 009 owns the pattern; this lesson plants the shape so the next chapter has language to reference.
-- Distributive behavior, named once. When a generic type parameter is a union, conditional types and some utility types distribute over the members. Reserved for lesson 6 of chapter 009 and lesson 7 of chapter 009; named here in one sentence so the student doesn't reinvent the wheel.
-
-What this lesson does not cover:
-
-- Discriminated-union narrowing in depth (lesson 6 of chapter 008 and lesson 1 of chapter 009).
-- Conditional types (`T extends U ? X : Y`). Reserved for lesson 7 of chapter 009 where generics earn their lesson; the rare conditional type a SaaS engineer reaches for comes through utility types.
-- The `T | (T & {})` pattern for autocomplete-friendly string literal unions. Niche library trick; named in one line.
-
-Pedagogical approach: Concept archetype with a Decision close. Open with the three-shapes scenario from the senior question. Walk unions and intersections in side-by-side code blocks with the same field set — `User | Guest` (intersection of fields readable) and `User & Guest` (union of fields readable). Use a `script-coding` exercise where the student types a `Result` shape as a discriminated union (`{ ok: true; value: T } | { ok: false; error: Error }`); the test is whether reading `.value` on a generic `Result` fails without narrowing. That failure is the seed for lesson 6 of chapter 008.
-
----
-
-## Lesson 6 — Narrow, don't assert
-
-Teaches control-flow narrowing through `typeof`, equality, `in`, `instanceof`, `Array.isArray`, and discriminant fields, with the three legitimate triggers that earn `as` and `!` named as conditional escape hatches.
-
-Topics to cover:
-
-- The senior question. The student wrote `function getEmail(value: User | Guest) { return (value as User).email }` and shipped it; six months later a `Guest` flowed through and the field was `undefined`. The assertion lied. The lesson installs the senior reflex: narrow the type with runtime checks the language tracks; reach for `as` and `!` only in three named cases.
-- The narrowing surface. Each form with its trigger.
-  - **`typeof`** — narrows `string | number | boolean | ...` by primitive. The basic reach for mixed-primitive unions.
-  - **Equality narrowing** — `if (status === 'loading')` narrows a literal union. The reach for any discriminated union or literal-union switch.
-  - **`in`** — narrows shape unions by property existence: `if ('email' in value)`. The reach for shape unions without a discriminant.
-  - **`instanceof`** — narrows by constructor. The reach for error subclasses (`error instanceof ValidationError`) and class hierarchies. Pair with the cross-realm gotcha named in lesson 2 of chapter 012.
-  - **`Array.isArray`** — narrows a union of `T | T[]` to the array branch. Named separately because `typeof` reports both as `'object'`.
-  - **`switch` on a discriminant** — the canonical form for discriminated unions, set up in lesson 5 of chapter 008 and built out in lesson 1 of chapter 009.
-  - **Custom type predicates** — `function isUser(v: unknown): v is User { ... }`. Named with one example; the depth lands in lesson 3 of chapter 009 where exhaustiveness lives.
-- The narrowing scope rule. A narrow holds inside the block where the check fired and is invalidated by any assignment that could change the type. The closure trap: a narrow inside a callback can be lost if the variable is reassigned between the check and the callback execution. Senior reflex: assign the narrowed value to a `const` inside the block.
-- The three legitimate triggers for `as`. The escape hatch exists for three cases.
-  - **Boundary parse-then-trust.** After Zod validates an `unknown`, the parsed value is typed and the assertion is implicit in the parser. No `as` needed in the user code; named so the student understands where the type information comes from.
-  - **TypeScript can't see what you can prove.** A `value as 'draft' | 'sent'` where the prior code already narrowed via a non-trackable mechanism (e.g., a Map lookup the type system can't follow). Rare; the senior should ask whether a refactor removes the need.
-  - **The DOM and third-party type gaps.** `document.querySelector('button') as HTMLButtonElement`. The DOM API returns `Element | null` but the call site knows the selector matches a button. Acceptable for tightly-scoped cases; the broader fix is `instanceof HTMLButtonElement`.
-- `as unknown as T` is a smell. Named once: it always means the type system is being silenced. Sometimes it's the right call (test fixtures, intentional type-system bypass at a third-party boundary); usually it's a refactor signal.
-- The non-null assertion, `!`. Same posture as `as` — escape hatch with narrow triggers. The most common legitimate use: `array.find(...)!` when the caller has just proved the element exists via a prior check the type system can't track. The senior alternative: `array.find(...) ?? throwError()` for explicit failure.
-- Type assertions that lie at runtime. The student should leave knowing that `value as User` is a compile-time-only operation; the runtime value is unchanged. The bug class: asserting something the data doesn't honor, then crashing three lines later. The fix is to narrow with a check, not to assert.
-
-What this lesson does not cover:
-
-- Assertion functions (`asserts value is T`). Reserved for lesson 3 of chapter 009 where exhaustiveness lives.
-- The `satisfies` operator. Reserved for lesson 7 of chapter 008.
-- `unknown` narrowing in `catch` blocks at depth. Reserved for lesson 2 of chapter 012.
-
-Pedagogical approach: Pattern archetype. Open with the `as User` lie and its six-months-later crash in two sentences. Walk the narrowing surface in six tight code blocks, each with the trigger named. Use a `script-coding` exercise where the student receives a `User | Guest` value and writes the function body with narrowing, no `as`; the tests cover both branches. Close with one `Buckets` exercise sorting eight scenarios ("mixed-primitive union," "shape union with discriminant," "shape union without discriminant," "error subclass check," "DOM query result," "Zod parse result," "an array we just `.find`'d," "third-party type gap") into "narrowing form" or "`as`/`!` is acceptable here."
-
----
-
-## Lesson 7 — Keeping literals narrow: as const and satisfies
-
-Teaches the value-site freeze that keeps literal types from widening, the contract check that validates without losing the narrow, and the combined `as const satisfies T` idiom for typed-config patterns.
-
-Topics to cover:
-
-- The senior question. The student writes `const ROUTES = { home: '/', about: '/about' }` expecting the values to be literal types. They aren't — TypeScript infers `{ home: string; about: string }`, so a typo at the call site (`ROUTES.abot`) is caught but `ROUTES.home.startsWith('/')` is the only narrowing available. The student wants the literal values preserved so unions like `keyof typeof ROUTES` and `(typeof ROUTES)[keyof typeof ROUTES]` work. `as const` is the fix.
-- `as const`, the value-site freeze. Applied to a literal, it tells TypeScript "freeze every nested literal at its narrowest type and make every property `readonly`." Three behaviors:
-  - String literals stay as their literal type (`'/' instead of `string`).
-  - Object properties become `readonly`.
-  - Arrays become `readonly` tuples of their element literal types.
-- The three sites `as const` earns its weight.
-  - **Typed config objects.** A routes map, a permission table, a feature-flag map. The downstream type derivations (`keyof typeof X`, `(typeof X)[keyof typeof X]`) become useful only when the values are literal.
-  - **Tuple literals.** `[1, 2, 3] as const` produces `readonly [1, 2, 3]`, not `number[]`. The trigger for any positional record built inline.
-  - **Discriminant values.** `{ status: 'loading' } as const` keeps the literal type that lesson 5 of chapter 008's discriminated union depends on; without it, the inferred type widens to `string`.
-- `satisfies`, the contract check that preserves the narrow. The bug it fixes: the student writes `const ROUTES: Record<string, string> = { home: '/', about: '/about' }` to enforce a contract, but the annotation widens the values to `string` and erases the literal types. `satisfies` validates the value against a type without applying the type as the value's annotation: `const ROUTES = { home: '/', about: '/about' } satisfies Record<string, string>` keeps the literal types and still errors if a non-string snuck in.
-- The two senior triggers for `satisfies`.
-  - **You want to keep the narrow type but validate against a contract.** The canonical case.
-  - **You want the structural check at write time, not at read time.** A typo in a key or a missing required field surfaces where the value is defined, not where it's consumed. Annotations do this too but at the cost of widening.
-- The combined idiom, `as const satisfies T`. The senior reach for typed-config patterns: lock the literal types (`as const`) and validate against a contract (`satisfies T`). The two compose in that order. Show one full worked example — a permissions table where keys are `Role` and values are arrays of `Permission` literals — and the type derivations it unlocks.
-- The contrast table, terse. Three forms and what they do.
-  - **Annotation** (`const X: T = ...`) — applies `T` to the value; loses the literal type if `T` is wider; catches missing fields.
-  - **`as const`** — freezes the value's inferred type at the narrowest; doesn't validate against any contract.
-  - **`satisfies T`** — validates against `T`; doesn't apply `T` to the value; keeps the inferred type.
-- Forward links. The pattern lands again in Drizzle schema definitions (Unit chapter 041), Next.js route segment configs (Unit chapter 033), and feature-flag and permission tables in the org/RBAC chapter (Unit chapter 061). One sentence each.
-
-What this lesson does not cover:
-
-- `as` for type assertions at depth (lesson 6 of chapter 008 owns it).
-- Mapped types and conditional types that operate on `as const` outputs (chapter 009 chapter).
-- `const` type parameters on generic functions (lesson 7 of chapter 009).
-
-Pedagogical approach: Pattern archetype. Open with the `ROUTES` widening surprise in two snippets — one with the inferred wide type, one with `as const` and the narrow. Walk `as const` and `satisfies` in adjacent code blocks operating on the same `ROUTES` value. Show the combined `as const satisfies T` idiom as the third block. Use a `script-coding` exercise where the student types a permissions table with `as const satisfies Record<Role, readonly Permission[]>` and the tests validate the type derivations. Close with one `MultipleChoice` matching four scenarios ("config with literal keys and values," "config with a contract and literal values," "config with a contract and widened values," "an array literal that should be a tuple") to the right combination of annotation, `as const`, and `satisfies`.
-
----
-
-## Lesson 8 — Annotate the boundaries, infer the inside
-
-Teaches the senior rule for where annotations earn their weight (parameters, exported APIs) and where inference wins (locals, return types, inline callbacks), plus the `import type` discipline that `verbatimModuleSyntax` enforces.
-
-Topics to cover:
-
-- The senior question. The student has seen TypeScript codebases that annotate every local variable and every return type — and codebases that annotate nothing and lean on inference. Both extremes are wrong. The senior rule: **annotate where the type carries information the value alone can't (parameters, exported APIs, generic constraints); infer everywhere else.**
-- Where annotations earn their weight.
-  - **Function parameters.** Always. The function signature is the contract with the caller; the caller can't infer the type. Without an annotation, TypeScript infers `any` for parameters (the implicit-any error in strict mode).
-  - **Exported APIs.** Functions, types, and values exported from a module get explicit type signatures so the consumer reads the contract without opening the implementation. The `isolatedDeclarations` story is named in one line as the 2026 direction; not yet a hard requirement.
-  - **Return types where inference produces an unintended type.** Rare; the senior reaches for an explicit return type when the function's intent is to satisfy an interface, when the inferred type is a complex conditional the consumer shouldn't depend on, or when a recursive function's inferred return is `any`.
-- Where inference wins.
-  - **Local variables.** `const total = items.reduce(...)` — TypeScript reads the reducer and types `total` correctly. Annotating is noise.
-  - **Inline callbacks.** `items.map(item => item.price)` — the callback's parameter is inferred from the array's element type. Annotating breaks the inference and forces a redundant type.
-  - **Return types of internal functions.** When the function isn't exported and the body is small, the inferred return type is correct and stays in sync as the body changes. Senior reflex: annotate the return only when the function's signature is the lesson or the inference would be wrong.
-- The trade-off, stated plainly. Annotations are documentation and a structural enforcement; inference is concision and refactoring resilience. The boundary rule (annotate at the seams, infer inside) gives both.
-- The `import type` discipline. With `verbatimModuleSyntax: true` (from the strict tsconfig of lesson 2 of chapter 003), every type-only import must use `import type`. The compiler erases the import; the bundler never sees it; the runtime never executes it. The companion: `import { type Foo, bar }` for mixed imports where some names are types and some are values. Biome's `useImportType` rule (lesson 2 of chapter 003) catches violations automatically; the lesson installs the mental model so the student writes it correctly the first time.
-- The two failure modes `verbatimModuleSyntax` prevents.
-  - **Side-effect modules that get tree-shaken.** A value import that's only used as a type can be erased by the bundler; the side-effecting initialization at module load (e.g., a Drizzle relation declaration) goes missing. `import type` is explicit about intent.
-  - **Circular type imports that masquerade as value imports.** Drawing the import graph at type level is sound; at value level it can deadlock module initialization. `import type` lets the cycle resolve cleanly.
-- Forward link. Module graph mechanics (Chapter 010) lands the full story; this lesson installs the per-import-line discipline.
-
-What this lesson does not cover:
-
-- `isolatedModules` and `isolatedDeclarations` at depth. The former is on by default in modern setups; the latter is named as the 2026 direction in one line. Module-graph chapter chapter 010 owns the deeper treatment.
-- `tsconfig.json` options beyond the ones already enabled in lesson 2 of chapter 003. The strict baseline is assumed.
-- The `import type * as X` and `export type { X }` re-export forms. Named in one line; the canonical pattern is `import type { X }`.
-- Project references and monorepo TypeScript topology. Not in scope for a single-app SaaS course.
-
-Pedagogical approach: Decision archetype. Open with the two anti-extremes (annotate-everything, annotate-nothing) in two paired snippets. State the rule in one sentence. Walk the boundary cases — parameter annotation always, exported API annotation always, local inference always, callback inference always, return type annotation conditional — in a tight prose-plus-code section. Show `import type` and `import { type Foo, bar }` in a single code block with a comment on each line stating what gets erased. Close with one `Buckets` exercise sorting ten declaration sites ("exported function parameter," "internal helper parameter," "local sum variable," "inline `.map` callback parameter," "exported type alias," "internal function return," "exported function return," "an imported `User` used only as a type," "an imported `db` used as a value," "a mixed import with `type Foo` and `bar`") into "annotate," "infer," or "`import type` / mixed import."
-
----
-
-## Lesson 9 — Quizz
+## Lesson 3 — Quizz
 
 Top 10 topics to quiz:
 
-1. The seven primitive types and the senior trigger for each of the four corners (`any`, `unknown`, `never`, `void`).
-2. Literal union types as the reach for finite domains, and the typo-caught-at-compile-time payoff.
-3. `type` as the senior default; `interface` only for declaration merging.
-4. The `?` vs. `| undefined` distinction under `exactOptionalPropertyTypes`.
-5. `readonly` on fields (binding-only, not deep) and `readonly T[]` for array-level immutability.
-6. Tuple syntax with element labels, and the three sites tuples beat objects.
-7. Index signature vs. `Record<LiteralUnion, V>`, and how `noUncheckedIndexedAccess` narrows reads differently across them.
-8. Union vs. intersection semantics, and the shape-union access rule (only common fields are readable without narrowing).
-9. Narrowing forms (`typeof`, `in`, `instanceof`, `Array.isArray`, discriminant equality) and the three legitimate triggers for `as` / `!`.
-10. `as const`, `satisfies`, and the combined `as const satisfies T` idiom for typed-config patterns; plus the `import type` discipline under `verbatimModuleSyntax`.
+1. The two-channel routing decision: expected failures the caller branches on go through `Result<T, E>`; unexpected operational failures throw and bubble to the framework boundary.
+2. The "can the caller do something different per case?" heuristic as the one-question test that routes any new failure.
+3. The `try`/`catch`/`finally` mechanics under `strict` + `useUnknownInCatchVariables`: `err` typed `unknown`, the `finally` side-effects-only rule, and the bare `catch` shape.
+4. The async-throw flow: a rejected Promise is the throw at the `await` site, un-awaited `async` calls escape the surrounding `try`, and `return await` inside `try` is mandatory.
+5. The "only throw `Error`" rule with the three consequences (predictable catch shape, stack traces, the `ensureError` recovery for vendor seams).
+6. The `Result<T, E>` shape with `ok`/`err` helpers, a discriminated `E` channel, and the `assertNever` exhaustiveness at the call site.
+7. The `unknown`-in-catch narrow with `instanceof Error`, the `Error.isError()` cross-realm 2026 replacement, and the `error.name` fallback for portable discrimination.
+8. The custom `Error` subclass shape: literal-typed `readonly name`, structured fields (`code`), `{ cause }` passed through `super(message, options)`, and no abstract base class.
+9. `Error.cause` for rewrap-at-the-seam and the chain-walking pattern (with the loop-guard against cycles).
+10. The canonical catch ordering: specific subclasses first, then `error.name` for cross-realm errors like `AbortError` and `TimeoutError`, then a generic `Error` branch, then `ensureError` as the catch-all.
 
 ---
 
 ## Total chapter time
 
-Roughly 195 to 235 minutes across the eight content lessons plus the quiz. The chapter splits naturally across three evenings — lesson 1 of chapter 008 + lesson 2 of chapter 008 + lesson 3 of chapter 008 (the primitives-shapes-tuples vocabulary) as one sitting, lesson 4 of chapter 008 + lesson 5 of chapter 008 + lesson 6 of chapter 008 (the dynamic keys, composition, and narrowing triad) as the second, lesson 7 of chapter 008 + lesson 8 of chapter 008 (`as const`/`satisfies` and the annotation rule) plus the quiz as the third. At the end the student has the type-vocabulary fluency Chapter 009's patterns assume — and the senior reflexes (literal unions for finite domains, `type` by default, narrow-don't-assert, `as const satisfies T` for typed config, annotate at the seams) that the rest of the course never re-explains.
+Roughly 85 to 105 minutes across the two content lessons plus the quiz. The chapter fits one or two evenings — lesson 1 of chapter 008 (channel decision and mechanics) and lesson 2 of chapter 008 (narrowing and domain errors) split naturally if the student wants two sittings, but both can run together as a single 90-minute session. At the end the student can route any new failure into the correct channel (`Result` or throw) by reading the caller's recovery path, write a `try`/`catch` that satisfies the strict-mode `unknown` catch type, narrow with `instanceof Error` and the `error.name` fallback, reach for `Error.isError()` at realm boundaries, normalize unknown throws through `ensureError`, author small custom `Error` subclasses with literal-typed `name` discriminants and `Error.cause` passthrough, and walk a cause chain without looping. Chapter 009 lands on this floor with the wire-boundary error story (JSON parse failures as a `Result`-channel candidate) and the `Date`-to-Temporal pivot. lesson 3 of chapter 043 locks the `Result` contract into Server Actions; Unit chapter 080 turns the catch reflexes into a refuse-by-default error-discipline pass; Unit chapter 092 turns the `Error.cause` walker into the production structured-log pipeline.

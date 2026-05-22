@@ -1,313 +1,257 @@
-# Chapter 066 — Project: The production list view
+# Chapter 066 — Background work
 
 ## Chapter framing
 
-Chapter 066 takes the Unit 7 CRUD surface (Chapter 051's invoices) and turns it into the production list view every SaaS app eventually ships: filter, sort, search, and cursor pagination all in the URL through `nuqs`; soft delete plus archive as two distinct lifecycle states; restore from an Archived tab; optimistic concurrency via a `version` column that turns silent last-write-wins into a real 409 with a refresh-and-retry conflict surface. The schema layer (Unit 6), the Server Action shape (chapter 047), the tenant helper (chapter 060's `tenantDb`), and the RBAC wrapper (chapter 061's `authedAction`) are all in place — this chapter wires `searchParams` to the read, layers the soft-delete/archive base-query helper on top of `tenantDb`, and adds the `version` precondition to the update path. The output is a list view a coworker can paste a URL of, refresh a hundred times, archive rows from, restore them, and race two tabs against — every behavior holds.
+Chapter 066 lands the senior question students dodged through Units 1 to 12: where does "work that runs after the user's request" live, and when does shipping it inside the request itself stop being defensible. The chapter walks the ladder from cheapest to heaviest — inline `await` inside a Server Action, `after()` for same-invocation post-response work, Vercel Cron for schedules, then Trigger.dev v4 once durability, multi-step execution, fan-out, long-running compute, or human-in-the-loop pauses enter the picture. The threshold is named once and revisited at every escalation: code stays at the lowest tier that meets the durability, latency, and time-budget requirements. The chapter inherits the idempotency discipline from lesson 4 of chapter 063 — every retried job carries a stable key — and the dedup-and-transact shape from lesson 2 of chapter 063 — every external side effect is guarded by a unique constraint or a provider idempotency key.
 
-Threads that run through every lesson: the URL is the source of truth for filter + sort + search + cursor + visibility; defaults are implicit (stripped from the URL); the page is a Server Component reading a `nuqs` `searchParamsCache`, the client writes via `nuqs` setters with `replace` and `{ scroll: false }`; any change that shrinks or re-orders the result set bundles `cursor: null` in the same setter call; the base-query helper `tenantDb(orgId).invoices.active() / .archived() / .includingDeleted()` is the only way reads touch the table — hand-written `.from(invoices)` is a code-review red flag; every UPDATE has tenancy + lifecycle + `version` preconditions in the `WHERE`; zero rows affected returns the canonical 409 Result with `current` payload so the client renders the conflict without a second fetch; `useActionState` + `useOptimistic` handle the success path, the rollback, and the conflict banner; `useDeferredValue` + `useTransition` keep the search box responsive without a hand-rolled debounce. The chapter ships 1 brief + 1 starter walkthrough + 4 build lessons + 1 verify lesson; each build ends on a runnable state.
-
-### Dependency carry-in
-
-- **From chapter 051 (the CRUD starter):** `app/invoices/page.tsx`, the `createInvoiceInputSchema` / `updateInvoiceInputSchema` / `deleteInvoiceInputSchema` in `src/lib/invoices/mutation-schemas.ts`, the three Server Actions (`createInvoice`, `updateInvoice`, `deleteInvoice`) returning the canonical Result shape from lesson 2 of chapter 047, the `useActionState`-driven form components, the `useOptimistic` create wiring, the shadcn `<Form>` primitives.
-- **From chapter 045 (the schema):** `invoices`, `invoice_lines`, `customers`, `organizations`, `org_members` tables; the `listInvoices` + `getInvoiceDetail` reads in `src/lib/invoices/queries.ts`; the cursor encode/decode helpers in `src/db/cursor.ts`; the composite index `invoices_org_status_created_id_idx` on `(organizationId, status, createdAt desc, id desc)` and `invoices_org_created_id_idx` on `(organizationId, createdAt desc, id desc)`.
-- **From chapter 063 (tenancy + RBAC):** `tenantDb(orgId)` in `src/lib/tenant-db.ts`, `authedAction(role, schema, fn)` in `src/lib/authed-action.ts`, the active-org slot in the session, the `audit_logs` table and the `logAudit(tx, event)` helper.
-- **From chapter 064 (URL-state):** `nuqs` installed, `<NuqsAdapter>` wrapped at the root layout, the `searchParamsCache` pattern, `useQueryState` / `useQueryStates`, `parseAsStringEnum` / `parseAsString` / `parseAsArrayOf`, the `replace`-only history policy, the cursor-reset-on-other-change rule, the `useDeferredValue` + `useTransition` search rhythm.
-- **From chapter 065 (lifecycle + concurrency):** the `deletedAt` / `archivedAt` / `version` columns added in a migration (already in the starter — running the migration was a chapter 065 exercise), the base-query helper API surface (`active()`, `archived()`, `includingDeleted()`), the version-precondition UPDATE shape, the 409 Result shape with `current`, the `useActionState` + `useOptimistic` conflict UX.
-- **From chapter 037 / chapter 039:** the Server Component `searchParams` async prop, parallel routes (`@list` + `@detail` from chapter 039's project — reused in the starter), `Suspense` boundaries with slot-specific skeletons.
-- **From chapter 008 / chapter 009 / chapter 046:** Zod 4 schemas, `z.strictObject`, `z.infer`.
-- **From lesson 3 of chapter 085 (forward dependency, helper provided):** the `logAudit` helper is invoked from the soft-delete, archive, restore, and update actions; the table is already in the schema.
-
-### Starter file tree (stubs marked with TODO)
-
-```
-docker-compose.yml             # provided: postgres:18 service
-drizzle.config.ts              # provided
-.env.example                   # provided: DATABASE_URL, DATABASE_URL_UNPOOLED, BETTER_AUTH_SECRET, RESEND_API_KEY, SEED
-package.json                   # provided: db:migrate, db:seed, dev, build, test scripts
-src/
-  db/
-    schema.ts                  # provided: full Unit 6 + chapter 065 schema with deletedAt, archivedAt, version, partial unique indexes
-    client.ts                  # provided
-    relations.ts               # provided
-    cursor.ts                  # provided
-  lib/
-    tenant-db.ts               # provided: tenantDb(orgId) from chapter 060
-    authed-action.ts           # provided: authedAction wrapper from chapter 061
-    audit-log.ts               # provided: logAudit(tx, event)
-    invoices/
-      schema.ts                # provided: listInvoicesInputSchema (from chapter 045) plus new TODOs for the listSearchParams parsers
-      queries.ts               # provided as-is from chapter 045; TODO student: refactor to go through scoped query helper, add archive/restore branches
-      scoped-query.ts          # TODO student: the active() / archived() / includingDeleted() helper layered on tenantDb
-      actions.ts               # TODO student: archive, restore, softDelete actions + version precondition on updateInvoice
-      search-params.ts         # TODO student: nuqs parsers + createSearchParamsCache for status, sort, q, view, cursor
-  app/
-    (app)/
-      invoices/
-        page.tsx               # provided shell: reads searchParamsCache, calls listInvoices, renders <Toolbar /> + <Table /> + <Pagination />
-        toolbar.tsx            # TODO student: <Filters /> + <Sort /> + <Search /> + <ViewTabs /> Client Component
-        table.tsx              # provided shell; TODO student: row actions (archive, restore, edit, delete) wired to actions
-        pagination.tsx         # TODO student: next/prev cursor wiring
-        [id]/
-          edit/
-            page.tsx           # provided shell; reads invoice + version
-            edit-form.tsx      # TODO student: useActionState + useOptimistic, hidden version field, conflict banner
-    inspector/
-      page.tsx                 # provided: row counts, "Reset and re-seed" button, RBAC switcher, "Force version drift" debug tool, audit-log tail
-scripts/
-  seed.ts                      # provided from chapter 045, plus a seeded "already archived" row and a "already soft-deleted" row
-```
-
-### Reference solution signatures lessons display
-
-- **Parsers and search-params cache** (`src/lib/invoices/search-params.ts`):
-  - `statusParser = parseAsStringEnum(['draft', 'sent', 'paid', 'overdue']).withDefault(null)`
-  - `sortParser = parseAsStringEnum(['-createdAt', 'createdAt', '-total', 'total', '-customer', 'customer']).withDefault('-createdAt')`
-  - `qParser = parseAsString.withDefault('').withOptions({ throttleMs: 200, history: 'replace' })`
-  - `viewParser = parseAsStringEnum(['active', 'archived', 'all']).withDefault('active')` — `all` is RBAC-gated.
-  - `cursorParser = parseAsString.withDefault(null)`
-  - `invoiceListSearchParams = { status: statusParser, sort: sortParser, q: qParser, view: viewParser, cursor: cursorParser }`
-  - `invoiceListSearchParamsCache = createSearchParamsCache(invoiceListSearchParams)`
-- **Scoped query helper** (`src/lib/invoices/scoped-query.ts`):
-  - `invoiceScope(orgId: string)` returns `{ active(), archived(), includingDeleted() }`, each a chainable Drizzle builder pre-filtered by `eq(invoices.organizationId, orgId)` + the lifecycle predicate.
-  - `activeFilter = sql\`${invoices.deletedAt} IS NULL AND ${invoices.archivedAt} IS NULL\``
-  - `archivedFilter = sql\`${invoices.deletedAt} IS NULL AND ${invoices.archivedAt} IS NOT NULL\``
-- **List query** (`src/lib/invoices/queries.ts`):
-  - `listInvoices({ orgId, view, status, sort, q, cursor, pageSize = 20 }): Promise<{ rows: InvoiceWithCustomer[]; nextCursor: string | null; hasPrev: boolean }>` — routes to `active() / archived() / includingDeleted()` based on `view`; applies status filter; resolves sort to `orderBy` tuple; applies cursor predicate; `limit(pageSize + 1)`.
-- **Actions** (`src/lib/invoices/actions.ts`):
-  - `archiveInvoice = authedAction('member', z.strictObject({ id: z.string().uuid(), version: z.number().int() }), async ({ id, version }, ctx) => ...)` — UPDATE with `WHERE id = id AND organizationId = ctx.orgId AND version = version AND archivedAt IS NULL AND deletedAt IS NULL`, `SET archivedAt = NOW(), version = version + 1, updatedAt = NOW()`, returns `{ ok: true, data: row }` or `{ ok: false, error: { code: 'conflict', userMessage, current } }`.
-  - `restoreInvoice = authedAction('member', z.strictObject({ id, version }), ...)` — clears whichever of `archivedAt` / `deletedAt` is set; same precondition shape.
-  - `softDeleteInvoice = authedAction('admin', z.strictObject({ id, version }), ...)` — sets `deletedAt = NOW()`, gated on admin role.
-  - `updateInvoice` is the existing chapter 051 action, refactored to add the `version` precondition and the `conflict` branch.
-- **Form** (`edit-form.tsx`):
-  - Hidden `<input type="hidden" name="version" value={invoice.version} />`.
-  - `useActionState(updateInvoice, initialState)` returns `{ ok, error?, data? }`; conflict branch reads `error.current` and renders a `<ConflictBanner current={...} onUseLatest={...} onOverwrite={...} />`.
-- **Env entries:** unchanged from chapter 051 / chapter 063 — no new entries.
-
-### Inspector page spec
-
-A single Server Component at `/inspector` for verification, all read from `searchParams`:
-
-- **Header:** Org switcher (two seeded orgs), session-user switcher (admin user / member user — drives RBAC verification), "Reset and re-seed" form posting to a Server Action.
-- **Row-counts banner:** counts of `invoices` total / `active` / `archived` / `soft-deleted` for the current org, computed via `includingDeleted()` plus filtered counts. Updates after every action.
-- **Audit-log tail:** the last 20 `audit_logs` rows for the current org, streamed via Server Component refresh. Each archive / restore / soft-delete / update writes here.
-- **"Force version drift" tool:** a debug control that runs a raw `UPDATE invoices SET version = version + 1 WHERE id = :id` against a target row, bypassing the action layer — used in lesson 7 of chapter 066 to reproduce the 409 deterministically without juggling two real tabs.
-- **"Open this invoice in two tabs" helper:** a button that opens `/invoices/:id/edit` in a new window plus copies the URL — convenience for the manual two-tab race.
-- **Live partial-index probe:** a small panel running `EXPLAIN ANALYZE` on the current list query and printing the index name used; verifies the `WHERE deletedAt IS NULL` partial index gets picked.
-
-The inspector is provided in full; the student writes only the actions and parsers it exercises.
-
-### Verify recipe mapped to "Done when"
-
-| Done-when clause | Verify step |
-| --- | --- |
-| Filter + sort + page changes update the URL | Click status `paid`; URL shows `?status=paid`. Sort by total; URL shows `?sort=-total`. Click Next; URL carries `?cursor=...`. Defaults stay implicit. |
-| Refresh and share both reproduce the view | Copy any URL, paste in a private window (signed in as the same user); list renders identically. Hard reload preserves filter, sort, cursor, view. |
-| Deleting an invoice removes it from the default list | As admin, click "Delete" on an active row; row vanishes from the default `view=active` list. Switch to `view=all`; the row appears with a "Deleted" badge. |
-| Soft-deleted row appears under "show deleted" | `view=all` is RBAC-gated to admin; member sees only `active` and `archived` tabs; admin sees `all`. |
-| Editing from two tabs returns 409 on the second submit | Open the same invoice in two tabs; edit and save the first; edit and save the second; the second renders the conflict banner with the current server values and the "Use latest" / "Overwrite" affordances. |
-| Conflict banner offers refresh-and-retry | Click "Use latest"; form state resets to `current`, the hidden `version` advances; resubmitting succeeds. |
-| Archive removes from default list, surfaces in Archived tab | Click "Archive" on an active row; row vanishes from `view=active`; switch to `view=archived`; row appears with the "Archived on …" label and a "Restore" button. |
-| Restore returns the row to active | From `view=archived`, click "Restore"; row reappears in `view=active`; audit log shows the event. |
-| Partial unique index allows re-creating a soft-deleted invoice number | As admin, soft-delete invoice `INV-0001`; create a new invoice with `number = INV-0001`; the create succeeds (because the partial unique index excludes the soft-deleted row). |
-| `useOptimistic` rolls back on action failure | Force the update to fail via the inspector's "drift version" tool, submit the edit; the optimistic state rolls back automatically; the conflict banner renders. |
-| Search input stays responsive while the URL writes are throttled | Type a long query fast; the input never lags; the URL writes settle every ~200ms; no history-entry spam. |
-| Cursor reset on filter / sort / search change | With a non-null `cursor`, change status; URL drops `cursor`; list shows page 1 of the new filter. |
-
-### Concepts demonstrated → owning lesson
-
-- URL-vs-component state for list views, share-and-refresh contract — lesson 1 of chapter 064.
-- `router.replace` + `{ scroll: false }` policy — lesson 1 of chapter 064.
-- `nuqs` parsers, defaults, `createSearchParamsCache`, `useQueryState` / `useQueryStates` — lesson 1 of chapter 064.
-- Filter, sort, view-tab encoding; the cursor-reset rule on other-change — lesson 2 of chapter 064.
-- Search with `useDeferredValue` + `useTransition` + `nuqs` `throttleMs` — lesson 3 of chapter 064.
-- Cursor pagination URL shape, next-extra-row trick — lesson 4 of chapter 064 (built on lesson 6 of chapter 042).
-- Soft delete vs. archive vs. restore semantics; partial unique indexes — lesson 1 of chapter 065.
-- Base-query helper composed with `tenantDb`; `active()` / `archived()` / `includingDeleted()` API — lesson 2 of chapter 065.
-- `version`-column optimistic concurrency, 409 Result with `current`, refresh-and-retry — lesson 3 of chapter 065.
-- `useActionState` + `useOptimistic` with conflict rollback — lesson 6 of chapter 048, lesson 3 of chapter 065.
-- `authedAction(role, schema, fn)`, `tenantDb(orgId)`, audit-log writes in the same transaction — chapter 061, chapter 063.
-- Server-side `searchParams` reads in a Server Component — lesson 4 of chapter 037.
-- Zod 4 `z.strictObject`, `z.infer` at the action boundary — chapter 046.
+Threads through every lesson: the request-response budget is sacred — user-visible work blocks the response, everything else does not; durability means "this work survives a crash, redeploy, function timeout, and transient downstream outage"; the platform default is the right answer until a named threshold is crossed (function time limit, retries, multi-step orchestration, human pauses, fan-out); idempotency is the same DB-constraint discipline from chapter 063, expressed through `idempotencyKey` at trigger and wait boundaries; retries are exponential with jitter, never linear; observability comes free with Trigger.dev and must be built by hand at lower tiers, which is part of the threshold calculus. Seven teaching lessons plus a quiz, ordered from the platform default outward: the lessons before Trigger.dev exist so the student can defend *not* reaching for it; the Trigger.dev lessons exist so the student can wield it without dragging in features they do not need.
 
 ---
 
-## Lesson 1 — The list view every SaaS ships
+## Lesson 1 — Inline, then after()
 
-Frames the project goal — turning the Unit 7 invoice CRUD into a URL-state list with soft delete, archive, restore, and optimistic concurrency — and names the "Done when" verifications, scope cuts, and senior payoff.
+Teaches the 0-tier (inline `await`) and 0.5-tier (`after()`) defaults for post-request work in Server Actions, the four thresholds that break them, and the `maxDuration` / error-swallow gotchas of running after the response.
 
-Goals:
+**Vercel Fluid Compute — the invocation model this chapter assumes.** On Vercel, every request becomes a function-per-request invocation with a hard wall-clock cap set by the `maxDuration` config key (per-route or per-action). Tier caps in 2026: 1 minute on Hobby, 14 minutes on Pro Fluid Compute. The implication threads every lesson below — every second on the request path is the user's, and "background work" means work that does not block that budget. Full deployment depth in lesson 3 of chapter 098.
 
-- Frame what's being built: take the Unit 7 invoice CRUD surface and ship the production list view — URL-state filter/sort/search/pagination, soft-delete + archive + restore, optimistic concurrency on update. Show one screenshot of the finished `/invoices` page with the toolbar, the table, the active-filter chips, the pagination row, and the view tabs visible.
-- State the "Done when" verifications in one paragraph (URL captures every view-state piece; share-and-refresh holds; archive moves rows to the archived tab and restore brings them back; soft-delete hides rows from default but surfaces under `view=all` for admins; two-tab edit returns 409 with a conflict banner; optimistic rollback fires on action failure).
-- Name the scope cuts: no bulk actions (a senior would add multi-select + bulk archive but that's a separate UX pass — out of scope); no saved views / named presets (out of scope); no real-time list updates (no notifications wiring — Unit 14); no full-text search (Postgres `ilike` is enough for the seeded data — FTS lives in lesson 8 of chapter 042 if the student wants it); no Row-Level Security (application-layer tenancy is the course default — RLS named in chapter 065 as the alternative).
-- Set the senior payoff: the list view is the canonical SaaS screen — every internal tool, dashboard, and admin app becomes one. The patterns shipped here (URL state, base-query helper, version precondition, refresh-and-retry conflict UX) carry into every subsequent feature the student writes.
-- Show the end UX: a short animated capture of the toolbar interactions and the two-tab conflict flow.
-- Link the starter via `degit`.
+Topics to cover:
 
-Senior calls and watch-outs:
+- **The senior question.** A user clicks "Send invitation". The Server Action inserts the row, sends the email, returns. What part of this work belongs inside the request-response cycle, what part belongs after the response, what part should not be on the request path at all? The lesson lands the 0-tier (inline `await`) and the 0.5-tier (`after()`).
+- **The default — sequential `await` inside the action.** A Server Action that does a DB write and one external call (one Resend send, one Stripe API call) runs entirely inside the action body and returns the Result shape from chapter 043 after both complete. Synchronous-from-the-user's-perspective is the cheapest, most observable, most debuggable shape — no "queued for sending" half-state, no dispatcher to debug, no separate worker.
+- **The thresholds that break the default.** Four named limits: (1) downstream latency that bloats the user-visible response (Resend p99 ~400ms is fine; a 5s API is not); (2) the function time limit — Vercel fluid compute caps at 14 minutes on paid, 1 minute on Hobby, and every second is on the user's request; (3) work that must continue if the user closes the tab — fire-and-forget cannot use request scope; (4) work that must survive transient downstream failures with retries — the action returns once, retries need somewhere else to live.
+- **`after()` — Next.js 16's after-response primitive.** `import { after } from 'next/server'`. Schedules a callback to run after the response, inside the same serverless invocation. Stable since Next.js chapter 072. Usable in Server Components, Server Actions, Route Handlers, and Proxy. The senior anchor: `after()` is for "the user does not need to see this happen, but it must happen on this same invocation" — analytics events, structured logs that depend on the rendered response, fire-and-forget cache warming.
+- **What `after()` is not.** Not a job queue. Runs once, in the same invocation, bounded by the same `maxDuration`. If the function times out or crashes, the callback is lost. No retries, no durability, no cross-process visibility. The most common 2026 mistake is reaching for `after()` for work that needed Trigger.dev. Threshold: lose-once-in-a-thousand acceptable → fine; not acceptable → escalate.
+- **Lifecycle mechanics.** `after()` extends the invocation past the response via Vercel's `waitUntil` primitive — invocation stays alive up to `maxDuration` even after the response ships. Same behavior on self-hosted Node; on platforms without `waitUntil`, it's a no-op or runs synchronously.
+- **Reading request data inside `after()`.** Inside Route Handlers and Server Actions, `cookies()` and `headers()` work inside the callback. Inside Server Components, they do not — read them before the call and close over the values (partial prerendering reason). Names the gotcha and the fix.
+- **The three-tier mental model.** Tier 0: blocks the response (`await` inline). Tier 0.5: same invocation, after the response (`after()`). Tier 1+: outside the invocation entirely (Vercel Cron, Trigger.dev). The lesson draws the ladder once; the rest of the chapter climbs it.
+- **Worked example — invite flow.** The `inviteMember` Server Action: insert the `org_invitations` row inside `db.transaction`, send the email inline with `await sendEmail(...)`, write the audit log in the same transaction, return Result. Then a variant deferring the audit log via `after()` — flagged as the wrong default here (the user wants to know the invite actually sent).
+- **Where `after()` actually earns its weight.** Logging user agent and structured fields after a checkout completes, warming a `cacheTag` for a list the user is about to navigate to, posting a PostHog analytics event from a Server Action where the analytics failure must not roll back the DB transaction.
+- **Error handling.** Errors inside `after()` do not propagate to the user — response is already sent. Must be caught and logged via chapter 092's structured logger or they vanish. `after()` is not fire-and-forget, it is fire-and-log.
+- **Watch-outs:** putting the user-visible side effect inside `after()` so the user sees "success" before the email sends — race with reload, no failure path; using `after()` for work that exceeds `maxDuration` — silently truncated; "fixing" slow Server Actions by hiding latency in `after()` — the action is still slow; relying on `after()` for retries — none, one shot; calling `cookies()` inside `after()` in a Server Component — runtime error, read it outside.
 
-- The starter ships everything from chapter 051 working — this project is layering URL state on top and adding the lifecycle + concurrency disciplines. Resist the urge to rewrite the form or the actions wholesale.
-- The `view=all` tab is admin-only; the inspector intentionally shows the tab regardless of role so the student can verify the server-side refusal (defense-in-depth, not a missed UX hide — the chapter 063 lesson).
+What this lesson does not cover:
 
-Codebase state at entry: empty repo (student runs `degit`).
-Codebase state at exit: starter cloned, `docker compose up -d` running Postgres, `pnpm install` clean, `pnpm db:migrate && pnpm db:seed` populated, `pnpm dev` shows the existing Unit 7 list view and edit form working — but with no URL state (filters are local, no archive/restore buttons, update silently overwrites on a two-tab race).
+- Scheduled jobs and cron — lesson 2 of chapter 066.
+- Durable retries and multi-step orchestration — Lessons lesson 3 of chapter 066 through lesson 6 of chapter 066.
+- Server Action canonical shape and Result type — Chapter 043.
+- `cacheTag` / `revalidateTag` mechanics — Chapters 036 and chapter 072.
+- Structured logging and observability of background errors — Chapter 092.
 
-Estimated student time: 10 to 15 minutes.
-
----
-
-## Lesson 2 — Tour the starter
-
-Walks the stub vs. provided file tree, the lifecycle columns and partial indexes in the schema, the seeded archived and soft-deleted rows, the inspector verification surface, and the `tenantDb` plus `authedAction` helpers the project leans on.
-
-Goals:
-
-- Walk the file tree, calling out provided vs. stubbed. Linger on five files: the `searchParams.ts` stub (where the `nuqs` parsers go), `scoped-query.ts` (the empty helper module), `actions.ts` (the existing `updateInvoice` from chapter 051 that still needs the `version` precondition + the three new lifecycle actions), `app/(app)/invoices/page.tsx` (the Server Component shell that already calls `searchParamsCache.parse(props.searchParams)` — but the cache is empty), and `app/(app)/invoices/[id]/edit/edit-form.tsx` (the chapter 051 form, no hidden `version` field yet, no conflict banner). Call out the reframe: the chapter 051 edit form moved from `app/invoices/[invoiceId]/edit-invoice-form.tsx` to `app/(app)/invoices/[id]/edit/edit-form.tsx` as part of the starter packaging, and the route segment was renamed `[invoiceId]` → `[id]`. Same component contract, new path — the starter wraps the list view's detail/edit split into its own segment so the list and edit routes coexist cleanly.
-- Read the schema: confirm `deletedAt`, `archivedAt`, `version` columns on `invoices`; confirm the partial unique index `invoices_org_number_active_uq` on `(organizationId, number) WHERE deletedAt IS NULL`; confirm the partial composite index `invoices_org_status_created_id_active_idx` on `(organizationId, status, createdAt desc, id desc) WHERE deletedAt IS NULL AND archivedAt IS NULL`. These were added in a migration as part of Chapter 065's reading — verify by opening Drizzle Studio.
-- Read the seed: 60+ invoices per org, one row pre-archived (`archivedAt` set), one row pre-soft-deleted (`deletedAt` set), one row with a duplicated `number` against a soft-deleted row to prove the partial unique index works.
-- Read the inspector: confirm the row-counts banner, the "Force version drift" tool, the "Open this invoice in two tabs" helper, the audit-log tail. The inspector is the verification surface for every later lesson.
-- Run the app: confirm the existing list view renders, the existing edit form saves successfully (no concurrency), the filters in the toolbar are local state only (refresh wipes them).
-- Read `src/lib/tenant-db.ts` and `src/lib/authed-action.ts` end-to-end — the helpers from chapter 063 are load-bearing for every action this project writes; the student should remember the call shape.
-
-Senior calls and watch-outs:
-
-- The migration that added `deletedAt`, `archivedAt`, `version`, and the partial indexes is already applied. The `version` defaults to 1 across every existing row — the senior call from lesson 3 of chapter 065.
-- The base-query helper is empty intentionally; the existing `listInvoices` still uses raw `db.select().from(invoices).where(eq(invoices.organizationId, orgId))` — a bug by lesson 2 of chapter 065's standard. The student fixes it in lesson 4 of chapter 066.
-
-Codebase state at entry: starter cloned, Postgres running, schema migrated, seed loaded.
-Codebase state at exit: student has read every provided file, run the app, clicked through the existing surface, opened the inspector. No code written. The list view still has no URL state, no archive button, and no version precondition.
-
-Estimated student time: 20 to 25 minutes.
+Estimated student time: 35 to 45 minutes. The "do not over-engineer" lesson — most students will write more inline awaits than Trigger.dev tasks and need to know why that is correct.
 
 ---
 
-## Lesson 3 — Move every control to the URL
+## Lesson 2 — Vercel Cron as the schedule default
 
-Builds the `nuqs` parsers and `searchParamsCache`, wires the Server Component page and the toolbar Client Component, refactors `listInvoices` to the parsed shape, adds active-filter chips, cursor pagination, and the deferred-search rhythm with the cursor-reset invariant.
+Teaches the Vercel Cron topology and `vercel.json` shape, `CRON_SECRET` verify-first auth, at-least-once delivery with dedup keys, UTC expressions, and the time-budget threshold that bumps a job up to Trigger.dev.
 
-Goals:
+Topics to cover:
 
-- Fill `src/lib/invoices/search-params.ts`: define the five parsers (`status`, `sort`, `q`, `view`, `cursor`) and export `invoiceListSearchParams` and `invoiceListSearchParamsCache` via `createSearchParamsCache`. Match the parsers to the reference signatures.
-- Wire `app/(app)/invoices/page.tsx`: replace the empty-cache call with `const parsed = await invoiceListSearchParamsCache.parse(props.searchParams)`. Pass `parsed` slices into `listInvoices`. Pass the parsed values as props into `<Toolbar parsed={parsed} />` so the Client Component renders controlled inputs without re-reading the URL.
-- Refactor `listInvoices` to accept `{ status, sort, q, view, cursor, pageSize }` matching the parsed shape. Translate `sort` to a Drizzle `orderBy` tuple (one helper `resolveSort(sort)` mapping the enum string to `[column, direction]`). Apply `ilike(invoices.number, \`%${q}%\`)` or join-and-`ilike` against `customers.name` when `q` is non-empty.
-- Fill `app/(app)/invoices/toolbar.tsx`: a single Client Component using `useQueryStates(invoiceListSearchParams)`. Render the status dropdown (`<Select>`), the sort dropdown, the search input, the view tabs (`active` / `archived` / `all`). Every setter bundles `cursor: null` for the reset invariant. The search input holds typed state in `useState`, syncs via `useDeferredValue` + `useTransition` to `setQueryStates({ q: deferred, cursor: null })`.
-- Fill `app/(app)/invoices/pagination.tsx`: read `cursor` via `useQueryState`. Receive `nextCursor` and `hasPrev` as props from the server. "Next" calls `setCursor(nextCursor)`; "Previous" is conditional on `hasPrev` and pops to the prior page (or, simpler for this lesson, clears the cursor — the senior call to take the "next-only" path is named explicitly).
-- Render the active-filter chips above the table: a small Server Component that reads `parsed` and emits `<Chip key="status" label="Status: Paid" />` etc. Each chip's "x" is a Client `<ClearChip param="status" />` that calls `setQueryStates({ status: null, cursor: null })`.
-- Wrap the root layout in `<NuqsAdapter>` if the starter hasn't already (sanity check — it should be wrapped from chapter 064).
-- Run the app: click through every control, watch the URL change, refresh the page, copy and paste the URL into a new tab, verify the view reproduces. The view tabs work but only `active` returns rows (the helper still hand-filters; the archived rows already exist but the existing `listInvoices` doesn't yet branch on `view` — that's lesson 4 of chapter 066).
+- **The senior question.** A SaaS has a handful of recurring jobs — nightly digests, weekly rollups, expired-trial sweeps, Stripe reconciliation. They run on a schedule, do not need cross-hour retries, fit inside a function timeout. Where does this work live? The lesson lands Vercel Cron as the 2026 default for schedules and pins the threshold that bumps a job up to Trigger.dev.
+- **What Vercel Cron is.** A `vercel.json` entry maps a cron expression to a Route Handler path. The scheduler hits the path at the cadence; the handler runs as a normal serverless invocation, bounded by the same `maxDuration`. Topology: scheduler → HTTP GET to `/api/cron/<name>` → function executes → returns.
+- **Config shape.** `{ "crons": [{ "path": "/api/cron/daily-digest", "schedule": "0 9 * * *" }] }`. Five-field expressions in UTC — never local time, schedules drift with DST.
+- **Handler location.** `app/api/cron/daily-digest/route.ts` exporting `GET`. One folder per cron job, one `route.ts` per folder — shows up in deploy preview and in logs grouped by path.
+- **Auth — `CRON_SECRET`.** A cron handler is a public URL; anyone can hit it. Vercel sets `Authorization: Bearer ${CRON_SECRET}` on every cron invocation; the handler verifies and returns 401 on mismatch. Non-optional — same trust-boundary discipline as lesson 1 of chapter 063.
+- **The canonical verify-first shape.** Read `Authorization`, constant-time-compare against `process.env.CRON_SECRET`, 401 on mismatch, then do the work. Restates the constant-time discipline from lesson 1 of chapter 063.
+- **Idempotency.** Vercel guarantees at-least-once cron delivery, not exactly-once. A network blip can produce two invocations seconds apart. Cron handlers use the chapter 063 dedup-and-transact shape with a key like `cron:<name>:<yyyy-mm-dd>`. Jobs that mutate idempotent state (SQL UPDATE on a predicate) often need none; jobs that send emails or charge cards do.
+- **Time budget.** A cron job is a function invocation — same caps as any route. A 50 000-user digest that emails one-by-one times out. If work does not fit the budget, the cron handler's job becomes "enqueue a Trigger.dev fan-out task" and the real work moves out. Bridge to lesson 3 of chapter 066.
+- **What Vercel Cron does not give.** No automatic retries (a 5xx is logged, not retried), no backoff, no intermediate-state visibility, no human pauses, no waitpoints, no fan-out — one invocation per tick. Each absence ties to a threshold for escalation.
+- **Cron expressions students write.** `0 9 * * *` daily 09:00 UTC; `*/15 * * * *` every 15 minutes; `0 0 * * 0` weekly Sunday midnight UTC; `0 0 1 * *` monthly first. No seconds field, no `L` / `W` extensions.
+- **Cost shape.** Metered as invocations plus compute. Every minute = 43 200 invocations/month; daily = 30. Frequency drives cost, not work — a once-per-minute "do nothing" job costs more than a daily heavy one.
+- **Worked example — trial-expiry sweep.** `app/api/cron/sweep-trials/route.ts`. Cron `0 * * * *` hourly. Handler: verify `CRON_SECRET`, open transaction, `UPDATE plan_entitlements SET status = 'expired' WHERE plan = 'trial' AND trial_end_at < now() AND status = 'active' RETURNING organizationId`, audit-log each row, return 200 with the count. Closes the chapter 061 lifecycle-aware-UPDATE thread.
+- **Local development.** Vercel does not run crons against `next dev`. Loop: hit the URL with `curl -H 'Authorization: Bearer $CRON_SECRET' http://localhost:3000/api/cron/<name>`. Write as a normal route, test via curl, deploy and watch the cron logs.
+- **Watch-outs:** skipping `CRON_SECRET` "because it's just a cron URL" — public URLs get found within hours; local time in the cron — DST drift; inline heavy work exceeding `maxDuration` — silent truncation; ignoring at-least-once for side-effect jobs — duplicate emails; checking the secret without constant-time-compare — wastes the boundary; running crons more often than needed.
 
-Senior calls and watch-outs:
+What this lesson does not cover:
 
-- Default values stay out of the URL — `nuqs` strips them. The empty `/invoices` URL is the home state; only differences from default appear.
-- Every setter that re-orders or shrinks the result set bundles `cursor: null` — the invariant from lesson 2 of chapter 064 and lesson 4 of chapter 064. Missing this on one setter is the canonical bug.
-- The search input's typed state lives in the component; the deferred value drives the URL. Wrapping the URL write in `useTransition` keeps the input responsive without a hand-rolled debounce — the lesson 3 of chapter 064 rhythm.
-- `replace` only — `nuqs`'s default for `useQueryStates` is `replace`, but the search parser explicitly sets `history: 'replace'` for clarity. Filter chip changes producing 50 back-button entries is the easy regression.
+- Dynamic per-tenant schedules — lesson 4 of chapter 066 (Trigger.dev `schedules.create`).
+- Durable multi-step jobs — Lessons lesson 4 of chapter 066 through lesson 6 of chapter 066.
+- Fan-out and concurrency control — lesson 4 of chapter 066.
+- Long-running jobs past function time — lesson 3 of chapter 066.
+- Stripe webhook reconciliation flow — Unit 11.
 
-Codebase state at entry: parsers stub empty, toolbar uses local `useState`, page reads no URL state.
-Codebase state at exit: every interaction in the toolbar updates the URL; refresh and share reproduce the view; the active-filter chips render; pagination wires the cursor; the search input is responsive. The view tabs render but `archived` and `all` still return active rows only (helper not yet branching) — fixed in lesson 4 of chapter 066.
-
-Estimated student time: 50 to 65 minutes.
-
----
-
-## Lesson 4 — Scoped reads, archive, restore, delete
-
-Implements `invoiceScope(orgId)` with `active()` / `archived()` / `includingDeleted()` on top of `tenantDb`, routes `listInvoices` on the `view` param with RBAC gating, and ships the `archiveInvoice`, `restoreInvoice`, and `softDeleteInvoice` Server Actions with audit-log writes inside the same transaction.
-
-Goals:
-
-- Fill `src/lib/invoices/scoped-query.ts`: implement `invoiceScope(orgId)` returning `{ active(), archived(), includingDeleted() }`. Each method returns a chainable Drizzle builder pre-scoped to `eq(invoices.organizationId, orgId)` plus the lifecycle predicate. Export the shared `activeFilter` and `archivedFilter` `sql` fragments so hand-written joins can reuse them.
-- Wire the helper through `tenantDb`: the call site is `tenantDb(ctx.orgId).invoices.active()` — same shape Chapter 060 used; this project layers the lifecycle methods on the tenant-scoped table. Show the composition in one place; the rest of the project uses the named shape.
-- Refactor `listInvoices` to route on `view`: `'active'` → `active()`, `'archived'` → `archived()`, `'all'` → `includingDeleted()` (RBAC-gated at the page layer — `view=all` is dropped to `active` unless `ctx.role === 'admin'`). The pagination filter, status filter, sort, and cursor predicate compose on the builder returned by the helper.
-- Refactor `getInvoiceDetail` similarly: route on `view` (or accept `includeArchived` / `includeDeleted` booleans). The detail page for an archived invoice still loads (so restore works); the detail page for a soft-deleted invoice only loads for admin.
-- Fill the three lifecycle Server Actions in `src/lib/invoices/actions.ts`:
-  - `archiveInvoice = authedAction('member', z.strictObject({ id: z.string().uuid(), version: z.number().int() }), async ({ id, version }, ctx) => { ... })`. The UPDATE uses the scoped query — `tenantDb(ctx.orgId).invoices.active().update({ archivedAt: sql\`NOW()\`, version: sql\`version + 1\`, updatedAt: sql\`NOW()\` }).where(and(eq(invoices.id, id), eq(invoices.version, version))).returning()`. Zero rows means 409; one row means success. Wrap in `db.transaction` with `logAudit(tx, { action: 'invoice.archive', subjectType: 'invoice', subjectId: id, orgId: ctx.orgId, actorUserId: ctx.user.id, payload: {} })`.
-  - `restoreInvoice`: clears whichever of `archivedAt` / `deletedAt` is set. Uses `includingDeleted()` for the read leg (an admin restoring a soft-deleted row) but `archived()` for the typical member-restoring-archived path — the senior call to write two variants vs. one is named (one action, branch on role inside).
-  - `softDeleteInvoice = authedAction('admin', z.strictObject({ id, version }), ...)`. Sets `deletedAt = NOW()`. Cascade soft-delete on `invoice_lines` is handled inside the same transaction via a second UPDATE (or relies on `ON DELETE CASCADE` not firing — name the application-level cascade explicitly).
-- Wire the three actions to the row action menu in `app/(app)/invoices/table.tsx`: each `<form action={archiveInvoice}>` (or `<button formAction={...}>`) with hidden `id` and `version` fields. Use `useActionState` for the in-flight indicator and the conflict surface.
-- Optional: an `<RestoreButton />` in the archived tab that calls `restoreInvoice` and an `<UnDeleteButton />` (admin-only) on `view=all` rows with `deletedAt` set.
-- Run the app: switch between view tabs, archive a row from `active`, see it move to `archived`, click restore, see it return. As admin, soft-delete a row; switch to `view=all`; see it with a "Deleted" badge. The list query now uses the partial composite index on the active hot path — verify in the inspector's index probe.
-
-Senior calls and watch-outs:
-
-- The helper composes with `tenantDb` — both filters land in the same `where`, neither is hand-typed at the call site. Hand-writing `.from(invoices).where(eq(orgId, ...))` is the failure mode lesson 2 of chapter 065 named; the lint rule is the second-layer defense.
-- `view=all` is RBAC-gated at the page layer, not just at the toolbar. A member who hand-types `?view=all` gets `view=active` rows back — defense at the read, not at the UI hide.
-- The lifecycle actions write an audit log in the same transaction as the UPDATE. Failure to write the audit log rolls back the lifecycle change — the discipline from lesson 3 of chapter 085. The starter's `logAudit` helper takes the transaction as a parameter to make this composition mechanical.
-- The partial unique index on `(orgId, number) WHERE deletedAt IS NULL` is what lets a soft-deleted `INV-0001` and a new `INV-0001` coexist — verify by creating one (already in the seed) and watching the create succeed.
-- `useOptimistic` on archive/restore is optional but a senior reach — the row disappears from the table the moment the user clicks, rolls back on a 409. Wire it on archive; the rollback is automatic.
-
-Codebase state at entry: parsers + toolbar wired, list query doesn't yet branch on `view`, lifecycle actions don't exist.
-Codebase state at exit: scoped query helper in place, list query branches on `view` and respects the RBAC gate, three lifecycle actions live and audit-log-writing, row action menu exposes them, archive / restore / soft-delete all work end-to-end. The update action still has no `version` precondition — silent last-write-wins still possible — fixed in lesson 5 of chapter 066.
-
-Estimated student time: 60 to 80 minutes.
+Estimated student time: 35 to 45 minutes. The "the platform already does this" lesson — proves the student can defend not reaching for Trigger.dev for schedule alone.
 
 ---
 
-## Lesson 5 — Two tabs, one winner
+## Lesson 3 — When Trigger.dev earns its weight
 
-Adds the `version` precondition to `updateInvoice`, returns the 409 Result with a `current` payload on zero rows, wires the hidden version field and `<ConflictBanner>` into the edit form with "Use latest" and admin-gated "Overwrite anyway", and surfaces lifecycle-action conflicts as toasts.
+Teaches the five named conditions that justify Trigger.dev (past function time, multi-step orchestration, automatic retries, fan-out, event-driven pauses), the 2026 alternatives, the decision tree, and the org-context separation tasks inherit.
 
-Goals:
+Topics to cover:
 
-- Refactor `updateInvoice` to add the `version` precondition. The input schema gets a `version: z.number().int()` field. The UPDATE's `where` becomes `and(eq(invoices.id, id), eq(invoices.organizationId, ctx.orgId), eq(invoices.version, clientVersion), isNull(invoices.deletedAt))`. The `set` clause bumps `version: sql\`version + 1\`` and `updatedAt: sql\`NOW()\``. `.returning()` gives zero or one row.
-- Branch on the result: one row → `{ ok: true, data: updated }`; zero rows → fetch the current row via `tenantDb(ctx.orgId).invoices.active().findFirst({ where: eq(invoices.id, id) })` and return `{ ok: false, error: { code: 'conflict', userMessage: 'This invoice was changed in another tab. Refresh to see the latest version.', current } }`. The fetch happens inside the same Server Action — the client gets one round trip.
-- Wire the form: add `<input type="hidden" name="version" value={invoice.version} />` to `edit-form.tsx`. The `useActionState` reducer already returns the Result shape — extend the type to include the `conflict` branch and the `current` payload.
-- Build the conflict banner: a new `<ConflictBanner current={current} onUseLatest={...} onOverwrite={...} />` Client Component. "Use latest" replaces the form's controlled state with `current` and resets the hidden `version` to `current.version`. "Overwrite anyway" is gated on `ctx.role === 'admin'` and calls the action with a `force: true` flag that bypasses the precondition — the rare carve-out, named loud.
-- `useOptimistic` interaction: the optimistic state rolls back automatically on `{ ok: false }` — React's documented behavior. The conflict banner renders alongside the rolled-back form values. The senior anchor: the optimistic UI is fine for the common case; the rollback is automatic.
-- Wire the lifecycle actions' 409 path the same way: archive / restore / soft-delete also return `{ ok: false, error: { code: 'conflict', current } }` on zero-rows-affected. The row action menu surfaces a toast on conflict ("This invoice changed elsewhere — refresh to retry") rather than the full banner — the row UI has no controlled form state to merge against.
-- Run the app: open an invoice in two tabs; edit and save the first; edit and save the second; see the conflict banner; click "Use latest"; the form reloads with the server's values and the new version; resubmit; success. Use the inspector's "Force version drift" tool to reproduce the conflict deterministically.
+- **The senior question.** Inline `await` and `after()` cover same-invocation work. Vercel Cron covers schedules. What workloads do those two combined still fail at, and what specifically does Trigger.dev provide that earns the operational cost of a second platform? Threshold named explicitly so the student can defend the decision both ways.
+- **The five trigger conditions.** Each named and observable. **(1) Past function time limit** — work needing more than 14 minutes on Pro fluid compute (1 minute on Hobby). **(2) Multi-step orchestration with intermediate state** — step A, wait for external response or delay, step B, where re-running A on failure would be incorrect or expensive. **(3) Automatic retries with backoff** — work that must survive a transient downstream outage on its own schedule, not the user's. **(4) Fan-out** — a single trigger spawns 50 000 child runs with concurrency control. **(5) Event-driven / human-in-the-loop pauses** — work blocking on a third-party callback URL, human approval, or wall-clock delay measured in hours or days.
+- **Conditions that do not justify Trigger.dev.** A slow API under a minute → `after()` or accept latency. A nightly job that fits in 5 minutes → Vercel Cron. "I want a separate worker for cleanliness" → no, the platform is not your aesthetic.
+- **2026 alternatives.** **Inngest** — serverless-native event system with step functions, similar shape, edge for event-driven teams. **Vercel Queues** (beta March 2026) — managed pub/sub on Vercel, lighter on multi-step orchestration. **BullMQ + Redis** — self-managed, full control, requires running Redis and a worker, wins on Render/Railway with persistent infra. **AWS SQS + Lambda** — enterprise-scale, heavy operational surface, wins inside AWS. Course picks Trigger.dev v4 — best 2026 DX for small teams (typed payloads, waitpoints, visible run timelines, local-CLI debugging) and Apache 2.0 self-host option if cost shifts. Names the alternatives once.
+- **What Trigger.dev v4 provides, against the five conditions.** Durable runs surviving worker crashes and redeploys. Per-task retries with exponential backoff and jitter, declared. `wait.for` and `wait.until` — run pauses, worker frees, run resumes. Waitpoints for external callbacks and human approval. Code-defined queues for concurrency and fan-out. Typed payloads via `schemaTask`. A dashboard showing every run, step, retry, payload. A local dev CLI streaming live logs with kill-mid-run to prove durability.
+- **Architectural shape.** Trigger.dev runs as a separate service (cloud or self-hosted). The app triggers tasks via the SDK over HTTPS. Tasks live in `src/trigger/`, deploy via the Trigger.dev CLI alongside Vercel deploys. Two CI steps (`vercel deploy` and `trigger deploy`), one codebase, types flow via the SDK.
+- **Cost shape.** Per run, per run-minute, per concurrency seat. Free tier covers small SaaS (5 000 runs/month, 6 hour-equivalent compute). Senior reach: track per-task run count and duration weekly — bill grows linearly with work.
+- **Decision tree.** Mermaid flowchart with the threshold at every fork. "Single email synchronously" → inline. "Log analytics after response" → `after()`. "Nightly 5-minute job" → Vercel Cron. "Send 50 000 emails on a schedule" → Vercel Cron triggers a Trigger.dev fan-out. "Wait for third-party webhook" → Trigger.dev waitpoint. "Multi-hour data export" → Trigger.dev task with `wait.for` between pages.
+- **The course's triggers — preview.** Export job (chapter 067): multi-step, paginated, must resume on crash, sends email — all five conditions, Trigger.dev wins. R2 upload (chapter 069): not Trigger.dev — direct presigned PUT, inline. Not every job is a Trigger.dev job.
+- **Org-versus-app separation.** Trigger.dev tasks run with no Better Auth session and no `tenantDb` middleware; org context must be in the payload and re-derived inside the task. Every payload is `{ organizationId, ... }`, every DB call uses `tenantDb(organizationId)` explicitly. Foreshadows the schema-task shape in lesson 4 of chapter 066.
+- **Watch-outs:** reaching for Trigger.dev before any of the five conditions actually triggers — operational complexity for nothing; assuming tasks share request context with calling code — they do not, pass the org ID; running tasks against the same Postgres without considering pool contention — points at PgBouncer / chapter 039; using Trigger.dev for work that must happen *before* responding to the user — inverted model, user is now waiting; comparing Trigger.dev cost per run to Vercel cost per invocation — not the same unit.
 
-Senior calls and watch-outs:
+What this lesson does not cover:
 
-- The precondition lives in the `WHERE`, not as a separate `SELECT ... THEN UPDATE` round trip — the latter has a TOCTOU race. One statement, atomic.
-- Every UPDATE has tenancy + lifecycle + version in the `where`. Missing any one is a distinct bug class: missing tenancy is the cross-tenant overwrite, missing lifecycle is the "edit a soft-deleted row" bug, missing version is silent last-write-wins. Name all three.
-- "Overwrite anyway" is a sharp edge. Gate it on role; consider hiding it entirely for non-admin product surfaces. The course's default is "show to admin, hide for member".
-- `updatedAt` as the alternative to `version` is named for the existing-tables case (lesson 3 of chapter 065); the course default is `version` because the column is cheap and the precision is unambiguous.
-- The `current` payload in the 409 Result saves the client a second round trip — the senior anchor from lesson 3 of chapter 065. Without it, the client either renders stale state or fires a refetch.
-- Tampering with the hidden `version` field at the client just produces a 409 — bounded impact. Zod parses on the server (chapter 046, lesson 4 of chapter 047) is the defense; the version precondition is the back-stop.
+- Trigger.dev SDK and task definitions — lesson 4 of chapter 066.
+- Durable execution mechanics — Lessons lesson 5 of chapter 066 and lesson 6 of chapter 066.
+- Self-hosting Trigger.dev — named as option, not drilled.
+- Detailed comparison with alternatives — out of scope.
+- DB pool tuning under high concurrency — Chapter 039.
 
-Codebase state at entry: lifecycle actions live, update action still silently overwrites on race.
-Codebase state at exit: update action has the version precondition, returns 409 with `current` on conflict, the form renders the conflict banner, "Use latest" and "Overwrite anyway" both work, lifecycle actions surface conflicts as toasts. Every UPDATE in the project has tenancy + lifecycle + version in its `WHERE`.
-
-Estimated student time: 55 to 70 minutes.
+Estimated student time: 40 to 50 minutes. The "defend the decision" lesson — equips the student to say "no, Vercel Cron is enough" and "yes, Trigger.dev because of this exact property".
 
 ---
 
-## Lesson 6 — Run the failure modes
+## Lesson 4 — Tasks, schemaTask, queues, schedules
 
-Walks every "Done when" clause — share-and-refresh, cursor reset, search responsiveness, archive and restore, soft-delete with RBAC, partial unique index recovery, two-tab 409, optimistic rollback, cross-tenant probe, index-plan check — and points forward to notifications, cache invalidation, audit-log hardening, and integration tests.
+Teaches the v4 API surface — `task` and `schemaTask` with Zod payloads, `tasks.trigger` versus `triggerAndWait`, code-defined queues as the v3-to-v4 break, per-tenant dynamic queues, and static and dynamic schedules.
 
-Goals:
+Topics to cover:
 
-- Walk every "Done when" clause as a verification step (the table in the framing).
-- URL behavior: click status `paid`, sort by `-total`, click Next page; URL shows `?status=paid&sort=-total&cursor=...`. Copy the URL to a private window (signed in as the same user); the view reproduces. Hard reload; reproduces. Click "Clear filters"; URL becomes `/invoices` (defaults stripped).
-- Cursor reset on other-change: with a non-null cursor, change status; URL drops `cursor`; first page of the new filter loads. Same for sort and search.
-- Search responsiveness: type a fast 30-character query; the input never lags; the URL writes settle every ~200ms; back-button count stays sane (one or two entries, not 30). Confirm the partial composite index `invoices_org_status_created_id_active_idx` is picked via the inspector's `EXPLAIN ANALYZE` panel.
-- Archive flow: archive a row from `view=active`; row vanishes; switch to `view=archived`; row appears with the archive timestamp; click restore; row returns to active. The audit log tail shows both events.
-- Soft-delete flow (as admin): delete a row from `view=active`; row vanishes; switch to `view=all` (admin-only tab); row appears with a "Deleted" badge. As member, hand-type `?view=all`; the read drops to `view=active` (server-side refusal). Verify the `view=all` tab is hidden for the member role in the toolbar.
-- Partial unique index: soft-delete invoice `INV-0001`; create a new invoice with `number = INV-0001`; create succeeds. Drop the partial index temporarily (via `psql`); re-run the create; it fails with a unique-constraint error — proving the partial index is what makes the recovery possible.
-- Two-tab concurrency: open an invoice in two tabs; edit and save the first; verify the version bumped in the audit log and in the inspector; edit and save the second; conflict banner renders; "Use latest" loads `current`, hidden version updates, resubmit succeeds. Use the "Force version drift" tool to reproduce the race deterministically.
-- Optimistic rollback: enable the inspector's "force next update to fail with 409"; edit a row; the optimistic UI shows the change briefly, then rolls back when the action returns the conflict; banner appears.
-- Cross-tenant probe: as a user in org A, hand-construct an edit URL for an invoice ID from org B; the detail page returns 404 (tenant filter holds at the read). As the same user, submit a forged form with the org-B invoice's ID; the action's `where` filters by `ctx.orgId`, the UPDATE affects zero rows, conflict path fires (or a `NOT_FOUND` error if the action distinguishes). Tenant isolation holds at both the read and the write.
-- Index plan check: open the inspector's index-probe panel; confirm the active-rows list query uses `invoices_org_status_created_id_active_idx` (the partial composite). Confirm `view=archived` uses a different plan (or the same composite without the partial filter). No `Seq Scan` on any list view.
-- Name the senior calls one more time:
-  - URL state is the source of truth for any view-state piece that survives refresh, share, or back button.
-  - The base-query helper plus `tenantDb` makes "I forgot the `deletedAt IS NULL` filter" or "I forgot the tenancy filter" structurally impossible at hand-written reads.
-  - Every UPDATE carries tenancy + lifecycle + version preconditions in its `WHERE`. Zero-rows-affected is the honest 409.
-  - `useActionState` + `useOptimistic` handles success, rollback, and conflict in one shape; the conflict's `current` payload spares the client a refetch.
-  - The cursor reset on every filter / sort / search change is the invariant that keeps pagination correct.
-- Forward references:
-  - Unit 14 (notifications) wires a notification on archive / restore so collaborators see lifecycle changes in real time.
-  - Unit 15 (cache) adds `cacheTag('invoices', orgId)` invalidation to the lifecycle actions so the list cache refreshes correctly.
-  - lesson 3 of chapter 085 hardens the audit-log discipline (append-only, retention policy).
-  - Unit chapter 092 writes integration tests for the conflict path and the cross-tenant probe.
+- **The senior question.** Trigger.dev v4 is the chosen runtime. What is the minimum API surface to define, trigger, type, and operate a task, and where is the v3-to-v4 break the student must know because search results and AI completions are full of v3 examples?
+- **Directory and setup.** `src/trigger/` folder, one task per file or grouped by domain. `trigger.config.ts` at the root declares the project ref, runtime, build target, queues. `npx trigger.dev@latest init` first-time setup. CLI: `pnpm trigger dev` local worker, `pnpm trigger deploy` production. Topology only; lesson 2 of chapter 067 walks the starter.
+- **`task()` — the base primitive.** `task({ id: 'send-digest', run: async (payload, { ctx }) => { ... } })`. The `id` is durable identity — runs reference it by ID, persists across deploys. Treat `id` like a route path; do not rename casually.
+- **`schemaTask()` — the default for everything in the course.** Plus a Zod 4 schema for the payload. `schemaTask({ id: 'export-csv', schema: z.object({ organizationId: z.uuid(), since: z.iso.date() }), run: ... })`. Payload parsed before the body runs; invalid payload throws at trigger time, not three minutes in. Same discipline as Server Action inputs from chapter 042. v4 supports Standard Schema (Zod, Valibot, ArkType) — future swap is structural.
+- **Triggering from the app.** `await tasks.trigger<typeof exportCsv>('export-csv', { organizationId, since })`. The generic carries inferred payload type. Returns a `handle` with `id`. `tasks.trigger` is fire-and-forget — returns once enqueued, not on completion. Use `tasks.triggerAndWait` only inside another task body, never from request code (action would block and time out).
+- **The `ctx` argument.** `ctx.run.id` (durable run ID, natural idempotency key), `ctx.attempt.number` (retry number), `ctx.environment` (dev / staging / production). No request context, no session, no cookies, no headers — the task is its own world.
+- **Queues — the v4 break from v3.** In v3, queues were declared at trigger time. In v4, queues are declared in code, at project level, before the deploy. `trigger.config.ts` exports `queues: [{ name: 'export', concurrencyLimit: 5 }]`. Tasks reference queues by name. Treat queues like database tables — declared in code, migrated at deploy. Most-likely-to-bite v3-to-v4 trap because old examples will not work.
+- **Concurrency limits.** A queue with `concurrencyLimit: 5` runs at most 5 simultaneously, regardless of enqueue depth. Extras queue and wait. Back-pressure primitive — set to the smallest number that keeps downstream services happy (Resend rate limit, third-party quota, DB pool size). Concurrency at the queue, not the task body.
+- **Per-tenant queues — the SaaS pattern.** A single static queue serializes all tenants and one noisy tenant starves everyone. The v4 pattern is dynamic queues keyed by `organizationId`: `tasks.trigger('export-csv', payload, { queue: { name: \`org-\${organizationId}\`, concurrencyLimit: 1 } })`. Sequential per org, parallel across orgs. Project (chapter 067) demonstrates.
+- **Scheduled tasks.** Static: `schedules.task({ id: 'nightly-digest', cron: '0 9 * * *', run: ... })` — one global schedule, declared in code. Dynamic: `await schedules.create({ task: 'nightly-digest', cron: '0 9 * * *', externalId: organizationId })` — at runtime per tenant or resource, with `externalId` for later lookup and cancel.
+- **`cron` as object — timezone-aware schedules.** Both the static and dynamic forms accept `cron` as an object instead of a plain string: `cron: { pattern: '0 9 * * 1-5', timezone: 'America/New_York' }`. The `timezone` argument takes an IANA zone name and makes the schedule DST-aware (UTC `cron` strings drift through DST transitions). Default to the object form for any business-hours schedule; the plain string is fine for UTC-anchored sweeps.
+- **Schedules versus Vercel Cron — second look.** A scheduled Trigger.dev task earns its place when the schedule needs to be dynamic (per-org) or when the work needs Trigger.dev's durability anyway. Static daily jobs that fit Vercel's budget stay on Vercel Cron. Do not migrate a working Vercel cron for uniformity.
+- **The `init` lifecycle hook.** Per-run pre-body setup returning a value passed to the body. One-line example: `init: async () => ({ db: createDbForOrg(payload.organizationId) })`. Named, not drilled.
+- **What the dashboard shows.** Every run with payload, status (queued, executing, completed, failed, retrying), start, duration, every log line, every retry's stack, every wait. Observability for free — equivalent on Vercel Cron is `console.log` plus hope. Part of the threshold calculus from lesson 3 of chapter 066.
+- **Worked example — `notify-org-members`.** `schemaTask({ id: 'notify-org-members', schema: z.object({ organizationId: z.uuid(), eventType: z.string() }), queue: 'notifications', run: async ({ organizationId, eventType }, { ctx }) => { /* read members, send emails */ } })`. Triggered from a Server Action via `tasks.trigger`. Full lifecycle: action triggers, task enqueued, worker picks up, run executes, logs in dashboard.
+- **Watch-outs:** copy-pasting v3 examples declaring queues at trigger time — v4 needs them in code; using `task` instead of `schemaTask` and validating in the body — duplicates work; `tasks.trigger` instead of `tasks.triggerAndWait` when you needed the result; concurrency at the task level (does not exist in v4); `tasks.triggerAndWait` from a Server Action — blocks and times out; renaming a task `id` without migrating in-flight runs — orphans; placing tasks outside `src/trigger/` — CLI does not find them.
 
-Senior calls and watch-outs:
+What this lesson does not cover:
 
-- The verify lesson is the rehearsal of the failure modes — running each one and naming what would break without the disciplines the student just installed.
-- If a verification fails, the lesson points at the owning build lesson, not at "debug it yourself".
+- Retries, backoff, `wait.for` / `wait.until` — lesson 5 of chapter 066.
+- Waitpoints for callbacks and approval — lesson 6 of chapter 066.
+- Project walkthrough and starter — Chapter 067.
+- Self-hosting infrastructure — out of scope.
+- Full pricing model — referenced, not drilled.
 
-Codebase state at entry: full URL state, lifecycle, and concurrency wired.
-Codebase state at exit: same surface, verified clause-by-clause; the student can articulate every decision (URL vs. component state, helper vs. raw query, version vs. updatedAt, archive vs. soft delete) and which forward unit will lean on it.
+Estimated student time: 55 to 65 minutes. The "I can define and run a task" lesson — biggest in the chapter because it is the API surface every later lesson assumes.
 
-Estimated student time: 30 to 40 minutes.
+---
+
+## Lesson 5 — Surviving crashes — retries, waits, idempotency keys
+
+Teaches checkpoints at step boundaries, exponential retries with jitter and `AbortTaskRunError`, `wait.for` / `wait.until` for durable pauses, `idempotencyKey` and `idempotencyKeyTTL` on every trigger and wait, and cooperative cancellation via `ctx.run.abortSignal`.
+
+Topics to cover:
+
+- **The senior question.** A task runs ten minutes. The worker crashes at eight. A third-party rate-limits the third call. What does Trigger.dev do, what does the student do, and where do production bugs hide in the seam?
+- **What "durable" means.** A durable run survives worker crashes, redeploys, platform restarts. The runtime checkpoints at every `await wait.*`, every `await tasks.triggerAndWait`, every `await ctx.run.*`, and at the end of every retry. On crash, the run resumes from the last checkpoint on a new worker. Durability is a property of the *boundaries between steps*, not the steps — a long synchronous CPU loop in one step is not durable; the worker dies, the loop restarts. Split long work into small steps separated by `wait` or `triggerAndWait`.
+- **Retries — declarative.** Every task has `retry: { maxAttempts: 5, factor: 1.8, minTimeoutInMs: 1000, maxTimeoutInMs: 60000, randomize: true }`. Exponential backoff with jitter. A throw triggers retry with the configured backoff. `ctx.attempt.number` tells the body which retry it is on. Retries are the runtime's job, not the body's — never `try/catch` around an external call to "retry inside" when the runtime already does it.
+- **What gets retried, what does not.** Any throw retries by default. Exception: `AbortTaskRunError` skips retries and fails the run immediately — for unrecoverable errors (400 with a stable payload, validation, programmer errors). Rule: retry on transients (5xx, network, rate-limit), abort on permanents.
+- **Run-level versus call-level retries.** Run-level restarts the task from the top — every step re-runs. Call-level (the SDK's automatic retries for rate-limited calls) restarts only the failing call. Implication: a step with side effects (DB write, Resend send) inside a retrying task executes twice unless guarded by an idempotency key. The cause of every "duplicate email" production bug.
+- **`wait.for(duration)` — wall-clock waits.** `await wait.for({ minutes: 5 })` checkpoints, frees the worker, resumes after duration. Wall clock — survives crashes and redeploys. Use for "wait for a third-party rate-limit window" or "polling interval between export pages". Contrast: `setTimeout` holds the worker for nothing and dies on crash.
+- **`wait.until(date)` — wait to a wall-clock time.** Same checkpoint semantics. Useful for "send the welcome email 24h after signup" or "expire trial at period end".
+- **`idempotencyKey` on `tasks.trigger`, `wait.for`, `wait.until`.** Every trigger and wait accepts an `idempotencyKey` and `idempotencyKeyTTL`. Same key within the TTL returns the same run handle / waitpoint — no new run, no new wait. The dedup-and-transact discipline from lesson 4 of chapter 063 re-expressed as a runtime primitive. Use `ctx.run.id` as the key for retrying a step within a run; use a stable business key (`org:${orgId}:export:${date}`) when triggering from the app.
+- **`idempotencyKeys.create` — key construction.** `await idempotencyKeys.create([organizationId, eventType, day])` produces a stable key from a key array. Named once; the project uses it.
+- **Cross-step idempotency — the loop pattern.** A task that emails N users in a loop, called inside a run that may retry, needs each per-user send guarded by its own key: `for (const user of users) { await tasks.triggerAndWait('send-one', { userId: user.id }, { idempotencyKey: \`\${ctx.run.id}:user:\${user.id}\` }) }`. A retry of the outer run re-issues the same keys; the runtime returns prior results instead of re-sending. Closes the lesson 4 of chapter 063 idempotency thread with a concrete shape.
+- **Run priority.** Every `tasks.trigger` accepts `priority` integer. Higher jumps ahead modulo concurrency. User-initiated → priority. Scheduled → default. Backfills → low. Named, not drilled.
+- **Lifecycle hooks for cleanup.** `onSuccess` and `onFailure` per task — run after body succeeds or all retries exhaust. For "always write a final audit log" or "always clean up the temporary R2 object". Hooks themselves are not retried — their bodies should be idempotent.
+- **Cancellation — `runs.cancel`.** A run can be canceled from dashboard or via `runs.cancel(runId)`. Inside the body, `ctx.run.abortSignal` is an `AbortSignal` that fires on cancel — propagate to `fetch` calls. Cancellation is cooperative; check the signal at step boundaries.
+- **Worked example — paginated export with retries.** A `schemaTask` exporting invoices in batches of 500. `for (let page = 0; page < totalPages; page++) { await pageStep.triggerAndWait({ orgId, page }, { idempotencyKey: \`\${ctx.run.id}:page:\${page}\` }); await wait.for({ seconds: 2 }); }`. Mid-export worker crash resumes on a new worker, completed pages return cached, next page re-executes. Same shape as the project (chapter 067) build steps.
+- **Watch-outs:** retrying a Resend-calling body without an idempotency key — guaranteed duplicate emails across retry; `setTimeout` instead of `wait.for` — durability lost; `Error` for permanent failure that should not retry — five wasted retries; `wait.until` with a past date — fires immediately, not skipped; assuming `ctx.run.id` is stable across child runs — every `triggerAndWait` spawns a new run with a new ID, use the parent's for keys that must align; mixing run- and call-level retries by adding manual retry loops — redundant; not propagating `ctx.run.abortSignal` — cancellation does not stop in-flight HTTP.
+
+What this lesson does not cover:
+
+- Waitpoints for external callbacks and human approval — lesson 6 of chapter 066.
+- Task definition and queue setup — lesson 4 of chapter 066.
+- Webhook signature verification and dedup — Chapter 063.
+- DB transaction semantics inside tasks — Chapter 039.
+- Cancellation UI and surfacing run state — Chapter 070.
+
+Estimated student time: 50 to 60 minutes. The "I can write a task that survives production" lesson — every senior-level production task hangs on this material.
+
+---
+
+## Lesson 6 — Waitpoints for callbacks and approvals
+
+Teaches `wait.forToken` with `publicAccessToken` as a third-party callback URL, programmatic `wait.completeToken` for human-in-the-loop approval, mandatory timeouts, multi-token aggregation, and live progress via `ctx.run.metadata`.
+
+Topics to cover:
+
+- **The senior question.** A task triggers a third-party long-running job (video render, payment authorization, partner API import) and must resume only when the third party calls back. Or a workflow needs human approval before continuing. Or N parallel sub-jobs must all finish before a final step. Where does the run live in the meantime, and how does resume work without polling?
+- **What a waitpoint is.** A durable resumable token. The run hits `await wait.forToken(...)`; the runtime checkpoints, frees the worker, parks the run on the token. The token is completed externally — HTTP callback, programmatic SDK call, timeout — and any blocked run resumes. Replaces "poll a status endpoint until done" with structural pausing — no polling, no wasted compute, no missed completions.
+- **The two-direction relationship.** A single waitpoint can block multiple runs (a feature-flag flip unblocks every run waiting on "feature enabled"). A single run can wait on multiple waitpoints ("any of these three" or "all of these N"). Small topology diagram.
+- **`wait.forToken` — basic shape.** `const token = await wait.createToken({ timeout: '24h' })`. `token.publicAccessToken` is the URL-completion handle; `token.id` is the internal ID. Pass `publicAccessToken` to the third party as `callback_url`. Then `await wait.forToken<{ result: string }>(token.id)`. The runtime resumes with the value when the third party posts. Generic types the resumed payload.
+- **Completing externally — the callback URL.** Trigger.dev exposes `https://api.trigger.dev/v1/tokens/${publicAccessToken}/complete` accepting a POST with the completion payload. The third party posts directly. Cleanest "we hand off to a third party and wait for callback" surface in the stack — no inbound webhook handler, no dedup table for the callback.
+- **Completing programmatically.** `await wait.completeToken(tokenId, { result: 'approved' })` from anywhere — another task, Server Action, Route Handler. The human-in-the-loop pattern.
+- **Timeouts.** Every waitpoint can carry `timeout` (`'24h'`, `'7d'`, ISO duration). On timeout, the wait resolves with `{ ok: false, timedOut: true }` and the run resumes with an explicit signal. Every external waitpoint has a timeout — no "wait forever" in production.
+- **Human-in-the-loop — approval workflow.** A refund task triggers, creates a waitpoint with 48h timeout, writes a `pending_approvals` row carrying the token ID, sends a Slack notification, awaits the token. An admin clicks "Approve" / "Reject" in the admin UI, the Server Action calls `wait.completeToken(tokenId, { decision })`, the task resumes and applies the decision. The run is alive but consuming nothing — worker free, no polling.
+- **Third-party callback — integration shape.** A video transcoding task posts to the partner with `callback_url = token.publicAccessToken`, then `await wait.forToken(token.id)`. Partner finishes, posts back, run resumes with partner's response. Partner's API surface and wait-token URL match perfectly — no glue webhook handler.
+- **Multiple waitpoints — `wait.forWaitpoint`.** `await wait.forWaitpoint([token1.id, token2.id, token3.id], { all: true })` waits for all; `{ all: false }` (default) waits for any. Fan-out aggregation: trigger N sub-tasks, each completes its own token on success, parent waits on all. Alternative shape: `triggerAndWait` with `Promise.all` for typed sub-task results.
+- **Waitpoints versus `wait.for` versus `triggerAndWait`.** `wait.for` for time-based pauses with no external completion. `triggerAndWait` for "child task, get its result" — runtime manages the waitpoint. `wait.forToken` for "external system or human will signal" — student manages the token.
+- **Idempotency on completion.** Tokens complete once; a second completion call is a no-op (returns original result). The at-least-once callback story is handled by the runtime — no dedup table on the SaaS side for the callback itself, only for the work the resume triggers.
+- **Observability.** A run blocked on a token shows "Waiting" with token ID, timeout countdown, and the URL the third party should call. When a third-party integration goes silent, the dashboard is the first place to look.
+- **The `metadata` channel.** Inside the body, `ctx.run.metadata` is a mutable object the run writes to and the dashboard renders live. Useful for "47 of 200" progress to a watching admin or polling client. Project (chapter 067) uses it.
+- **Worked example — third-party render callback.** A `schemaTask` triggers a partner video render and waits for completion. Body: create token with 6h timeout, POST to partner with `callback_url = publicAccessToken`, `wait.forToken<{ renderUrl: string }>(token.id)`, save `renderUrl` to DB. 30 lines, structural pause, no polling, full durability.
+- **Watch-outs:** waitpoints without a timeout — run lives forever; trusting the third party to call the right URL — log token creation and resume, alert if wait expires; completing a token inside a transaction that may roll back — wait resumed but DB did not commit, split the completion out; `wait.forToken` for a time-based wait — use `wait.for`; passing internal `token.id` to the third party instead of `publicAccessToken` — exposes the internal ID; assuming a completed token is one-shot per run — one-shot per token, multiple runs can listen and all resume.
+
+What this lesson does not cover:
+
+- Task definition primitives — lesson 4 of chapter 066.
+- Retry and idempotency mechanics — lesson 5 of chapter 066.
+- Admin UI for human approval — Chapter 14 and beyond.
+- Partner-side third-party integration handshake — partner-specific.
+- Self-hosting — out of scope.
+
+Estimated student time: 45 to 55 minutes. The "I can pause and resume" lesson — the v4 primitive students will reach for the moment a real workflow has a human or callback in it.
+
+---
+
+## Lesson 7 — Wiring our app — which workloads go where
+
+Teaches which three jobs in the course's app run on Trigger.dev (CSV export, Stripe reconciliation, notification dispatcher), which four stay on the platform default, the env surface, and the deploy-Trigger.dev-before-the-app ordering rule.
+
+Topics to cover:
+
+- **The senior question.** Student has threshold, primitives, retries, waits, waitpoints. Where in the course's app does Trigger.dev get wired in, and where deliberately not?
+- **The three workloads the course wires through Trigger.dev.** **(1)** CSV export job (chapter 067 project) — multi-step, paginated, time-budget-bursting, sends email at the end, must survive crashes — all five conditions present. **(2)** Stripe reconciliation sweep (forward note — extends chapter 063 / chapter 064) — nightly schedule reading Stripe state for any org with `lastEventAt` older than 24h and reconciling drift; durability matters because partial reconciliation is wrong. **(3)** Notification dispatcher fan-out (Chapter 071 forward note) — one event fans out to N channels per N users, per-org queue serializes, dispatcher runs as a Trigger.dev task triggered from `notifyEvent` Server Action helper.
+- **The workloads the course keeps on the platform default.** Resend send from `inviteMember` Server Action — inline, single call, ~200ms. Hourly trial-expiry sweep from lesson 2 of chapter 066 — fits Vercel's budget, idempotent SQL UPDATE. Audit log writes — inside the action's transaction, never deferred. Analytics events from a Server Action — `after()`, fire-and-forget.
+- **Env surface.** `TRIGGER_SECRET_KEY` for the SDK app-side, `TRIGGER_PROJECT_REF` in `trigger.config.ts`. `CRON_SECRET` for Vercel crons. Foreshadows chapter 067's `.env.example`.
+- **Deploy surface.** Two CI deploys: `vercel deploy` and `pnpm trigger deploy`. Order matters when a Server Action triggers a new task version — deploy Trigger.dev first, then the app, so the app never references a task version that has not landed. Deeper coverage in Unit 20.
+- **Cost in operational terms.** Per-run cost small; per-run-minute adds up for long tasks; concurrency seats add up for high fan-out. Monitor Trigger.dev's per-task run count weekly the same way you monitor Vercel function invocations — anomalies usually indicate a missing idempotency key or retry storm.
+- **Two services, one codebase.** Tasks in `src/trigger/`, single SDK import, types flow. Postgres shared — same Drizzle schema, same `tenant-db.ts`, same audit log. Task bodies call the same `lib/email.ts`, `lib/billing.ts`, DB helpers. Trigger.dev is a *runtime* for code that already lives in the codebase, not a separate codebase.
+- **Self-host off-ramp.** Trigger.dev v4 is Apache 2.0; self-host once a SaaS scales past free tier or has data-residency constraints. Course uses cloud; pattern does not change.
+- **Forward note for chapter 067.** The project ships the CSV export task end-to-end: starter clone, schema-task with payload validation, paginated `triggerAndWait` per page with per-page idempotency keys, final email send, dashboard verification, mid-run worker kill to prove durability, parallel-trigger test for per-org serialization.
+- **Watch-outs:** dragging every async Server Action into Trigger.dev "for consistency" — operational complexity for nothing; deploying the app before the new task version — `tasks.trigger('new-task-id')` fails at runtime; running the local dev CLI against the production project — production runs trigger on every save; sharing `TRIGGER_SECRET_KEY` between staging and production — same blast radius as sharing webhook secrets.
+
+What this lesson does not cover:
+
+- The export task's code — Chapter 067.
+- Notification dispatcher — Chapter 14.
+- Stripe reconciliation — Unit 11 forward note.
+- Deploy pipelines — Unit 20.
+- Self-hosting infrastructure — out of scope.
+
+Estimated student time: 20 to 30 minutes. The bridge lesson — short, names workloads and pre-loads the project.
+
+---
+
+## Lesson 8 — Quizz
+
+Top 10 topics to quiz:
+
+- The latency ladder — inline `await`, `after()` for same-invocation post-response work, Vercel Cron for schedules, Trigger.dev for durable / multi-step / fan-out / waitable — and the named threshold promoting work to each next tier.
+- `after()` mechanics — same invocation, bounded by `maxDuration`, no retries, no durability, errors caught and logged or they vanish; the Server-Component `cookies()/headers()` constraint (read before, close over).
+- Vercel Cron's `CRON_SECRET` trust boundary, at-least-once delivery and `processed_events`-style dedup when side effects are involved, function-time cap on cron handlers.
+- The five Trigger.dev trigger conditions — past function time, multi-step orchestration with intermediate state, automatic retries with backoff, fan-out, event-driven / human-in-the-loop pauses — and conditions that do not qualify (aesthetics, slight slowness, separation alone).
+- `schemaTask` as default — Zod payload validation at trigger boundary, `id` as durable API, queues declared in code (the v4 break from v3), `tasks.trigger` vs `tasks.triggerAndWait`.
+- Code-defined queues and concurrency limits as back-pressure; per-tenant dynamic queues (`org-${organizationId}`) as the SaaS-tenancy pattern.
+- Durable execution — checkpoints at every `wait.*` and `triggerAndWait`, run-level retries with exponential backoff and jitter, `AbortTaskRunError` for permanent failures, `ctx.run.id` as natural idempotency key.
+- `idempotencyKey` on `tasks.trigger`, `wait.for`, `wait.until` — the unifying discipline from lesson 4 of chapter 063 as a runtime primitive; per-step keys (`${ctx.run.id}:user:${userId}`) guarding side effects across retry boundaries.
+- Waitpoints — `wait.forToken` with public access token for third-party callback URLs, `wait.completeToken` for programmatic / human-in-the-loop completion, mandatory timeouts, many-runs-on-one-token and one-run-on-many-tokens topologies.
+- The course's wiring — CSV export, Stripe reconciliation, notification dispatcher in Trigger.dev; Resend-from-action, hourly trial sweep, audit logs, analytics on platform default; per-tenant queues, `TRIGGER_SECRET_KEY` env, deploy-Trigger.dev-before-the-app order.
+
+---
+
+> **Note (`revalidateTag` in Next.js 16):** the single-argument form `revalidateTag(tag)` is deprecated — every call must pass a `cacheLife` profile as the second argument (`'max'` is the senior default), e.g. `revalidateTag(tag, 'max')`.

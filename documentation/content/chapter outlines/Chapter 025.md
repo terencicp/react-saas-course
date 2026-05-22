@@ -1,284 +1,328 @@
-# Chapter 025 — The visual surface
+# Chapter 025 — Effects, context, and concurrent hooks
 
 ## Chapter framing
 
-Chapter 024 closed with the layout stack — where elements sit and how big they are. Chapter 025 is the visual surface that sits on top: how text reads, how colors render, how the element decorates itself, how it responds to user state, how it moves, and how it adapts across viewports and containers. The senior framing is that the 2026 visual layer is settled — system font stacks plus one or two `next/font` faces with `font-display: swap` baked in; OKLCH as the color space the design tokens live in, with `color-mix()` as the runtime mixer; `border-radius` and `box-shadow` as the only decoration utilities a senior reaches for; `:focus-visible` as the canonical focus reflex and `:has()` as the parent-selector that retired a generation of JavaScript class toggles; Tailwind's `animate-*` plus `tw-animate-css` as the shadcn-compatible animation surface; responsive variants for page-level breakpoints and container queries for component-level adaptation. Every lesson teaches the CSS primitive, names the Tailwind v4 utility that compiles to it, and surfaces the senior reach.
+Chapter 024 installed the hooks that *hold* state. Chapter 025 is where the student learns the hooks that *connect* a React component to anything outside the render contract: external systems, scheduling, and context. The senior framing is that `useEffect` is no longer the daily reach it was in 2020 — Server Components, Server Actions, `<Suspense>`, the `use()` primitive, and TanStack Query have absorbed the vast majority of what `useEffect` used to do. What remains is the narrow set of escape hatches a senior reaches for *deliberately*: synchronizing with a non-React subscription, integrating a third-party widget, reading a browser API React doesn't model. Every lesson lands the *should this be an effect at all?* question before any syntax.
 
-Several threads run through every lesson. Tokens flow from `:root` and recolor on `.dark` (the `next-themes` plumbing was installed in lesson 6 of chapter 022 and the cascade machinery in chapter 023) — typography, color, shadows, and motion all read tokens rather than literal values. `:focus-visible` is the default focus reflex on every interactive element. `prefers-reduced-motion` and `prefers-color-scheme` are first-class media queries, not afterthoughts. Container queries are the component-level reach when a card or sidebar needs to adapt to its parent, not the viewport. Animation lives in CSS (`@keyframes` declared in `@theme`, compiled to `animate-*` utilities), not JavaScript. The chapter avoids the long tail — no calligraphy effects, no font-display deep dives, no historical detours through `@font-face`, no JS animation libraries. The chapter ships seven teaching lessons plus the quiz, in dependency order: typography (lesson 1 of chapter 025), color (lesson 2 of chapter 025), borders and shadows (lesson 3 of chapter 025), pseudo-classes for interaction state (lesson 4 of chapter 025), animation (lesson 5 of chapter 025), media queries and responsive variants (lesson 6 of chapter 025), container queries (lesson 7 of chapter 025). Forward references land in lesson 3 of chapter 026 (CVA variants for component-level styling), lesson 5 of chapter 026 (portals for animated dialogs), chapter 031 (the shadcn surface and the accessibility baseline), lesson 7 of chapter 038 (`next/font` at depth), and chapter 033 (the app-router where responsive layouts ship).
+Several threads run through every lesson. **Effects synchronize with the outside world; they don't run on render** — the cleanup-and-resync model is the contract from lesson 2 of chapter 025 and cashed in by every subsequent lesson. **Most "I need an effect" instincts are wrong in 2026** — the five-quadrant audit lands in lesson 4 of chapter 025 and forward-references the Next.js data path in chapter 031–chapter 032. **Strict Mode is the senior's free correctness test** — double-invocation surfaces missing cleanups and impurity before production. **Reactivity is what changes inputs to an effect** — `useEffectEvent` carves out the non-reactive seam so effects don't re-run on every keystroke. **Context is propagation, not a store** — value-changes-everything-re-renders is the daily footgun. **Concurrent rendering primitives mark *intent*, not *speed*** — `useTransition`, `useDeferredValue`, and `<Suspense>` tell React which updates are urgent. **`use()` is the new shape of "read this async thing"** — it replaces effect-based fetching with suspense-driven render. The chapter ships eight teaching lessons plus the quiz: Strict Mode (lesson 1 of chapter 025), `useEffect` (lesson 2 of chapter 025), `useEffectEvent` (lesson 3 of chapter 025), the "you might not need an effect" catalog (lesson 4 of chapter 025), `useContext` and re-render cost (lesson 5 of chapter 025), `useTransition`/`useDeferredValue` (lesson 6 of chapter 025), `use()` (lesson 7 of chapter 025), rules of hooks (lesson 8 of chapter 025). Forward references: chapter 026 (custom hooks, React Compiler), Unit 4 (App Router data path, Server Actions, Suspense streaming), Chapter 11 (server-state caching).
 
 ---
 
-## Lesson 1 — Type, scale, and the reading surface
+## Lesson 1 — Strict Mode is the messenger
 
-Teaches the system-plus-`next/font` stack, Tailwind's `text-*`/`leading-*`/`tracking-*` scales, `text-balance` and `text-pretty` reflexes, `max-w-prose` reading width, and the `truncate` / `line-clamp-*` / `tabular-nums` utilities the student writes daily.
+How `<StrictMode>` double-invokes renders, initializers, and the effect lifecycle in dev so impurity and missing cleanups surface before production.
 
 Topics to cover:
 
-- **The senior question.** A heading rendered in Inter at `text-3xl font-semibold tracking-tight` looks tight; the same heading with `text-balance` reflows so no line is a one-word orphan. The lesson installs the typography surface a senior writes in 2026 — the font stack (system plus one display face via `next/font`), the type scale, line-height and letter-spacing reflexes, and the modern `text-wrap` properties.
-- **The font stack — system first, one branded face via `next/font`.** Preflight wires `font-family: ui-sans-serif, system-ui, ...` as the default; the project usually ships one branded font (Inter, Geist, Manrope) loaded through `next/font/google` and exposed as a CSS variable in `@theme`. Variable fonts are the 2026 reach — one file, every weight, no FOUT. `next/font` at depth lives in lesson 7 of chapter 038; this lesson names the surface (declaration, variable, `@theme` binding) and trusts that lesson for the wiring.
-- **The Tailwind type scale.** `text-xs` through `text-9xl` is one rem-based scale with paired `font-size` and `line-height` values. The senior writes off the scale; arbitrary values (`text-[17px]`) are a smell. The scale is editable via `@theme` for projects that want a denser or larger type system.
-- **`font-weight`, `font-style`, and the variable-font reach.** `font-thin` through `font-black` map to 100–900; variable fonts expose the full range without separate files. Italic is `italic`; underline is `underline` (the inherited text-decoration is named explicitly because the JSX student often expects the link to be unstyled by default after Preflight strips it).
-- **`line-height` — Tailwind's paired scale plus the `leading-*` override.** Every `text-*` ships with a sensible default `line-height`; `leading-*` overrides it. The reflex: body text wants `leading-relaxed` or `leading-7`; headings want `leading-tight` or `leading-none`. Long-form prose at `leading-loose` reads slowly on purpose.
-- **`letter-spacing` — `tracking-*`.** Tight tracking on large headings (`tracking-tight`, `tracking-tighter`), normal on body, loose tracking on small all-caps eyebrow labels (`tracking-wide`, `tracking-widest`). Negative values exist via bracket form for display type.
-- **`text-wrap: balance` and `text-wrap: pretty` — the 2026 reflex.** `text-balance` (Tailwind: `text-balance`) on headings under ten lines balances the line breaks so no orphan word sits alone; `text-pretty` on body paragraphs runs a slower wrapping algorithm that avoids end-of-paragraph orphans. The senior reach: `text-balance` on every `h1`/`h2`/`h3`, `text-pretty` on every long-form paragraph. Firefox shipped `pretty` in 2025; Baseline-newly-available in 2026.
-- **Reading width — `max-w-prose` and the 65ch heuristic.** Body text reads best at 60–75 characters per line. `max-w-prose` (= `max-w-[65ch]`) is the senior reflex on any long-form column. Wider columns lose the eye between line ends.
-- **Text utilities the student actually writes.** `text-left` / `center` / `right`; `truncate` (one-line ellipsis with overflow-hidden); `line-clamp-*` (multi-line ellipsis, the canonical reach for card descriptions); `whitespace-nowrap` / `pre-wrap`; `break-words` for long URLs and emails; `uppercase` / `lowercase` / `capitalize`; `font-mono` for code and tabular numbers; `tabular-nums` (font-variant-numeric) for aligned digits in tables and stat cards.
-- **The Preflight typography reset cashed in.** Preflight removes margins on headings and paragraphs, strips list bullets, and inherits font properties through form elements (cross-reference to lesson 3 of chapter 023). Every typography utility the student writes is on top of that clean slate; no fighting browser defaults.
+- **The senior question.** A component looks fine in dev, ships to prod, and a user reports stale data after navigating away and back. The bug is a missing effect cleanup that Strict Mode would have surfaced on day one. The lesson installs `<StrictMode>` as the senior's free correctness test and lands the rule that code that breaks under Strict Mode is broken — Strict Mode is the messenger, not the bug.
+- **What it is and where it lives.** A wrapper component (`<StrictMode>`) that opts a subtree into dev-time checks. Next.js wraps the app in Strict Mode by default; the student inherits it. Production builds run normally — zero runtime cost shipped.
+- **What gets double-invoked.** In dev, Strict Mode intentionally double-invokes component function bodies, `useState`/`useReducer` initializers, `useMemo`/`useCallback` factories (memoization hooks — lesson 3 of chapter 026), and the *full effect lifecycle* (setup → cleanup → setup again on mount). Anything that should be pure runs twice; anything synchronizing with an external system gets a full mount/unmount/mount cycle so missing cleanups surface immediately.
+- **The mount/unmount/mount cycle for effects.** On first mount in dev, React runs setup → cleanup → setup. If the effect subscribes (`addEventListener`, `setInterval`, WebSocket connect), the cleanup must unsubscribe — otherwise after the second setup the component holds two subscriptions. Canonical reproductions: an interval ID not cleared (fires twice), a request not aborted (two in flight), a listener not removed (handler fires twice per user event).
+- **Why double-invocation surfaces purity bugs.** A render pushing to a module-level array doubles it. A `useState` initializer that writes to localStorage corrupts the resource. The fix is the contract from lesson 3 of chapter 023 — keep render and initializers pure. Strict Mode doesn't cause the bug; it makes a latent bug visible.
+- **The Server Components interaction.** Server Components don't run under Strict Mode's double-invocation (they execute once per request on the server). Strict Mode applies at every `'use client'` boundary.
+- **`useState` initializer gotcha.** `useState(() => expensiveCompute())` runs twice. If pure, harmless; if side-effectful (localStorage write, counter increment), the side effect runs twice. Same rule for `useReducer`'s `init` arg.
+- **Race conditions exercised.** Two overlapping setups model the production scenario of rapid navigation. The fix is the canonical abort pattern (`AbortController` or an `ignore` flag), taught in lesson 2 of chapter 025.
+- **The "don't fight Strict Mode" rule.** A junior reaches for a `useRef(false)` guard to suppress the second setup. This silences the warning but reintroduces the bug — React 19's concurrent rendering (Activity API, prefetching, transitions) legitimately mounts/unmounts/remounts. Write cleanups that make the second mount safe, not guards that prevent it.
+- **The Activity API foreshadow.** React chapter 087's `<Activity>` lets components mount, get hidden (effects clean up), and remount without leaving the page. Strict Mode isn't a dev fiction; it models real production behavior. Recognition only; Unit 4 owns the surface.
+- **Other dev signals.** Console warnings for deprecated APIs, unsafe legacy lifecycles, string refs — students won't write these but should recognize the warning shape from legacy libraries.
 - **Watch-outs:**
-  - `text-base` is the body default; the scale is a system, not a menu — staying on it is the cost of consistency.
-  - `font-display: swap` is the default `next/font` ships; FOUT is the price of not blocking render. Variable fonts plus `subset` cut the swap to imperceptible.
-  - `truncate` requires `min-w-0` on a flex item (same trap as lesson 3 of chapter 024); without it the text overflows the container.
-  - `line-clamp-*` uses `-webkit-line-clamp` under the hood — production-safe in 2026 but cross-browser by convention, not by spec name.
-  - Heading semantics live in lesson 3 of chapter 021; this lesson styles them, doesn't choose them.
-  - `tabular-nums` is the reflex for numeric tables and dashboards; without it, the digit `1` is narrower than `8` and columns misalign.
-  - Don't rely on `text-justify` — produces uneven word spacing on the web; reach for `text-pretty` instead.
+  - "Why does my effect run twice?" is almost always Strict Mode. Fix the cleanup, not the workaround.
+  - `useState(() => fetch(...))` is a bug regardless of Strict Mode — initializers must be pure and synchronous.
+  - Side-effectful render (an analytics call) fires twice — move to an effect or handler.
+  - "Production seems fine" is the classic justification for ignoring warnings; the bug ships, it just hides until a user navigates fast enough.
+  - Disabling Strict Mode globally to make tests pass is a smell — fix the cleanup, isolate incompatible libraries in a wrapper.
+  - Strict Mode does *not* double-invoke event handlers, `setTimeout`, or `setInterval` callbacks — only render-time and effect-lifecycle code.
 
 What this lesson does not cover:
 
-- `next/font` setup at depth (subsetting, preload, weight axes, `display` strategy) — lesson 7 of chapter 038.
-- Heading semantics and the outline (`h1`–`h6` choice, the document outline) — lesson 3 of chapter 021.
-- Link styling and `text-decoration` for `<a>` — lesson 4 of chapter 021 owns the element; this lesson covers `underline` as a utility.
-- The CSS `font-feature-settings` and OpenType features at depth — recognition only.
-- Custom `@font-face` declarations — `next/font` covers the cases; rare-case fallback only.
-- Text inputs and form element typography quirks — lesson 5 of chapter 021 and Preflight (lesson 3 of chapter 023).
-- Internationalization-driven font stacks (CJK, Arabic) — out of scope; the chapter assumes Latin script.
+- The `useEffect` API surface and cleanup mechanics — lesson 2 of chapter 025.
+- `useEffectEvent` — lesson 3 of chapter 025.
+- The Activity API and prerendering — Unit 4 (recognition only).
+- Hydration mismatches — Lessons lesson 5 of chapter 030–lesson 6 of chapter 030.
+- The React Compiler's purity checks — lesson 2 of chapter 026.
 
 ---
 
-## Lesson 2 — OKLCH, color-mix(), and the alpha syntax
+## Lesson 2 — useEffect as synchronization
 
-Teaches OKLCH as the token storage form, `color-mix(in oklch, ...)` for runtime mixing, the `bg-blue-500/50` alpha syntax and how it compiles to `color-mix()`, semantic tokens over primitives, `opacity` vs. per-property alpha, and `prefers-color-scheme` vs. the `.dark` class.
+The `useEffect` signature, the setup/cleanup/resync lifecycle, the four canonical cleanup pairings, abort and ignore-flag race patterns, and the dependency-array contract.
 
 Topics to cover:
 
-- **The senior question.** A 2024 design token written as `--brand: #4f46e5` renders the same on every screen but can't be brightened by 8% without a JS-side color library; the 2026 form is `--brand: oklch(0.62 0.22 263)` and a hover state is `color-mix(in oklch, var(--brand), white 8%)`. The lesson installs OKLCH as the color space tokens live in, `color-mix()` as the runtime mixer, the modern alpha syntax, and `prefers-color-scheme` as the dark-mode primitive `next-themes` already wires up.
-- **OKLCH — the senior color space in 2026.** Three channels: L (lightness, perceptually uniform 0–1), C (chroma, 0 to ~0.4), H (hue, 0–360). Two reasons it's the default: changing one channel doesn't accidentally drift another (a 10%-lighter blue stays blue, unlike HSL); and OKLCH encodes the P3 wide-gamut colors modern displays can show. Tailwind v4 ships its entire default palette in OKLCH; shadcn does the same. Hex still ships in legacy code; the student reads it but writes OKLCH.
-- **`color-mix()` — runtime color mixing.** `color-mix(in oklch, var(--brand), white 10%)` is the 2026 form for hover/active/disabled variants without pre-computing every step. Reach: hover states (`color-mix(in oklch, var(--color), black 8%)`), tinted backgrounds (mix a brand color with the surface token), token-driven semitransparent borders. Tailwind v4 uses `color-mix()` internally for `bg-blue-500/50`-style opacity modifiers — the student is already calling it indirectly.
-- **The Tailwind alpha syntax — `bg-blue-500/50` and the `color-mix` translation.** Every color utility takes a `/N` suffix for alpha. The compiled output is `color-mix(in oklab, var(--color-blue-500) 50%, transparent)` — opacity composes correctly even when the base color is a token. Reaches: glass-morphism backdrops, dialog backdrops (`bg-black/50`), translucent borders.
-- **The semantic-token palette — `background`, `foreground`, `card`, `muted`, `primary`, `destructive`, etc.** Cross-reference to lesson 5 of chapter 022. Components reference semantic tokens, never primitives — `bg-card text-card-foreground border-border` not `bg-white text-zinc-900`. The lesson cashes in the model installed in chapter 022 with the modern color values it stores.
-- **`opacity` vs. alpha — the two roads and when each is right.** `opacity-50` (Tailwind: `opacity-*`) makes the entire element semi-transparent including its children — the right reach for disabled buttons and pending UI states. Per-property alpha (`bg-blue-500/50`) only fades the one declaration — the right reach for a translucent overlay where text inside must stay fully opaque. Watch-out: `opacity` creates a stacking context (cross-reference to lesson 9 of chapter 024).
-- **`prefers-color-scheme` and the `dark:` variant cashed in.** `next-themes` toggles `.dark` on `<html>`; Tailwind's `dark:` variant compiles to a class-based selector wrapped in `:where()` (specificity-zero, no fights with utility order). The semantic tokens flip their values inside `.dark` — `--color-card: oklch(0.99 0 0)` light, `oklch(0.18 0 0)` dark. The student writes `bg-card text-foreground` once and both themes work. Reflex: never write `dark:bg-zinc-900` next to `bg-white`; reach for the token instead.
-- **`prefers-contrast` and `forced-colors`.** Two media-query variants the student names once: `contrast-more:` for users who set high-contrast mode in OS settings, `forced-colors:` for Windows High Contrast Mode (which replaces every color with a system palette). Most projects don't override defaults; recognition for accessibility audits.
-- **WCAG contrast — the chapter 025:1 reflex.** Body text needs chapter 025:1 contrast against its background; large text and UI text need 3:1. Tools: Chrome DevTools' Contrast picker, the Tailwind palette in shadcn is contrast-audited. Cross-reference to lesson 2 of chapter 031 for the discipline-level commitment.
-- **The Tailwind color surface.** Default palette in OKLCH; the `@theme` overrides for adding/removing palette steps; arbitrary values (`bg-[oklch(0.6_0.2_180)]`) for one-off design needs; `currentColor` (`bg-current`, `border-current`) as the inherit-the-text-color form (icons cross-reference to lesson 2 of chapter 023).
+- **The senior question.** A component needs to connect to a WebSocket on mount, disconnect on unmount, reconnect when the room ID changes. A non-React widget (chart, map, Stripe Elements) needs instantiation against a DOM node. A browser API (`IntersectionObserver`, `matchMedia`) needs subscription and cleanup. `useEffect` is the right tool for each — and almost nothing else in 2026.
+- **The 2026 narrowing.** Data fetching moved to Server Components, route loaders, TanStack Query. URL syncing moved to `nuqs` and `useSearchParams`. Form state moved to Server Actions and `useActionState`. Derived values compute in render. Parent-driven resets use `key`. The lesson opens with this audit; effect's residual role is external systems React doesn't own.
+- **The signature.** `useEffect(setup, dependencies?)` — `setup` returns `undefined` or a cleanup function. Three array forms: omitted (runs every render — almost always a bug), `[]` (mount only, cleanup on unmount), `[deps]` (re-runs when any dep changes by `Object.is`).
+- **The lifecycle as synchronization, not lifecycle.** The effect's job is to make the outside world match current props and state. When inputs change, cleanup first, then re-setup. The canonical reproduction: a `roomId` prop change → disconnect old room → connect new room. The cleanup is not "happens on unmount"; it's "happens before next setup *and* on unmount."
+- **The dependency-array contract.** Every reactive value read inside the setup belongs in deps. `react-hooks/exhaustive-deps` enforces this — when it flags a missing dep, the fix is almost always "add it," not "silence the rule."
+- **The non-reactive trap.** An effect that needs to read a `currentUser` at *event time* but shouldn't *re-run* when the user changes — that's what `useEffectEvent` (lesson 3 of chapter 025) is for.
+- **Cleanup discipline — the four canonical pairings.** `addEventListener` ↔ `removeEventListener`. `setInterval`/`setTimeout` ↔ `clear*`. Subscription `subscribe` ↔ returned `unsubscribe`. Resource `create` ↔ `destroy` (a chart instance, map instance, Stripe Elements). Every effect that creates anything outside React returns a cleanup that destroys it.
+- **The abort-on-resync pattern.** When an effect kicks off a fetch, cleanup aborts: `const ctrl = new AbortController(); fetch(url, { signal: ctrl.signal }); return () => ctrl.abort();`. Taught here as the canonical race-condition fix even though most fetching shouldn't be in effects in 2026 — the pattern still matters for residual cases (SDK with `signal`, non-cacheable POST).
+- **The "ignore" flag pattern for non-abortable async.** `let cancelled = false; doWork().then(r => { if (!cancelled) setResult(r); }); return () => { cancelled = true; };`. The two-prong race-condition discipline.
+- **Object and array deps — the identity trap.** An object literal `{ id: 1 }` changes reference every render, re-runs the effect every render, and creates infinite loops if the effect calls `setState`. Fix: depend on primitives (`item.id`), memoize upstream, or restructure so the parent passes primitives.
+- **Function deps.** A function defined inside the component re-creates every render. Fixes in order: (1) move inside the effect; (2) move outside the component if it doesn't capture reactive values; (3) `useCallback` only when the function passes to a memoized child (lesson 3 of chapter 026); (4) `useEffectEvent` for non-reactive event-shaped reads (lesson 3 of chapter 025).
+- **`useLayoutEffect`.** Synchronous variant — runs after DOM commit, before browser paint. Reach for it when an effect must measure the DOM and synchronously update state to avoid a visible flicker (tooltip measuring content then positioning). Threshold: only when a flicker is the problem; otherwise `useEffect` is default. Recognition: `useInsertionEffect` is CSS-in-JS-library territory.
+- **`useSyncExternalStore` — recognition only.** When a value lives outside React (a `window` event, a third-party store, a `BroadcastChannel`), this is the correct primitive — it integrates with concurrent rendering's tearing-prevention. Daily app code rarely reaches for it; consumer-side libraries (Zustand, `useSearchParams`) already use it.
+- **Effects and the Server/Client boundary.** Effects only run in Client Components. The senior reflex: when a component "needs an effect," check whether it could be a Server Component reading data directly. Cross-reference chapter 030.
 - **Watch-outs:**
-  - Don't ship hex literals in new code; OKLCH is the token storage form. The exception is `transparent` and `currentColor`, which compile to themselves.
-  - `opacity` on a parent fades the children (compositing); `bg-color/50` on the parent doesn't. Pick the one that matches the design intent.
-  - `color-mix()` interpolation space matters: `in oklch` produces perceptually-even mixes; `in srgb` produces the gray middle every legacy color library shipped. The default for the project is `oklch`.
-  - Display P3 colors fall back to the closest sRGB on older monitors — write OKLCH and let the browser map.
-  - `prefers-color-scheme` reads the OS preference; the `next-themes` class on `<html>` reads the user's *site* preference. Both matter; `next-themes` resolves the precedence.
-  - `bg-transparent` is not `bg-none`; `bg-none` removes background images, not color.
+  - Reading state in an effect *to update state* is a smell — usually means the value should be derived in render (lesson 2 of chapter 024).
+  - Returning a Promise from setup is a type error — setup is synchronous. Do async work in an inner function and remember the cleanup.
+  - Cleanups run in reverse order across multiple effects in the same component — usually irrelevant, occasionally matters.
+  - Mutating a dep inside the effect breaks invariants — never mutate; produce a new value.
+  - Effects don't run during SSR — anything that must run on first paint reaches for `use()` (lesson 7 of chapter 025) or moves to a Server Component.
 
 What this lesson does not cover:
 
-- The cascade and how `.dark` swap reaches every descendant — lesson 1 of chapter 023 and lesson 4 of chapter 023 own it.
-- `next-themes` wiring at depth — lesson 6 of chapter 022 owns it.
-- The full Tailwind color palette and its OKLCH coordinates — reference material, not lesson material.
-- Color theory (complementary, analogous, triadic) — not in scope; the design system ships a palette.
-- SVG `fill` / `stroke` mechanics at depth — lesson 1 of chapter 031 handles icons.
-- Gradients (`bg-gradient-to-*`) — recognition only here; the chapter doesn't dedicate space.
-- Print color modes and CMYK — out of scope.
+- `useEffectEvent` — lesson 3 of chapter 025.
+- The "you might not need an effect" catalog — lesson 4 of chapter 025.
+- `useContext` — lesson 5 of chapter 025.
+- Concurrent primitives — lesson 6 of chapter 025.
+- `use()` — lesson 7 of chapter 025.
+- Rules of hooks and lint — lesson 8 of chapter 025.
+- TanStack Query — Chapter 11.
+- Suspense and streaming — Chapter 031.
 
 ---
 
-## Lesson 3 — Borders, radius, and the elevation scale
+## Lesson 3 — useEffectEvent and the non-reactive seam
 
-Teaches `border` / `border-*` / `divide-*`, the `rounded-*` scale, `outline` vs. `border` for focus rings, `ring-*` as the multi-layer shorthand, the `shadow-*` elevation tiers, `drop-shadow` vs. `box-shadow`, and `backdrop-filter` for glass-morphism headers.
+How `useEffectEvent` lets an effect read latest props and state without re-running, the reactive vs. non-reactive distinction, and the call-site restrictions that make it safe.
 
 Topics to cover:
 
-- **The senior question.** A card with `rounded-lg border bg-card shadow-sm` reads as one elevation step above its parent; the same card with `shadow-2xl` reads as a floating modal. The lesson installs the three decoration utilities a senior actually reaches for — borders, border-radius, and box-shadow — and treats them as the elevation language of the design system.
-- **Borders — `border`, `border-*`, `divide-*`.** Tailwind's bare `border` utility is `1px solid var(--color-border)`; the token comes from `@theme`. Width modifiers (`border-2`, `border-4`); side-specific (`border-t`, `border-x`, `border-s` logical); color overrides (`border-destructive`, `border-input`); style (`border-dashed`, `border-dotted`, rare in production). The `--default-border-color` Preflight uses cross-references to lesson 3 of chapter 023.
-- **`border-radius` — the rounding scale.** `rounded`, `rounded-sm` through `rounded-full`; per-corner variants (`rounded-t-lg`, `rounded-bl-md`); logical variants (`rounded-s-lg`, `rounded-e-lg`). The 2026 reflex: a design system picks one or two radius values and reuses them; mixing `rounded-md` cards with `rounded-2xl` cards is a smell. shadcn's `--radius` token is the central knob most projects expose.
-- **`outline` vs. `border` — the focus-ring distinction.** `outline` doesn't occupy layout space, so it doesn't shift content when it appears on focus. `border` does. The canonical focus reflex is `focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring` (cross-reference to lesson 4 of chapter 025 for the pseudo-class). `ring-*` is Tailwind's outline-plus-offset shorthand and is the form most components ship.
-- **`ring-*` — the multi-layer outline shorthand.** `ring-2 ring-ring/50 ring-offset-2 ring-offset-background` produces a halo focus ring with a gap from the element. Used heavily in shadcn buttons, inputs, and selects. The advantage over a raw `outline`: composes with rounded corners, supports offset, and the offset color is themable.
-- **`box-shadow` — the elevation scale.** `shadow-sm`, `shadow`, `shadow-md`, `shadow-lg`, `shadow-xl`, `shadow-2xl`, `shadow-inner`, `shadow-none`. The senior reach is one elevation step per surface tier — base surface (no shadow), card (`shadow-sm`), hover (`shadow-md`), modal/dialog (`shadow-lg`/`shadow-xl`), tooltip (`shadow-md`). Tailwind v4 shadows use OKLCH-based colors with built-in alpha so they tint correctly in dark mode.
-- **Shadow color and the colored-glow pattern.** `shadow-blue-500/50` colors the shadow itself — reaches: highlighted active states, brand-tinted hover glows on a feature card. Watch-out: every colored shadow is a brand decision, not a default.
-- **`drop-shadow` vs. `box-shadow` — the choice.** `drop-shadow` is a filter that follows the rendered shape, including transparent regions and rounded corners on irregular SVGs. `box-shadow` follows the element's bounding box. Reach `drop-shadow` for icons and irregular shapes; `box-shadow` for everything else. `drop-shadow` creates a stacking context (cross-reference to lesson 9 of chapter 024).
-- **`backdrop-filter` and the glass-morphism reach.** `backdrop-blur-*`, `backdrop-saturate-*`, `backdrop-brightness-*` blur and tint the content *behind* a semi-transparent element. Canonical reach: sticky headers with a translucent background (`bg-background/70 backdrop-blur`) so content scrolls under and stays legible. Cost: GPU compositing on every paint — fine for one element, slow for many.
-- **Borders on dashed/dotted forms and the rare reaches.** `border-dashed` for empty-state placeholders and drag-drop drop zones; `border-double` and the rest are recognition only. The dashed-empty-state pattern is the only place dashed borders earn their weight in 2026.
+- **The senior question.** A chat-room component connects to a WebSocket on mount, reconnects when `roomId` changes, and on every incoming message calls `onMessage(message, currentUser)`. The reflex says `onMessage` and `currentUser` belong in deps — but adding them re-runs the effect (disconnect-reconnect) when the user changes, which is wrong: changing user shouldn't drop the connection. `useEffectEvent` (stable in React chapter 087) is the seam: a callback that *reads* the latest props and state but is *excluded* from deps.
+- **The signature.** `const onMessageEvent = useEffectEvent((message) => { onMessage(message, currentUser); });`. Returns a function that reads latest values each call but has no stable identity and *cannot* be called outside an effect, layout effect, or another Effect Event. The lint rule (in React chapter 087+) understands it and won't ask for it in deps — and *will* flag a call outside allowed contexts.
+- **Reactive vs. non-reactive — the bright line.** A value is *reactive* if changes should *cause resynchronization*. Room ID is reactive (disconnect-reconnect). Current user is non-reactive in this scenario. `onMessage` is non-reactive (a parent's fresh callback shouldn't reconnect the socket). Audit every reactive value the effect reads.
+- **The canonical replacements.** Before `useEffectEvent`: stash the latest value in a ref (leaked stale closures through timing cracks) or wrap every callback in `useCallback` (still re-ran on legit changes). Both disappear in 2026 — `useEffectEvent` is the platform answer.
+- **The three canonical reaches.** (1) Event-shaped callbacks from props — a chart's `onPointClick` wrapped, dropped from deps. (2) Analytics/logging from inside an effect — the trigger is reactive, the *values logged* are not. (3) Reading mutable state at an interval — the polling interval is set on mount, the `pollNow` function reads latest filter state each tick.
+- **The rules.** Only callable inside effects or other Effect Events. Never during render. Never passed as a prop or returned from a hook (unstable identity makes it useless downstream). Excluded from dep arrays. Body should be event-shaped — read latest values, perform an action.
+- **Why the call-site restriction matters.** Calling during render would read mutable state during render — the same impurity that breaks the React Compiler (lesson 3 of chapter 023 / lesson 2 of chapter 026). Calling from a regular handler is tolerated by the runtime but defeats the purpose; ordinary handlers already see latest values via closure.
+- **Difference from `useCallback`.** `useCallback` produces a *stable* function whose body closes over its render — same stale-closure problem if deps are wrong. `useEffectEvent` produces an *unstable* function whose body always reads latest values; the trade is restricted call sites.
+- **Difference from a ref.** A ref-based pattern (`callbackRef.current = callback` in an effect, then `callbackRef.current()` in another) works for some cases but has timing gaps and no lint enforcement. `useEffectEvent` is the same pattern with first-class support.
+- **Audit before reaching.** Audit whether the effect is needed (lesson 4 of chapter 025) first. This hook is for the residual cases where an effect is genuinely warranted; not a license to keep effects that should be handlers, derived values, or Server Components.
+- **Status in 2026.** Stable since React chapter 087 (October 2025). Available in Next.js 16. ESLint plugin understands it. No experimental flag.
 - **Watch-outs:**
-  - `border` alone defaults to `border-color: currentColor` in raw CSS; Preflight sets it to the theme's `--color-border` so the student doesn't surprise themselves (cross-reference to lesson 3 of chapter 023).
-  - `outline` on an element without `:focus-visible` is a visual mistake — the student writes the variant, never the bare `outline`.
-  - `rounded-full` on a non-square element makes a pill, not a circle — `aspect-square` plus `rounded-full` is the avatar pattern.
-  - `box-shadow` doesn't clip with `overflow: hidden`; the shadow extends beyond.
-  - `drop-shadow` is more expensive than `box-shadow` — use it when irregular shapes demand it, not by default.
-  - `backdrop-filter` has no effect if the element behind has no contrast to blur; the price is paid regardless.
-  - Multi-layer shadows (combining several `box-shadow` values) are how realistic depth is built; Tailwind ships these in the `shadow-*` scale already.
-  - `shadow-2xl` on a card is rarely the design — it reads as a modal. Match the shadow to the surface tier.
+  - Calling from a regular handler defeats the design — use a normal function or `useCallback`.
+  - Passing as a prop loses meaning and is lint-flagged — wrap on the consumer side.
+  - The body should be event-shaped — don't declare hooks, derive state, or branch in ways that should drive re-renders.
+  - "Wrap everything so I don't have to think about deps" is the abuse mode — converts reactive logic to non-reactive and breaks synchronization.
 
 What this lesson does not cover:
 
-- The focus-visible pseudo-class — lesson 4 of chapter 025 owns it.
-- `filter` properties beyond `drop-shadow` and `backdrop-filter` (`blur`, `grayscale`, `sepia`, `hue-rotate`) — recognition only; the chapter doesn't dedicate space.
-- `clip-path` and `mask-image` — niche.
-- SVG-specific decoration (`stroke-width`, `stroke-dasharray`) — out of scope.
-- Material Design elevation theory — not the design system the course ships.
-- `outline-offset` interaction with `border-radius` curves — recognition only.
+- The "you might not need an effect" catalog — lesson 4 of chapter 025.
+- `useCallback` thresholds — lesson 3 of chapter 026.
+- React Compiler effect handling — lesson 2 of chapter 026.
+- Custom hooks wrapping effects — lesson 1 of chapter 026.
 
 ---
 
-## Lesson 4 — Pseudo-classes and the :has() parent selector
+## Lesson 4 — You probably don't need an effect
 
-Teaches `:focus-visible` as the canonical focus reflex, `:focus-within` for parent-of-focused, the disabled/checked/invalid state pseudo-classes, `:has()` and the JavaScript class toggles it retired, `:not()`, the `::placeholder` / `::selection` pseudo-elements, and the iOS sticky-hover gate.
+The five-quadrant audit (derive, handle, server, cache, sync) and the catalog of effect anti-patterns paired with their correctly shaped replacements.
 
 Topics to cover:
 
-- **The senior question.** Styling a button on hover is `hover:bg-accent`; styling a button on keyboard focus only is `focus-visible:ring-2`; styling a `<form>` differently when any input inside is invalid was a `useState` plus class toggle in 2022, and is `has-[input:invalid]:border-destructive` in 2026. The lesson installs the pseudo-classes a senior reaches for on interactive UI, with `:focus-visible` as the canonical focus reflex and `:has()` as the parent-selector that retired a generation of JavaScript.
-- **The interaction pseudo-classes — `:hover`, `:focus`, `:focus-visible`, `:focus-within`, `:active`.** `:hover` for mouse over (no-op on touch); `:focus` for any focus (keyboard or click); `:focus-visible` for keyboard-only focus — the reflex on every button, link, and input; `:focus-within` for the parent of a focused descendant (canonical reach: form rows that highlight when the input inside takes focus); `:active` for "currently being pressed." The 2026 default: `focus-visible:` for the ring, `hover:` for the color shift, `active:` for the pressed state.
-- **The state pseudo-classes — `:disabled`, `:checked`, `:invalid`, `:required`, `:read-only`, `:placeholder-shown`.** Form-element states the student reaches for. `disabled:opacity-50 disabled:pointer-events-none` is the canonical disabled-button pattern; `aria-invalid:` and `aria-disabled:` (data/aria variants from lesson 4 of chapter 022) are the form-driven companions when state is set via attribute rather than property.
-- **The structural pseudo-classes — `:first-child`, `:last-child`, `:nth-child(N)`, `:empty`.** Rare in 2026 because `gap` plus `divide-*` replaced most uses; `:empty` is occasionally useful for empty-state styling. `:first-of-type` and `:last-of-type` are recognition only.
-- **`:has()` — the parent selector that changed CSS.** Selects an element *that contains* a matching descendant. Canonical reaches: `has-[input:invalid]:border-destructive` on a form row, `has-[:checked]:bg-accent` on a label-wrapped checkbox card, `has-[img]:p-0` on a card that has an image (vs. one that doesn't). Replaces a JavaScript class-toggle observer in every one of these cases. Baseline since late 2023; production-safe across all current browsers. Tailwind variant: `has-[<selector>]:` and `group-has-[<selector>]:` for parent-of-group reaches.
-- **`:not()` — the negation primitive.** `not-disabled:hover:bg-accent` skips the hover when the button is disabled. Tailwind variant: `not-*:`. Reach: hover states that shouldn't apply to disabled buttons, sibling reset (`:not(:first-child)` for skipping the first element in a stack — though `gap` retired the pattern).
-- **The link state pseudo-classes — `:link`, `:visited`.** `:visited` exists but is locked-down for privacy (only `color`, `background-color`, `border-color`, `outline-color`, and a few SVG properties can change). Rare in app UI; common in long-form content.
-- **The placeholder pseudo-elements — `::placeholder`, `::selection`, `::file-selector-button`.** `placeholder:text-muted-foreground` is the senior reflex on every text input (sets the placeholder color via the pseudo-element, which doesn't inherit). `::selection` for branded text-selection color; `::file-selector-button` for styling the file picker button.
-- **`group-*` and `peer-*` — Tailwind's relational variants cashed in.** Cross-reference to lesson 4 of chapter 022. `group-hover:`, `peer-checked:`, etc. interact with the same pseudo-classes; the lesson treats the variant prefixes as the Tailwind form and the underlying CSS as the model.
-- **DevTools — forcing element state.** Chrome's "Toggle element state" in the Styles panel lets the senior pin `:hover`, `:focus`, `:focus-visible`, `:active`, and `:target` without juggling mouse and keyboard. The debugging move when a hover style "doesn't look right."
+- **The senior question.** A junior writes a `useEffect` to update a derived value, reset a form when a prop changes, log an analytics event on click, fetch on mount, and compute next state from previous. Four out of five are wrong — not because effects are bad, because each has a better-shaped tool. The lesson is the canonical audit: every senior anti-pattern named, paired with the right shape.
+- **The five-quadrant audit.** Before adding an effect, ask: (1) Is this value *derived* from existing props/state? → compute in render (lesson 2 of chapter 024). (2) Triggered by a *user interaction*? → event handler. (3) *Initial data* the page needs? → Server Component or route loader (Unit 4). (4) *Cached server state*? → TanStack Query or `use()` (Chapter 11). (5) *Synchronizing with an external system* React doesn't own? → effect. Only (5) warrants `useEffect`.
+- **Anti-pattern: derived state via effect.** `useState(0)` for `totalPrice` + `useEffect(() => setTotalPrice(sum(items)), [items])`. Fix: `const totalPrice = sum(items)` in render. Two renders collapse to one; stale state disappears. (Cross-ref lesson 2 of chapter 024.)
+- **Anti-pattern: resetting state when a prop changes.** `useEffect(() => setDraft(record), [record])` for an editable form. Fix: `<EditForm key={record.id} record={record} />` — the `key` reset (lesson 5 of chapter 023).
+- **Anti-pattern: adjusting state on prop change (partial reset).** Keep edits but reset *one* field on prop change. The narrow documented pattern: `setState` during render, conditionally, with a previous-value ref. Shown but flagged — `key` reset handles 95%.
+- **Anti-pattern: event-handler logic in an effect.** Toast after save, navigate after submit, analytics on click. Trigger is the action, not a prop/state change. Fix: do the work in the handler.
+- **Anti-pattern: chains of state updates via effects.** State A → effect sets B → effect sets C. Three renders for one logical change. Fix: compute B and C in the handler that triggers A, or use `useReducer` (lesson 4 of chapter 024) for atomic transitions.
+- **Anti-pattern: initial data fetch in `useEffect`.** `useEffect(() => fetch().then(setData), [])`. Fix path: (1) Server Component awaits directly (chapter 030); (2) `use()` if parent passes a promise (lesson 7 of chapter 025); (3) TanStack Query for client cache, polling, optimistic updates (Chapter 11). The residual effect-fetch case is a code-review red flag.
+- **Anti-pattern: subscribing to a parent's state via effect.** A child reads a prop/context, copies to local state via effect, uses local. Updates are one render late. Fix: read the prop/context directly.
+- **Anti-pattern: deriving expensive values via effect with `useState`.** `useEffect(() => setProcessed(expensiveTransform(input)), [input])`. Fix: compute in render and let the React Compiler memoize (lesson 2 of chapter 026); fall back to `useMemo` if needed.
+- **Anti-pattern: communicating to a parent via effect.** Child wants to notify parent "I changed state X" via `useEffect(() => props.onChange(state), [state])`. Notification is one render late; loops are easy. Fix: call `props.onChange` in the same handler that updates state, or lift state (lesson 3 of chapter 024).
+- **Anti-pattern: storing a "previous value" via effect.** `useEffect(() => { prevRef.current = value })`. Legitimate exception — it *is* synchronization with an external store (the ref). The `usePrevious` custom hook (lesson 1 of chapter 026).
+- **Legitimate effect cases — the residual surface.** (1) WebSocket / EventSource / BroadcastChannel. (2) Third-party widget taking a DOM node (chart, map, Stripe Elements, video). (3) Browser APIs not React-aware (`matchMedia`, `IntersectionObserver`, `ResizeObserver`, scroll listeners). (4) Native `<dialog>`/`<details>` state synchronization. (5) Non-React script-tag widget initialization.
+- **The senior code-review heuristic.** Two questions: "What external system does this synchronize with?" and "What does the cleanup do?". Empty cleanup + no external system = suspect the effect should be a handler, a Server Component fetch, or derived in render.
+- **The accumulation trap.** A codebase with 80 effects across 200 components is almost guaranteed to have ordering bugs, races, loops, stale closures somewhere. Every effect is maintenance liability; reach for `useEffect` only when nothing else fits.
 - **Watch-outs:**
-  - `:focus` without `:focus-visible` shows a focus ring on every click — annoying for mouse users. `:focus-visible` is the discipline; the bare `:focus` is the bug.
-  - `:hover` does nothing on touch devices (no hover); design hover-only affordances as enhancements, not as the only way to discover an action.
-  - `:active` fires on touch *and* hover-press; useful as the pressed-down style.
-  - `:has()` can chain (`:has(input:checked):has(label.required)`) but readability falls off; flatten into `data-*` attributes if the chain gets long.
-  - `placeholder:` styles the pseudo-element; without it, the placeholder inherits `color` and looks like real text.
-  - Disabled controls don't receive `:hover` events in most browsers — combine `disabled:` and `not-disabled:hover:` instead of relying on disabled-hover.
-  - `:has()` doesn't work inside `<select>` and a few other elements with shadow DOM; the chapter trusts the form library (Chapter 7) to handle those.
+  - "I'll just use an effect" is the lazy reach; "what shape *should* this be?" is the correct reflex.
+  - `useEffect(() => setX(...))` with no cleanup is almost always one of the anti-patterns.
+  - The fix isn't always "remove the effect" — sometimes it's "move to a Server Component," which is a larger refactor.
+  - Effects depending on derived values depending on more derived values signal `useReducer` (lesson 4 of chapter 024).
+  - `eslint-disable react-hooks/exhaustive-deps` is rarely the fix — `useEffectEvent` (lesson 3 of chapter 025) is the seam for legitimate cases.
 
 What this lesson does not cover:
 
-- The `data-*` and `aria-*` variants — lesson 4 of chapter 022 owns them; this lesson cross-references.
-- Form validation flow (`onSubmit`, `noValidate`, server validation) — Chapter 7.
-- The full `::pseudo-element` set (`::before`, `::after` for content insertion, `::marker` for list bullets) — recognition only; the chapter doesn't dedicate space.
-- Container query relational state — lesson 7 of chapter 025.
-- Accessibility primitives at depth (live regions, ARIA roles) — Chapter 031.
-- Drag-and-drop pseudo-states (`:active`, drop targets) — out of scope.
-- The `:target` pseudo-class for hash-driven UI — recognition only.
+- `useEffect` mechanics — lesson 2 of chapter 025.
+- `useEffectEvent` — lesson 3 of chapter 025.
+- `key` reset — lesson 5 of chapter 023.
+- Server Component data — Chapter 030, chapter 032.
+- TanStack Query — Chapter 11.
+- Suspense / streaming — Chapter 031.
 
 ---
 
-## Lesson 5 — Motion: transitions, keyframes, and tw-animate-css
+## Lesson 5 — useContext without the re-render storm
 
-Teaches `transition-*` for property motion (with `transform` and `opacity` as the cheap properties), `animate-*` with `@keyframes` declared in `@theme`, `tw-animate-css` as the shadcn dialog/sheet/accordion dependency, the `data-[state=open]:animate-in` choreography pattern, and `prefers-reduced-motion` with the `motion-reduce:` variant.
+`useContext` as propagation primitive, the every-consumer-re-renders footgun, and the three mitigations: split contexts, separate state from dispatch, and stable provider values.
 
 Topics to cover:
 
-- **The senior question.** A modal that opens with no animation feels janky; pulling in Framer Motion for one fade-and-scale is overkill. The 2026 form is `data-[state=open]:animate-in data-[state=closed]:animate-out fade-in-0 zoom-in-95` — utilities from `tw-animate-css` driving Radix data-state changes through pure CSS. The lesson installs the motion surface: `transition-*` for property-driven motion, `animate-*` plus custom `@keyframes` for entrance/exit choreography, the `tw-animate-css` package shadcn dialog/sheet/accordion depend on, and `prefers-reduced-motion` as the discipline-level guard.
-- **`transition-*` — the cheap motion.** `transition` (= `transition-property: all` with sensible defaults), `transition-colors`, `transition-transform`, `transition-opacity`, plus `duration-*`, `ease-*` (`linear`, `in`, `out`, `in-out`), `delay-*`. The 2026 reach: `transition-colors` on buttons, links, and any element whose color shifts on hover; `transition-transform` for scale-on-hover or translate-on-state. Limit `transition-all` to small components where every property is intentional — broad transitions paint extra work on every render.
-- **What's cheap to animate — `transform` and `opacity`.** GPU-composited on every modern browser; animate at 60fps without paint cost. Everything else (`width`, `height`, `top`, `left`, `padding`, `margin`, `background-color`, `color`) triggers layout or paint. The senior reflex: translate, scale, fade — never `top`, never `height` if avoidable.
-- **`animate-*` — the keyframe-driven motion.** Tailwind v4 keyframes live in `@theme` (`--animate-spin`, `--animate-pulse`, `--animate-ping`, `--animate-bounce` are shipped); custom keyframes go in `@theme` next to them. `animate-spin` on the loading icon, `animate-pulse` on skeleton placeholders, `animate-bounce` on the empty-state arrow. Custom animations: declare `@keyframes` and `--animate-<name>: <duration> <name>` in `@theme`, then write `animate-<name>` in JSX.
-- **`tw-animate-css` — the shadcn dependency.** New shadcn projects ship `tw-animate-css` as a dependency for the dialog, sheet, accordion, popover, and dropdown components. It provides `animate-in` / `animate-out` plus modifiers (`fade-in-0`, `fade-out-0`, `zoom-in-95`, `zoom-out-95`, `slide-in-from-top-2`, `slide-in-from-bottom`, etc.) and the duration/easing scale (`duration-200`, `ease-out`). The student installs once, then reads the surface — they don't reimplement it. Replaces the deprecated `tailwindcss-animate`.
-- **Data-attribute-driven choreography.** The 2026 pattern for component motion: Radix sets `data-state="open"` or `"closed"` on the wrapper; CSS variants (`data-[state=open]:animate-in data-[state=closed]:animate-out`) target the state and run the right entrance/exit. The motion lives in CSS, the state lives in React. The lesson shows a Dialog example: `fade-in-0 zoom-in-95` on open, `fade-out-0 zoom-out-95` on close, both via data-state variants.
-- **The accordion-down/-up keyframes.** Accordion height animations are special — `auto` height can't be animated by spec. shadcn's Accordion uses CSS custom properties Radix sets (`--radix-accordion-content-height`) plus `@keyframes accordion-down` and `accordion-up` in `@theme`. The student copies the pattern; the lesson names what each piece does. `interpolate-size: allow-keywords` (Baseline 2026) is the forward reference for the native fix when shadcn migrates.
-- **View Transitions API — the cross-route motion primitive.** Browser-level animation for state changes — `document.startViewTransition(() => setState(...))` snapshots before/after and crossfades. Next.js 16 supports it for page navigations behind a config flag. Out of the deep-dive scope here (recognition only); cashed in at a chapter that owns animated page transitions if the project demands it.
-- **`prefers-reduced-motion` — the discipline-level guard.** Users who set "Reduce motion" in OS settings see the matching media query. The senior reflex: every non-essential animation has a `motion-reduce:` variant that either disables or shortens it. shadcn's defaults handle this for the components themselves; the student writes `motion-reduce:transition-none` on bespoke animations. Cross-reference to lesson 2 of chapter 031 as the discipline-level commitment.
-- **The transform surface — `translate`, `scale`, `rotate`, `skew`.** Tailwind utilities for the four transforms (`translate-x-*`, `scale-105`, `rotate-12`, `-rotate-3`). `hover:scale-105` is the canonical hover-lift on cards; `active:scale-95` is the pressed-feedback on buttons. `transform-gpu` is the explicit form-hint; the browser usually composites these automatically.
+- **The senior question.** A SaaS app has a current user, theme, feature-flag map, locale, notifications queue — values needed by components scattered across the tree. Prop-drilling through fifteen layers is wrong. Bundling them in one context also costs: every consumer re-renders whenever *any* field changes. The lesson installs `useContext` as the propagation primitive, lands the perf footgun, and teaches the mitigations.
+- **The signature.** `const Context = createContext<T | null>(null)`. Provider in React 19: `<Context value={current}>...</Context>` (the shorter form; `.Provider` still works). Consumers: `const value = useContext(Context)` or `use(Context)` — the latter adds conditional reads (lesson 7 of chapter 025).
+- **What context is for.** Cross-cutting *infrastructure*: auth user, active org, theme, locale, i18n translator, feature flags, router instance. Values that change rarely or with broad scope. Used by Better Auth (Unit 8), theme provider (chapter 027), Next router.
+- **What context is *not* for.** A drop-in for three-layer prop drilling (pass the prop). Server state (TanStack Query / Server Components). Form state (the form component, Unit 6). High-frequency updates (per-keystroke, per-scroll) — re-render cost dominates.
+- **Default value and the null-check pattern.** `createContext<User | null>(null)` requires consumers to handle null. Senior pattern: a wrapper hook that throws on missing — `function useCurrentUser() { const ctx = useContext(UserContext); if (!ctx) throw new Error('...'); return ctx; }`. Converts a runtime null into fail-fast error at the import site; rest of the codebase reads a non-nullable type.
+- **The re-render rule — the footgun.** When the provider's `value` changes by `Object.is`, every consumer re-renders, regardless of which field they read. A theme toggle re-renders every consumer of a bundled global context.
+- **Mitigation #1: split the context.** Instead of one `AppContext`, three: `UserContext`, `ThemeContext`, `LocaleContext`. Consumers subscribe to what they use. Theme changes only re-render theme consumers. One context per cohesive concern.
+- **Mitigation #2: separate state from dispatch.** A reducer-backed context exposing `state + dispatch` re-renders dispatch-only consumers on every state change. Fix: two contexts — `StateContext` and `DispatchContext`. Dispatch is reference-stable; pure-dispatch consumers never re-render on state changes. The canonical pattern for reducer-in-context.
+- **Mitigation #3: stable provider values.** `<Context value={{ user, theme }}>` creates a new object every render. Fix: `useMemo` the value, or pass a stable reference (the state object directly). The React Compiler (lesson 2 of chapter 026) handles this automatically when analysis succeeds; manual `useMemo` is the fallback.
+- **The compiler interaction.** The compiler auto-memoizes provider values when the component is pure. When it succeeds, the manual `useMemo` ceremony disappears. When DevTools shows it didn't, `useMemo` is the manual fallback.
+- **Composition.** Each context owns its provider. Compose at the root: `<AuthProvider><ThemeProvider><LocaleProvider>...</LocaleProvider></ThemeProvider></AuthProvider>`. Deep nesting is unsightly but cheap; a `composeProviders` helper is recognition territory.
+- **Server/Client boundary.** Server Components can't consume Client contexts directly. Pattern in Next.js: a Client Component `<ProvidersWrapper>` holds all contexts; Server Components above pass data as props into Client Components below. Cross-ref chapter 030.
+- **Reading with `use(Context)`.** Same primitive plus one capability `useContext` lacks — conditional reads, including after early returns. `if (!enabled) return null; const value = use(Context);` is legal. (lesson 7 of chapter 025 owns the surface.)
 - **Watch-outs:**
-  - `transition` without naming the property animates *every* property change — a hover that changes background plus padding will animate the padding too (paint cost). Name the property.
-  - `transform` and `filter` create stacking contexts (cross-reference to lesson 9 of chapter 024); a scaled card with a tooltip child portals out or `isolation: isolate`s.
-  - `animate-spin` keeps running while off-screen unless paused; for performance-sensitive lists, gate with `content-visibility` or unmount.
-  - Animating `height: auto` doesn't work — measure-and-set in JS, or use the Radix custom-property pattern.
-  - Long animations feel sluggish; the senior duration band is `150ms` (snappy state changes), `200–300ms` (entrances/exits), `400ms+` (long-form choreography only).
-  - `motion-reduce:` doesn't disable *all* motion — essential UI feedback (loading spinners, focus rings) often stays; opt out of decorative motion only.
-  - View Transitions API has cross-origin and same-document constraints; verify support before assuming it covers a route.
+  - "Every consumer re-renders on context change" — split before it becomes a perf problem.
+  - `useContext` deep in a frequently re-rendering tree magnifies cost — measure with the Profiler.
+  - A provider with object literals in JSX re-renders every consumer every parent render — compiler usually fixes this; otherwise `useMemo`.
+  - "Use context to avoid the prop" for three-layer drill is overkill — pass the prop or use composition (children).
+  - Storing setter and value in the same context bundles read+write cohesion — split.
+  - Server-component providers don't exist; the Server Component *renders* the provider but doesn't read.
+  - Zustand/Jotai are the right move when state is *application state* (mutated from many places, sliced into subscribers), not infrastructure — Unit 15.
 
 What this lesson does not cover:
 
-- React-side animation libraries (Framer Motion, React Spring) — out of scope; CSS plus `tw-animate-css` covers the SaaS surface. Brief recognition only.
-- Scroll-driven animations and `animation-timeline: scroll()` — niche; recognition only.
-- SVG animation (`<animate>`, SMIL) — out of scope.
-- View Transitions API at depth — recognition only here; the chapter that owns animated route transitions is a future Unit 5 lesson if the project demands it.
-- Lottie and JSON-driven motion — out of scope.
-- `IntersectionObserver`-driven scroll reveals — covered in Chapter 7 territory if it earns its weight.
-- Page-load animations and FOUC mitigation — lesson 6 of chapter 022 owns the dark-mode FOUC; load-in motion is project-level.
+- `use(Context)` conditional reads — lesson 7 of chapter 025.
+- Server/Client boundary — Chapter 030.
+- React Compiler memoization — lesson 2 of chapter 026.
+- Manual `useMemo` / `memo` thresholds — lesson 3 of chapter 026.
+- Zustand and external stores — Unit 15.
+- Better Auth's session provider — Unit 8.
 
 ---
 
-## Lesson 6 — Breakpoints and the mobile-first reflex
+## Lesson 6 — Marking updates as non-urgent
 
-Teaches mobile-first as the senior default, the Tailwind `sm`/`md`/`lg`/`xl`/`2xl` scale, breakpoints as content-driven not device-driven, the `prefers-*` media-feature family, `@media (hover: hover)` against the iOS sticky-hover bug, and the `hidden md:block` / `md:hidden` visibility pattern.
+`useTransition` and `useDeferredValue` as priority markers (not speed boosts), the wrap-the-setter vs. wrap-the-value cut, async transitions, and the Suspense interaction that keeps old UI visible.
 
 Topics to cover:
 
-- **The senior question.** A card grid that's three columns desktop, two tablet, one mobile is `grid-cols-1 md:grid-cols-2 lg:grid-cols-3`; the Tailwind responsive prefix compiles to a `@media (min-width: 768px)` block. The lesson installs the responsive design model — the media query as the primitive, Tailwind's mobile-first breakpoint scale as the form the student actually writes, and the senior reflexes (mobile-first by default, container queries when the component should respond to its parent instead of the viewport).
-- **Mobile-first as the senior default.** Write the base styles for the smallest viewport; layer larger-viewport overrides with `sm:`, `md:`, `lg:`, `xl:`, `2xl:`. The reason isn't preference: mobile devices are the larger share of traffic, browser cost is lower (fewer overrides to discard), and the cascade flows naturally (`min-width` media queries layer cleanly). Desktop-first (`max-md:`) exists for the rare case where the small-screen rules are the override.
-- **The Tailwind breakpoint scale.** `sm` 640px, `md` 768px, `lg` 1024px, `xl` 1280px, `2xl` 1536px. Customizable via `@theme` (`--breakpoint-md: 800px`). The 2026 reach: stay on the scale; the design system picks one custom point if the project demands it. The `max-*` cousins (`max-md:`) flip the direction. Ranged variants exist (`@min-md:`, `@max-lg:`) but rare in production.
-- **`@media (min-width: ...)` — the underlying primitive.** Recognition: every responsive utility compiles to `@media (min-width: <breakpoint>) { ... }`. The CSS form is what custom Tailwind utilities or third-party CSS would write.
-- **Breakpoints are content-driven, not device-driven.** Old advice was "phone, tablet, desktop"; the 2026 form is "where does the layout break." A card grid breaks at the width where two cards fit; the breakpoint is whatever width that is. Tailwind's defaults are a pragmatic starting point, not device categories.
-- **The `prefers-*` media features cashed in.** `prefers-color-scheme: dark` (handled by `dark:` and `next-themes` — lesson 6 of chapter 022); `prefers-reduced-motion: reduce` (handled by `motion-reduce:` — lesson 5 of chapter 025); `prefers-contrast: more` (rare, lesson 2 of chapter 025); `forced-colors: active` (Windows HCM, lesson 2 of chapter 025). The lesson collects them as a single family because they're all media queries.
-- **`@media (hover: hover)` and `@media (pointer: fine)` — the input-device queries.** `hover:` and `:hover` work everywhere, but a touch-only device fires `:hover` on tap and sticks until the next interaction (the iOS sticky-hover bug). The senior fix wraps hover styling in `@media (hover: hover)` — Tailwind variants `hover:` already do this in v4 by default. `pointer: fine` for mouse-only affordances (small click targets); `pointer: coarse` for touch-only.
-- **`orientation: landscape` / `portrait`.** Rare in practice — `min-width` breakpoints capture the same intent more reliably. Recognition only.
-- **`@media print`.** The print stylesheet — `print:` variant in Tailwind. Reaches: hiding navigation on print, expanding collapsed content, forcing black text on white background. Most SaaS apps don't ship a print stylesheet; recognition for invoices and reports.
-- **The responsive utilities a senior reaches for daily.** `md:flex`, `md:grid-cols-2`, `md:flex-row` (column on mobile, row on desktop), `hidden md:block` (the canonical hide-on-mobile pattern), `md:hidden` (the canonical show-on-mobile-only pattern), `md:text-lg`, `md:p-8`, `md:gap-8` (denser spacing on mobile, looser on desktop). The pattern: change the layout primitive at the breakpoint, then scale the visual values inside.
-- **Viewport vs. container queries — the decision.** Media queries answer "how big is the viewport"; container queries answer "how big is this container." A sidebar that goes from collapsed to expanded changes its component's available width without changing the viewport; container queries are the right reach. Page-level structure (mobile nav vs. desktop nav, two-column page vs. one-column) is viewport-driven. The lesson lands the decision; lesson 7 of chapter 025 cashes in container queries.
-- **The viewport meta tag.** Cross-reference to lesson 2 of chapter 021 — `<meta name="viewport" content="width=device-width, initial-scale=1">` is what makes mobile-first viewport units behave. Next.js ships it via the metadata API. The student doesn't write it; they recognize it.
+- **The senior question.** A type-ahead has an instant-updating input and a slow result list — every keystroke janks. A tab-switch click triggers a heavy re-render, freezing the click animation. A filter applies and the table re-renders for 300ms. Each is a *priority* problem: the input/click is urgent, the downstream re-render is non-urgent. `useTransition` and `useDeferredValue` tell React which is which.
+- **The mental model — urgency, not speed.** React's concurrent renderer can interrupt low-priority work for higher-priority updates. The primitives don't make rendering faster; they reorder which work blocks the user. `startTransition` marks an update as low-priority; React commits the urgent update first and the transition in the background, optionally showing a pending state.
+- **`useTransition` — the signature.** `const [isPending, startTransition] = useTransition()`. Wrap a state update: `startTransition(() => setFilter(value))`. `isPending` is `true` from start to commit — useful for spinners, dimming, disabling.
+- **The canonical reach — input + slow filter.** The input's `onChange` updates two states: urgent `setQuery(value)` (the controlled input, must paint immediately) and transitional `startTransition(() => setFilter(value))` (drives the slow list). React commits the input first; the list updates in the background.
+- **Async transition pattern (React 19+).** `startTransition(async () => { const data = await fetchData(); setData(data); })`. The async runs inside the transition; `isPending` stays `true` until commit. Foundation Server Actions build on — every `<form action={...}>` and `useActionState` dispatch is implicitly a transition. Cross-ref Unit 6.
+- **`useDeferredValue` — the signature.** `const deferredQuery = useDeferredValue(query, initialValue?)`. Returns a value that *lags* — when `query` updates, the deferred value keeps the previous for one render, then re-renders at low priority with the new. Optional `initialValue` (React 19+) for SSR with a placeholder.
+- **`useDeferredValue` — the canonical reach.** When you can't control the *setter* (third-party input, library hook), wrap at the *consumer*. `const deferredQuery = useDeferredValue(query); return <SlowList query={deferredQuery} />`. The slow list re-renders against the deferred value; the input stays responsive.
+- **`useTransition` vs. `useDeferredValue` — the cut.** Wrap the *setter* when you control where state updates. Wrap the *value* when you only observe. Same downstream behavior; different side of the data flow.
+- **Suspense + transition interaction.** When a transition's render reads a suspending resource (a `use()` of a promise, a tripped Suspense), React keeps the *previous* committed UI visible during the transition instead of unmounting to a fallback. This is what makes transitions feel smooth.
+- **Combining with `useMemo` for compounding wins.** The deferred value passed into a `useMemo` (or compiler auto-memo) means the expensive computation only runs when the deferred updates — not every keystroke.
+- **The threshold — when these earn their weight.** (1) Measurable jank (the user notices, typically >50ms). (2) Genuinely large work (sorting thousands of items, complex viz). (3) The React Compiler hasn't already memoized it away. Premature blanket-wrapping adds complexity without payoff.
+- **Server Actions and transitions — recognition.** Server Action runs (form submit, `useActionState.formAction`, or `startTransition(async () => action())`) are transitions. `useFormStatus().pending` and `useActionState.isPending` surface from the same mechanism. (Unit 6.)
+- **What these are not.** Not a debounce (use a debounce hook or `useDeferredValue`'s lag). Not a way to make slow code fast (just reorders priority). Not a substitute for `<Suspense>` at route boundaries — Suspense is for *initial* load; transitions keep old UI visible *during* an update. Not relevant to non-React work (a slow `setTimeout`).
+- **Compiler interaction.** Compiler doesn't replace these; it complements. Compiler memoizes pure computation to make non-deferred renders faster; the primitives mark *which* updates can wait.
 - **Watch-outs:**
-  - `md:flex` doesn't unset `flex` below the breakpoint — it's `@media (min-width: 768px) { display: flex }`. Combined with `block` base, the element is block on mobile and flex on desktop, not "unset on mobile."
-  - Responsive prefixes stack with state prefixes — `md:hover:bg-accent` is valid; order matters in Tailwind v4 (variant order = source order in the compiled CSS).
-  - The iOS sticky-hover bug is real on `:hover` without `(hover: hover)` gating — Tailwind's `hover:` handles it; raw CSS doesn't unless the developer wraps it.
-  - `prefers-color-scheme` is the OS preference; `.dark` is the site preference. The site preference wins via `next-themes`.
-  - `min-width: 640px` doesn't mean "tablet"; it means "640px and up." Don't name breakpoints for devices.
-  - `hidden md:block` and `md:hidden` are the legitimate visibility-by-breakpoint pattern; conditional rendering in React is the alternative when the off-screen content should be unmounted (a11y, performance).
+  - `startTransition(setX)` (passing the setter directly) doesn't work — call it inside the function.
+  - State inside a transition isn't delayed — `setX(v)` still queues a commit; only *priority* changes.
+  - `isPending` is `true` during the transition's render *and* any suspending resources — using it for spinners covers both.
+  - Wrapping the input's own value in `useDeferredValue` is wrong — that's the urgent path. Wrap the consumer.
+  - Effects depending on a deferred value see the deferred value, not current — usually correct, occasionally a trap.
+  - "Use `useTransition` for everything" misses the threshold. Default is no transition; reach when measurable jank exists.
+  - A transition can be interrupted — a new transition starting before the previous commits abandons the previous work. Correct behavior.
+  - Standalone `startTransition` from the React import does the same priority marking without `isPending` — useful from module-scope utilities.
 
 What this lesson does not cover:
 
-- Container queries — lesson 7 of chapter 025.
-- The viewport meta tag — lesson 2 of chapter 021.
-- The `<picture>` element and responsive images — lesson 6 of chapter 021 / Next.js `<Image>` territory.
-- Viewport unit details (`vh`, `dvh`, `svh`, `lvh`) — lesson 5 of chapter 024.
-- Mobile navigation patterns (drawer, slide-out) — lesson 5 of chapter 032 (the project chapter cashes in).
-- Server-side device detection (`User-Agent` sniffing) — out of scope; CSS handles it.
-- Adaptive vs. responsive design philosophy — out of scope; the chapter is opinionated on responsive.
+- `use()` and Suspense — lesson 7 of chapter 025.
+- `<Suspense>` and streaming — Chapter 031.
+- `useOptimistic` — Unit 6.
+- `useFormStatus` and `useActionState` — Unit 6.
+- Server Actions at depth — Unit 6.
+- Debounce/throttle hooks — lesson 1 of chapter 026.
+- The Profiler — lesson 3 of chapter 026.
 
 ---
 
-## Lesson 7 — Container queries for component-level layout
+## Lesson 7 — Reading promises with use()
 
-Teaches `container-type: inline-size` as the senior default, `@container` plus the `@sm:` / `@md:` Tailwind variants, the `cqi` unit with `clamp()` for fluid component typography, named containers for nested structures, and the viewport-vs-container decision rule.
+The `use()` primitive for unwrapping promises into Suspense and reading context conditionally, the stable-promise rule, and the Server-to-Client streaming pattern that replaces effect-based fetching.
 
 Topics to cover:
 
-- **The senior question.** A `<ProductCard>` rendered in the sidebar (200px wide) and in the main feed (600px wide) needs different layouts — but both contexts share the same viewport, so media queries can't tell them apart. The 2026 answer is a container query: `@container (min-width: 400px) { ... }`, or in Tailwind `@container` on the wrapper and `@md:flex-row` on the children. The lesson installs container queries as the component-level form of responsive design, names the `cqi`/`cqb` container units, and lands the decision (viewport queries for page structure, container queries for components).
-- **The model — `container-type` and `@container` rules.** A parent declares itself a container (`container-type: inline-size` or `container-type: size`), and descendants query *that container's* size instead of the viewport. Tailwind v4 ships `@container` as the utility that declares `container-type: inline-size`. Descendants use `@sm:`, `@md:`, `@lg:` prefixes (the `@` distinguishes container from viewport queries). Default Tailwind container breakpoints are smaller than viewport breakpoints (`@xs` 320px, `@sm` 384px, `@md` 448px...).
-- **`container-type: inline-size` — the senior default.** Queries only the container's inline (width) axis; the container's height stays content-driven. The 99% reach. `container-type: size` queries both axes but the container must have a defined height — rare and footgun-prone. `container-type: normal` removes containment.
-- **The canonical pattern — a card that adapts to its slot.** A `<ProductCard>` with `@container` on the root and `@md:flex-row` on the inner layout produces a vertical card in narrow slots and a horizontal card in wide slots — without the parent ever knowing what layout the card chose. Cashes in component reusability across the dashboard / sidebar / feed contexts every SaaS hits.
-- **`@container` plus named containers.** `container-name: card` lets a child query a specific ancestor by name — `@container card (min-width: 400px)`. Tailwind: `@container/card` on the parent and `@md/card:flex-row` on the child. Reach: nested containers where a deep child needs to bypass a closer container.
-- **Container query units — `cqi`, `cqb`, `cqw`, `cqh`, `cqmin`, `cqmax`.** `1cqi` = 1% of the container's inline size (preferred over `cqw`); `1cqb` = 1% of block size; `cqmin` / `cqmax` for the smaller / larger of the two. Reaches: fluid typography inside a card (`font-size: clamp(1rem, chapter 009cqi, 1.5rem)`), padding that scales with container size, image heights that follow card width. The 2026 reach is `cqi` for almost everything — width drives most component sizing.
-- **`@container` and `clamp()` — fluid component typography.** A common 2026 pattern: a card title that scales from 16px in a small card to 24px in a large card, with one rule — `clamp(1rem, chapter 009cqi, 1.5rem)`. No breakpoint, no Tailwind variant, no JavaScript. Cashes in the `clamp()` primitive named in lesson 5 of chapter 024.
-- **The viewport-vs-container decision, cashed in.** Page-level layout (mobile nav vs. desktop nav, single-column vs. two-column page shell) → viewport queries via `md:`. Component-level layout (a card that adapts to its slot, a sidebar widget that collapses based on its parent) → container queries via `@md:`. Most modern SaaS UIs use both — the page is viewport-driven, the components inside are container-driven. The lesson lands this as the senior decision rule.
-- **`auto-fit` + `minmax` vs. container queries — both solve "responsive without breakpoints."** Cross-reference to lesson 4 of chapter 024. `grid-cols-[repeat(auto-fit,minmax(280px,1fr))]` makes the *container* responsive to the items; `@container` + `@md:flex-row` makes the *items* responsive to the container. Both are 2026 reflexes; the decision is whether the design wants flexible track count or per-item adaptation.
-- **Container query browser support and the Baseline status.** Baseline since late 2023; in 2026 it's universally supported with no polyfill story. The senior reaches without checking caniuse.
-- **Style queries — recognition only.** `@container style(--theme: dark)` queries a custom property rather than a size. Limited browser support in early 2026; not a senior reach yet.
+- **The senior question.** A Server Component awaits a database query and passes the resulting `Promise` to a Client Component child. The child shouldn't `await` (Client Components aren't async), shouldn't `useEffect` (the 2020 anti-pattern), shouldn't `useState` + spinner (also 2020). It should *read* the promise inside a Suspense boundary and let React suspend until it resolves. `<Suspense fallback={...}>` is a boundary that renders the fallback while descendant components throw a pending Promise; wrapping granularity is the subject of lesson 1 of chapter 031. `use()` is the primitive: unwraps a Promise (suspending if unresolved) or a Context (with one capability `useContext` lacks: conditional reads).
+- **The signature.** `const value = use(resource)` — `resource` is `Promise<T>` or `Context<T>`. Returns `T`. Promise pending → throws to nearest Suspense boundary. Resolved → returns value. Rejected → throws to nearest error boundary. Context → returns current value, callable conditionally.
+- **The rule that breaks rules of hooks — for `use()` only.** Can be called conditionally, after early returns, inside loops. The lint has a special exemption. Reason: `use()` doesn't depend on call-order matching across renders; it reads a resource and decides whether to suspend. Named explicitly — students should not generalize.
+- **Promise use case — Server → Client streaming.** A Server Component starts a slow query and passes the *unawaited* promise: `<ClientList items={getItems()} />`. The child: `const items = use(itemsPromise)`. While pending, React suspends; the parent's `<Suspense fallback>` shows. When resolved, the child renders. The canonical pattern for streaming data server → client without `useEffect` and without blocking the rest of the page.
+- **Context use case — conditional reads.** `useContext` must be at the top, before any early return. `use(Context)` can be anywhere. Rarely needed but solves a real pain — a component returning `null` for disabled state and reading context only when enabled.
+- **What `use()` does not do.** It does not subscribe to a promise's resolution and re-render. It throws to Suspense, which renders the fallback, then re-renders the component when the promise resolves. From the component's view, it's synchronous: get a value or interrupt the render.
+- **The "cache the promise" rule.** The Promise must be referentially stable across renders for the same logical resource. Creating a new promise inside the component every render (`use(fetch('/api/data'))`) is wrong — every render creates a new fetch, suspends, never resolves. Senior pattern: create in a Server Component (one run per request) or pass from a stable holder. For client-only async, TanStack Query (Chapter 11).
+- **`cache()` from React.** Server-only — deduplicates calls to the same function with the same args within a request: `const getUser = cache(async (id) => db.user.findUnique({ id }))`. With `use()`, multiple components reading the same resource share one fetch. (Chapter 032 owns the full data path.)
+- **Error handling — error boundaries.** A rejected promise throws to the nearest error boundary, which renders its fallback. Pattern: wrap regions with `<ErrorBoundary>` (from `react-error-boundary` or hand-rolled) and `<Suspense>` for loading. (Unit 16 for error patterns.)
+- **Comparison to `useEffect` + state.** Old: `useEffect(() => fetch().then(setData), []); if (!data) return <Spinner />`. Two renders, manual loading, manual error, manual cleanup, no SSR. New: `const data = use(promise)`. One render, Suspense for loading, error boundary for errors, works in SSR.
+- **Comparison to TanStack Query.** TanStack Query handles client-side server-state with cache, polling, invalidation, optimistic updates. `use()` is the lower-level primitive — closer to the metal, no caching, no automatic refetch. Senior reflex: initial server-rendered fetch with simple reads → `use()` + Server Components. Interactive data with cache, mutations, invalidation → TanStack Query. They compose (TanStack Query's `useSuspenseQuery` uses Suspense, which `use()` taps into).
+- **`use()` in Server Components.** Server Components can `await` directly — `use()` is unnecessary there. It shines in Client Components reading promises from Server Component parents and in conditional context reads. Don't sprinkle `use()` where `await` would do.
+- **Action-side counterparts.** `useActionState`, `useFormStatus`, `useOptimistic` — taught in Unit 6. Together they form the React 19 "read async resources" surface. Forward reference only.
 - **Watch-outs:**
-  - Container queries don't work without `container-type` set somewhere up the tree; the most common bug is forgetting `@container` on the parent.
-  - `container-type: inline-size` causes the container to establish a new layout context — flex items inside still flex, but the container's height becomes content-driven (no `height: 100%` on the parent flowing through automatically).
-  - Container query units don't work *outside* a container; `cqi` falls back to 0 if no ancestor has `container-type`.
-  - `@container` is the Tailwind utility name; the underlying property is `container-type`. The chapter uses both forms so the student recognizes either.
-  - Nested containers compose — an inner `@container` shadows an outer one for unnamed queries. Name containers when the structure has multiple.
-  - Container queries don't query the element they're applied to; they query a parent. The container is always an ancestor.
-  - Don't reach for container queries when viewport queries are simpler — the page shell rarely needs them.
+  - Creating a promise inside the component body is wrong — must be stable from a parent or `cache()`.
+  - `use()` reading a promise without `<Suspense>` above suspends the whole tree — wrap at the right granularity.
+  - Error boundary placement matters — too high blanks the whole region; too low and it doesn't catch.
+  - `use()` doesn't deduplicate — two children reading the same `promiseA` each suspend independently; `cache()` deduplicates the *function call*.
+  - Conditional `use(Context)` is fine; conditional `use(promise)` that varies across renders can cause inconsistent suspense behavior — keep the resource stable.
+  - `use()` isn't a replacement for `useEffect`'s synchronization with external systems.
+  - Browser-only promises (timers, `setTimeout`) coordinating with UI usually want `useEffect` + `useState` or `useDeferredValue` — `use()` is for *resource* reads.
 
 What this lesson does not cover:
 
-- Style queries at depth — recognition only.
-- The viewport-unit family (`vh`, `dvh`, `svh`, `lvh`) — lesson 5 of chapter 024.
-- Media queries — lesson 6 of chapter 025.
-- Component composition patterns that benefit from container queries — Chapter 026.
-- Responsive images and `<picture>` source matching — out of scope here.
-- Container queries for height-driven adaptation — niche; the chapter recommends `inline-size` and trusts the design.
-- Component design system practices (variants vs. queries) — Chapter 031 territory.
+- `<Suspense>` and streaming SSR — Chapter 031.
+- Server Components and the data path — Chapter 030, chapter 032.
+- `cache()` at depth — Chapter 032.
+- Server Actions, `useActionState`, `useFormStatus`, `useOptimistic` — Unit 6.
+- TanStack Query's `useSuspenseQuery` — Chapter 11.
+- Error boundaries at depth — Unit 16.
 
 ---
 
-## Lesson 8 — Quizz
+## Lesson 8 — Rules of hooks and the lint that enforces them
+
+Why hooks must run at the top level in the same order every render (the indexed-slot mechanic), the `use*` naming contract, and the two ESLint rules that enforce structure and dependencies.
+
+Topics to cover:
+
+- **The senior question.** Hooks have unstated rules that make them work: same hooks, in the same order, every render. Violating produces unpredictable bugs — `useState` returning the wrong slot, `useEffect` running for the wrong deps, `useRef` pointing at the wrong instance. The rules are simple to state, easy to violate, easy to enforce with lint. The lesson names them explicitly (per "explicit over magic"), explains *why* they exist (React identifies hook instances by call order), and lands the lint setup.
+- **Rule 1: only at the top level of a component or another hook.** Never inside conditionals, loops, or after early returns. Every render must execute the same sequence in the same order. Canonical violation: `if (props.show) { const [x] = useState(0); }` — first render runs `useState`, second skips it, slot misaligns, next `useState` reads the wrong slot.
+- **Rule 2: only from React function components or other hooks.** Not from utility functions, handlers, or class components. Hooks rely on render-time tracking; calling outside a render breaks the contract. Custom hooks (prefixed `use*`, lesson 1 of chapter 026) are legitimate composition.
+- **The exception: `use()`.** As taught in lesson 7 of chapter 025, callable conditionally. The lint has a built-in exemption. Reason: `use()` doesn't rely on call-order matching. The lesson reinforces this as the *one* deviation — students should not generalize.
+- **Why the rules exist — the indexed-slot metaphor.** React doesn't track hooks by name. On render, it advances an internal "current hook index" on each call: 0 → `useState` → 1 → `useEffect` → 2 → `useState`. The next render expects the same sequence. A conditional hook breaks indexing — index 1 might be `useEffect` on render one and `useState` on render two, and React mismatches state.
+- **The naming convention — `use*` as contract.** Any function calling a hook must be named `use*`. This signals to the lint that the function obeys the rules and may call other hooks. `getThing` calling `useState` is a lint error.
+- **Setup: `eslint-plugin-react-hooks`.** Two rules — `react-hooks/rules-of-hooks` (calling rules) and `react-hooks/exhaustive-deps` (dependency arrays for `useEffect`, `useMemo`, `useCallback`, custom hooks via `additionalHooks`). Both ship in the default Next.js ESLint config. Comments-disabling either is almost always a smell.
+- **`rules-of-hooks` failures.** Hook inside `if`, hook after early `return`, hook inside a callback or handler, hook in a non-`use*` function, hook in a class method. Each has a specific fix — usually restructuring so the hook is at the top.
+- **`exhaustive-deps` warnings.** Triggers when an effect (or `useMemo`/`useCallback`) reads a reactive value not in its deps. The fix is almost always "add the dep." Exclusions the lint understands: `useEffectEvent`-wrapped functions (lesson 3 of chapter 025), refs (`ref.current`), stable `useState` setters.
+- **`additionalHooks` config.** Custom hooks that take a dep array (e.g., a `useDebounced(value, delay)`) can be added to the `additionalHooks` regex so the lint enforces deps on them too. Students writing custom hooks (lesson 1 of chapter 026) should opt in.
+- **When to disable lint — narrow cases.** (1) Intentional one-time effect where adding a dep would cause undesired re-runs *and* `useEffectEvent` doesn't fit (extremely rare; document with a comment). (2) A library hook with non-standard semantics the lint doesn't understand. (3) A complex dep that's intentionally referentially stable from upstream. Each requires a comment explaining why; bare `// eslint-disable-next-line` is a code-review red flag.
+- **Compiler-plus-lint.** With the React Compiler enabled (lesson 2 of chapter 026), `exhaustive-deps` is less critical — the compiler analyzes and inserts the right deps. `rules-of-hooks` remains critical regardless; the compiler doesn't change the indexed-slot mechanic. Keep both rules on.
+- **The DevTools angle.** When a rules-of-hooks violation slips past lint (a hot-reload edge, a library doing something unusual), React throws at runtime: "Rendered fewer hooks than expected." The error names the component; fix is auditing for conditional calls.
+- **Watch-outs:**
+  - `if (props.show) { const [x] = useState(0); }` is the textbook violation — slot misaligns.
+  - `if (!data) return <Spinner />; const [x] = useState(0)` — the early return makes the hook conditional. Move all hooks above any early return.
+  - `items.map((_, i) => useEffect(...))` — hooks in a loop where iteration count can change. Lift the iteration into a child component with one hook per instance.
+  - `function onClick() { const [x] = useState(0); }` — hook inside a handler, not a component or custom hook.
+  - A custom hook named `getThing` (no `use*` prefix) calling `useState` — lint flags both name and implication.
+  - The lint can't catch a hook called from a renamed-to-`use*` utility that doesn't actually obey the rules — naming is a contract, not enforcement.
+  - `use(Context)` and `use(promise)` are the deliberate exception — don't generalize.
+  - Class components don't have hooks. A library boundary requiring a class wraps a function component that owns hooks and passes results down.
+
+What this lesson does not cover:
+
+- Custom hooks at depth — lesson 1 of chapter 026.
+- React Compiler's interaction with `exhaustive-deps` — lesson 2 of chapter 026.
+- Full project ESLint config — Chapter 003.
+- `useEffectEvent` exclusions — lesson 3 of chapter 025.
+
+---
+
+## Lesson 9 — Quizz
 
 Top 10 topics to quiz:
 
-- Typography reflexes — the Tailwind type scale, `leading-*` / `tracking-*` defaults, `text-balance` on headings, `text-pretty` on body, `max-w-prose` for reading width, `truncate` and `line-clamp-*` requirements (the `min-w-0` flex companion).
-- Color and the modern surface — OKLCH as the storage form, `color-mix(in oklch, ...)` for runtime mixing, the alpha syntax (`bg-blue-500/50`) compiling to `color-mix()`, semantic tokens over primitives, `opacity` vs. per-property alpha (and the stacking-context trigger), `prefers-color-scheme` vs. `.dark`.
-- Borders, radius, and shadows — `outline` vs. `border` for focus rings (`outline` doesn't shift layout), `ring-*` as the multi-layer shorthand, the `shadow-*` elevation scale and the surface tiers, `drop-shadow` vs. `box-shadow`, `backdrop-filter` for glass-morphism.
-- Pseudo-classes for interaction — `:focus-visible` as the canonical focus reflex (not `:focus`), `:focus-within` for parent-of-focused, `disabled:` plus `aria-disabled:`, the iOS sticky-hover bug and how `hover:` gates it.
-- `:has()` — the parent selector, the canonical reaches (`has-[input:invalid]:`, `has-[:checked]:`), where it retires JavaScript class toggles, and the `group-has-[...]:` form.
-- Animation — `transition-*` for property motion (cheap properties are `transform` and `opacity`), `animate-*` for keyframes, `tw-animate-css` as the shadcn dependency for dialog/sheet/accordion, the `data-[state=open]:animate-in` pattern, `prefers-reduced-motion` and `motion-reduce:` as the discipline.
-- The transform surface — `translate`, `scale`, `rotate`, `skew`, plus the stacking-context trigger on `transform` and `filter` (cross-references to lesson 9 of chapter 024).
-- Media queries and breakpoints — mobile-first as the senior default, the Tailwind `sm`/`md`/`lg`/`xl`/`2xl` scale, breakpoints are content-driven not device-driven, `hidden md:block` and `md:hidden` for visibility-by-breakpoint, the `prefers-*` family.
-- Container queries — `container-type: inline-size` as the default, `@container` plus `@sm:` / `@md:` Tailwind variants, the `cqi` unit and `clamp()` for fluid component typography, named containers for nested structures, the viewport-vs-container decision.
-- The decision lattice — viewport queries for page structure, container queries for component layout, `grid auto-fit minmax` when the design wants flexible track count, and the senior reach for each.
+- Strict Mode's double-invocation contract — what gets double-invoked (renders, initializers, effect mount/cleanup/mount), why it surfaces missing cleanups, the rule that fighting Strict Mode reintroduces the bug it catches.
+- The `useEffect` lifecycle as synchronization, not lifecycle — setup, cleanup-then-setup on dep change, cleanup on unmount; the four cleanup pairings (listener, timer, subscription, resource); abort and `ignore`-flag patterns.
+- The narrowed 2026 role of `useEffect` — residual cases (external subscriptions, third-party widgets, browser APIs) and what replaced effect-based fetching (Server Components, `use()`, TanStack Query).
+- `useEffectEvent` for non-reactive logic — reactive vs. non-reactive (cause resynchronization vs. read latest values); the three canonical reaches (event-shaped props, analytics, polling reads); call-site restriction.
+- The "you might not need an effect" audit — the five-quadrant chart (derive, handle, server, cache, sync) and canonical anti-patterns (derived state, prop-driven reset, chain of effects, fetch-on-mount, child-to-parent notify).
+- `useContext` and the re-render footgun — value-change re-renders all consumers; three mitigations (split contexts, separate state from dispatch, stable provider values via compiler or `useMemo`).
+- `useTransition` vs. `useDeferredValue` — wrap-the-setter vs. wrap-the-value; urgency-not-speed framing; threshold (measurable jank, large work, compiler doesn't help); Suspense keeps old UI visible.
+- `use()` for promises and contexts — the conditional-call exemption; Server-to-Client streaming pattern; stable-promise requirement and `cache()` companion.
+- The rules of hooks (top level, function-component or `use*`-function, no conditionals, `use()` exception) — the call-order/indexed-slot mechanic and why violations produce slot-misalignment bugs.
+- ESLint enforcement — `react-hooks/rules-of-hooks` (structural, never disable) and `react-hooks/exhaustive-deps` (dependencies, rarely disable); compiler-plus-lint relationship and when each is the right layer.

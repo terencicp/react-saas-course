@@ -1,432 +1,334 @@
-# Chapter 069 — Project: From Stripe webhook to plan entitlement
+# Chapter 069 — Project: presigned R2 upload
 
 ## Chapter framing
 
-Chapter 069 stitches the webhook discipline from chapter 067 and the Stripe billing model from chapter 068 into one runnable surface: the `/api/webhooks/stripe` route handler that ingests `checkout.session.completed`, `customer.subscription.updated`, and `customer.subscription.deleted` — signature-verified with constant-time compare, deduped via `processed_events`, wrapped in one outer transaction, ordered with a `last_event_at` predicate — and the derived `plan_entitlements` row the app reads on every request. On the in-bound side the student writes the `billing.*` interface (`upgrade`, `openPortal`, `requirePlan`), wires the inspector's Checkout and Portal buttons through it, and proves the loop end-to-end with `stripe listen` + `stripe trigger` against a local dev URL. The chapter ships 1 brief + 1 starter walkthrough + 4 build lessons + 1 verify lesson; each build closes on a runnable state and a deterministic verification step.
+Chapter 069 cashes in the chapter 068 primitives — scoped credentials and CORS (lesson 2 of chapter 068), presigned PUT/GET with the two-step write (lesson 3 of chapter 068), the `file_metadata` row shape with tenancy at the read boundary (lesson 4 of chapter 068), the workload split between user uploads and export outputs (lesson 5 of chapter 068) — and lands them as one runnable upload surface. The student writes the `presignedPut` Server Action that signs against R2 without piping bytes through the function, the browser-side direct-to-R2 PUT with XHR progress, the `finalizeUpload` action that HEADs the object and inserts the row, the `Files` list rendering rows with fresh per-render presigned GETs, and the retrofit on the chapter 067 export job so the `console.log`-shaped `downloadUrl` becomes a real R2 object and the email's link is a 10-minute presigned GET. Each build lesson closes on a runnable state: lesson 3 of chapter 069 ends with a fireable action verified by `curl`-PUT; lesson 4 of chapter 069 ends with the browser upload landing the bytes and the row; lesson 5 of chapter 069 ends with the `Files` page rendering downloads; lesson 6 of chapter 069 ends with the export emailing a working R2 link. Verify walks the "Done when" clause-by-clause, including the long-tail proof — a refresh 11 minutes later still works because GETs are re-issued per render.
 
-Threads that run through every lesson: the webhook is the only writer for `plan_entitlements` — Server Actions, the Portal return, and the Checkout success page all read, never write; the route handler verifies before parsing before logging, returns 400 on signature failure with no body work; the dedup INSERT and the entitlement UPSERT live in one transaction so a crash mid-handler can never leave partial state and a replay never mutates twice; the entitlement UPSERT carries the `last_event_at < event.created` predicate so out-of-order delivery silently no-ops the older event; `lookup_key` is the only stable handle Stripe IDs travel by — `price_id` strings never appear in app code; the `billing.*` interface is the only place `stripe` is imported, every other call site reads the entitlement row or calls one of three exported methods; `hasActiveAccess(entitlement)` and `requirePlan(planSlug)` are the two gate functions, encoded once. The chapter inherits the chapter framing of chapter 066 — every UPDATE carries tenancy + lifecycle + ordering preconditions in its `WHERE`, zero-rows-affected is the honest no-op.
+Threads through every lesson: the function never sees the bytes for user uploads — Network tab shows small JSON to/from the action and the multi-MB PUT going straight to `${bucket}.r2.cloudflarestorage.com`; the two-step write is structural — sign → upload → finalize-with-HEAD → row insert, never row-before-upload; `objectKey` is server-constructed (`org/${organizationId}/files/${rowId}.${ext}`), never client-supplied; `byteSize` and `contentType` come from the post-upload `HeadObjectCommand`, not the client's claim; presigned GETs are fresh-per-render, never persisted, never cached past expiry; tenancy is enforced at every read via `tenantDb(orgId)` and at the action via `authedAction('member', ...)`; `lib/r2.ts` is constructed once and powers both consumers (browser-PUT user uploads, server-PUT export retrofit) — one mechanism, two consumers.
 
 ### Dependency carry-in
 
-- **From chapter 067 (the webhook discipline):** the canonical handler skeleton (verify → parse → claim → mutate inside one transaction → 200/400), the `processed_events(provider, eventId, eventType, receivedAt)` table with `unique(provider, eventId)`, the `claimEvent(tx, provider, eventId, eventType)` helper, `stripe.webhooks.constructEvent` and the raw-body rule, the `last_event_at` ordering predicate, the 200-on-dedup-hit success path, the `STRIPE_WEBHOOK_SECRET` env entry, the `stripe listen` / `stripe trigger` local loop.
-- **From chapter 063 (tenancy + RBAC):** the `organizations` table with `id`, `name`, `ownerId`; the active-org slot in the session; `tenantDb(orgId)`; `authedAction(role, schema, fn)`; the `audit_logs` table and `logAudit(tx, event)` helper. The starter adds an `ownerEmail` getter so `stripe.customers.create({ email })` has something to pass.
-- **From chapter 059 (auth + protected routes):** the `proxy.ts` matcher and the session reads in the layout; the `BillingError` subclass (closes the thread from lesson 2 of chapter 013) is added in lesson 6 of chapter 069, the existing `error.tsx` segment renders it.
-- **From chapter 047 + chapter 051 (Server Actions):** the canonical Result shape `{ ok: true, data } | { ok: false, error: { code, userMessage } }`, `useActionState` plumbing, Server Action with `'use server'` directive.
-- **From chapter 045 (schema):** Drizzle setup, the migration cadence (`drizzle-kit generate` then `db:migrate`), `db.transaction` shape, `ON CONFLICT` upserts.
-- **From chapter 054 (Resend):** `sendEmail({ to, subject, react, idempotencyKey })` lives in `/lib/email.ts`; not exercised in this project but referenced when an entitlement change should email the org owner ("forward note — Unit 14 wires the notification").
-- **From lesson 1 of chapter 020 (Web Crypto):** HMAC primitives (acknowledged; the project uses `stripe.webhooks.constructEvent`, the lesson notes the hand-rolled path).
-- **From chapter 066 (URL state, optional):** the starter's inspector follows the same `/inspector` Server Component shape — the student does not re-derive it.
+- **From lesson 2 of chapter 068:** the bucket with CORS for `http://localhost:3000` allowing `GET`/`PUT`/`Content-Type`; scoped token with Object Read + Object Write; env `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`; `lib/r2.ts` with `S3Client({ region: 'auto', endpoint, credentials })`.
+- **From lesson 3 of chapter 068:** `getSignedUrl` + `PutObjectCommand`/`GetObjectCommand`, 5-min PUT expiry / 10-min GET expiry, layered size defense, content-type allowlist, two-step write, CORS preflight failure shape.
+- **From lesson 4 of chapter 068:** the row shape (`id` UUIDv7 as key segment, `organizationId`, `uploadedBy`, `objectKey` unique, `originalFileName`, `contentType`, `byteSize`, `uploadedAt`, `deletedAt`); index `(organizationId, deletedAt, uploadedAt desc, id desc)`; no-`url`-column rule.
+- **From lesson 5 of chapter 068:** user uploads use `file_metadata` + browser PUT + soft-delete; exports use no metadata row + server-side worker PUT + lifecycle-rule cleanup; lesson 6 of chapter 069 retrofits the export to write `org/${orgId}/exports/${runId}.csv`.
+- **From chapter 067:** the `exportInvoices` parent task with the paginate-page loop, `metadata.set('downloadUrl', ...)`, `sendExportEmail` child accepting `downloadUrl`, the inspector reading `run.metadata`.
+- **From chapter 050:** `sendEmail` in `lib/email.ts`; `ExportReadyEmail` template taking `{ orgName, rowCount, downloadUrl }`.
+- **From chapter 056/chapter 057:** `tenantDb(orgId)`; `authedAction('member', schema, fn)`; `audit_logs` with `logAudit(tx, event)`.
+- **From chapter 043:** canonical Result shape; Zod validation at the action boundary.
+- **From chapter 032/chapter 072:** the `Files` list is *not* `use cache` — presigned GETs are per-render-fresh and would poison a cached response.
+- **From chapter 061:** `deletedAt` discipline.
+- **From chapter 016:** file picker, MIME/size validation, blob URL preview — thread closed here.
+- **From chapter 009:** `UploadError` subclass with codes `unsupported-type | too-large | size-mismatch | object-not-found`.
 
-### Starter file tree (stubs marked with TODO)
+### Starter file tree (stubs marked TODO)
 
 ```
-docker-compose.yml              # provided: postgres:18
-drizzle.config.ts               # provided
-.env.example                    # provided: DATABASE_URL, BETTER_AUTH_SECRET, RESEND_API_KEY,
-                                #           STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_PORTAL_RETURN_URL,
-                                #           APP_URL
-package.json                    # provided: db:migrate, db:seed, seed:stripe, stripe:listen, dev, build
+docker-compose.yml             # provided
+drizzle.config.ts              # provided
+trigger.config.ts              # provided (from chapter 067)
+.env.example                   # provided: chapter 067 vars + R2_ACCOUNT_ID/ACCESS_KEY_ID/SECRET_ACCESS_KEY/BUCKET_NAME
+package.json                   # provided: chapter 067 scripts + r2:cors, r2:lifecycle
 scripts/
-  seed.ts                       # provided: two orgs, two users, plan_entitlements free rows
-  seed-stripe.ts                # provided: creates Products (free/pro/team) + monthly Prices in the
-                                #           student's test-mode account, writes their lookup_keys to
-                                #           lib/billing/catalog.json
+  seed.ts                      # provided: orgs + invoices from chapter 067; no file_metadata rows
+  r2-cors.ts                   # provided: PutBucketCors with the CORS JSON
+  r2-lifecycle.ts              # provided: 7-day rule on org/*/exports/*
 src/
-  db/
-    schema.ts                   # provided: organizations (+ stripeCustomerId), users, org_members,
-                                #           audit_logs, processed_events (full from lesson 2 of chapter 067),
-                                #           plan_entitlements stub — TODO student adds columns in lesson 5 of chapter 069
-    client.ts                   # provided
-    relations.ts                # provided
+  db/schema.ts                 # provided: chapter 067 schema; file_metadata TODO student
   lib/
-    tenant-db.ts                # provided
-    authed-action.ts            # provided
-    audit-log.ts                # provided
-    email.ts                    # provided (Unit 8)
-    webhooks/
-      stripe.ts                 # TODO student: verifyStripeEvent + handler dispatch
-      processed-events.ts       # provided: claimEvent(tx, provider, eventId, eventType) from lesson 2 of chapter 067
-    billing/
-      stripe.ts                 # provided: configured Stripe SDK singleton (server-only)
-      catalog.json              # populated by seed-stripe.ts: lookup_key → planSlug mapping
-      catalog.ts                # provided: typed loader for catalog.json with z.parse
-      entitlement.ts            # TODO student: getEntitlement(orgId), hasActiveAccess(e), planFromLookupKey
-      projection.ts             # TODO student: subscriptionToEntitlement(subscription)
-      upgrade.ts                # TODO student: billing.upgrade action
-      portal.ts                 # TODO student: billing.openPortal action
-      require-plan.ts           # TODO student: billing.requirePlan gate
-      errors.ts                 # TODO student: BillingError subclass
-      index.ts                  # TODO student: re-export the three methods + types
+    tenant-db.ts               # provided
+    authed-action.ts           # provided
+    audit-log.ts               # provided
+    email.ts                   # provided
+    r2.ts                      # provided: S3Client + ALLOWED_CONTENT_TYPES + MAX_BYTES
+    files/
+      keys.ts                  # provided: buildObjectKey({ orgId, fileId, contentType })
+      errors.ts                # provided: UploadError class
+      presigned-put.ts         # TODO student: presignedPut authedAction
+      finalize.ts              # TODO student: finalizeUpload authedAction
+      presigned-get.ts         # TODO student: getFileDownloadUrl + getSignedGetForKey helpers
+      list.ts                  # TODO student: listFiles({ orgId, cursor })
+      soft-delete.ts           # provided: softDeleteFile (named, not exercised)
+    invoices/                  # provided (chapter 067)
+    exports/                   # provided (chapter 067) — student edits in lesson 6 of chapter 069
+  trigger/
+    export-invoices.ts         # provided (chapter 067) — student edits in lesson 6 of chapter 069
+    paginate-page.ts           # provided (chapter 067)
+    send-export-email.ts       # provided (chapter 067) — payload already accepts downloadUrl
+  emails/ExportReadyEmail.tsx  # provided (chapter 067)
   app/
-    api/
-      webhooks/
-        stripe/
-          route.ts              # TODO student: the POST handler — verify, claim, dispatch, 200/400
-    (app)/
-      billing/
-        page.tsx                # provided shell: renders current plan, "Upgrade" + "Manage billing" buttons
-        success/
-          page.tsx              # provided: read-and-poll Server Component, refreshes via Client poller
-        success/Poller.tsx      # provided: 500ms router.refresh, 30s budget, "finalizing" → "ready"
-    inspector/
-      page.tsx                  # provided: plan_entitlements panel, processed_events tail, Checkout/Portal
-                                #           buttons, "Replay last event" debug, "Tamper signature" debug
+    files/
+      page.tsx                 # TODO student: server-rendered list + presigned GETs
+      upload-form.tsx          # TODO student: client component + XHR + progress + finalize
+    inspector/page.tsx         # provided: chapter 067 surface + downloadUrl renders as clickable link
 ```
 
 ### Reference solution signatures lessons display
 
-- **The webhook route** (`app/api/webhooks/stripe/route.ts`):
-  - `export async function POST(request: Request)` — reads `await request.text()` once, reads `request.headers.get('stripe-signature')`, calls `stripe.webhooks.constructEvent(body, signature, env.STRIPE_WEBHOOK_SECRET)`, returns `400 application/problem+json` on `Stripe.errors.StripeSignatureVerificationError`.
-  - On success, opens `db.transaction(async (tx) => { const claimed = await claimEvent(tx, 'stripe', event.id, event.type); if (!claimed) return; await dispatch(tx, event); })`, returns `Response.json({ received: true }, { status: 200 })`.
-- **The dispatch** (`lib/webhooks/stripe.ts`):
-  - `dispatch(tx, event)` switches on `event.type`, calls `onCheckoutCompleted`, `onSubscriptionUpdated`, or `onSubscriptionDeleted`. Unknown event types log + return.
-- **The projection function** (`lib/billing/projection.ts`):
-  - `subscriptionToEntitlement(sub: Stripe.Subscription, catalog: Catalog): EntitlementPatch` returns `{ plan, status, subscriptionId, currentPeriodEnd, cancelAtPeriodEnd, seats }`. `plan` resolved via `catalog.planFromLookupKey(sub.items.data[0].price.lookup_key)`.
-- **The handlers** (`lib/webhooks/stripe.ts`):
-  - `onCheckoutCompleted(tx, event)` — reads `session.customer` (the Stripe Customer ID), reads `session.subscription`, calls `stripe.subscriptions.retrieve(subscriptionId)` once (the one allowed `stripe.*` call inside a handler — names the carve-out), resolves `organizationId` via `session.subscription_data?.metadata?.organization_id` or by reading the `organizations` row with the matching `stripeCustomerId`, UPSERTs `plan_entitlements` from the projection with `last_event_at = event.created`, writes `audit_logs` row `{ action: 'billing.subscription.activated', subjectType: 'subscription', subjectId: subscriptionId, orgId: organizationId, actorUserId: null, payload: { plan } }` via `logAudit(tx, ...)`.
-  - `onSubscriptionUpdated(tx, event)` — projects the subscription, UPDATEs `plan_entitlements` with `WHERE organizationId = ? AND (last_event_at IS NULL OR last_event_at < ?)`, writes `audit_logs` `{ action: 'billing.subscription.updated', subjectType: 'subscription', subjectId: subscriptionId, orgId: organizationId, actorUserId: null, payload: { plan, status, cancelAtPeriodEnd } }` via `logAudit(tx, ...)` (only when the UPDATE returns a row).
-  - `onSubscriptionDeleted(tx, event)` — UPDATEs `plan_entitlements` to `plan: 'free'`, `status: 'canceled'`, `subscriptionId: null`, same ordering predicate, writes `audit_logs` `{ action: 'billing.subscription.canceled', subjectType: 'subscription', subjectId: subscriptionId, orgId: organizationId, actorUserId: null, payload: {} }` via `logAudit(tx, ...)`.
-- **The `plan_entitlements` schema** (`db/schema.ts`):
-  - `organizationId uuid pk references organizations(id) on delete cascade`, `plan text not null default 'free'` (`'free' | 'pro' | 'team'`), `status text not null default 'active'`, `subscriptionId text` nullable, `currentPeriodEnd timestamptz` nullable, `cancelAtPeriodEnd boolean not null default false`, `seats integer not null default 1`, `lastEventAt timestamptz` nullable, `updatedAt timestamptz not null default now()`. Free row inserted at org creation by a trigger or by the org creation flow (the starter wires the latter).
-- **`getEntitlement(orgId)`** (`lib/billing/entitlement.ts`):
-  - `getEntitlement(orgId: string): Promise<PlanEntitlement>` — `React.cache`-wrapped to dedupe within a request; throws if the row is missing (should never happen).
-  - `hasActiveAccess(e: PlanEntitlement): boolean` — encodes the decision table from lesson 5 of chapter 068.
-- **`billing.upgrade`** (`lib/billing/upgrade.ts`):
-  - `upgrade = authedAction('admin', z.strictObject({ planSlug: z.enum(['pro', 'team']) }), async ({ planSlug }, ctx) => ...): Promise<Result<{ url: string }>>`. Ensures Customer, creates `checkout.session`, returns `{ url }`.
-- **`billing.openPortal`** (`lib/billing/portal.ts`):
-  - `openPortal = authedAction('admin', z.strictObject({ returnPath: z.string().optional() }), async ({ returnPath }, ctx) => ...): Promise<Result<{ url: string }>>`. Errors if `stripeCustomerId` is null with `BillingError('NO_CUSTOMER')`.
-- **`billing.requirePlan`** (`lib/billing/require-plan.ts`):
-  - `requirePlan(planSlug: 'pro' | 'team'): Promise<void>` — reads the active org's entitlement, throws `BillingError('PLAN_REQUIRED' | 'NO_ACCESS')` if the tier is insufficient or `hasActiveAccess` is false. Server-Component-callable; not an action.
-- **Env entries** (`.env.example`):
-  - `STRIPE_SECRET_KEY=sk_test_...`
-  - `STRIPE_WEBHOOK_SECRET=whsec_...` (from `stripe listen` output locally)
-  - `STRIPE_PORTAL_RETURN_URL=http://localhost:3000/billing`
-  - `APP_URL=http://localhost:3000` (used for Checkout `success_url`/`cancel_url`)
+- **`lib/r2.ts`** (provided) — exports `r2: S3Client`, `BUCKET: string`, `ALLOWED_CONTENT_TYPES` (`as const` tuple of `image/png | image/jpeg | image/webp | application/pdf | text/csv`), `MAX_BYTES = 25 * 1024 * 1024`.
+- **`buildObjectKey`** (provided) — `({ orgId, fileId, contentType }) => \`org/${orgId}/files/${fileId}.${extFor(contentType)}\``. Extension comes from the validated content type via a static map; never from the user's filename.
+- **`presignedPut`** — `authedAction('member', z.strictObject({ fileName: z.string().min(1).max(255), contentType: z.enum(ALLOWED_CONTENT_TYPES), claimedSize: z.int().positive().max(MAX_BYTES) }), async (input, ctx): Promise<Result<{ uploadId, url, objectKey }>>)`. Generates `uploadId = uuidv7()`, builds `objectKey`, signs `PutObjectCommand({ Bucket, Key: objectKey, ContentType, ContentLength: claimedSize })` with `expiresIn: 300`. No DB write.
+- **`finalizeUpload`** — `authedAction('member', z.strictObject({ uploadId: z.uuid(), objectKey: z.string(), originalFileName: z.string().min(1).max(255), contentType: z.enum(ALLOWED_CONTENT_TYPES) }), ...): Promise<Result<{ fileId }>>`. HEADs the object (`object-not-found` on 404), asserts `head.ContentType === input.contentType`, asserts `head.ContentLength <= MAX_BYTES` (`size-mismatch` otherwise). In `tenantDb(ctx.orgId).transaction`: inserts the row with `id: uploadId`, `byteSize: head.ContentLength`, `contentType: head.ContentType`; writes `audit_logs` `file.uploaded`.
+- **`getFileDownloadUrl`** — `({ fileId }, ctx): Promise<Result<{ url, fileName, contentType }>>`. Reads via `tenantDb(ctx.orgId)` filtered by `isNull(deletedAt)`. Signs `GetObjectCommand({ Bucket, Key: row.objectKey, ResponseContentDisposition: \`attachment; filename="${encodeRFC5987(row.originalFileName)}"\` })` with `expiresIn: 600`.
+- **`getSignedGetForKey`** — pure helper, `({ objectKey, expiresIn }) => Promise<{ url }>`. No tenant check — caller is a worker, inside the trust boundary.
+- **`listFiles`** — `({ orgId, cursor, limit = 20 }) => Promise<{ rows, nextCursor }>`. `tenantDb(orgId).fileMetadata.findMany` with `isNull(deletedAt)`, `orderBy: [desc(uploadedAt), desc(id)]`, `limit + 1` n+1 trick.
+- **`file_metadata` table** — `id uuid pk` (UUIDv7), `organizationId uuid not null references organizations(id) on delete cascade`, `uploadedBy uuid not null references users(id) on delete restrict`, `objectKey text not null unique`, `originalFileName text not null`, `contentType text not null`, `byteSize bigint not null check (byteSize >= 0)`, `uploadedAt timestamptz not null default now()`, `deletedAt timestamptz`. Index: `(organizationId, deletedAt, uploadedAt desc, id desc)`.
+- **CORS JSON** — `[{ AllowedOrigins: [env.APP_URL], AllowedMethods: ['GET', 'PUT'], AllowedHeaders: ['content-type'], ExposeHeaders: ['etag'], MaxAgeSeconds: 3600 }]`.
+- **`upload-form.tsx`** — `XMLHttpRequest` for the R2 PUT (so `xhr.upload.onprogress` fires); `fetch` for the two Server Action calls.
+- **Export retrofit** — after the page loop, `Buffer.from(csvAccumulator)`, `r2.send(new PutObjectCommand({ Bucket, Key: \`org/${organizationId}/exports/${ctx.run.id}.csv\`, Body, ContentType: 'text/csv', ContentDisposition: \`attachment; filename="export-${dayBucket()}.csv"\` }))`, then `getSignedGetForKey({ objectKey, expiresIn: 600 })` → pass `downloadUrl` to `sendExportEmail`. No `file_metadata` row.
+- **Env** — carried from lesson 2 of chapter 068.
 
-### Inspector page spec
+### Inspector / Files page spec
 
-A single Server Component at `/inspector` providing the verification surface for every later lesson:
+**`/files` page (TODO student).**
 
-- **Header:** active-org switcher (two seeded orgs), session-user switcher (admin / member), the current org's `stripeCustomerId` rendered raw (null until first Checkout).
-- **`plan_entitlements` panel:** the full row for the active org — `plan`, `status`, `subscriptionId`, `currentPeriodEnd`, `cancelAtPeriodEnd`, `seats`, `lastEventAt`, `updatedAt`. Updates after every webhook landing via `router.refresh` polling at 1s while the success-page loop is open.
-- **`processed_events` tail:** the last 20 rows for `provider='stripe'`, newest first. Each row shows `eventId`, `eventType`, `receivedAt`. The student watches rows land here in real time as `stripe trigger` fires.
-- **Checkout button:** calls `billing.upgrade('pro')`, redirects to the returned URL. The "Upgrade to Team" button calls `billing.upgrade('team')`.
-- **Portal button:** calls `billing.openPortal()`, opens the returned URL in a new tab. Disabled (with tooltip "No Stripe Customer yet — start a Checkout first") when `stripeCustomerId` is null.
-- **"Replay last event" debug:** re-fires the last claimed event by re-POSTing the original raw body and signature to the local webhook URL via the Stripe CLI (`stripe events resend <event_id>`). Used in lesson 7 of chapter 069 to prove idempotency.
-- **"Tamper signature" debug:** sends a forged POST to `/api/webhooks/stripe` with a body but an invalid `stripe-signature` header; the panel shows the 400 + problem+json response.
-- **Audit-log tail:** the last 20 `audit_logs` rows for the active org. Every successful entitlement transition writes one.
+- **Upload form** (client component): `<input type="file" accept="image/png,image/jpeg,image/webp,application/pdf,text/csv">`; XHR progress bar; status `idle | signing | uploading | finalizing | done | failed`; error from `error.userMessage`. On success, `router.refresh()`.
+- **List** (server component): table with `originalFileName`, `contentType` badge, formatted `byteSize`, humanized `uploadedAt`, `"Download"` link whose `href` is the fresh presigned GET. Empty state when no rows. Cursor "Next page" link.
+- **No `use cache`** — fresh-per-render is structural here.
 
-The inspector is provided in full; the student writes only the handlers and the `billing.*` methods it exercises.
+**`/inspector` page** (provided, from chapter 067 + one addition): the run-status panel renders `metadata.downloadUrl` as a clickable link once the export completes.
 
 ### Verify recipe mapped to "Done when"
 
 | Done-when clause | Verify step |
 | --- | --- |
-| `stripe listen` forwards a test checkout to the dev server | `stripe listen --forward-to localhost:3000/api/webhooks/stripe` prints the secret; paste into `.env.local` as `STRIPE_WEBHOOK_SECRET`; restart dev. `stripe trigger checkout.session.completed` fires; the inspector's `processed_events` panel gains one row within 1s. |
-| The inspector panel shows the event landed once even when Stripe retries | Click "Replay last event" in the inspector; CLI resends the same `event.id`; `processed_events` still shows one row; `plan_entitlements.updatedAt` does not advance; `audit_logs` does not gain a second row. |
-| The derived `plan_entitlements` row reflects the new plan | Before trigger: row reads `plan: 'free'`, `status: 'active'`, `subscriptionId: null`. After trigger: `plan: 'pro'`, `status: 'trialing' \| 'active'`, `subscriptionId: 'sub_...'`, `currentPeriodEnd` populated, `lastEventAt` matches the event's `created`. |
-| Replaying the same event ID does not produce a second `audit_logs` row | After replay, the audit panel's row count is unchanged; the `processed_events` row's `receivedAt` is unchanged (the second attempt lost the claim, no row updated). |
-| The portal button opens the Stripe customer portal in a new tab | After a successful Checkout, the inspector's "Portal" button is enabled; clicking opens a `https://billing.stripe.com/p/session/...` URL in a new tab; clicking "Cancel subscription" in the portal returns the user to `STRIPE_PORTAL_RETURN_URL`; the inspector picks up `customer.subscription.updated` with `cancel_at_period_end: true`; the `plan_entitlements` panel shows the new flag. |
-| Signature tampering returns 400 | Click the "Tamper signature" debug button; the panel shows `400 application/problem+json` with `title: 'invalid_signature'`; `processed_events` does not gain a row; no body parsing occurred (verifiable in the structured log). |
-| Out-of-order delivery silently no-ops the older event | Fire `customer.subscription.updated` twice with hand-crafted `event.created` timestamps via `stripe events resend --idempotency-key <new>` — the newer one lands, then the older one returns 200 but `plan_entitlements.lastEventAt` does not regress and the panel still shows the newer values. |
-| `billing.requirePlan('pro')` gates a paywalled Server Component | A provided `/inspector/pro-only` page calls `await billing.requirePlan('pro')`; before the upgrade, it renders the `error.tsx` segment ("Upgrade to Pro to access this"); after the upgrade, it renders the protected content. |
-| The redirect-versus-webhook race resolves cleanly | After clicking Checkout, complete the test-card flow; land on `/billing/success?session_id=...`; the page shows "finalizing your subscription"; within 1-2s the poller picks up the new entitlement and the page swaps to "you're on Pro." Disable the webhook handler temporarily and confirm the page sits in "finalizing" until the 30s budget elapses and surfaces "check your email." |
+| 5 MB file uploaded lands in R2 + `file_metadata` row written | Upload `fixtures/sample-5mb.jpg` from `/files`. Confirm one R2 object at `org/<orgId>/files/<uuid>.jpeg` and one row with matching `objectKey`, `byteSize ≈ 5242880`, `contentType: 'image/jpeg'`. |
+| `Files` list renders rows with working download | List shows the row; click "Download"; browser saves as `sample-5mb.jpg` (from `Content-Disposition`). |
+| Download works after the GET window | View source, copy a `href`. Wait 11 minutes. Copied URL returns `403 AccessDenied`. Refresh `/files` — same row's `href` is different; click — works. **Load-bearing proof.** |
+| chapter 067 export emails a working R2 link | Trigger export. Inspector shows `downloadUrl` as a real R2 link. Email arrives with same URL — click within 10 minutes — CSV downloads. |
+| Function never sees the bytes (user uploads) | Network tab: `presignedPut` POST ~400 B response; PUT to `<bucket>.r2.cloudflarestorage.com` carries the MB body; `finalizeUpload` POST ~100 B response. |
+| Payload validation at the action boundary | `presignedPut({ contentType: 'application/octet-stream', ... })` → `{ ok: false, error: { code: 'invalid-input' } }`; no R2 call. Same for `claimedSize > MAX_BYTES`. |
+| Tenancy at GET boundary | Upload in org A; switch to org B. `getFileDownloadUrl({ fileId: <orgA-id> })` → `{ ok: false, error: { code: 'object-not-found' } }`. |
+| HEAD-based size verification | Debug helper: `claimedSize: 1024`, PUT 10 MB body. R2 accepts. `finalizeUpload` HEADs, sees 10 MB, throws `size-mismatch`. No row inserted. |
+| CORS in the browser | Serve on `127.0.0.1:3000` (not allowed). PUT preflight 403 (R2-side). Restore `localhost` — works. |
+| No `file_metadata` for exports | `select count(*) from file_metadata where object_key like 'org/%/exports/%'` → 0. |
 
 ### Concepts demonstrated → owning lesson
 
-- Signature verification at the route handler boundary, raw body via `request.text()`, constant-time compare via `stripe.webhooks.constructEvent`, 400 with RFC 9457 on failure — lesson 1 of chapter 067.
-- `processed_events(provider, eventId)` composite unique, atomic `INSERT ... ON CONFLICT DO NOTHING RETURNING` as check-and-claim — lesson 2 of chapter 067.
-- Outer transaction wrapping dedup INSERT and business work, partial-state impossibility, 200-on-dedup-hit success path — lesson 2 of chapter 067.
-- Out-of-order events and the `last_event_at < event.created` predicate in the UPDATE WHERE, UPDATE-RETURNING to detect no-op — lesson 3 of chapter 067.
-- Redirect-versus-webhook race, the webhook as the only writer for entitlement state, success page reads-and-polls via `router.refresh` — lesson 3 of chapter 067.
-- Idempotency as a unifying discipline: the same unique-on-key pattern across webhooks, Server Actions, and retried jobs — lesson 4 of chapter 067.
-- The Stripe object graph — Products, Prices (`lookup_key` not `price_id`), Customers (one per org), Subscriptions, metadata as the carry-channel for `organization_id` — lesson 1 of chapter 068.
-- Checkout sessions — server-created single-use URL, hosted-vs-embedded default, lazy Customer creation, trials, `success_url` polling — lesson 2 of chapter 068.
-- Customer Portal — `cancel_at_period_end` graceful cancel, deep-link flows, return URL as navigation hint not state-change proof — lesson 3 of chapter 068.
-- `plan_entitlements` as a derived view, webhook-only writes, one row per org, `lookup_key` mapping to plan slug — lesson 4 of chapter 068.
-- Subscription status as first-class state, `hasActiveAccess(e)` as the single decision-table function — lesson 5 of chapter 068.
-- `billing.upgrade` / `openPortal` / `requirePlan` interface, `/lib/billing/` as the only place `stripe` is imported, `requirePlan` as the load-bearing gate — lesson 6 of chapter 068.
-- `authedAction(role, schema, fn)` at the Server Action seam — lesson 2 of chapter 061.
-- `tenantDb(orgId)` for org-scoped reads — chapter 060.
-- `audit_logs` append-only on every privileged transition — chapter 063.
-- Custom `BillingError` Error subclass and `error.tsx` interop — lesson 2 of chapter 013, chapter 047.
+- Threshold for object storage, R2 vs. S3 — lesson 1 of chapter 068.
+- Bucket + scoped credentials + CORS, S3-compatible endpoint, `region: 'auto'` — lesson 2 of chapter 068.
+- Presigned PUT/GET mechanics, `ContentType`/`ContentLength` pinning, expiry trade-offs — lesson 3 of chapter 068.
+- Two-step write, layered size defense, R2-specific `ContentLength` non-enforcement — lesson 3 of chapter 068.
+- `file_metadata` shape, `id` as key segment, no-`url`-column rule — lesson 4 of chapter 068.
+- Tenancy at read via `tenantDb(orgId)`, audit on upload/download/delete — lesson 4 of chapter 068 / chapter 056 / chapter 057.
+- Soft delete with cooled-off cleanup (named) — lesson 4 of chapter 068 / chapter 061.
+- One bucket two prefixes, browser-vs-worker byte-pipe rule — lesson 5 of chapter 068.
+- `authedAction('member', ...)` — chapter 057. Result shape — chapter 043. Zod validation — chapter 042/chapter 043.
+- `XMLHttpRequest` for upload progress — closes chapter 016.
+- Principle #3 (named seams in `lib/files/`) — chapter 035/chapter 043. Principle #5 (R2 SDK at the call site) — lesson 2 of chapter 068.
 
 ---
 
-## Lesson 1 — The brief
+## Lesson 1 — Brief and Done-when
 
-Frames the build, the "Done when" verification recipe, scope cuts, and the senior payoff of owning the webhook seam end-to-end.
+Frames the runnable upload surface, locks the "Done when" clauses (5 MB lands, list downloads, 11-minute-later refresh still works, export emails a real R2 link), and names the scope cuts (no transforms, no multipart, no virus scan, no soft-delete UI).
 
 Goals:
 
-- Frame what's being built: ingest three Stripe webhooks, project them into one `plan_entitlements` row per org, expose three methods (`upgrade`, `openPortal`, `requirePlan`) at `/lib/billing/`, prove the loop with `stripe listen` + `stripe trigger`. One screenshot of the inspector with the entitlement panel showing `plan: 'pro'`, the `processed_events` tail with one row, and the Portal button enabled.
-- State the "Done when" in one paragraph (verify with constant-time compare, dedup via `processed_events` in one transaction, derive `plan_entitlements` from three events, `last_event_at` ordering predicate, portal button opens, signature tampering returns 400, replay does not mutate twice).
-- Name the scope cuts: no real Stripe production keys — test mode only; no embedded Checkout — hosted is the default (lesson 2 of chapter 068); no in-house cancel screen — the Portal owns it (lesson 3 of chapter 068); no `invoice.paid` / `invoice.payment_failed` handling — the three subscription events are enough for the entitlement projection (the project notes the past-due banner is a forward reference); no seat enforcement — the `seats` column ships but the membership gate is left to Unit 14's notification project where the over-seat banner lands; no `stripe.subscriptions.update` calls from app code — plan changes go through the Portal; no automatic tax — toggled off in Checkout; no promotion codes; no `incomplete_expired` recovery flow; no webhook secret rotation drill.
-- Set the senior payoff: the webhook seam is the production async edge of every modern SaaS — and the careless code is the most expensive code in the codebase. The patterns shipped here (verify-then-claim-then-mutate-in-one-transaction, the `last_event_at` predicate, the single-writer rule, the derived-view projection, the thin interface around an SDK that earns wrapping) carry into every async ingest the student writes — payment webhooks, email-bounce webhooks, third-party callbacks, internal event buses.
-- Show the end UX: a short animated capture of (a) clicking Upgrade → completing Stripe test-card checkout → success page polling → entitlement panel flipping to Pro; (b) clicking Portal → cancel-at-period-end → inspector picking up the new flag; (c) the "Tamper signature" debug button returning 400.
+- Frame the build: direct-browser-to-R2 upload with `Files` list, plus the chapter 067 export retrofit so the email carries a real R2 link. One screenshot: `/files` with form, progress mid-flight, list of completed rows.
+- State the "Done when" in one paragraph (5 MB lands and writes row, list renders downloads, refresh 11 min later still works because URL re-issues, export emails working R2 link, function never sees user-upload bytes, tenancy holds, layered size defense catches a lying client).
+- Scope cuts: no image transformation (Cloudflare Images, named once); no multipart for >100 MB (25 MB cap); no virus scanning (named); no client preview past file-picker echo; no soft-delete UI in this chapter (action exists, column verified); no orphan-cleanup sweep (forward note).
+- Senior payoff: the canonical R2 shape every later upload feature copies — `lib/r2.ts` once, presigned PUT, two-step write with HEAD, fresh-per-render GETs, `file_metadata` as canonical identity. The retrofit on chapter 067 proves the same primitives work from a worker with server-side PUT.
+- Show the end UX: an animated capture of choose-file → progress → row appears → download → export fires → email arrives → click email → CSV opens.
 - Link the starter via `degit`.
 
 Senior calls and watch-outs:
 
-- The starter ships the webhook claim helper and the Stripe SDK singleton — the discipline from chapter 067 is the carry-in, not something the student re-derives. This project is the application of the discipline to one real third-party.
-- Stripe test mode is the only environment the project runs in. Test-mode keys and live-mode keys are wholly separate universes; the project's `.env.example` ships `sk_test_` and `whsec_` (local) — never paste a `sk_live_` here.
-- The `pnpm seed:stripe` script must run once before the project works. The script creates three Products and their monthly Prices in the student's test account, then writes the resolved `lookup_key`s to `catalog.json`. Re-running the seed is idempotent (uses `lookup_key` to find-or-create).
+- R2 account, bucket, scoped token, and CORS must be set up first (one-time). Starter ships env keys; student's account fills values. `pnpm r2:cors` runs once per environment before the first browser upload, or the preflight fails.
+- Starter inherits chapter 067's Trigger.dev project. lesson 6 of chapter 069 needs both `pnpm trigger:dev` and `pnpm dev` in two terminals.
+- 25 MB cap is a course choice; production often allows 100 MB+ via multipart. The cap is the simplest defense against the size-bomb attack the verify exercises.
 
 Codebase state at entry: empty repo (student runs `degit`).
-Codebase state at exit: starter cloned, Stripe CLI installed (`brew install stripe/stripe-cli/stripe`), `stripe login` complete, test-mode keys pasted into `.env.local`, `pnpm install` clean, `docker compose up -d` running Postgres, `pnpm db:migrate && pnpm db:seed` populated, `pnpm seed:stripe` created the catalog, `pnpm dev` shows the inspector with `plan: 'free'` for the active org and a disabled Portal button. No webhook handler logic yet — `stripe trigger` would fire but the route returns 404.
+Codebase state at exit: starter cloned, deps installed, Postgres up, chapter 067 schema migrated and seeded, R2 bucket/token/env created, `pnpm r2:cors` run, `/files` renders empty list with broken form, `/inspector` carries the chapter 067 surface.
 
-Estimated student time: 15 to 20 minutes.
-
----
-
-## Lesson 2 — Tour the starter and open the Stripe CLI tunnel
-
-Walks the file tree, reads the provided `claimEvent` / SDK singleton / catalog, runs `stripe listen` + one `stripe trigger` to prove the local tunnel is alive.
-
-Goals:
-
-- Walk the file tree, calling out provided vs. stubbed. Linger on six files: the empty `app/api/webhooks/stripe/route.ts` (the handler skeleton the student writes), the empty `lib/webhooks/stripe.ts` (the dispatch + handlers), the empty `lib/billing/projection.ts` (the projection function), the stub `plan_entitlements` schema in `db/schema.ts` (columns to be filled in lesson 5 of chapter 069), the empty `billing/upgrade.ts` / `portal.ts` / `require-plan.ts`, and the provided `billing/stripe.ts` (the SDK singleton — the only file that may import `stripe`).
-- Read the provided `lib/webhooks/processed-events.ts` end-to-end — `claimEvent(tx, provider, eventId, eventType)` from lesson 2 of chapter 067, returning `boolean` (true = claimed, false = already processed). This is the seam every webhook handler in the codebase will share.
-- Read `lib/billing/stripe.ts`: the configured singleton with `apiVersion` pinned, `STRIPE_SECRET_KEY` from the typed env, `typescript: true` flag. Names the rule: this file is the only place `import Stripe from 'stripe'` appears; the lint config from lesson 6 of chapter 068 flags violations.
-- Read `lib/billing/catalog.ts` and `catalog.json`: the seed-stripe script wrote `{ "lookup_keys": { "course_pro_monthly": "pro", "course_team_monthly": "team" } }` after creating the test-mode Products and Prices. The catalog loader exposes `planFromLookupKey(key) → 'free' | 'pro' | 'team' | null` — the projection function's only path from Stripe-side IDs to app-side plan slugs.
-- Read the inspector: confirm the `plan_entitlements` panel, the `processed_events` tail, the Checkout / Portal buttons (currently broken — the buttons exist but the actions throw), the "Replay last event" and "Tamper signature" debug tools.
-- Read the success page: `app/(app)/billing/success/page.tsx` is a Server Component that reads the entitlement; if `lastEventAt` is older than the current `session_id` lookup's expected window, it renders the `Poller` Client Component that calls `router.refresh()` every 500ms with a 30s budget. The poller is the resolution of the redirect-versus-webhook race from lesson 3 of chapter 067.
-- Run the Stripe CLI: `stripe login`, then `stripe listen --forward-to localhost:3000/api/webhooks/stripe` — the CLI prints the local webhook signing secret to paste into `.env.local` as `STRIPE_WEBHOOK_SECRET`. Restart the dev server so the env reloads. The CLI keeps running in a side terminal for the rest of the project.
-- Run `stripe trigger checkout.session.completed` once: the handler 404s (no route logic yet), the CLI prints the 404 — proves the tunnel is alive. The next lesson lands the 200.
-- Read `lib/billing/projection.ts`'s type definitions (provided): `EntitlementPatch` and `PlanSlug` are already exported as type aliases so the handler signatures compile incrementally; the function body is the TODO.
-
-Senior calls and watch-outs:
-
-- The webhook secret from `stripe listen` is different on every fresh CLI session and from the dashboard-configured production secret. Paste-into-env each time the student restarts the CLI is the daily rhythm; named here so it doesn't surprise them later.
-- The Stripe CLI's `--forward-to` tunnel forwards to whatever URL the student gives it. Forgetting to start it (or starting it pointed at the wrong port) is the canonical "my handler doesn't fire" bug — the CLI prints "200 OK" or "404" on every forward, so the side terminal is the live verification.
-- `STRIPE_SECRET_KEY` is server-only. The starter's `env.ts` (from Chapter 054's typed env discipline) does not expose it to the client bundle. Pasting a live-mode key here is a security incident — the project's `.env.example` ships only the `sk_test_` prefix and the typed env validates the prefix at boot.
-- Reading the inspector before writing any code is the discipline named in lesson 2 of chapter 066 — the student should know every panel before they need it.
-
-Codebase state at entry: starter cloned, deps installed, Postgres up, schema migrated, seed loaded, `seed:stripe` ran, CLI installed.
-Codebase state at exit: student has read every provided file, run the inspector, started `stripe listen`, fired one `stripe trigger` event and watched it 404 cleanly. No app code written. The Checkout and Portal buttons still throw because the actions are empty.
-
-Estimated student time: 25 to 35 minutes.
+Estimated student time: 20 to 30 minutes.
 
 ---
 
-## Lesson 3 — Verify before you parse
+## Lesson 2 — Tour the starter
 
-Writes the route handler's read-raw-body, `constructEvent`, 400-with-problem+json-on-failure skeleton with structured logging on every disposition.
+Walks the provided pieces (singleton `lib/r2.ts`, pure `buildObjectKey` keyed off the validated content type, `UploadError` codes, idempotent CORS script) and identifies the five `lib/files/` TODOs plus the two `app/files/` TODOs the student will fill in.
 
 Goals:
 
-- Fill `app/api/webhooks/stripe/route.ts` with the verification skeleton from lesson 1 of chapter 067:
-  - `export async function POST(request: Request)`.
-  - `const body = await request.text()` — once, before anything else; never `request.json()`.
-  - `const signature = request.headers.get('stripe-signature')` — null check returns 400.
-  - `try { const event = stripe.webhooks.constructEvent(body, signature, env.STRIPE_WEBHOOK_SECRET) } catch (err) { return problemJson(400, 'invalid_signature') }` — the SDK helper encapsulates timestamp parse, HMAC compute, constant-time compare, and the 5-minute tolerance.
-  - On success, log `{ eventId: event.id, eventType: event.type }` via the structured logger and return `Response.json({ received: true }, { status: 200 })` — no business logic yet; the dispatch lands in lesson 4 of chapter 069.
-- Add the `problemJson(status, title)` helper to `lib/webhooks/stripe.ts` (or import the one from chapter 050 if the starter ships it). Returns `new Response(JSON.stringify({ type, title, status, instance }), { status, headers: { 'content-type': 'application/problem+json' } })`. No body echo, no detail leakage.
-- Verify the route is the Node runtime: the starter sets `export const runtime = 'nodejs'` at the top — names the rule from lesson 1 of chapter 067 even though Edge would also work for the HMAC.
-- Wire the structured logger from Chapter 096 (provided in the starter as `lib/logger.ts`): every verification path logs `{ eventId, eventType, disposition }` where disposition is `'verified'`, `'invalid_signature'`, or `'missing_header'`. Structured logging — key-value JSON via Pino — is the discipline that lets 2am debugging filter by event-id (depth in lesson 2 of chapter 096); the structured log is what 2am debugging will need.
-- Run the verification:
-  - `stripe trigger checkout.session.completed` → handler logs `verified`, returns 200, no `processed_events` row yet (that's lesson 4 of chapter 069).
-  - Click the inspector's "Tamper signature" debug → handler logs `invalid_signature`, returns 400 with problem+json body; the inspector's debug panel renders the 400 status and the body inline.
-  - Submit a POST with a missing `stripe-signature` header (via the inspector's "Missing header" debug, or via `curl`): handler returns 400 with `invalid_signature` (same disposition — the signature is the contract, missing or wrong is the same answer).
+- Walk the file tree, calling out provided vs. stubbed. Linger on the five TODO files in `lib/files/` and the two in `app/files/`. The chapter 067 task files are provided in full chapter 067 form; student edits them in lesson 6 of chapter 069.
+- Read the provided pieces: `lib/r2.ts` (singleton `S3Client` + constants), `lib/files/keys.ts` (pure `buildObjectKey` — extension from the validated content type, never from the user filename), `lib/files/errors.ts` (the four error codes), `lib/files/soft-delete.ts` (named, not exercised), `scripts/r2-cors.ts` (CORS JSON per lesson 2 of chapter 068). Confirm `pnpm r2:cors` ran successfully.
+- Read `app/inspector/page.tsx` — the chapter 067 surface intact, the new "downloadUrl as clickable link" rendering provided.
+- Bring up the dev rhythm: `pnpm trigger:dev` in one terminal, `pnpm dev` in another. Visit `/files`: form renders, picking a file does nothing (action empty). Visit `/inspector`: chapter 067 surface works (export still produces `console.log`-shaped placeholder, not R2 yet).
 
 Senior calls and watch-outs:
 
-- `request.text()` is read once. Calling `request.json()` later consumes the same stream and returns empty — the canonical bug from lesson 1 of chapter 067. The lesson shows the broken shape (`const data = await request.json(); ... stripe.webhooks.constructEvent(JSON.stringify(data), ...)`) and the fix (`const body = await request.text(); ... JSON.parse(body)` only after `constructEvent` succeeds).
-- 400, never 401, on signature failure — Stripe retries on 5xx and treats 4xx as terminal, which is the desired behavior; a 401 misleads operators reading the dashboard's failed-delivery panel.
-- No logging of the body before verification — attacker-controlled strings in the structured log become a log-injection vector. The lesson restates the verify-before-log rule.
-- `stripe.webhooks.constructEvent` throws `Stripe.errors.StripeSignatureVerificationError` on failure. The `instanceof` check is the discrimination; any other error is a 5xx (genuine server error). Names the asymmetry.
-- The Edge-vs-Node question: the Stripe SDK works on Node only; switching to Edge would require hand-rolling HMAC (lesson 1 of chapter 067 covered the primitives). The project picks Node uniformly for the chapter.
-- The 5-minute tolerance is the SDK default; do not lower it without coordinating with the senders — under clock skew, a tight window starts producing false-positive `invalid_signature` errors that look exactly like an attack.
+- `lib/r2.ts` is constructed once and imported everywhere — the same discipline as `lib/db.ts`, `lib/resend.ts`. Per-request construction churns the connection pool. Principle #5 — no wrapping past the call site.
+- `ALLOWED_CONTENT_TYPES` is reused at the Zod boundary so the allowlist is one source of truth. Drift between Zod and the bucket policy is the kind of bug structural uniqueness prevents.
+- `buildObjectKey` takes `contentType` and looks up the extension via a static map. User filenames are untrusted.
+- `pnpm r2:cors` is idempotent — re-running overwrites the same rules. The script logs after the push so the student can eyeball-confirm `AllowedOrigins: ['http://localhost:3000']` (not `'*'`).
 
-Codebase state at entry: empty route handler, the SDK singleton + claim helper + logger provided.
-Codebase state at exit: the route verifies signatures, returns 200 on success and 400 with problem+json on failure, logs every disposition. `stripe trigger` lands cleanly; the inspector's tamper button reproduces the 400. No `processed_events` writes yet, no business logic — the dispatch and dedup land in lesson 4 of chapter 069.
+Codebase state at entry: starter cloned, deps installed, R2 set up.
+Codebase state at exit: student has read every provided file, confirmed both terminals running, confirmed CORS rules, visited both pages. No code written.
 
-Estimated student time: 35 to 50 minutes.
+Estimated student time: 20 to 30 minutes.
 
 ---
 
-## Lesson 4 — Claim the event inside one transaction
+## Lesson 3 — Sign the PUT, no DB write
 
-Wraps the post-verify path in `db.transaction`, calls `claimEvent` to dedupe against `processed_events`, and stubs the dispatch switch with structured logging.
+Builds the `presignedPut` Server Action with Zod-validated input, server-generated `uploadId`, a server-constructed `objectKey`, and a 5-minute signed `PutObjectCommand`, verified end-to-end by `curl`-PUTting bytes straight to R2.
 
 Goals:
 
-- Wrap the post-verification path in `db.transaction`:
-  - `return await db.transaction(async (tx) => { const claimed = await claimEvent(tx, 'stripe', event.id, event.type); if (!claimed) { logger.info({ eventId: event.id, disposition: 'duplicate' }); return Response.json({ received: true, duplicate: true }, { status: 200 }); } await dispatch(tx, event); return Response.json({ received: true }, { status: 200 }); })`.
-- Build the dispatch stub in `lib/webhooks/stripe.ts`:
-  - `dispatch(tx, event)` switches on `event.type`: cases for `'checkout.session.completed'`, `'customer.subscription.updated'`, `'customer.subscription.deleted'` log + return for now (the projection + mutations land in lesson 5 of chapter 069); the `default` case logs `{ eventType, disposition: 'unhandled' }` and returns.
-- Verify `processed_events` writes:
-  - `stripe trigger checkout.session.completed` once: inspector's `processed_events` panel gains one row with `eventId`, `eventType: 'checkout.session.completed'`, `receivedAt: now()`. The structured log shows `verified` then `claimed`.
-  - `stripe events resend <eventId>` (or the inspector's "Replay last event"): the same `event.id` arrives a second time; `claimEvent` returns false (the unique constraint on `(provider, eventId)` blocked the insert); the handler logs `duplicate` and returns 200 with `{ duplicate: true }`. The inspector's panel still shows one row — no second insert. This is the structural idempotency proof.
-- Verify the 200-on-duplicate rule: returning 4xx or 5xx on a duplicate would tell Stripe to retry, producing an infinite loop. 200 is the success path for both first-arrival and replay (lesson 2 of chapter 067).
-- Add structured logging on every code path: `verified`, `duplicate`, `claimed`, `dispatched`, `unhandled` — each with the `eventId`. The log is the live forensic surface; the inspector's audit panel is the user-visible one.
-- Name the timing budget: Stripe waits 30 seconds for a 2xx. The current handler does nothing in dispatch yet, so latency is trivial; in lesson 5 of chapter 069 the handlers add one Stripe API call (`subscriptions.retrieve`) plus a DB write — still well within budget. The lesson names the threshold so lesson 5 of chapter 069's API call doesn't look like an accident.
-- (Optional senior reach.) The `processed_events.eventType` column is stored for observability — the analyst can answer "how many `checkout.session.completed` did we see this week" without a Stripe round trip. Costs nothing; pays off the first time someone asks.
+- Write `lib/files/presigned-put.ts` per the reference signature. The action: Zod input (`fileName`, `contentType` from the enum, `claimedSize` positive int ≤ `MAX_BYTES`); generates `uploadId = uuidv7()`; builds `objectKey = buildObjectKey({ orgId: ctx.orgId, fileId: uploadId, contentType })`; signs `PutObjectCommand` with `Bucket`, `Key: objectKey`, `ContentType`, `ContentLength: claimedSize` at `expiresIn: 300`; returns `{ ok: true, data: { uploadId, url, objectKey } }`.
+- The action does **no** DB write. The row lands in `finalizeUpload` *after* the bytes are confirmed in R2.
+- Verify without writing the client yet:
+  - From the browser console: `await presignedPut({ fileName: 'sample.jpg', contentType: 'image/jpeg', claimedSize: 5_000_000 })` returns `{ ok: true, data: { uploadId, url: 'https://<bucket>.r2.cloudflarestorage.com/...?X-Amz-Signature=...', objectKey } }`.
+  - `curl -X PUT -H "Content-Type: image/jpeg" --data-binary @some.jpg "<url>"` returns 200. R2 dashboard shows the object at `org/<orgId>/files/<uploadId>.jpeg`. **Proof that the byte-pipe rule holds — no function in the call.**
+  - `curl`-PUT with mismatched `Content-Type: image/png` against the JPEG-signed URL — R2 returns 403 `SignatureDoesNotMatch`.
+  - `presignedPut({ contentType: 'application/octet-stream' })` → `{ ok: false, error: { code: 'invalid-input' } }` from the Zod parse. No R2 call.
+  - `presignedPut({ claimedSize: 100_000_000 })` (exceeds `MAX_BYTES`) → same.
 
 Senior calls and watch-outs:
 
-- The dedup INSERT and the dispatch must live in the same `db.transaction`. Claiming outside the transaction and dispatching inside (or vice versa) re-introduces the partial-state bug from lesson 2 of chapter 067 — the claim row commits, the business work fails, the next retry sees "already processed" and skips, leaving the database wrong. One transaction, one boundary.
-- The dispatch function takes `tx` (the transaction handle), not `db`. Every database call inside a handler must go through `tx`, never the global `db`. Mis-routing a call to `db` opens an outer transaction that races the inner — name the rule, then catch in code review.
-- The `default` case (unknown event type) returns 200, not 400. Stripe sends events the application hasn't subscribed to from dashboard misconfigurations; refusing them produces dashboard noise. The right shape: ignore quietly, log for observability, move on.
-- The `dispatch` switch is exhaustive over the events the application acts on. New event types added later require a new case; missing a case means the event lands as `unhandled`. TypeScript's `event.type` union (Stripe's SDK types) helps but isn't load-bearing — the runtime log is the safety net.
-- Side effects inside the transaction (`stripe.subscriptions.retrieve`, Resend sends, R2 uploads) hold DB connections across network IO. The lesson names the discipline: DB-only work goes in the transaction; the one allowed exception inside `onCheckoutCompleted` (the `subscriptions.retrieve` call in lesson 5 of chapter 069) is the smallest reach that earns its weight; anything else queues to a background job. (Pointing forward to chapter 070, not blocking here.)
+- `uploadId` is server-generated, never client-supplied. Letting the client choose the ID is the tenancy-bypass shape — a crafted UUID could clobber an existing row in `finalizeUpload`.
+- `ContentLength` is signed but R2 does not enforce it server-side (the lesson 3 of chapter 068 quirk). Signing is still correct — it documents intent and matches the AWS SDK shape — but the *enforcement* is the post-upload HEAD in `finalizeUpload`.
+- 5-min `expiresIn` is the trade-off — long enough for 25 MB on a slow connection (the client can also re-sign on retry), short enough that leaks don't grant indefinite write.
+- Role is `member`, not `admin`. The function-level gate is the structural defense — R2 credentials are app-wide.
+- Students often want to "reserve" a row with `status: pending`. The senior call: no row until the bytes are confirmed. Orphan rows lie in the UI; orphan objects are cheap to clean.
+- `'invalid-input'` is mapped at the `authedAction` boundary (from Unit 9), not by the action body.
 
-Codebase state at entry: route verifies signatures and returns 200, no DB writes.
-Codebase state at exit: route claims events into `processed_events` inside `db.transaction`, replay produces no second row, the dispatch stub logs every event type. The inspector's `processed_events` tail lights up; the `plan_entitlements` panel is still `free` because the handlers are empty — that's lesson 5 of chapter 069.
+Codebase state at entry: empty `presigned-put.ts`.
+Codebase state at exit: `presignedPut` works end-to-end against R2 (verified via `curl`); payload validation rejects bad inputs; no client-side upload yet. **Runnable — action fires; next lesson wires the browser.**
 
 Estimated student time: 45 to 60 minutes.
 
 ---
 
-## Lesson 5 — Project three events into one entitlement row
+## Lesson 4 — Browser PUT, HEAD, then insert
 
-Completes the `plan_entitlements` schema, writes the pure `subscriptionToEntitlement` projection, and lands the three handlers with the `last_event_at` ordering predicate plus audit logs.
-
-Goals:
-
-- Complete the `plan_entitlements` schema in `db/schema.ts` per the reference signatures (org PK, plan/status/subscriptionId/currentPeriodEnd/cancelAtPeriodEnd/seats/lastEventAt/updatedAt). Run `pnpm drizzle-kit generate` then `pnpm db:migrate`. Backfill: the seed already inserted a `'free'` row per seeded org; new orgs created later get a row from the org-creation flow (the starter wires this — names the discipline).
-- Fill `lib/billing/projection.ts`:
-  - `subscriptionToEntitlement(sub: Stripe.Subscription, catalog: Catalog): EntitlementPatch` — reads `sub.items.data[0].price.lookup_key`, resolves to a plan slug via `catalog.planFromLookupKey`, returns `{ plan, status: sub.status, subscriptionId: sub.id, currentPeriodEnd: new Date(sub.current_period_end * 1000), cancelAtPeriodEnd: sub.cancel_at_period_end, seats: sub.items.data[0].quantity ?? 1 }`. The function is pure — no DB access, no SDK calls — and the test target in Unit 19.
-- Fill the three handlers in `lib/webhooks/stripe.ts`:
-  - **`onCheckoutCompleted(tx, event)`**: extract `session = event.data.object`. Resolve `organizationId` — prefer `session.subscription_data?.metadata?.organization_id` written by `billing.upgrade` (lesson 6 of chapter 069); fall back to a lookup via `organizations.stripeCustomerId = session.customer`. Call `stripe.subscriptions.retrieve(session.subscription)` to fetch the full Subscription (the Checkout event payload is summary; the Subscription object carries the full price + status). UPSERT `plan_entitlements` via Drizzle's `onConflictDoUpdate` keyed on `organizationId`, setting the projection result + `lastEventAt = new Date(event.created * 1000)`. Write `audit_logs` `{ action: 'billing.subscription.activated', subjectType: 'subscription', subjectId: subscriptionId, orgId: organizationId, actorUserId: null, payload: { plan } }` via `logAudit(tx, ...)`.
-  - **`onSubscriptionUpdated(tx, event)`**: project the subscription directly from `event.data.object` (already a full Subscription on this event type — no second SDK call needed). UPDATE `plan_entitlements` with `SET plan = ..., status = ..., currentPeriodEnd = ..., cancelAtPeriodEnd = ..., seats = ..., subscriptionId = ..., lastEventAt = event.created, updatedAt = now() WHERE organizationId = ? AND (lastEventAt IS NULL OR lastEventAt < event.created) RETURNING id`. Zero rows → log `{ disposition: 'stale_ordering' }` and return. One row → `logAudit(tx, { action: 'billing.subscription.updated', subjectType: 'subscription', subjectId: subscriptionId, orgId: organizationId, actorUserId: null, payload: { plan, status, cancelAtPeriodEnd } })`.
-  - **`onSubscriptionDeleted(tx, event)`**: UPDATE `plan_entitlements` with `SET plan = 'free', status = 'canceled', subscriptionId = NULL, currentPeriodEnd = NULL, cancelAtPeriodEnd = false, lastEventAt = event.created, updatedAt = now() WHERE organizationId = ? AND (lastEventAt IS NULL OR lastEventAt < event.created)`. Resolve `organizationId` via the existing entitlement row's `subscriptionId = event.data.object.id` (the simpler reverse lookup — the row is already org-keyed). Write `logAudit(tx, { action: 'billing.subscription.canceled', subjectType: 'subscription', subjectId: subscriptionId, orgId: organizationId, actorUserId: null, payload: {} })`.
-- Resolve the `organizationId` lookup helper: `resolveOrgIdFromCustomer(tx, stripeCustomerId)` reads `organizations.id WHERE stripeCustomerId = ?`; throws `BillingError('UNKNOWN_CUSTOMER')` if not found (the webhook was for a Customer the app didn't create — log + 200 to prevent retries, the lesson names the trade-off vs. 500-to-investigate).
-- Add `getEntitlement(orgId)` in `lib/billing/entitlement.ts`: `React.cache`-wrapped, simple `tenantDb(orgId).planEntitlements.findFirst({ where: eq(planEntitlements.organizationId, orgId) })`. Throws if missing (every org has a row from creation — missing is a real bug).
-- Add `hasActiveAccess(e: PlanEntitlement): boolean`: encodes the decision table from lesson 5 of chapter 068 — `trialing | active | past_due → true`; `canceled` with `cancelAtPeriodEnd === true` and `currentPeriodEnd > now() → true`; `incomplete | incomplete_expired | unpaid → false`. Pure function; named once.
-- Verify each handler:
-  - `stripe trigger checkout.session.completed`: inspector flips `plan: 'free' → 'pro'`, `status: 'trialing' \| 'active'` (depends on whether the Checkout used a trial), `subscriptionId` populated, `lastEventAt` matches `event.created`. `audit_logs` gains the `billing.subscription.activated` row.
-  - `stripe trigger customer.subscription.updated` (with the existing subscription ID — the CLI's `--add` lets you override): inspector picks up new `status` / `currentPeriodEnd` / `cancelAtPeriodEnd`. The "Force older event" debug button replays the event with a hand-crafted `created` 60 seconds in the past — the handler logs `stale_ordering` and the entitlement does not regress.
-  - `stripe trigger customer.subscription.deleted`: inspector flips `plan: 'pro' → 'free'`, `status: 'canceled'`, `subscriptionId: null`.
-- One Mermaid sequence diagram in the lesson: Checkout → `checkout.session.completed` event → handler claims in `processed_events` → projects → UPSERTs `plan_entitlements` → writes `audit_logs` → returns 200 → inspector picks up via `router.refresh` poll.
-
-Senior calls and watch-outs:
-
-- The `onCheckoutCompleted` handler is the one place inside a webhook handler where the course allows a `stripe.*` call — `subscriptions.retrieve(session.subscription)` because the Checkout event payload's `subscription` is just the ID. The senior call: this is one round trip, well inside the 30s budget; alternatives (a separate `customer.subscription.created` event arriving moments later) are functionally equivalent but introduce a second event to handle. The course defaults to retrieve-on-Checkout.
-- `onSubscriptionUpdated` does *not* call `subscriptions.retrieve` — the event's payload is already the full Subscription. Re-fetching is the canonical "I copied the Checkout handler" bug; the lesson shows it as a watch-out.
-- The `lastEventAt` predicate is in the UPDATE's `WHERE`, not in a pre-read. A pre-read-then-write opens the same race window from lesson 3 of chapter 067 — two concurrent handlers both see "mine is newer," both write, the older one wins. The atomic `UPDATE ... WHERE lastEventAt < ?` lets Postgres evaluate the condition under row-lock.
-- UPSERT vs. UPDATE: `onCheckoutCompleted` uses UPSERT because a Checkout might land before the entitlement row exists (rare, but possible if the org-creation insert was retried after Checkout); the other two use UPDATE because the row is guaranteed by the time they fire. Names the asymmetry.
-- Resolving `organizationId` from `Customer` ID is a fallback path — the primary path is `subscription_data.metadata.organization_id` set in `billing.upgrade` (lesson 6 of chapter 069). Names the rule: metadata is the carry-channel; the lookup is the safety net.
-- `Stripe.Subscription`'s TypeScript types from the SDK have known gaps around `lookup_key` nullability — the projection function's null check on `catalog.planFromLookupKey` is the structural guard. An unrecognized `lookup_key` (a Stripe-side seed drift) returns `null`; the projection throws `BillingError('UNKNOWN_PLAN')` with the offending key, the handler logs + 500s, Stripe retries. Names the trade-off.
-- The `audit_logs` write is inside the transaction with the entitlement write. Failure to log rolls back the entitlement change — the discipline from lesson 3 of chapter 085. Restated, not re-taught.
-- The `seats` column ships per the reference schema, but no enforcement logic ships in this chapter — the gate lives in the membership flow (Unit 10) and the over-seat banner lands in Unit 14's notification project. Named here so the column is not orphaned.
-
-Codebase state at entry: dedup works, dispatch logs but does not mutate.
-Codebase state at exit: the three handlers project Stripe events into `plan_entitlements` with the `last_event_at` ordering predicate, audit logs land on every transition, `getEntitlement` and `hasActiveAccess` are exported from `lib/billing/`. The inspector's panel flips through `free → pro → free` as the student fires events. `billing.upgrade` and `openPortal` still throw — the Checkout flow can't be exercised end-to-end yet — that's lesson 6 of chapter 069.
-
-Estimated student time: 75 to 90 minutes. The chapter's heaviest lesson; the projection + three handlers + the entitlement schema all close on one runnable surface.
-
----
-
-## Lesson 6 — Ship the three-method billing interface
-
-Implements `upgrade`, `openPortal`, and `requirePlan` behind `lib/billing/`, wires the inspector's Checkout and Portal buttons, and exercises the Stripe-hosted flow end-to-end with a test card.
+Lands the `file_metadata` migration, the `finalizeUpload` action that HEADs the object for true size and content-type before inserting the row inside a `tenantDb` transaction, and the XHR-driven client form that streams bytes direct to R2 with a live progress bar.
 
 Goals:
 
-- Create `lib/billing/errors.ts`: `class BillingError extends Error { constructor(public code: 'NO_CUSTOMER' | 'PLAN_REQUIRED' | 'NO_ACCESS' | 'UNKNOWN_PLAN' | 'UNKNOWN_CUSTOMER', message?: string) { super(message ?? code); this.name = 'BillingError'; } }`. Hooks into the existing `error.tsx` segment via `instanceof BillingError` discrimination.
-- Fill `lib/billing/upgrade.ts`:
-  - `upgrade = authedAction('admin', z.strictObject({ planSlug: z.enum(['pro', 'team']) }), async ({ planSlug }, ctx) => ...): Promise<Result<{ url: string }>>`.
-  - Ensure Stripe Customer: read `organizations.stripeCustomerId` for `ctx.orgId`; if null, call `stripe.customers.create({ email: ctx.org.ownerEmail, metadata: { organization_id: ctx.orgId } })` and `UPDATE organizations SET stripeCustomerId = ? WHERE id = ?`. The two writes (the Stripe Customer creation and the column update) cannot be made atomic across systems — the senior anchor: order them so the Stripe-side write happens first and the local update is the idempotent follow-up; a duplicate-but-orphan Customer on retry is fixable, a local pointer to a non-existent Customer is not.
-  - Resolve the Price ID via the catalog: `const priceId = await catalog.priceIdForPlan(planSlug, 'monthly')` — the catalog tracks Stripe Price IDs per lookup_key (the seed-stripe script writes them).
-  - Create the Checkout session: `stripe.checkout.sessions.create({ mode: 'subscription', customer: stripeCustomerId, line_items: [{ price: priceId, quantity: 1 }], success_url: `${env.APP_URL}/billing/success?session_id={CHECKOUT_SESSION_ID}`, cancel_url: `${env.APP_URL}/billing`, subscription_data: { metadata: { organization_id: ctx.orgId }, trial_period_days: 14 }, allow_promotion_codes: false, payment_method_collection: 'always' })`.
-  - Return `{ ok: true, data: { url: session.url } }`.
-- Fill `lib/billing/portal.ts`:
-  - `openPortal = authedAction('admin', z.strictObject({ returnPath: z.string().optional() }), async ({ returnPath }, ctx) => ...): Promise<Result<{ url: string }>>`.
-  - Read `stripeCustomerId`; if null, return `{ ok: false, error: { code: 'NO_CUSTOMER', userMessage: 'Subscribe to manage billing' } }`. No Customer creation here — the Portal is for existing customers (lesson 3 of chapter 068).
-  - Create the Portal session: `stripe.billingPortal.sessions.create({ customer: stripeCustomerId, return_url: returnPath ? `${env.APP_URL}${returnPath}` : env.STRIPE_PORTAL_RETURN_URL })`.
-  - Return `{ ok: true, data: { url: session.url } }`.
-- Fill `lib/billing/require-plan.ts`:
-  - `requirePlan(planSlug: 'pro' | 'team'): Promise<void>` — reads the active org from session (the helper from chapter 063), reads the entitlement via `getEntitlement(orgId)`, checks `hasActiveAccess(e)` and the plan tier (`'team'` includes `'pro'` access; the tier comparison is a small `PLAN_TIER: Record<PlanSlug, number>` table). Throws `BillingError('NO_ACCESS')` or `BillingError('PLAN_REQUIRED')` on fail.
-  - Not an `authedAction` — it's a Server-Component-callable helper. Names the asymmetry: actions handle mutations and return Result; helpers throw and rely on `error.tsx`.
-- Re-export the three methods from `lib/billing/index.ts`: `export { upgrade, openPortal } from './...'; export { requirePlan } from './require-plan'; export { getEntitlement, hasActiveAccess } from './entitlement'; export { BillingError } from './errors';`. Every other file imports from `billing`, never the underlying modules — the wrapper boundary.
-- Wire the inspector's Checkout and Portal buttons:
-  - The "Upgrade to Pro" button is a `<form action={async (formData) => { 'use server'; const result = await upgrade(null, formData); if (result.ok) redirect(result.data.url); }}> <input type="hidden" name="planSlug" value="pro" />` Server-Action-inline form. (Or a Client Component calling the action with a constructed `FormData` and using `window.location.assign(result.data.url)`.)
-  - The "Manage billing" button is the same shape, an inline `<form action={async (formData) => { 'use server'; const result = await openPortal(null, formData); if (result.ok) /* open in new tab */ }}> <input type="hidden" name="returnPath" value="/inspector" />`, opening the URL in a new tab via `target="_blank"`. Disabled (with tooltip) when `stripeCustomerId` is null.
-- Wire `/inspector/pro-only` (a provided page that calls `await billing.requirePlan('pro')` at the top, then renders "Pro-only content"). Before Checkout: the page throws `BillingError('NO_ACCESS')`, `error.tsx` renders "Upgrade to Pro." After Checkout: the page renders the protected content.
-- Add the `BillingError` rendering in the existing `error.tsx` segment: discriminate on `error instanceof BillingError`, switch on `error.code`, render the appropriate copy + a deep-link to the Portal or to the Upgrade flow.
-- Verify end-to-end:
-  - Click "Upgrade to Pro" in the inspector. Stripe Checkout opens (hosted page); pay with `4242 4242 4242 4242`; land on `/billing/success?session_id=...`. The poller shows "finalizing" for ~1-2s; the webhook lands; the entitlement panel flips to Pro; the success page renders "you're on Pro."
-  - Click "Manage billing." The Portal opens in a new tab. Click "Cancel subscription"; confirm; close the tab. Within a moment the inspector picks up `customer.subscription.updated` with `cancel_at_period_end: true`; the panel shows the new flag. The provided billing-page banner reads "your subscription ends on <date>."
-  - Open `/inspector/pro-only` after Pro: renders the protected content. Cancel via the Portal in test mode at-period-end-now (the dashboard's test-clock or `stripe trigger customer.subscription.deleted` for the seeded subscription): the entitlement flips to free; the protected page renders the error fallback again.
-- Lint rule: add (or call out as already-present) the eslint rule `no-restricted-imports` blocking `import Stripe from 'stripe'` and `import { stripe } from '@/lib/billing/stripe'` outside `lib/billing/**`. The rule is the structural enforcement of lesson 6 of chapter 068's principle.
+- Write the `file_metadata` migration. Add the table to `db/schema.ts` per the reference. Run `pnpm db:generate --name add_file_metadata`, inspect emitted SQL, run `pnpm db:migrate`. Confirm in Studio.
+- Write `lib/files/finalize.ts`: Zod input (`uploadId` uuid, `objectKey`, `originalFileName`, `contentType` from the enum). `r2.send(new HeadObjectCommand({ Bucket, Key: objectKey }))` — catch 404 → `UploadError('object-not-found')`. Assert `head.ContentType === input.contentType`. Assert `head.ContentLength <= MAX_BYTES` → `size-mismatch` otherwise. In `tenantDb(ctx.orgId).transaction`: insert the row with `id: input.uploadId`, `uploadedBy: ctx.user.id`, `byteSize: head.ContentLength`, `contentType: head.ContentType`; call `logAudit(tx, { action: 'file.uploaded', subjectType: 'file', subjectId: input.uploadId, actorUserId: ctx.user.id, orgId: ctx.orgId, payload: { byteSize: head.ContentLength, contentType: head.ContentType } })`. Return `{ ok: true, data: { fileId: uploadId } }`.
+- Write `app/files/upload-form.tsx` as a client component: `<input type="file" accept="...">` + `useRef`; status `useState` (`idle | signing | uploading | finalizing | done | failed`) + progress (0-100); on submit, client-side validation (`file.size <= MAX_BYTES`, `file.type` in allowlist) → `'signing'`, call `presignedPut` → `'uploading'`, create `XMLHttpRequest`, `xhr.open('PUT', data.url)`, `xhr.setRequestHeader('Content-Type', file.type)` (must match signed `ContentType`), `xhr.upload.onprogress` drives the bar, `xhr.send(file)`; on PUT 200 → `'finalizing'`, call `finalizeUpload` with the `uploadId` + `objectKey` + `originalFileName` + `contentType`; on success → `'done'`, `router.refresh()`, reset after 2s.
+- Pre-fill the `/files` page list section with a minimal empty state. Full list rendering is lesson 5 of chapter 069.
+- Verify: 1 MB upload runs to `done`, progress bar smooth; refresh shows empty list still (next lesson). 30 MB picks rejects client-side, no `presignedPut` call. `.exe` filtered by `accept` (or rejected by client validation on drag-drop). Network tab during success: small POST to `presignedPut`, MB-scale PUT to `r2.cloudflarestorage.com`, small POST to `finalizeUpload`. **Byte-pipe verification — function-side bytes, not megabytes.** `audit_logs` has one `file.uploaded` row.
 
 Senior calls and watch-outs:
 
-- The lazy Customer creation in `upgrade` is the one cross-system write the project has. The order matters: create on Stripe first, then UPDATE the local row. A failure after the Stripe create leaves an orphan Customer (Stripe-side garbage but no app-side reference); the retry creates a second Customer — the senior fix is to check for an existing Customer by metadata first (`stripe.customers.list({ email, limit: 1 })`) before creating. The lesson names the trade-off; the project ships the simpler retry-with-orphan path for clarity and notes the production hardening.
-- `subscription_data.metadata.organization_id` is the carry-channel that lets the webhook resolve `organizationId` without a DB lookup. Names the pattern from lesson 1 of chapter 068 and lands the code.
-- `payment_method_collection: 'always'` is the default for trial-collecting flows (lesson 2 of chapter 068) — collects a card at trial start, avoids the "trial ended, no card on file" downgrade dance.
-- `allow_promotion_codes: false` is the conservative default; flipping to `true` enables Stripe-dashboard-defined coupons. Named, not exercised.
-- The success URL contains `{CHECKOUT_SESSION_ID}` — Stripe interpolates the ID. The success page reads `searchParams.session_id` but does *not* call `stripe.checkout.sessions.retrieve` from the page — the read-and-poll pattern is structurally cleaner than the "trust the session_id" pattern (the latter requires the success page to verify the session server-side and write entitlements; the former lets the webhook own writes).
-- The Portal is opened in a new tab (`target="_blank"`) because Stripe's hosted Portal navigates back via `return_url` — the new-tab opens a focused billing context the user closes when done, no SPA back-button confusion.
-- `requirePlan` is the load-bearing gate (lesson 6 of chapter 068). Every Server Component or Server Action that gates behind a plan calls it at the top. Forgetting the call is the same lint-rule target as forgetting `authedAction` (Chapter 084's audit class); the rule is "every privileged Server Component imports `requirePlan` from `billing` and calls it before any data read."
-- The `BillingError` discrimination in `error.tsx` is the seam — without it, every billing-gated page renders a generic 500. Names the wiring once; the test in chapter 095 exercises it.
-- The `STRIPE_PORTAL_RETURN_URL` env is a default — the action accepts a `returnPath` override so a "Cancel my subscription" link in settings can return to settings, not the inspector.
-- Don't add `billing.cancel` or `billing.changePlan` methods — the Portal owns user-initiated mutations (lesson 6 of chapter 068). The temptation to "for symmetry" wrap is the failure mode named in lesson 7 of chapter 068. Interface stays at three methods.
+- Migration adds the table; re-running `db:generate` emits "no changes" (determinism signal from chapter 040).
+- `XMLHttpRequest` over `fetch` for one reason — `xhr.upload.onprogress` fires per chunk; `fetch` does not expose upload progress to user code.
+- PUT's `Content-Type` must match the signed one *exactly*. Common bug: `.JPG` is `image/jpeg` on some OSes, `image/pjpeg` on others. Symptom: `403 SignatureDoesNotMatch`. Fix: normalize via the allowlist before signing.
+- `finalizeUpload` HEADs to catch a malicious client calling with a stale `uploadId`/`objectKey` from a previous flow. The `unique` constraint on `objectKey` also rejects a duplicate row insert. Layered defense.
+- HEAD-then-insert is not transactional with R2 — between HEAD and insert, the object could (in principle) be deleted. Microsecond gap, lifecycle rules are 7-day prefix-scoped. Named, accepted.
+- `audit_logs` writes are in the same `tenantDb(orgId).transaction` as the row insert — both roll back together.
+- Client-side validation duplicates the server-side allowlist — defense-in-depth, not duplication smell. Client = instant feedback; server = trust boundary.
+- 4xx on PUT triggers full-flow retry (re-sign + re-upload), not PUT-only. Reusing a signed URL after a 4xx is undefined.
+- Network drop or tab close mid-PUT leaves an orphan object (lifecycle cleanup).
 
-Codebase state at entry: handlers mutate `plan_entitlements`, `billing.*` is empty.
-Codebase state at exit: `billing.upgrade`, `openPortal`, `requirePlan` shipped, the inspector exercises Checkout end-to-end with a real test card and the Portal end-to-end with cancel-at-period-end, `/inspector/pro-only` gates correctly. The lint rule blocks stray `stripe` imports. Verification step is mostly complete; the deterministic forensic recipes land in lesson 7 of chapter 069.
+Codebase state at entry: `presignedPut` works; no migration, no `finalizeUpload`, no client form.
+Codebase state at exit: full upload flow end-to-end — file picked, progress, row in `file_metadata`, bytes in R2, audit logged. List still empty (next lesson). **Runnable — uploads work.**
 
-Estimated student time: 75 to 90 minutes. Second-heaviest lesson; closes the loop the user touches.
+Estimated student time: 75 to 90 minutes. The chapter's heaviest lesson — migration + action + client land together because each one alone is not runnable.
 
 ---
 
-## Lesson 7 — Rehearse every failure mode
+## Lesson 5 — Fresh-per-render GETs
 
-Walks every "Done when" clause as a deterministic probe — tamper, replay, out-of-order, Portal cancel, redirect race, cross-tenant metadata, every `hasActiveAccess` status — and lands the metadata cross-check hardening.
+Writes `getFileDownloadUrl`, `listFiles`, and the un-cached `/files` server component that signs a new GET per row per render, then proves the discipline by watching a copied URL die at 11 minutes while a refreshed page keeps working.
+
+Goals:
+
+- Write `lib/files/presigned-get.ts`: read the row via `tenantDb(ctx.orgId)` filtered by `isNull(deletedAt)`; on no row → `{ ok: false, error: { code: 'object-not-found' } }`; sign `GetObjectCommand({ Bucket, Key: row.objectKey, ResponseContentDisposition: \`attachment; filename="${encodeRFC5987(row.originalFileName)}"\` })` at `expiresIn: 600`; return `{ url, fileName: row.originalFileName, contentType: row.contentType }`. Also export `getSignedGetForKey({ objectKey, expiresIn })` — pure, no tenant check, for the worker caller in lesson 6 of chapter 069.
+- Write `lib/files/list.ts`: `tenantDb(orgId).fileMetadata.findMany({ where: isNull(deletedAt), orderBy: [desc(uploadedAt), desc(id)], limit: limit + 1 })`. Cursor decode/encode lives in a new `lib/files/cursor.ts` with shape `{ uploadedAt: string; id: string }` (base64url-encoded JSON, Zod-validated) — `db/cursor.ts` from chapter 041 hardcodes `createdAt` and is not reusable here.
+- Write `app/files/page.tsx` as a Server Component: read `searchParams.cursor` (Zod-validated); call `listFiles`; for each row call `getFileDownloadUrl({ fileId: row.id })` to attach a fresh signed URL (**N signing calls per page render**, ~microseconds each, no R2 round trip); render the table; render `"Next page"` link with `nextCursor`. Call `logAudit(tx, { action: 'file.list_viewed', subjectType: 'file', subjectId: 'list', actorUserId: ctx.user.id, orgId: ctx.orgId, payload: { fileIds } })` once per page render (batched — one row per view, not per signed URL).
+- Verify: upload from lesson 4 of chapter 069 now appears; click "Download" → fetches via presigned GET; saves as `originalFileName`. View source — `href`s are real `https://<bucket>.r2.cloudflarestorage.com/...?X-Amz-Signature=...` URLs. **Fresh-per-render proof:** copy a URL, wait 11 minutes, paste in new tab — `403 AccessDenied`. Refresh `/files` — same row's `href` is different; click — works. **Senior anchor of the chapter.** Cross-org test: upload in A, switch to B, `/files` empty; `getFileDownloadUrl({ fileId: <A-id> })` → `object-not-found`.
+
+Senior calls and watch-outs:
+
+- Page is **not** `use cache`. Caching serves stale presigned URLs; the URL expires, the cached HTML lies. Fresh-per-render belongs at the boundary; cache lives one layer up (forecasts chapter 072).
+- N signing calls per render is not a hot spot — `getSignedUrl` is local HMAC, no R2 round trip. Signing is free; R2 round trips are not.
+- `ResponseContentDisposition` overrides the default. Without it, the browser saves as the `objectKey` segment (`<uuid>.jpeg`). Must be RFC 5987-encoded for non-ASCII names (`encodeRFC5987` helper provided).
+- `isNull(deletedAt)` is the structural enforcement of soft-delete hiding. The base-query helper from chapter 062 would normally enforce this; the project has one read shape so the manual `isNull` is the discipline.
+- Cursor shape is `{ uploadedAt, id }` (file-local, in `lib/files/cursor.ts`) — `(uploadedAt desc, id desc)` matched by the composite index. chapter 041's `db/cursor.ts` is `createdAt`-hardcoded and not reusable for an `uploadedAt` payload.
+- Audit at the user action (visit), not the derived effect (sign N URLs). Cardinality choice.
+
+Codebase state at entry: uploads work, no list.
+Codebase state at exit: full upload + list flow — pick, upload, see row, download, get the file. Multi-tenancy verified, URL freshness verified. **Runnable end-to-end for user uploads.**
+
+Estimated student time: 50 to 65 minutes.
+
+---
+
+## Lesson 6 — Real downloadUrl for the export
+
+Retrofits the chapter 067 export task to do a server-side `PutObjectCommand` under the `org/<id>/exports/` prefix, hand a fresh `getSignedGetForKey` URL to the email, and rely on the lifecycle rule for cleanup with no `file_metadata` row written.
+
+Goals:
+
+- Edit `trigger/export-invoices.ts`. After the page loop accumulates `csvAccumulator`: `const buffer = Buffer.from(csvAccumulator, 'utf8'); const objectKey = \`org/${organizationId}/exports/${ctx.run.id}.csv\`; await r2.send(new PutObjectCommand({ Bucket, Key: objectKey, Body: buffer, ContentType: 'text/csv', ContentDisposition: \`attachment; filename="export-${dayBucket()}.csv"\` }))`. **Server-side PUT** — bytes pass through this Trigger.dev worker, which is correct per lesson 5 of chapter 068.
+- `const { url: downloadUrl } = await getSignedGetForKey({ objectKey, expiresIn: 600 })`. `metadata.set('downloadUrl', downloadUrl)`. Pass `downloadUrl` to `sendExportEmail.triggerAndWait({ ..., downloadUrl })` (payload schema already accepts it from chapter 067).
+- **No `file_metadata` row** — exports are short-lived; lifecycle rule (7-day) on `org/*/exports/*` handles cleanup. Configure via `pnpm r2:lifecycle` (script provided); verify by logging effective rules, not by waiting 7 days.
+- Verify: trigger export from `/inspector`; on completion, panel renders `downloadUrl` as a real R2 link → click → CSV downloads (filename `export-<day>.csv` from `ContentDisposition`). Email arrives in Resend-verified inbox with same URL — click within 10 min → CSV. **Full end-to-end retrofit proof.** R2 dashboard shows the object at `org/<orgId>/exports/<runId>.csv`. `select count(*) from file_metadata where object_key like 'org/%/exports/%'` → 0. Run the kill-resume drill from chapter 067 — Ctrl-C trigger CLI at `pagesDone: 2/7`, restart; export resumes; the R2 PUT happens at end of the resumed parent (not on retry of completed pages); cross-step idempotency holds. Final: one CSV, one email, one audit row.
+
+Senior calls and watch-outs:
+
+- Server-side PUT is the *only* place in the project where a function (Trigger.dev worker) sees the bytes. The rule from lesson 5 of chapter 068 — browser PUT for user-facing flows; server PUT for workers.
+- CSV-in-memory is bounded by `pagesTotal × pageSize × avgRowSize`. Project-scale: MB. Production-scale (>100 MB or >10s generation): switch to multipart streaming per `paginatePage`. Named, not built.
+- Same bucket as user uploads — one bucket per environment, prefixes carry the workload split. Separate buckets per environment, never per workload.
+- 10-min GET expiry trade-off: user who opens the email 30 minutes later gets a dead link; senior call is "re-trigger" rather than "longer expiry".
+- Same `lib/r2.ts` for both Next.js function and Trigger.dev worker — one client, two consumers.
+- `getSignedGetForKey({ objectKey, expiresIn })` takes a raw key (no tenant check) because the worker has no request context. Tenant checks live at the boundary the caller is on.
+
+Codebase state at entry: chapter 067 export works against placeholder URL.
+Codebase state at exit: export end-to-end produces a real R2 object; email link works; both consumers of `lib/r2.ts` operate against the same bucket. **Runnable — full project surface complete.**
+
+Estimated student time: 45 to 60 minutes.
+
+---
+
+## Lesson 7 — Verify
+
+Walks each "Done when" clause as a runnable check — the 11-minute URL-death proof, function-side byte-pipe inspection, cross-org GET denial, `size-mismatch` from a lying client, CORS preflight on a non-allowed host, and the exports-have-no-row SQL.
 
 Goals:
 
 - Walk every "Done when" clause as a verification step (the table in the framing).
-- Signature path:
-  - `stripe trigger checkout.session.completed` → `processed_events` gains one row, `plan_entitlements` flips to `pro`, `audit_logs` gains one row. Inspector logs `verified → claimed → dispatched`.
-  - Inspector's "Tamper signature" → handler returns 400 + problem+json, no `processed_events` write, no body parse occurred (verifiable in the structured log which does not contain the body).
-  - `curl -X POST localhost:3000/api/webhooks/stripe -d '{}'` (no signature header) → 400 with `invalid_signature`.
-- Idempotency path:
-  - `stripe events resend <eventId>` of a previously claimed event → `processed_events` row count unchanged, `plan_entitlements.updatedAt` unchanged, `audit_logs` row count unchanged. The handler logs `verified → duplicate → 200`. The lesson names the deterministic proof: the row count is the load-bearing assertion.
-  - Verify the success path returned `{ duplicate: true }` in the response body (visible in the `stripe events resend` CLI output).
-- Ordering path:
-  - Two-event drill. Fire `customer.subscription.updated` for the current subscription (the CLI's `stripe trigger` with `--add subscription:status=past_due` produces a tailored event); confirm `plan_entitlements.status: 'past_due'`. Inspector's "Replay last event with older created" debug fires the same event-shape with a hand-rolled `created` value 60 seconds before the row's `lastEventAt`; handler logs `stale_ordering`, the entitlement does not change. Inspector confirms `status: 'past_due'` (unchanged).
-- Portal flow:
-  - Click "Manage billing" after a Checkout → Portal opens in new tab; cancel → return to app → inspector picks up the new `cancel_at_period_end: true` flag within a moment.
-  - With Stripe's test clock (or via `stripe trigger customer.subscription.deleted`): the period-end deletion fires; entitlement flips to free; `/inspector/pro-only` renders the gate fallback again.
-- Redirect-versus-webhook race:
-  - Real Checkout flow (test card `4242 4242 4242 4242`): success page renders "finalizing"; the poller's `router.refresh` flips the page to "you're on Pro" within 1-2s. Confirm via DevTools that the poll fires every 500ms.
-  - Disable the webhook handler (comment out the dispatch); rerun the Checkout; the success page sits at "finalizing" for 30 seconds, then renders the fallback ("this is taking longer than expected — check your email"). The fallback is the safety net for actual production webhook lag (or outage).
-- Cross-tenant probe:
-  - As user in org A, hand-craft a `subscription_data.metadata.organization_id` value pointing at org B (via the inspector's "forge metadata" debug). The webhook lands; the handler reads `organizationId` from metadata; UPDATEs org B's entitlement. The lesson names the failure mode: trusting metadata at face value lets a malicious-or-buggy `billing.upgrade` write to the wrong org. The structural defense: the webhook handler cross-checks `metadata.organization_id` against the `organizations` row whose `stripeCustomerId = session.customer`; mismatch → log + 500. Add the cross-check (a small refactor on lesson 5 of chapter 069's resolveOrgIdFromCustomer) and re-run the probe — the mismatched event is rejected.
-  - The lesson notes this hardening was deferred from lesson 5 of chapter 069 to surface it as a concrete watch-out in verify; some students will add it earlier.
-- Lint rule:
-  - Verify the `no-restricted-imports` rule blocks `import Stripe from 'stripe'` anywhere outside `lib/billing/**`. Try the violation in a Server Action and watch the lint fail. Restate the rule from lesson 6 of chapter 068.
-- Gate function exhaustiveness:
-  - Run `/inspector/pro-only` against each entitlement status: trialing (pass), active (pass), past_due (pass — grace), canceled with cancel_at_period_end + future period_end (pass), canceled with past period_end (fail), incomplete (fail), incomplete_expired (fail), unpaid (fail). Use the inspector's "force entitlement status" debug to walk all eight without round-tripping Stripe each time. `hasActiveAccess` lives up to the decision table from lesson 5 of chapter 068.
-- `audit_logs` discipline:
-  - Every transition wrote an `audit_logs` row inside the same transaction. Soft-delete one of the rows and re-run a transition; the audit panel shows the gap; restore. Names the append-only discipline (forward reference to lesson 3 of chapter 085).
-- Forward references the chapter project hands off:
-  - **Unit 13 (background work):** the `onCheckoutCompleted` handler's `subscriptions.retrieve` plus the entitlement upsert is one round trip; heavier post-subscription work (provisioning a customer-specific S3 prefix, sending a welcome email through Resend) lands as a `triggered.task` enqueued from the handler, not inline (lesson 2 of chapter 067's split-work pattern).
-  - **Unit 14 (notifications):** "subscription started," "trial ending in 3 days," "payment failed — please update card," "subscription canceled" all wire through the centralized dispatcher; the email and in-app inbox channels both fire off the entitlement transitions.
-  - **Unit 15 (cache):** `plan_entitlements` reads are `cacheTag('billing', orgId)`-keyed; the webhook handler calls `updateTag('billing', orgId)` after every UPSERT so the next request reads fresh; the Portal-driven `customer.subscription.updated` lands a `revalidateTag` instead (background mutation, not user-driven on this request).
-  - **Unit 17 (security/audit):** the webhook-secret-rotation drill (two active secrets, try-new-fall-back-to-old); the `subscription_data.metadata` cross-check (lifted to a lint rule); the `BillingError` user/operator split.
-  - **Unit 19 (tests):** the projection function (`subscriptionToEntitlement`) is the unit-testable seam — pure, fast; the integration tests cover the full webhook → DB → entitlement flow against real Postgres (Unit chapter 095 ships this as its target).
-- Name the senior calls one more time:
-  - The webhook is the only writer for `plan_entitlements`. Server Actions, the success page, and the Portal return all read.
-  - Verify → claim → mutate → audit all live in one transaction. Partial state is structurally impossible.
-  - The `last_event_at` predicate makes out-of-order delivery a silent no-op, not an incident.
-  - The `billing.*` interface is the only place `stripe` is imported. The lint rule is the structural enforcement.
-  - `hasActiveAccess` and `requirePlan` encode the decision table once; every gate calls them.
-  - The carry channel is `subscription_data.metadata.organization_id`; the safety net is the `stripeCustomerId` reverse lookup; the cross-check is the harness against a malicious-or-buggy upstream.
+- **User upload + row:** upload `fixtures/sample-5mb.jpg` from `/files`; confirm one R2 object at `org/<orgId>/files/<uuid>.jpeg`; confirm one `file_metadata` row with matching `objectKey`, `byteSize ≈ 5242880`, `contentType: 'image/jpeg'`, `uploadedBy: ctx.user.id`.
+- **List + download:** click "Download"; file saves as `sample-5mb.jpg` via `Content-Disposition`.
+- **Fresh-per-render (chapter's load-bearing proof):** view source, copy a `href`, wait 11 minutes, paste in new tab → `403 AccessDenied (Request has expired)`. Refresh `/files` — same row's `href` is different; click — works. **Senior anchor of the chapter — the URL is never persisted, never cached.**
+- **Export emails working R2 link:** trigger export; panel shows real R2 `downloadUrl`; click — CSV downloads. Email has the same URL; click within 10 min — CSV downloads.
+- **Function never sees user-upload bytes:** Network tab — `presignedPut` ~400 B response; PUT to `<bucket>.r2.cloudflarestorage.com` carries the MB body; `finalizeUpload` ~100 B response. Function-side bytes are orders of magnitude less than the upload.
+- **Payload validation:** `presignedPut({ contentType: 'application/octet-stream' })` → `{ ok: false, error: { code: 'invalid-input' } }`, no R2 call. Same for `claimedSize: 100_000_000`.
+- **Tenancy at GET:** upload in A; switch session to B (seeded users); `/files` empty; `getFileDownloadUrl({ fileId: <A-id> })` → `object-not-found`. Even with the right ID, wrong org returns no row.
+- **HEAD-based size verification (layered defense):** `debug:fake-upload` calls `presignedPut({ claimedSize: 1024 })` then PUTs 10 MB. R2 accepts. `finalizeUpload` reads `head.ContentLength: 10485760` → throws `size-mismatch`. No row inserted. Orphan 10 MB object remains (cleanup sweep named).
+- **CORS in the browser:** serve on `127.0.0.1:3000` (not in allowlist). PUT preflight returns 200 (allowed for the host); R2 returns 403 on the PUT because origin doesn't match. Restore `localhost` — works.
+- **No `file_metadata` for exports:** `select count(*) from file_metadata where object_key like 'org/%/exports/%'` → 0.
+- **Audit log:** `select action, count(*) from audit_logs group by action` — `file.uploaded` per upload (the `finalizeUpload` `logAudit(tx, { action: 'file.uploaded', subjectType: 'file', subjectId: fileId, actorUserId: ctx.user.id, orgId: ctx.orgId, payload: { byteSize, contentType } })` call), `file.list_viewed` per page render (the `/files` `logAudit(tx, { action: 'file.list_viewed', subjectType: 'file', subjectId: 'list', actorUserId: ctx.user.id, orgId: ctx.orgId, payload: { fileIds } })` call), `file.download_url_issued` per email link from the export task (`logAudit(tx, { action: 'file.download_url_issued', subjectType: 'file', subjectId: objectKey, actorUserId: null, orgId: organizationId, payload: { objectKey, expiresIn: 600 } })`).
+- **Soft-delete column exists:** `select column_name from information_schema.columns where table_name = 'file_metadata' and column_name = 'deleted_at'` returns the column. Action exists in `lib/files/soft-delete.ts`; structural shape verified.
+- Name the senior calls once more:
+  - Function never sees bytes for user uploads — browser PUT direct to R2.
+  - Two-step write — sign → upload → finalize-with-HEAD → row insert.
+  - `byteSize` and `contentType` from the HEAD, not the client claim.
+  - `objectKey` server-constructed; never client-supplied.
+  - Presigned GETs fresh-per-render; never persisted, never cached.
+  - Tenancy at every read via `tenantDb(orgId)`.
+  - One bucket per environment; prefixes carry the workload split. One `lib/r2.ts` for both consumers.
+  - User uploads use `file_metadata`; exports use no row + lifecycle rule.
+  - CORS specific origin, never `*`.
+- Forward references:
+  - **Unit 13:** `file.uploaded` fires the notification dispatcher; channel choice is the dispatcher's.
+  - **Unit 15a:** `/files` deliberately not cached; cache one layer up at the metadata read if volume demands.
+  - **Unit 16:** layered size defense, CORS specificity, `deletedAt` reads are audit line items.
+  - **Unit 20:** rotating R2 credentials follows staged-rollover discipline.
+  - **Avatars (9.x forward note):** Better Auth's hosted avatar handles its own pipeline; a custom avatar field reuses this chapter's shape with `contentType` restricted to images. Named, not built.
 
 Senior calls and watch-outs:
 
-- The verify lesson is the rehearsal of the failure modes — running each one and naming what would break without the disciplines the student just installed. If a verification fails, the lesson points at the owning build lesson, not at "debug it yourself."
-- The metadata cross-check at the resolution step is the chapter's last hardening. Surfacing it in verify (rather than burying it in lesson 5 of chapter 069) frames it as a concrete watch-out the student earns by running the probe.
-- Running every status through `hasActiveAccess` is the lesson that proves the decision table; the inspector's "force status" debug is the only way to walk all eight without manual Stripe test-clock orchestration.
+- Verify rehearses each failure mode and names what would break without the disciplines. If a verification fails, point at the owning build lesson.
+- The 11-min-later refresh proof is the chapter's headline verification — run the timer in real time (or fast-forward the system clock). Skipping it produces a student who thinks `<img src>={signedUrl}` survives a long page session.
+- The CORS test requires actually serving on a non-allowed host — `curl` won't reproduce the browser preflight. CORS is a browser concept; verify must run in a browser.
 
-Codebase state at entry: full webhook + projection + billing interface wired.
-Codebase state at exit: every "Done when" clause verified clause-by-clause; the metadata cross-check landed; the student can articulate every decision (verify before parse, dedup atomically, project purely, `last_event_at` ordering, single-writer entitlement, Portal for user-initiated changes, the three-method interface, the lint rule) and which forward unit will lean on it.
+Codebase state at entry: full upload + list + export retrofit wired.
+Codebase state at exit: every "Done when" clause verified clause-by-clause; the student can articulate every primitive and which forward unit will lean on it.
 
-Estimated student time: 40 to 55 minutes.
-
----
-
-> **Note (`revalidateTag` in Next.js 16):** the single-argument form `revalidateTag(tag)` is deprecated — every call must pass a `cacheLife` profile as the second argument (`'max'` is the senior default), e.g. `revalidateTag(tag, 'max')`.
+Estimated student time: 30 to 45 minutes.

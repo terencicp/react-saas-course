@@ -1,259 +1,400 @@
-# Chapter 028 — Hooks for holding state
+# Chapter 028 — Project: themed product surface
 
 ## Chapter framing
 
-Chapter 027 installed the render model — render is a function call, state is a snapshot, reconciliation runs by type and `key`, and components must stay pure. Chapter 028 is where the student learns the four hooks every React component reaches for to *hold* and *shape* state: `useState` (the default), `useReducer` (when transitions multiply), `useRef` (the mutable escape hatch that doesn't trigger re-renders), and `useId` (stable identifiers across SSR/hydration). The senior framing is that state shape is a design decision long before it's a syntax decision — every lesson lands the *where does this value live* question first, then the API. The chapter also lands the most consequential anti-pattern in early React careers: mirroring props into state via an effect when derived state or a `key` reset is the right reach.
+Chapter 028 cashes in everything Unit 3 installed. The student ships a real static product/marketing page — header, hero, three-column feature grid, pricing table, footer, and a mobile nav drawer below the `md` breakpoint — built out of shadcn primitives, CVA variants, semantic-token theming, and a working theme toggle that survives reload without FOUC. The accessibility baseline is non-negotiable and verified clause by clause: Lighthouse a11y 100, keyboard-only navigation, color-contrast pass, focus rings, semantic landmarks, heading hierarchy, layout reflow at three widths, and the drawer's focus trap plus scroll lock.
 
-Several threads run through every lesson. **State has four homes** — local component state, lifted parent state, URL state, server state — and the senior reflex is to start at the leaf and lift only on demand; this thread runs through lesson 1 of chapter 028, lesson 3 of chapter 028, and lesson 4 of chapter 028 and connects forward to the URL-state surface in chapter 037. **Updates produce new references, never mutations** — the `Object.is` bailout from lesson 1 of chapter 027 is cashed in repeatedly; spread for objects and arrays, updater functions for stale-prone setters. **The compiler depends on purity** (lesson 3 of chapter 027) — `useState` initializers, reducers, and ref reads all respect that contract; lesson 2 of chapter 030 cashes it in. **Hooks are called unconditionally at the top of the component** — the rules of hooks are foreshadowed here and owned by lesson 7 of chapter 029. **Refs are the not-state escape hatch** — when a value persists across renders but doesn't drive UI, it lives in a ref; this contrasts with state on every dimension. **`useId` is for accessibility wiring, not list keys** — the rule lands once and forward-references the form patterns in Chapter 7. The chapter ships six teaching lessons plus the quiz, in dependency order: the `useState` surface (lesson 1 of chapter 028), derived state and the mirror-into-state anti-pattern (lesson 2 of chapter 028), the lift-vs-colocate-vs-URL decision (lesson 3 of chapter 028), `useReducer` for multi-transition state (lesson 4 of chapter 028), `useRef` as the non-rendering store (lesson 5 of chapter 028), and `useId` for SSR-stable identifiers (lesson 6 of chapter 028). Forward references land in chapter 029 (effects and `useContext`), chapter 030 (compiler and the narrow remaining cases for manual memoization), and Chapter 7 (forms, where every hook in this chapter shows up at the call site).
+Threads that run through every lesson: shadcn primitives are imported from `components/ui/`, never reinstalled; the `cn()` helper merges every `className` override; design tokens flow through `@theme` and `--primary`/`--background`/`--foreground` rather than literal colors; layout uses flex and CSS Grid with responsive breakpoints (`sm:`, `md:`, `lg:`); dark mode is the `.dark` class flipped by `next-themes` and the inline pre-paint script kills FOUC; accessibility is verified with keyboard and Lighthouse, not promised; the mobile drawer is shadcn's `Sheet` (the focus trap is the primitive's job) and the body-scroll lock is the one custom hook the project owns. The chapter ships 1 brief + 4 project-init lessons (pnpm, AGENTS.md, tsconfig, Biome) + 3 build lessons + 1 verify lesson; each build lesson closes on a runnable state the student can `pnpm dev` and use. The project-init lessons exist because Chapter 028 is the *from-scratch* project — every subsequent project chapter (Chapter 035 onward) carries this toolchain forward via `degit`, and that pattern only works if one project lays the foundation.
 
----
+### Dependency carry-in
 
-## Lesson 1 — The useState surface and lazy initialization
+- **From chapter 017 (JSX/HTML semantics):** semantic landmarks (`<header>`, `<main>`, `<nav>`, `<footer>`), heading hierarchy (one `<h1>`, no level skips), `<button type>`, `<label htmlFor>`, `<img alt>`.
+- **From chapter 018 (Tailwind):** utility-first reflex, `@theme` config, `cn()`, the `dark:` variant, the `next-themes` wiring shape (`<ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>` plus `suppressHydrationWarning` on `<html>`).
+- **From chapter 019 (cascade and tokens):** the semantic-token model (`--background`/`--foreground`/`--primary`/`--muted`/`--ring`/`--border`) and OKLCH color values.
+- **From chapter 020 (layout):** flex axes, CSS Grid with `grid-template-columns`, container queries when applicable, the `min-h-dvh` reach.
+- **From chapter 021 (typography/color/motion/responsive):** breakpoint utilities, `prefers-reduced-motion`, `tw-animate-css`, fluid type with `clamp()`.
+- **From chapter 022 (components and composition):** the canonical Button shape (`cva` + `Slot` + `cn()` + `asChild`), `VariantProps<typeof variants>`, discriminated unions for mutually exclusive props.
+- **From chapter 024 (state and refs):** `useState`, `useRef`, `useId`.
+- **From chapter 025 (effects):** `useEffect` for body-scroll lock with cleanup; closing-on-escape via event listeners.
+- **From chapter 026 (custom hooks):** `useLockBodyScroll()` shape — toggles `overflow: hidden` on `body` with cleanup.
+- **From chapter 027 (shadcn + a11y):** the shadcn CLI install pattern, `asChild` composition, the four discipline-level commitments, focus-trap as the primitive's job, the icon-only button label pattern.
 
-Teaches the `useState` signature, typing pitfalls, the `Object.is` bailout, immutable-update reflex, lazy initializer form, setter stability, and what `useState` is not for.
+### Project file tree (built across Lessons 2-5, with UI stubs marked TODO for Lessons 6-9)
 
-Topics to cover:
+```
+app/
+  layout.tsx                     # provided: <html lang="en" suppressHydrationWarning>, ThemeProvider, fonts
+  (marketing)/
+    page.tsx                     # provided: page shell, section placeholders with TODO comments
+  globals.css                    # provided: @import "tailwindcss"; @theme { --background, --foreground, --primary, --muted, --ring, --border, --radius } in light + .dark
+components/
+  ui/                            # provided by shadcn add: button, sheet, dialog, card, separator, badge, skeleton
+  site-header.tsx                # TODO student
+  site-footer.tsx                # TODO student
+  hero.tsx                       # TODO student
+  feature-grid.tsx               # TODO student (uses FeatureCard with CVA variants)
+  feature-card.tsx               # TODO student (cva-driven variants: tone, emphasis)
+  pricing-table.tsx              # TODO student
+  pricing-card.tsx               # TODO student
+  theme-toggle.tsx               # TODO student (useTheme + sun/moon icons)
+  mobile-nav.tsx                 # TODO student (Sheet trigger + content)
+  theme-aware-image.tsx          # TODO student (renders light/dark sources)
+hooks/
+  use-lock-body-scroll.ts        # TODO student
+lib/
+  data.ts                        # provided: typed copy + pricing fixtures
+  utils.ts                       # provided: cn()
+public/
+  hero-light.png, hero-dark.png  # provided
+  logo.svg                       # provided
+components.json                  # provided (shadcn, Radix engine, lucide icons)
+next.config.ts                   # provided (reactCompiler: true)
+package.json                     # provided
+```
 
-- **The senior question.** A component needs to hold a value that changes over time and drives the UI — a counter, a toggle, the currently selected tab, a form field. `useState` is the answer, but the API rewards careful framing: the initial value runs once but the function is called on every render, the setter is stable but the value is a fresh snapshot, and the lazy initializer form earns its weight when the initial computation is non-trivial. The lesson installs the surface, lands the four daily decisions (primitive vs. object, initial-value form, separate-vs-grouped state, when the setter bails out), and forward-references the patterns that build on it.
-- **The signature and what each piece does.** `const [count, setCount] = useState(0)` returns a tuple — the current snapshot and a setter. The initial value is used on the first render only; subsequent renders ignore it. The setter is stable across renders (same reference), which matters for effect dependencies (lesson 2 of chapter 029) and the compiler's memoization story.
-- **Typing `useState`.** Inference is the default — `useState(0)` infers `number`, `useState('')` infers `string`, `useState([])` infers `never[]` (a trap). For empty arrays, object initial values where the shape can grow, or `null`-able state, annotate explicitly: `useState<Todo[]>([])`, `useState<User | null>(null)`. The senior reflex: annotate when inference would narrow too tight or widen wrong.
-- **State that's an object vs. multiple state variables.** Two `useState`s for `firstName` and `lastName` vs. one `useState({ firstName, lastName })` is a daily decision (foreshadowed in lesson 4 of chapter 027). The senior cut: separate state for values that update independently (a panel's `isOpen` and its content), grouped state for values that update together (a form draft, a settings bundle). Grouped state means every update is a spread; separate state means more setters but cleaner updates.
-- **The immutable-update reflex.** `setUser({ ...user, name: 'Alice' })` for objects; `setItems([...items, newItem])` for arrays; `setItems(items.filter(i => i.id !== removed))` for removal; nested updates spread at every level. Mutating in place and then calling the setter bails out via `Object.is`. The lesson reinforces the rule from lesson 4 of chapter 027 and shows it at the `useState` call site.
-- **The bailout rule.** Setting state to a value that is `Object.is`-equal to the current state skips the re-render entirely. `setCount(count)` with the same number is a no-op; `setUser(user)` with the same reference is a no-op; `setUser({ ...user })` with a freshly spread object re-renders even if every field matches. The lesson names this so students understand both the optimization (cheap to call `setState` defensively) and the trap (in-place mutation looks "set" but doesn't render).
-- **Lazy initial state — `useState(() => expensiveCompute())`.** When the initial value requires non-trivial work (parsing a localStorage blob, computing a derived structure, reading a large prop), passing a function defers and caches it. Without the lazy form, `useState(expensiveCompute())` calls `expensiveCompute()` on every render and discards the result. The threshold for reaching for the lazy form: anything that touches storage, parses JSON, walks a large structure, or measures the DOM. For a literal or simple expression, the direct form is fine.
-- **The setter is stable, the value is not.** The setter reference never changes across renders; it's safe in `useEffect` dependency arrays (and the lint rule won't flag it). The state value is a fresh snapshot every render — capturing it in a closure freezes the snapshot, which is the stale-closure mechanism from lesson 4 of chapter 027.
-- **The updater form recap.** When the next state depends on the previous, reach for `setCount(c => c + 1)` (cashed in by lesson 4 of chapter 027). The lesson re-states it at the `useState` call site as the reflex, not the workaround.
-- **Reading from props as initial state — the controlled trap.** `useState(props.value)` looks reasonable but the state is "frozen" at the mount — subsequent prop changes don't update it. This is sometimes deliberate (an editable copy of a server value), sometimes a bug (the parent expects the child to follow the prop). The lesson names the trap and forward-references the fix (lesson 2 of chapter 028 for derived state, lesson 5 of chapter 027 for `key`-driven reset).
-- **What `useState` is not for.** Values that don't affect the UI (interval IDs, focus state, scroll positions read by handlers) — use `useRef` (lesson 5 of chapter 028). Values derived from other state or props — derive in render (lesson 2 of chapter 028). Values that should be shared across many components — lift or use context (lesson 3 of chapter 028, lesson 4 of chapter 029). Values that should survive a refresh or be shareable — URL or server state (lesson 3 of chapter 028, chapter 037).
-- **Watch-outs:**
-  - `useState([])` infers `never[]` and `arr.push(x)` won't typecheck. Annotate `useState<T[]>([])`.
-  - `useState({})` infers `{}` — usable but loose. Annotate the shape.
-  - Passing a function literal *as* the initial value (`useState(handler)`) calls `handler()` once instead of storing the function. To store a function as state, wrap: `useState(() => handler)`.
-  - The lazy initializer must be pure (lesson 3 of chapter 027) — Strict Mode may call it twice in development.
-  - Calling the setter inside the function body (not in a handler/effect) causes an infinite loop. The exception is the `setState`-during-render pattern for *derived from previous state* (rare, narrow rules apply); the daily reach is to derive in render instead (lesson 2 of chapter 028).
-  - Setting state from inside `useState`'s initial value (calling the setter in the initializer) is silently ignored — the component hasn't mounted yet.
-  - Reading a stale `count` in a `setTimeout` is fixed with the updater form, not by recomputing.
+### Reference-solution signatures lessons will display
 
-What this lesson does not cover:
+- `useLockBodyScroll(locked: boolean): void` — applies `document.body.style.overflow = 'hidden'` when `locked`, restores prior value on cleanup; no-op on SSR.
+- `featureCardVariants = cva(base, { variants: { tone: { default, brand, muted }, emphasis: { quiet, loud } }, defaultVariants: { tone: 'default', emphasis: 'quiet' } })` returning a class string.
+- `FeatureCardProps = ComponentProps<'article'> & VariantProps<typeof featureCardVariants> & { title: string; description: string; icon: LucideIcon }`.
+- `PricingCardProps = { name: string; price: string; period: 'month' | 'year'; features: string[]; featured?: boolean; cta: { label: string; href: string } }`.
+- `ThemeToggle: () => JSX.Element` using `useTheme()` from `next-themes`; renders `<Button variant="ghost" size="icon" aria-label="Toggle theme">` with `<Sun className="dark:hidden" />` and `<Moon className="hidden dark:block" />` swap.
+- `MobileNav: ({ links }: { links: { href: string; label: string }[] }) => JSX.Element` wrapping shadcn's `<Sheet>` with `SheetTrigger` (the `Menu` icon button) and `SheetContent side="left"`; calls `useLockBodyScroll(open)`; closes on link click.
+- `ThemeAwareImage: ({ light, dark, alt, ...props }) => JSX.Element` rendering both `<img>` sources with `dark:hidden` and `hidden dark:block` so SSR ships both and CSS picks the right one — no JS branch, no FOUC.
+- Page data: `lib/data.ts` exports `features: FeatureCardProps[]`, `pricingTiers: PricingCardProps[]`, `navLinks: { href; label }[]`, all typed.
+- Env entries: none — fully static.
 
-- Derived state and the syncing-via-effect anti-pattern — lesson 2 of chapter 028.
-- Lifting state, colocation, and URL state — lesson 3 of chapter 028.
-- `useReducer` for multi-transition state — lesson 4 of chapter 028.
-- `useRef` for non-rendering values — lesson 5 of chapter 028.
-- `useEffect` for syncing with external systems — lesson 2 of chapter 029.
-- The rules of hooks — lesson 7 of chapter 029.
-- Form state and uncontrolled inputs — Chapter 7.
+### Verify recipe mapped to "Done when"
 
----
+| Done-when clause | Verify step |
+| --- | --- |
+| Identical first paint regardless of system theme (no FOUC) | Reload with system set to dark, then light; the rendered theme matches before paint. DevTools Performance flame chart shows no flash frame. |
+| Lighthouse a11y at 100 | Run Lighthouse (Chrome DevTools) in incognito; the accessibility score is 100; no flagged issues. |
+| Keyboard tab order traverses every visible interactive control top-to-bottom | Unplug or ignore the mouse; Tab from the URL bar; every interactive element receives a visible focus ring in document order. |
+| Layout reflows correctly at 360 / 768 / 1280 px | DevTools device toolbar; cycle through the three widths; no horizontal scroll, no broken grid, hero stacks below `md`, three-column grid becomes one-column below `md`. |
+| Mobile drawer traps focus | Below `md`, open the drawer; Tab cycles within the drawer; Shift+Tab reverses; focus does not escape to the underlying page. |
+| Mobile drawer locks body scroll | With the drawer open, attempt to scroll the page; the page doesn't move. Close the drawer; scroll restored. iOS Safari emulation passes the same test. |
+| Drawer closes on `Esc` | With the drawer open, press `Esc`; the drawer closes and focus returns to the trigger button. |
 
-## Lesson 2 — Derive in render, do not mirror into state
+### Concepts demonstrated → owning lesson
 
-Teaches that values computable from existing props and state belong in the function body, names the canonical mirror-prop-into-state-and-sync-with-effect anti-pattern, and lands the three fixes (derive, lift, `key`-reset).
-
-Topics to cover:
-
-- **The senior question.** A component has a `fullName` value that depends on `firstName` and `lastName`. A junior reflex is `useState` for `fullName` plus a `useEffect` that calls `setFullName(firstName + ' ' + lastName)` whenever either changes. The result is a render, an effect, a re-render — three passes for one value, plus a window of stale state where the UI shows the old `fullName`. The fix is to *derive* the value during render: `const fullName = firstName + ' ' + lastName`. The lesson installs the rule, lands the canonical reproductions, and forward-references the narrow cases where state actually earns its weight.
-- **What "derived" means.** A value is derived when it can be computed from existing props and state at any moment. A user's full name from first/last. A filtered list from a search query plus the source list. The count of completed todos from a todo array. The total of a cart's line items. These should not live in state — they should be computed in the function body during render.
-- **The mental shift — JavaScript before JSX.** The body of a component is a function. Anything that can be computed with normal JavaScript (variables, ternaries, `.filter`, `.map`, `.reduce`) gets computed there. State is reserved for values that *change over time independent of other state*. The senior framing: state is the *minimum* set of values from which everything else can be computed.
-- **The canonical anti-pattern: mirror a prop into state, sync with effect.** `const [value, setValue] = useState(props.value); useEffect(() => setValue(props.value), [props.value])`. (`useEffect(callback, deps)` runs the callback after commit and re-runs when any value in `deps` changes — full treatment in lesson 2 of chapter 029.) The component renders with the stale state, the effect fires, the component re-renders with the new state — two renders per prop change, and any code between the two reads stale state. The fix depends on intent: if the value is purely a function of the prop, derive it; if the value is an editable copy that should reset when the prop changes, use a `key` reset (lesson 5 of chapter 027); if neither fits, the state structure is wrong.
-- **The canonical anti-pattern: cached calculation as state.** `const [filtered, setFiltered] = useState([]); useEffect(() => setFiltered(items.filter(...)), [items, query])`. Same shape, same fix — `const filtered = items.filter(...)` in render. The React Compiler (lesson 2 of chapter 030) memoizes the expensive computation; the developer doesn't pre-memoize.
-- **The canonical anti-pattern: derived flags.** `const [hasErrors, setHasErrors] = useState(false); useEffect(() => setHasErrors(errors.length > 0), [errors])`. Fix: `const hasErrors = errors.length > 0`. The lesson stacks these reproductions because the shape recurs in every codebase.
-- **When state is actually warranted.** (1) The value originates from user input (`<input onChange>`). (2) The value comes from an external system (server, localStorage, a subscription) and needs to be cached locally. (3) The value tracks a moment in time (a timestamp at mount, a random seed assigned once). (4) The value is intentionally "snapshotted" — an editable form draft that should diverge from the server-side record until save. The lesson lands these as the legitimate triggers.
-- **Computing in render is cheap.** The senior reflex corrects "but won't recomputing on every render be slow?" — for typical work (a filter over a few hundred items, a sum, a string concatenation), the cost is negligible compared to the rendering itself. The React Compiler memoizes when the computation is expensive and the inputs are stable; when it doesn't, `useMemo` (lesson 3 of chapter 030) is the manual reach, but only after a profiler measurement.
-- **The `useMemo` foreshadow — narrow and audited.** When derivation is *measurably* expensive (a large sort, a non-trivial graph traversal, a parser pass), `useMemo` caches across renders. Named here once as the escape valve; lesson 3 of chapter 030 owns the decision threshold. The default is no `useMemo`.
-- **The "you might not need an effect" landing.** The React docs page of the same name is the canonical reading for this lesson — the lesson summarizes its rules and forward-references lesson 3 of chapter 029 for the full effects-anti-pattern catalog (event-handler logic, parent-driven resets, expensive calculation, fetching).
-- **State that derives from changing props — the `key`-reset alternative.** When a child needs local state seeded from a prop but reset when the prop changes (an edit form for a selected record), the `key` reset (lesson 5 of chapter 027) is the senior reach, not a sync effect. The lesson cross-references explicitly because the two anti-patterns share the same setup.
-- **Watch-outs:**
-  - "I need to update state when a prop changes" is almost always one of: derive it, lift it, or `key`-reset it. The sync-effect is the wrong shape.
-  - Derived computations in render run on every render — that's the point. Don't optimize prophylactically.
-  - A `setState` call inside a `useEffect` that watches another piece of state is the smell. Look for the derivation.
-  - The exception — `setState` during render, conditionally, for "adjusting state based on changed props" — is a documented but narrow pattern; the lesson names it once and trusts that `key` resets or derivation cover most cases.
-  - Derived state hidden inside a custom hook is still derived state. The hook should return the computed value, not store it.
-  - A computed value that is the *input* to an effect (a query string passed to a fetch) belongs in render and the effect's dependencies. Don't cache it in state to "stabilize" the dependency — React's comparison is `Object.is` and the source-of-truth values already drive the change.
-
-What this lesson does not cover:
-
-- The full "you might not need an effect" catalog (event handlers, parent resets, expensive calc) — lesson 3 of chapter 029.
-- `useMemo` thresholds and decision rules — lesson 3 of chapter 030.
-- The `key` reset mechanic at depth — lesson 5 of chapter 027.
-- Effects and external-system sync — lesson 2 of chapter 029.
-- Form drafts and server-state divergence — Chapter 7.
-- Server state and caching — Chapter 036 and Chapter 11.
-
----
-
-## Lesson 3 — The four homes for state
-
-Teaches the local-lifted-URL-server decision tree, the colocate-then-lift-on-demand reflex, URL state with `nuqs` as the 2026 reach, and the prop-drilling-is-not-a-context-bug distinction.
-
-Topics to cover:
-
-- **The senior question.** A `SearchableTable` has a `query` input and rows below. Should `query` be local state in the input, lifted to the parent that owns the rows, or pushed into the URL as `?q=...`? The answer drives shareability, refresh behavior, undo/redo via back button, and SSR. The lesson installs the four-tier decision (leaf, lifted, URL, server) as the senior framing for state placement, lands the canonical triggers for each tier, and forward-references the URL-state surface in chapter 037.
-- **The four homes for state.** (1) **Local** — state belongs to a single component, no one else cares. (2) **Lifted** — state belongs to a parent because two or more siblings need it. (3) **URL** — state belongs to the route because it should survive refresh, be shareable, and respect the back button. (4) **Server** — state belongs to the server because it's the canonical record. The lesson teaches the senior reflex: start at (1), lift only when (2) demands, push to (3) when shareability or refresh-survival demands, persist to (4) when canonicity demands.
-- **Colocation as the default.** "Colocate state with the component that needs it" is the rule. A modal's open/closed state lives in the modal trigger's parent — the closest common ancestor of the trigger and the modal. A dropdown's expanded state lives in the dropdown component. Premature lifting creates prop-drilling and recomputes the world on every keystroke. The senior framing: lift on demand, not on prediction.
-- **Lifting state up — the mechanic.** When two siblings need the same state (a parent showing a list, a filter input above it), the state moves to their common parent and is passed down as props plus a setter (or a typed event handler). The lifted-up component becomes the *single source of truth* — the inputs are now controlled, the children render purely from props.
-- **The canonical lift triggers.** (1) Two siblings need the same value (filter + list). (2) An ancestor needs to *react* to a child's state (form fields driving a "save" button's enabled state). (3) The state needs to survive across the unmount of a single child (a tab's content state surviving tab switches — though `key` resets often handle this better).
-- **URL state — the third tier.** Search filters, pagination, sort orders, the selected tab, modal IDs that should be linkable. The URL is the source of truth; the components read from `searchParams` (in App Router this means `useSearchParams` for Client Components, or awaited `searchParams` on the page in Server Components — Chapter 033 and chapter 037 own these). The senior reflexes the lesson lands: if a user reloading the page expects the value to stick, it belongs in the URL. If they expect to share the link and the recipient sees the same view, it belongs in the URL. If neither, local or lifted is fine.
-- **URL state with `nuqs` — the 2026 reflex.** `nuqs` is the typed-search-params library that wraps `useSearchParams` with typed parsers, defaults, batching, and history mode. The lesson names it once as the senior reach when URL state grows past one or two params; full surface is in chapter 037. Without `nuqs`, hand-rolled `useSearchParams` + `router.push` works for simple cases.
-- **Server state — the fourth tier.** Server state (the user's saved records, the team's settings, anything backed by a database) doesn't belong in `useState` long-term — it belongs in a server-state cache (Chapter 11) or read directly in a Server Component (Chapter 036). `useState` for server data leads to staleness, refetch-on-every-mount bugs, and lost optimistic updates. Named here as the fourth tier and forward-referenced.
-- **The decision framework — a tree.** (1) Does the value need to survive a refresh or be shareable? → URL. (2) Is it canonical data backed by the server? → server cache / Server Component. (3) Do two or more components need it? → lift to the common parent. (4) Otherwise → local. The lesson states this once as the chart and uses it for the rest of the surface.
-- **Prop-drilling and the context foreshadow.** When lifted state has to traverse many layers, prop-drilling becomes the cost. The instinct to "fix" this with context is sometimes right and sometimes premature — context has its own re-render cost (lesson 4 of chapter 029) and is reserved for genuinely cross-cutting state (auth user, theme, locale). The lesson names this and trusts lesson 4 of chapter 029 to land the decision.
-- **The compound-component alternative to prop-drilling.** When the depth comes from layout structure (a `Card` with `CardHeader` and `CardBody`), compound components (lesson 2 of chapter 026) often eliminate the need to lift — children are wired implicitly via context inside the compound. Recognition only; lesson 2 of chapter 026 owns the surface.
-- **The senior code smell — multiple `useState`s tracking the same conceptual value.** A `searchInput` state in the input, a `searchQuery` state in the list, and a `useEffect` syncing them is the lifting-not-done signal. The fix is one `useState` at the parent.
-- **Inverse smell — state lifted too high.** A `tabState` lifted to the root layout when only one route uses it bloats the layout and re-renders the world on every tab click. The fix is push state down to the smallest component that actually needs it.
-- **The form-draft exception.** Form state is *almost always* lifted to the form component, never to the input. The form owns the submit, the validation, the dirty-tracking; the inputs are presentational. This is the canonical "one form, many inputs, one piece of state" pattern. Chapter 7 owns the surface; the lesson names it here as the canonical lifting case.
-- **Watch-outs:**
-  - Lifting too eagerly is as wrong as lifting too late. The trigger is two-components-need-it, not "might someday."
-  - URL state is global state with a free synchronization mechanism. Use it for anything the user might expect to bookmark.
-  - `useState` for the current user, the theme, or the locale is the wrong tier — those are context (auth, theme provider) or URL/cookie (locale).
-  - "Move state to context" is not a fix for prop-drilling that's three layers deep — pass the prop. Context is for cross-cutting concerns, not for skipping intermediate components.
-  - Server state in `useState` looks like it works until the user opens a second tab.
-  - When lifting, the typed callback shape (`onChange: (next: string) => void`) is the contract — don't pass setters across component boundaries unless the child is genuinely "the input." Named callbacks are easier to refactor.
-  - URL state without parsing is unsafe — Zod-validate the params on read (foreshadowed at lesson 3 of chapter 033).
-
-What this lesson does not cover:
-
-- `useContext` and the perf footgun — lesson 4 of chapter 029.
-- The `useSearchParams` surface and `nuqs` API — Lesson chapter 037 (App Router URL state).
-- Server-side data fetching and Server Components — Chapter 036.
-- Server-state caching (TanStack Query / SWR-style) — Chapter 11.
-- Forms at depth (validation, submission, server actions) — Chapter 7.
-- Global stores (Zustand, Jotai) — Unit 16 recognition only.
-- Co-location patterns at the file-system level — lesson 1 of chapter 033.
+- Tailwind v4 with `@theme` — lesson 2 of chapter 018.
+- `cn()` helper composition — lesson 3 of chapter 018.
+- CVA variant tables (`cva` + `VariantProps`) — lesson 3 of chapter 022.
+- `Slot` + `asChild` polymorphism — lesson 3 of chapter 022.
+- `dark:` variant and the `.dark` class flip — lesson 5 of chapter 018.
+- `next-themes` wiring without FOUC — lesson 6 of chapter 018.
+- Semantic-token model (`--background`, `--foreground`, `--primary`) — lesson 4 of chapter 019.
+- Flex and CSS Grid layout — lesson 2 of chapter 020, lesson 3 of chapter 020.
+- Responsive breakpoints (`sm:`, `md:`, `lg:`) — lesson 6 of chapter 021.
+- `prefers-reduced-motion` and `motion-reduce:` — lesson 5 of chapter 021.
+- shadcn primitives (`Button`, `Sheet`, `Card`, `Badge`, `Separator`) — lesson 1 of chapter 027.
+- The four discipline-level a11y commitments — lesson 2 of chapter 027.
+- ARIA: `aria-label` on icon-only buttons, `aria-hidden` on decorative icons — lesson 3 of chapter 027.
+- Focus trap (Radix handles it inside `Sheet`) and return-focus contract — lesson 4 of chapter 027.
+- `useState`, `useRef`, `useId` — Chapter 024.
+- `useEffect` with cleanup — lesson 1 of chapter 025.
+- `useLockBodyScroll` custom hook — lesson 1 of chapter 026.
+- Architectural Principle #4 (name things for intent) at design-token naming — surfaced here.
 
 ---
 
-## Lesson 4 — useReducer when transitions multiply
+## Lesson 1 — The bar and the brief
 
-Teaches the threshold where coordinated `useState`s become a reducer, the discriminated-union action shape, the reducer purity contract, lazy init via the `init` argument, and the async-lives-in-the-handler rule.
+Frame the static marketing surface as a SaaS pattern, state the seven "Done when" verifications, show the final UX at three widths, set the scope cut, and commit to the from-scratch build (no starter clone — Chapter 035 will introduce the project-clone flow).
 
-Topics to cover:
+Goals:
 
-- **The senior question.** A form has fields, a submit button, a loading state, a server error, a "draft saved" indicator. The component has eight `useState`s and twenty setters scattered through handlers, and a bug shows up where the loading state stays `true` after a validation failure. The fix is `useReducer` — one state object, named actions, one reducer that owns every legal transition. The lesson installs the threshold ("when `useState`s start coordinating, switch to a reducer"), lands the reducer shape, and connects to the broader state-management vocabulary.
-- **The signature.** `const [state, dispatch] = useReducer(reducer, initialState)`. The reducer is `(state, action) => newState`, pure, no side effects. `dispatch(action)` queues an action; React calls the reducer with the current state and the action and renders with the result. The third argument — `init` — is the lazy form (same role as `useState`'s lazy initializer).
-- **What an action looks like.** Discriminated unions are the senior shape: `type Action = { type: 'submit' } | { type: 'error'; message: string } | { type: 'reset' }`. The `type` field discriminates; payloads come as additional fields. TypeScript narrows in each `case` of the switch, so `action.message` is only available where `action.type === 'error'`. The lesson connects this directly to Chapter 009's discriminated-union seed.
-- **The reducer shape.** A switch on `action.type`, each case returning a new state object via spread. No mutation. No side effects. No async calls. Pure inputs to pure outputs. The lesson lands this as the contract — the reducer's purity is what makes the state predictable, testable, and time-travel-debuggable (devtools recognition only).
-- **When `useReducer` earns its weight.** (1) Multiple related state values that update together (a form's `values + errors + isSubmitting + submitError`). (2) Transitions that have invariants (you can never be `isLoading` and have a `result` at the same time). (3) Update logic complex enough to want a name (`'optimistic-update'`, `'rollback'`, `'commit'`). (4) The same state value getting set from multiple distant handlers and you want one place to trust. (5) State that needs to be tested independently — reducers are unit-testable without React.
-- **When `useState` is the right reach instead.** A counter. A toggle. A form field. A modal's open/closed flag. A single piece of state with one or two transitions. Reducers add ceremony; reach for them when the ceremony pays for itself.
-- **The "model a state machine" framing.** Reducers are state machines without the library. `idle → loading → success | error → idle` is a four-state machine with named transitions; modeling it as a `status` field in a reducer prevents the impossible-state bugs that scattered `useState`s create (e.g., `isLoading: true` *and* `error: 'X'` at the same time). The senior reflex: when invariants matter, model the state machine. XState as the library reach is recognition only — overkill for most components, right when the machine has nested or guarded transitions.
-- **Lazy initialization with the `init` argument.** `useReducer(reducer, initialArg, init)` calls `init(initialArg)` once on mount. Useful when initial state requires a derivation (parsing local storage, computing from props on mount). Same role as `useState(() => ...)`.
-- **Dispatch is stable, state is a snapshot.** `dispatch` is referentially stable across renders; safe in effect dependencies and prop-drilling. The state value follows the snapshot rule — actions queue; the next render sees the next state. The updater-form rules from lesson 4 of chapter 027 apply: when an action's payload depends on the current state, reach for an action that computes from previous-state inside the reducer (which already has access), not from outside.
-- **Immer with `useReducer` — recognition only.** When state is deeply nested and spreads pile up, Immer's `produce` wraps a "mutating-style" reducer body and produces an immutable result. Named once as the library reach; the course default is direct spreads because shallow updates dominate and explicit spreads keep the reducer's intent visible.
-- **Reducer + `useTransition` — recognition.** `useTransition` (lesson 5 of chapter 029) can wrap a `dispatch` to mark the update as a transition. Forward reference only.
-- **The Redux foreshadow.** `useReducer` looks like a single-component Redux. The shape is intentional — actions, reducers, dispatch — but the scope is one component (and its descendants via context, if shared). Course doesn't teach Redux; recognition that the vocabulary transfers.
-- **Typing `useReducer` in React 19.** The compiler's type inference improved; the senior pattern is `useReducer(reducer, initialState)` with the reducer's signature carrying the types — `function reducer(state: State, action: Action): State`. The state and action types live next to the reducer, not as generics on the hook call. Cross-reference to chapter 009 for the discriminated-union shape.
-- **Watch-outs:**
-  - The reducer must be pure (lesson 3 of chapter 027) — no `fetch`, no `console.log`-in-production, no DOM access, no `Math.random()`. Strict Mode may double-call it in dev.
-  - Returning the same state object reference bails out the same way `useState` does. Always spread to produce a new reference.
-  - Don't put async logic inside the reducer. Async lives in the handler that calls `dispatch` — start the async, dispatch `{ type: 'start' }`, await, dispatch `{ type: 'success', payload }` or `{ type: 'error', message }`.
-  - "Switch on action type" exhaustiveness — TypeScript's `never` check at the end of the switch catches forgotten action types. The senior pattern: a `default` case with `assertNever(action)` (cross-reference chapter 009).
-  - Sharing a reducer via context is the multi-component pattern, but it's also where context's re-render cost (lesson 4 of chapter 029) bites — split the state and dispatch into two contexts to limit re-renders.
-  - Reducers can return a partial state by mistake — always spread `...state` first in the case, then override fields.
-  - "I have 12 `useState`s in one component" is the canonical trigger to switch.
+- Frame the SaaS pattern being built: the public-facing product surface every B2B SaaS ships before login — and the standards bar a senior holds it to (a11y 100, no FOUC, responsive, focus-trapped drawer).
+- State the seven "Done when" verifications in one paragraph; map each to the lesson that builds it.
+- Show the final UX as three screenshots: desktop at 1280, tablet at 768, mobile at 360 with the drawer open.
+- Set the scope cut: static page only, no real auth, no real CMS, no analytics, no animations beyond shadcn defaults; copy and pricing live in a typed `data.ts`.
+- Name the senior-mindset payoff: this surface is the visible bar your design system holds — every shadcn component, every token, every responsive utility cashed out at once.
+- State that Chapter 028 is the *from-scratch* project: pnpm install, AGENTS.md, tsconfig, Biome, and the Next.js scaffold are all authored in the next four lessons before any UI code is written. Subsequent project chapters (Chapter 035 onward) clone a starter that carries this scaffold forward.
 
-What this lesson does not cover:
+Senior calls and watch-outs:
 
-- Discriminated unions and exhaustive switches at depth — Lessons lesson 5 of chapter 008 and chapter 009.
-- `useContext` and context performance — lesson 4 of chapter 029.
-- `useTransition` and async transitions — lesson 5 of chapter 029.
-- Async form actions and `useActionState` — Chapter 7.
-- Redux, Zustand, Jotai — Unit 16 recognition.
-- State machines (XState) — recognition only.
-- Server-state caching libraries — Chapter 11.
+- The accessibility bar is non-negotiable. A 99 Lighthouse score is a failure; a single keyboard trap is a failure. Name the bar up front so the student does not negotiate with themselves at verify time.
+- "I'll add motion later" — motion comes free with `tw-animate-css` and shadcn defaults; reduced-motion already respected. Do not roll your own.
+- The drawer is shadcn's `Sheet`; do not write a custom modal. The custom hook is `useLockBodyScroll` and only that.
+
+Codebase state at entry: empty directory.
+Codebase state at exit: project scope and Done-when bar internalized; no code written yet — Lessons 2 through 5 stand the project up.
+
+Estimated student time: 10 to 15 minutes.
 
 ---
 
-## Lesson 5 — useRef as the non-rendering escape hatch
+## Lesson 2 — pnpm and the lockfile contract
 
-Teaches the two flavors of ref (DOM nodes and instance values), the state-vs-ref rule ("does the JSX read it?"), the four canonical DOM-ref reaches, the don't-read-or-write-during-render rule, and how refs interact with the React Compiler.
+Install pnpm through mise, write the minimum-viable `package.json` with `packageManager` pinned, commit `pnpm-lock.yaml` as the deterministic resolution record, and guard against mixed package managers with `only-allow pnpm`.
 
-Topics to cover:
+Goals:
 
-- **The senior question.** A `<SearchInput>` should focus its `<input>` when the parent opens the dropdown. A debounced search needs to remember its `setTimeout` ID across renders so the next keystroke can clear it. A scroll-position tracker needs to read `scrollTop` without re-rendering the page on every pixel. Each of these is a value that *persists across renders* but *doesn't drive UI*. The lesson installs `useRef` as the React escape hatch for that pattern, names the two flavors (DOM node access and instance values), and lands the rule that distinguishes refs from state.
-- **The signature and what's in `.current`.** `const inputRef = useRef<HTMLInputElement>(null)` returns a stable object `{ current: T | null }`. The object reference is the same across renders; `.current` is mutable and doesn't trigger re-renders when set. The initial value (`null` for DOM refs, anything for instance values) is set once on the first render.
-- **The two flavors of ref.** (1) **DOM refs** — attach to an element via the `ref` prop (`<input ref={inputRef} />`) and React assigns the DOM node to `.current` after commit. (2) **Instance values** — a mutable box for any value the component needs to remember across renders without rendering on change (interval IDs, timeout IDs, previous values, large objects that shouldn't be inputs to state).
-- **The rule that separates refs from state.** State is for values the UI reads. Refs are for values *only handlers and effects* read. If changing the value should re-render, it's state. If changing the value should not re-render, it's a ref. The senior reflex: "does the JSX read this?" — yes → state, no → ref.
-- **DOM ref lifecycle.** React assigns the node to `.current` after the DOM commit (the `useEffect` timing). Reading `inputRef.current` in render returns the *previous* commit's value (or `null` on the first render); reading it in an effect or handler reads the live node. The lesson lands this so students don't reach for the ref in render.
-- **The canonical DOM-ref patterns.** (1) Focus management: `inputRef.current?.focus()` in an effect or a handler. (2) Reading layout: `divRef.current?.getBoundingClientRect()` in an effect. (3) Imperative APIs: `videoRef.current?.play()` from a "Play" button handler. (4) Scrolling: `listRef.current?.scrollTo({ top: 0 })`. The lesson names these as the four reaches and forward-references lesson 4 of chapter 026 for `ref` as a React 19 prop (no more `forwardRef`).
-- **Refs are not for things React already does.** Reading the value of a controlled input via a ref defeats the controlled pattern. Setting `style.display = 'none'` via a ref bypasses React. Toggling a class via `classList.add` bypasses Tailwind/state. The senior cut: refs are for capabilities the DOM exposes that React doesn't (focus, measurement, media playback, scrolling, copy-to-clipboard targets), not for re-implementing what props and state do.
-- **Instance-value refs — the second flavor.** `const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)` to remember a `setTimeout` ID across renders. `const previousValueRef = useRef(value)` to compare against the previous render (the `usePrevious` custom-hook pattern foreshadowed in lesson 1 of chapter 030). `const renderCountRef = useRef(0); renderCountRef.current++` for debugging.
-- **The "don't read or write refs during render" rule.** Refs hold mutable state; reading or writing during render makes the component impure (lesson 3 of chapter 027). The narrow exception is the "lazy initial ref" pattern: `if (someRef.current === null) someRef.current = createExpensiveThing()` for one-time setup. Otherwise — handlers and effects only.
-- **Ref callbacks for measurement and dynamic refs.** Passing a function as the `ref` prop (`<div ref={node => { ... }}>`) gives a callback that runs when the node attaches and (in React 19) returns a cleanup that runs when it detaches. Useful for measuring on mount, attaching to dynamic elements, and merging multiple refs. Forward reference to lesson 4 of chapter 026 for the full surface.
-- **`useImperativeHandle` — recognition only.** When a parent legitimately needs to call methods on a child (a `<VideoPlayer>` with `play()` and `pause()`), the child exposes a typed API via `useImperativeHandle`. Rare in 2026 — most "expose a method" instincts are better served by lifting state or `key` resets. Cross-reference lesson 4 of chapter 026.
-- **Refs and the React Compiler.** The compiler treats refs as opaque; reading or writing `.current` during render flags the component as impure and skips memoization (lesson 2 of chapter 030). The senior audit: any component with ref reads in render shows up in the DevTools "not memoized" list. Move the ref access to a handler or effect.
-- **The "previous value" pattern.** `useEffect(() => { previousValueRef.current = value })` after render captures the previous value for the next render. Common enough to extract as a `usePrevious` custom hook (lesson 1 of chapter 030). The lesson names this once as the canonical instance-value pattern.
-- **Cleanup discipline.** A ref holding a timer ID, a subscription, or a resource needs a cleanup — usually in the effect that created it. The lesson names this and trusts lesson 2 of chapter 029 to teach effect cleanup at depth.
-- **Watch-outs:**
-  - Reading `ref.current` during render returns the *committed* value, which is `null` on the first render and stale on every subsequent one. Always read in effects or handlers.
-  - Setting `ref.current` during render makes the component impure and skips compiler memoization.
-  - A `useState` plus a setter where the value never appears in JSX is a ref in disguise. Switch to `useRef` and move the setter into a handler.
-  - A ref to a conditionally rendered element holds `null` when the element isn't mounted — null-check at read sites.
-  - Sharing a ref across components by passing it as a prop works; sharing by storing in module scope is a leak and breaks Strict Mode tests.
-  - Don't initialize a ref with an expensive computation directly — the lazy form is `useRef(null)` followed by an `if (ref.current === null) ref.current = ...` block inside an effect or the lazy-init exception above.
-  - `ref` is not passed through standard `props.ref` access; in React 19 you destructure `ref` from props directly on the function component (lesson 4 of chapter 026) — but accessing it from inside the *same* component (looking at "my own" ref) uses `useRef`, not the prop.
-  - Pointer-capture refs and IntersectionObserver targets are the canonical "instance value + DOM node" combo — both lifecycles must align.
+- The decision up front, in three sentences. pnpm is the package manager default in 2026 — strict non-hoisted `node_modules` (phantom-dependency bugs surface at install time, not in production), monorepo-first design, mature ecosystem, full Node compat. Bun gets one line as the conditional alternative — faster on cold installs, ~95% Node-compat means one package in twenty surprises, no built-in audit; ready for some teams in 2026 but not the default the course teaches against. The trigger that would flip the choice: a greenfield project where install time genuinely dominates CI and the team has the bandwidth to handle compat edges.
+- Installing pnpm through mise (`mise use --pin pnpm@10`) rather than globally via Homebrew or the standalone installer — keeps the package manager version pinned per-repo for free and avoids the global-version drift that bites teams. The student already has `mise` from lesson 8 of chapter 003; this lesson pins pnpm under the same `.mise.toml`.
+- The post-Corepack reality. Corepack is removed from Node 25+ distributions and the ecosystem is moving off it. pnpm 10 ships `manage-package-manager-versions` enabled by default, so once any pnpm is installed, the `packageManager` field in `package.json` is enough to lock the version per-repo — pnpm itself swaps in the right binary. Write the `packageManager: "pnpm@10.x.y"` field by hand (or by running `pnpm use ...`) and explain the field is read by pnpm on every invocation.
+- The minimum-viable `package.json` — `name`, `private: true` (because this is an app, not a publishable library, and the field prevents an accidental `pnpm publish`), `type: "module"` (ESM-first in 2026), `packageManager`, and an empty `scripts` block that the next few lessons fill in.
+- The four pnpm commands a SaaS engineer runs daily: `pnpm install` (and what it actually does — resolves the dependency graph, writes the lockfile, populates `node_modules` from the global content-addressed store via symlinks), `pnpm add <pkg>` / `pnpm add -D <pkg>` (with the dev-dependency distinction at production-build time named explicitly), `pnpm remove`, and `pnpm run <script>` (with the `pnpm <script>` shorthand and what `pnpm` does when the script name collides with a built-in).
+- The `.npmrc` at the repo root for two settings the course relies on: `auto-install-peers=true` (modern default, but explicit avoids the surprise on older pnpm versions) and `engine-strict=true` (the `engines` field in `package.json` becomes a hard error, not a warning — pairs with the runtime pin from lesson 8 of chapter 003).
+- **The lockfile as a contract.** `pnpm-lock.yaml` is the resolved, fully-pinned graph of every transitive dependency at the exact version, integrity hash, and resolution path. Distinct from `package.json`, which only declares the top-level intent and the version ranges; the lockfile records the actual decision.
+  - The senior question: what does the lockfile prevent. Concrete failure shapes — a teammate running `pnpm install` six months from now and getting a patched-but-broken sub-dependency that the original install didn't see; a CI build that resolves a different graph than the dev machine because the version range allowed it; a supply-chain incident where the integrity hash is the only thing flagging that an upstream artifact was tampered with.
+  - The commit rule, stated as a hard default with no hedging: `pnpm-lock.yaml` belongs in version control. It is never in `.gitignore`.
+  - `--frozen-lockfile` in CI as the structural enforcement — named here, used in Unit 20.
+  - Merge conflicts in the lockfile. The senior move: never hand-edit. Resolve the `package.json` conflict, then run `pnpm install`, which re-resolves and rewrites the lockfile. Most teams configure git to mark the file as `merge=ours` or `linguist-generated` so reviewers don't try to read the diff.
+- The mixed-package-manager failure mode. A teammate who runs `npm install` against a pnpm repo generates a `package-lock.json`, breaks the workspace symlinks, and produces a second source of truth. The `preinstall` script `npx only-allow pnpm` as the structural enforcement that makes this hard to do accidentally.
 
-What this lesson does not cover:
+Senior calls and watch-outs:
 
-- `ref` as a prop in React 19 and ref forwarding — lesson 4 of chapter 026 (already taught).
-- `useImperativeHandle` at depth — lesson 4 of chapter 026 (recognition only).
-- `useEffect` cleanup and external systems — lesson 2 of chapter 029.
-- IntersectionObserver, MutationObserver, ResizeObserver patterns — Chapter 029 (effects) and recognition in 3.x DOM chapters.
-- Drag-and-drop and gesture libraries — out of scope (recognition).
-- Animation libraries (Framer Motion, `motion`) — lesson 5 of chapter 025 territory.
-- Custom hooks extracting ref patterns (`usePrevious`, `useEventListener`) — lesson 1 of chapter 030.
+- pnpm is named once; the lesson commits and moves on. The Bun line is a sentence, not a sidebar.
+- The lockfile commit rule is not a taste call. Skipping it produces the "works on my machine" bugs the chapter's discipline exists to prevent.
+- `--save-exact` on every install (`pnpm add -D --save-exact ...`) for the few tools the course pins explicitly (Biome, `@biomejs/biome` in the next lesson). Named so the student knows when to reach for it.
+
+Codebase state at entry: empty directory with the Done-when bar from lesson 1 of chapter 028.
+Codebase state at exit: `.mise.toml` pins Node + pnpm; `package.json` has `packageManager` and `engines` set; `.npmrc` has `engine-strict=true` and `auto-install-peers=true`; `pnpm install` runs clean; `pnpm-lock.yaml` is committed; the `preinstall` script guards against mixed package managers.
+
+Estimated student time: 30 to 40 minutes.
 
 ---
 
-## Lesson 6 — useId for ARIA wiring across SSR
+## Lesson 3 — AGENTS.md as the next contributor's briefing
 
-Teaches the position-in-the-tree derivation that keeps IDs stable across server and client, composing multiple IDs from one call, the label-input-error wiring pattern, and the not-for-list-keys rule.
+Author the project's `AGENTS.md` at the repo root for what earns a place (thesis, pinned stack, layout, commands, conventions pointers) and what doesn't (aspirational prose, duplicated rules, hand-maintained file lists), with the deeper documentation doctrine deferred to Chapter 101.
 
-Topics to cover:
+Goals:
 
-- **The senior question.** A custom `<TextField label="Email" />` component needs to wire a `<label htmlFor={id}>` to a `<input id={id}>` so screen readers announce the field correctly. Hardcoding `id="email"` works for one instance but collides when two `<TextField>`s are on the same page. `Math.random()` works on render but produces a hydration mismatch under SSR — the server picks one number, the client picks another. `useId` is the platform answer: a stable identifier per component instance, identical on server and client. The lesson installs the hook, names the canonical reaches, and lands the rule that distinguishes `useId` from list keys.
-- **The signature and what it produces.** `const id = useId()` returns a string identifier (`':r1:'` or similar) that is unique per component instance, stable across renders, and identical on server and client. The format is opaque — don't parse it, don't pattern-match on it. The hook is called once per component; each instance gets its own ID.
-- **Why a hook and not a `crypto.randomUUID`.** `crypto.randomUUID()` would produce a different value on server and client and break hydration. `useId` derives the ID from the component's *position in the React tree*, which is deterministic across renders and identical on server and client because the tree is the same.
-- **The canonical use — accessibility wiring.** Form fields where label and input must be paired: `<label htmlFor={id}>` plus `<input id={id} />`. `aria-describedby={errorId}` plus an error element with `id={errorId}`. `aria-labelledby={titleId}` for custom dialogs. The senior reflex: any time a non-visual ID needs to link two DOM nodes, reach for `useId`.
-- **Composing multiple IDs from one `useId`.** A single `useId()` returns one base ID. When a component needs multiple related IDs (one for the input, one for the error message, one for the description), derive: `const id = useId(); const inputId = id; const errorId = \`${id}-error\``. The convention preserves uniqueness and keeps the relationship visible.
-- **What `useId` is *not* for — list keys.** The lesson lands this rule explicitly because the misconception is universal. `key` in a list (`items.map(item => <Row key={...} />)`) is for reconciliation identity (lesson 2 of chapter 027) — it must come from the *data*, not from a hook. `useId` generates an ID for the *component instance*, which by definition exists only after the instance is created — the chicken-and-egg makes it useless for keys. Use the item's `id`, `slug`, or a `crypto.randomUUID()` assigned at creation time and stored on the data.
-- **What `useId` is not for — security or business identifiers.** `useId` IDs are not random, not unpredictable, and not unique across pages or sessions. They're stable per component, per tree, per page render. Anything that needs cryptographic uniqueness (CSRF tokens, session IDs, idempotency keys) uses `crypto.randomUUID()` server-side.
-- **The hydration-mismatch fix.** When a Client Component reads from `Date.now()`, `Math.random()`, or `window.*` and uses the result in an ID attribute, the SSR HTML and the hydrated HTML differ and React throws a hydration warning (lesson 5 of chapter 034). `useId` is one of the canonical fixes — replace the random ID with a deterministic one. Other hydration fixes live at the source (move the random read to an effect; use `suppressHydrationWarning` for known-acceptable differences) — lesson 5 of chapter 034 owns the surface.
-- **Inside Server Components.** `useId` works in both Server and Client Components in React 19 — the IDs are generated during the tree-walk and serialized into the SSR HTML, then matched on the client during hydration. The senior takeaway: don't special-case Server Components for ID generation; `useId` is universal.
-- **The `idPrefix` rendering option.** When rendering multiple React roots on the same page (rare, but used for some legacy migration patterns and embedded widgets), `createRoot(..., { identifierPrefix: 'app1-' })` prefixes IDs to avoid cross-root collisions. Recognition only — the daily reach is one root per page.
-- **Composability and library compatibility.** `useId` is what shadcn/ui (lesson 1 of chapter 031) and Radix primitives use internally to wire ARIA attributes. The course's own form components (Chapter 7) reach for `useId` at every label-input pairing. When wrapping a third-party input with a custom component, the wrapper generates the ID and the inner element receives it as a prop.
-- **Watch-outs:**
-  - `useId` IDs contain colons (`:r1:`) by design — they're safe in HTML `id` attributes and `htmlFor`, but if a CSS selector references the ID it must escape the colons (`#\\:r1\\:`). The senior reach is to not select on these IDs from CSS; they're for ARIA wiring, not styling.
-  - Don't use `useId` as a key in lists — keys come from data, not from the React tree (lesson 2 of chapter 027).
-  - Conditional rendering that changes the *call order* of `useId` (e.g., `{flag && <UseIdComponent />}` followed by another `useId` consumer in the same parent) can shift IDs and cause hydration mismatches — keep `useId` calls outside conditionals.
-  - The ID changes if the component unmounts and remounts (a `key` reset, for instance) — fine for ARIA, surprising if you stored the ID somewhere expecting it to persist.
-  - `useId` is for *internal* wiring. URL fragments (`#email`) that users link to need stable, human-readable IDs hardcoded — not `useId`.
-  - Calling `useId` inside a custom hook is fine; the hook receives a unique ID per call site. The custom hook returns the ID for the consumer to use.
-  - Reading `useId` and then mutating it (string concatenation for a suffix) is the right pattern; calling `useId` twice in one component is also fine — each call gets its own ID.
+- The senior question: what is the file the next person to open this repo (human or AI agent) should read first, and what earns a place in it. `AGENTS.md` is that file in 2026. The Linux Foundation adopted it as an Agentic AI Foundation founding project in late 2025; major coding agents (Codex, Cursor, Claude Code, Factory) read it natively. The framing for the course: `AGENTS.md` is **operational onboarding**, not architectural prose — the durable facts the next contributor needs to be productive in their first session.
+- Write the project's `AGENTS.md` at the repo root with the sections that earn a place. Each section gets one-line justification:
+  - **Thesis line** — one or two sentences naming what the project is. Without it, the agent or new contributor has to infer the domain from file names.
+  - **Stack core** — pinned versions of the load-bearing libraries (Next.js 16, React 19, TypeScript X.Y, Tailwind v4, shadcn/ui, Drizzle X.Y for later projects) so an agent doesn't hallucinate an old API surface.
+  - **Repo layout** — the file tree by directory with one line per directory on what lives there. Saves the next contributor the discovery step.
+  - **Commands** — the daily commands (`pnpm dev`, `pnpm build`, `pnpm check`, `pnpm tsc --noEmit`) so an agent doesn't try `npm run …`.
+  - **Conventions** — pointers to where the conventions live (the `biome.json` from lesson 8 of chapter 028, the `.editorconfig` from lesson 7 of chapter 003, the `tsconfig.json` from lesson 7 of chapter 028). The conventions are not duplicated in prose; the agent is told where to look.
+  - **Additional project context** — links to longer docs the agent should pull in *only when needed*. Conditional reading so the file stays short.
+- What does **not** earn a place. Stated as a hard list because the failure mode of `AGENTS.md` is bloat — a 2026 research finding (Gloaguen et al., real-world repos) shows that LLM-generated context files reduce agent task success, and even hand-written files only help when minimal and precise. The hard cuts:
+  - Aspirational architecture statements. ("This codebase strives to be clean and maintainable.") Add nothing; cut.
+  - Marketing copy. Not the readme.
+  - Tutorials. The agent doesn't need to be taught Next.js; it needs to know which Next.js this repo runs on.
+  - Anything that duplicates a more authoritative source. The `biome.json` (next lesson) is the source of truth for formatting rules; `AGENTS.md` references it, never restates it.
+  - Hand-maintained file trees that age out the moment a directory is added. List *directories* (the architectural shape) but not individual files (which drift).
+  - Decisions that should be ADRs. Architectural Decision Records get their own treatment in Chapter 101; `AGENTS.md` points at the ADR directory if it exists, doesn't inline the decisions.
+- The discipline. One paragraph naming the test the file passes or fails: if a section is the same five lines six months from now even though five PRs landed, it's earned its place. If it ages out on the next refactor, it doesn't belong.
+- A note on naming. Some teams use `CLAUDE.md`, `.cursorrules`, or tool-specific equivalents. 2026 consensus has converged on `AGENTS.md` as the open spec; tool-specific files can exist alongside but should re-export or reference `AGENTS.md` rather than duplicate. Stated in one line; the course commits to `AGENTS.md`.
 
-What this lesson does not cover:
+Senior calls and watch-outs:
 
-- Reconciliation and list keys — lesson 2 of chapter 027.
-- Hydration mismatches at depth and Server/Client boundaries — Lessons lesson 5 of chapter 034 and lesson 6 of chapter 034.
-- ARIA roles, live regions, and the first rule of ARIA — lesson 3 of chapter 031.
-- Focus management and keyboard navigation — lesson 4 of chapter 031.
-- Form field components and validation — Chapter 7.
-- shadcn/ui's internal ID wiring — lesson 1 of chapter 031 (recognition).
-- Cryptographic IDs and server-generated tokens — Chapter 11 (server) and recognition only.
+- The lesson asks the student to write a short file (under one screen). If it grows past two screens during authoring, sections are being added that shouldn't earn a place.
+- The Chapter 101 forward link is named once. Documentation that lives next to code, the wider doctrine, owns the deeper treatment.
+
+Codebase state at entry: `package.json`, `.mise.toml`, `.npmrc`, lockfile from lesson 2 of chapter 028.
+Codebase state at exit: `AGENTS.md` at the repo root — thesis, stack, layout, commands, conventions, additional context — committed.
+
+Estimated student time: 20 to 25 minutes.
 
 ---
 
-## Lesson 7 — Quizz
+## Lesson 4 — Configuring tsconfig
 
-Top 10 topics to quiz:
+Author `tsconfig.json` in two halves — the project-owned strictness floor (`strict`, `noUncheckedIndexedAccess`, `noFallthroughCasesInSwitch`, `noImplicitOverride`, `forceConsistentCasingInFileNames`, the `@/*` path aliases) and the framework-owned compatibility surface (`target`/`lib`, `module`/`moduleResolution: "bundler"`, the transpiler-alignment trio, `jsx: "preserve"`, `noEmit`, the Next.js plugin) — under the rule that the project owns the first half and Next.js owns the second.
 
-- The `useState` signature, the bailout rule (`Object.is` skips re-render on same value), and typing pitfalls — `useState([])` infers `never[]`, annotate when the inferred type is too narrow.
-- Lazy initial state — `useState(() => expensiveCompute())` runs once on mount; `useState(expensiveCompute())` runs on every render and discards the result; the trigger is anything that touches storage, parses, or measures.
-- Derived state — compute in render rather than mirroring with a `setState`-in-effect; the canonical anti-pattern (prop mirrored into state, synced via effect) and the three fixes (derive, lift, `key`-reset).
-- The four homes for state — local, lifted, URL, server — and the decision tree (start at local, lift when two components need it, push to URL when refresh/share matters, persist when the server is canonical).
-- The colocation-vs-lifting senior cut — lift on demand, not on prediction; the form-as-the-canonical-lifting-case; the prop-drilling-is-not-a-fix-for-context distinction.
-- `useReducer` — the threshold (multiple coordinated state values, transitions with invariants), the reducer purity contract, discriminated-union actions, lazy init, and the "don't put async in the reducer" rule.
-- `useRef` — instance values and DOM access, the "state-vs-ref" rule (does the JSX read it?), the four canonical DOM-ref reaches (focus, measure, imperative APIs, scrolling), the "don't read or write refs during render" rule.
-- `useRef` lifecycle and the React Compiler interaction — `.current` is set after commit; reading in render returns the previous commit's value; impure ref access skips compiler memoization.
-- `useId` for stable IDs across SSR — the position-in-the-tree derivation, composing multiple IDs from one call, the rule that `useId` is for ARIA wiring not list keys, the hydration-mismatch case it fixes.
-- The hooks-are-tools-not-defaults framing — `useState` for UI-driving values, `useReducer` for coordinated transitions, `useRef` for non-rendering persistence, `useId` for accessibility wiring; reach for each at its threshold, not prophylactically.
+Goals:
+
+- The senior framing. `tsconfig.json` has two owners. The project owns the *strictness floor* — the flags that decide which classes of bugs the type-checker catches before the code ships. Next.js owns the *compatibility surface* — the flags that make TypeScript, the bundler, and the runtime agree on what a module is. Both halves live in the same `tsconfig.json`; the split is mental, not physical. Naming it makes the file readable.
+- **The strictness floor (project-owned).** Author each flag with one line on the bug class it catches.
+  - `"strict": true` — the umbrella flag that turns on the eight individual checks that together make TypeScript actually type-safe (`noImplicitAny`, `strictNullChecks`, `strictFunctionTypes`, `strictBindCallApply`, `strictPropertyInitialization`, `noImplicitThis`, `useUnknownInCatchVariables`, `alwaysStrict`). The senior framing: anything below `strict` is not TypeScript, it's JSDoc with hints. The course never operates below this floor.
+  - `"noUncheckedIndexedAccess": true` — accessing `array[i]` or `record[key]` returns `T | undefined` instead of `T`. The bug class it catches: reading past the end of an array or a missing key and silently passing `undefined` into the rest of the function. The cost: the student has to handle the `undefined` case. The course leaves the flag on because the bug class shows up in production reads where a 99%-populated record breaks on the 1% case.
+  - `"noFallthroughCasesInSwitch": true` — a `case` without an explicit `break` or `return` is an error. Catches the pattern where a senior dev intends to fall through but the next reader can't tell whether the omission was intentional.
+  - `"noImplicitOverride": true` — overriding a base-class method without the `override` keyword is an error. Free insurance for the rare class hierarchies that show up.
+  - `"forceConsistentCasingInFileNames": true` — refuses imports that differ in case from the on-disk filename. Catches the bug where a Mac filesystem (case-insensitive) lets `import Foo from './foo'` work locally and then breaks in CI on Linux (case-sensitive). One of the cheapest "works on my machine" preventers in the file.
+- The flag the project does **not** set, with the reason.
+  - `"exactOptionalPropertyTypes"` — distinguishes `{ foo: undefined }` from `{}`. Real bug class, but the friction is high across the ecosystem in 2026 — many third-party types still produce values that fail this check and the workarounds (`as` casts, conditional spreads) noise up the call site more than the flag's safety pays back. Named here so the student knows it exists and knows the trigger to turn it on.
+- Path aliases — the project's other strictness lever. `"paths": { "@/*": ["./*"] }` paired with `"baseUrl": "."`. Two senior questions: why use aliases at all (refactor safety — moving a file doesn't break a hundred imports written as `'../../../lib/foo'`), and why the course uses `@/` specifically (Next.js's convention since the App Router shipped, recognized by every editor and every AI tool, no debate). One line on the runtime-resolution gotcha: `tsconfig`-defined paths are *checked* by `tsc` and *resolved* by Next.js's bundler; standalone scripts run through `tsx` (not `node` native stripping, from lesson 8 of chapter 003) because native stripping doesn't read `tsconfig.json`.
+- **The compatibility surface (framework-owned).** Author each group with the agreement it enforces between TypeScript, the bundler, and the runtime.
+  - `"target": "ES2022"` and `"lib": ["dom", "dom.iterable", "esnext"]` — what JavaScript features TypeScript can emit, and which built-in types it knows about. `ES2022` is broadly the floor Next.js 16 sets; `lib` includes DOM so client components type-check against `window`, `document`, etc., and `esnext` so the latest standard-library types (ES2025 Set methods, iterator helpers) are available at the type level.
+  - `"module": "esnext"` and `"moduleResolution": "bundler"` — how `import`/`export` are interpreted and how the resolver finds files. `bundler` is the modern moduleResolution mode (TypeScript 5+) that aligns with how Turbopack actually resolves imports.
+  - The transpiler-alignment trio.
+    - `"verbatimModuleSyntax": true` — forces the student to write `import type { Foo }` for type-only imports and rejects the `import { Foo }` form when `Foo` is only a type. The bug class it catches: a type import accidentally pulling in a runtime module's side effects on the client when the type was supposed to be erased.
+    - `"isolatedModules": true` — every file must be transpilable in isolation, without information from other files. Required by Turbopack. Catches `const enum` (which can't be isolated), barrel re-exports of types without `export type`, and a handful of other patterns the framework can't compile.
+    - `"esModuleInterop": true` — smooths over the CommonJS-vs-ESM interop friction so `import express from 'express'` works against a CommonJS module. Less load-bearing on App Router but still on for compatibility with the legacy CJS dependencies the ecosystem still ships.
+  - `"jsx": "preserve"` — TypeScript leaves JSX in the source; Next.js's compiler handles the transformation.
+  - `"noEmit": true` — TypeScript only type-checks; it never writes `.js` files. The companion script the course runs in CI is `tsc --noEmit` — same flag, separate process, type-checking the codebase without competing with the build.
+  - `"plugins": [{ "name": "next" }]` — the Next.js TypeScript plugin in the editor. Adds editor-level type-checking for the metadata API, route parameters, dynamic route segments, and the validator for the App Router's typed routes.
+  - The `"include"` and `"exclude"` arrays — `next-env.d.ts` (Next.js's generated declarations — never edit, always commit), the `.next/types/**/*.ts` directory (auto-generated typed-route output), `**/*.ts`, `**/*.tsx`. `"exclude"` lists `node_modules` and build outputs.
+- The senior rule across the lesson, stated plainly. **The flags in the second half are not personal preference.** The student should resist the temptation to "harden" them past what Next.js sets, because the framework's correctness depends on them. The strictness lever is the first half; the compatibility surface is left to Next.js.
+- The `next-env.d.ts` file. One paragraph: Next.js generates it on the first run, the file references the framework's ambient types, and the student commits it (the file's presence is required at build time) and never edits it. The "never edit" rule is concrete because the file has a comment header saying so.
+
+Senior calls and watch-outs:
+
+- The rule of thumb: if you're tempted to edit a flag in the compatibility surface, you're probably wrong; if you're tempted to edit a flag in the strictness floor, you're probably right.
+- `noUncheckedIndexedAccess` is the flag the student will feel the most in everyday code. The friction is real; the bug class it catches is realer.
+- Set `typescript.tsdk` in `.vscode/settings.json` (from lesson 7 of chapter 003) to the workspace TypeScript once `node_modules/typescript` exists, so the editor's diagnostics match the build's.
+
+Codebase state at entry: `package.json`, `.mise.toml`, `AGENTS.md`, lockfile committed.
+Codebase state at exit: `tsconfig.json` authored with the strictness floor and compatibility surface; `pnpm tsc --noEmit` runs clean on the empty project.
+
+Estimated student time: 35 to 45 minutes.
+
+---
+
+## Lesson 5 — Biome, the single-binary linter and formatter
+
+Adopt Biome as the 2026 default over ESLint+Prettier — single Rust binary, dependency-aware domains — wire the minimum-viable `biome.json` to the `.editorconfig` from chapter 003, install the four daily `pnpm` scripts, and frame the safe-versus-unsafe fix distinction.
+
+Goals:
+
+- The decision up front, in three sentences. Biome replaces ESLint + Prettier as the 2026 default for new SaaS projects on this stack — single Rust binary, single `biome.json`, 10–25x faster on lint and format, ships with rule domains that auto-enable based on installed dependencies (Next.js, React, the test runner). The trigger that would flip the choice: an ESLint plugin the team genuinely needs that Biome doesn't cover or have a domain for. For the course's stack, no such plugin is load-bearing; Biome wins.
+- The `next lint` ghost. Next.js 16 removed `next lint` and the `eslint` option from `next.config`. The platform now expects the project to wire linting itself. The course wires Biome directly through `pnpm` scripts; the migration codemod (`@next/codemod` `next-lint-to-eslint-cli`) is named in one line for students who later inherit a Next 15 codebase, then dropped.
+- Installing Biome as a workspace dependency. `pnpm add -D --save-exact @biomejs/biome` — `--save-exact` so the version is pinned the same way the runtime and package manager are pinned, no caret range. Initialize with `pnpm biome init` to generate a starter `biome.json`.
+- The minimum-viable `biome.json` for the project. Walk through the fields the student actually touches:
+  - `"$schema"` — JSON schema URL so the editor autocompletes the config itself.
+  - `"vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true }` — Biome respects `.gitignore` so it never lints `node_modules` or `.next`.
+  - `"files": { "ignoreUnknown": true }` and any explicit `includes` if the layout calls for it.
+  - `"formatter": { "enabled": true, "indentStyle": "space", "indentWidth": 2, "lineWidth": 100 }` — matches the `.editorconfig` from lesson 7 of chapter 003 so the two files agree by construction.
+  - `"javascript": { "formatter": { "quoteStyle": "single", "trailingCommas": "all", "semicolons": "always", "arrowParentheses": "always" } }`.
+  - `"linter": { "enabled": true, "rules": { "recommended": true } }` — the recommended preset is the floor.
+  - `"useEditorconfig": true` — Biome reads the `.editorconfig` for indentation, line endings, and final-newline.
+  - `"assist": { "actions": { "source": { "organizeImports": "on" } } }` — sorted imports as a save-time fix, with no separate import-sort plugin.
+- The domain system, the v2 thing worth naming. Biome 2 introduced domains — grouped rule sets for `next`, `react`, `test`, etc. — that auto-enable when the matching dependency is in `package.json`. Show `"linter": { "domains": { "next": "recommended" } }` if explicit enabling is wanted, then point at the auto-enable default.
+- The four daily Biome commands as `pnpm` scripts in `package.json`:
+  - `"format": "biome format --write ."`
+  - `"lint": "biome lint ."`
+  - `"check": "biome check --write ."` — runs format + lint + import-sort + safe quick-fixes in one pass. The script the student runs locally before committing.
+  - `"check:ci": "biome ci ."` — CI mode, no writes, fails on any diagnostic. Named here, used in Unit 20.
+- The editor integration. Format-on-save and `source.organizeImports.biome` were wired in lesson 7 of chapter 003; this lesson is the moment that wiring actually fires because the config now exists. Demonstrate one round: open a file, save it ugly, watch Biome format on save and surface a lint warning inline (the Error Lens extension from lesson 7 of chapter 003 puts it on the same line).
+- Two senior watch-outs.
+  - The "safe vs. unsafe" fix distinction. Biome's default `--write` applies only safe fixes; `--unsafe` is opt-in and changes program behavior. Removing an unused import is safe; rewriting `==` to `===` can change behavior if the operands differ in type.
+  - The CI rule. Biome runs in CI on every PR. The `--frozen-lockfile`/`only-allow pnpm` discipline from the previous lesson has a Biome cousin — the `biome ci` script is what closes the loop. Foreshadowed only; the actual CI job lives in Unit 20.
+
+Senior calls and watch-outs:
+
+- ESLint is named once as the trigger-gated alternative and the lesson moves on.
+- The `biome.json` is short; if it grows past 30 lines, the student is configuring rules they don't yet have the experience to justify. Reach for the recommended preset and the domain defaults first.
+- The student now has Node + pnpm + TypeScript + Biome wired. Lessons 6-9 of chapter 028 install Next.js + Tailwind + shadcn and ship the actual marketing surface on top of this floor.
+
+Codebase state at entry: `tsconfig.json` runs clean on the empty project.
+Codebase state at exit: `biome.json` authored; four daily `pnpm` scripts in `package.json`; format-on-save fires correctly in the editor; `pnpm check` runs clean on the empty project. The toolchain floor is locked in; the next lesson stands up the Next.js + Tailwind + shadcn scaffold the UI lessons assume.
+
+Estimated student time: 30 to 40 minutes.
+
+---
+
+## Lesson 6 — Header, hero, and feature grid
+
+Build the semantic header with desktop nav, the hero with `<Button asChild>` CTAs and a CSS-only `ThemeAwareImage`, and a `cva`-driven `FeatureCard` mapped into a responsive three-column grid.
+
+Goals:
+
+- Fill `components/site-header.tsx`: semantic `<header>` with logo, desktop nav (`<nav aria-label="Primary">` with `navLinks`), and a slot for `<ThemeToggle>` plus `<MobileNav>` (stubbed for now — render an empty `<div className="md:hidden">` placeholder). Use `flex items-center justify-between` and the `container` width. Below `md`, the desktop nav is `hidden md:flex`; the mobile slot is `md:hidden`.
+- Fill `components/hero.tsx`: semantic `<section>` with an `<h1>`, supporting paragraph, two CTAs (`<Button asChild><Link href="/signup">Get started</Link></Button>` and `<Button variant="outline" asChild>...</Button>`), and a `<ThemeAwareImage>` to the right on `lg:`, stacking above on `md:` and below. Cross-ref the canonical Button shape from lesson 3 of chapter 022.
+- Fill `components/theme-aware-image.tsx`: render both `<img src={light} className="block dark:hidden" />` and `<img src={dark} className="hidden dark:block" />` with shared `alt`, `width`, `height`. The image swap is pure CSS; no JS, no FOUC.
+- Fill `components/feature-card.tsx`: use `cva` to declare a `featureCardVariants` table with `tone: { default, brand, muted }` and `emphasis: { quiet, loud }`. Card uses shadcn's `Card`/`CardHeader`/`CardTitle`/`CardDescription` building blocks composed by hand (not the whole `Card` block at once); the icon renders inside a `<div>` with token-backed bg.
+- Fill `components/feature-grid.tsx`: `<section>` with an `<h2>` and a `grid grid-cols-1 md:grid-cols-3 gap-6`. Map over `features` from `lib/data.ts` rendering a `<FeatureCard>` per entry. Use the `VariantProps<typeof featureCardVariants>` type for tone and emphasis selection from data.
+- Wire `<SiteHeader />`, `<Hero />`, and `<FeatureGrid />` into `app/(marketing)/page.tsx` in order.
+- Verify locally: page renders header (with placeholder for mobile nav), hero with theme-aware image swapping correctly when the OS theme changes, three-column grid on desktop, single-column below `md`.
+
+Senior calls and watch-outs:
+
+- `cva` is the senior shape for variant tables. Three booleans (`isBrand`, `isLoud`, `isMuted`) becomes one `tone` union and one `emphasis` union — the variant table makes invalid states unrepresentable. Cross-ref lesson 3 of chapter 022.
+- Icon-only buttons (none yet in this lesson, but the theme toggle and mobile trigger appear in lesson 7 of chapter 028 and lesson 8 of chapter 028) require `aria-label`. Pattern named now.
+- The theme-aware image ships both `<img>` tags. Optimizing to a single `<picture>` with `prefers-color-scheme` is a senior follow-up; the dual-img reach is correct here because the site preference (controlled by `next-themes` via the `.dark` class) is what we honor, not the OS preference.
+- `<Button asChild>` wraps a Next.js `<Link>` — the polymorphism is the Slot pattern from lesson 3 of chapter 022. Naming this once because it appears in every CTA.
+- Heading hierarchy: one `<h1>` in the hero, `<h2>` for each section's title, no skipping levels. Cross-ref lesson 3 of chapter 017.
+
+Codebase state at entry: shell with TODO placeholders from lesson 2 of chapter 028.
+Codebase state at exit: header (desktop nav only), hero, and feature grid render correctly on desktop and below `md`. Page is responsive at 1280 and 768; mobile nav slot still empty (drawer ships in lesson 8 of chapter 028). Theme toggles via the OS preference; no manual toggle yet.
+
+Estimated student time: 50 to 65 minutes.
+
+---
+
+## Lesson 7 — Pricing, footer, and a flicker-free theme toggle
+
+Compose the pricing cards with a data-driven featured tier, build the three-column footer, and wire a `next-themes` toggle that respects `prefers-reduced-motion` and survives hard reload without hydration warnings or FOUC.
+
+Goals:
+
+- Fill `components/pricing-card.tsx`: a single tier's card. Composes `<Card>` with `<CardHeader>` (`<h3>` for the tier name, the price as a large numeric, the period as muted text), `<CardContent>` listing features with a `<Check />` icon per row (icons `aria-hidden`), and `<CardFooter>` with the CTA `<Button>`. A `featured?: boolean` flag adds a `border-primary ring-2 ring-ring/40` accent and a `<Badge>` "Most popular" — discriminated visual emphasis driven by data.
+- Fill `components/pricing-table.tsx`: `<section>` with an `<h2>`, optional paragraph, then a `grid grid-cols-1 md:grid-cols-3 gap-6` of `<PricingCard>`s mapped from `pricingTiers`. Center the featured tier visually with `md:scale-105` and `motion-reduce:scale-100` so reduced-motion users get the static layout.
+- Fill `components/site-footer.tsx`: semantic `<footer>` with three columns of link groups (Product, Company, Legal), logo, copyright line, and social icon buttons (each `<Button size="icon" variant="ghost" aria-label="...">`). Below `md`, columns stack.
+- Fill `components/theme-toggle.tsx`: a `<Button variant="ghost" size="icon" aria-label="Toggle theme">` that calls `setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')` from `useTheme()`. Render both `<Sun />` and `<Moon />` icons; one is hidden per theme via `dark:hidden` and `hidden dark:block`. Guard against the SSR/hydration mismatch by reading `mounted` state via `useEffect` and returning a placeholder-sized button (`<Button size="icon" variant="ghost" aria-hidden />`) until mounted — the canonical `next-themes` workaround.
+- Mount `<ThemeToggle />` in the header (between desktop nav and the mobile-nav slot).
+- Wire `<PricingTable />` and `<SiteFooter />` into the marketing page.
+- Verify locally: pricing table renders three tiers, featured is visually distinct, footer renders, theme toggle flips the site theme and persists across reload with no FOUC. Hard reload in light and dark to confirm first paint matches.
+
+Senior calls and watch-outs:
+
+- The hydration-mismatch dance for the theme toggle is the canonical `next-themes` watch-out. Render a stable placeholder until `mounted`, then swap to the real toggle. Skipping this surfaces a React hydration mismatch warning on every reload.
+- FOUC verification: in DevTools Performance, record a reload; the rendered theme must match before the first paint frame. If you see a flash, the inline pre-paint script is misconfigured — check the provided `<ThemeProvider>` props.
+- Pricing emphasis through `scale-105` is decorative motion that should respect `prefers-reduced-motion`. Pair every `scale-*` with a `motion-reduce:scale-100`. Same for any future hover transforms.
+- Icon-only buttons (theme toggle and social icons in the footer) all need `aria-label`. Decorative icons inside labeled buttons get `aria-hidden`. Cross-ref lesson 3 of chapter 027.
+- Color contrast on the muted period text and disabled-looking elements must pass AA. If you used `text-muted-foreground` over `bg-background` from the provided tokens, the palette is already AA-passing; do not invent colors.
+
+Codebase state at entry: header, hero, feature grid render from lesson 6 of chapter 028.
+Codebase state at exit: full marketing surface renders desktop and tablet, theme toggle works without FOUC, no hydration warning. Mobile nav slot still empty.
+
+Estimated student time: 50 to 65 minutes.
+
+---
+
+## Lesson 8 — Mobile drawer with scroll lock
+
+Write the `useLockBodyScroll` hook that restores prior overflow on cleanup, then drop it inside a shadcn `Sheet`-based `MobileNav` that traps focus, closes on `Esc` and link click, and keeps the desktop and mobile navs single-source via `hidden md:flex` / `md:hidden`.
+
+Goals:
+
+- Fill `hooks/use-lock-body-scroll.ts`: a custom hook that, when `locked` is true, sets `document.body.style.overflow = 'hidden'` and restores the prior value on cleanup. Run inside `useEffect`; no-op when `typeof document === 'undefined'`. Generic on no parameters beyond the boolean.
+- Fill `components/mobile-nav.tsx`: a controlled `<Sheet open onOpenChange>` from shadcn. `<SheetTrigger asChild><Button variant="ghost" size="icon" aria-label="Open menu"><Menu /></Button></SheetTrigger>` for the hamburger. `<SheetContent side="left">` renders `<SheetHeader>` with `<SheetTitle>Navigation</SheetTitle>` (accessible name for the dialog) and a `<nav>` listing `navLinks` as styled `<Link>`s. Each link's `onClick` closes the sheet by setting `open` to false so the user lands on the new route without the drawer underlay. Below the links, render `<ThemeToggle />` so the mobile user can flip themes from inside the drawer.
+- Inside `<MobileNav>`, call `useLockBodyScroll(open)`. The Radix-handled `<Sheet>` already locks scroll on most browsers; the custom hook is the iOS Safari belt-and-suspenders that the project verifies.
+- Mount `<MobileNav links={navLinks} />` in the `md:hidden` slot of `<SiteHeader>`. Desktop slot stays as the existing `<nav className="hidden md:flex">`.
+- Verify locally: below `md`, the hamburger button appears; clicking it opens the drawer from the left; Tab cycles within the drawer; Shift+Tab reverses; `Esc` closes the drawer and returns focus to the hamburger; clicking a link navigates and closes the drawer; the underlying page does not scroll while the drawer is open (test on Chrome DevTools "iPhone 14" device emulation).
+
+Senior calls and watch-outs:
+
+- The focus trap is Radix's job, not yours. Writing a focus trap by hand is the canonical lesson 4 of chapter 027 watch-out — don't.
+- `<SheetTitle>` is the accessible name for the dialog. Hiding it visually (`<SheetTitle className="sr-only">`) is fine; *omitting* it produces a Radix console error.
+- Returning focus to the hamburger trigger on close is automatic with Radix. The exception (lesson 4 of chapter 027) is unmounted triggers, which doesn't apply here.
+- The `useLockBodyScroll(open)` cleanup must restore the *prior* `overflow` value, not unconditionally `''`. If a parent scope already had `overflow: hidden`, blanket clearing breaks it.
+- The mobile nav must not duplicate the desktop nav's links in the DOM. The `hidden md:flex` and `md:hidden` cut keeps each surface single-source. Cross-ref lesson 6 of chapter 021.
+- The link click closes the drawer; pair the navigation and the close in the same handler so the user lands on the new route with focus management already complete.
+- Avoid `autoFocus` on a link inside the drawer — Radix's `<Sheet>` already moves initial focus.
+
+Codebase state at entry: full surface from lesson 7 of chapter 028 with empty mobile-nav slot.
+Codebase state at exit: full responsive surface works. Mobile drawer opens, traps focus, locks scroll, closes on `Esc` and on link click. Theme toggle accessible from inside the drawer on mobile. All Done-when clauses are now achievable in lesson 9 of chapter 028.
+
+Estimated student time: 45 to 60 minutes.
+
+---
+
+## Lesson 9 — Verify clause by clause
+
+Walk every "Done when" check — no-FOUC reload, Lighthouse 100, keyboard-only traversal, reflow at 360/768/1280, drawer focus trap, scroll lock, and `Esc` close — plus an axe DevTools audit, and name the senior calls one more time.
+
+Goals:
+
+- Walk every "Done when" clause as a verification step (see table in Chapter framing).
+- No-FOUC reload: hard reload in light and in dark with system preference set both ways; confirm rendered theme matches first paint. DevTools Performance recording shows no flash frame.
+- Lighthouse a11y: run in Chrome incognito; the score is 100; if not, audit findings against the four lesson 2 of chapter 027 commitments and the icon-only-button labeling from lesson 3 of chapter 027.
+- Keyboard-only nav: from a fresh tab, Tab from the URL bar; every interactive element receives a visible focus ring in document order; Enter activates buttons and links; Esc closes any open menu.
+- Responsive reflow: cycle DevTools device toolbar across 360, 768, 1280 pixel widths; confirm no horizontal scroll, no broken grid, hero stacks correctly, three-column feature grid collapses to one-column below `md`.
+- Drawer behaviors: below `md`, open the drawer; Tab cycles within; Shift+Tab reverses; `Esc` closes and returns focus to the trigger; underlying page does not scroll while open; iOS Safari emulation passes the same scroll-lock test.
+- Run axe DevTools (extension) as the secondary auditor — its rule coverage exceeds Lighthouse's and catches what Lighthouse misses (lesson 2 of chapter 027). Note any new findings.
+- Name the senior calls one more time:
+  - Design tokens are the single seat of color truth; never hard-code colors.
+  - shadcn primitives ship the focus-trap and ARIA work; your job is to not break it.
+  - The four discipline-level a11y commitments held from day one made the audit cheap.
+  - `useLockBodyScroll` is the one custom hook this project owns; the rest is composition.
+- Forward references:
+  - Unit 4 will move this page into a Next.js routing structure with real navigation, layouts, and the App Router primitives.
+  - Chapter 081 will add the security headers (CSP, HSTS) this marketing page needs in production.
+  - Chapter 094 will add the performance and Core Web Vitals pass; this project ships the a11y baseline, not the perf baseline.
+
+Senior calls and watch-outs:
+
+- The verify lesson is the rehearsal of the failure modes — running each one and naming what would break without the fix the student wrote.
+- If any verification fails, the lesson points at the owning build lesson, not at "debug it yourself."
+- Lighthouse 100 is necessary, not sufficient. The keyboard pass is the harder bar; treat axe DevTools findings as ground-truth additions.
+
+Codebase state at entry: full surface, working.
+Codebase state at exit: same surface, verified clause-by-clause against the spec. Student can articulate which Unit 3 concept bought them which verified behavior.
+
+Estimated student time: 20 to 30 minutes.

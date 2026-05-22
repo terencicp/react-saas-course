@@ -1,333 +1,259 @@
-# Chapter 024 — Layout and sizing
+# Chapter 024 — Hooks for holding state
 
 ## Chapter framing
 
-Chapter 023 closed with the cascade, inheritance, Preflight, and the design-token substrate. Chapter 024 is the next axis: **where the element sits, how big it is, and how it relates to its neighbors.** The senior framing is that layout in 2026 is a settled stack — flexbox for one-dimensional rows and columns, grid for two-dimensional structure, `gap` for spacing inside both, sticky and fixed for the few elements that escape flow, and a small set of viewport-aware sizing primitives (`dvh`, `aspect-ratio`, `clamp`) for the responsive cases that used to need JavaScript. Floats are gone from production code, the flex-vs-grid debate is settled ("both, for different jobs"), and `gap` has replaced sibling-margin tricks. The chapter owns nine load-bearing topics — the box model and the inline/block axis (lesson 1 of chapter 024), display modes (lesson 2 of chapter 024), flexbox (lesson 3 of chapter 024), grid (lesson 4 of chapter 024), sizing (lesson 5 of chapter 024), spacing inside containers (lesson 6 of chapter 024), position and the inset utilities (lesson 7 of chapter 024), overflow and scroll containers (lesson 8 of chapter 024), and stacking context with z-index (lesson 9 of chapter 024) — plus the quiz (lesson 10 of chapter 024). Each lesson teaches the underlying CSS model, names the Tailwind v4 utility that compiles to it, and names the senior reach.
+Chapter 023 installed the render model — render is a function call, state is a snapshot, reconciliation runs by type and `key`, and components must stay pure. Chapter 024 is where the student learns the four hooks every React component reaches for to *hold* and *shape* state: `useState` (the default), `useReducer` (when transitions multiply), `useRef` (the mutable escape hatch that doesn't trigger re-renders), and `useId` (stable identifiers across SSR/hydration). The senior framing is that state shape is a design decision long before it's a syntax decision — every lesson lands the *where does this value live* question first, then the API. The chapter also lands the most consequential anti-pattern in early React careers: mirroring props into state via an effect when derived state or a `key` reset is the right reach.
 
-Several threads run through every lesson. `box-sizing: border-box` is the universal default Preflight already set, so widths compose by addition. `gap` is the spacing default; `space-x` / `space-y` and sibling-margin tricks are legacy. Intrinsic-vs-extrinsic sizing is the model that demystifies "why is my width auto." Stacking context is the hidden trap — `transform`, `filter`, `opacity < 1`, or `position: fixed/sticky` on an ancestor creates one and traps every descendant's `z-index` inside, and the senior fix is to portal modals and popovers out to `<body>`. Mobile viewport units (`dvh`, `svh`, `lvh`) are the answer to the iOS address-bar bug, with `min-h-dvh` as the reflex. Logical properties (`ps-*` / `pe-*` / `ms-*` / `me-*` and the new `inset-s-*` family) are the i18n-aware form of physical margin and padding. The ordering follows the dependency — box model first, display modes second, then flex, grid, sizing, spacing, position, overflow, and stacking context last because it's the trap that wraps the others. Forward references land in Chapter 025 (responsive variants, container queries), lesson 5 of chapter 026 (portals), Chapter 031 (CSS anchor positioning and the shadcn component surface), and the project chapter chapter 032 where every layout utility cashes in.
+Several threads run through every lesson. **State has four homes** — local component state, lifted parent state, URL state, server state — and the senior reflex is to start at the leaf and lift only on demand; this thread runs through lesson 1 of chapter 024, lesson 3 of chapter 024, and lesson 4 of chapter 024 and connects forward to the URL-state surface in chapter 033. **Updates produce new references, never mutations** — the `Object.is` bailout from lesson 1 of chapter 023 is cashed in repeatedly; spread for objects and arrays, updater functions for stale-prone setters. **The compiler depends on purity** (lesson 3 of chapter 023) — `useState` initializers, reducers, and ref reads all respect that contract; lesson 2 of chapter 026 cashes it in. **Hooks are called unconditionally at the top of the component** — the rules of hooks are foreshadowed here and owned by lesson 7 of chapter 025. **Refs are the not-state escape hatch** — when a value persists across renders but doesn't drive UI, it lives in a ref; this contrasts with state on every dimension. **`useId` is for accessibility wiring, not list keys** — the rule lands once and forward-references the form patterns in Unit 6. The chapter ships six teaching lessons plus the quiz, in dependency order: the `useState` surface (lesson 1 of chapter 024), derived state and the mirror-into-state anti-pattern (lesson 2 of chapter 024), the lift-vs-colocate-vs-URL decision (lesson 3 of chapter 024), `useReducer` for multi-transition state (lesson 4 of chapter 024), `useRef` as the non-rendering store (lesson 5 of chapter 024), and `useId` for SSR-stable identifiers (lesson 6 of chapter 024). Forward references land in chapter 025 (effects and `useContext`), chapter 026 (compiler and the narrow remaining cases for manual memoization), and Unit 6 (forms, where every hook in this chapter shows up at the call site).
 
 ---
 
-## Lesson 1 — The box model and the inline/block axis
+## Lesson 1 — The useState surface and lazy initialization
 
-How the four boxes compose under `border-box`, the Tailwind `--spacing` scale, margin collapse as a smell, logical `ps-*`/`pe-*`/`inset-s-*` utilities, and `mx-auto` as the one centering case where margin still earns its weight.
+Teaches the `useState` signature, typing pitfalls, the `Object.is` bailout, immutable-update reflex, lazy initializer form, setter stability, and what `useState` is not for.
 
 Topics to cover:
 
-- **The senior question.** A `w-64 p-4 border` element renders 256 px wide because `box-sizing: border-box` is the Preflight default; padding and border are inside the declared width, not added on top. The lesson installs the box model in this form, names the four boxes (content, padding, border, margin), explains why margin sits outside the box, and folds in CSS logical properties as the modern axis-aware form.
-- **The four boxes and the `border-box` default.** Content (where children render), padding (inside the border, takes the background), border (the styled edge), and margin (transparent, outside, the only one that participates in margin collapse). `border-box` is the universal 2026 default — Preflight already sets it on `*, ::before, ::after`. The student doesn't write the rule and only encounters `content-box` when a third-party widget assumes it (rare).
-- **The Tailwind spacing scale — `--spacing` as one CSS variable.** Every spacing utility (`p-*`, `m-*`, `gap-*`, `space-y-*`, etc.) compiles to `var(--spacing) * n`. The whole scale changes by editing one variable in `@theme`. Arbitrary values exist for rare one-offs (`p-[17px]`), but the convention is to stay on the scale. The 4-px grid is the convention every modern design system (Material, Carbon, Tailwind, shadcn) shares.
-- **Margin collapse — recognition, not pattern.** Adjacent block siblings' vertical margins collapse to the larger value; a parent's margin can collapse with its first/last child's. The 2026 reflex is `gap` on a flex/grid parent, which doesn't trigger collapse. The lesson names the rule, then lands on "don't use the pattern that triggers it."
-- **The inline/block axis and Tailwind's logical utilities.** CSS names the two box-model axes as *inline* (text-flow direction) and *block* (perpendicular); logical properties flip with `direction: rtl` or vertical writing modes. Tailwind ships `ps-*` / `pe-*`, `ms-*` / `me-*`, the block-axis `pbs-*` / `pbe-*` for vertical-writing cases, and the new `inset-s-*` / `inset-e-*` / `inset-bs-*` / `inset-be-*` family (which replaced the deprecated `start-*` / `end-*` shorthands). The senior reach: logical from day one in an RTL-bound project; physical is fine in LTR-only, with mechanical migration later.
-- **`mx-auto` centering — the one place margin still earns its weight.** `margin-inline: auto` centers a block element with a defined width inside its parent. The canonical 2026 form is `mx-auto max-w-3xl` on a centered article — the right tool when the parent has no flex/grid in between. Every other centering is flex or grid (Lessons lesson 3 of chapter 024 and lesson 4 of chapter 024).
-- **DevTools — the box-model panel.** Color-coded overlay (content / padding / border / margin) on hover; Computed panel diagram with the four values. The senior debugging move when a layout is "off by a few pixels."
+- **The senior question.** A component needs to hold a value that changes over time and drives the UI — a counter, a toggle, the currently selected tab, a form field. `useState` is the answer, but the API rewards careful framing: the initial value runs once but the function is called on every render, the setter is stable but the value is a fresh snapshot, and the lazy initializer form earns its weight when the initial computation is non-trivial. The lesson installs the surface, lands the four daily decisions (primitive vs. object, initial-value form, separate-vs-grouped state, when the setter bails out), and forward-references the patterns that build on it.
+- **The signature and what each piece does.** `const [count, setCount] = useState(0)` returns a tuple — the current snapshot and a setter. The initial value is used on the first render only; subsequent renders ignore it. The setter is stable across renders (same reference), which matters for effect dependencies (lesson 2 of chapter 025) and the compiler's memoization story.
+- **Typing `useState`.** Inference is the default — `useState(0)` infers `number`, `useState('')` infers `string`, `useState([])` infers `never[]` (a trap). For empty arrays, object initial values where the shape can grow, or `null`-able state, annotate explicitly: `useState<Todo[]>([])`, `useState<User | null>(null)`. The senior reflex: annotate when inference would narrow too tight or widen wrong.
+- **State that's an object vs. multiple state variables.** Two `useState`s for `firstName` and `lastName` vs. one `useState({ firstName, lastName })` is a daily decision (foreshadowed in lesson 4 of chapter 023). The senior cut: separate state for values that update independently (a panel's `isOpen` and its content), grouped state for values that update together (a form draft, a settings bundle). Grouped state means every update is a spread; separate state means more setters but cleaner updates.
+- **The immutable-update reflex.** `setUser({ ...user, name: 'Alice' })` for objects; `setItems([...items, newItem])` for arrays; `setItems(items.filter(i => i.id !== removed))` for removal; nested updates spread at every level. Mutating in place and then calling the setter bails out via `Object.is`. The lesson reinforces the rule from lesson 4 of chapter 023 and shows it at the `useState` call site.
+- **The bailout rule.** Setting state to a value that is `Object.is`-equal to the current state skips the re-render entirely. `setCount(count)` with the same number is a no-op; `setUser(user)` with the same reference is a no-op; `setUser({ ...user })` with a freshly spread object re-renders even if every field matches. The lesson names this so students understand both the optimization (cheap to call `setState` defensively) and the trap (in-place mutation looks "set" but doesn't render).
+- **Lazy initial state — `useState(() => expensiveCompute())`.** When the initial value requires non-trivial work (parsing a localStorage blob, computing a derived structure, reading a large prop), passing a function defers and caches it. Without the lazy form, `useState(expensiveCompute())` calls `expensiveCompute()` on every render and discards the result. The threshold for reaching for the lazy form: anything that touches storage, parses JSON, walks a large structure, or measures the DOM. For a literal or simple expression, the direct form is fine.
+- **The setter is stable, the value is not.** The setter reference never changes across renders; it's safe in `useEffect` dependency arrays (and the lint rule won't flag it). The state value is a fresh snapshot every render — capturing it in a closure freezes the snapshot, which is the stale-closure mechanism from lesson 4 of chapter 023.
+- **The updater form recap.** When the next state depends on the previous, reach for `setCount(c => c + 1)` (cashed in by lesson 4 of chapter 023). The lesson re-states it at the `useState` call site as the reflex, not the workaround.
+- **Reading from props as initial state — the controlled trap.** `useState(props.value)` looks reasonable but the state is "frozen" at the mount — subsequent prop changes don't update it. This is sometimes deliberate (an editable copy of a server value), sometimes a bug (the parent expects the child to follow the prop). The lesson names the trap and forward-references the fix (lesson 2 of chapter 024 for derived state, lesson 5 of chapter 023 for `key`-driven reset).
+- **What `useState` is not for.** Values that don't affect the UI (interval IDs, focus state, scroll positions read by handlers) — use `useRef` (lesson 5 of chapter 024). Values derived from other state or props — derive in render (lesson 2 of chapter 024). Values that should be shared across many components — lift or use context (lesson 3 of chapter 024, lesson 4 of chapter 025). Values that should survive a refresh or be shareable — URL or server state (lesson 3 of chapter 024, chapter 033).
 - **Watch-outs:**
-  - Don't override Preflight's `box-sizing` — a custom `*` rule breaks every utility-driven width calculation.
-  - Margin collapse only happens between block-level siblings in normal flow; flex/grid items don't collapse.
-  - `outline` doesn't take layout space — the canonical focus-ring tool (`focus-visible:outline-2`) because it doesn't shift the layout.
-  - Negative margins are legal in narrow cases (image-flush-to-edge, hero hooks) but otherwise a smell.
-  - `width: 100%` plus padding overflows on `content-box`; the project default is `border-box`, so the bug doesn't exist.
+  - `useState([])` infers `never[]` and `arr.push(x)` won't typecheck. Annotate `useState<T[]>([])`.
+  - `useState({})` infers `{}` — usable but loose. Annotate the shape.
+  - Passing a function literal *as* the initial value (`useState(handler)`) calls `handler()` once instead of storing the function. To store a function as state, wrap: `useState(() => handler)`.
+  - The lazy initializer must be pure (lesson 3 of chapter 023) — Strict Mode may call it twice in development.
+  - Calling the setter inside the function body (not in a handler/effect) causes an infinite loop. The exception is the `setState`-during-render pattern for *derived from previous state* (rare, narrow rules apply); the daily reach is to derive in render instead (lesson 2 of chapter 024).
+  - Setting state from inside `useState`'s initial value (calling the setter in the initializer) is silently ignored — the component hasn't mounted yet.
+  - Reading a stale `count` in a `setTimeout` is fixed with the updater form, not by recomputing.
 
 What this lesson does not cover:
 
-- Display modes and their box-model interactions — lesson 2 of chapter 024.
-- Flexbox-specific item sizing (`flex-grow`, `flex-shrink`, `flex-basis`) — lesson 3 of chapter 024.
-- Width / height / min-max / aspect-ratio — lesson 5 of chapter 024.
-- Spacing inside containers (`gap`, `space-x`, `divide-x`) — lesson 6 of chapter 024.
-- Position and inset (`top`, `left`, the inset utilities) — lesson 7 of chapter 024 (with logical insets cross-referenced from this lesson).
-- The `writing-mode` property at depth — out of scope; the chapter names the inline/block axis and trusts the student to apply it.
-- CSS containment (`contain: layout/paint/style/size`) — niche performance tool, not chapter material.
+- Derived state and the syncing-via-effect anti-pattern — lesson 2 of chapter 024.
+- Lifting state, colocation, and URL state — lesson 3 of chapter 024.
+- `useReducer` for multi-transition state — lesson 4 of chapter 024.
+- `useRef` for non-rendering values — lesson 5 of chapter 024.
+- `useEffect` for syncing with external systems — lesson 2 of chapter 025.
+- The rules of hooks — lesson 7 of chapter 025.
+- Form state and uncontrolled inputs — Unit 6.
 
 ---
 
-## Lesson 2 — Display modes and the hide decision tree
+## Lesson 2 — Derive in render, do not mirror into state
 
-The choice between `block`, `inline`, `inline-block`, `flex`, `grid`, and `contents` as layout primitives, plus the `display: none` / `visibility: hidden` / `aria-hidden` decision tree for the three ways to hide an element.
+Teaches that values computable from existing props and state belong in the function body, names the canonical mirror-prop-into-state-and-sync-with-effect anti-pattern, and lands the three fixes (derive, lift, `key`-reset).
 
 Topics to cover:
 
-- **The senior question.** A `<span>` ignores `width` and `padding-top` because it's `inline`; switching to `<div>` makes them work because block elements accept all box-model properties. The display mode decides which box-model rules apply, which sizing utilities work, and how the element relates to its siblings. The lesson installs the modes the student reaches for (`block`, `inline-block`, `flex`, `grid`, `inline-flex`, `inline-grid`, `contents`, `none`), names the recognition-only ones (`inline`, `table`, `list-item`, `flow-root`), and frames the choice as a decision: `flex` for a row or column, `grid` for a 2D structure, `block` for stacking content, `inline` for in-text spans, `contents` for the rare unwrapping case.
-- **Block, inline, inline-block.** Block: new line, fills the parent's inline axis, accepts all box-model properties (default for `<div>`, `<p>`, headings, sectioning elements, lists, forms). Inline: flows with text, ignores `width`/`height`, vertical margin/padding visually overlaps surrounding lines (default for `<span>`, `<a>`, text-level elements). Inline-block bridges the two — flows like inline, sized like block. The 2026 reach for `inline-block` is narrow (a status dot in a sentence); most "I want width on a span" cases want flex on the parent.
-- **Flex / inline-flex, grid / inline-grid.** Flex makes a 1D container; grid makes a 2D container. The inline variants flow with text — the canonical reach for `inline-flex` is an icon-and-text button. Algorithms at depth land in Lessons lesson 3 of chapter 024 and lesson 4 of chapter 024.
-- **`display: contents` — the unwrapper.** The element disappears from the layout tree but its children participate in the parent's layout. Reaches: semantic wrappers (`<section>` around cards) that shouldn't break a flex/grid layout, and component composition where a real DOM element is needed but its layout box is unwanted. The watch-out: historically broke accessibility; modern browsers fixed most semantic elements, but test with screen readers and prefer React Fragments where possible.
-- **The three hide mechanisms — `display: none`, `visibility: hidden`, `aria-hidden`.** `display: none` removes from both layout and a11y trees (closed dialogs, unmounted routes). `visibility: hidden` reserves the box but hides the element and removes from a11y (rare; usually a grid-sizing problem). `aria-hidden="true"` keeps visible but hides from a11y (decorative icons next to redundant labels; cross-reference to lesson 3 of chapter 031). Decision tree: state-change hiding → conditional render or `display: none`; visually hidden / a11y visible → `sr-only`; visible / a11y hidden → `aria-hidden`.
-- **The default-display reset.** Preflight doesn't change `display` defaults — `<div>` is still block, `<button>` is still inline-block with browser quirks. The student writes `flex` or `inline-flex` on the button explicitly.
-- **Tailwind utility coverage.** `block`, `inline-block`, `inline`, `flex`, `inline-flex`, `grid`, `inline-grid`, `contents`, `hidden` (= `display: none`), plus `flow-root` and `table` / `table-row` / `table-cell` for the rare cases. Responsive variants (`md:flex`, `hidden md:block`) live at depth in lesson 6 of chapter 025.
+- **The senior question.** A component has a `fullName` value that depends on `firstName` and `lastName`. A junior reflex is `useState` for `fullName` plus a `useEffect` that calls `setFullName(firstName + ' ' + lastName)` whenever either changes. The result is a render, an effect, a re-render — three passes for one value, plus a window of stale state where the UI shows the old `fullName`. The fix is to *derive* the value during render: `const fullName = firstName + ' ' + lastName`. The lesson installs the rule, lands the canonical reproductions, and forward-references the narrow cases where state actually earns its weight.
+- **What "derived" means.** A value is derived when it can be computed from existing props and state at any moment. A user's full name from first/last. A filtered list from a search query plus the source list. The count of completed todos from a todo array. The total of a cart's line items. These should not live in state — they should be computed in the function body during render.
+- **The mental shift — JavaScript before JSX.** The body of a component is a function. Anything that can be computed with normal JavaScript (variables, ternaries, `.filter`, `.map`, `.reduce`) gets computed there. State is reserved for values that *change over time independent of other state*. The senior framing: state is the *minimum* set of values from which everything else can be computed.
+- **The canonical anti-pattern: mirror a prop into state, sync with effect.** `const [value, setValue] = useState(props.value); useEffect(() => setValue(props.value), [props.value])`. (`useEffect(callback, deps)` runs the callback after commit and re-runs when any value in `deps` changes — full treatment in lesson 2 of chapter 025.) The component renders with the stale state, the effect fires, the component re-renders with the new state — two renders per prop change, and any code between the two reads stale state. The fix depends on intent: if the value is purely a function of the prop, derive it; if the value is an editable copy that should reset when the prop changes, use a `key` reset (lesson 5 of chapter 023); if neither fits, the state structure is wrong.
+- **The canonical anti-pattern: cached calculation as state.** `const [filtered, setFiltered] = useState([]); useEffect(() => setFiltered(items.filter(...)), [items, query])`. Same shape, same fix — `const filtered = items.filter(...)` in render. The React Compiler (lesson 2 of chapter 026) memoizes the expensive computation; the developer doesn't pre-memoize.
+- **The canonical anti-pattern: derived flags.** `const [hasErrors, setHasErrors] = useState(false); useEffect(() => setHasErrors(errors.length > 0), [errors])`. Fix: `const hasErrors = errors.length > 0`. The lesson stacks these reproductions because the shape recurs in every codebase.
+- **When state is actually warranted.** (1) The value originates from user input (`<input onChange>`). (2) The value comes from an external system (server, localStorage, a subscription) and needs to be cached locally. (3) The value tracks a moment in time (a timestamp at mount, a random seed assigned once). (4) The value is intentionally "snapshotted" — an editable form draft that should diverge from the server-side record until save. The lesson lands these as the legitimate triggers.
+- **Computing in render is cheap.** The senior reflex corrects "but won't recomputing on every render be slow?" — for typical work (a filter over a few hundred items, a sum, a string concatenation), the cost is negligible compared to the rendering itself. The React Compiler memoizes when the computation is expensive and the inputs are stable; when it doesn't, `useMemo` (lesson 3 of chapter 026) is the manual reach, but only after a profiler measurement.
+- **The `useMemo` foreshadow — narrow and audited.** When derivation is *measurably* expensive (a large sort, a non-trivial graph traversal, a parser pass), `useMemo` caches across renders. Named here once as the escape valve; lesson 3 of chapter 026 owns the decision threshold. The default is no `useMemo`.
+- **The "you might not need an effect" landing.** The React docs page of the same name is the canonical reading for this lesson — the lesson summarizes its rules and forward-references lesson 3 of chapter 025 for the full effects-anti-pattern catalog (event-handler logic, parent-driven resets, expensive calculation, fetching).
+- **State that derives from changing props — the `key`-reset alternative.** When a child needs local state seeded from a prop but reset when the prop changes (an edit form for a selected record), the `key` reset (lesson 5 of chapter 023) is the senior reach, not a sync effect. The lesson cross-references explicitly because the two anti-patterns share the same setup.
 - **Watch-outs:**
-  - `<button>` defaults are inconsistent across browsers — use `inline-flex items-center gap-2` for icon-and-text alignment.
-  - `display` doesn't change semantics; pick the right element first, then the display utility.
-  - Tailwind's `hidden` utility equals the HTML `hidden` attribute in effect (both → `display: none`).
-  - `display: contents` makes the *children* the flex/grid items, not the wrapper — easy to forget when scanning a tree.
-  - Floats and clears are dead outside text-wrapping-around-an-image.
+  - "I need to update state when a prop changes" is almost always one of: derive it, lift it, or `key`-reset it. The sync-effect is the wrong shape.
+  - Derived computations in render run on every render — that's the point. Don't optimize prophylactically.
+  - A `setState` call inside a `useEffect` that watches another piece of state is the smell. Look for the derivation.
+  - The exception — `setState` during render, conditionally, for "adjusting state based on changed props" — is a documented but narrow pattern; the lesson names it once and trusts that `key` resets or derivation cover most cases.
+  - Derived state hidden inside a custom hook is still derived state. The hook should return the computed value, not store it.
+  - A computed value that is the *input* to an effect (a query string passed to a fetch) belongs in render and the effect's dependencies. Don't cache it in state to "stabilize" the dependency — React's comparison is `Object.is` and the source-of-truth values already drive the change.
 
 What this lesson does not cover:
 
-- Flexbox at depth (`flex-direction`, `flex-grow`, `justify-content`, `align-items`, etc.) — lesson 3 of chapter 024.
-- Grid at depth — lesson 4 of chapter 024.
-- `sr-only` and the visually-hidden pattern — lesson 3 of chapter 031.
-- Responsive variants (`md:flex`, `lg:grid`) at depth — lesson 6 of chapter 025.
-- The semantic-element choice (when to write `<section>` vs `<div>`) — lesson 3 of chapter 021 owns it; this lesson assumes it.
-- Tables for actual tabular data — lesson 6 of chapter 021.
-- `position` (which overrides participation in normal flow but not `display`) — lesson 7 of chapter 024.
+- The full "you might not need an effect" catalog (event handlers, parent resets, expensive calc) — lesson 3 of chapter 025.
+- `useMemo` thresholds and decision rules — lesson 3 of chapter 026.
+- The `key` reset mechanic at depth — lesson 5 of chapter 023.
+- Effects and external-system sync — lesson 2 of chapter 025.
+- Form drafts and server-state divergence — Unit 6.
+- Server state and caching — Chapter 032 and Chapter 11.
 
 ---
 
-## Lesson 3 — Flexbox, the 1D primitive
+## Lesson 3 — The four homes for state
 
-The flex container's main and cross axes, the `flex-1` / `flex-auto` / `flex-none` / `shrink-0` item sizing forms, `justify-*` vs. `items-*` alignment, `gap` as the spacing default, the `min-w-0` companion fix, and the five canonical layouts a senior reaches for.
+Teaches the local-lifted-URL-server decision tree, the colocate-then-lift-on-demand reflex, URL state with `nuqs` as the 2026 reach, and the prop-drilling-is-not-a-context-bug distinction.
 
 Topics to cover:
 
-- **The senior question.** For a horizontal nav (logo left, links middle, sign-in right), the 2026 reach is `flex items-center justify-between` — flex is the 1D primitive for "rows and columns of variable-content items where the algorithm distributes leftover space." The lesson installs the flex algorithm in the form a 2026 senior reads it: container → main and cross axes → item growing, shrinking, and basis → alignment on both axes → `gap` for spacing.
-- **The flex container and the two axes.** `display: flex` makes the element a flex container; children become flex items. Main axis = direction items lay out (row by default, follows `direction`; switch with `flex-col`). Cross axis = perpendicular. Every flex property is named for one of the two axes — `justify-*` on main, `items-*` / `align-*` on cross. The student names the axis first, picks the property second.
-- **`flex-direction` and `flex-wrap`.** `flex-row` (default), `flex-col`, and the `-reverse` cousins (recognition only — visual reorder doesn't change tab order; `order` on one item is the senior reach when a single item needs to move). `flex-wrap` enables multi-line wrapping; `gap-y-*` becomes the row-gap when wrap is on.
-- **Item sizing — `flex-grow`, `flex-shrink`, `flex-basis`, and the `flex` shorthand.** The 2026 form is one of three named shorthands: `flex-1` (take available space, share equally), `flex-auto` (take available space but respect content size), `flex-none` (don't grow or shrink). `shrink-0` is the canonical reach for sidebars, fixed-width avatars, anything whose width is the design. The senior rarely writes the three values separately.
-- **Alignment — `justify-content`, `align-items`, `align-self`, `align-content`.** Main-axis `justify-*`: `start` / `end` / `center` / `between` / `around` / `evenly`. Cross-axis `items-*`: `stretch` (default) / `start` / `end` / `center` / `baseline`. `align-self` overrides one item. `align-content` controls the *lines* of a wrapped container — rarely needed; `gap-y-*` usually does the job.
-- **`gap` — the senior default for spacing flex items.** Every flex container with multiple items uses `gap-*`. Two-axis variants `gap-x-*` / `gap-y-*` for asymmetric. Adds space between items only — no leading or trailing edge collisions.
-- **The canonical flex layouts a senior reaches for.** Five patterns cover most production use: horizontal navs (`flex items-center justify-between` with `gap`), form rows (a `shrink-0` label plus a `flex-1` input), card column stacks (`flex flex-col gap-*`), toolbars with a `flex-1` spacer between clusters, and cards with bottom-pinned footers (`flex flex-col h-full` plus `flex-1` on the main region).
-- **DevTools — the flex overlay.** A button in the Elements panel toggles a colored overlay showing the axes, gaps, and item bounds. The senior debugging move when alignment looks wrong.
+- **The senior question.** A `SearchableTable` has a `query` input and rows below. Should `query` be local state in the input, lifted to the parent that owns the rows, or pushed into the URL as `?q=...`? The answer drives shareability, refresh behavior, undo/redo via back button, and SSR. The lesson installs the four-tier decision (leaf, lifted, URL, server) as the senior framing for state placement, lands the canonical triggers for each tier, and forward-references the URL-state surface in chapter 033.
+- **The four homes for state.** (1) **Local** — state belongs to a single component, no one else cares. (2) **Lifted** — state belongs to a parent because two or more siblings need it. (3) **URL** — state belongs to the route because it should survive refresh, be shareable, and respect the back button. (4) **Server** — state belongs to the server because it's the canonical record. The lesson teaches the senior reflex: start at (1), lift only when (2) demands, push to (3) when shareability or refresh-survival demands, persist to (4) when canonicity demands.
+- **Colocation as the default.** "Colocate state with the component that needs it" is the rule. A modal's open/closed state lives in the modal trigger's parent — the closest common ancestor of the trigger and the modal. A dropdown's expanded state lives in the dropdown component. Premature lifting creates prop-drilling and recomputes the world on every keystroke. The senior framing: lift on demand, not on prediction.
+- **Lifting state up — the mechanic.** When two siblings need the same state (a parent showing a list, a filter input above it), the state moves to their common parent and is passed down as props plus a setter (or a typed event handler). The lifted-up component becomes the *single source of truth* — the inputs are now controlled, the children render purely from props.
+- **The canonical lift triggers.** (1) Two siblings need the same value (filter + list). (2) An ancestor needs to *react* to a child's state (form fields driving a "save" button's enabled state). (3) The state needs to survive across the unmount of a single child (a tab's content state surviving tab switches — though `key` resets often handle this better).
+- **URL state — the third tier.** Search filters, pagination, sort orders, the selected tab, modal IDs that should be linkable. The URL is the source of truth; the components read from `searchParams` (in App Router this means `useSearchParams` for Client Components, or awaited `searchParams` on the page in Server Components — Chapter 029 and chapter 033 own these). The senior reflexes the lesson lands: if a user reloading the page expects the value to stick, it belongs in the URL. If they expect to share the link and the recipient sees the same view, it belongs in the URL. If neither, local or lifted is fine.
+- **URL state with `nuqs` — the 2026 reflex.** `nuqs` is the typed-search-params library that wraps `useSearchParams` with typed parsers, defaults, batching, and history mode. The lesson names it once as the senior reach when URL state grows past one or two params; full surface is in chapter 033. Without `nuqs`, hand-rolled `useSearchParams` + `router.push` works for simple cases.
+- **Server state — the fourth tier.** Server state (the user's saved records, the team's settings, anything backed by a database) doesn't belong in `useState` long-term — it belongs in a server-state cache (Chapter 11) or read directly in a Server Component (Chapter 032). `useState` for server data leads to staleness, refetch-on-every-mount bugs, and lost optimistic updates. Named here as the fourth tier and forward-referenced.
+- **The decision framework — a tree.** (1) Does the value need to survive a refresh or be shareable? → URL. (2) Is it canonical data backed by the server? → server cache / Server Component. (3) Do two or more components need it? → lift to the common parent. (4) Otherwise → local. The lesson states this once as the chart and uses it for the rest of the surface.
+- **Prop-drilling and the context foreshadow.** When lifted state has to traverse many layers, prop-drilling becomes the cost. The instinct to "fix" this with context is sometimes right and sometimes premature — context has its own re-render cost (lesson 4 of chapter 025) and is reserved for genuinely cross-cutting state (auth user, theme, locale). The lesson names this and trusts lesson 4 of chapter 025 to land the decision.
+- **The compound-component alternative to prop-drilling.** When the depth comes from layout structure (a `Card` with `CardHeader` and `CardBody`), compound components (lesson 2 of chapter 022) often eliminate the need to lift — children are wired implicitly via context inside the compound. Recognition only; lesson 2 of chapter 022 owns the surface.
+- **The senior code smell — multiple `useState`s tracking the same conceptual value.** A `searchInput` state in the input, a `searchQuery` state in the list, and a `useEffect` syncing them is the lifting-not-done signal. The fix is one `useState` at the parent.
+- **Inverse smell — state lifted too high.** A `tabState` lifted to the root layout when only one route uses it bloats the layout and re-renders the world on every tab click. The fix is push state down to the smallest component that actually needs it.
+- **The form-draft exception.** Form state is *almost always* lifted to the form component, never to the input. The form owns the submit, the validation, the dirty-tracking; the inputs are presentational. This is the canonical "one form, many inputs, one piece of state" pattern. Unit 6 owns the surface; the lesson names it here as the canonical lifting case.
 - **Watch-outs:**
-  - `flex-1` sets `min-width: 0` and collapses an item's intrinsic min-width (add `min-w-0` or `min-w-fit` when content matters — the most common flex bug in 2026).
-  - `gap` is universal in flex now; `space-x-*` isn't needed.
-  - `items-baseline` aligns text baselines (the right reach for a row with mixed font sizes); `items-center` centers the box, which often visually misaligns text.
-  - Items shrink by default — `shrink-0` for items whose width is the design.
-  - `*-reverse` reverses visual order, not source order; keyboard tab order follows source.
-  - `justify-between` with one child does nothing.
-  - `<img>` and form elements have implicit min-content widths that can blow out a flex row — constrain with `min-w-0` or `max-w-*`.
+  - Lifting too eagerly is as wrong as lifting too late. The trigger is two-components-need-it, not "might someday."
+  - URL state is global state with a free synchronization mechanism. Use it for anything the user might expect to bookmark.
+  - `useState` for the current user, the theme, or the locale is the wrong tier — those are context (auth, theme provider) or URL/cookie (locale).
+  - "Move state to context" is not a fix for prop-drilling that's three layers deep — pass the prop. Context is for cross-cutting concerns, not for skipping intermediate components.
+  - Server state in `useState` looks like it works until the user opens a second tab.
+  - When lifting, the typed callback shape (`onChange: (next: string) => void`) is the contract — don't pass setters across component boundaries unless the child is genuinely "the input." Named callbacks are easier to refactor.
+  - URL state without parsing is unsafe — Zod-validate the params on read (foreshadowed at lesson 3 of chapter 029).
 
 What this lesson does not cover:
 
-- Grid at depth (lesson 4 of chapter 024).
-- Sizing utilities (`w-*`, `h-*`, `max-w-*`, `aspect-*`) — lesson 5 of chapter 024 (cross-referenced lightly here).
-- The `gap` decision vs. `space-x` / margin tricks — lesson 6 of chapter 024 owns the comparison; this lesson assumes `gap` as the default.
-- Responsive variants for flex direction (`md:flex-row`) — lesson 6 of chapter 025.
-- Animation of layout properties — lesson 5 of chapter 025.
-- The relationship between flex items and `position: absolute` children — recognition only; lesson 7 of chapter 024 owns positioning.
+- `useContext` and the perf footgun — lesson 4 of chapter 025.
+- The `useSearchParams` surface and `nuqs` API — Lesson chapter 033 (App Router URL state).
+- Server-side data fetching and Server Components — Chapter 032.
+- Server-state caching (TanStack Query / SWR-style) — Chapter 11.
+- Forms at depth (validation, submission, server actions) — Unit 6.
+- Global stores (Zustand, Jotai) — Unit 15 recognition only.
+- Co-location patterns at the file-system level — lesson 1 of chapter 029.
 
 ---
 
-## Lesson 4 — Grid, the 2D primitive
+## Lesson 4 — useReducer when transitions multiply
 
-Explicit tracks, the `fr` unit, `repeat(auto-fit, minmax(...))` for responsive without breakpoints, `grid-template-areas` for page shells, `subgrid` for nested alignment, `place-items-*` shorthands, item placement, and the flex-vs-grid decision.
+Teaches the threshold where coordinated `useState`s become a reducer, the discriminated-union action shape, the reducer purity contract, lazy init via the `init` argument, and the async-lives-in-the-handler rule.
 
 Topics to cover:
 
-- **The senior question.** For a card grid (three columns desktop, two tablet, one mobile, consistent gaps), `flex flex-wrap` produces varying widths because flex items shrink to content; the 2026 answer is `grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6`. Grid is the 2D primitive — it defines tracks (columns and rows), items snap into them. The lesson installs explicit columns and rows, named template areas for page shells, `auto-fit` / `minmax` for responsive cards without media queries, and `subgrid` for nested alignment.
-- **The grid container and the explicit-track model.** `display: grid` makes the element a grid container; children become grid items, auto-placed unless they specify a placement. Tracks are defined via `grid-template-columns` / `grid-template-rows` and sized with fixed lengths, the `fr` unit, content-based keywords (`auto`, `min-content`, `max-content`, `fit-content()`), or `minmax(<min>, <max>)`.
-- **The `fr` unit.** `1fr` = one fraction of the leftover space after fixed and content-sized tracks are subtracted. The right default for "this column grows with the container"; mix `1fr` with fixed sizes for sidebar layouts.
-- **Tailwind grid utilities.** `grid-cols-*` and `grid-rows-*` (numeric or bracket-form arbitrary), `gap-*`, `col-span-*` / `row-span-*`, `col-start-*` / `col-end-*`, `grid-flow-*` for auto-placement direction, `auto-cols-*` / `auto-rows-*` for implicit tracks. `grid-cols-3` compiles to `repeat(3, minmax(0, 1fr))` so columns can shrink below content width.
-- **Responsive grids without media queries — `repeat(auto-fit, minmax(...))`.** Creates as many tracks as fit, each at least a min width and at most `1fr`. The senior reach when the design is "however many cards fit, with a minimum size each." Responsive variants (`md:grid-cols-2 lg:grid-cols-3`) are the right reach when the design wants exact column counts at breakpoints.
-- **`grid-template-areas` — named regions for page shells.** A header-sidebar-main-footer page shell defines its tracks plus a named template; each child references its area name. Tailwind v4 ships `grid-areas-*` and `area-*` utilities. The template is readable as ASCII art; mobile rearrangement is a single template change.
-- **`subgrid` — nested alignment.** `grid-cols-subgrid` makes a nested grid's columns match the parent's. Reach: a card grid where each card has its own inner grid (header / image / body / footer) and rows must align horizontally across the row regardless of content length. Production-safe in 2026.
-- **Alignment shorthands — `place-items`, `place-content`, `place-self`.** `place-items-center` on a grid with one item is the most concise centering pattern in CSS — `grid place-items-center min-h-dvh` centers a child on both axes. `place-content-*` centers the entire grid when tracks don't fill the container.
-- **Item placement.** Span counts (`col-span-2`), explicit line numbers (`col-start-* col-end-*`), and named lines (the bracket form, where line names appear in the track definition). Span counts cover most cases; named lines are useful for complex page shells where the line names match the layout language.
-- **The canonical grid layouts a senior reaches for.** Five patterns cover most production use: card grids with fixed columns at breakpoints, card grids with `auto-fit minmax` (no breakpoints), page shells with sidebar tracks and full-width header/footer (`col-span-2`), centered heroes (`grid place-items-center min-h-dvh`), and stats dashboards with a featured card spanning multiple tracks.
-- **Flex vs. grid — the decision.** Flex for 1D (rows or columns with variable-content items distributing leftover space). Grid for 2D (rows-and-columns structure, snap-to-track items, subgrid alignment, exact column counts at breakpoints). Most SaaS UIs are a grid of flex compositions.
-- **DevTools — the grid overlay.** A "grid" badge in the Elements panel; the Layout tab toggles line numbers, line names, and area names independently. The senior debugging move when an item isn't where it should be.
+- **The senior question.** A form has fields, a submit button, a loading state, a server error, a "draft saved" indicator. The component has eight `useState`s and twenty setters scattered through handlers, and a bug shows up where the loading state stays `true` after a validation failure. The fix is `useReducer` — one state object, named actions, one reducer that owns every legal transition. The lesson installs the threshold ("when `useState`s start coordinating, switch to a reducer"), lands the reducer shape, and connects to the broader state-management vocabulary.
+- **The signature.** `const [state, dispatch] = useReducer(reducer, initialState)`. The reducer is `(state, action) => newState`, pure, no side effects. `dispatch(action)` queues an action; React calls the reducer with the current state and the action and renders with the result. The third argument — `init` — is the lazy form (same role as `useState`'s lazy initializer).
+- **What an action looks like.** Discriminated unions are the senior shape: `type Action = { type: 'submit' } | { type: 'error'; message: string } | { type: 'reset' }`. The `type` field discriminates; payloads come as additional fields. TypeScript narrows in each `case` of the switch, so `action.message` is only available where `action.type === 'error'`. The lesson connects this directly to Chapter 005's discriminated-union seed.
+- **The reducer shape.** A switch on `action.type`, each case returning a new state object via spread. No mutation. No side effects. No async calls. Pure inputs to pure outputs. The lesson lands this as the contract — the reducer's purity is what makes the state predictable, testable, and time-travel-debuggable (devtools recognition only).
+- **When `useReducer` earns its weight.** (1) Multiple related state values that update together (a form's `values + errors + isSubmitting + submitError`). (2) Transitions that have invariants (you can never be `isLoading` and have a `result` at the same time). (3) Update logic complex enough to want a name (`'optimistic-update'`, `'rollback'`, `'commit'`). (4) The same state value getting set from multiple distant handlers and you want one place to trust. (5) State that needs to be tested independently — reducers are unit-testable without React.
+- **When `useState` is the right reach instead.** A counter. A toggle. A form field. A modal's open/closed flag. A single piece of state with one or two transitions. Reducers add ceremony; reach for them when the ceremony pays for itself.
+- **The "model a state machine" framing.** Reducers are state machines without the library. `idle → loading → success | error → idle` is a four-state machine with named transitions; modeling it as a `status` field in a reducer prevents the impossible-state bugs that scattered `useState`s create (e.g., `isLoading: true` *and* `error: 'X'` at the same time). The senior reflex: when invariants matter, model the state machine. XState as the library reach is recognition only — overkill for most components, right when the machine has nested or guarded transitions.
+- **Lazy initialization with the `init` argument.** `useReducer(reducer, initialArg, init)` calls `init(initialArg)` once on mount. Useful when initial state requires a derivation (parsing local storage, computing from props on mount). Same role as `useState(() => ...)`.
+- **Dispatch is stable, state is a snapshot.** `dispatch` is referentially stable across renders; safe in effect dependencies and prop-drilling. The state value follows the snapshot rule — actions queue; the next render sees the next state. The updater-form rules from lesson 4 of chapter 023 apply: when an action's payload depends on the current state, reach for an action that computes from previous-state inside the reducer (which already has access), not from outside.
+- **Immer with `useReducer` — recognition only.** When state is deeply nested and spreads pile up, Immer's `produce` wraps a "mutating-style" reducer body and produces an immutable result. Named once as the library reach; the course default is direct spreads because shallow updates dominate and explicit spreads keep the reducer's intent visible.
+- **Reducer + `useTransition` — recognition.** `useTransition` (lesson 5 of chapter 025) can wrap a `dispatch` to mark the update as a transition. Forward reference only.
+- **The Redux foreshadow.** `useReducer` looks like a single-component Redux. The shape is intentional — actions, reducers, dispatch — but the scope is one component (and its descendants via context, if shared). Course doesn't teach Redux; recognition that the vocabulary transfers.
+- **Typing `useReducer` in React 19.** The compiler's type inference improved; the senior pattern is `useReducer(reducer, initialState)` with the reducer's signature carrying the types — `function reducer(state: State, action: Action): State`. The state and action types live next to the reducer, not as generics on the hook call. Cross-reference to chapter 005 for the discriminated-union shape.
 - **Watch-outs:**
-  - `repeat(3, 1fr)` overflows on narrow viewports — `minmax(0, 1fr)` lets columns shrink below content width (Tailwind's `grid-cols-3` already does this).
-  - `gap` is the row-and-column gap; no per-item margin tricks.
-  - `auto-fit` collapses empty tracks; `auto-fill` keeps them. `auto-fit` is the card-grid reach.
-  - `col-span-N` in an N-1 column grid clamps to available columns.
-  - `grid-flow-dense` reorders visually but not in source (same a11y caveat as `flex-row-reverse`).
-  - `min-content` / `max-content` are the sizing escape hatches; rare in component code, common in data tables.
+  - The reducer must be pure (lesson 3 of chapter 023) — no `fetch`, no `console.log`-in-production, no DOM access, no `Math.random()`. Strict Mode may double-call it in dev.
+  - Returning the same state object reference bails out the same way `useState` does. Always spread to produce a new reference.
+  - Don't put async logic inside the reducer. Async lives in the handler that calls `dispatch` — start the async, dispatch `{ type: 'start' }`, await, dispatch `{ type: 'success', payload }` or `{ type: 'error', message }`.
+  - "Switch on action type" exhaustiveness — TypeScript's `never` check at the end of the switch catches forgotten action types. The senior pattern: a `default` case with `assertNever(action)` (cross-reference chapter 005).
+  - Sharing a reducer via context is the multi-component pattern, but it's also where context's re-render cost (lesson 4 of chapter 025) bites — split the state and dispatch into two contexts to limit re-renders.
+  - Reducers can return a partial state by mistake — always spread `...state` first in the case, then override fields.
+  - "I have 12 `useState`s in one component" is the canonical trigger to switch.
 
 What this lesson does not cover:
 
-- Container queries (`@container`) — lesson 7 of chapter 025 (mentioned as the "responsive without breakpoints" alternative for components, vs. grid `auto-fit` for containers).
-- Sizing utilities (`w-*`, `min-h-*`, `aspect-*`) — lesson 5 of chapter 024.
-- Stacking context inside grid/flex — lesson 9 of chapter 024.
-- The `gap` decision vs. legacy alternatives — lesson 6 of chapter 024.
-- Animation of grid track changes — niche; the chapter doesn't ship it.
-- Multi-column layout (`columns: 3`) — recognition only; rare in 2026 outside long-form prose.
+- Discriminated unions and exhaustive switches at depth — Lessons lesson 5 of chapter 004 and chapter 005.
+- `useContext` and context performance — lesson 4 of chapter 025.
+- `useTransition` and async transitions — lesson 5 of chapter 025.
+- Async form actions and `useActionState` — Unit 6.
+- Redux, Zustand, Jotai — Unit 15 recognition.
+- State machines (XState) — recognition only.
+- Server-state caching libraries — Chapter 11.
 
 ---
 
-## Lesson 5 — Sizing, viewport units, and aspect-ratio
+## Lesson 5 — useRef as the non-rendering escape hatch
 
-The `w-*` / `h-*` / `size-*` / `min-*` / `max-*` sizing primitives, the `vh` / `dvh` / `svh` / `lvh` viewport-unit family with `min-h-dvh` as the iOS reflex, `aspect-ratio` for zero-CLS media containers, intrinsic vs. extrinsic sizing, and `clamp()` for fluid sizes without breakpoints.
+Teaches the two flavors of ref (DOM nodes and instance values), the state-vs-ref rule ("does the JSX read it?"), the four canonical DOM-ref reaches, the don't-read-or-write-during-render rule, and how refs interact with the React Compiler.
 
 Topics to cover:
 
-- **The senior question.** An `h-screen` hero leaves a gap at the bottom on iOS Safari because `100vh` is the *largest* viewport (address bar collapsed) and the address-bar overlay leaves a gap when expanded. The fix is `100dvh` (dynamic), `100svh` (smallest), or `100lvh` (largest) depending on intent. The lesson installs the sizing primitives (`width`/`height`, `min-*`/`max-*`, `size-*`, `aspect-ratio`), the viewport-unit family, the intrinsic-vs-extrinsic mental model, and `min()` / `max()` / `clamp()` for fluid sizing.
-- **`width` and `height` — extrinsic sizing.** Forces the element to a size regardless of content. Tailwind: `w-*` / `h-*` on the spacing scale, `w-full` (100%), `w-screen` (100vw — recognition; rarely the right reach), fractional widths (`w-1/2`, `w-1/3`), arbitrary values.
-- **`size-*` — the v4 width-and-height shortcut.** A single utility for square elements (avatars, icons, status indicators, square buttons). `w-*` and `h-*` separately stay right for rectangles.
-- **`min-*` / `max-*` constraints.** Clamp the element's size after the layout algorithm computes it. Canonical reaches: `max-w-3xl` on a centered article, `max-w-[65ch]` (or `max-w-prose`) for body text reading width, `min-w-0` on flex items that should shrink below content (the `flex-1` companion fix), `min-h-dvh` on the page shell, `max-h-screen overflow-y-auto` on a tall sidebar.
-- **The viewport-unit family — `vh`, `dvh`, `svh`, `lvh` (and the `*-vw` cousins).** `vh` = largest viewport, `dvh` = dynamic (resizes with the address bar), `svh` = smallest. The 2026 reflex is `min-h-dvh` for "fill the viewport" and `h-dvh` for "exactly viewport height." `min-h-screen` is the legacy form that breaks on mobile.
-- **`aspect-ratio` — sizing without one dimension.** `aspect-square`, `aspect-video` (16/9), arbitrary `aspect-[3/2]`. Reaches: image and video containers (zero CLS because space is reserved before media loads), square thumbnails, card image areas where every card's hero height must match. Replaces the legacy `padding-bottom: 56.25%` hack.
-- **Intrinsic vs. extrinsic sizing — the mental model.** Intrinsic = content-driven (`auto`, `min-content`, `max-content`, `fit-content()`); extrinsic = parent- or utility-forced (`100%`, fixed lengths, `flex-basis: 0` + grow, a grid `1fr` track). Block elements are extrinsic on width, intrinsic on height; inline elements are intrinsic on both; flex/grid items are extrinsic on main, content-driven on cross. When sizing is wrong, the question is which axis is being computed which way.
-- **`fit-content` — `w-fit`.** Width = content, capped at parent. Reach: a content-width button inside a `flex-col` parent that would otherwise stretch.
-- **`min()`, `max()`, `clamp()` — fluid sizing without breakpoints.** `clamp(min, preferred, max)` is the 2026 sweet spot. Tailwind via bracket form. Analogous to `auto-fit` for grid columns — responsive size without media queries. The chapter names it once and points at lesson 6 of chapter 025 for when to reach.
-- **The CSS unit zoo.** `rem` for spacing and typography (the senior default, via Tailwind's scale); `dvh` / `dvw` for viewport-fill; `ch` for reading widths; `px` for hairlines, borders, focus rings; `%` rarely (a flex/grid `1fr` is usually the right substitute); `em` very rarely; `fr` in grid only.
+- **The senior question.** A `<SearchInput>` should focus its `<input>` when the parent opens the dropdown. A debounced search needs to remember its `setTimeout` ID across renders so the next keystroke can clear it. A scroll-position tracker needs to read `scrollTop` without re-rendering the page on every pixel. Each of these is a value that *persists across renders* but *doesn't drive UI*. The lesson installs `useRef` as the React escape hatch for that pattern, names the two flavors (DOM node access and instance values), and lands the rule that distinguishes refs from state.
+- **The signature and what's in `.current`.** `const inputRef = useRef<HTMLInputElement>(null)` returns a stable object `{ current: T | null }`. The object reference is the same across renders; `.current` is mutable and doesn't trigger re-renders when set. The initial value (`null` for DOM refs, anything for instance values) is set once on the first render.
+- **The two flavors of ref.** (1) **DOM refs** — attach to an element via the `ref` prop (`<input ref={inputRef} />`) and React assigns the DOM node to `.current` after commit. (2) **Instance values** — a mutable box for any value the component needs to remember across renders without rendering on change (interval IDs, timeout IDs, previous values, large objects that shouldn't be inputs to state).
+- **The rule that separates refs from state.** State is for values the UI reads. Refs are for values *only handlers and effects* read. If changing the value should re-render, it's state. If changing the value should not re-render, it's a ref. The senior reflex: "does the JSX read this?" — yes → state, no → ref.
+- **DOM ref lifecycle.** React assigns the node to `.current` after the DOM commit (the `useEffect` timing). Reading `inputRef.current` in render returns the *previous* commit's value (or `null` on the first render); reading it in an effect or handler reads the live node. The lesson lands this so students don't reach for the ref in render.
+- **The canonical DOM-ref patterns.** (1) Focus management: `inputRef.current?.focus()` in an effect or a handler. (2) Reading layout: `divRef.current?.getBoundingClientRect()` in an effect. (3) Imperative APIs: `videoRef.current?.play()` from a "Play" button handler. (4) Scrolling: `listRef.current?.scrollTo({ top: 0 })`. The lesson names these as the four reaches and forward-references lesson 4 of chapter 022 for `ref` as a React 19 prop (no more `forwardRef`).
+- **Refs are not for things React already does.** Reading the value of a controlled input via a ref defeats the controlled pattern. Setting `style.display = 'none'` via a ref bypasses React. Toggling a class via `classList.add` bypasses Tailwind/state. The senior cut: refs are for capabilities the DOM exposes that React doesn't (focus, measurement, media playback, scrolling, copy-to-clipboard targets), not for re-implementing what props and state do.
+- **Instance-value refs — the second flavor.** `const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)` to remember a `setTimeout` ID across renders. `const previousValueRef = useRef(value)` to compare against the previous render (the `usePrevious` custom-hook pattern foreshadowed in lesson 1 of chapter 026). `const renderCountRef = useRef(0); renderCountRef.current++` for debugging.
+- **The "don't read or write refs during render" rule.** Refs hold mutable state; reading or writing during render makes the component impure (lesson 3 of chapter 023). The narrow exception is the "lazy initial ref" pattern: `if (someRef.current === null) someRef.current = createExpensiveThing()` for one-time setup. Otherwise — handlers and effects only.
+- **Ref callbacks for measurement and dynamic refs.** Passing a function as the `ref` prop (`<div ref={node => { ... }}>`) gives a callback that runs when the node attaches and (in React 19) returns a cleanup that runs when it detaches. Useful for measuring on mount, attaching to dynamic elements, and merging multiple refs. Forward reference to lesson 4 of chapter 022 for the full surface.
+- **`useImperativeHandle` — recognition only.** When a parent legitimately needs to call methods on a child (a `<VideoPlayer>` with `play()` and `pause()`), the child exposes a typed API via `useImperativeHandle`. Rare in 2026 — most "expose a method" instincts are better served by lifting state or `key` resets. Cross-reference lesson 4 of chapter 022.
+- **Refs and the React Compiler.** The compiler treats refs as opaque; reading or writing `.current` during render flags the component as impure and skips memoization (lesson 2 of chapter 026). The senior audit: any component with ref reads in render shows up in the DevTools "not memoized" list. Move the ref access to a handler or effect.
+- **The "previous value" pattern.** `useEffect(() => { previousValueRef.current = value })` after render captures the previous value for the next render. Common enough to extract as a `usePrevious` custom hook (lesson 1 of chapter 026). The lesson names this once as the canonical instance-value pattern.
+- **Cleanup discipline.** A ref holding a timer ID, a subscription, or a resource needs a cleanup — usually in the effect that created it. The lesson names this and trusts lesson 2 of chapter 025 to teach effect cleanup at depth.
 - **Watch-outs:**
-  - `h-screen` (= `100vh`) breaks on iOS — use `h-dvh` / `min-h-dvh`. The single most important sizing fix to install.
-  - `width: 100%` on a flex item with `min-width: auto` overflows when content is wider than the parent — add `min-w-0`.
-  - `height: 100%` requires the parent to have a defined height; surprises a `<div>` inside `<body>` without `<html>, <body>` heights.
-  - `max-w-prose` and `max-w-[65ch]` are the same idea — both cap reading width at the optimal character count.
-  - `aspect-ratio` interacts with flex item collapse the same way `flex-1` does; use `min-w-0` or restructure.
-  - `size-*` only works for square elements; use `w-*` and `h-*` separately for rectangles.
-  - Magic-number sizing (`mt-[37px]`) is a smell — use the scale or change the scale's base.
+  - Reading `ref.current` during render returns the *committed* value, which is `null` on the first render and stale on every subsequent one. Always read in effects or handlers.
+  - Setting `ref.current` during render makes the component impure and skips compiler memoization.
+  - A `useState` plus a setter where the value never appears in JSX is a ref in disguise. Switch to `useRef` and move the setter into a handler.
+  - A ref to a conditionally rendered element holds `null` when the element isn't mounted — null-check at read sites.
+  - Sharing a ref across components by passing it as a prop works; sharing by storing in module scope is a leak and breaks Strict Mode tests.
+  - Don't initialize a ref with an expensive computation directly — the lazy form is `useRef(null)` followed by an `if (ref.current === null) ref.current = ...` block inside an effect or the lazy-init exception above.
+  - `ref` is not passed through standard `props.ref` access; in React 19 you destructure `ref` from props directly on the function component (lesson 4 of chapter 022) — but accessing it from inside the *same* component (looking at "my own" ref) uses `useRef`, not the prop.
+  - Pointer-capture refs and IntersectionObserver targets are the canonical "instance value + DOM node" combo — both lifecycles must align.
 
 What this lesson does not cover:
 
-- Container queries (`@container`) for component-scoped responsive sizing — lesson 7 of chapter 025.
-- Responsive variants (`md:w-1/2 lg:w-1/3`) — lesson 6 of chapter 025.
-- The `gap` and spacing utilities — lesson 6 of chapter 024.
-- Position and inset (`top`, `left`, etc.) — lesson 7 of chapter 024.
-- Typography sizing (`text-*`) — lesson 1 of chapter 025.
-- The `text-wrap: balance` and `pretty` properties — lesson 1 of chapter 025.
-- The `field-sizing: content` property for inputs that grow with content — niche; Chapter 7 (forms) is the right place if it earns its weight.
+- `ref` as a prop in React 19 and ref forwarding — lesson 4 of chapter 022 (already taught).
+- `useImperativeHandle` at depth — lesson 4 of chapter 022 (recognition only).
+- `useEffect` cleanup and external systems — lesson 2 of chapter 025.
+- IntersectionObserver, MutationObserver, ResizeObserver patterns — Chapter 025 (effects) and recognition in 3.x DOM chapters.
+- Drag-and-drop and gesture libraries — out of scope (recognition).
+- Animation libraries (Framer Motion, `motion`) — lesson 5 of chapter 021 territory.
+- Custom hooks extracting ref patterns (`usePrevious`, `useEventListener`) — lesson 1 of chapter 026.
 
 ---
 
-## Lesson 6 — Gap, the universal spacing default
+## Lesson 6 — useId for ARIA wiring across SSR
 
-Why `gap` replaces sibling-margin tricks and `space-x` / `space-y` inside flex and grid containers, the gap-vs-margin decision, `divide-x` / `divide-y` for visible hairlines between items, and the padding / gap / margin parallel.
+Teaches the position-in-the-tree derivation that keeps IDs stable across server and client, composing multiple IDs from one call, the label-input-error wiring pattern, and the not-for-list-keys rule.
 
 Topics to cover:
 
-- **The senior question.** For a vertical list, the 2018 reach was `margin-bottom` on every item except the last; 2021 was Tailwind's `space-y-*`; the 2026 reach is `flex flex-col gap-*` — the parent declares the layout primitive, `gap` does the spacing, no per-child rules. The lesson installs `gap` as the universal default for spacing inside flex and grid containers, names the legacy alternatives with the trigger that would flip back, and covers `divide-*` for borders between items.
-- **`gap` — the universal default.** Works in flex, grid, and multi-column. Adds space between items only — no leading or trailing edge collisions with the parent's padding. Two-axis variants (`gap-x-*`, `gap-y-*`). Reflows correctly when items wrap or change count.
-- **`space-x-*` / `space-y-*` — legacy compatibility.** Compiles to a sibling-margin pattern. Exists for the rare non-flex/grid parent that can't be changed without side effects. The cleaner fix is almost always `flex flex-col` on the parent. Chapter names it once, dismisses with the trigger.
-- **Why `gap` wins.** `space-x` breaks on wrap (inconsistent cross-row spacing), is sensitive to `:first-child` ordering (hidden / conditionally-rendered siblings shift the spacing), and interacts poorly with RTL. `gap` is one property on the parent with no per-child math and no edge cases.
-- **`divide-x-*` / `divide-y-*` — borders between items.** Adds a top/left border to every direct child except the first. Reach: visible separators (settings list with hairlines, nav menu with vertical dividers). Not a substitute for `gap`; the two compose when both are wanted.
-- **The gap-vs-margin decision.** Use `gap` between siblings inside a flex/grid container (~90% of cases). Use `margin` for spacing between an element and something *outside* its container (the rare push-this-element-away case). Never margin between siblings inside a flex/grid container.
-- **Padding / gap / margin — the parallel.** Padding = inside an element. Gap = between siblings. Margin = outside an element. The student hardly ever writes margin in 2026; `gap` and `padding` cover almost everything.
-- **The legacy patterns — recognition only.** The `* + *` "lobotomized owl" pattern (Heydon Pickering) and Tailwind's `space-y-*` (the modern variant) are dead for new code; the student recognizes them in legacy projects.
-- **Asymmetric gaps and the underlying CSS properties.** `gap-x-*` / `gap-y-*` decouple row and column spacing for the rare case where they differ. `gap` is shorthand for `row-gap` and `column-gap` (name recognition only; the Tailwind shorthand is what the student writes).
+- **The senior question.** A custom `<TextField label="Email" />` component needs to wire a `<label htmlFor={id}>` to a `<input id={id}>` so screen readers announce the field correctly. Hardcoding `id="email"` works for one instance but collides when two `<TextField>`s are on the same page. `Math.random()` works on render but produces a hydration mismatch under SSR — the server picks one number, the client picks another. `useId` is the platform answer: a stable identifier per component instance, identical on server and client. The lesson installs the hook, names the canonical reaches, and lands the rule that distinguishes `useId` from list keys.
+- **The signature and what it produces.** `const id = useId()` returns a string identifier (`':r1:'` or similar) that is unique per component instance, stable across renders, and identical on server and client. The format is opaque — don't parse it, don't pattern-match on it. The hook is called once per component; each instance gets its own ID.
+- **Why a hook and not a `crypto.randomUUID`.** `crypto.randomUUID()` would produce a different value on server and client and break hydration. `useId` derives the ID from the component's *position in the React tree*, which is deterministic across renders and identical on server and client because the tree is the same.
+- **The canonical use — accessibility wiring.** Form fields where label and input must be paired: `<label htmlFor={id}>` plus `<input id={id} />`. `aria-describedby={errorId}` plus an error element with `id={errorId}`. `aria-labelledby={titleId}` for custom dialogs. The senior reflex: any time a non-visual ID needs to link two DOM nodes, reach for `useId`.
+- **Composing multiple IDs from one `useId`.** A single `useId()` returns one base ID. When a component needs multiple related IDs (one for the input, one for the error message, one for the description), derive: `const id = useId(); const inputId = id; const errorId = \`${id}-error\``. The convention preserves uniqueness and keeps the relationship visible.
+- **What `useId` is *not* for — list keys.** The lesson lands this rule explicitly because the misconception is universal. `key` in a list (`items.map(item => <Row key={...} />)`) is for reconciliation identity (lesson 2 of chapter 023) — it must come from the *data*, not from a hook. `useId` generates an ID for the *component instance*, which by definition exists only after the instance is created — the chicken-and-egg makes it useless for keys. Use the item's `id`, `slug`, or a `crypto.randomUUID()` assigned at creation time and stored on the data.
+- **What `useId` is not for — security or business identifiers.** `useId` IDs are not random, not unpredictable, and not unique across pages or sessions. They're stable per component, per tree, per page render. Anything that needs cryptographic uniqueness (CSRF tokens, session IDs, idempotency keys) uses `crypto.randomUUID()` server-side.
+- **The hydration-mismatch fix.** When a Client Component reads from `Date.now()`, `Math.random()`, or `window.*` and uses the result in an ID attribute, the SSR HTML and the hydrated HTML differ and React throws a hydration warning (lesson 5 of chapter 030). `useId` is one of the canonical fixes — replace the random ID with a deterministic one. Other hydration fixes live at the source (move the random read to an effect; use `suppressHydrationWarning` for known-acceptable differences) — lesson 5 of chapter 030 owns the surface.
+- **Inside Server Components.** `useId` works in both Server and Client Components in React 19 — the IDs are generated during the tree-walk and serialized into the SSR HTML, then matched on the client during hydration. The senior takeaway: don't special-case Server Components for ID generation; `useId` is universal.
+- **The `idPrefix` rendering option.** When rendering multiple React roots on the same page (rare, but used for some legacy migration patterns and embedded widgets), `createRoot(..., { identifierPrefix: 'app1-' })` prefixes IDs to avoid cross-root collisions. Recognition only — the daily reach is one root per page.
+- **Composability and library compatibility.** `useId` is what shadcn/ui (lesson 1 of chapter 027) and Radix primitives use internally to wire ARIA attributes. The course's own form components (Unit 6) reach for `useId` at every label-input pairing. When wrapping a third-party input with a custom component, the wrapper generates the ID and the inner element receives it as a prop.
 - **Watch-outs:**
-  - `gap` doesn't add edge space — use parent `padding` for leading/trailing space.
-  - `grid-gap` is the legacy form; `gap` is the unified property now.
-  - `space-y` skips spacing for `null`-rendered children; `gap` doesn't (it operates on the parent, not on selectors).
-  - `divide-*` composes with parent `border` and `rounded-*` for a list-card with internal hairlines.
-  - Don't mix `gap` and `space-x` on the same container.
-  - `gap` doesn't collapse like margins do.
+  - `useId` IDs contain colons (`:r1:`) by design — they're safe in HTML `id` attributes and `htmlFor`, but if a CSS selector references the ID it must escape the colons (`#\\:r1\\:`). The senior reach is to not select on these IDs from CSS; they're for ARIA wiring, not styling.
+  - Don't use `useId` as a key in lists — keys come from data, not from the React tree (lesson 2 of chapter 023).
+  - Conditional rendering that changes the *call order* of `useId` (e.g., `{flag && <UseIdComponent />}` followed by another `useId` consumer in the same parent) can shift IDs and cause hydration mismatches — keep `useId` calls outside conditionals.
+  - The ID changes if the component unmounts and remounts (a `key` reset, for instance) — fine for ARIA, surprising if you stored the ID somewhere expecting it to persist.
+  - `useId` is for *internal* wiring. URL fragments (`#email`) that users link to need stable, human-readable IDs hardcoded — not `useId`.
+  - Calling `useId` inside a custom hook is fine; the hook receives a unique ID per call site. The custom hook returns the ID for the consumer to use.
+  - Reading `useId` and then mutating it (string concatenation for a suffix) is the right pattern; calling `useId` twice in one component is also fine — each call gets its own ID.
 
 What this lesson does not cover:
 
-- The `padding` and `margin` utilities at depth — lesson 1 of chapter 024 owns the box model.
-- Flex item sizing and alignment — lesson 3 of chapter 024.
-- Grid track and item placement — lesson 4 of chapter 024.
-- Responsive variants for spacing (`md:gap-6`) — lesson 6 of chapter 025.
-- The `<hr>` element vs. `divide-*` — `<hr>` is the semantic horizontal rule for thematic breaks (lesson 6 of chapter 021 territory).
-- Multi-column layout (`columns: 3` + `column-gap`) — niche, recognition only.
+- Reconciliation and list keys — lesson 2 of chapter 023.
+- Hydration mismatches at depth and Server/Client boundaries — Lessons lesson 5 of chapter 030 and lesson 6 of chapter 030.
+- ARIA roles, live regions, and the first rule of ARIA — lesson 3 of chapter 027.
+- Focus management and keyboard navigation — lesson 4 of chapter 027.
+- Form field components and validation — Unit 6.
+- shadcn/ui's internal ID wiring — lesson 1 of chapter 027 (recognition).
+- Cryptographic IDs and server-generated tokens — Chapter 11 (server) and recognition only.
 
 ---
 
-## Lesson 7 — Position and inset utilities
-
-The five `position` modes (`static`, `relative`, `absolute`, `sticky`, `fixed`), containing-block rules with the `relative` parent reflex for `absolute` children, the physical and logical `inset-*` family, canonical layouts for badges / sticky headers / toasts / drawers, and CSS anchor positioning plus the Popover API as forward references.
-
-Topics to cover:
-
-- **The senior question.** Pinning a toast bottom-right with `margin: auto` fails (parent isn't tall enough); `position: fixed` with offsets pins but overlaps the footer on scroll. The 2026 answer is `fixed bottom-4 right-4 z-50` (with the `z-50` caveat that lesson 9 of chapter 024 unpacks). The lesson installs the four positioning modes (`relative`, `absolute`, `sticky`, `fixed`), the `inset-*` utilities, the containing-block rules, and the senior reach for each mode.
-- **The five `position` values.** `static` (default, no offsets), `relative` (in normal flow, offsets shift visually — usually used to establish a containing block for `absolute` children), `absolute` (removed from flow, positioned to the nearest positioned ancestor or the initial containing block), `fixed` (positioned to the viewport, stays during scroll), `sticky` (in flow until it would scroll past an offset, then sticks).
-- **The containing block.** For an `absolute` element, the nearest *positioned* ancestor; if none, the initial containing block (the viewport, roughly). The most common bug is an `absolute` child without a `relative` parent positioning to the viewport. The 2026 reflex: every absolute overlay or badge is wrapped in a `relative` parent.
-- **The `inset` utility family.** `top-*` / `right-*` / `bottom-*` / `left-*` for single-axis; `inset-*` for all four; `inset-x-*` / `inset-y-*` for axis pairs; `inset-s-*` / `inset-e-*` / `inset-bs-*` / `inset-be-*` for logical (Tailwind vchapter 023+ replaced the deprecated `start-*` / `end-*` shorthands). `inset-0` is the canonical "fill the parent" pattern. Negative offsets (`-top-4`, `-inset-2`) pull outside the parent.
-- **The canonical position layouts.** `relative` parent plus `absolute` child for icon badges; `sticky top-0` for table headers; `sticky top-0` with `z-*` for section headings inside a scrolling main; `fixed inset-0` for modal backdrops (pre-portal); `fixed bottom-4 right-4` for toast clusters; `fixed inset-y-0 right-0 w-72` for side drawers.
-- **Sticky requires a scrollable ancestor.** `position: sticky` needs an `overflow: auto` / `scroll` / `hidden` ancestor on the relevant axis (or the page itself) and a defined offset (`top` / `bottom` / etc.). The sticky element sticks within its parent's bounds — it doesn't escape. lesson 8 of chapter 024 cashes in the overflow interaction.
-- **Anchor positioning and the Popover API — forward references.** CSS Anchor Positioning (Baseline 2026 — Chrome 125+, Firefox 147+, Safari 26+) lets an element position relative to any other element on the page, not just its parent. The native `popover` HTML attribute plus the Popover API (`showPopover()`, `popovertarget`) are the 2026 form for native popovers, dropdowns, and dialogs. shadcn's Popover (lesson 1 of chapter 031) wraps these; the student recognizes the term and reads the surface, doesn't implement it from scratch.
-- **Watch-outs:**
-  - `absolute` without a `relative` parent positions to the viewport — the single most common position-related bug.
-  - `position: fixed` doesn't escape an ancestor with `transform`, `filter`, or `perspective` — those create a new containing block (same trap as the "popover stuck inside its parent" bug in lesson 9 of chapter 024). Fix: portal to `<body>`.
-  - `position: sticky` doesn't work without a scrollable ancestor, and breaks if a non-scroll ancestor has `overflow: hidden` on the relevant axis.
-  - Bottom navbars must respect the iOS home indicator — pad with `pb-[env(safe-area-inset-bottom)]`.
-  - `z-index` only works on positioned elements (or flex/grid items) — lesson 9 of chapter 024 cashes this in.
-  - `inset-0` on an absolute element with no width/height fills the parent — the canonical full-coverage pattern, useful with `pointer-events-none` for click-through hover overlays.
-
-What this lesson does not cover:
-
-- Stacking context and z-index at depth — lesson 9 of chapter 024.
-- Overflow modes and scroll containers — lesson 8 of chapter 024.
-- React Portals (the `<Portal>` pattern for modals/popovers) — lesson 5 of chapter 026.
-- shadcn's Popover, Dropdown, Tooltip components — lesson 1 of chapter 031.
-- Drag and drop positioning — out of scope.
-- CSS `transform` for visual positioning (`translate-x-*`, `translate-y-*`) — recognition only here; lesson 5 of chapter 025 owns motion.
-- Fixed-element scroll-locking (preventing background scroll when a modal is open) — the project chapter (lesson 5 of chapter 032) cashes in `useLockBodyScroll`.
-
----
-
-## Lesson 8 — Overflow and scroll containers
-
-The overflow modes (`visible` / `hidden` / `clip` / `auto` / `scroll`), `overscroll-behavior` for the iOS scroll-chain and pull-to-refresh bugs, `scrollbar-gutter: stable` for layout stability, sticky-inside-overflow, the page-scroll vs. app-shell-scroll decision, and `scroll-snap-*` as the modern carousel primitive.
-
-Topics to cover:
-
-- **The senior question.** A tall sidebar causes the page to scroll behind it on iOS (or pull-to-refresh fires); a long modal lets the page underneath scroll when the modal content reaches its end. The 2026 answers are `overflow-y-auto` on the scroll container, `overscroll-behavior: contain` to stop the scroll chain, and `scrollbar-gutter: stable` to prevent layout shift when the scrollbar appears. The lesson installs the overflow modes (`visible`, `hidden`, `clip`, `auto`, `scroll`), `overscroll-behavior` for the iOS scroll-chain and pull-to-refresh bugs, scroll containment, and the canonical scroll-container patterns.
-- **The overflow modes.** `visible` (default, content overflows), `hidden` (clipped, no scrollbars, *creates a new scroll container*), `clip` (like `hidden` but doesn't create a scroll container), `auto` (scrollbars only when content overflows — the senior default for scrollable regions), `scroll` (always-visible scrollbars; rare in 2026). Per-axis variants (`overflow-x-auto overflow-y-hidden` for horizontal scrollers; `overflow-y-auto overflow-x-hidden` for vertical sidebars).
-- **`overscroll-behavior` — the scroll-chain control.** The scroll-chain bug: scroll at a child's boundary chains to the parent and triggers iOS pull-to-refresh. The fix is `overscroll-contain` (Tailwind) on the modal / drawer / sidebar body. `overscroll-none` also disables bounce/glow; per-axis variants exist. Every modal, drawer, and dialog body gets it.
-- **Scroll-locking the page when a modal opens — the body-lock pattern.** Naïve `body { overflow: hidden }` works on desktop but fails on iOS touch. The senior reach combines body overflow with a `touchmove` listener that calls `preventDefault()`, wrapped into a `useLockBodyScroll` hook (the project chapter lesson 5 of chapter 032 builds this; this lesson references the pattern).
-- **Sticky inside overflow.** The most common 2026 pattern: a sidebar that scrolls internally (`h-dvh overflow-y-auto overscroll-contain`) with a `sticky top-0` header inside it. Without the overflow, sticky has nothing to stick to; without sticky, the header scrolls away.
-- **`scrollbar-gutter: stable` — preventing layout shift.** Reserves the scrollbar's space even when content fits, so the scrollbar's appearance/disappearance doesn't jolt the layout. Reach: any container that conditionally overflows on user interaction (search-results list, modal body). Tailwind vchapter 023+ via bracket form.
-- **Per-element scroll vs. page scroll — the architectural decision.** Page-level scroll (`<body>` is the scroll container) is the 2026 default; works with browser back/forward, scroll restoration, anchor links, deep linking. App-shell scroll (an inner `<main>` scrolls, `<body>` doesn't) is the right reach for dashboards and tool-style UIs where chrome stays fixed; scroll restoration needs manual handling (Next.js `experimental.scrollRestoration` or a custom hook).
-- **`scroll-snap-*` — the modern carousel primitive.** Snap-type (`snap-x snap-mandatory`), snap-align (`snap-start`), scroll-padding (account for sticky headers). Reach: image carousels, horizontal card scrollers, story-style UIs. Replaces most JS carousel libraries.
-- **Watch-outs:**
-  - `overflow: hidden` creates a scroll container (affects `position: sticky` ancestors); use `overflow: clip` if you want clipping without scroll-container creation.
-  - `overflow-x-hidden overflow-y-visible` doesn't work as expected — spec forces the other axis to `auto`.
-  - `overscroll-contain` is Baseline universal — no polyfill, no fallback needed.
-  - `-webkit-overflow-scrolling: touch` is no longer needed in 2026.
-  - Horizontal scroll containers need `shrink-0` on children, or flex items compress instead of overflowing.
-  - Modal scroll-lock breaks on iOS unless `touchmove` is intercepted (project chapter cashes in).
-  - Scrollbar styling utilities (`scrollbar-width: thin`, `scrollbar-color`) exist for dashboards; otherwise leave native.
-
-What this lesson does not cover:
-
-- Stacking context and z-index — lesson 9 of chapter 024.
-- Position and inset utilities — lesson 7 of chapter 024 (cross-referenced for sticky).
-- React Portals — lesson 5 of chapter 026.
-- The `useLockBodyScroll` custom hook implementation — project chapter (lesson 5 of chapter 032).
-- IntersectionObserver and scroll-driven animations — lesson 5 of chapter 025 has a brief touch; advanced scroll-driven animations are out of scope.
-- Custom scrollbar styling at depth — niche; the chapter mentions the surface and moves on.
-- `content-visibility: auto` for off-screen optimization — niche performance tool, Chapter 20 territory.
-
----
-
-## Lesson 9 — Stacking context and z-index
-
-How z-index is scoped to its stacking context, the trigger list (`opacity < 1`, `transform`, `filter`, `position: fixed/sticky`, `isolation: isolate`, and friends), the canonical trapped-modal bug, the three fixes (portal to `<body>`, `isolation: isolate`, restructure the DOM), and z-index tier conventions.
-
-Topics to cover:
-
-- **The senior question.** A modal with `z-50` containing a tooltip with `z-100` renders the tooltip behind the modal backdrop, even though `100 > 50`. The 2026 answer names the *stacking context* — `z-index` is scoped to a stacking context, and any of `opacity < 1`, `transform`, `filter`, `position: fixed/sticky`, `isolation: isolate`, or several other properties on an ancestor creates a new stacking context that traps every descendant's z-index inside. The lesson installs the model, the canonical bugs, and the senior fixes (portals to escape; `isolation: isolate` to scope deliberately; numeric z-index conventions to keep the layering legible).
-- **What `z-index` actually does.** Sets an element's order on the z-axis within its stacking context. Higher values stack on top within the same context. Two critical points: z-index only applies to positioned elements (or flex/grid items), and it's scoped to the containing stacking context — a `z-100` inside a trapped parent context doesn't compete with elements in another context.
-- **What creates a new stacking context.** `position: fixed` / `sticky` always; `position: relative` / `absolute` with `z-index` other than `auto`; `opacity < 1` (the most surprising trigger); `transform` / `filter` / `backdrop-filter` other than `none`; `isolation: isolate` (the deliberate, side-effect-free way); `will-change` set to certain properties; `mix-blend-mode` other than `normal`; `contain: layout` / `paint` / `style`. Common offenders in the wild: opacity fade transitions, transform animations, fixed headers, and backdrop-filter blurs.
-- **The canonical bug — z-index that "doesn't work."** A parent with `opacity-95` containing a child with `relative z-50`, and a *sibling* of that parent with `relative z-40`. The parent's opacity creates a new stacking context, scoping the child's `z-50` inside; the parent itself participates in the root context with z-index `auto` (effectively `0`). The sibling at `z-40` is in the root context and beats the parent's `auto/0`. Result: the child renders behind the sibling, even though `50 > 40`.
-- **The three fixes.** Portal the floating element to `<body>` — the most common 2026 fix for modals, popovers, tooltips (React's `createPortal`; shadcn's Dialog / Popover / Tooltip all do this). Use `isolation: isolate` (Tailwind: `isolate`) to scope a context deliberately when the design wants conflicts contained inside a card or section. Restructure the DOM to lift the floating element above the trapping parent.
-- **Numeric z-index conventions.** A small set of named tiers prevents spaghetti: `z-0` / `z-10` / `z-20` for content-level layering; `z-30` / `z-40` for page chrome; `z-50` for modals, drawers, dialogs; higher only for non-portaled toasts and tooltips (rare). Tailwind's scale is the senior tier set; arbitrary values (`z-[200]`) are reached for rarely.
-- **The `isolation` property.** `isolation: isolate` creates a new stacking context with no other side effects — replaces the `transform: translateZ(0)` hack. Reaches: scoping a card's internal layering so a badge / overlay can't accidentally escape into the page; establishing a context for `mix-blend-mode` elements.
-- **DevTools — finding the trap.** Chrome's Layers panel (Cmd+Shift+P → "Show Layers") shows compositing layers that roughly correspond to stacking contexts. The senior debugging move when z-index "doesn't work": find the element in Layers, walk up the DOM tree, look for the ancestor with `opacity` / `transform` / `filter` / `position: fixed-or-sticky` / `isolation` — that's the trap.
-- **Watch-outs:**
-  - `opacity` is the most surprising stacking-context trigger; a `transition: opacity` fade can briefly trap z-indexed children. Fix: portal the floating elements, or pair opacity with `transform: scale(...)` (no extra trap because transform already creates one).
-  - `position: fixed` on the modal itself doesn't escape an ancestor's `transform` — the modal positions relative to the transformed ancestor. Fix: portal.
-  - `z-index: -1` on a child puts it behind its parent's background — sometimes the right reach for decorative layers.
-  - `relative` without `z-index` doesn't create a stacking context, but `relative z-0` does — the two aren't equivalent.
-  - shadcn's Dialog, Popover, and Tooltip all portal to `<body>` — same lesson when writing your own floating UI.
-  - Arbitrary high z-index (`z-9999`) is a code smell, not a fix — a trap can't be defeated from inside the trap.
-  - `will-change: transform` creates a stacking context; only apply when measured.
-
-What this lesson does not cover:
-
-- React Portals at depth — lesson 5 of chapter 026.
-- shadcn's Dialog, Popover, Tooltip implementation — lesson 1 of chapter 031.
-- CSS Animation and transform — lesson 5 of chapter 025.
-- The `position` modes themselves — lesson 7 of chapter 024.
-- The browser layout engine — out of scope; the chapter teaches behavior, not implementation.
-- 3D transforms and `transform-style: preserve-3d` — niche.
-- `accent-color` and other related properties — out of scope.
-
----
-
-## Lesson 10 — Quizz
+## Lesson 7 — Quizz
 
 Top 10 topics to quiz:
 
-- The box model and `box-sizing` — what `border-box` means, that Preflight set it on `*, ::before, ::after`, and how `w-64 p-4 border` computes to a `256px` rendered width.
-- The display modes and the senior reach — `flex` for 1D rows/columns, `grid` for 2D structure, `block`/`inline`/`inline-block` defaults, `display: contents` for unwrapping.
-- Flexbox — main vs. cross axis, `flex-1` and `shrink-0`, `justify-content` vs. `align-items`, `gap` as the spacing default, the `min-w-0` companion fix for `flex-1`.
-- Grid — tracks, the `fr` unit, `repeat(auto-fit, minmax(...))` for responsive without breakpoints, `grid-template-areas` for page shells, `subgrid` for nested alignment.
-- Sizing — intrinsic vs. extrinsic sizing, the viewport-unit family (`vh` / `dvh` / `svh` / `lvh`), `aspect-ratio` for media containers, `clamp()` for fluid sizing, the `size-*` v4 shortcut.
-- Spacing inside containers — `gap` as the universal default, `space-x` / `space-y` as legacy, `divide-x` / `divide-y` for visible separators between items, the gap-vs-margin decision.
-- Position modes — `relative` as the containing-block tool, `absolute` for icon overlays inside `relative` parents, `sticky` for headers in scroll containers, `fixed` for viewport overlays, the `inset-*` utility family, the `transform`/`filter` ancestor breaking `position: fixed`.
-- Overflow and scroll containers — the overflow modes, `overscroll-contain` for the scroll-chain bug, `scrollbar-gutter: stable` for layout stability, the sticky-needs-scroll-container interaction, horizontal scroll requires `shrink-0` on children.
-- Stacking context and z-index — z-index is scoped to stacking contexts, the trigger list (`opacity < 1`, `transform`, `filter`, `position: fixed/sticky`, `isolation: isolate`, etc.), the canonical trapped-modal bug, the fix is portal-to-body or `isolation: isolate`.
-- Logical properties and the inline/block axis — `padding-inline` vs. `padding-left/right`, `ms-*` / `me-*` / `ps-*` / `pe-*` Tailwind utilities, the new `inset-s-*` / `inset-e-*` / `inset-bs-*` / `inset-be-*` family that replaced the deprecated `start-*` / `end-*` shorthands, the senior reach when shipping in RTL.
+- The `useState` signature, the bailout rule (`Object.is` skips re-render on same value), and typing pitfalls — `useState([])` infers `never[]`, annotate when the inferred type is too narrow.
+- Lazy initial state — `useState(() => expensiveCompute())` runs once on mount; `useState(expensiveCompute())` runs on every render and discards the result; the trigger is anything that touches storage, parses, or measures.
+- Derived state — compute in render rather than mirroring with a `setState`-in-effect; the canonical anti-pattern (prop mirrored into state, synced via effect) and the three fixes (derive, lift, `key`-reset).
+- The four homes for state — local, lifted, URL, server — and the decision tree (start at local, lift when two components need it, push to URL when refresh/share matters, persist when the server is canonical).
+- The colocation-vs-lifting senior cut — lift on demand, not on prediction; the form-as-the-canonical-lifting-case; the prop-drilling-is-not-a-fix-for-context distinction.
+- `useReducer` — the threshold (multiple coordinated state values, transitions with invariants), the reducer purity contract, discriminated-union actions, lazy init, and the "don't put async in the reducer" rule.
+- `useRef` — instance values and DOM access, the "state-vs-ref" rule (does the JSX read it?), the four canonical DOM-ref reaches (focus, measure, imperative APIs, scrolling), the "don't read or write refs during render" rule.
+- `useRef` lifecycle and the React Compiler interaction — `.current` is set after commit; reading in render returns the previous commit's value; impure ref access skips compiler memoization.
+- `useId` for stable IDs across SSR — the position-in-the-tree derivation, composing multiple IDs from one call, the rule that `useId` is for ARIA wiring not list keys, the hydration-mismatch case it fixes.
+- The hooks-are-tools-not-defaults framing — `useState` for UI-driving values, `useReducer` for coordinated transitions, `useRef` for non-rendering persistence, `useId` for accessibility wiring; reach for each at its threshold, not prophylactically.

@@ -1,334 +1,322 @@
-# Chapter 073 — Project: presigned R2 upload
+# Chapter 073 — Project: caching the invoices list with tag-driven invalidation
 
 ## Chapter framing
 
-Chapter 073 cashes in the chapter 072 primitives — scoped credentials and CORS (lesson 2 of chapter 072), presigned PUT/GET with the two-step write (lesson 3 of chapter 072), the `file_metadata` row shape with tenancy at the read boundary (lesson 4 of chapter 072), the workload split between user uploads and export outputs (lesson 5 of chapter 072) — and lands them as one runnable upload surface. The student writes the `presignedPut` Server Action that signs against R2 without piping bytes through the function, the browser-side direct-to-R2 PUT with XHR progress, the `finalizeUpload` action that HEADs the object and inserts the row, the `Files` list rendering rows with fresh per-render presigned GETs, and the retrofit on the chapter 071 export job so the `console.log`-shaped `downloadUrl` becomes a real R2 object and the email's link is a 10-minute presigned GET. Each build lesson closes on a runnable state: lesson 3 of chapter 073 ends with a fireable action verified by `curl`-PUT; lesson 4 of chapter 073 ends with the browser upload landing the bytes and the row; lesson 5 of chapter 073 ends with the `Files` page rendering downloads; lesson 6 of chapter 073 ends with the export emailing a working R2 link. Verify walks the "Done when" clause-by-clause, including the long-tail proof — a refresh 11 minutes later still works because GETs are re-issued per render.
+Chapter 073 cashes in the decision discipline of chapter 072 — the route-class checklist and cacheable shortlist (lesson 1 of chapter 072), the four tag shapes funneled through `tags.ts` (lesson 1 of chapter 072), the `fetchedAt` diagnostic (lesson 1 of chapter 072), the four-way invalidation tree (lesson 2 of chapter 072), the `updateTag`-Server-Action-only rule (lesson 2 of chapter 072), the after-commit-then-redirect sequence (lesson 2 of chapter 072) — as one runnable surface on top of the Unit chapter 062 invoices list. The student adds `use cache` boundaries to two cached reads (the list and the per-org summary), defines the `tags.ts` helper that mirrors `org:${orgId}:invoices`, `invoice:${id}`, and `org:${orgId}:summary`, emits a `fetchedAt` timestamp inside each cached function as the cache-state proxy, calls `updateTag` from the edit and lifecycle actions (read-your-writes — the same user is sitting on the redirect), and calls `revalidateTag` from a Trigger.dev daily summary task (eventual — no user is watching). Each build closes on a runnable state: lesson 3 of chapter 073 ends with cached reads emitting `fetchedAt` and the tag scheme in place; lesson 4 of chapter 073 ends with both invalidation paths firing at their seams; lesson 5 of chapter 073 walks the "Done when" clause-by-clause.
 
-Threads through every lesson: the function never sees the bytes for user uploads — Network tab shows small JSON to/from the action and the multi-MB PUT going straight to `${bucket}.r2.cloudflarestorage.com`; the two-step write is structural — sign → upload → finalize-with-HEAD → row insert, never row-before-upload; `objectKey` is server-constructed (`org/${organizationId}/files/${rowId}.${ext}`), never client-supplied; `byteSize` and `contentType` come from the post-upload `HeadObjectCommand`, not the client's claim; presigned GETs are fresh-per-render, never persisted, never cached past expiry; tenancy is enforced at every read via `tenantDb(orgId)` and at the action via `authedAction('member', ...)`; `lib/r2.ts` is constructed once and powers both consumers (browser-PUT user uploads, server-PUT export retrofit) — one mechanism, two consumers.
+Threads through every lesson: caching is opt-in and the senior default for the authenticated SaaS surface is dynamic — only the list query and the summary widget take `use cache`, the rest stays dynamic; `tags.ts` is the only place tag strings exist — read sites and write sites import the same functions, a grep for raw `'org:'` strings outside `tags.ts` is a red flag; the cached read is a function whose tags depend only on its arguments — `orgId` is passed in, never read from `auth()` inside the cached function; `fetchedAt` is the verification proxy because Next.js doesn't surface cache hit/miss to user code — stable timestamp across requests means hit, advancing timestamp means miss; the invalidation call runs after commit, then the redirect — never inside the transaction; `updateTag` only inside Server Actions for read-your-writes, `revalidateTag` from the Trigger.dev task for the eventual path; misusing `revalidateTag` from the Server Action is the deliberate failure-mode demo in lesson 5 of chapter 073; the inspector's `fetchedAt` strip is the on-page reading of cache state for every verification step.
 
 ### Dependency carry-in
 
-- **From lesson 2 of chapter 072:** the bucket with CORS for `http://localhost:3000` allowing `GET`/`PUT`/`Content-Type`; scoped token with Object Read + Object Write; env `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`; `lib/r2.ts` with `S3Client({ region: 'auto', endpoint, credentials })`.
-- **From lesson 3 of chapter 072:** `getSignedUrl` + `PutObjectCommand`/`GetObjectCommand`, 5-min PUT expiry / 10-min GET expiry, layered size defense, content-type allowlist, two-step write, CORS preflight failure shape.
-- **From lesson 4 of chapter 072:** the row shape (`id` UUIDv7 as key segment, `organizationId`, `uploadedBy`, `objectKey` unique, `originalFileName`, `contentType`, `byteSize`, `uploadedAt`, `deletedAt`); index `(organizationId, deletedAt, uploadedAt desc, id desc)`; no-`url`-column rule.
-- **From lesson 5 of chapter 072:** user uploads use `file_metadata` + browser PUT + soft-delete; exports use no metadata row + server-side worker PUT + lifecycle-rule cleanup; lesson 6 of chapter 073 retrofits the export to write `org/${orgId}/exports/${runId}.csv`.
-- **From chapter 071:** the `exportInvoices` parent task with the paginate-page loop, `metadata.set('downloadUrl', ...)`, `sendExportEmail` child accepting `downloadUrl`, the inspector reading `run.metadata`.
-- **From chapter 054:** `sendEmail` in `lib/email.ts`; `ExportReadyEmail` template taking `{ orgName, rowCount, downloadUrl }`.
-- **From chapter 060/chapter 061:** `tenantDb(orgId)`; `authedAction('member', schema, fn)`; `audit_logs` with `logAudit(tx, event)`.
-- **From chapter 047:** canonical Result shape; Zod validation at the action boundary.
-- **From chapter 036/chapter 076:** the `Files` list is *not* `use cache` — presigned GETs are per-render-fresh and would poison a cached response.
-- **From chapter 065:** `deletedAt` discipline.
-- **From chapter 020:** file picker, MIME/size validation, blob URL preview — thread closed here.
-- **From chapter 013:** `UploadError` subclass with codes `unsupported-type | too-large | size-mismatch | object-not-found`.
+- **From chapter 062 (the starter base):** `app/(app)/invoices/page.tsx` Server Component reading `invoiceListSearchParamsCache`, the `<Toolbar />` / `<Table />` / `<Pagination />` shells, `listInvoices({ orgId, view, status, sort, q, cursor, pageSize })` in `src/lib/invoices/queries.ts`, the scoped-query helper `invoiceScope(orgId).active()/.archived()/.includingDeleted()`, the four Server Actions (`updateInvoice`, `archiveInvoice`, `restoreInvoice`, `softDeleteInvoice`) all returning the canonical Result shape with the `version` precondition and tenancy + lifecycle in every `WHERE`.
+- **From chapter 062 (concurrency surface):** the `version` column on `invoices`, the conflict banner with `current` payload, `useActionState` + `useOptimistic`; the partial indexes `invoices_org_number_active_uq` and `invoices_org_status_created_id_active_idx`.
+- **From chapter 059 (tenancy + RBAC):** `tenantDb(orgId)` in `src/lib/tenant-db.ts`, `authedAction(role, schema, fn)` in `src/lib/authed-action.ts`, the active-org slot in the session, `logAudit(tx, event)`, `audit_logs` (table).
+- **From chapter 041 (schema):** `invoices`, `invoice_lines`, `customers`, `organizations`, `org_members`; the unique `(organizationId, number)` and the composite index `(organizationId, status, createdAt desc, id desc)`.
+- **From lesson 1 of chapter 032:** `cacheComponents: true` flag — already in `next.config.ts`, every route dynamic by default; opt-in only via `use cache`.
+- **From lesson 3 of chapter 032:** `use cache` directive on three placements (page / component / function), serializable arguments, closure rules — cached function cannot read `cookies()` / `headers()` / `auth()` inside.
+- **From lesson 4 of chapter 032:** `cacheLife` profiles (`'seconds'`, `'minutes'`, `'hours'`, `'days'`, `'weeks'`, `'max'`), `cacheTag(...)` call inside the cached function.
+- **From lesson 6 of chapter 032:** `updateTag` (Server-Action-only, read-your-writes), `revalidateTag` (eventual), `revalidatePath`, `router.refresh`.
+- **From lesson 1 of chapter 072:** the four tag shapes (entity / record / org-scoped / user-scoped), `tags.ts` helper convention, tag-string conventions (lowercase, colon-delimited, scope first), the `fetchedAt` discipline, the "no closures over request data — tags are arguments" rule.
+- **From lesson 2 of chapter 072:** the four-call decision tree, the user-expectation question as the primary driver, the after-commit-then-redirect rule, the redirect-then-invalidate anti-pattern, multiple-tags-per-mutation fan-out.
+- **From lesson 4 of chapter 066 / lesson 7 of chapter 066:** Trigger.dev v4 `schemaTask`, code-defined queues, scheduled task; the starter provides a stub `summaryRecomputeTask` so the project does not require a working Trigger.dev cloud account (an inspector button invokes the task body directly for verification).
+- **From chapter 043 + chapter 047:** canonical Result shape, Zod 4 `strictObject` at the action boundary, `'use server'`.
 
-### Starter file tree (stubs marked TODO)
+### Starter file tree (stubs marked with TODO)
 
 ```
-docker-compose.yml             # provided
-drizzle.config.ts              # provided
-trigger.config.ts              # provided (from chapter 071)
-.env.example                   # provided: chapter 071 vars + R2_ACCOUNT_ID/ACCESS_KEY_ID/SECRET_ACCESS_KEY/BUCKET_NAME
-package.json                   # provided: chapter 071 scripts + r2:cors, r2:lifecycle
+docker-compose.yml              # provided: postgres:18
+drizzle.config.ts               # provided
+next.config.ts                  # provided: cacheComponents: true; experimental.useCache enabled
+.env.example                    # provided: DATABASE_URL, DATABASE_URL_UNPOOLED, BETTER_AUTH_SECRET,
+                                #           TRIGGER_SECRET_KEY (optional — inspector mocks the task)
+package.json                    # provided: db:migrate, db:seed, dev, build, trigger:dev (optional)
 scripts/
-  seed.ts                      # provided: orgs + invoices from chapter 071; no file_metadata rows
-  r2-cors.ts                   # provided: PutBucketCors with the CORS JSON
-  r2-lifecycle.ts              # provided: 7-day rule on org/*/exports/*
+  seed.ts                       # provided: two orgs, 60 invoices per org from chapter 062, one pre-archived,
+                                #           one pre-soft-deleted, one duplicated-number row
 src/
-  db/schema.ts                 # provided: chapter 071 schema; file_metadata TODO student
+  db/
+    schema.ts                   # provided: full chapter 062 schema + new `org_invoice_summaries` table
+                                #           (orgId pk, totalCount, totalAmount, updatedAt) — empty in seed
+    client.ts                   # provided
+    relations.ts                # provided
+    cursor.ts                   # provided
   lib/
-    tenant-db.ts               # provided
-    authed-action.ts           # provided
-    audit-log.ts               # provided
-    email.ts                   # provided
-    r2.ts                      # provided: S3Client + ALLOWED_CONTENT_TYPES + MAX_BYTES
-    files/
-      keys.ts                  # provided: buildObjectKey({ orgId, fileId, contentType })
-      errors.ts                # provided: UploadError class
-      presigned-put.ts         # TODO student: presignedPut authedAction
-      finalize.ts              # TODO student: finalizeUpload authedAction
-      presigned-get.ts         # TODO student: getFileDownloadUrl + getSignedGetForKey helpers
-      list.ts                  # TODO student: listFiles({ orgId, cursor })
-      soft-delete.ts           # provided: softDeleteFile (named, not exercised)
-    invoices/                  # provided (chapter 071)
-    exports/                   # provided (chapter 071) — student edits in lesson 6 of chapter 073
+    tenant-db.ts                # provided (chapter 056)
+    authed-action.ts            # provided (chapter 057)
+    audit-log.ts                # provided
+    cache/
+      tags.ts                   # TODO student: orgInvoicesTag, invoiceTag, orgSummaryTag helpers
+    invoices/
+      schema.ts                 # provided from chapter 062
+      scoped-query.ts           # provided from chapter 062
+      queries.ts                # provided shell; TODO student: add `use cache` + cacheTag + fetchedAt
+                                #           to listInvoices and getOrgInvoiceSummary
+      actions.ts                # provided from chapter 062; TODO student: add updateTag calls after commit
+      search-params.ts          # provided from chapter 062
   trigger/
-    export-invoices.ts         # provided (chapter 071) — student edits in lesson 6 of chapter 073
-    paginate-page.ts           # provided (chapter 071)
-    send-export-email.ts       # provided (chapter 071) — payload already accepts downloadUrl
-  emails/ExportReadyEmail.tsx  # provided (chapter 071)
+    summary-recompute.ts        # TODO student: schemaTask body, revalidateTag call
   app/
-    files/
-      page.tsx                 # TODO student: server-rendered list + presigned GETs
-      upload-form.tsx          # TODO student: client component + XHR + progress + finalize
-    inspector/page.tsx         # provided: chapter 071 surface + downloadUrl renders as clickable link
+    (app)/
+      invoices/
+        page.tsx                # provided shell; renders <FetchedAtStrip /> + existing list
+        fetched-at-strip.tsx    # provided: reads listFetchedAt + summaryFetchedAt from server props
+        toolbar.tsx             # provided from chapter 062
+        table.tsx               # provided from chapter 062
+        pagination.tsx          # provided from chapter 062
+        [id]/edit/
+          page.tsx              # provided from chapter 062
+          edit-form.tsx         # provided from chapter 062
+    inspector/
+      page.tsx                  # provided: fetchedAt strip, edit-one-invoice button (uses updateTag),
+                                #           run-summary-task button (uses revalidateTag),
+                                #           "misuse revalidateTag from action" debug toggle,
+                                #           tag-invalidation log tail, reset-and-re-seed,
+                                #           current cacheLife profile readout per cached function
 ```
 
 ### Reference solution signatures lessons display
 
-- **`lib/r2.ts`** (provided) — exports `r2: S3Client`, `BUCKET: string`, `ALLOWED_CONTENT_TYPES` (`as const` tuple of `image/png | image/jpeg | image/webp | application/pdf | text/csv`), `MAX_BYTES = 25 * 1024 * 1024`.
-- **`buildObjectKey`** (provided) — `({ orgId, fileId, contentType }) => \`org/${orgId}/files/${fileId}.${extFor(contentType)}\``. Extension comes from the validated content type via a static map; never from the user's filename.
-- **`presignedPut`** — `authedAction('member', z.strictObject({ fileName: z.string().min(1).max(255), contentType: z.enum(ALLOWED_CONTENT_TYPES), claimedSize: z.int().positive().max(MAX_BYTES) }), async (input, ctx): Promise<Result<{ uploadId, url, objectKey }>>)`. Generates `uploadId = uuidv7()`, builds `objectKey`, signs `PutObjectCommand({ Bucket, Key: objectKey, ContentType, ContentLength: claimedSize })` with `expiresIn: 300`. No DB write.
-- **`finalizeUpload`** — `authedAction('member', z.strictObject({ uploadId: z.uuid(), objectKey: z.string(), originalFileName: z.string().min(1).max(255), contentType: z.enum(ALLOWED_CONTENT_TYPES) }), ...): Promise<Result<{ fileId }>>`. HEADs the object (`object-not-found` on 404), asserts `head.ContentType === input.contentType`, asserts `head.ContentLength <= MAX_BYTES` (`size-mismatch` otherwise). In `tenantDb(ctx.orgId).transaction`: inserts the row with `id: uploadId`, `byteSize: head.ContentLength`, `contentType: head.ContentType`; writes `audit_logs` `file.uploaded`.
-- **`getFileDownloadUrl`** — `({ fileId }, ctx): Promise<Result<{ url, fileName, contentType }>>`. Reads via `tenantDb(ctx.orgId)` filtered by `isNull(deletedAt)`. Signs `GetObjectCommand({ Bucket, Key: row.objectKey, ResponseContentDisposition: \`attachment; filename="${encodeRFC5987(row.originalFileName)}"\` })` with `expiresIn: 600`.
-- **`getSignedGetForKey`** — pure helper, `({ objectKey, expiresIn }) => Promise<{ url }>`. No tenant check — caller is a worker, inside the trust boundary.
-- **`listFiles`** — `({ orgId, cursor, limit = 20 }) => Promise<{ rows, nextCursor }>`. `tenantDb(orgId).fileMetadata.findMany` with `isNull(deletedAt)`, `orderBy: [desc(uploadedAt), desc(id)]`, `limit + 1` n+1 trick.
-- **`file_metadata` table** — `id uuid pk` (UUIDv7), `organizationId uuid not null references organizations(id) on delete cascade`, `uploadedBy uuid not null references users(id) on delete restrict`, `objectKey text not null unique`, `originalFileName text not null`, `contentType text not null`, `byteSize bigint not null check (byteSize >= 0)`, `uploadedAt timestamptz not null default now()`, `deletedAt timestamptz`. Index: `(organizationId, deletedAt, uploadedAt desc, id desc)`.
-- **CORS JSON** — `[{ AllowedOrigins: [env.APP_URL], AllowedMethods: ['GET', 'PUT'], AllowedHeaders: ['content-type'], ExposeHeaders: ['etag'], MaxAgeSeconds: 3600 }]`.
-- **`upload-form.tsx`** — `XMLHttpRequest` for the R2 PUT (so `xhr.upload.onprogress` fires); `fetch` for the two Server Action calls.
-- **Export retrofit** — after the page loop, `Buffer.from(csvAccumulator)`, `r2.send(new PutObjectCommand({ Bucket, Key: \`org/${organizationId}/exports/${ctx.run.id}.csv\`, Body, ContentType: 'text/csv', ContentDisposition: \`attachment; filename="export-${dayBucket()}.csv"\` }))`, then `getSignedGetForKey({ objectKey, expiresIn: 600 })` → pass `downloadUrl` to `sendExportEmail`. No `file_metadata` row.
-- **Env** — carried from lesson 2 of chapter 072.
+- **Tag helper** (`src/lib/cache/tags.ts`):
+  - `orgInvoicesTag = (orgId: string) => \`org:${orgId}:invoices\`` — list-level invalidation for an org.
+  - `invoiceTag = (id: string) => \`invoice:${id}\`` — record-level invalidation.
+  - `orgSummaryTag = (orgId: string) => \`org:${orgId}:summary\`` — aggregate-level invalidation.
+  - Each helper is a pure function of its argument. The module exports nothing else; the string template is the contract.
+- **Cached list read** (`src/lib/invoices/queries.ts`):
+  - `listInvoices(args: ListArgs): Promise<{ rows; nextCursor; hasPrev; fetchedAt }>` — body opens with `'use cache'`, then `cacheLife('minutes')`, then `cacheTag(orgInvoicesTag(args.orgId))`. Returns `{ rows, nextCursor, hasPrev, fetchedAt: new Date().toISOString() }`. The `view`, `status`, `sort`, `q`, `cursor`, `pageSize` are serializable arguments — they participate in the cache key.
+  - `args.orgId` is always passed in by the page; the cached function does not read session inside.
+- **Cached summary read** (`src/lib/invoices/queries.ts`):
+  - `getOrgInvoiceSummary(orgId: string): Promise<{ totalCount: number; totalAmount: number; updatedAt: Date; fetchedAt: string }>` — body opens with `'use cache'`, then `cacheLife('hours')`, then `cacheTag(orgSummaryTag(orgId))`. Reads from `org_invoice_summaries` for the precomputed aggregate; falls back to a `count(*) + sum(total)` query if the row is absent (first run before the task lands).
+- **Update action with `updateTag` fan-out** (`src/lib/invoices/actions.ts`):
+  - `updateInvoice` body, after the transaction commits and before `redirect`:
+    - `await updateTag(orgInvoicesTag(ctx.orgId))` — invalidates the list.
+    - `await updateTag(invoiceTag(id))` — invalidates the record.
+    - `await updateTag(orgSummaryTag(ctx.orgId))` — invalidates the summary (totals changed).
+    - `redirect('/invoices')`.
+  - `archiveInvoice` / `restoreInvoice` / `softDeleteInvoice` follow the same after-commit fan-out: list + record + summary. Restoring fires the same three calls (the row's visibility changes for both the list and the summary).
+- **Trigger.dev summary task** (`src/trigger/summary-recompute.ts`):
+  - `summaryRecomputeTask = schemaTask({ id: 'org-summary-recompute', schema: z.strictObject({ orgId: z.string().uuid() }), queue: { name: 'summary', concurrencyLimit: 5 }, run: async ({ orgId }) => { ... } })`.
+  - Body: compute `totalCount = count(invoices WHERE orgId AND deletedAt IS NULL)` and `totalAmount = sum(total ...)`; UPSERT into `org_invoice_summaries` on `orgId`; `await revalidateTag(orgSummaryTag(orgId), 'max')`; return `{ orgId, totalCount, totalAmount }`.
+  - The inspector's "Run summary task" button calls the task via `tasks.trigger('org-summary-recompute', { orgId })` when `TRIGGER_SECRET_KEY` is set, or imports and invokes the run function inline when it is not — the verification surface is identical either way.
+- **`org_invoice_summaries` table:**
+  - `orgId uuid pk references organizations(id) on delete cascade`, `totalCount int not null default 0`, `totalAmount numeric(14,2) not null default 0`, `updatedAt timestamptz not null default now()`. No composite index — one row per org.
+- **Env entries:** unchanged from chapter 062; `TRIGGER_SECRET_KEY` optional — the inspector falls back to in-process invocation when absent.
 
-### Inspector / Files page spec
+### Inspector page spec
 
-**`/files` page (TODO student).**
+Single Server Component at `/inspector`, the verification surface for every "Done when" clause. Server-side reads; refreshes on submit via `router.refresh()` and on Server-Action redirects.
 
-- **Upload form** (client component): `<input type="file" accept="image/png,image/jpeg,image/webp,application/pdf,text/csv">`; XHR progress bar; status `idle | signing | uploading | finalizing | done | failed`; error from `error.userMessage`. On success, `router.refresh()`.
-- **List** (server component): table with `originalFileName`, `contentType` badge, formatted `byteSize`, humanized `uploadedAt`, `"Download"` link whose `href` is the fresh presigned GET. Empty state when no rows. Cursor "Next page" link.
-- **No `use cache`** — fresh-per-render is structural here.
+- **Header:** session-user switcher (admin / member per seeded org), org switcher (two seeded orgs), "Reset and re-seed" Server Action (truncates `org_invoice_summaries`, re-runs the chapter 062 seed).
+- **`fetchedAt` strip:** the same `<FetchedAtStrip />` component the list page renders. Two timestamps: `listFetchedAt` (from `listInvoices`) and `summaryFetchedAt` (from `getOrgInvoiceSummary`). Each row labels its `cacheLife` profile and the tags emitted.
+- **"Edit one invoice" button:** posts a Server Action that picks a seeded invoice for the active org, runs `updateInvoice` with a small amount delta, commits, calls `updateTag` for list + record + summary, redirects to `/inspector`. The redirected render shows fresh `fetchedAt` values for both cached reads.
+- **"Archive / restore / soft-delete one invoice" buttons:** same pattern as above against the seeded lifecycle rows, each verifying its action's `updateTag` fan-out.
+- **"Run summary task" button:** invokes `summaryRecomputeTask` (either via Trigger.dev or in-process — see signatures above). The task mutates `org_invoice_summaries` and calls `revalidateTag(orgSummaryTag(orgId), 'max')`. The inspector renders **before** the next visit's read sees the new value — the strip's `summaryFetchedAt` stays stable on this render, then advances on the next manual refresh.
+- **"Misuse `revalidateTag` from action" toggle:** when on, the "Edit one invoice" Server Action calls `revalidateTag` instead of `updateTag` for the list tag. On the immediate redirect, `listFetchedAt` stays stale (the row's edit is not visible) — the deterministic demonstration of why read-your-writes needs `updateTag` from Server Actions.
+- **Tag-invalidation log tail:** a Server Component panel reading the last 20 lines from a starter-provided `cache_invalidation_log` table (the actions write a row `{ tag, source: 'action' | 'task', firedAt }` next to the `updateTag`/`revalidateTag` call). The tail is the structured-log surface foreshadowed in lesson 2 of chapter 072.
+- **`cacheLife` readout:** per cached function, the profile string and the resolved (stale / revalidate / expire) triple. Sourced from a small `lib/cache/profiles.ts` map the student populates alongside `tags.ts`.
+- **"Hit/miss probe":** five consecutive refreshes of `/invoices`; the strip captures each `fetchedAt` reading. Identical timestamps prove hits; one new timestamp followed by four stable ones proves a miss then four hits.
 
-**`/inspector` page** (provided, from chapter 071 + one addition): the run-status panel renders `metadata.downloadUrl` as a clickable link once the export completes.
+The inspector is provided in full; the student writes only `tags.ts`, the `use cache` annotations on the two queries, the invalidation calls in the four actions, and the Trigger.dev task body.
 
 ### Verify recipe mapped to "Done when"
 
 | Done-when clause | Verify step |
 | --- | --- |
-| 5 MB file uploaded lands in R2 + `file_metadata` row written | Upload `fixtures/sample-5mb.jpg` from `/files`. Confirm one R2 object at `org/<orgId>/files/<uuid>.jpeg` and one row with matching `objectKey`, `byteSize ≈ 5242880`, `contentType: 'image/jpeg'`. |
-| `Files` list renders rows with working download | List shows the row; click "Download"; browser saves as `sample-5mb.jpg` (from `Content-Disposition`). |
-| Download works after the GET window | View source, copy a `href`. Wait 11 minutes. Copied URL returns `403 AccessDenied`. Refresh `/files` — same row's `href` is different; click — works. **Load-bearing proof.** |
-| chapter 071 export emails a working R2 link | Trigger export. Inspector shows `downloadUrl` as a real R2 link. Email arrives with same URL — click within 10 minutes — CSV downloads. |
-| Function never sees the bytes (user uploads) | Network tab: `presignedPut` POST ~400 B response; PUT to `<bucket>.r2.cloudflarestorage.com` carries the MB body; `finalizeUpload` POST ~100 B response. |
-| Payload validation at the action boundary | `presignedPut({ contentType: 'application/octet-stream', ... })` → `{ ok: false, error: { code: 'invalid-input' } }`; no R2 call. Same for `claimedSize > MAX_BYTES`. |
-| Tenancy at GET boundary | Upload in org A; switch to org B. `getFileDownloadUrl({ fileId: <orgA-id> })` → `{ ok: false, error: { code: 'object-not-found' } }`. |
-| HEAD-based size verification | Debug helper: `claimedSize: 1024`, PUT 10 MB body. R2 accepts. `finalizeUpload` HEADs, sees 10 MB, throws `size-mismatch`. No row inserted. |
-| CORS in the browser | Serve on `127.0.0.1:3000` (not allowed). PUT preflight 403 (R2-side). Restore `localhost` — works. |
-| No `file_metadata` for exports | `select count(*) from file_metadata where object_key like 'org/%/exports/%'` → 0. |
+| First list visit shows one `fetchedAt`; refresh shows the same `fetchedAt` (cache hit) | Open `/invoices`; note `listFetchedAt`. Hard-refresh; `listFetchedAt` unchanged. Five consecutive refreshes via the inspector hit/miss probe; same timestamp every time. |
+| Editing an invoice and returning to the list shows a fresh `fetchedAt` and the new value | Inspector "Edit one invoice"; redirect lands on `/invoices`; `listFetchedAt` advances; the edited row's amount reflects the delta. `updateTag` for list + record + summary all fired. |
+| Firing the background job leaves `fetchedAt` unchanged on the current visit but the next visit shows the new aggregate with a fresh `fetchedAt` | Inspector "Run summary task"; redirect to `/inspector` shows `summaryFetchedAt` stale (the task fired `revalidateTag`, not `updateTag` — stale-while-revalidate). Next manual visit to `/inspector` (or `/invoices` summary section) → `summaryFetchedAt` advances; new totals visible. |
+| Misusing `revalidateTag` from the server action shows a stale `fetchedAt` and value on the submitting request | Toggle "Misuse `revalidateTag` from action" on; "Edit one invoice"; redirect lands on `/invoices`; `listFetchedAt` stale, edited row's amount still old. Toggle off; repeat; `listFetchedAt` advances, new amount visible. The deterministic demo of why read-your-writes needs `updateTag`. |
+| Archive / restore / soft-delete all invalidate list and summary | Inspector "Archive one invoice"; redirect to list; row missing from `view=active`, `listFetchedAt` advances, `summaryFetchedAt` advances (totals dropped). Restore; redirect; row back, both timestamps advance. Soft-delete (admin); switch to `view=all`; row visible with "Deleted" badge; summary excludes it. |
+| Record-level tag invalidates only the affected invoice's detail | Edit invoice A; visit detail B; B's `fetchedAt` stable (the record tag for A did not invalidate B). Detail A's `fetchedAt` advances. |
+| Cross-org isolation: invalidation in org A does not invalidate org B's caches | As admin in org A, edit an invoice; switch session to org B; the org-B list `listFetchedAt` is unchanged from before. The org-scoped tag `org:${A}:invoices` is distinct from `org:${B}:invoices`. |
+| Tags only exist in `tags.ts` | Grep `org:.*:invoices` and `invoice:` outside `lib/cache/tags.ts` and the cached read sites — zero raw string hits at write sites. Every write site imports the helper. |
+| `cacheLife` profile readout matches expectations | Inspector readout shows `listInvoices: 'minutes'` and `getOrgInvoiceSummary: 'hours'`. Senior call: list cache profile is short because users edit and view; summary cache profile is long because the task refreshes it. |
+| The cached function does not close over session | Cached function signatures take `orgId` as an explicit argument. Grep `auth()` / `cookies()` / `headers()` inside `listInvoices` and `getOrgInvoiceSummary` bodies — zero hits. |
+| Invalidate-after-commit, not before | The action's source orders: `await db.transaction(...)`, then `await updateTag(...)` (multiple), then `redirect(...)`. The inverse order is the deliberate failure mode in lesson 5 of chapter 073. |
 
 ### Concepts demonstrated → owning lesson
 
-- Threshold for object storage, R2 vs. S3 — lesson 1 of chapter 072.
-- Bucket + scoped credentials + CORS, S3-compatible endpoint, `region: 'auto'` — lesson 2 of chapter 072.
-- Presigned PUT/GET mechanics, `ContentType`/`ContentLength` pinning, expiry trade-offs — lesson 3 of chapter 072.
-- Two-step write, layered size defense, R2-specific `ContentLength` non-enforcement — lesson 3 of chapter 072.
-- `file_metadata` shape, `id` as key segment, no-`url`-column rule — lesson 4 of chapter 072.
-- Tenancy at read via `tenantDb(orgId)`, audit on upload/download/delete — lesson 4 of chapter 072 / chapter 060 / chapter 061.
-- Soft delete with cooled-off cleanup (named) — lesson 4 of chapter 072 / chapter 065.
-- One bucket two prefixes, browser-vs-worker byte-pipe rule — lesson 5 of chapter 072.
-- `authedAction('member', ...)` — chapter 061. Result shape — chapter 047. Zod validation — chapter 046/chapter 047.
-- `XMLHttpRequest` for upload progress — closes chapter 020.
-- Principle #3 (named seams in `lib/files/`) — chapter 039/chapter 047. Principle #5 (R2 SDK at the call site) — lesson 2 of chapter 072.
+- `cacheComponents: true` and dynamic-by-default — lesson 1 of chapter 032.
+- `use cache` directive, serializable args, closure rules — lesson 3 of chapter 032.
+- `cacheLife` profile selection — lesson 4 of chapter 032 + lesson 1 of chapter 072 (UX framing).
+- `cacheTag` and the four tag shapes — lesson 4 of chapter 032 + lesson 1 of chapter 072.
+- `tags.ts` helper as the structural enforcement — lesson 1 of chapter 072.
+- The `fetchedAt` diagnostic — lesson 1 of chapter 072.
+- The "tags are arguments, not ambient" rule — lesson 1 of chapter 072.
+- The four-call invalidation surface and the decision tree — lesson 6 of chapter 032 + lesson 2 of chapter 072.
+- The user-expectation question as the primary driver — lesson 2 of chapter 072.
+- `updateTag` Server-Action-only restriction — lesson 2 of chapter 072.
+- `revalidateTag` from webhooks and background jobs — lesson 2 of chapter 072.
+- Multiple tags per mutation (the fan-out) — lesson 2 of chapter 072.
+- After-commit-then-redirect ordering — lesson 2 of chapter 072.
+- Org-scoping the tag mirrors data-layer scoping — chapter 056 + lesson 1 of chapter 072.
+- Trigger.dev `schemaTask` and queue declaration — lesson 4 of chapter 066.
+- `authedAction`, `tenantDb`, audit-log writes — chapter 057 / chapter 059.
 
 ---
 
-## Lesson 1 — Brief and Done-when
+## Lesson 1 — Brief and the finished cache shape
 
-Frames the runnable upload surface, locks the "Done when" clauses (5 MB lands, list downloads, 11-minute-later refresh still works, export emails a real R2 link), and names the scope cuts (no transforms, no multipart, no virus scan, no soft-delete UI).
+Frame the build: two `use cache` reads (list and per-org summary), a three-helper `tags.ts`, `updateTag` fan-out from four actions, `revalidateTag` from a Trigger.dev summary task, and the `<FetchedAtStrip />` as the on-page cache-state readout.
 
 Goals:
 
-- Frame the build: direct-browser-to-R2 upload with `Files` list, plus the chapter 071 export retrofit so the email carries a real R2 link. One screenshot: `/files` with form, progress mid-flight, list of completed rows.
-- State the "Done when" in one paragraph (5 MB lands and writes row, list renders downloads, refresh 11 min later still works because URL re-issues, export emails working R2 link, function never sees user-upload bytes, tenancy holds, layered size defense catches a lying client).
-- Scope cuts: no image transformation (Cloudflare Images, named once); no multipart for >100 MB (25 MB cap); no virus scanning (named); no client preview past file-picker echo; no soft-delete UI in this chapter (action exists, column verified); no orphan-cleanup sweep (forward note).
-- Senior payoff: the canonical R2 shape every later upload feature copies — `lib/r2.ts` once, presigned PUT, two-step write with HEAD, fresh-per-render GETs, `file_metadata` as canonical identity. The retrofit on chapter 071 proves the same primitives work from a worker with server-side PUT.
-- Show the end UX: an animated capture of choose-file → progress → row appears → download → export fires → email arrives → click email → CSV opens.
+- Frame the build: take the chapter 062 invoices surface and instrument it with `use cache` on the list query and a per-org summary aggregate, lay down a three-helper `tags.ts` (`orgInvoicesTag`, `invoiceTag`, `orgSummaryTag`), fire `updateTag` from the four user-facing actions for the read-your-writes path, fire `revalidateTag` from a Trigger.dev daily summary task for the eventual path. Show one screenshot of the finished `/invoices` page with the `<FetchedAtStrip />` visible at the top — two timestamps labeled and the resolved `cacheLife` triple per cached function.
+- State the "Done when" in one paragraph: first visit shows one `listFetchedAt`; refresh keeps it stable (cache hit); editing through the inspector advances it on the next render (read-your-writes via `updateTag`); running the summary task leaves the current visit's `summaryFetchedAt` stable but advances it on the next visit (eventual via `revalidateTag`); toggling the "misuse `revalidateTag` from action" debug shows the stale read the framework's restriction is designed to prevent.
+- Scope cuts: no `'use cache: private'` per-user caches (named, deferred — per-user reads are dynamic by default and a senior call until the workload justifies it); no edge-cache or CDN tuning (out of scope, Vercel data-cache layer named once); no full prerendered route segments — the chapter is about the dynamic-with-cached-subtree shape that fits the SaaS list view; no `revalidatePath` worked example (named in lesson 2 of chapter 072; the chapter chooses tags over paths because the tag scheme captures the cases); no notification on edit (Unit 13 territory).
+- Senior payoff: this is the canonical cache shape for the rest of the course. Lists, detail pages, and per-org aggregates all follow the same pattern: cached function takes its scoping as an argument, emits a tag through `tags.ts`, mutations fan out invalidations to every affected tag after commit, background work uses `revalidateTag`. Adding a cached read later is a three-line change in queries.ts plus one helper in `tags.ts`.
+- Show the end UX: a short capture of the inspector — five refreshes (stable `fetchedAt`), edit one invoice (timestamp advances on next render), run summary task (summary timestamp stays stable, then advances on the next visit), toggle misuse (stale read, deliberate).
 - Link the starter via `degit`.
 
 Senior calls and watch-outs:
 
-- R2 account, bucket, scoped token, and CORS must be set up first (one-time). Starter ships env keys; student's account fills values. `pnpm r2:cors` runs once per environment before the first browser upload, or the preflight fails.
-- Starter inherits chapter 071's Trigger.dev project. lesson 6 of chapter 073 needs both `pnpm trigger:dev` and `pnpm dev` in two terminals.
-- 25 MB cap is a course choice; production often allows 100 MB+ via multipart. The cap is the simplest defense against the size-bomb attack the verify exercises.
+- The starter ships chapter 062 working end-to-end: URL state, scoped query helper, version-precondition actions, audit log, conflict banner. This project layers the cache on top — no rewrites to the existing surface, only additions inside the two query functions and the four actions plus the new task file and `tags.ts`.
+- `next.config.ts` already has `cacheComponents: true`. No code in the starter currently opts in — the entire list view is dynamic until lesson 3 of chapter 073 lands the directives.
+- `TRIGGER_SECRET_KEY` is optional. The inspector mocks the task in-process when absent so students without a Trigger.dev cloud account can complete the verification. The task code is identical either way — only the invocation differs.
 
 Codebase state at entry: empty repo (student runs `degit`).
-Codebase state at exit: starter cloned, deps installed, Postgres up, chapter 071 schema migrated and seeded, R2 bucket/token/env created, `pnpm r2:cors` run, `/files` renders empty list with broken form, `/inspector` carries the chapter 071 surface.
+Codebase state at exit: starter cloned, Postgres up, schema migrated, seed loaded, `pnpm dev` shows the chapter 062 list view working dynamically; `/inspector` loads; `<FetchedAtStrip />` renders with two `fetchedAt` timestamps that advance on every request (the queries are not yet cached); the "Edit one invoice" button works (the chapter 062 update action commits) but no `updateTag` calls fire yet; "Run summary task" produces a console error (the task body is empty).
 
-Estimated student time: 20 to 30 minutes.
-
----
-
-## Lesson 2 — Tour the starter
-
-Walks the provided pieces (singleton `lib/r2.ts`, pure `buildObjectKey` keyed off the validated content type, `UploadError` codes, idempotent CORS script) and identifies the five `lib/files/` TODOs plus the two `app/files/` TODOs the student will fill in.
-
-Goals:
-
-- Walk the file tree, calling out provided vs. stubbed. Linger on the five TODO files in `lib/files/` and the two in `app/files/`. The chapter 071 task files are provided in full chapter 071 form; student edits them in lesson 6 of chapter 073.
-- Read the provided pieces: `lib/r2.ts` (singleton `S3Client` + constants), `lib/files/keys.ts` (pure `buildObjectKey` — extension from the validated content type, never from the user filename), `lib/files/errors.ts` (the four error codes), `lib/files/soft-delete.ts` (named, not exercised), `scripts/r2-cors.ts` (CORS JSON per lesson 2 of chapter 072). Confirm `pnpm r2:cors` ran successfully.
-- Read `app/inspector/page.tsx` — the chapter 071 surface intact, the new "downloadUrl as clickable link" rendering provided.
-- Bring up the dev rhythm: `pnpm trigger:dev` in one terminal, `pnpm dev` in another. Visit `/files`: form renders, picking a file does nothing (action empty). Visit `/inspector`: chapter 071 surface works (export still produces `console.log`-shaped placeholder, not R2 yet).
-
-Senior calls and watch-outs:
-
-- `lib/r2.ts` is constructed once and imported everywhere — the same discipline as `lib/db.ts`, `lib/resend.ts`. Per-request construction churns the connection pool. Principle #5 — no wrapping past the call site.
-- `ALLOWED_CONTENT_TYPES` is reused at the Zod boundary so the allowlist is one source of truth. Drift between Zod and the bucket policy is the kind of bug structural uniqueness prevents.
-- `buildObjectKey` takes `contentType` and looks up the extension via a static map. User filenames are untrusted.
-- `pnpm r2:cors` is idempotent — re-running overwrites the same rules. The script logs after the push so the student can eyeball-confirm `AllowedOrigins: ['http://localhost:3000']` (not `'*'`).
-
-Codebase state at entry: starter cloned, deps installed, R2 set up.
-Codebase state at exit: student has read every provided file, confirmed both terminals running, confirmed CORS rules, visited both pages. No code written.
-
-Estimated student time: 20 to 30 minutes.
+Estimated student time: 10 to 15 minutes.
 
 ---
 
-## Lesson 3 — Sign the PUT, no DB write
+## Lesson 2 — Starter tour and inspector surface
 
-Builds the `presignedPut` Server Action with Zod-validated input, server-generated `uploadId`, a server-constructed `objectKey`, and a 5-minute signed `PutObjectCommand`, verified end-to-end by `curl`-PUTting bytes straight to R2.
+Walk the chapter 062-based starter, the new `org_invoice_summaries` table, the empty stubs (`tags.ts`, queries directives, action invalidations, task body), and every inspector panel that will verify later lessons.
 
 Goals:
 
-- Write `lib/files/presigned-put.ts` per the reference signature. The action: Zod input (`fileName`, `contentType` from the enum, `claimedSize` positive int ≤ `MAX_BYTES`); generates `uploadId = uuidv7()`; builds `objectKey = buildObjectKey({ orgId: ctx.orgId, fileId: uploadId, contentType })`; signs `PutObjectCommand` with `Bucket`, `Key: objectKey`, `ContentType`, `ContentLength: claimedSize` at `expiresIn: 300`; returns `{ ok: true, data: { uploadId, url, objectKey } }`.
-- The action does **no** DB write. The row lands in `finalizeUpload` *after* the bytes are confirmed in R2.
-- Verify without writing the client yet:
-  - From the browser console: `await presignedPut({ fileName: 'sample.jpg', contentType: 'image/jpeg', claimedSize: 5_000_000 })` returns `{ ok: true, data: { uploadId, url: 'https://<bucket>.r2.cloudflarestorage.com/...?X-Amz-Signature=...', objectKey } }`.
-  - `curl -X PUT -H "Content-Type: image/jpeg" --data-binary @some.jpg "<url>"` returns 200. R2 dashboard shows the object at `org/<orgId>/files/<uploadId>.jpeg`. **Proof that the byte-pipe rule holds — no function in the call.**
-  - `curl`-PUT with mismatched `Content-Type: image/png` against the JPEG-signed URL — R2 returns 403 `SignatureDoesNotMatch`.
-  - `presignedPut({ contentType: 'application/octet-stream' })` → `{ ok: false, error: { code: 'invalid-input' } }` from the Zod parse. No R2 call.
-  - `presignedPut({ claimedSize: 100_000_000 })` (exceeds `MAX_BYTES`) → same.
+- Walk the file tree, calling out provided vs. stubbed. Linger on four files: `src/lib/cache/tags.ts` (empty — lesson 3 of chapter 073), `src/lib/invoices/queries.ts` (provided from chapter 062 with no `use cache` — lesson 3 of chapter 073), `src/lib/invoices/actions.ts` (provided from chapter 062 with no invalidation calls — lesson 4 of chapter 073), `src/trigger/summary-recompute.ts` (empty `schemaTask` skeleton — lesson 4 of chapter 073).
+- Read the schema: confirm the new `org_invoice_summaries` table (one row per org, `totalCount`, `totalAmount`, `updatedAt`), seeded empty. The chapter 062 tables (`invoices`, `invoice_lines`, `customers`, `organizations`, `org_members`, `audit_logs`) are unchanged.
+- Read `next.config.ts`: `cacheComponents: true` flag set, `experimental.useCache` enabled. The framework is ready; the code has not opted in yet.
+- Read the inspector end-to-end — every panel, button, debug tool. It is the verification surface for every later lesson. Confirm `<FetchedAtStrip />` reads `listFetchedAt` and `summaryFetchedAt` from its props, which the page wires from the two query return values.
+- Read the seed: two orgs, 60+ invoices per org from chapter 062 (one pre-archived, one pre-soft-deleted, one duplicated-number row), `org_invoice_summaries` empty. The student's `revalidateTag` task populates it on first run.
+- Read the provided `cache_invalidation_log` table and the small `logCacheInvalidation(tag, source)` helper. The helper is exported from `src/lib/cache/log.ts` for the actions and the task to import alongside the actual `updateTag` / `revalidateTag` calls.
+- Run the app: `/invoices` renders, the list-page `fetchedAt` strip shows two timestamps that advance on every refresh (no cache); `/inspector` loads; "Edit one invoice" succeeds at the database (audit log writes); "Run summary task" throws.
 
 Senior calls and watch-outs:
 
-- `uploadId` is server-generated, never client-supplied. Letting the client choose the ID is the tenancy-bypass shape — a crafted UUID could clobber an existing row in `finalizeUpload`.
-- `ContentLength` is signed but R2 does not enforce it server-side (the lesson 3 of chapter 072 quirk). Signing is still correct — it documents intent and matches the AWS SDK shape — but the *enforcement* is the post-upload HEAD in `finalizeUpload`.
-- 5-min `expiresIn` is the trade-off — long enough for 25 MB on a slow connection (the client can also re-sign on retry), short enough that leaks don't grant indefinite write.
-- Role is `member`, not `admin`. The function-level gate is the structural defense — R2 credentials are app-wide.
-- Students often want to "reserve" a row with `status: pending`. The senior call: no row until the bytes are confirmed. Orphan rows lie in the UI; orphan objects are cheap to clean.
-- `'invalid-input'` is mapped at the `authedAction` boundary (from Unit 10), not by the action body.
+- `lib/cache/tags.ts` will be the only place tag strings exist. The lesson 1 of chapter 072 rule: read sites and write sites both import the helper, the raw string never leaks. The student should commit this convention from the first line written.
+- The starter's `getOrgInvoiceSummary` falls back to a live `count(*) + sum(total)` query when the summary row is absent. Once the task lands and populates the row, the query reads from the precomputed table. The fallback is the bootstrap path so the cached read works from minute one.
+- The `<FetchedAtStrip />` is provided. The student does not author the strip — they just thread the `fetchedAt: new Date().toISOString()` line through each cached function's return so the strip has a value to show. The lesson 1 of chapter 072 discipline made operational.
+- The inspector's "misuse `revalidateTag` from action" toggle requires the action to branch on a flag — the starter provides the flag wiring (an env var the inspector flips); the student adds the branch alongside the correct `updateTag` call in lesson 4 of chapter 073.
 
-Codebase state at entry: empty `presigned-put.ts`.
-Codebase state at exit: `presignedPut` works end-to-end against R2 (verified via `curl`); payload validation rejects bad inputs; no client-side upload yet. **Runnable — action fires; next lesson wires the browser.**
+Codebase state at entry: starter cloned, Postgres running, schema migrated, seed loaded.
+Codebase state at exit: every provided file read, inspector clicked through, list page tried, summary task button errors as expected. No code written.
 
-Estimated student time: 45 to 60 minutes.
+Estimated student time: 15 to 25 minutes.
 
 ---
 
-## Lesson 4 — Browser PUT, HEAD, then insert
+## Lesson 3 — Tag helpers, cached reads, and fetchedAt
 
-Lands the `file_metadata` migration, the `finalizeUpload` action that HEADs the object for true size and content-type before inserting the row inside a `tenantDb` transaction, and the XHR-driven client form that streams bytes direct to R2 with a live progress bar.
-
-Goals:
-
-- Write the `file_metadata` migration. Add the table to `db/schema.ts` per the reference. Run `pnpm db:generate --name add_file_metadata`, inspect emitted SQL, run `pnpm db:migrate`. Confirm in Studio.
-- Write `lib/files/finalize.ts`: Zod input (`uploadId` uuid, `objectKey`, `originalFileName`, `contentType` from the enum). `r2.send(new HeadObjectCommand({ Bucket, Key: objectKey }))` — catch 404 → `UploadError('object-not-found')`. Assert `head.ContentType === input.contentType`. Assert `head.ContentLength <= MAX_BYTES` → `size-mismatch` otherwise. In `tenantDb(ctx.orgId).transaction`: insert the row with `id: input.uploadId`, `uploadedBy: ctx.user.id`, `byteSize: head.ContentLength`, `contentType: head.ContentType`; call `logAudit(tx, { action: 'file.uploaded', subjectType: 'file', subjectId: input.uploadId, actorUserId: ctx.user.id, orgId: ctx.orgId, payload: { byteSize: head.ContentLength, contentType: head.ContentType } })`. Return `{ ok: true, data: { fileId: uploadId } }`.
-- Write `app/files/upload-form.tsx` as a client component: `<input type="file" accept="...">` + `useRef`; status `useState` (`idle | signing | uploading | finalizing | done | failed`) + progress (0-100); on submit, client-side validation (`file.size <= MAX_BYTES`, `file.type` in allowlist) → `'signing'`, call `presignedPut` → `'uploading'`, create `XMLHttpRequest`, `xhr.open('PUT', data.url)`, `xhr.setRequestHeader('Content-Type', file.type)` (must match signed `ContentType`), `xhr.upload.onprogress` drives the bar, `xhr.send(file)`; on PUT 200 → `'finalizing'`, call `finalizeUpload` with the `uploadId` + `objectKey` + `originalFileName` + `contentType`; on success → `'done'`, `router.refresh()`, reset after 2s.
-- Pre-fill the `/files` page list section with a minimal empty state. Full list rendering is lesson 5 of chapter 073.
-- Verify: 1 MB upload runs to `done`, progress bar smooth; refresh shows empty list still (next lesson). 30 MB picks rejects client-side, no `presignedPut` call. `.exe` filtered by `accept` (or rejected by client validation on drag-drop). Network tab during success: small POST to `presignedPut`, MB-scale PUT to `r2.cloudflarestorage.com`, small POST to `finalizeUpload`. **Byte-pipe verification — function-side bytes, not megabytes.** `audit_logs` has one `file.uploaded` row.
-
-Senior calls and watch-outs:
-
-- Migration adds the table; re-running `db:generate` emits "no changes" (determinism signal from chapter 044).
-- `XMLHttpRequest` over `fetch` for one reason — `xhr.upload.onprogress` fires per chunk; `fetch` does not expose upload progress to user code.
-- PUT's `Content-Type` must match the signed one *exactly*. Common bug: `.JPG` is `image/jpeg` on some OSes, `image/pjpeg` on others. Symptom: `403 SignatureDoesNotMatch`. Fix: normalize via the allowlist before signing.
-- `finalizeUpload` HEADs to catch a malicious client calling with a stale `uploadId`/`objectKey` from a previous flow. The `unique` constraint on `objectKey` also rejects a duplicate row insert. Layered defense.
-- HEAD-then-insert is not transactional with R2 — between HEAD and insert, the object could (in principle) be deleted. Microsecond gap, lifecycle rules are 7-day prefix-scoped. Named, accepted.
-- `audit_logs` writes are in the same `tenantDb(orgId).transaction` as the row insert — both roll back together.
-- Client-side validation duplicates the server-side allowlist — defense-in-depth, not duplication smell. Client = instant feedback; server = trust boundary.
-- 4xx on PUT triggers full-flow retry (re-sign + re-upload), not PUT-only. Reusing a signed URL after a 4xx is undefined.
-- Network drop or tab close mid-PUT leaves an orphan object (lifecycle cleanup).
-
-Codebase state at entry: `presignedPut` works; no migration, no `finalizeUpload`, no client form.
-Codebase state at exit: full upload flow end-to-end — file picked, progress, row in `file_metadata`, bytes in R2, audit logged. List still empty (next lesson). **Runnable — uploads work.**
-
-Estimated student time: 75 to 90 minutes. The chapter's heaviest lesson — migration + action + client land together because each one alone is not runnable.
-
----
-
-## Lesson 5 — Fresh-per-render GETs
-
-Writes `getFileDownloadUrl`, `listFiles`, and the un-cached `/files` server component that signs a new GET per row per render, then proves the discipline by watching a copied URL die at 11 minutes while a refreshed page keeps working.
+Write `tags.ts`, annotate `listInvoices`, `getOrgInvoiceSummary`, and `getInvoiceDetail` with `'use cache'` + `cacheLife` + `cacheTag`, return `fetchedAt`, and verify hits through the inspector's hit/miss probe.
 
 Goals:
 
-- Write `lib/files/presigned-get.ts`: read the row via `tenantDb(ctx.orgId)` filtered by `isNull(deletedAt)`; on no row → `{ ok: false, error: { code: 'object-not-found' } }`; sign `GetObjectCommand({ Bucket, Key: row.objectKey, ResponseContentDisposition: \`attachment; filename="${encodeRFC5987(row.originalFileName)}"\` })` at `expiresIn: 600`; return `{ url, fileName: row.originalFileName, contentType: row.contentType }`. Also export `getSignedGetForKey({ objectKey, expiresIn })` — pure, no tenant check, for the worker caller in lesson 6 of chapter 073.
-- Write `lib/files/list.ts`: `tenantDb(orgId).fileMetadata.findMany({ where: isNull(deletedAt), orderBy: [desc(uploadedAt), desc(id)], limit: limit + 1 })`. Cursor decode/encode lives in a new `lib/files/cursor.ts` with shape `{ uploadedAt: string; id: string }` (base64url-encoded JSON, Zod-validated) — `db/cursor.ts` from chapter 045 hardcodes `createdAt` and is not reusable here.
-- Write `app/files/page.tsx` as a Server Component: read `searchParams.cursor` (Zod-validated); call `listFiles`; for each row call `getFileDownloadUrl({ fileId: row.id })` to attach a fresh signed URL (**N signing calls per page render**, ~microseconds each, no R2 round trip); render the table; render `"Next page"` link with `nextCursor`. Call `logAudit(tx, { action: 'file.list_viewed', subjectType: 'file', subjectId: 'list', actorUserId: ctx.user.id, orgId: ctx.orgId, payload: { fileIds } })` once per page render (batched — one row per view, not per signed URL).
-- Verify: upload from lesson 4 of chapter 073 now appears; click "Download" → fetches via presigned GET; saves as `originalFileName`. View source — `href`s are real `https://<bucket>.r2.cloudflarestorage.com/...?X-Amz-Signature=...` URLs. **Fresh-per-render proof:** copy a URL, wait 11 minutes, paste in new tab — `403 AccessDenied`. Refresh `/files` — same row's `href` is different; click — works. **Senior anchor of the chapter.** Cross-org test: upload in A, switch to B, `/files` empty; `getFileDownloadUrl({ fileId: <A-id> })` → `object-not-found`.
+- Fill `src/lib/cache/tags.ts`: define the three helpers per reference (`orgInvoicesTag`, `invoiceTag`, `orgSummaryTag`). Pure arrow functions, lowercase colon-delimited strings, scope first. Add the `cacheLife` profile map (`listInvoices: 'minutes'`, `getOrgInvoiceSummary: 'hours'`) in a sibling `profiles.ts` if the readout panel needs it.
+- Annotate `listInvoices` in `src/lib/invoices/queries.ts`: open the function body with `'use cache'`, then `cacheLife('minutes')`, then `cacheTag(orgInvoicesTag(args.orgId))`. Return `{ rows, nextCursor, hasPrev, fetchedAt: new Date().toISOString() }` so the strip has a value. The existing chapter 062 implementation (scoped query, view/status/sort/cursor handling) stays unchanged — the directives wrap it.
+- Annotate `getOrgInvoiceSummary` the same way: `'use cache'`, `cacheLife('hours')`, `cacheTag(orgSummaryTag(orgId))`. Return `{ totalCount, totalAmount, updatedAt, fetchedAt: new Date().toISOString() }`. Implement the fallback live-aggregate read for the case where the row is missing (first run before the task lands).
+- Verify the closure rule: the cached function signatures take `orgId` (and the other filter args for `listInvoices`) explicitly. Grep the bodies for `auth()`, `cookies()`, `headers()` — zero hits. The caller (page-level Server Component) reads the session and passes `orgId` in.
+- Add a third cached read for the detail page: `getInvoiceDetail({ orgId, id })` gets the same treatment with `cacheTag(invoiceTag(id))` and `cacheTag(orgInvoicesTag(orgId))` — both tags so either an org-level or record-level invalidation hits it. The lesson 1 of chapter 072 union-of-tags rule applied.
+- Wire the page-level Server Component (`app/(app)/invoices/page.tsx`): the parent already calls `listInvoices(args)` and `getOrgInvoiceSummary(orgId)`; pass the returned `fetchedAt` values through to `<FetchedAtStrip listFetchedAt={...} summaryFetchedAt={...} />`. Single-line wiring change.
+- Run the app: open `/invoices`; note `listFetchedAt` and `summaryFetchedAt`. Refresh; both timestamps stable — the cache is hitting. Open the inspector hit/miss probe; five refreshes; same timestamps every time. Change a URL filter (`?status=paid`); a new `listFetchedAt` (different cache key for the new args); refresh again; that timestamp stable. Open a detail page; note its `fetchedAt`; refresh; stable.
 
 Senior calls and watch-outs:
 
-- Page is **not** `use cache`. Caching serves stale presigned URLs; the URL expires, the cached HTML lies. Fresh-per-render belongs at the boundary; cache lives one layer up (forecasts chapter 076).
-- N signing calls per render is not a hot spot — `getSignedUrl` is local HMAC, no R2 round trip. Signing is free; R2 round trips are not.
-- `ResponseContentDisposition` overrides the default. Without it, the browser saves as the `objectKey` segment (`<uuid>.jpeg`). Must be RFC 5987-encoded for non-ASCII names (`encodeRFC5987` helper provided).
-- `isNull(deletedAt)` is the structural enforcement of soft-delete hiding. The base-query helper from chapter 066 would normally enforce this; the project has one read shape so the manual `isNull` is the discipline.
-- Cursor shape is `{ uploadedAt, id }` (file-local, in `lib/files/cursor.ts`) — `(uploadedAt desc, id desc)` matched by the composite index. chapter 045's `db/cursor.ts` is `createdAt`-hardcoded and not reusable for an `uploadedAt` payload.
-- Audit at the user action (visit), not the derived effect (sign N URLs). Cardinality choice.
+- `cacheLife('minutes')` for the list is the senior call from lesson 1 of chapter 072's UX framing — the list is read often, edited often, "a few minutes of staleness if the action chain fails to invalidate" is the right ceiling. `cacheLife('hours')` for the summary is the right call because the task refreshes it explicitly and the underlying totals only matter on the dashboard.
+- The cached function's argument list is part of the cache key. Filter / sort / cursor changes produce distinct cache entries — verify by switching filters in the URL and watching `fetchedAt` advance for the new args, then stable on refresh. This is correct behavior, not a bug; the cache is keyed on the args, the org-scoped tag invalidates every entry across all arg combinations.
+- The `fetchedAt` value lives inside the cached function's return — it is computed once when the function runs and frozen into the cache entry. A stable timestamp across requests means the framework served the cached value. An advancing timestamp means the function re-ran. The lesson 1 of chapter 072 discipline is now the diagnostic.
+- The detail page tags itself with both `invoiceTag(id)` and `orgInvoicesTag(orgId)` because either a record-level write (`updateInvoice`) or an org-level write (a future bulk import) should invalidate it. Tagging at the granularity of the affected writes, not just the read's identity.
+- Resist the temptation to add `'use cache'` to the toolbar render or any Client Component piece. The toolbar is dynamic by definition (it reads URL state, which is request-scoped). Only the two query functions take the directive — the cacheable shortlist from lesson 1 of chapter 072 holds.
 
-Codebase state at entry: uploads work, no list.
-Codebase state at exit: full upload + list flow — pick, upload, see row, download, get the file. Multi-tenancy verified, URL freshness verified. **Runnable end-to-end for user uploads.**
+Codebase state at entry: `tags.ts` empty, queries dynamic, `fetchedAt` advances on every request.
+Codebase state at exit: tag helpers in place, two cached reads with `cacheLife` and `cacheTag` set, detail page cached with the union tag, `fetchedAt` strip shows stable timestamps across refreshes for the same args. **Runnable — caching demonstrably works, no invalidation paths exist yet so writes leave the cache stale until the entry's `cacheLife` expires.**
 
 Estimated student time: 50 to 65 minutes.
 
 ---
 
-## Lesson 6 — Real downloadUrl for the export
+## Lesson 4 — Wiring both invalidation paths
 
-Retrofits the chapter 071 export task to do a server-side `PutObjectCommand` under the `org/<id>/exports/` prefix, hand a fresh `getSignedGetForKey` URL to the email, and rely on the lifecycle rule for cleanup with no `file_metadata` row written.
+Fan out three `updateTag` calls after commit in the four lifecycle actions, implement the `summaryRecomputeTask` that calls `revalidateTag`, and wire the deliberate misuse-`revalidateTag`-from-action branch as the failure-mode demo.
 
 Goals:
 
-- Edit `trigger/export-invoices.ts`. After the page loop accumulates `csvAccumulator`: `const buffer = Buffer.from(csvAccumulator, 'utf8'); const objectKey = \`org/${organizationId}/exports/${ctx.run.id}.csv\`; await r2.send(new PutObjectCommand({ Bucket, Key: objectKey, Body: buffer, ContentType: 'text/csv', ContentDisposition: \`attachment; filename="export-${dayBucket()}.csv"\` }))`. **Server-side PUT** — bytes pass through this Trigger.dev worker, which is correct per lesson 5 of chapter 072.
-- `const { url: downloadUrl } = await getSignedGetForKey({ objectKey, expiresIn: 600 })`. `metadata.set('downloadUrl', downloadUrl)`. Pass `downloadUrl` to `sendExportEmail.triggerAndWait({ ..., downloadUrl })` (payload schema already accepts it from chapter 071).
-- **No `file_metadata` row** — exports are short-lived; lifecycle rule (7-day) on `org/*/exports/*` handles cleanup. Configure via `pnpm r2:lifecycle` (script provided); verify by logging effective rules, not by waiting 7 days.
-- Verify: trigger export from `/inspector`; on completion, panel renders `downloadUrl` as a real R2 link → click → CSV downloads (filename `export-<day>.csv` from `ContentDisposition`). Email arrives in Resend-verified inbox with same URL — click within 10 min → CSV. **Full end-to-end retrofit proof.** R2 dashboard shows the object at `org/<orgId>/exports/<runId>.csv`. `select count(*) from file_metadata where object_key like 'org/%/exports/%'` → 0. Run the kill-resume drill from chapter 071 — Ctrl-C trigger CLI at `pagesDone: 2/7`, restart; export resumes; the R2 PUT happens at end of the resumed parent (not on retry of completed pages); cross-step idempotency holds. Final: one CSV, one email, one audit row.
+- Edit `updateInvoice` in `src/lib/invoices/actions.ts`: after the existing transaction commits (the chapter 062 version-precondition UPDATE), and before the (existing) redirect, call the three-tag fan-out in order:
+  - `await updateTag(orgInvoicesTag(ctx.orgId))` — the list cache invalidates.
+  - `await updateTag(invoiceTag(id))` — the record cache invalidates.
+  - `await updateTag(orgSummaryTag(ctx.orgId))` — the summary cache invalidates (totals shift).
+  - Each call also goes through `logCacheInvalidation(tag, 'action')` so the inspector log tail captures the event.
+  - Then `redirect('/invoices')`. The lesson 2 of chapter 072 sequence: commit → invalidate → redirect.
+- Edit `archiveInvoice`, `restoreInvoice`, `softDeleteInvoice` with the same three-tag fan-out. Each lifecycle change moves a row in or out of the active set — the list filter result changes, the record's display changes, the summary totals change.
+- Add the "misuse `revalidateTag` from action" branch in `updateInvoice` (and only `updateInvoice` — one place is enough to demonstrate the bug deterministically). Read the `INSPECTOR_MISUSE_REVALIDATE` env var the inspector toggle flips; when on, call `revalidateTag(orgInvoicesTag(ctx.orgId), 'max')` instead of `updateTag` for the list tag. The other two tags still use `updateTag`. The lesson surfaces this as the deliberate failure-mode wiring — lesson 5 of chapter 073 walks the demo.
+- Fill `src/trigger/summary-recompute.ts`: implement `summaryRecomputeTask` per reference. `schemaTask` declaration with `id`, the Zod payload schema (`z.strictObject({ orgId: z.string().uuid() })`), a code-defined queue (`{ name: 'summary', concurrencyLimit: 5 }`), and the `run` body that recomputes totals, UPSERTs `org_invoice_summaries`, and calls `await revalidateTag(orgSummaryTag(orgId), 'max')`. Log the invalidation via `logCacheInvalidation(orgSummaryTag(orgId), 'task')`.
+- Wire the inspector's "Run summary task" button: provided shell that posts to a Server Action; the action calls the task (`tasks.trigger` when `TRIGGER_SECRET_KEY` is set, else imports the run function directly). The student adds the import and the call inside the provided action shell.
+- Run the app: open `/invoices`, note both `fetchedAt` values. From the inspector, "Edit one invoice"; the redirect lands on `/invoices` with both `listFetchedAt` and `summaryFetchedAt` advanced and the edited row's amount reflecting the delta. From the inspector, "Run summary task"; the task body executes; the inspector redirects to itself; `summaryFetchedAt` is **unchanged** (stale-while-revalidate — the framework will serve the previous value on this render and refresh on the next visit). Refresh `/inspector` again; now `summaryFetchedAt` advances and the new totals are visible.
 
 Senior calls and watch-outs:
 
-- Server-side PUT is the *only* place in the project where a function (Trigger.dev worker) sees the bytes. The rule from lesson 5 of chapter 072 — browser PUT for user-facing flows; server PUT for workers.
-- CSV-in-memory is bounded by `pagesTotal × pageSize × avgRowSize`. Project-scale: MB. Production-scale (>100 MB or >10s generation): switch to multipart streaming per `paginatePage`. Named, not built.
-- Same bucket as user uploads — one bucket per environment, prefixes carry the workload split. Separate buckets per environment, never per workload.
-- 10-min GET expiry trade-off: user who opens the email 30 minutes later gets a dead link; senior call is "re-trigger" rather than "longer expiry".
-- Same `lib/r2.ts` for both Next.js function and Trigger.dev worker — one client, two consumers.
-- `getSignedGetForKey({ objectKey, expiresIn })` takes a raw key (no tenant check) because the worker has no request context. Tenant checks live at the boundary the caller is on.
+- The action's order is load-bearing: transaction commits, then the invalidations fire, then `redirect`. Inverting any pair is a distinct bug: invalidate-then-commit risks invalidating-then-rolling-back (the inverse of the lesson 2 of chapter 070 dispatcher's after-commit rule); redirect-then-invalidate produces a one-render stale view on the destination (the lesson 2 of chapter 072 anti-pattern). Name both.
+- Multiple `await updateTag` calls are sequential — each is cheap. The senior call from lesson 2 of chapter 072: list every cached read the mutation affects, invalidate each. Missing one is the silent stale-read bug. The three-tag fan-out here is the minimum complete set for an invoice edit.
+- `updateTag` only works inside Server Actions. The Trigger.dev task body cannot use it — the framework rejects the call. `revalidateTag` works everywhere. The lesson surfaces this as the API enforcing the architectural rule: outside an action, no specific user is sitting on the redirect, so read-your-writes is the wrong semantic.
+- The task's `revalidateTag` lands the new summary on the **next** visit, not the current one. This is correct: no specific user is waiting on this task; stale-while-revalidate is the right UX. The inspector's "next refresh shows fresh" verification is the demonstration of stale-while-revalidate that lesson 2 of chapter 072 named conceptually.
+- The `INSPECTOR_MISUSE_REVALIDATE` toggle is deliberately user-facing. A senior reading this code asks: "Why is there a branch here?" The answer is the teaching surface — production code never reads a misuse flag. Strip the branch in any real codebase. The lesson surfaces the convention explicitly.
+- The `cache_invalidation_log` writes happen after the actual `updateTag` / `revalidateTag` call returns. Logging before the call is the small bug where a failing invalidation produces a misleading log; logging after is the discipline.
+- The summary task's payload schema is the discipline from lesson 4 of chapter 066 and chapter 042 (Zod at the boundary). A typoed `orgId` from a misconfigured trigger surfaces as a Zod parse error, not a silent recompute of the wrong org.
 
-Codebase state at entry: chapter 071 export works against placeholder URL.
-Codebase state at exit: export end-to-end produces a real R2 object; email link works; both consumers of `lib/r2.ts` operate against the same bucket. **Runnable — full project surface complete.**
+Codebase state at entry: cached reads in place, no invalidation paths, writes silently stale the cache until `cacheLife` expires.
+Codebase state at exit: four actions fan out three `updateTag` calls each after commit; the Trigger.dev task body recomputes the summary and calls `revalidateTag`; the misuse toggle wires a deterministic failure-mode demo; the inspector's tag-invalidation log tail captures every call. **Runnable — every inspector button produces the expected cache-state change; the four-way decision tree is now wired against real flows.**
 
-Estimated student time: 45 to 60 minutes.
+Estimated student time: 55 to 75 minutes. The chapter's heaviest lesson — the read-your-writes path and the eventual path land together because the decision tree is only verifiable end-to-end once both are real.
 
 ---
 
-## Lesson 7 — Verify
+## Lesson 5 — Verify clause-by-clause
 
-Walks each "Done when" clause as a runnable check — the 11-minute URL-death proof, function-side byte-pipe inspection, cross-org GET denial, `size-mismatch` from a lying client, CORS preflight on a non-allowed host, and the exports-have-no-row SQL.
+Walk every "Done when" clause via the inspector: cache hits, read-your-writes through `updateTag`, record-level scoping, cross-org isolation, lifecycle fan-out, eventual via `revalidateTag`, the misuse demo, and the tag-string and closure-rule disciplines.
 
 Goals:
 
-- Walk every "Done when" clause as a verification step (the table in the framing).
-- **User upload + row:** upload `fixtures/sample-5mb.jpg` from `/files`; confirm one R2 object at `org/<orgId>/files/<uuid>.jpeg`; confirm one `file_metadata` row with matching `objectKey`, `byteSize ≈ 5242880`, `contentType: 'image/jpeg'`, `uploadedBy: ctx.user.id`.
-- **List + download:** click "Download"; file saves as `sample-5mb.jpg` via `Content-Disposition`.
-- **Fresh-per-render (chapter's load-bearing proof):** view source, copy a `href`, wait 11 minutes, paste in new tab → `403 AccessDenied (Request has expired)`. Refresh `/files` — same row's `href` is different; click — works. **Senior anchor of the chapter — the URL is never persisted, never cached.**
-- **Export emails working R2 link:** trigger export; panel shows real R2 `downloadUrl`; click — CSV downloads. Email has the same URL; click within 10 min — CSV downloads.
-- **Function never sees user-upload bytes:** Network tab — `presignedPut` ~400 B response; PUT to `<bucket>.r2.cloudflarestorage.com` carries the MB body; `finalizeUpload` ~100 B response. Function-side bytes are orders of magnitude less than the upload.
-- **Payload validation:** `presignedPut({ contentType: 'application/octet-stream' })` → `{ ok: false, error: { code: 'invalid-input' } }`, no R2 call. Same for `claimedSize: 100_000_000`.
-- **Tenancy at GET:** upload in A; switch session to B (seeded users); `/files` empty; `getFileDownloadUrl({ fileId: <A-id> })` → `object-not-found`. Even with the right ID, wrong org returns no row.
-- **HEAD-based size verification (layered defense):** `debug:fake-upload` calls `presignedPut({ claimedSize: 1024 })` then PUTs 10 MB. R2 accepts. `finalizeUpload` reads `head.ContentLength: 10485760` → throws `size-mismatch`. No row inserted. Orphan 10 MB object remains (cleanup sweep named).
-- **CORS in the browser:** serve on `127.0.0.1:3000` (not in allowlist). PUT preflight returns 200 (allowed for the host); R2 returns 403 on the PUT because origin doesn't match. Restore `localhost` — works.
-- **No `file_metadata` for exports:** `select count(*) from file_metadata where object_key like 'org/%/exports/%'` → 0.
-- **Audit log:** `select action, count(*) from audit_logs group by action` — `file.uploaded` per upload (the `finalizeUpload` `logAudit(tx, { action: 'file.uploaded', subjectType: 'file', subjectId: fileId, actorUserId: ctx.user.id, orgId: ctx.orgId, payload: { byteSize, contentType } })` call), `file.list_viewed` per page render (the `/files` `logAudit(tx, { action: 'file.list_viewed', subjectType: 'file', subjectId: 'list', actorUserId: ctx.user.id, orgId: ctx.orgId, payload: { fileIds } })` call), `file.download_url_issued` per email link from the export task (`logAudit(tx, { action: 'file.download_url_issued', subjectType: 'file', subjectId: objectKey, actorUserId: null, orgId: organizationId, payload: { objectKey, expiresIn: 600 } })`).
-- **Soft-delete column exists:** `select column_name from information_schema.columns where table_name = 'file_metadata' and column_name = 'deleted_at'` returns the column. Action exists in `lib/files/soft-delete.ts`; structural shape verified.
-- Name the senior calls once more:
-  - Function never sees bytes for user uploads — browser PUT direct to R2.
-  - Two-step write — sign → upload → finalize-with-HEAD → row insert.
-  - `byteSize` and `contentType` from the HEAD, not the client claim.
-  - `objectKey` server-constructed; never client-supplied.
-  - Presigned GETs fresh-per-render; never persisted, never cached.
-  - Tenancy at every read via `tenantDb(orgId)`.
-  - One bucket per environment; prefixes carry the workload split. One `lib/r2.ts` for both consumers.
-  - User uploads use `file_metadata`; exports use no row + lifecycle rule.
-  - CORS specific origin, never `*`.
+- Walk every "Done when" clause from the framing's verify recipe in order. The recipe lists the steps; this lesson is the execution and the surrounding senior commentary.
+- **Cache hit baseline:** open `/invoices` as admin in org A; note `listFetchedAt`. Refresh five times via the inspector's hit/miss probe; the same timestamp every time. The `cache_invalidation_log` is empty. Pure hits.
+- **Read-your-writes via `updateTag`:** inspector "Edit one invoice"; the action commits, fires three `updateTag` calls, redirects. The redirected `/invoices` render shows `listFetchedAt` advanced, the edited amount reflected, `summaryFetchedAt` advanced (totals shifted). The invalidation log tail shows three entries — list, record, summary — sourced as `action`. Refresh; both timestamps stable again (the post-invalidate read is now the cached entry).
+- **Record-level scoping:** edit invoice A; visit invoice B's detail; `fetchedAt` on B is stable from before — the record tag `invoice:A` did not invalidate B's cached entry. Visit invoice A's detail; `fetchedAt` advances (both the record tag and the org-level tag invalidated it). The lesson 1 of chapter 072 granularity rule is the on-page reading.
+- **Cross-org isolation:** as admin in org A, edit; switch the inspector session to org B; the org-B list `listFetchedAt` is unchanged from before. Different org-scoped tag, different cache entry, untouched. Tenant isolation holds at the cache layer the same way it does at the data layer.
+- **Lifecycle fan-out:** archive a row; redirect; `listFetchedAt` advances (`view=active` row count dropped), `summaryFetchedAt` advances. Restore from the archived tab; both advance again. Soft-delete; both advance and the summary totals exclude the row.
+- **Eventual via `revalidateTag`:** inspector "Run summary task"; the task body fires `revalidateTag(orgSummaryTag(orgId), 'max')`; the redirect to `/inspector` shows `summaryFetchedAt` **stable** — the stale entry served on this render. Refresh `/inspector`; `summaryFetchedAt` advances; new totals visible. The invalidation log shows the entry sourced as `task`. The senior anchor: stale-while-revalidate is the correct UX when no specific user is sitting on the redirect.
+- **The misuse demo (the chapter's load-bearing failure):** flip "Misuse `revalidateTag` from action" on; "Edit one invoice"; redirect; `listFetchedAt` **stable**, the edited amount **not visible** on this render. The other two tags (record + summary) still used `updateTag`, so their entries refresh — but the list is the user-facing surface the redirect lands on. Refresh once; the list catches up. Flip the toggle off; repeat the edit; `listFetchedAt` advances on the redirected render and the new amount is there. The demo is the operationalization of lesson 2 of chapter 072's `updateTag` vs. `revalidateTag` framing — `updateTag` gives read-your-writes, `revalidateTag` gives one stale render.
+- **Tag-string discipline:** open `lib/cache/tags.ts`; the only place the strings exist. Grep `'org:.*:invoices'` and `'invoice:'` outside `tags.ts` and the cached read sites — zero raw hits at write sites. Every action imports the helper.
+- **The closure-rule check:** open `listInvoices`, `getOrgInvoiceSummary`, `getInvoiceDetail`; grep the bodies for `auth()`, `cookies()`, `headers()` — zero hits. Org scoping is an argument, not ambient state.
+- **`cacheLife` readout:** the inspector's per-function readout shows `listInvoices: 'minutes'` with the resolved triple, `getOrgInvoiceSummary: 'hours'` with the longer triple. The UX framing from lesson 1 of chapter 072 is the on-page reading: short for the high-edit list, long for the task-refreshed summary.
+- **After-commit ordering:** read `updateInvoice`'s source aloud — `await tx...`, then three `await updateTag(...)`, then `redirect(...)`. The lesson 2 of chapter 072 sequence is the lint rule a senior reader runs by eye.
+- **The `updateTag`-outside-action error (forced):** the inspector's "force `updateTag` from task" debug button calls `updateTag` inside the task body; the framework throws at runtime with a clear message. The API enforces the architectural rule — the bug is impossible to ship.
+- **Index plan unchanged:** the existing chapter 062 partial composite index on `(organizationId, status, createdAt desc, id desc) WHERE deletedAt IS NULL AND archivedAt IS NULL` still gets picked on the cached list query's underlying SELECT. Caching does not bypass the index; the cached payload is the result the index produced.
+- Name the senior calls one more time:
+  - Caching is opt-in; the default for the authenticated SaaS surface is dynamic; only the list and the summary earned their `use cache` directives.
+  - `tags.ts` is the only place tag strings exist; write sites and read sites share the helper.
+  - The cached function takes its scoping as an argument; closing over session is the leak bug.
+  - `fetchedAt` inside the cached function's return is the cache-state proxy; Next.js does not surface hit/miss, the timestamp does.
+  - `updateTag` from Server Actions for read-your-writes; `revalidateTag` from background work for stale-while-revalidate; the user-expectation question picks between them.
+  - Invalidate after commit, then redirect; fan out to every affected tag; multiple `await updateTag` calls are the right shape.
+  - The misuse demo proves why the framework restricts `updateTag` to actions — read-your-writes requires the in-band redirect path.
 - Forward references:
-  - **Unit 14:** `file.uploaded` fires the notification dispatcher; channel choice is the dispatcher's.
-  - **Unit 15a:** `/files` deliberately not cached; cache one layer up at the metadata read if volume demands.
-  - **Unit 17:** layered size defense, CORS specificity, `deletedAt` reads are audit line items.
-  - **Unit 21:** rotating R2 credentials follows staged-rollover discipline.
-  - **Avatars (9.x forward note):** Better Auth's hosted avatar handles its own pipeline; a custom avatar field reuses this chapter's shape with `contentType` restricted to images. Named, not built.
+  - Unit chapter 074 — Upstash for distributed cache and rate limiting; the cache backend on Vercel deployments is the cross-process variant of what's running locally here.
+  - Unit chapter 081 — security baseline; cached reads must never include per-user PII keyed by org scope (a real concern when caching enters the picture).
+  - Unit chapter 088 — integration tests for the invalidation paths; the "fetchedAt advances after edit" assertion is mechanical.
+  - Unit chapter 092 — structured logs; the `cache_invalidation_log` table is the development-time analog of the production dashboard for invalidation rate per tag.
+  - Unit chapter 099 — schema migrations against a live app; cached reads that close over schema shape need the expand-migrate-contract discipline.
 
 Senior calls and watch-outs:
 
-- Verify rehearses each failure mode and names what would break without the disciplines. If a verification fails, point at the owning build lesson.
-- The 11-min-later refresh proof is the chapter's headline verification — run the timer in real time (or fast-forward the system clock). Skipping it produces a student who thinks `<img src>={signedUrl}` survives a long page session.
-- The CORS test requires actually serving on a non-allowed host — `curl` won't reproduce the browser preflight. CORS is a browser concept; verify must run in a browser.
+- The verify lesson rehearses every failure mode the chapter exists to prevent. If a verification fails, point at the owning build lesson.
+- The misuse demo must run with the toggle deliberately — flipping it in the middle of an unrelated verification produces confusing results. Use it as its own dedicated step.
 
-Codebase state at entry: full upload + list + export retrofit wired.
-Codebase state at exit: every "Done when" clause verified clause-by-clause; the student can articulate every primitive and which forward unit will lean on it.
+Codebase state at entry: full cache + invalidation paths + verifying surface wired.
+Codebase state at exit: every "Done when" clause verified clause-by-clause; the student can articulate every primitive (`use cache`, `cacheLife`, `cacheTag`, `tags.ts`, `fetchedAt`, `updateTag`, `revalidateTag`, after-commit ordering, multi-tag fan-out, the closure rule) and which forward unit will lean on it.
 
 Estimated student time: 30 to 45 minutes.
+
+---
+
+> **Note (`revalidateTag` in Next.js 16):** the single-argument form `revalidateTag(tag)` is deprecated — every call must pass a `cacheLife` profile as the second argument (`'max'` is the senior default), e.g. `revalidateTag(tag, 'max')`.

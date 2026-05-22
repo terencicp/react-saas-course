@@ -1,339 +1,354 @@
-# Chapter 071 — Project: Durable CSV export with Trigger.dev
+# Chapter 071 — Project: notification dispatcher
 
 ## Chapter framing
 
-Chapter 071 takes the Trigger.dev primitives lessons lesson 3 of chapter 070–lesson 6 of chapter 070 installed (schemaTask, code-defined queues, `wait.for`, run-level retries, idempotency keys, lifecycle hooks) and lands them as one runnable durable job: a paginated CSV export of an org's invoices that survives a worker kill, serializes per-org via a dynamic queue, and ends in a `ExportReadyEmail` send through the Unit 8 Resend adapter. The student writes the task body, not the surrounding infrastructure — the cloud-linked project, the local-dev CLI, the inspector page that triggers and polls runs, and the React Email template are all provided. Each "Build it" lesson closes on a runnable state: lesson lesson 3 of chapter 071 ends with a fireable empty task validated by Zod; lesson 4 of chapter 071 ends with a full multi-page run completing and `console.log`-ing the would-be URL; lesson 5 of chapter 071 ends with the email landing in the student's inbox. The verify lesson then walks the three deterministic proofs — visible run progress, mid-run kill resumes, per-org serialization — clause by clause against the project's "Done when."
+Chapter 071 cashes in the four teaching lessons of chapter 070 — the dispatcher seam and the notifiable-vs-logged line (lesson 1 of chapter 070), the uniform channel-function shape (lesson 2 of chapter 070), category-grained prefs resolved once with default-on (lesson 3 of chapter 070), and 60-second dedup keyed by `(event_type, dedup_key, recipient_user_id)` (lesson 4 of chapter 070) — as one runnable surface. The student writes the `notifiable_events` registry, the `dispatch(event)` function that resolves prefs and dedups before fanning out, the two channel functions (`sendEmailChannel`, `writeInboxRow`), the `user_notification_preferences` and `notification_dedup` schemas, and the wiring at three real call sites: invite-sent and role-change (chapter 059 Server Actions) and billing-past-due (chapter 065 webhook). Each build closes on a runnable state: lesson 3 of chapter 071 ends with `dispatch()` callable with dedup but stub channels; lesson 4 of chapter 071 with both channels live and prefs respected; lesson 5 of chapter 071 with three real call sites firing; lesson 6 of chapter 071 walks the "Done when" clause-by-clause.
 
-Threads that run through every lesson: every Server Action call site triggers a task and returns immediately — the user never waits on the export; the task receives `organizationId` in its payload because it has no request context, and re-derives tenancy via `tenantDb(organizationId)` inside the body; `schemaTask` validates the payload at the trigger boundary, never inside the body; the queue is declared in code (`trigger.config.ts`), never at trigger time (the v3-to-v4 break from lesson 4 of chapter 070); per-org serialization uses dynamic queues keyed by `organizationId`, not the static queue; durability lives at step boundaries — every page is its own `triggerAndWait` child run with `idempotencyKey = ${ctx.run.id}:page:${page}`, so a retried parent re-issues the same keys and the runtime returns prior results instead of re-running; the email send is its own `triggerAndWait` child with `idempotencyKey = ${ctx.run.id}:email`, guarding the Resend call against a parent-level retry; `run.metadata` carries live progress (`{ pagesDone, pagesTotal }`) for the inspector's poller; the inspector reads run state via the Trigger.dev REST API by `run.id`, never by scanning logs; the local CLI (`npx trigger.dev@latest dev`) is the only worker that can be killed mid-run, so the durability proof requires it specifically.
+Threads through every lesson: the dispatcher is the only seam — `dispatch` imports from `lib/notifications/index.ts` only, a grep for `sendEmail(` or `db.insert(notifications)` outside `lib/notifications/` is a red flag; the registry is the source of truth — adding an event is a one-file change; prefs read once per dispatch with default-on (`?? true`); dedup inside the dispatcher, before channels, after prefs, check-then-insert on `notification_dedup`; channel functions uniform `({ recipient, event, payload })` behind per-channel `try/catch` so one failing channel never kills the other; dispatch fires after the action's transaction commits — never inside it, transactional-outbox alternative named and deferred; inbox rows rendered at dispatch time so the row is a snapshot, not a live join; `{ sent, deduped, suppressedByPrefs }` is the observability shape every call site logs.
 
 ### Dependency carry-in
 
-- **From lesson 4 of chapter 070 (Trigger.dev v4 primitives):** the `src/trigger/` folder convention, `trigger.config.ts` with `queues:` declared in code, `schemaTask` with Zod payloads, `tasks.trigger` (fire-and-forget) vs `tasks.triggerAndWait` (in-task, returns the child's result), `ctx.run.id` / `ctx.attempt.number` / `ctx.run.metadata`, dynamic per-tenant queues via `queue: { name: \`org-${organizationId}\`, concurrencyLimit: 1 }`.
-- **From lesson 5 of chapter 070 (durable execution):** checkpoints at every `wait.*` and `triggerAndWait`, run-level retries with exponential backoff and jitter (declared in `retry: {...}`), `AbortTaskRunError` for permanent failures, `idempotencyKey` + `idempotencyKeyTTL` on `tasks.trigger` / `triggerAndWait` / `wait.for`, `idempotencyKeys.create([...keyArray])`, the `${ctx.run.id}:step:...` cross-step key shape.
-- **From lesson 7 of chapter 070 (workload picking):** the three Trigger.dev-bound jobs named (CSV export is the one this chapter builds; Stripe reconciliation and notification dispatcher are forward references), the `TRIGGER_SECRET_KEY` + `TRIGGER_PROJECT_REF` env surface, the deploy-Trigger-first-then-app order.
-- **From chapter 054 (Resend):** `sendEmail({ to, subject, react })` lives in `lib/email.ts`; the React Email runtime is installed; the verified domain is configured in `.env.local`; the suppression read is wired (skipped sends return an `err('suppressed', ...)` Result, i.e. `{ ok: false, error: { code: 'suppressed', ... } }`).
-- **From chapter 063 (tenancy):** `organizations` and `org_members` tables, `tenantDb(orgId)` returning a Drizzle handle scoped to the org, `audit_logs` and `logAudit(tx, event)`.
-- **From chapter 066 (list queries):** the invoices schema with cursor-paginatable reads; the project ships a thin starter wrapper `listInvoicesPage` over `listInvoices` from chapter 066 as the source of CSV rows.
-- **From chapter 047 (Server Actions + Result):** the canonical `{ ok: true, data } | { ok: false, error: { code, userMessage } }` shape returned by the `startExport` action; `authedAction('member', schema, fn)` wraps the trigger call.
-- **From chapter 045 (schema) and chapter 066 (concurrency):** no schema changes in this chapter beyond a small `exports` table the starter ships (id, organizationId, status, runId, requestedBy, requestedAt, completedAt, idempotencyKey unique on `(organizationId, requestedBy, dayBucket)`).
-- **From chapter 013 (Error classes):** `ExportError` subclass with codes `EMPTY_RESULTSET | UNKNOWN_PLAN` (the latter forward-referenced, named here so the union is open).
+- **From lesson 1 of chapter 070:** `dispatch(event)` contract — input `{ type, recipientUserIds, subjectId, payload }`, return `{ sent, deduped, suppressedByPrefs }`; fire-after-commit; notifiable-vs-logged-event line.
+- **From lesson 2 of chapter 070:** uniform channel signature `({ recipient, event, payload }) => Promise<void>`; render-at-dispatch for inbox rows; channel independence under `try/catch`; `notifications` row shape.
+- **From lesson 3 of chapter 070:** `user_notification_preferences` `(user_id, category)` unique with per-channel booleans; category-level granularity; default-on; critical-channel override; `resolveChannels`.
+- **From lesson 4 of chapter 070:** `notification_dedup` `(event_type, dedup_key, recipient_user_id, fired_at)` + composite index; 60-second default with per-event override; check-then-insert race accepted; order — registry → prefs → dedup → channels.
+- **From chapter 059:** `tenantDb(orgId)`, `authedAction(role, schema, fn)`, active-org slot in session, `audit_logs` + `logAudit(tx, event)`. Invite-sent and role-change actions live here.
+- **From chapter 050:** `sendEmail({ to, subject, react, idempotencyKey })` in `lib/email.ts`; `email_suppressions` read inside the wrapper (lesson 4 of chapter 048); transactional sender split (lesson 3 of chapter 048); unsubscribe-link discipline (lesson 2 of chapter 048).
+- **From chapter 055:** Better Auth's `user` table with `id` and `email`; `getUserEmail(userId)` helper added in the starter.
+- **From chapter 065:** `processed_events` and the webhook handler that triggers `billing.past_due` — the handler dispatches after commit.
+- **From chapter 043 + chapter 047:** canonical Result shape, Zod 4 strictObject at the action boundary, `'use server'`.
+- **From chapter 009:** `NotificationError` subclass with codes `REGISTRY_MISS | RECIPIENT_NOT_FOUND` — non-fatal channel failures are logged inside the dispatcher, never thrown.
+- **From chapter 041:** Drizzle setup, `db.transaction`, `ON CONFLICT` upserts, composite-index discipline.
 
 ### Starter file tree (stubs marked with TODO)
 
 ```
 docker-compose.yml              # provided: postgres:18
 drizzle.config.ts               # provided
-trigger.config.ts               # TODO student: declare the `notifications` queue,
-                                #              the project ref + runtime — most of file scaffolded
 .env.example                    # provided: DATABASE_URL, BETTER_AUTH_SECRET, RESEND_API_KEY,
-                                #           TRIGGER_SECRET_KEY, TRIGGER_PROJECT_REF, APP_URL
-package.json                    # provided: db:migrate, db:seed, trigger:dev, trigger:deploy, dev
+                                #           STRIPE_WEBHOOK_SECRET (from chapter 065), APP_URL,
+                                #           NOTIFICATION_UNSUBSCRIBE_SECRET (HMAC token signing)
+package.json                    # provided: db:migrate, db:seed, dev, build, stripe:listen
 scripts/
-  seed.ts                       # provided: three orgs, each with 200+ seeded invoices
+  seed.ts                       # provided: two orgs, four users, one seeded invitation for
+                                #           a non-user (RECIPIENT_NOT_FOUND target), one user
+                                #           with team→email pref off (suppression target);
+                                #           a second user with no prefs row (default-on target)
 src/
   db/
-    schema.ts                   # provided: organizations, org_members, invoices, audit_logs,
-                                #           and an `exports` table (id, orgId, status, runId,
-                                #           idempotencyKey unique, requestedBy, ...)
+    schema.ts                   # provided: users (Better Auth), organizations + member
+                                #           + audit_logs (chapter 059), invitations (chapter 059),
+                                #           plan_entitlements (chapter 065); three stub tables
+                                #           commented out — TODO student fills in lesson 3 of chapter 071/4
+    client.ts                   # provided
+    relations.ts                # provided
   lib/
     tenant-db.ts                # provided
     authed-action.ts            # provided
     audit-log.ts                # provided
-    email.ts                    # provided (Unit 8)
-    invoices/
-      list-page.ts              # provided: listInvoicesPage({ orgId, cursor, limit }) — starter-only wrapper over listInvoices from chapter 066
-    exports/
-      to-csv.ts                 # provided: pure rowsToCsv(rows): string
-      errors.ts                 # provided: ExportError class
-      start.ts                  # TODO student: startExport authedAction → tasks.trigger
-    trigger-client.ts           # provided: typed runs.retrieve, runs.list-for-org helpers
-  trigger/
-    export-invoices.ts          # TODO student: the schemaTask — payload, queue, body
-    send-export-email.ts        # TODO student: child task — render template + sendEmail
-    paginate-page.ts            # TODO student: child task — read one page, accumulate CSV
+    email.ts                    # provided (Unit 7): sendEmail({ to, subject, react, idempotencyKey, tags, headers });
+                                #           inspector-mode mock bumps MOCK_EMAIL_SENT_COUNT
+    notifications/
+      registry.ts               # TODO student: notifiable_events typed map
+      types.ts                  # provided: DispatchEvent, DispatchResult, Channel, Recipient
+      errors.ts                 # provided: NotificationError subclass
+      dispatcher.ts             # TODO student: dispatch(event)
+      prefs.ts                  # TODO student: resolveChannels + batched read
+      dedup.ts                  # TODO student: claimDedup helper
+      channels/
+        email.ts                # TODO student: sendEmailChannel
+        inbox.ts                # TODO student: writeInboxRow
+      tokens.ts                 # provided: sign/verify unsubscribe tokens (HMAC, 30-day exp)
+      index.ts                  # TODO student: re-export dispatch + types
   emails/
-    ExportReadyEmail.tsx        # provided: React Email template, takes { orgName, rowCount, downloadUrl }
+    InviteSentEmail.tsx         # provided React Email templates
+    RoleChangedEmail.tsx        # provided
+    BillingPastDueEmail.tsx     # provided
   app/
-    inspector/
-      page.tsx                  # provided: per-org "Export invoices" button, run-status panel
-                                #           polling /api/exports/[runId] every 1s,
-                                #           pagesDone/pagesTotal progress bar from run.metadata,
-                                #           "Trigger 2 parallel exports" debug button
-    api/
-      exports/
-        [runId]/route.ts        # provided: GET reads runs.retrieve, returns
-                                #           { status, metadata, completedAt, error }
+    (app)/
+      members/
+        actions.ts              # provided shell from chapter 059 (re-exports `sendInvitationAction` from `src/lib/invitations/send.ts`); TODO student adds dispatch() calls in `src/lib/invitations/send.ts`
+      api/webhooks/stripe/
+        route.ts                # provided (chapter 065); TODO student adds dispatch() in past-due branch
+      inbox/page.tsx            # provided: server-rendered notifications list for the user
+    inspector/page.tsx          # provided: prefs toggles, fire-event buttons (single + rapid-fire),
+                                #           inbox panel, email-sent counter, dedup-count badge,
+                                #           processed_events tail, debug tools, reset-and-re-seed
 ```
 
 ### Reference solution signatures lessons display
 
-- **`trigger.config.ts`** — exports default config with `project: env.TRIGGER_PROJECT_REF`, `runtime: 'node'`, `queues: [{ name: 'notifications', concurrencyLimit: 5 }]` (static queue named but unused this chapter; the export queue is dynamic per-org), and `retries: { default: { maxAttempts: 3, factor: 1.8, minTimeoutInMs: 1000, maxTimeoutInMs: 60_000, randomize: true } }`.
-- **`startExport`** (`lib/exports/start.ts`) — `authedAction('member', z.strictObject({}), async (_, ctx) => ...): Promise<Result<{ runId: string }>>`. Inserts an `exports` row with `status: 'queued'`, calls `tasks.trigger<typeof exportInvoices>('export-invoices', { organizationId: ctx.orgId, requestedBy: ctx.user.id }, { idempotencyKey: \`org:${ctx.orgId}:user:${ctx.user.id}:${dayBucket()}\`, idempotencyKeyTTL: '24h' })`, updates the `exports` row with the returned `runId`, returns `{ ok: true, data: { runId } }`.
-- **`exportInvoices`** (`trigger/export-invoices.ts`) — `schemaTask({ id: 'export-invoices', schema: z.strictObject({ organizationId: z.uuid(), requestedBy: z.uuid() }), queue: ({ payload }) => ({ name: \`org-${payload.organizationId}\`, concurrencyLimit: 1 }), retry: { maxAttempts: 3 }, run: async ({ organizationId, requestedBy }, { ctx, metadata }) => ... })`. Body: count total pages via a `count(*)` read, set `metadata.set('pagesTotal', total)`, loop pages 0..n calling `paginatePage.triggerAndWait(...)` with per-page idempotency key, accumulate CSV strings, then `sendExportEmail.triggerAndWait(...)` with the email idempotency key.
-- **`paginatePage`** (`trigger/paginate-page.ts`) — `schemaTask({ id: 'paginate-page', schema: z.strictObject({ organizationId: z.uuid(), page: z.int().nonnegative(), cursor: z.string().nullable() }), run: async ({ organizationId, page, cursor }) => { const { rows, nextCursor } = await listInvoices({ orgId: organizationId, view: 'active', cursor, pageSize: 500 }); return { csv: rowsToCsv(rows), nextCursor, rowCount: rows.length }; } })`.
-- **`sendExportEmail`** (`trigger/send-export-email.ts`) — `schemaTask({ id: 'send-export-email', schema: z.strictObject({ organizationId: z.uuid(), recipientUserId: z.uuid(), rowCount: z.int(), downloadUrl: z.string() }), run: async ({ organizationId, recipientUserId, rowCount, downloadUrl }) => { /* read org, read recipient email, render template, sendEmail */ } })`.
-- **Per-page idempotency key** — `\`${ctx.run.id}:page:${page}\`` (cross-step shape from lesson 5 of chapter 070).
-- **Per-email idempotency key** — `\`${ctx.run.id}:email\``.
-- **Env entries** (`.env.example`):
-  - `TRIGGER_SECRET_KEY=tr_dev_...` (per environment)
-  - `TRIGGER_PROJECT_REF=proj_...`
-  - `APP_URL=http://localhost:3000`
-  - existing `DATABASE_URL`, `RESEND_API_KEY`, `BETTER_AUTH_SECRET`
+- **Registry** (`lib/notifications/registry.ts`):
+  - `notifiable_events = { 'org.invitation.sent': {...}, 'org.member.role_changed': {...}, 'org.billing.past_due': {...} } as const satisfies Record<string, EventDefinition>`.
+  - Entry shape: `{ category: 'team' | 'billing' | 'security', channels: ReadonlyArray<'email' | 'inbox'>, dedup: { windowSeconds: number; keyBy: ReadonlyArray<string> }, template: { email: ComponentType<Payload>; inbox: (p: Payload) => { title: string; body: string } }, emailSubject: (p: Payload) => string, criticalChannel?: 'email' | 'inbox' }`.
+  - `'org.invitation.sent'` — `category: 'team'`, `channels: ['email', 'inbox']`, `dedup: { windowSeconds: 60, keyBy: ['subject_id'] }`.
+  - `'org.member.role_changed'` — `category: 'team'`, `channels: ['email', 'inbox']`, `dedup: { windowSeconds: 60, keyBy: ['subject_id', 'newRole'] }`.
+  - `'org.billing.past_due'` — `category: 'billing'`, `channels: ['email', 'inbox']`, `dedup: { windowSeconds: 60, keyBy: ['subject_id'] }`, `criticalChannel: 'email'`.
+- **Dispatch** (`lib/notifications/dispatcher.ts`):
+  - `dispatch(event: DispatchEvent): Promise<DispatchResult>` where `DispatchEvent = { type: EventType; recipientUserIds: ReadonlyArray<string>; subjectId: string; payload: PayloadFor<EventType>; orgId?: string }` and `DispatchResult = { sent: { email: number; inbox: number }; deduped: number; suppressedByPrefs: number }`.
+  - Body order: registry lookup (throw `REGISTRY_MISS` if unknown) → batched prefs read → per-recipient loop: `resolveChannels` → `claimDedup` (skip on hit, increment `deduped`) → for each enabled channel call inside `try/catch` (increment per-channel `sent`, log + swallow per-channel failures).
+- **Prefs** (`lib/notifications/prefs.ts`):
+  - `readPrefsForCategory(userIds, category): Promise<Map<userId, PrefRow | null>>` — one `WHERE userId IN (...) AND category = ?` query.
+  - `resolveChannels({ event, recipientId, prefs })` — `event.channels.filter(c => (prefs.get(recipientId)?.channels[c] ?? true) || c === event.criticalChannel)`.
+- **Dedup** (`lib/notifications/dedup.ts`):
+  - `claimDedup(tx, { eventType, dedupKey, recipientUserId, windowSeconds }): Promise<{ claimed: boolean }>` — selects most-recent row in window; if absent, inserts and returns `claimed: true`. Composite index `(event_type, dedup_key, recipient_user_id, fired_at desc)`.
+  - `computeDedupKey(eventDef, payload): string` — joins `keyBy` values with `:`.
+- **Email channel** (`lib/notifications/channels/email.ts`):
+  - `sendEmailChannel({ recipient, event, payload }): Promise<void>` — resolves email via `getUserEmail(recipient.userId)` (throws `RECIPIENT_NOT_FOUND` on null), signs unsubscribe token, renders template with `{ ...payload, unsubscribeUrl }`, calls `sendEmail({ to, subject, react, idempotencyKey, tags, headers: List-Unsubscribe + List-Unsubscribe-Post })`. Suppression is the wrapper's concern.
+- **Inbox channel** (`lib/notifications/channels/inbox.ts`):
+  - `writeInboxRow({ recipient, event, payload }): Promise<void>` — renders `event.template.inbox(payload)` once, inserts one row.
+- **`notifications` table:**
+  - `id uuid pk default gen_random_uuid()`, `userId uuid not null references users(id) on delete cascade`, `orgId uuid references organizations(id) on delete cascade` (nullable), `eventType text not null`, `subjectId text not null`, `title text not null`, `body text not null`, `payload jsonb not null default '{}'::jsonb`, `readAt timestamptz`, `createdAt timestamptz not null default now()`.
+  - Composite index `(userId, createdAt desc)`; partial index `(userId) WHERE readAt IS NULL`.
+- **`user_notification_preferences` table:**
+  - `userId uuid not null references users(id) on delete cascade`, `category text not null`, `channels jsonb not null default '{"email": true, "inbox": true}'::jsonb`, `updatedAt timestamptz not null default now()`. PK `(userId, category)`.
+- **`notification_dedup` table:**
+  - `eventType text not null`, `dedupKey text not null`, `recipientUserId uuid not null references users(id) on delete cascade`, `firedAt timestamptz not null default now()`. Composite index `(eventType, dedupKey, recipientUserId, firedAt desc)`. No PK — append-with-TTL.
+- **Call-site shape** (`src/lib/invitations/send.ts`):
+  - `sendInvitationAction = authedAction('admin', inviteSchema, async ({ email, role }, ctx) => { const inv = await tenantDb(ctx.orgId).transaction(...); await dispatch({ type: 'org.invitation.sent', recipientUserIds: invitee ? [invitee.id] : [], subjectId: inv.id, payload: { invitedEmail: email, role, orgName, inviterName, acceptUrl }, orgId: ctx.orgId }); return { ok: true, data: inv }; })`.
+  - The implicit `tx.commit()` happens *before* `dispatch` — dispatcher is never inside the transaction.
+- **Env entries:** existing from chapter 059 + chapter 065; new `NOTIFICATION_UNSUBSCRIBE_SECRET` (HMAC, 32+ bytes via `openssl rand -base64 32`).
 
 ### Inspector page spec
 
-A single Server Component at `/inspector` provided in full; the student writes only the task code and `startExport` action it exercises.
+Single Server Component at `/inspector`, the verification surface for every "Done when" clause. Reads server-side, refreshes on submit via `router.refresh()`.
 
-- **Header:** active-org switcher (three seeded orgs each with 200+ invoices), session-user switcher (one admin per org), the active org's last export status read from the `exports` table.
-- **"Export invoices" button per org:** calls `startExport()` Server Action, on `{ ok: true }` the run panel below switches to the returned `runId` and starts polling `/api/exports/[runId]` every 1s.
-- **Run panel:** shows `runId`, status (`queued | executing | completed | failed | retrying`), `attempt.number`, a progress bar driven by `run.metadata.pagesDone / run.metadata.pagesTotal`, the duration since trigger, and (on completion) the `downloadUrl` from `run.output` plus a deep-link to the Trigger.dev dashboard run page.
-- **"Trigger 2 parallel exports for this org" debug button:** fires `startExport` twice with hand-rolled distinct idempotency keys (the debug bypasses the natural daily key) so the per-org queue serialization is observable — the second run shows `status: queued` until the first finishes.
-- **"Trigger 3 parallel exports across orgs" debug button:** fires for orgs A, B, C simultaneously; all three should reach `status: executing` immediately (different dynamic queues).
-- **Audit-log tail:** last 20 `audit_logs` rows for the active org; every completed export writes one (`export.invoices.completed`) and every fired-but-deduped action writes none (the idempotency-key short-circuit returns the prior run handle, no second audit row).
-- **No log scraping** — the panel reads run state structurally via the Trigger.dev REST API (`runs.retrieve` in `lib/trigger-client.ts`), so the verify lesson can assert against state, not log strings.
+- **Header:** session-user switcher (admin/member per seeded org), org switcher (two seeded orgs), "Reset and re-seed" Server Action (truncates three notification tables, re-seeds).
+- **Preferences panel:** for the active user, three categories (`team`, `billing`, `security`) with per-channel toggles. The `security` category's `email` is rendered disabled with a tooltip; toggling it has no effect server-side. Other toggles post to `setPref`.
+- **Fire-event buttons:** `Fire invite-sent`, `Fire role-changed`, `Fire billing-past-due` — each posts a Server Action that calls `dispatch()` with a fixed payload against the active user.
+- **Rapid-fire buttons:** `Rapid-fire X (5x in 2s)` per event — calls `dispatch()` five times in a tight loop against the same recipient/subject. Deterministic dedup verification, more reliable than manual clicks.
+- **Inbox panel:** last 20 `notifications` rows for the active user, descending by `createdAt`, with `eventType`, `subjectId`, `title`, `createdAt`, `readAt`.
+- **Email-sent counter:** count of `sendEmail` calls in the current session via `MOCK_EMAIL_SENT_COUNT`. The starter's `lib/email.ts` mocks Resend in inspector mode, bumps the counter, and logs rendered HTML to the server console. Counter resets with "Reset and re-seed".
+- **Dedup-count badge:** running total of `deduped` from the most-recent `DispatchResult`.
+- **Processed-events tail (from chapter 065):** existing panel streaming `processed_events` — used for the billing-past-due webhook path.
+- **Debug tools:** `Force registry miss` (renders the `NotificationError`); `Make email fail` (sets a flag that makes `sendEmail` throw — verifies channel independence); `Wrap invite in rollback` (forces the invite action's outer transaction to roll back — verifies fire-after-commit); `Tampered unsubscribe token`.
+
+The inspector is provided in full; the student writes only dispatcher, channels, prefs, dedup, registry, and the three call-site additions.
 
 ### Verify recipe mapped to "Done when"
 
 | Done-when clause | Verify step |
 | --- | --- |
-| Firing the inspector "Export invoices" button kicks off a run that visibly progresses across pages in the Trigger.dev dashboard | Click the button for org A. Inspector run panel switches to `runId`, status moves `queued → executing`, progress bar advances `1/N → 2/N → ... → N/N` within the polling window. Open the Trigger.dev dashboard at the deep-link — each `paginatePage.triggerAndWait` shows as a child run with payload + output. |
-| Killing the local dev worker mid-run resumes after restart | Start `pnpm trigger:dev` in a side terminal. Trigger an export. When the inspector shows `pagesDone: 2 / 7`, hit Ctrl-C in the trigger terminal. Wait 5s. Re-run `pnpm trigger:dev`. The inspector panel resumes advancing from page 3; previously-completed pages return cached on the parent's retry-issued keys; the final state is `completed` with the same `runId`. |
-| Firing the same export twice for the same org enqueues the second behind the first | Click "Trigger 2 parallel exports for this org" (debug). Two runs appear in the panel list; the first goes `executing`, the second sits at `queued`. When the first hits `completed`, the second transitions `queued → executing`. The dashboard confirms both ran on the `org-<id>` queue with concurrency 1. |
-| Firing parallel exports across orgs runs them in parallel | Click "Trigger 3 parallel exports across orgs" (debug). All three runs transition to `executing` within ~1s; the dashboard shows three distinct dynamic queues `org-A`, `org-B`, `org-C`. |
-| Idempotency key short-circuits a duplicate same-day trigger | Click "Export invoices" twice in quick succession (no debug bypass). The second click's `startExport` returns the same `runId` as the first; the inspector does not add a second row to the run list; the `exports` table shows one row with the unchanged `idempotencyKey`. |
-| The email lands in the student's inbox with the right rowCount and a working download URL | After a completed run, the student's Resend-verified inbox receives the `ExportReadyEmail` render with `orgName`, `rowCount`, and the placeholder `downloadUrl` (a `https://example.com/exports/{runId}.csv` URL for this chapter — R2 lands in chapter 073). The audit-log tail in the inspector shows `export.invoices.completed`. |
-| The body validates payload structurally before any work | Use the Trigger.dev dashboard's "Run task" tool to fire `export-invoices` with `{ organizationId: 'not-a-uuid' }`. The dashboard shows the run failing immediately with a Zod error, no body work attempted, no `paginate-page` child runs spawned. |
+| Invite-sent fires one email + one inbox row (where prefs allow) | Click `Fire invite-sent` as admin. One new `notifications` row with matching `eventType`/`subjectId`/`title`; `MOCK_EMAIL_SENT_COUNT += 1`; `DispatchResult = { sent: { email: 1, inbox: 1 }, deduped: 0, suppressedByPrefs: 0 }`. |
+| Rapid-fire 5x in 2s → one of each, not five | `Rapid-fire invite-sent (5x in 2s)`. Exactly one new inbox row, one email increment, aggregated `deduped: 4`. One row in `notification_dedup`. |
+| Disabling email in prefs keeps inbox, suppresses email | Toggle `team` → `email` off; fire `invite-sent`. New inbox row; counter unchanged; `suppressedByPrefs: 1`. |
+| Default-on for missing prefs row | Reset + re-seed; confirm no prefs row for the target user; fire `invite-sent`; both inbox and email increment. |
+| Critical-channel override | Toggle `billing` → `email` off; fire `billing-past-due` (has `criticalChannel: 'email'`); email still increments. |
+| Call-site — invite sent | From `/members`, invite an existing user; action commits then dispatches; one inbox row + email for the invitee. |
+| Call-site — role changed | From `/members`, change a member's role; both `audit_logs` and `notifications` write; one email increment for the affected member. |
+| Call-site — billing past due | `stripe trigger invoice.payment_failed`; webhook commits then dispatches to org owners; one inbox row + email per owner. |
+| Channel independence — inbox failure does not kill email | Debug tool makes `writeInboxRow` throw; fire `invite-sent`; email counter still increments; the dispatch log shows the inbox error swallowed. |
+| Fire after commit — rolled-back actions do not notify | Debug tool wraps the invite action in a transaction that always rolls back; submit; no rows anywhere, no email increment. |
+| Tenant isolation | `/inbox` reads `userId` from session, never `orgId` from query; cross-tenant hand-crafted URLs do not leak. |
 
 ### Concepts demonstrated → owning lesson
 
-- Inline `await` vs. `after()` vs. Vercel Cron vs. Trigger.dev as the four-tier ladder, with the five trigger conditions — lesson 3 of chapter 070.
-- `schemaTask` for Zod-validated payloads at the trigger boundary — lesson 4 of chapter 070.
-- `tasks.trigger` (fire-and-forget from Server Actions) vs `tasks.triggerAndWait` (in-task child runs) — lesson 4 of chapter 070.
-- Queues declared in code (the v3-to-v4 break) — lesson 4 of chapter 070.
-- Dynamic per-tenant queues keyed by `organizationId` (the SaaS pattern) — lesson 4 of chapter 070.
-- `ctx.run.id`, `ctx.attempt.number`, `ctx.run.metadata` — lesson 4 of chapter 070 / lesson 5 of chapter 070.
-- Durable checkpoints at every `triggerAndWait` boundary — lesson 5 of chapter 070.
-- Run-level retries with exponential backoff and jitter (declared in `retry`) — lesson 5 of chapter 070.
-- `idempotencyKey` on `tasks.trigger` (business-key at the action) and `triggerAndWait` (cross-step `${ctx.run.id}:page:N`) — lesson 5 of chapter 070.
-- `idempotencyKeyTTL` to scope the dedup window — lesson 5 of chapter 070.
-- `AbortTaskRunError` for permanent failures (the empty-resultset case) — lesson 5 of chapter 070.
-- Mutable `run.metadata` as the live-progress channel for an inspecting client — lesson 6 of chapter 070.
-- Task body has no request context — payload carries `organizationId`, `tenantDb(orgId)` re-derives tenancy inside the body — lesson 3 of chapter 070 / lesson 7 of chapter 070.
-- `authedAction(role, schema, fn)` wrapping the trigger call from app code — chapter 061.
-- `tenantDb(orgId)` for org-scoped reads inside the task — chapter 060.
-- Canonical Server Action Result shape returned by `startExport` — chapter 047.
-- `audit_logs` append-only on every completed run, written from the task body inside the same transaction as the `exports` row update — chapter 063.
-- Resend send through `lib/email.ts` from inside a task (no request context) — chapter 054.
-- React Email template render passed as `react:` to `sendEmail` — chapter 054.
+- Dispatcher as the one named seam, call-site/channel separation — lesson 1 of chapter 070.
+- `notifiable_events` registry — fields, source-of-truth rule — lesson 1 of chapter 070.
+- Notifiable-vs-logged line, `notifications` vs. `audit_logs` audience-driven — lesson 1 of chapter 070.
+- Dispatcher contract (`DispatchEvent` in, `DispatchResult` out), fire-after-commit — lesson 1 of chapter 070.
+- Uniform channel signature, channel independence under `try/catch` — lesson 2 of chapter 070.
+- Render-at-dispatch over render-at-display — lesson 2 of chapter 070.
+- `notifications` shape, inbox feed query, partial index on unread — lesson 2 of chapter 070 + lesson 1 of chapter 039.
+- Email channel calling Unit 7 wrapper, unsubscribe HMAC — lesson 2 of chapter 070 + lesson 1 of chapter 016.
+- `user_notification_preferences` shape, `(userId, category)` unique, default-on, critical override — lesson 3 of chapter 070.
+- Batched prefs read — lesson 3 of chapter 070 + lesson 2 of chapter 039 (N+1).
+- `notification_dedup` shape, 60-second window, registry-defined `keyBy`, composite index, check-then-insert race accepted — lesson 4 of chapter 070.
+- Dispatcher order — lesson 4 of chapter 070.
+- `authedAction`, `tenantDb`, audit-log writes — chapter 057 / chapter 059.
+- Webhook transaction-then-commit-then-dispatch — chapter 063 / chapter 065.
+- React Email templates, plain-text fallback, unsubscribe header — chapter 049 / lesson 2 of chapter 048.
+- Result shape, Zod 4 `z.strictObject` — chapter 042 / chapter 043.
 
 ---
 
-## Lesson 1 — The export job, end to end
+## Lesson 1 — Project brief
 
-Frame the durable paginated CSV export, state the "Done when" clauses, name the scope cuts (no R2 yet, no streaming, no schedule), and clone the starter.
+Three events, one dispatcher: scope, "Done when", and the demo loop you will reproduce.
 
 Goals:
 
-- Frame what is being built: a paginated, durable CSV export task fired from a Server Action, serialized per-org via a dynamic queue, ending in a `ExportReadyEmail` send. One screenshot of the inspector showing a run completed, progress bar at `7/7`, the audit-log row, and the email arriving in the student's inbox.
-- State the "Done when" in one paragraph (runs visibly progress, mid-run worker kill resumes, parallel triggers per org serialize, parallel across orgs parallelize, idempotency key short-circuits same-day duplicate, email arrives with the right rowCount, payload validates structurally).
-- Name the scope cuts: no R2 upload yet — the email's `downloadUrl` is a placeholder `https://example.com/exports/{runId}.csv` and the project notes chapter 073 wires the real upload; no streaming generation — the CSV is materialized in memory across pages because the rows-per-org cap keeps this safe (the senior call is named, the streaming alternative referenced); no schedule — exports fire from the inspector, the scheduled-export pattern is a forward note to Chapter 14; no per-user rate limit on `startExport` — Unit 15b lands that; no failure-email path — a permanently-failed export logs but does not email the student a failure notification (Unit 14's dispatcher will).
-- Set the senior payoff: this is the canonical Trigger.dev shape every later durable job (Stripe reconciliation in Chapter 12 forward note, notification dispatcher in chapter 075) will copy — `schemaTask` at the boundary, dynamic per-tenant queue for back-pressure, `triggerAndWait` per step for durability, cross-step idempotency keys guarding side effects across retries, `run.metadata` for live progress to the watching client. The student writes one job here and can defend every primitive.
-- Show the end UX: a short animated capture of clicking Export → progress bar advancing → the Ctrl-C-and-restart drill resuming cleanly → email arriving.
+- Frame the build: the dispatcher is the one seam, the registry is the source of truth, prefs read once per dispatch, 60-second dedup window, three real call sites (invite, role change, billing past-due) prove the pattern earns its weight by needing more than one channel and more than one preference resolution. Show one screenshot of the inspector with the three event buttons, the inbox panel populated, the email counter at 3, and the prefs panel.
+- State the "Done when" in one paragraph: three event-fires each produce one inbox row + one email; rapid-fire 5x in 2s on any event produces exactly one inbox row + one email plus `deduped: 4`; toggling `team` → `email` off and firing `invite-sent` produces an inbox row but no email; resetting and re-seeding (no prefs rows) defaults to "on"; the three real call sites each dispatch after commit.
+- Scope cuts: no push/SMS/Slack (named as future additions); no quiet hours/digest (named, deferred to a later unit); no Trigger.dev-backed channel queue (named as the durable upgrade in lesson 1 of chapter 070, deferred to Unit chapter 066); no coalesce — dedup only; no per-org admin override on member prefs; no transactional-outbox (the dispatcher is called after commit, loss-on-crash window accepted in v1); no inbox UI past `/inbox` server-rendered list; no full settings page (inspector's prefs panel is the verification surface).
+- Senior payoff: the dispatcher is the canonical shape every later notification feature copies. Adding push later is one new channel function with the same signature; adding an event is one registry entry; muting noise per category is the user's lever.
+- Show the end UX: a short capture clicking `Fire invite-sent` (inbox +1, email +1), `Rapid-fire 5x` (inbox +1, dedup badge "4 deduped"), toggle email off and refire (inbox grows, counter does not).
 - Link the starter via `degit`.
 
 Senior calls and watch-outs:
 
-- The Trigger.dev cloud project must be created first (`npx trigger.dev@latest init` in the starter folder runs the interactive flow); the starter ships the project skeleton but the student's account creates the project ref and pastes it into `.env.local`. Named here so it does not surprise them in lesson 2 of chapter 071.
-- Local dev requires the trigger CLI side terminal (`pnpm trigger:dev`) running alongside `pnpm dev` — without it tasks queue forever. The lesson names the daily two-terminal rhythm.
-- Re-running the starter's seed is idempotent (the seed checks `organizations.id` existence first) — students can reset state safely. Trigger.dev's run history is not reset by the seed; old runs accumulate in the dashboard.
-- The free tier covers everything this chapter runs (3 runs × ~10 pages × 3 orgs = 90 child runs total). Named so the student is not anxious about hitting the cap during the kill-resume drill.
+- The starter ships chapter 059 + chapter 065 working — members surface, Stripe webhook, audit log. This project is layering the dispatcher on top, not rewriting; the only changes at call sites are two lines (`await dispatch(...)` plus the import).
+- `MOCK_EMAIL_SENT_COUNT` is the inspector's verification proxy because real Resend round-trips during development are slow and rate-limited. The starter's `lib/email.ts` mocks Resend in inspector mode and logs rendered HTML to the server console. Student does not change `lib/email.ts`.
+- `NOTIFICATION_UNSUBSCRIBE_SECRET` must be generated locally and put in `.env.local`. Starter's `tokens.ts` is provided.
+- Stripe-CLI setup inherited from chapter 065 — needs `stripe listen` running for the billing-past-due verification. If chapter 065 skipped, the inspector's `Fire billing-past-due` button replaces it.
 
 Codebase state at entry: empty repo (student runs `degit`).
-Codebase state at exit: starter cloned, `pnpm install` clean, `docker compose up -d` running Postgres, `pnpm db:migrate && pnpm db:seed` populated three orgs, Trigger.dev account created and `npx trigger.dev@latest init` linked, `TRIGGER_SECRET_KEY` and `TRIGGER_PROJECT_REF` pasted into `.env.local`, `pnpm dev` shows the inspector with the per-org Export buttons, `pnpm trigger:dev` running in a side terminal showing "Waiting for tasks" — clicking Export returns an error because the task file is empty.
+Codebase state at exit: starter cloned, Postgres up, schema migrated, seed loaded, `pnpm dev` shows the chapter 059 members surface working; `/inspector` shell loads but every fire button errors (`dispatch` undefined); `/inbox` renders empty.
 
 Estimated student time: 15 to 25 minutes.
 
 ---
 
-## Lesson 2 — Tour the starter and the two-terminal loop
+## Lesson 2 — Tour the starter
 
-Walk the provided files and the three TODO task stubs, read the inspector and `exports` table, and run the `pnpm trigger:dev` + `pnpm dev` loop to confirm the cloud link.
+Walk the file tree, schema stubs, seeded users, and inspector panels before writing any code.
 
 Goals:
 
-- Walk the file tree, calling out provided vs. stubbed. Linger on the three TODO task files (`trigger/export-invoices.ts`, `trigger/paginate-page.ts`, `trigger/send-export-email.ts`), the stub `startExport` in `lib/exports/start.ts`, and `trigger.config.ts` (mostly scaffolded — the student fills the queue declaration in lesson 3 of chapter 071).
-- Read the provided pieces end-to-end: `lib/email.ts` (Unit 8 carry-in), `lib/invoices/list-page.ts` (cursor-paginated reader the task calls), `lib/exports/to-csv.ts` (pure function the student does not need to write), `emails/ExportReadyEmail.tsx` (the React Email template with `{ orgName, rowCount, downloadUrl }` props), `lib/trigger-client.ts` (the typed REST helper the inspector route uses to read run state).
-- Read the inspector: confirm the per-org Export buttons, the run-status polling panel, the progress bar wired to `run.metadata`, the parallel-debug buttons, the audit-log tail.
-- Read the `exports` table in `db/schema.ts`: `id`, `organizationId`, `requestedBy`, `status` (`queued | running | completed | failed`), `runId`, `idempotencyKey` (unique on `(organizationId, requestedBy, dayBucket)`), `requestedAt`, `completedAt`. Names the rule: the row exists for app-side audit and dedup; Trigger.dev's run record is the operational truth, the `exports` row is the app's reference.
-- Run the local CLI loop once: in one terminal, `pnpm trigger:dev`; in another, `pnpm dev`. Visit `/inspector`. Click "Export invoices" for org A — `startExport` throws because the action is empty, the inspector renders the error fallback. Names the next step.
-- Verify the dashboard link: the `pnpm trigger:dev` terminal prints a `https://cloud.trigger.dev/orgs/<...>/projects/<ref>/dashboard` URL; open it once to confirm the project is linked and shows zero runs.
+- Walk the file tree, calling out provided vs. stubbed. Linger on six files: `lib/notifications/registry.ts` (empty — lesson 3 of chapter 071), `dispatcher.ts` (empty — lesson 3 of chapter 071), `prefs.ts` (empty — lesson 4 of chapter 071), `dedup.ts` (empty — lesson 3 of chapter 071), `channels/email.ts` and `inbox.ts` (empty — lesson 4 of chapter 071), and `app/(app)/members/actions.ts` (provided from chapter 059, no `dispatch` calls yet — lesson 5 of chapter 071).
+- Read the schema: the three stub tables (`notifications`, `user_notification_preferences`, `notification_dedup`) are commented-out blocks in `db/schema.ts` with TODO markers naming the lesson that fills each. The existing chapter 059 + chapter 065 tables (`users`, `organizations`, `org_members`, `invitations`, `audit_logs`, `processed_events`, `plan_entitlements`) are unchanged.
+- Read the seed: two orgs, four users (`alice@`, `bob@` in org A as admin/member; `carol@`, `dan@` in org B); one seeded invitation for `eve@example.com` (non-user, `RECIPIENT_NOT_FOUND` target); one explicit prefs row turning `team` → `email` off for `bob` (suppression target); `alice` has no prefs row (default-on target).
+- Read the inspector end-to-end — every panel, button, debug tool. It is the verification surface for every later lesson.
+- Read provided pieces in `lib/notifications/`: `types.ts` (full TypeScript shapes for `DispatchEvent`/`DispatchResult`/`Channel`/`Recipient`/`EventDefinition`), `errors.ts` (`NotificationError` extends `BaseError` from chapter 009), `tokens.ts` (HMAC sign + verify, 30-day expiry). The three React Email templates in `src/emails/` are full components — student does not author email JSX.
+- Run the app: members page renders; invite submission writes `invitations` + `audit_logs` (no notification yet — that's what this project ships); `/inbox` empty; inspector loads but fire buttons throw.
 
 Senior calls and watch-outs:
 
-- The `TRIGGER_SECRET_KEY` is per-environment (dev / staging / production). The starter ships only the dev key; trying to run `pnpm trigger:deploy` requires the production key in CI — named, not exercised this chapter.
-- The local dev CLI registers tasks via filesystem watch — saving any file in `src/trigger/` re-registers; do not move task files around mid-run, the CLI logs "task not found" until restart.
-- The `paginate-page` and `send-export-email` files are stubs because each becomes its own `triggerAndWait` child task (durability lives at the boundaries between steps — lesson 5 of chapter 070). The lesson names the alternative ("one long body with `wait.for` between pages") and the trade-off: child tasks give dashboard-visible per-page progress and free per-step retries.
-- The inspector reads run state by `runId` through the Trigger.dev REST API, not by tailing logs. Names the rule from the framing: state-based verification is the senior shape.
-- The starter does not ship `npx trigger.dev@latest init` — the student runs it once before this lesson. The CLI writes `trigger.config.ts` defaults and registers `src/trigger/` as the task folder; the starter ships a version of `trigger.config.ts` that matches what the init produces plus a TODO marker for the queue declaration in lesson 3 of chapter 071.
+- `lib/notifications/index.ts` will be the only export surface — call sites import `dispatch` from here, never reach into the channel files. Matches `lib/billing/index.ts` from chapter 065.
+- The seed's `bob`-with-email-off and `alice`-with-no-row are the deterministic verification targets. Resetting restores them.
+- React Email templates accept `{ unsubscribeUrl: string }` as part of their payload — the email channel must thread the URL through, not hard-code it.
 
-Codebase state at entry: starter cloned, deps installed, Postgres up, schema migrated and seeded, Trigger.dev project linked, both terminals running.
-Codebase state at exit: student has read every provided file, confirmed the inspector renders, fired one click that errored cleanly (action empty), confirmed the dashboard shows the project with zero runs. No task code written.
+Codebase state at entry: starter cloned, Postgres running, schema migrated, seed loaded.
+Codebase state at exit: every provided file read, inspector clicked through, members page tried, `/inbox` empty. No code written.
 
 Estimated student time: 20 to 30 minutes.
 
 ---
 
-## Lesson 3 — The task boundary: schemaTask and the per-org queue
+## Lesson 3 — Registry, dispatcher, dedup
 
-Write the `exportInvoices` `schemaTask` with a Zod payload and a dynamic per-org queue, plus the `startExport` Server Action that fires it with a daily idempotency key.
+Define the three notifiable events, write `dispatch()` with stub channels, and prove the 60-second dedup window from the inspector.
 
 Goals:
 
-- Write `trigger/export-invoices.ts` as a `schemaTask` per the reference signature. Payload schema: `z.strictObject({ organizationId: z.uuid(), requestedBy: z.uuid() })`. `id: 'export-invoices'` — names the rule from lesson 4 of chapter 070 that `id` is the durable API.
-- Declare the dynamic queue inline: `queue: ({ payload }) => ({ name: \`org-${payload.organizationId}\`, concurrencyLimit: 1 })`. Names the per-tenant pattern from lesson 4 of chapter 070: serialize within an org, parallelize across orgs, no one tenant starves another.
-- Body for this lesson is a placeholder: read `organizationId` from the payload, log it via the structured logger, write a `run.metadata.set('pagesDone', 0)` so the inspector's progress bar has something to read, return `{ ok: true, organizationId }`. The body grows in lesson 4 of chapter 071.
-- Fill `lib/exports/start.ts` with the `startExport` action per the reference signature: `authedAction('member', z.strictObject({}), ...)`, insert the `exports` row, call `tasks.trigger<typeof exportInvoices>('export-invoices', { organizationId: ctx.orgId, requestedBy: ctx.user.id }, { idempotencyKey, idempotencyKeyTTL: '24h' })`. The `idempotencyKey` is built via `idempotencyKeys.create([ctx.orgId, ctx.user.id, dayBucket()])` (helper in the starter, returns the calendar-day string in the org's tz).
-- Update the `exports` row with the returned `runId`. Return `{ ok: true, data: { runId } }`.
-- Verify:
-  - Click "Export invoices" for org A. The inspector run panel switches to the new `runId`, the dashboard shows one run with `status: completed`, payload `{ organizationId, requestedBy }`, the structured log line. Progress bar reads `0/?` — `pagesTotal` not set yet, that lands in lesson 4 of chapter 071.
-  - Click "Export invoices" twice in quick succession. The second click's `startExport` returns the same `runId` (idempotency-key short-circuit at trigger boundary). The `exports` table shows one row. The dashboard shows one run.
-  - Use the Trigger.dev dashboard's "Run task" tool to fire `export-invoices` with `{ organizationId: 'not-a-uuid' }`. The dashboard immediately shows the run failed at the schema-parse boundary with a Zod error; the body never executed. Names the rule: `schemaTask` validates before retries are spent.
-  - Click "Trigger 2 parallel exports for this org" (debug, which bypasses the natural daily key by injecting a synthetic `idempotencyKey` suffix). Two runs appear. The first is `executing`, the second is `queued`. After the first completes, the second transitions to `executing`. Names the per-org serialization proof — fully demonstrated even before the body does real work.
-  - Click "Trigger 3 parallel exports across orgs". All three transition to `executing` within ~1s. The dashboard shows three distinct dynamic queues.
+- Fill `db/schema.ts`: uncomment the three stub tables per reference. `pnpm db:generate --name add_notifications`, inspect SQL (three `CREATE TABLE`s, three composite indexes, one partial index on unread), `pnpm db:migrate`. Confirm in Drizzle Studio.
+- Fill `lib/notifications/registry.ts`: define `notifiable_events` with the three keys per reference. Import the three React Email templates. Type with `satisfies Record<string, EventDefinition>` so unknown keys are flagged.
+- Fill `lib/notifications/dedup.ts`: implement `claimDedup(tx, { eventType, dedupKey, recipientUserId, windowSeconds })`. SELECT most-recent row for the triple with `firedAt > NOW() - INTERVAL '${windowSeconds} seconds'`; if exists return `{ claimed: false }`; else INSERT and return `{ claimed: true }`. Implement `computeDedupKey(eventDef, payload)` — joins `keyBy` payload values with `:`.
+- Fill `lib/notifications/dispatcher.ts`: write `dispatch(event)` per reference. Order: lookup `notifiable_events[event.type]` → throw `NotificationError('REGISTRY_MISS')` if absent; per-recipient loop; **stub** prefs with `const enabledChannels = eventDef.channels` (full prefs in lesson 4 of chapter 071); compute `dedupKey`; `claimDedup`; on hit, increment `deduped` and continue; on claim, fan out — **stub** channel calls with `console.log` plus `sent.<channel>++` (full channels in lesson 4 of chapter 071). Wrap each channel call in `try/catch`.
+- Write `lib/notifications/index.ts`: re-export `dispatch`, the event-type union, and `DispatchEvent`. Mark `'server-only'` at the top.
+- Wire the inspector's three fire buttons to call `dispatch()` with fixed payloads (the action stubs are already there; student adds imports + dispatch calls).
+- Run the app: click `Fire invite-sent` → `DispatchResult` shows `{ sent: { email: 1, inbox: 1 }, deduped: 0, suppressedByPrefs: 0 }` (stubs increment the counter); one row in `notification_dedup`. Click again within 60s → `deduped: 1`, no second dedup row. `Rapid-fire (5x in 2s)` → `deduped: 4` aggregated. Wait 61 seconds, fire again → fresh dispatch, dedup released.
 
 Senior calls and watch-outs:
 
-- The `queue:` callback receives `payload`, parsed; the function shape is structural. Static queues would put `queue: { name: 'exports', concurrencyLimit: 5 }`; the per-tenant dynamic shape is the v4-native pattern from lesson 4 of chapter 070. Copy-pasting v3 examples that declare queues at trigger time (`tasks.trigger('export-invoices', payload, { queue: {...} })`) will not work in v4 — names the v3-to-v4 break once more.
-- The `concurrencyLimit: 1` per dynamic queue is the back-pressure choice — the export is read-heavy, one-at-a-time per org keeps the DB pool friendly. Doubling to 2 would let two concurrent exports per org run; the senior call is "stay at 1 unless a specific tenant repeatedly stacks up."
-- `tasks.trigger` is called from a Server Action — this is the correct shape (fire-and-forget, action returns immediately). Calling `tasks.triggerAndWait` from a Server Action would block the request until the run completes and time out — the inverted-model failure mode named in lesson 4 of chapter 070. The lesson restates the rule.
-- The `idempotencyKey` on `tasks.trigger` lives at the trigger boundary; the cross-step keys land in lesson 4 of chapter 071. Two different shapes, same discipline (lesson 5 of chapter 070).
-- The `dayBucket()` helper is intentional — the natural-key shape `(orgId, userId, day)` means a user who hits Export twice on the same calendar day gets one run; a user who hits it next day gets a new run (and yesterday's `exports` row carries its own key, still unique). The debug button injects a `:debug:<random>` suffix to bypass for proof-of-serialization tests.
-- The `exports` row write happens *before* `tasks.trigger`, but the `runId` is only known after. The row is inserted with `runId: null` first and updated immediately after the trigger returns. Names the small two-step write; production hardening would wrap both in a transaction and accept the rare orphan-row-on-trigger-failure (Trigger.dev's API throws on failure, the catch-and-cleanup is named, not built).
-- `authedAction('member', ...)` — the role is `member`, not `admin`. Exports are a member-level capability per the SaaS norms (chapter 061); the role-pinning here is the structural enforcement.
+- The registry is `const`-asserted with `satisfies` so the event-type union is inferred — adding an event is one entry, types propagate (chapter 005 narrowing discipline).
+- `keyBy` typed as `ReadonlyArray<string>` validated at runtime; the typed-mapped alternative (`ReadonlyArray<keyof PayloadFor<EventType>>`) is named, not chosen for registry simplicity.
+- Check-then-insert race in `claimDedup` accepted (lesson 4 of chapter 070) — one duplicate per rare concurrent burst; unique-constraint upgrade is the next reach.
+- Per-channel `try/catch` is structural — one channel's throw must not prevent the other. The dispatcher swallows and logs per channel; dispatch never throws on channel failure.
+- 60-second default is per-event in the registry. Widen for high-frequency events (comments, mentions: 5-10 min); for financial events, either skip dedup or use payload-discriminating keys.
+- `recipientUserId` in the dedup row is load-bearing — dedup is per-recipient. Two recipients getting the same event is not a duplicate.
 
-Codebase state at entry: empty task, empty action.
-Codebase state at exit: `export-invoices` task fires end-to-end with a placeholder body, the per-org dynamic queue serializes correctly, schema validation rejects malformed payloads at the boundary, the inspector's idempotency-key short-circuit works, parallel-across-orgs runs in parallel. The body does no real work yet — that lands in lesson 4 of chapter 071. **Runnable.**
+Codebase state at entry: registry empty, dispatcher empty, dedup empty, three stub tables.
+Codebase state at exit: registry defined for three events, dispatcher callable, dedup populated and respected, inspector's fire buttons produce `DispatchResult`. Channels still `console.log` — no real inbox rows, no real email-counter increment. **Runnable — `dispatch()` end-to-end with dedup working.**
 
-Estimated student time: 45 to 55 minutes.
+Estimated student time: 70 to 85 minutes.
 
 ---
 
-## Lesson 4 — One checkpoint per page
+## Lesson 4 — Channels and preferences live
 
-Spawn each page as a `paginatePage.triggerAndWait` child with `${ctx.run.id}:page:N` keys, drive progress through `metadata.set`, and abort permanently on empty resultsets with `AbortTaskRunError`.
+Replace the stubs with the inbox writer, the email channel, and a batched preferences read with default-on and the critical-channel override.
 
 Goals:
 
-- Write `trigger/paginate-page.ts` as its own `schemaTask` per the reference signature. Payload: `{ organizationId, page, cursor }`. Body: call `listInvoices({ orgId: organizationId, view: 'active', cursor, pageSize: 500 })`, pipe rows through `rowsToCsv`, return `{ csv, nextCursor, rowCount }`. The function is short (10 lines); the senior value is "every page is its own checkpointed child run."
-- Grow the `exportInvoices` body to drive the page loop:
-  - Read the page count: `const { total } = await tenantDb(organizationId).invoices.countAll()` (helper provided), then `const pagesTotal = Math.ceil(total / 500)`. Throw `new AbortTaskRunError('EMPTY_RESULTSET')` if `total === 0` — names the permanent-failure-no-retry shape from lesson 5 of chapter 070.
-  - Write `metadata.set('pagesTotal', pagesTotal)` and `metadata.set('pagesDone', 0)` — the inspector's progress bar reads these.
-  - Loop pages 0 to `pagesTotal - 1`: `const { csv, nextCursor } = await paginatePage.triggerAndWait({ organizationId, page, cursor }, { idempotencyKey: \`${ctx.run.id}:page:${page}\` })`. Append `csv` to an accumulator string. Update `cursor = nextCursor`. `metadata.set('pagesDone', page + 1)`.
-  - After the loop, `console.log` the CSV size and a placeholder URL (`https://example.com/exports/${ctx.run.id}.csv`) — the real upload to R2 lands in chapter 073. Store the URL on `metadata.set('downloadUrl', url)` so the inspector picks it up and so the next lesson (lesson 5 of chapter 071) can pass it to the email step.
-- Verify:
-  - Click "Export invoices" for org A (200+ seeded invoices, ~5-7 pages at limit 500). The inspector progress bar advances `0/N → 1/N → 2/N → ... → N/N` over ~10-20s; the dashboard shows N child `paginate-page` runs, each with payload + output, parented under the export run.
-  - **Kill-resume drill:** start an export. When the panel shows `pagesDone: 2 / 7`, hit Ctrl-C in the `pnpm trigger:dev` terminal. Wait 5s. Re-run `pnpm trigger:dev`. The inspector resumes; the dashboard shows the parent run picked up after the failed worker, the previously-completed `paginate-page` child runs were not re-executed (idempotency-key cache hit returned the prior outputs), pages 3 onward execute fresh. Final state: `completed` with the same `runId`. **This is the durability proof of the chapter.**
-  - Trigger an export against an empty-data org (use a debug button that creates an empty fourth org). The body throws `AbortTaskRunError('EMPTY_RESULTSET')`; the dashboard shows the run failed once with no retry attempts. Names the senior call.
-- (Optional senior reach.) Inspect the dashboard to confirm one `paginate-page` child's `idempotencyKey` is exactly `${parent.id}:page:0`; restart the parent (force a retry by throwing transient error inside a synthetic debug path) and confirm the same key returns the cached output rather than re-executing.
+- Fill `lib/notifications/prefs.ts`: implement `readPrefsForCategory(userIds, category)` — one `WHERE userId IN (...) AND category = ?` query returning a `Map<userId, PrefRow | null>` (missing users map to `null`). Implement `resolveChannels({ event, recipientId, prefs })` — `event.channels.filter(c => (prefs.get(recipientId)?.channels[c] ?? true) || c === event.criticalChannel)`. The `?? true` is the default-on rule; the `|| critical` clause is the override.
+- Wire the prefs read into the dispatcher: replace the lesson 3 of chapter 071 stub with the batched read before the per-recipient loop and the `resolveChannels` call inside the loop. The read happens **once per dispatch**, not per recipient.
+- Track `suppressedByPrefs` — when `resolveChannels` returns fewer channels than `eventDef.channels`, increment by the diff.
+- Fill `lib/notifications/channels/inbox.ts`: implement `writeInboxRow` per reference. One call to `event.template.inbox(payload)`, one INSERT, no joins.
+- Fill `lib/notifications/channels/email.ts`: implement `sendEmailChannel` per reference. Resolve `to` via `getUserEmail` (throw `RECIPIENT_NOT_FOUND` on null — dispatcher catches); sign unsubscribe token; compose `unsubscribeUrl`; render template with payload + unsubscribe URL; call `sendEmail` with `List-Unsubscribe` + `List-Unsubscribe-Post: One-Click` headers (lesson 2 of chapter 048 bulk-sender bar). Suppression is the wrapper's concern.
+- Replace dispatcher's stub channel calls with real ones. The dispatcher imports `const channels = { email: sendEmailChannel, inbox: writeInboxRow } as const` so the loop is `await channels[channel](args)` with no branching.
+- Wire the inspector's preferences panel: Server Component reads `user_notification_preferences` for the active user; toggles post to `setPref` (`authedAction`-wrapped) that UPSERTs. The `security` → `email` toggle is rendered disabled with the tooltip.
+- Run the app: as `bob` (seeded `team` → `email` off), `Fire invite-sent` → one new inbox row, counter unchanged, `suppressedByPrefs: 1`. Switch to `alice` (no prefs row), fire → inbox + email increment (default-on). Toggle `alice` `team` → `inbox` off, fire → email only. Reset; with `team` → `email` off, fire `billing-past-due` → email still increments (critical-channel override held).
 
 Senior calls and watch-outs:
 
-- Every `triggerAndWait` is a durable checkpoint (lesson 5 of chapter 070). A 7-page export has 7 checkpoints; a crash between pages 3 and 4 resumes at page 4, not page 0. Restarting the parent run re-issues the same idempotency keys; the runtime returns prior results for completed children instead of re-executing. This is the load-bearing pattern of the chapter.
-- The cross-step key shape is `${ctx.run.id}:page:${page}`. Using `${page}` alone (no `ctx.run.id` prefix) would collide across runs — every export would return the first export's page-0 result. Using `Date.now()` would break the cache on retry. The lesson shows the broken shape and the fix.
-- `AbortTaskRunError` is the only "stop retrying" signal. A naked `throw new Error('empty')` would retry three times (the configured `maxAttempts`) before failing; the empty-resultset case is permanent on the same inputs, so wasted retries cost runtime and dashboard noise. Names the rule from lesson 5 of chapter 070: `AbortTaskRunError` for permanents, plain throws for transients.
-- `listInvoices` uses cursor pagination (from chapter 066); the cursor is the natural restart point. If a row is inserted between pages 3 and 4, the page-4 cursor still covers it correctly (cursor-keyed reads are stable across writes). The lesson restates the rule from chapter 042 once.
-- Accumulating CSV strings in memory across pages is bounded by `pagesTotal × 500 × avg-row-size`. For the project's seed (~200 invoices), the accumulator fits in a few MB; for a production org of 100k+ invoices, this would need a streaming write to R2 inside each page's child task. Names the threshold and points to chapter 073 for the real upload.
-- The `metadata.set` channel is "fire and forget" — the runtime persists it, the dashboard renders it, the inspector reads it. Setting `pagesDone` from the parent run, not from the child, is intentional — the parent's view of progress is the user-facing one.
-- The body is `async function` and uses `await` throughout — `tasks.triggerAndWait`-inside-loop is the durable parallel-or-sequential decision point. Sequential (`for...of` + `await`) is the safe default; parallel (`Promise.all` of `triggerAndWait`) would race the queue concurrency limit and reorder pages — the senior call is "sequential unless the rows-by-page have no order requirement and concurrency is fine to consume."
-- Forgetting `metadata.set('pagesDone', ...)` is the common bug — the inspector still completes correctly but the progress bar stays at zero. The lesson names the symptom and the fix.
+- Prefs are batched across recipients — one `WHERE userId IN (...)` per dispatch, not one per recipient (lesson 2 of chapter 039 N+1 discipline).
+- `?? true` (default-on) is the load-bearing line — a senior reading the file should explain it on sight: silence-by-default is worse than friction (lesson 3 of chapter 070).
+- `|| c === event.criticalChannel` keeps the override inside `resolveChannels` — all decisions in one place.
+- `writeInboxRow` renders at insert time; the inbox UI is a pure read. Render-at-display is rejected for actor-name drift and join cost (lesson 2 of chapter 070).
+- `RECIPIENT_NOT_FOUND` from `getUserEmail` returning null (e.g., seeded `eve` who is not yet a user) is swallowed by the dispatcher; the inbox channel skips because the user row doesn't exist. The chapter 059 invitation email still goes via the unauthenticated `sendEmail` path; the dispatcher does not duplicate.
+- `List-Unsubscribe` + `List-Unsubscribe-Post: One-Click` headers (RFC 8058) are mandatory by the 2026 bar (lesson 2 of chapter 048). Starter's `/api/email/unsubscribe` route handles the POST.
+- `REGISTRY_MISS` bubbles out (not swallowed) — registry miss is a programmer error, not a channel failure. The `try/catch` is per-channel, not per-dispatch.
 
-Codebase state at entry: skeleton task, empty page child task.
-Codebase state at exit: full paginated body, runs progress through all pages, kill-resume drill resumes cleanly, empty-resultset orgs abort without retries, the `metadata.downloadUrl` is a `console.log`-shaped placeholder. The email step is empty. **Runnable.**
+Codebase state at entry: dispatcher with dedup but stub channels and stub prefs.
+Codebase state at exit: full dispatcher with prefs and channels live; inspector verifies pref toggling, default-on, critical-channel override, channel independence; `MOCK_EMAIL_SENT_COUNT` is now load-bearing. **Runnable — every inspector button produces the expected effect.**
 
-Estimated student time: 60 to 75 minutes. The chapter's heaviest lesson — the durability proof lives here.
+Estimated student time: 75 to 90 minutes. The chapter's heaviest lesson — channels + prefs land together because the dispatcher is only verifiable end-to-end once both are real.
 
 ---
 
-## Lesson 5 — Send the email, write the audit log
+## Lesson 5 — Wire the three call sites
 
-Add the `sendExportEmail` child task guarded by a `${ctx.run.id}:email` key, then close the parent run by updating the `exports` row and writing `export.invoices.completed` to `audit_logs` in one tenant transaction.
+Add `dispatch()` after commit in the invite action, the role-change action, and the Stripe past-due webhook branch.
 
 Goals:
 
-- Write `trigger/send-export-email.ts` as the third `schemaTask`. Payload: `{ organizationId, recipientUserId, rowCount, downloadUrl }`. Body: read the org name and the recipient email via `tenantDb(organizationId)` (read-only), render `ExportReadyEmail({ orgName, rowCount, downloadUrl })`, call `sendEmail({ to: recipientEmail, subject: \`Your ${orgName} export is ready\`, react: <ExportReadyEmail .../>, idempotencyKey: \`export-email:${ctx.run.id}\` })` from the Unit 8 adapter, return `{ id }`.
-- Add the final step to the parent task body: after the page loop, `const downloadUrl = ...`, then `await sendExportEmail.triggerAndWait({ organizationId, recipientUserId: requestedBy, rowCount: totalRows, downloadUrl }, { idempotencyKey: \`${ctx.run.id}:email\` })`. The per-run email idempotency key guards the send across parent retries.
-- Open a `tenantDb(organizationId).transaction` and: update the `exports` row to `status: 'completed', completedAt: now()`, write `audit_logs` `{ action: 'export.invoices.completed', subjectType: 'export', subjectId: ctx.run.id, actorUserId: requestedBy, orgId: organizationId, payload: { runId: ctx.run.id, rowCount } }` via `logAudit(tx, ...)`. Return `{ ok: true, runId: ctx.run.id, rowCount }` from the parent body.
-- Verify:
-  - Run a full export against org A. The progress bar runs to completion; the inspector's run panel flips to `status: completed` with the `downloadUrl` rendered; the audit-log tail gains one row; the student's Resend-verified inbox receives the `ExportReadyEmail` render within ~10 seconds (Resend's typical p99).
-  - Force a parent retry (use the dashboard's "Replay run" or a debug button that throws a transient error after `sendExportEmail.triggerAndWait` returns). The parent retries; the email child task's `triggerAndWait` returns the cached `{ id }` from the idempotency-key cache; no second email is sent. The structured log inside the email child shows "cached return, did not call Resend." Names the proof.
-  - Confirm the email lands once even when the parent retries — the idempotency-key short-circuit lives at the child-task boundary, the email send happens exactly once per parent run.
-  - Confirm a Resend suppression on the recipient (use the seeded suppression row from chapter 054 — temporarily move the seeded user's email into the suppression list) returns an `err('suppressed', ...)` Result (i.e. `{ ok: false, error: { code: 'suppressed', ... } }`) from `sendEmail`; the email child task returns the suppressed result, the parent run still completes (the suppressed-recipient case is not a failure), the audit-log notes the suppression.
+- Edit `src/lib/invitations/send.ts` (chapter 059 `sendInvitationAction`). After the transaction commits, call `await dispatch({ type: 'org.invitation.sent', recipientUserIds: invitee ? [invitee.id] : [], subjectId: invitation.id, payload: { invitedEmail, role, orgName, inviterName, acceptUrl }, orgId: ctx.orgId })`. `invitee` is resolved by `select user where email = ?`; if absent, `recipientUserIds: []` and the dispatcher no-ops. The chapter 059 invitation email still sends via the unauthenticated path for the absent-user case.
+- Edit the role-change action. After commit, call `await dispatch({ type: 'org.member.role_changed', recipientUserIds: [memberUserId], subjectId: memberUserId, payload: { newRole, oldRole, orgName, changedByName }, orgId: ctx.orgId })`. The chapter 059 audit-log write stays unchanged — both `audit_logs` (admin-facing) and `notifications` (user-facing) write.
+- Edit `app/api/webhooks/stripe/route.ts` (chapter 065 handler). In the `onSubscriptionUpdated` past-due branch, after the `plan_entitlements` UPDATE and audit-log write — **still inside the outer transaction** — collect the org's owners (`select user_id from member where organization_id = ? and role = 'owner'`) into a closure variable. After commit, call `await dispatch({ type: 'org.billing.past_due', recipientUserIds: ownerIds, subjectId: organizationId, payload: { orgName, amountDue, currentPeriodEnd }, orgId: organizationId })`. Read inside transaction (consistent with the transition); dispatch after commit (no notification for rolled-back state).
+- Sanity-check each call site from the real surface — full clause-by-clause walks live in lesson 6 of chapter 071. Submit a new invite for an existing user; change a member's role; `stripe trigger invoice.payment_failed`. Each should produce its notification + audit pair. Inspect the `lib/email.ts` mock console log — the rendered HTML body shows the unsubscribe URL with a signed token.
 
 Senior calls and watch-outs:
 
-- The email step is a child task, not inline in the parent body, for two reasons: (1) durability — a Resend transient failure retries with backoff via the child's own retry policy; (2) idempotency — the per-step key `${ctx.run.id}:email` guards against parent retries re-issuing the send. Inlining the `sendEmail` call in the parent body would lose both; the lesson shows the inline-shaped wrong version and the child-task right version.
-- The audit-log write lives inside a `tenantDb` transaction in the parent body, *after* the email returns. Writing the audit log before the email risks claiming "completed" when the email never sent; writing after gives at-least-once "we sent the email and audited it" semantics. The senior call is "audit the user-facing outcome, not the intent."
-- The email payload carries `downloadUrl` from the parent's `metadata.downloadUrl`, not a re-derivation. The parent owns the URL; the child consumes it. Forecasts chapter 073 where the URL becomes a real R2 presigned link.
-- The Resend suppression path is named explicitly so the student sees how an "expected failure" composes with Trigger.dev — the child task does not throw on suppression, it returns the suppressed Result; the parent treats the run as completed-but-skipped-email. A different choice (throw on suppression to surface in the dashboard) is named as alternative.
-- The `recipientUserId` is `requestedBy` from the original payload — the user who clicked Export gets the email. A future variant (email the org owner regardless of who triggered) is named, not implemented. The senior call is "default to the triggering user; allow an override at the action level."
-- The structured log inside the email child shows `messageId`, `to` (hashed in production), and `disposition`. The lesson restates the 3am-rule discipline from chapter 084: useful enough to debug, no PII.
+- Dispatch runs **after** the action's transaction commits — never inside it. The pattern: `await tx`-action; `await dispatch(...)`. Notifying for state that rolls back is the failure mode lesson 1 of chapter 070 names.
+- The webhook path is the awkward one: read the owner list inside the transaction (consistent with the transition), capture in a closure, dispatch after commit. The transactional-outbox alternative is named, deferred.
+- The invite-already-a-user case produces two emails: chapter 059's unauthenticated invitation email + the dispatcher's `org.invitation.sent`. Merging them is the next reach; v1 accepts the duplication because refactoring chapter 059 is out of scope. Named in verify.
+- The dispatcher trusts its caller — gating happens at the action boundary (chapter 057). A direct call from a non-action path bypasses the admin check.
+- Two layers of dedup compose: `processed_events` at the webhook handler (chapter 063) catches duplicate deliveries; `notification_dedup` inside the dispatcher catches duplicate user-facing notifications even from distinct event IDs.
+- Grep test after this lesson: `sendEmail(` outside `lib/email.ts` and `lib/notifications/channels/email.ts` → zero hits; `db.insert(notifications)` outside `lib/notifications/channels/inbox.ts` → zero hits. Structural seam enforcement.
 
-Codebase state at entry: page loop runs, no email.
-Codebase state at exit: full end-to-end run — Server Action triggers parent, parent loops paginate-page children, parent loops sendExportEmail child, parent updates `exports` row + writes audit log, inspector reflects every state. Email lands in inbox. **Runnable end-to-end.**
+Codebase state at entry: dispatcher full and verified via inspector; three call sites unchanged.
+Codebase state at exit: three real call sites dispatch after commit; members surface and Stripe webhook produce real notifications and emails; `/inbox` shows real rows. **Runnable — production-shaped flow end-to-end.**
 
-Estimated student time: 45 to 60 minutes.
+Estimated student time: 50 to 65 minutes.
 
 ---
 
-## Lesson 6 — Verify: progress, kill-resume, serialization, exactly-once email
+## Lesson 6 — Verify clause by clause
 
-Walk each "Done when" clause clause-by-clause: visible per-page progress, the Ctrl-C kill-resume drill, per-org serialization vs. cross-org parallelism, schema-boundary validation, and email-send-once across parent retries.
+Walk every "Done when" item in order — dedup, prefs, critical override, channel independence, fire-after-commit, tenant isolation, and the unsubscribe link.
 
 Goals:
 
-- Walk every "Done when" clause as a verification step (the table in the framing).
-- Visible run progress:
-  - Click "Export invoices" for org A. The inspector run panel polling cycle (every 1s) shows status `queued → executing`, progress bar advancing `1/N → ... → N/N`, then `executing → completed`. The Trigger.dev dashboard deep-link shows the parent run with N `paginate-page` children + 1 `send-export-email` child, each with payload, output, and duration. Confirm the audit-log tail gained one `export.invoices.completed` row.
-- Mid-run kill resumes:
-  - Trigger an export against org B. When the inspector shows `pagesDone: 2 / 7`, Ctrl-C the `pnpm trigger:dev` terminal. The dashboard shows the parent run paused (no active worker). Restart `pnpm trigger:dev`. Within 5-10s, the parent run picks up on the new worker, pages 3-7 execute fresh, the email child sends, final state `completed`. The `runId` is unchanged. Confirm one row in `audit_logs`, one row in `exports`, one email in inbox. **The chapter's load-bearing proof — every paginate-page child completed before the kill returned its cached output from the idempotency-key cache; no row was double-counted.**
-- Per-org queue serialization:
-  - Click "Trigger 2 parallel exports for this org" (debug bypass of the daily key). Two runs appear in the panel list; the first is `executing`, the second is `queued`. Wait. When the first hits `completed`, the second transitions `queued → executing`. The dashboard shows both runs on the same dynamic queue `org-<id>` with `concurrency: 1`.
-- Across-org parallelism:
-  - Click "Trigger 3 parallel exports across orgs". All three transition to `executing` within ~1s. The dashboard shows three distinct dynamic queues. All three complete in roughly the same wall-clock window — proves the per-org queue is per-org, not global.
-- Idempotency-key short-circuit:
-  - Click "Export invoices" twice in quick succession (no debug). The second click's `startExport` returns the same `runId` as the first; the inspector shows one run, not two; the `exports` table shows one row. The `tasks.trigger` idempotency-key short-circuit happens at the SDK boundary, before any task runs.
-  - Wait until the next calendar day (or change the system clock for the test); click "Export invoices" again. A new `runId` returns, a new `exports` row lands. The day-bucket scope of the key is the lifetime control.
-- Payload validation:
-  - Use the Trigger.dev dashboard's "Run task" tool to fire `export-invoices` with `{ organizationId: 'not-a-uuid', requestedBy: 'also-not' }`. The dashboard immediately shows the run failed at the schema-parse boundary; the body never executed; no `paginate-page` child runs spawned; no `exports` row appears. Names the rule from lesson 4 of chapter 070: `schemaTask` validates *before* retries are spent.
-- Permanent-failure shape:
-  - Trigger an export against the empty fourth org (debug). The body throws `AbortTaskRunError('EMPTY_RESULTSET')`; the dashboard shows one attempt, no retries, status `failed`. No email is sent. No audit-log row is written. The `exports` row sits at `status: 'failed'`. Contrast: throw a plain `Error` in the same path and watch three retries fire before failure.
-- Email idempotency:
-  - Force a parent retry after the email step (debug button injects a transient throw at the very end of the parent body). The parent retries; the email child's `triggerAndWait` returns the cached `messageId` from the idempotency-key cache; no second email lands in the inbox. The structured log on the cached return shows "from cache, did not call Resend."
-- Cross-tenant defense:
-  - Click Export as a member of org A. The action's `authedAction('member', ...)` reads `ctx.orgId` from the session — there is no way to pass a different org from the action's call site. Try fabricating a `tasks.trigger` call from the dashboard's "Run task" tool with `organizationId` pointing at org B: the task runs (Trigger.dev does not enforce app tenancy), so the lesson names the structural defense — the body trusts the payload (no choice in a worker context), the only entry point that takes user input is `startExport`, and `authedAction` is the boundary. Trigger.dev's project is treated as a privileged service inside the trust boundary; the dashboard's "Run task" UI is admin-only and the senior call is "rotate `TRIGGER_SECRET_KEY` like any privileged secret."
-- Forward references the chapter project hands off:
-  - **Unit 13b (R2 upload, chapter 073):** the parent body's `console.log`-shaped `downloadUrl` becomes a real R2 presigned PUT; the `paginate-page` child task pipes its CSV directly to R2 via the presigned URL; the email's `downloadUrl` is the matching presigned GET. The `metadata.downloadUrl` channel stays unchanged.
-  - **Unit 14 (notifications):** the `export.invoices.completed` audit log fires the notification dispatcher (one event, the dispatcher fans out to email-or-inbox-or-both per user preferences). The current direct `sendExportEmail` child task becomes redundant; the dispatcher owns the channel choice.
-  - **Unit 15a (cache):** the inspector's `exports` list reads (`use cache` + `cacheTag('exports', orgId)`) gets `updateTag('exports', orgId)` from the parent task after every completion; the user's next visit shows fresh state without a hand-rolled refresh.
-  - **Unit 15b (rate limit):** `startExport` gets wrapped in an Upstash limiter (`5 per user per hour`) so a misbehaving client cannot fill the dynamic queue with synthetic-key debug runs.
-  - **Stripe reconciliation (12 forward note):** the per-org dynamic queue shape lifts directly — `org-reconcile-${organizationId}` with `concurrency: 1`, a nightly `schedules.task` cron triggers one run per org, the body reads `subscriptions.list` and reconciles drift against `plan_entitlements`.
+- Walk every "Done when" clause from the framing's verify recipe in order. The recipe lists the steps; this lesson is the execution and the surrounding senior commentary.
+- **Happy path per event:** fire each event button; confirm one inbox row + one email-counter increment per event; `DispatchResult` shows zero deduped and zero suppressed.
+- **Rapid-fire dedup (the chapter's load-bearing proof):** five-in-two-seconds → one inbox row, one email increment, `deduped: 4`, one `notification_dedup` row. Wait 61 seconds, refire single → fresh dispatch, window expired. Skipping the 61-second wait leaves the student believing dedup is permanent.
+- **Pref-respect:** as `bob` (seeded `team` → `email` off), fire `invite-sent` → inbox row, no email increment, `suppressedByPrefs: 1`.
+- **Default-on:** reset + re-seed → `alice` has no prefs rows → fire → both channels fire. Toggle `team` → `email` off (creates the row) → refire → email skipped. Toggle back on → fires again.
+- **Critical-channel override:** as `alice`, toggle `billing` → `email` off; fire `billing-past-due` → email still increments. The `security` → `email` toggle is rendered disabled on the prefs panel.
+- **Channel independence:** debug tools (a) drop `notifications` briefly → email still increments; (b) force `sendEmail` to throw → inbox row still written. Each channel's failure is structurally swallowed.
+- **Registry miss:** "Force registry miss" → `NotificationError('REGISTRY_MISS')` bubbles. Registry-miss is a programmer error; the per-channel `try/catch` is per-channel, not per-dispatch.
+- **Fire-after-commit:** "Wrap invite in rollback" → submit invite → no rows anywhere, no email, no dedup. The dispatcher never fired because the commit never happened.
+- **Tenant isolation:** `/inbox` reads `userId` from session, never `orgId` from query — hand-crafted URLs do not cross tenants.
+- **Three call sites end-to-end:**
+  - Invite `eve@example.com` (not a user) → chapter 059 invite email only, dispatcher no-ops.
+  - Invite `bob@example.com` (existing user) → chapter 059 invite email AND dispatcher fires for `bob`. Name the two-email duplication explicitly — accepted in v1.
+  - Role change `bob` member → admin → audit row + notification + email. Re-firing with no change still writes (the call site fired); senior call to short-circuit no-op role changes at the action layer is named, not built.
+  - `stripe trigger invoice.payment_failed` → `processed_events` + entitlement + audit + one notification per owner. Replay → `processed_events` blocks at the handler; dispatcher's dedup is a second layer.
+- **Unsubscribe link:** copy `unsubscribeUrl` from the server-console rendered email, visit it → category's `email` toggle pre-set to off, HMAC verified. Tamper one character → 400.
+- **Inbox feed query plan:** the inspector's index-probe panel confirms `(userId, createdAt desc)` and the partial `(userId) WHERE readAt IS NULL` indexes are picked. No `Seq Scan`.
 - Name the senior calls one more time:
-  - The task body has no request context — payload carries `organizationId`, `tenantDb(orgId)` re-derives.
-  - `schemaTask` validates before retries — invalid payloads fail at the boundary, not three minutes in.
-  - Dynamic per-tenant queues serialize within an org and parallelize across orgs.
-  - Durability lives at `triggerAndWait` boundaries — every page is a checkpoint.
-  - Cross-step idempotency keys (`${ctx.run.id}:step:identifier`) guard side effects against parent retries.
-  - `AbortTaskRunError` is for permanents only; plain throws are for transients.
-  - `run.metadata` is the live-progress channel for the watching client.
-  - `tasks.trigger` (fire-and-forget) is for app-side calls; `tasks.triggerAndWait` (durable wait) is for in-task children.
+  - The dispatcher is the only seam — grep `sendEmail(` and `db.insert(notifications)` outside `lib/notifications/`; zero hits is the structural check.
+  - The registry is the source of truth; adding an event is one entry.
+  - Prefs read once per dispatch, batched across recipients, `?? true` for default-on, `|| critical` for the override.
+  - Dedup inside the dispatcher, before channels, keyed by `(event_type, dedup_key, recipient_user_id)` with the registry-defined window.
+  - Channels independent under `try/catch`; one failing does not kill the other.
+  - Fire after commit; rolled-back actions do not notify.
+  - Inbox row is a dispatch-time snapshot; the inbox UI is a pure read.
+- Forward references:
+  - Unit chapter 073 — `cacheTag('notifications', userId)` on the inbox feed when volume justifies; the project deliberately does not cache.
+  - Unit chapter 075 — Upstash-backed dedup replaces the table when throughput crosses the database-write threshold; dispatcher contract stays the same.
+  - Unit chapter 066 — Trigger.dev-backed channel queue moves channel sends behind a durable worker; dispatcher contract stays the same.
+  - Unit chapter 081 — audit-log line, HMAC unsubscribe-token discipline, channel-failure log discipline.
+  - Unit chapter 088 — integration tests for prefs-respected, default-on, dedup, channel-independence.
+  - Unit chapter 092 — `DispatchResult` is the structured-log shape; dashboards on dedup rate, suppression rate, channel-failure rate live there.
 
 Senior calls and watch-outs:
 
-- The verify lesson rehearses each failure mode and names what would break without the disciplines installed. If a verification fails, the lesson points at the owning build lesson, not at "debug it yourself."
-- The kill-resume drill is the chapter's headline proof — running it slowly enough to actually time the Ctrl-C in the middle of a page is the senior call. Killing during a `paginate-page` body (not between pages) is also durable but resumes by re-executing that one page (the cache miss is at the in-flight child, not the parent boundary).
-- Running the parallel-across-orgs proof needs all three orgs seeded — the lesson confirms the seed populated three distinct orgs each with 200+ invoices.
+- The verify lesson rehearses every failure mode the chapter exists to prevent. If a verification fails, point at the owning build lesson.
+- The rapid-fire test must run as the inspector button, not five manual clicks — manual clicks span the window or hit different recipients across session switches.
 
-Codebase state at entry: full export job wired (parent + page child + email child + audit log).
-Codebase state at exit: every "Done when" clause verified clause-by-clause; the student can articulate every primitive (payload validation, dynamic per-tenant queues, `triggerAndWait` durability, cross-step idempotency keys, `AbortTaskRunError`, `metadata`-driven live progress, fire-and-forget action-side triggers) and which forward unit will lean on it.
+Codebase state at entry: full dispatcher + three call sites + verifying surface wired.
+Codebase state at exit: every "Done when" clause verified clause-by-clause; the student can articulate every primitive and which forward unit will lean on it.
 
-Estimated student time: 30 to 45 minutes.
+Estimated student time: 35 to 50 minutes.

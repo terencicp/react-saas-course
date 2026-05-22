@@ -4,54 +4,54 @@ For each project chapter, the **read set** is the minimum set of upstream projec
 
 ```mermaid
 graph LR
-    n032["032 themed surface"]
-    n039["039 list+detail"]
-    n045["045 data layer"]
-    n051["051 server actions"]
-    n054["054 email send"]
-    n059["059 auth"]
-    n063["063 org/RBAC"]
-    n066["066 production list"]
-    n069["069 Stripe webhook"]
-    n071["071 CSV export"]
-    n073["073 R2 upload"]
-    n075["075 notifications"]
-    n077["077 caching"]
-    n079["079 rate limits"]
-    n081["081 TanStack Query"]
-    n083["083 Zustand wizard"]
-    n086["086 audit pass"]
-    n089["089 tri-locale"]
-    n095["095 Stripe tests"]
-    n099["099 observability"]
-    n104["104 ship+migrate"]
-    n108["108 PR review/ADR"]
-    n112["112 AI chat"]
+    n028["028 themed surface"]
+    n035["035 list+detail"]
+    n041["041 data layer"]
+    n047["047 server actions"]
+    n050["050 email send"]
+    n055["055 auth"]
+    n059["059 org/RBAC"]
+    n062["062 production list"]
+    n065["065 Stripe webhook"]
+    n067["067 CSV export"]
+    n069["069 R2 upload"]
+    n071["071 notifications"]
+    n073["073 caching"]
+    n075["075 rate limits"]
+    n077["077 TanStack Query"]
+    n079["079 Zustand wizard"]
+    n082["082 audit pass"]
+    n085["085 tri-locale"]
+    n091["091 Stripe tests"]
+    n095["095 observability"]
+    n100["100 ship+migrate"]
+    n104["104 PR review/ADR"]
+    n108["108 AI chat"]
 
-    n032 --> n039
-    n039 --> n045
-    n045 --> n051
-    n051 --> n054
-    n054 --> n059
-    n059 --> n063
-    n059 --> n079
-    n063 --> n066
-    n066 --> n069
-    n066 --> n071
-    n066 --> n083
-    n066 --> n089
-    n066 --> n104
-    n066 --> n112
-    n069 --> n075
-    n069 --> n086
-    n069 --> n095
-    n071 --> n073
-    n066 --> n077
-    n071 --> n086
-    n066 --> n081
-    n077 --> n108
-    n079 --> n086
-    n086 --> n099
-    n086 --> n108
-    n089 --> n108
+    n028 --> n035
+    n035 --> n041
+    n041 --> n047
+    n047 --> n050
+    n050 --> n055
+    n055 --> n059
+    n055 --> n075
+    n059 --> n062
+    n062 --> n065
+    n062 --> n067
+    n062 --> n079
+    n062 --> n085
+    n062 --> n100
+    n062 --> n108
+    n065 --> n071
+    n065 --> n082
+    n065 --> n091
+    n067 --> n069
+    n062 --> n073
+    n067 --> n082
+    n062 --> n077
+    n073 --> n104
+    n075 --> n082
+    n082 --> n095
+    n082 --> n104
+    n085 --> n104
 ```

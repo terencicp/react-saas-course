@@ -1,227 +1,333 @@
-# Chapter 047 — Server Actions
+# Chapter 047 — Project: CRUD via Server Actions
 
 ## Chapter framing
 
-Chapter 046 built the Zod vocabulary; this chapter wires it to the mutation seam. A Server Action is the named function the framework lets a Client Component invoke as if it were local — but every call is an HTTP POST to the server, with the same trust boundary as any public endpoint. The chapter teaches the action shape (definition, invocation, the serializable-args contract), the validation discipline that has to fire on entry (Zod's `safeParse` against the input), the canonical `Result` return type that lets the form layer branch on success and failure without `try`/`catch`, and the post-mutation surface (`revalidatePath`, transaction wrapping, idempotency foreshadowing). The student leaves with the seam every form in Chapter 048 and every CRUD project from Unit 7 onward writes against.
+Chapter 047 cashes in Unit 6: Zod 4 as the schema vocabulary (chapter 042), the Server Action as the mutation seam with the five-seam shape and the canonical `Result` return (chapter 043), and the native React 19 form pattern with `useActionState` / `useFormStatus` / `useOptimistic` plus the Constraint Validation API and progressive enhancement (chapter 044). The student takes the Unit 5 invoicing schema and ships a full CRUD surface: a "new invoice" form, an "edit invoice" form, and a delete-with-confirmation button. Every mutation goes through one of three Server Actions, each parsing its input with a `drizzle-zod`-derived Zod schema, each returning the canonical `Result`, each revalidating the list after success. The create form layers `useOptimistic` so the row appears immediately and rolls back when the action returns `ok: false`. The delete is wrapped in a Drizzle transaction so the pattern lands explicitly even when the FK cascade would do the same work. Field errors render inline from the action's `Result.error.fieldErrors`, not from client state. The whole thing works with JavaScript disabled.
 
-Threads that must run through every lesson. The Server Action is a public POST endpoint — treat it that way, never trust the input, parse on entry, authorize before any database access (auth wrapper lands in Chapter 061; the slot is named here). The canonical `Result` shape — `{ ok: true; data } | { ok: false; error: { userMessage, code } }` — is the contract every action returns and every form reads; throw at the framework edge (auth, `notFound`), return `Result` everywhere the caller branches on the failure shape. The form layer's `useActionState` (lesson 4 of chapter 048) consumes this exact shape; pre-locking it here means chapter 048 is wiring, not invention. Architectural Principle #3 (pure functions in `/lib`, side effects at named boundaries) and Principle #5 (use the framework's conventions, don't invent parallel ones) get introduced here as the load-bearing decisions for how every action file is shaped — pure helpers in `/lib`, the action body as the seam, no rolled-from-scratch RPC wrapper to compete with the platform. `revalidatePath` is the basic post-mutation move; the full invalidation decision tree was lesson 6 of chapter 036, named once and not re-taught. Transactions revisit the lesson 4 of chapter 043 thread on the mutation side. Idempotency keys are foreshadowed for Chapter 067 but not built here.
+Threads that run through every lesson: the schema is the contract — `createInsertSchema(invoices)` + refinement is the action's input shape, the form's input `name`s match the schema's keys, drift is impossible; `safeParse` + return `Result` is the action body's opening discipline, never `parse`, never throw on validation; `useActionState` reads the same `Result` the action writes — both sides see one shape; the form is a Client Component with uncontrolled inputs and `defaultValue`, the action prop fires the submit, the JS-disabled path still works; `useOptimistic` rolls back implicitly when the surrounding transition fails — no manual rollback bookkeeping; the transaction is for atomicity, external calls don't go inside it. The chapter ships 1 brief + 1 starter walkthrough + 4 build lessons + 1 verify lesson; every build closes on a runnable state.
 
-The chapter ships five teaching lessons plus a quiz.
+### Dependency carry-in
 
----
+- **From chapter 041 (Unit 5 project):** the full `db/schema.ts` (`organizations`, `users` stub, `org_members`, `customers`, `invoices`, `invoice_lines`), `db/relations.ts`, the seeded data with two orgs and 50+ invoices each, the `listInvoices` and `getInvoiceDetail` query helpers in `lib/invoices/queries.ts`, the `lib/invoices/schema.ts` with `statusSchema` and `listInvoicesInputSchema`, the cursor encode/decode in `db/cursor.ts`, the pooled `db` client.
+- **From lesson 4 of chapter 042 / lesson 5 of chapter 042 / lesson 6 of chapter 042 / lesson 7 of chapter 042:** `createInsertSchema(invoices)` plus the override-and-refine pattern, `.omit` for server-owned columns, `z.coerce.number()` / `z.coerce.date()` for `FormData`, `z.preprocess(v => v === 'on', z.boolean())` for the optional draft checkbox, `safeParse(Object.fromEntries(formData))`, `z.treeifyError`.
+- **From lesson 1 of chapter 043 / lesson 2 of chapter 043 / lesson 3 of chapter 043 / lesson 4 of chapter 043 / lesson 5 of chapter 043:** the `"use server"` file-level directive, the five-seam shape (parse → authorize → mutate → revalidate → return), the canonical `Result<T>` type and the `ok`/`err` helpers in `lib/result.ts`, the error code set (`validation` / `conflict` / `not_found` / `internal`), the unique-violation-to-`conflict` mapping helper, `revalidatePath`, `db.transaction(async tx => ...)`, `redirect('/invoices/' + id)` from inside the action.
+- **From lesson 1 of chapter 044 / lesson 2 of chapter 044 / lesson 3 of chapter 044 / lesson 4 of chapter 044 / lesson 5 of chapter 044 / lesson 6 of chapter 044 / lesson 7 of chapter 044:** uncontrolled inputs with `name` + `defaultValue`, `<form action={formAction}>`, `useActionState(action, null)` and the `(prevState, formData)` action signature, the `<SubmitButton>` reading `useFormStatus`, `useOptimistic(actualState, reducer)` inside the action's transition, the Constraint Validation API attributes (`required`, `type`, `minLength`, `pattern`, `inputmode`, `autocomplete`), `:user-invalid` styling, the no-JS test discipline.
+- **From lesson 1 of chapter 033 / lesson 3 of chapter 033:** `searchParams` reads in the Server Component page, `redirect()` from a Server Action, `notFound()` for missing resources.
+- **From lesson 1 of chapter 027 / lesson 5 of chapter 027:** the shadcn install discipline (primitives copied into `components/ui/`, never reinstalled), `Button` from the chapter 028 set, the `cn()` helper, `aria-describedby` / `aria-invalid` accessibility wiring on inputs with errors. The form primitives (`Input`, `Label`, `Textarea`, `Select`, `Dialog`, `Form`, `FormField`, `FormItem`, `FormLabel`, `FormControl`, `FormDescription`, `FormMessage`) are added by the chapter 047 starter via `pnpm dlx shadcn add` and ship pre-installed in `components/ui/`.
 
-## Lesson 1 — The "use server" seam
+### Auth carve-out (deferred to Unit 9)
 
-Defines a Server Action, names the file-level and inline declaration sites, walks the three call shapes, and locks the serializable-args contract that crosses the wire.
+The action body needs an `organizationId` and a `createdBy` to write rows. Unit 8 (Better Auth) and 10 (`authedAction` + `tenantDb`) don't exist yet. The starter exposes a `getActiveContext()` helper in `lib/auth-stub.ts` that returns `{ organizationId, userId }` for the seeded "Acme" org and the seeded owner user — a fixed value at module scope, no cookie or session read. The action calls it once at the top of the body where chapter 057 will inject the `authedAction` wrapper later. Naming this so the student doesn't reach for `cookies()` or invent a session shape mid-chapter.
 
-Topics to cover:
+### Starter file tree (stubs marked with TODO)
 
-- **The senior question.** A form in a Client Component needs to create a row in the database when submitted. The naive 2026 reflex is to add a Server Component-rendered handler; the platform default is the Server Action — a function the client imports and calls as if it were local, with the framework rewriting the call into an HTTP POST. What's the syntax, what crosses the wire, and what's the boundary discipline the senior writes from the first action? The lesson names the two declaration sites, the invocation shape, and the serializable-args contract every action signature must obey.
-- **The Server Action mental model.** An async function marked `"use server"` becomes a server-only POST endpoint whose function reference doubles as the call site for clients. The compiler replaces the imported reference with a stable opaque ID; the client invocation serializes the arguments, POSTs them with the action ID, the server resolves the ID back to the function and runs it, the return value serializes back. The student sees `await createInvoice(formData)` in a Client Component and the runtime does the HTTP round-trip transparently. Architectural Principle #6 (prefer explicit over magic) named at the directive — `"use server"` is the seam, not a decoration.
-- **The two declaration sites — file-level vs. inline.** File-level: a module starting with `"use server"` at the top declares every exported async function as a Server Action. The course default — actions live in `/app/.../actions.ts` or `/lib/actions/<entity>.ts`, co-located with the feature, easily searchable. Inline: an async function declared inside a Server Component with `"use server"` as its body's first statement. The trigger for inline: the action closes over server-side values the Client Component shouldn't see (request-scoped IDs, derived auth state); rare in 2026 SaaS code, named once. The 2026 reflex: file-level by default.
-- **The invocation surface.** From a Client Component, import the action like any function and call it. Three call-site shapes the chapter teaches:
-  - As the `action` prop on a native `<form action={createInvoice}>` — the form pattern (lesson 3 of chapter 048) that posts the `FormData` directly.
-  - Inside `useActionState((prev, formData) => action(formData), initial)` — the React 19 hook that owns pending state and the latest result (lesson 4 of chapter 048).
-  - Directly inside an event handler: `await createInvoice(formData)` — the imperative form, used when the action runs outside a form submit (delete buttons, optimistic toggles).
-  All three call the same function; the framework handles the POST.
-- **The serializable-args contract.** Arguments to a Server Action cross the wire as the RSC payload — every value must serialize through the structured-clone-plus-React-extensions superset (lesson 4 of chapter 034 catalog). Accepted: primitives, plain objects, arrays, `Map`, `Set`, `Date`, typed arrays, `FormData`, `File`, Promises (server-to-client only), JSX (server-to-client only). Rejected: functions, class instances, `WeakMap`/`WeakSet`, DOM nodes. The senior reach for forms: take `FormData` as the only argument, parse on entry. The senior reach for imperative calls: take a plain object or a primitive ID — never pass a class instance or a Drizzle row with methods.
-- **The framework-bound first argument for `useActionState`.** When the action is wrapped in `useActionState`, the first parameter is the previous state, not the form data — `async function action(prevState, formData) { ... }`. Name this once so the student doesn't write the wrong signature; full wiring in lesson 4 of chapter 048.
-- **Closures over server-side values.** A file-level action can `import` modules and `await` server-only resources freely. An inline action additionally captures values from its enclosing Server Component scope (the rendering user's ID, the route's `params`). Next.js encrypts those captured values in the action payload so they don't leak to the client — but the senior posture is to not depend on the encryption: re-read auth from the session inside the action (chapter 061 pattern), never trust a client-passed `userId` argument. The encryption protects against accidental leaks; the action body protects against intentional ones.
-- **What gets stripped from the client bundle.** Action source code does not ship to the client — the import becomes a reference to the opaque ID. Dead-code elimination of unused action exports happens at build; the 14-day key rotation Next.js uses for action IDs is named once. The implication: an action defined in `/lib/actions/invoices.ts` doesn't bloat the Client Component that imports it.
-- **The starter action shape the chapter writes.** A skeleton every subsequent lesson refines:
+```
+src/
+  db/                            # provided: full schema, relations, client, cursor (from chapter 041)
+  lib/
+    invoices/
+      schema.ts                  # provided: statusSchema, listInvoicesInputSchema (from chapter 041)
+      mutation-schemas.ts        # TODO student: createInvoiceInput, updateInvoiceInput, deleteInvoiceInput
+      queries.ts                 # provided: listInvoices, getInvoiceDetail (from chapter 041)
+      actions.ts                 # TODO student: createInvoice, updateInvoice, deleteInvoice (file-level 'use server')
+    result.ts                    # provided: Result<T>, ok(), err(), unique-violation mapping helper
+    auth-stub.ts                 # provided: getActiveContext() returning fixed org + user
+  app/
+    invoices/
+      page.tsx                   # provided: server component, list of invoices, "New invoice" link
+      new/
+        page.tsx                 # provided: server-rendered shell
+        new-invoice-form.tsx     # TODO student: client component
+      [invoiceId]/
+        page.tsx                 # provided: server component, loads detail, renders edit form + delete button
+        edit-invoice-form.tsx    # TODO student: client component
+        delete-invoice-form.tsx  # TODO student: client component
+    _components/
+      submit-button.tsx          # TODO student: useFormStatus + shadcn Button
+      field-error.tsx            # TODO student: reads Result.error.fieldErrors[name]
+  components/ui/                 # provided: shadcn primitives (Input, Label, Textarea, Select, Button, Dialog, Form*)
+```
 
-  `'use server'; export async function createInvoice(formData: FormData) { /* parse → authorize → db → revalidate → return Result */ }`
+The provided pages assume the student-written form components exist at those paths and accept their documented props.
 
-  The five seams are named here in order; the rest of the chapter fills them in.
-- **Watch-outs.** A Server Action invoked from a Server Component is just a function call — no POST, no serialization, no action ID; the directive is only load-bearing at the server/client boundary; passing a Drizzle row directly to a Server Action fails serialization on the row's prototype methods — pass the plain ID or `JSON.parse(JSON.stringify(row))` for the rare full-row case; declaring an inline action inside a Client Component fails the build — inline actions only live inside Server Components; the action's name appears in the client bundle as part of the import reference (not the function body) — choose names you'd be comfortable seeing in DevTools; an action that throws an unhandled error returns a generic 500 to the client and triggers the route's nearest `error.tsx` — the `Result` shape (lesson 3 of chapter 047) is the senior alternative for expected failure paths.
+### Reference solution signatures lessons display
 
-What this lesson does not cover:
+- `CreateInvoiceInput = z.input<typeof createInvoiceInputSchema>` and `Output = z.output<typeof ...>` — the schema is derived from `createInsertSchema(invoices, { number: s => s.min(1).max(50), total: s => s.refine(n => n >= 0) })` then `.omit({ organizationId: true, createdBy: true, createdAt: true })`. The `id` column is *not* omitted — it stays optional (the column has a `$defaultFn` UUIDv7) so the create form can supply a client-generated UUIDv7 in lesson lesson 5 of chapter 047 for the optimistic-reconcile pattern without re-shaping the schema mid-chapter. Fields the form posts: `id` (optional uuid), `customerId` (uuid), `number` (string), `status` (enum), `total` (coerced number), `currency` (string with default), `issuedAt` (coerced date), `dueAt` (coerced date).
+- `UpdateInvoiceInputSchema` = `CreateInvoiceInputSchema.extend({ id: z.uuid() })`. The form posts the `id` as a hidden input.
+- `DeleteInvoiceInputSchema = z.object({ id: z.uuid() })`.
+- `createInvoice(prevState: Result<{ id: string }> | null, formData: FormData): Promise<Result<{ id: string }>>` — file-level `'use server'`.
+- `updateInvoice(prevState: Result<{ id: string }> | null, formData: FormData): Promise<Result<{ id: string }>>`.
+- `deleteInvoice(prevState: Result<null> | null, formData: FormData): Promise<Result<null>>` — wrapped in `db.transaction(async tx => ...)`.
+- `Result<T>` from `lib/result.ts`: `{ ok: true; data: T } | { ok: false; error: { code: 'validation' | 'conflict' | 'not_found' | 'internal'; userMessage: string; fieldErrors?: Record<string, string[]> } }`.
+- `<SubmitButton>{children}</SubmitButton>` — calls `useFormStatus`, renders shadcn `<Button type="submit" disabled={pending}>` with a spinner.
+- `<FieldError name="email" fieldErrors={state?.ok === false ? state.error.fieldErrors : undefined} />` — renders `<p id={`${name}-error`} className="text-destructive text-sm">{message}</p>` or null; the form's `<Input>` references it via `aria-describedby={`${name}-error`}` and `aria-invalid={!!message}`.
+- Env entries: none new (the project reuses chapter 041's `DATABASE_URL`, `DATABASE_URL_UNPOOLED`).
+- The optimistic-list reducer (in the client list component, named `OptimisticInvoicesList`): `(current: Invoice[], next: Invoice) => [next, ...current]`. Optimistic row uses a client-generated UUIDv7 passed as a hidden input to the action so the optimistic and revalidated rows reconcile by key.
 
-- The form pattern that consumes the action (lesson 3 of chapter 048).
-- `useActionState` and `useFormStatus` (lesson 4 of chapter 048, lesson 5 of chapter 048).
-- Authentication and authorization wrapping the action (Chapter 061).
-- The Server Action security model in depth — encryption, action IDs, CSRF (named once here, full coverage at the security baseline in Chapter 085).
+### Surface spec
 
-Estimated student time: 35 to 45 minutes. Foundational mechanics; sets the seam every other lesson refines.
+This project uses production-shaped surfaces, not an inspector dashboard — the verifies run against the real `/invoices` UI.
 
----
+- **`/invoices`** (Server Component): renders the list via the provided `listInvoices` call, a header with a "New invoice" link, and a `<OptimisticInvoicesList>` client wrapper around the rendered rows so optimistic appends work. Each row links to `/invoices/[invoiceId]` and shows the row's number, customer, status, total, due date.
+- **`/invoices/new`** (Server Component shell + client `NewInvoiceForm`): renders the create form. On success the action redirects to `/invoices/[newId]`.
+- **`/invoices/[invoiceId]`** (Server Component): loads the invoice via the provided `getInvoiceDetail`, renders the read-only detail panel above the `EditInvoiceForm`, and renders a `DeleteInvoiceForm` (a small `<form>` with a confirmation `<Dialog>` from shadcn).
+- **No new inspector page** — every verify runs against these three routes.
 
-## Lesson 2 — Parse on entry, every time
+### Verify recipe mapped to "Done when"
 
-Installs the five-seam action shape and the `safeParse`-on-`Object.fromEntries(formData)` discipline that runs before any cookie read, database call, or log statement.
+| Done-when clause | Verify step |
+| --- | --- |
+| The form submits without JavaScript | DevTools → settings → "Disable JavaScript", reload `/invoices/new`, submit a valid invoice — the browser navigates to the new detail page, `pnpm db:studio` shows the row. |
+| Field errors display on validation failure | Submit `/invoices/new` with `total` blank and a malformed `dueAt` — the form re-renders with messages under each field, the unfilled fields keep their typed values, the submit button is enabled again. |
+| The optimistic UI rolls back on action failure | Add `?fail=1` support to the create action that returns `{ ok: false, error: 'internal' }` after a 500ms delay; submit a valid invoice with `?fail=1`; the row appears optimistically in the list, then disappears, and a banner shows the action's `userMessage`. |
+| The delete confirmation submits through a form action, not a `fetch` | Open `/invoices/[id]`, click "Delete", confirm the dialog — the submit fires through the Server Action (one POST to the action URL in DevTools Network, no `/api/*` fetches). With JS disabled, the shadcn `<Dialog>` (Radix-backed) doesn't open; the delete form renders inline as the no-JS fallback so the submit still works. |
+| `revalidatePath` refreshes the list | After every create/edit/delete, navigating back to `/invoices` shows the change without a manual reload. |
+| The delete action is wrapped in a transaction | Read `actions.ts`: the delete body is `await db.transaction(async tx => { ... })`. |
 
-Topics to cover:
+### Concepts demonstrated → owning lesson
 
-- **The senior question.** The `createInvoice` action takes `FormData` and writes a row to the database. The browser's HTML5 validation (`required`, `pattern`, `minLength`) ran before submit — but a curl-from-the-terminal request, a stale client running an older schema, or a malicious script can call the action with any payload. What validation must run inside the action body before any database access, and where does Zod sit in the action's five-seam shape? The lesson installs the parse-on-entry discipline as the first line of every action body.
-- **The action's five seams in order.** Every Server Action the course writes follows the same shape: (1) parse the input with Zod's `safeParse`, (2) authorize the caller (full wrapper in chapter 061; for now, a one-line user check), (3) perform the database mutation, (4) revalidate the cache (lesson 5 of chapter 047), (5) return the `Result` (lesson 3 of chapter 047 owns the shape). Parse is first because every subsequent seam depends on typed input. The 2026 reflex: write the parse line before anything else, the rest follows.
-- **The canonical parse shape.** The action takes `FormData`, converts to an object with `Object.fromEntries(formData)` (multi-valued fields use `getAll` — lesson 6 of chapter 046), and calls `Schema.safeParse(...)`. On `success: false`, the action returns the `Result` failure with the field errors from `z.treeifyError(parsed.error)`. On `success: true`, the typed `parsed.data` flows through the rest of the action body. `safeParse` not `parse` — the action returns the validation failure to the form, it doesn't throw into the `error.tsx` boundary (lesson 3 of chapter 047 owns the throw-vs-Result decision).
-- **The schema source — `drizzle-zod` plus refinement.** The schema comes from `createInsertSchema(invoicesTable)` (lesson 7 of chapter 046) with the API-only refinements added on top, `.omit`-ing the columns the action sets server-side (organization ID from session, audit fields from the action wrapper). The student doesn't hand-write a parallel `z.object` — the database is the source of truth, the action's input schema is derived. The senior anchor: when a column type changes in the schema file, the action's input contract updates without manual edits.
-- **Why server-side validation isn't optional even with `useActionState` + client validation.** Three failure modes the server-side parse catches that the client-side never will: the client running a stale bundle after a schema deploy, the JS-disabled progressive-enhancement submit (lesson 8 of chapter 048) that skips client validation entirely, the non-browser caller (curl, an attacker, a script). The client validation (constraint API in lesson 7 of chapter 048) exists for UX; the server validation exists for correctness. The 2026 reflex: every action parses its input, no exceptions, even when the form does perfect client-side validation.
-- **The `strictObject` reflex for action inputs.** Action input schemas reach for `z.strictObject` (or `createInsertSchema`'s default strict mode) so unknown fields surface as a validation error rather than silently passing through. The client and server share a schema; an unknown field is a contract drift worth logging. Pair with the error-monitoring hook from Chapter 096 (named once).
-- **Where the field errors land.** The parse failure produces `z.treeifyError(error)` — a nested object mirroring the form's field shape. The action returns this in the `Result` failure branch under a typed `fieldErrors` key. The form layer's `useActionState` reads `result.fieldErrors?.email?.[0]` and renders it under the input. Both sides see the same shape; the schema is the single source of truth for both the rule and the message. Wiring lands in lesson 4 of chapter 048; the contract is fixed here.
-- **The cross-resource rules that don't belong in the schema.** Database uniqueness checks (email already exists, slug taken), billing-plan gates (subscription includes this feature), rate-limit checks. These need database access, can't run inside Zod, and belong in the action body after the parse. They produce the same `Result` failure shape with a different `code` (e.g., `'email_taken'`) and a `userMessage` the form renders. The senior call from Architectural Principle #3: pure validation in the schema, side-effects-bearing checks in the action body.
-- **The validation-before-anything-else rule.** No `cookies()` read, no `db` call, no `console.log` of the input shape before `safeParse` returns success. The reasons: unknown input shape means logging it may leak unexpected fields to logs, branching on un-validated fields means relying on `any`-shaped values, hitting the database before validation wastes a query on bad input. The 2026 senior reflex: parse first, branch on `parsed.success`, everything else lives in the success branch.
-- **The narrow window where a schema parses but the action still rejects.** A schema-valid email that's on the suppression list (Chapter 052), a schema-valid amount that exceeds the user's plan limit. These produce a typed error code in the `Result`'s error branch (`code: 'suppressed_email'`, `code: 'plan_exceeded'`), not a Zod issue. The student's mental model: Zod proves the shape; the action body proves the business rules.
-- **Watch-outs.** `parse` instead of `safeParse` throws past the form layer into `error.tsx` — the user sees a generic error page instead of an inline field message; logging the un-parsed input before validation surfaces sensitive client-controlled values in production logs (PII, password attempts); skipping `Object.fromEntries` and reading `formData.get('field')` field-by-field in the action body re-introduces stringly-typed code the schema would have removed; refinements that need DB access stuffed into the schema break the schema's purity — it can no longer parse without a database connection and tests get harder to write; the strictObject mode rejects browser-added fields like `_method` or framework hidden inputs — name those fields explicitly in the schema or use the default `z.object` and accept the silent strip.
-
-What this lesson does not cover:
-
-- The `Result` shape itself (lesson 3 of chapter 047 — next lesson).
-- Auth wrapping the action (Chapter 061).
-- The form-side rendering of field errors (lesson 4 of chapter 048).
-- Rate limiting on the action (Chapter 078, named once here).
-
-Estimated student time: 30 to 40 minutes. Pattern archetype: the entry-line discipline that hardens the seam.
-
----
-
-## Lesson 3 — Result, or throw
-
-Locks the canonical `Result<T>` discriminated-union return shape, the `ok` / `err` helpers, the throw-at-the-framework-edge rule, and the standardized error codes every action shares.
-
-Topics to cover:
-
-- **The senior question.** The action's parse failed. Or the database raised a unique-violation. Or the user lacks permission. Each is a failure the form needs to render — the user sees "Invalid email" under the field, "That slug is taken," "You don't have access." None of these are programming errors; they're expected outcomes of a public mutation endpoint. The 2026 senior question: does the action `throw` and let the form layer catch, or does it return a typed result the form's `useActionState` branches on? The lesson installs the canonical `Result` shape and the throw-versus-Result rule that decides which seam handles which failure.
-- **The canonical Server Action `Result` shape.** Every action in the course returns:
-
-  `type Result<T> = { ok: true; data: T } | { ok: false; error: { code: string; userMessage: string; fieldErrors?: Record<string, string[]> } }`
-
-  The discriminator is `ok`. On success, `data` carries the action's return value (the created entity's ID, the updated row, or `null` for fire-and-forget mutations). On failure, `error` carries a stable machine-readable `code`, a human-rendered `userMessage`, and optional `fieldErrors` from the Zod parse. This shape ties Principle #7 (make impossible states unrepresentable — the form can't render `data` and `error` simultaneously) to SaaS pattern #6 (the result contract every form reads).
-- **The shape as a TypeScript type, declared once.** A shared `Result<T>` generic in `/lib/result.ts` that every action imports and every form reads. The 2026 reflex from lesson 1 of chapter 009 (discriminated unions): name the type once, every consumer reaches for the same definition, no parallel `{ success: ..., error: ... }` variants invented per action.
-- **The two helpers — `ok(data)` and `err(code, userMessage, fieldErrors?)`.** Tiny pure functions in `/lib/result.ts` that produce the success and failure branches with the discriminator pre-set. The action body reads as:
-
-  `if (!parsed.success) return err('validation', 'Check the highlighted fields.', z.treeifyError(parsed.error).properties); ... return ok({ id: invoice.id });`
-
-  The helpers make the intent visible at the call site and keep the action body short.
-- **The throw-versus-Result decision tree.** The senior call comes from "who handles the failure, and does the caller need to branch on it?"
-  - **Throw** when the failure should bubble to the framework's nearest `error.tsx` and the user gets the global error page. The canonical throws: `notFound()` for "the resource doesn't exist," `redirect()` for navigation as a control-flow primitive (these are framework conventions, not exceptions), and an unhandled exception for genuine programmer errors (database is down, the env is misconfigured) where there is no graceful in-form recovery. The auth helper in chapter 061 also throws on missing session — the framework is the catch site.
-  - **Return `Result`** when the form layer needs to render the failure inline. Field-level validation failures, business-rule rejections (suppressed email, plan limit, rate limit), unique-constraint violations from the database. The user stays on the page; the form shows the message under the right field or as a form-level banner.
-  The rule, stated as a one-liner: throw at the framework edge, return `Result` inside the action body where the form branches on the shape. The 2026 reflex.
-- **The error codes worth standardizing.** A small enumerated set the codebase shares — `validation`, `unauthenticated`, `unauthorized`, `not_found`, `conflict` (unique violation), `rate_limited`, `plan_limit`, `internal`. Declared as a `z.enum` or a literal-union TypeScript type so every action's `error.code` types correctly. The form layer can branch on the code for variant rendering (a `conflict` shows a banner; a `validation` shows field errors); the analytics layer can group failures by code (Chapter 096). The senior anchor: codes are the contract between layers, `userMessage` is what the user reads.
-- **The `userMessage` discipline.** Every error returned from an action carries a human-readable string the form renders without translation or transformation. The schema authors validation messages (lesson 5 of chapter 046); the action authors business-rule messages. The form never invents a message ("Something went wrong") — if the action didn't return one, the message is missing and the bug is in the action, not the form. The 2026 reflex from Architectural Principle #5: one source of truth per concern; the action owns user-facing copy for its failure modes.
-- **The senior anti-pattern — leaking the raw error.** Returning `{ ok: false, error: dbError.message }` exposes database internals to the client. The senior reach: catch the raw error in the action body, map known cases to typed codes (a Postgres `23505` unique-violation becomes `{ code: 'conflict', userMessage: 'That slug is already taken.' }`), log the raw error for the operator, return only the sanitized shape. Database error code detection lives in `/lib` as a reusable helper (Architectural Principle #3); the action calls it.
-- **Where async errors become `Result` failures.** A try/catch around the database mutation that maps known thrown errors to the `Result` shape. The pattern:
-
-  `try { const row = await db.insert(...).returning(); return ok(row); } catch (e) { if (isUniqueViolation(e)) return err('conflict', '...'); throw e; }`
-
-  Known cases become `Result`; unknown cases re-throw to `error.tsx`. The senior reflex: catch what you can name and handle; let everything else propagate.
-- **The form layer's read shape.** `const [state, formAction, pending] = useActionState(action, null); state?.ok === false ? state.error.userMessage : ...`. The form discriminates on `ok`, reads `userMessage` for banner-level errors, reads `fieldErrors` for inline rendering. The wiring is lesson 4 of chapter 048's job; the contract is fixed here.
-- **What about `useOptimistic`?** The optimistic update from `useOptimistic` (lesson 6 of chapter 048) rolls back when the action returns `ok: false` — the form layer subscribes to the `Result` discriminator. Foreshadow once; the rollback pattern is lesson 6 of chapter 048.
-- **Watch-outs.** Throwing inside an action that the form was supposed to recover from kicks the user to `error.tsx` and loses the form state — the user retypes everything; the `Result` is the senior default for any failure the user can correct; returning `{ ok: false, error: 'string' }` (string, not object) breaks the `fieldErrors` channel — the contract is the object shape, every action obeys it; mapping every error to `'internal'` defeats the codes — the form can't render meaningfully; the failure code set should be small (six to ten codes for the whole app) — proliferating codes per action is the smell that the abstraction's wrong; success returning bulky entities (full Drizzle rows with all timestamps) crosses the wire on every mutation — return the ID and let the client refetch via the revalidated cache (lesson 6 of chapter 036 thread).
-
-What this lesson does not cover:
-
-- The schema source for validation (lesson 2 of chapter 047 prior).
-- The form-side consumption of the `Result` (lesson 4 of chapter 048).
-- The Drizzle unique-violation detection helper (Chapter 043 owns the database side; this lesson names it).
-- The auth helper's throw on missing session (Chapter 061).
-
-Estimated student time: 40 to 50 minutes. Decision archetype. The lesson that locks the error-model decision for every action in the course.
+- SaaS pattern #6 (canonical Server Action `Result` shape) — lesson 3 of chapter 043.
+- Architectural Principle #3 (pure `/lib`, side effects at named boundaries) — lesson 4 of chapter 043.
+- Architectural Principle #5 (use the framework's conventions) — lesson 4 of chapter 043.
+- Architectural Principle #6 (explicit over magic at `"use server"`) — lesson 1 of chapter 043.
+- Zod 4 `z.strictObject` / top-level format builders / `z.infer` — lesson 1 of chapter 042, lesson 2 of chapter 042, lesson 4 of chapter 042.
+- `createInsertSchema` + override + `.omit` — lesson 7 of chapter 042.
+- `Object.fromEntries(formData)` + `safeParse` — lesson 6 of chapter 042 + lesson 2 of chapter 043.
+- `z.treeifyError` for field-error rendering — lesson 5 of chapter 042.
+- `<form action={serverAction}>`, uncontrolled inputs with `name`, the auto-reset on success — lesson 1 of chapter 044, lesson 2 of chapter 044.
+- `useActionState` shape — lesson 3 of chapter 044.
+- `useFormStatus` + the `<SubmitButton>` pattern — lesson 4 of chapter 044.
+- `useOptimistic` reducer + implicit rollback + client-generated UUID — lesson 5 of chapter 044.
+- Constraint Validation API attributes + `:user-invalid` — lesson 6 of chapter 044.
+- Progressive enhancement — lesson 7 of chapter 044.
+- `revalidatePath` after a mutation — lesson 5 of chapter 043 (full tree lesson 6 of chapter 032).
+- `db.transaction(async tx => ...)` — lesson 5 of chapter 043 (full mechanics lesson 4 of chapter 039).
+- Idempotency-key slot named — lesson 5 of chapter 043 (full pattern chapter 063).
 
 ---
 
-## Lesson 4 — Thin actions, pure /lib
+## Lesson 1 — Project brief
 
-Introduces Principle #3 (pure helpers in `/lib`, side effects at named boundaries) and Principle #5 (don't invent a parallel call wrapper), and names the auth and billing carve-outs that earn their weight later.
+The scope, the five "Done when" clauses, the deferred-to-later-units carve-outs, and the senior payoff of installing the canonical Server Action shape on a real CRUD surface.
 
-Topics to cover:
+Goals:
 
-- **The senior question.** The action body is starting to fill up — parse, authorize, branch on business rules, call the database, map errors, revalidate, return. Where does each line belong: inside the action file, or extracted into `/lib`? And when the codebase grows to twenty actions across five features, is the answer to write a tRPC-style call wrapper that owns the parse-authorize-result pattern, or to lean into the framework's convention and accept the small boilerplate? The lesson introduces Architectural Principles #3 and #5 at the moment they earn their weight — and names the slot where the only legitimate wrapper (the auth/RBAC carve-out in Chapter 061) will land.
-- **Architectural Principle #3 introduced — pure functions in `/lib`, side effects at named boundaries.** The principle: business logic is a pure function of inputs to outputs (or to a typed `Result`), free of `cookies()`, `headers()`, `db` writes, or HTTP calls. The Server Action body is the named boundary where the side effects fire — it reads cookies, calls the database, returns the result. The action file itself is thin; the work it orchestrates lives in `/lib`.
+- Frame the CRUD surface as the canonical SaaS mutation flow: every later unit (auth gates in 10, soft delete in 11, billing-gated mutations in 12) layers on top of this exact shape. The chapter ships create / read / update / delete against the Unit 5 invoices schema and nothing more.
+- State the "Done when" five clauses in one paragraph: JS-disabled submit works, field errors render inline from the Result, optimistic create rolls back on failure, delete submits through the form action (not `fetch`), `revalidatePath` updates the list.
+- Name the scope cuts: no auth (Unit 8/10 owns sessions and RBAC; the starter ships a fixed-org stub), no soft delete (Unit 10), no audit log (Unit 9), no idempotency key (Chapter 063 — the slot is named in lesson 5 of chapter 043 and the form hidden-field shape is foreshadowed here but not enforced), no React Hook Form (the trigger doesn't fire — chapter 045), no route handlers (the form is in-app — chapter 046).
+- Set the senior payoff: the three actions written here are the shape every action in Units 7–22 reuses. The discipline installed — parse on entry, return `Result`, revalidate, transaction for multi-step, optimistic only when the trigger fires — is what turns "form code" into "audit-clean form code" later.
+- Show the end UX: one screenshot strip of `/invoices` → `/invoices/new` → field error state → success redirect → optimistic add → delete confirmation.
+- Link the starter via `degit` from the `react-saas-course-projects` monorepo.
 
-  The shape the chapter writes from here on:
-  - `/lib/invoices/calculate-total.ts` — pure function, `(items: LineItem[]) => Money`, fully unit-testable, no imports of `db` or `cookies`.
-  - `/lib/invoices/repository.ts` — the data-access layer; the only file that imports `db`.
-  - `/lib/invoices/policy.ts` — the authorization predicates (`canCreateInvoice(user, org)`); pure functions of session and target.
-  - `/app/.../actions.ts` — the Server Action; thin orchestration that calls the pure helpers in sequence.
+Senior calls and watch-outs:
 
-  The 2026 reflex: when the action body gets longer than ~30 lines, the next extraction is into `/lib`, not into a new abstraction layer. Three named boundaries fire side effects in this course: Server Actions, route handlers (chapter 050), and background jobs (Chapter 16); everything else is pure.
-- **Why the principle pays off.** Three concrete wins the student feels by the end of the chapter:
-  - Unit tests run without a database — the pure helpers in `/lib` take inputs and produce outputs; the action's integration tests are smaller and rarer.
-  - The same pure helper feeds a Server Action, a route handler, and a background job — one place to fix a calculation bug.
-  - The action body reads as a sequence: parse, authorize, call `/lib`, revalidate, return — the reviewer can scan it in seconds.
-- **Architectural Principle #5 introduced — use the framework's conventions, don't invent parallel ones.** The principle: when the framework ships a convention for a problem, use it; don't roll a parallel mechanism that competes with the platform. Named here because the next instinct after the action body fills up is to extract a generic call wrapper — `safeAction(schema, fn)` that owns the parse, the authorization, and the `Result` shape, called like `safeAction(InvoiceSchema, async (data) => { ... })`. The wrapper looks clean; it costs the platform's static analysis, breaks the call-site visibility of what the action does, and earns the team a custom DSL nobody else in the React 19 ecosystem speaks.
-- **The 2026 reflex around action wrappers.** Don't write one. The action's five seams (parse, authorize, mutate, revalidate, return) are small enough to repeat per action; the repetition is a feature for the reviewer. Libraries that wrap actions (`next-safe-action`, `zsa`) are real, well-built, and the senior trigger for them is named — but the default in this course is to use the framework's convention. The wrapper layer is the conditional past a clear threshold; the default is the framework.
-- **The named carve-out — authorization (Chapter 061).** The one place the course does extract a wrapper: `authedAction(role, schema, fn)` in lesson 2 of chapter 061. The reason it earns its weight (and survives Principle #5) is that auth is the same boilerplate at every action — `getSession`, check role, return `unauthenticated`/`unauthorized` if missing — and getting it wrong is a security incident, not a code-style issue. Centralizing the auth check at one wrapper makes the policy explicit and the audit trivial. The carve-out is named once here; the full pattern lands in chapter 061. Every other concern (parse, validate, revalidate, transaction) lives in the action body.
-- **The named carve-out — the thin billing interface (Chapter 068).** The other future carve-out, named once: `billing.upgrade()`, `billing.requirePlan()` — a small typed surface for the billing concern so action bodies don't have to know about Stripe webhooks. Same reasoning as the auth wrapper: a single concern, security/compliance-sensitive, worth a named interface.
-- **The "is this a /lib helper or an action?" decision rule.** Two-line test: does the function have side effects on a database, cache, queue, or external API? If yes, it's an action (or a route handler, or a job). If no, it's a `/lib` helper. The rule cuts the gray-area cases — a function that "validates a payment and reserves the inventory" is two functions: `validatePayment` (pure, `/lib`) and `reserveInventory` (side-effectful, called from the action).
-- **The directory shape the course settles on.**
-  - `/app/<route>/actions.ts` — the actions for the route, file-level `"use server"`.
-  - `/lib/<feature>/` — pure helpers, the repository layer, the policy layer.
-  - `/lib/db/schema.ts` — the canonical Drizzle schema (chapter 041).
-  - `/lib/result.ts` — the shared `Result` shape and helpers.
-  The student gets the layout once and follows it from the project chapter (chapter 051) forward.
-- **Watch-outs.** A `/lib` helper that imports `cookies()` or `db` has been mis-sliced — extract the side-effect to the action, keep the pure logic in `/lib`; the temptation to write a `safeAction(schema, fn)` wrapper is strongest after the third action — name it as the smell and write the parse line inline; the named auth carve-out doesn't justify a "while we're at it" wrapper that also handles validation and revalidation — auth is the one concern, the others stay inline; pure helpers that take a `db` instance as a parameter (`createInvoice(db, data)`) are a common anti-pattern — the database is a side-effect, the helper becomes impure once it can write; nesting `/lib` directories by both feature and layer (`/lib/invoices/repository/select.ts`) is over-structure for the SaaS surface — one folder per feature is enough until the feature genuinely splits.
+- The `getActiveContext()` stub is intentionally not session-shaped. Reaching for `cookies()` or inventing a session reader now creates code Unit 9 will rewrite — leave the stub alone, the wrapper drops in cleanly later.
+- Every action returns `Result`, never throws on validation. The student's instinct from older codebases is to `throw new ValidationError(...)`; the chapter's discipline is the opposite.
 
-What this lesson does not cover:
+Codebase state at entry: empty working directory.
+Codebase state at exit: starter cloned, `docker compose up -d` running the Unit 5 Postgres, `pnpm install` clean, `pnpm db:migrate && pnpm db:seed` populated, `pnpm dev` shows `/invoices` with the seeded list of invoices (read path inherited from chapter 041; mutations not wired).
 
-- The `authedAction` wrapper itself (lesson 2 of chapter 061).
-- The billing interface (lesson 6 of chapter 068).
-- Background jobs as a side-effect boundary (Chapter 16).
-- The dependency-injection variants of testable repositories (out of scope — the 2026 default is to test the pure helpers and integration-test the action).
-
-Estimated student time: 35 to 45 minutes. Decision archetype. The principles get introduced where they earn their weight, and the action's directory shape locks in for every later chapter.
+Estimated student time: 10 to 15 minutes.
 
 ---
 
-## Lesson 5 — After the write
+## Lesson 2 — Reading the starter
 
-Teaches `revalidatePath` as the basic post-mutation move, the `db.transaction` wrapping pattern with its no-external-calls rule, and foreshadows the idempotency-key slot for Chapter 067.
+A tour of the provided files (`Result<T>`, the auth stub, the page shells, the shadcn `<Form>` primitives) and the TODO stubs the student will fill across the chapter.
 
-Topics to cover:
+Goals:
 
-- **The senior question.** The action parsed the input, authorized the caller, wrote the row, and is about to return `ok({ id })`. Three things still need to fire: the cached list-of-invoices page must refresh so the user sees the new row, the multi-step mutation that wrote to two tables must be atomic so a half-failure doesn't leave the database inconsistent, and the user's accidental double-click must not produce two rows. The lesson teaches the basic post-mutation move (`revalidatePath`), the transaction-wrapping pattern for multi-step mutations, and foreshadows the idempotency-key pattern that closes the double-submit hole.
-- **`revalidatePath` as the basic move.** After a successful mutation, the action calls `revalidatePath('/invoices')` to mark the cached invoices list as stale. The next request to that route fetches fresh data; the user navigates back from the success state and sees the new row. The 2026 reflex from the first action: every mutation that affects a cached read on a known path ends with a `revalidatePath` call before the return. The path-string is the same as the URL; nested routes pass the layout's type (`revalidatePath('/[org]/invoices', 'page')`) when needed.
-- **Why the lesson stops at `revalidatePath` and not the full surface.** lesson 6 of chapter 036 owned the full decision tree — `updateTag` (Server-Action-only, read-your-writes), `revalidateTag` (stale-while-revalidate), `revalidatePath`, `router.refresh`. This lesson does not re-teach it. The senior call between them was named in chapter 036; here, `revalidatePath` is the basic move at the first action — clear, blunt, correct for the simple list-and-detail case the project chapter (chapter 051) builds. The student writes the more nuanced calls in Chapter 076 when the SaaS patterns demand it. A one-line frame and the link to lesson 6 of chapter 036.
-- **The placement rule — after the mutation, before the return.** `revalidatePath` mutates the server-side cache; calling it before the `db.insert` runs revalidates against an unchanged state and the user sees stale data after the redirect. The 2026 ordering: `parse → authorize → mutate → revalidate → return`. The five-seam shape from lesson 2 of chapter 047 locked in.
-- **`redirect()` after a mutation — the framework's convention.** A common follow-up: after the create, redirect to the new record's detail page. `redirect('/invoices/' + id)` runs at the end of the action; the framework throws a control-flow exception that the runtime catches and turns into a 303. The senior anchor: `redirect` is a framework convention, not an error — it doesn't conflict with the `Result` shape because the redirect happens before the `Result` would have returned. Pair the optimistic UI from lesson 6 of chapter 048 with the redirect carefully (the redirect cancels the optimistic state; lands in lesson 6 of chapter 048).
-- **The writable `headers()` API inside a Server Action.** Next.js 16 exposes a writable `headers()` inside Server Actions for appending response-specific headers (e.g., `Set-Cookie` for a fresh session token, custom audit headers) on the action's response — distinct from the read-only `headers()` taught in lesson 1 of chapter 037, which reads the incoming request headers. Named once here so the student knows the writable surface exists at this seam; the depth treatment lands with the security/headers chapter (lesson 4 of chapter 079).
-- **The transaction-wrapping pattern.** When the action writes to multiple tables that must succeed or fail together (create an invoice plus its line items; create a user plus their default organization), wrap the mutation in `db.transaction(async (tx) => { ... })`. Every write inside the callback uses `tx` instead of `db`; the transaction commits atomically on return, rolls back on throw. The senior reach: any multi-table mutation, any update-then-derive flow that depends on the first write having succeeded.
-- **The transaction shape inside the action body.**
+- Walk the file tree, separating provided from stub. Linger on four files: `lib/result.ts` (the `Result<T>` type, `ok` and `err` helpers, the `mapUniqueViolation` helper — students read it, don't write it, the unique-violation-to-`conflict` pattern from lesson 3 of chapter 043 lives here), `lib/auth-stub.ts` (the fixed-context helper and the reason it exists), `app/invoices/page.tsx` (the server component reading the list and rendering the `OptimisticInvoicesList` client wrapper — the wrapper is stubbed too and gets filled in lesson 5 of chapter 047), and `components/ui/form.tsx` (the shadcn `<Form>`, `<FormField>`, `<FormItem>`, `<FormLabel>`, `<FormControl>`, `<FormMessage>` primitives — the layout primitives the chapter uses without RHF, the discipline from lesson 6 of chapter 044).
+- Read `lib/invoices/mutation-schemas.ts` — empty with TODO comments naming the three exports the actions will import.
+- Read `lib/invoices/actions.ts` — the file starts with `'use server'` and three empty function signatures with TODOs.
+- Read `app/_components/submit-button.tsx` and `field-error.tsx` — empty TODOs with the expected props.
+- Sonner's `<Toaster>` is preinstalled in the root layout (the starter wires `<Toaster />` from `sonner` in `app/layout.tsx`); the `toast.success(message)` call shape lands in lesson 6 of chapter 047 for the URL-param success toast after a delete.
+- Read the three form components' page-side parents to lock in what the student-written client components receive as props and what they must render. The edit page passes the loaded invoice; the new page passes nothing; the detail page passes the invoice and the delete is a separate small form.
+- Bring up the dev surface: `pnpm dev` renders `/invoices` with the seeded list. Clicking "New invoice" 404s because `new-invoice-form.tsx` is empty. That's the runnable starting point.
 
-  `const result = await db.transaction(async (tx) => { const [invoice] = await tx.insert(invoices).values(data).returning(); await tx.insert(invoiceLines).values(linesFor(invoice.id)); return invoice; });`
+Senior calls and watch-outs:
 
-  The transaction is one of the action's middle seams. The parse and authorize fire before; the revalidation and return fire after. The transaction itself can throw — catch known constraint violations (the lesson 3 of chapter 047 unique-violation mapping) and return the `Result` failure; let unknown errors propagate to `error.tsx`. The 2026 reflex: the transaction is for atomicity, not for general error handling.
-- **The Drizzle transaction surface — what carries over from lesson 4 of chapter 043.** Isolation levels (`{ isolationLevel: 'serializable' }`), nested transactions (savepoints), the request-scoped transaction pattern for read-your-writes consistency — all named in lesson 4 of chapter 043. This lesson uses the default isolation and the simple flat transaction; the conditional levers live in chapter 043. The senior call here: most action transactions don't need a non-default isolation level; reach for serializable only when the chapter on consistency (Chapter 15) names the trigger.
-- **Senior watch-outs inside the transaction callback.** External calls (Stripe, Resend, queue dispatches) inside a transaction are the production landmine — the external call succeeds, the transaction rolls back, the external state and the database diverge. The senior reflex: external side effects fire *after* the transaction commits, not inside it. The pattern: `const id = await db.transaction(...)` then `await stripe.charges.create(...)` outside. The full background-jobs-for-external-effects pattern lands in Chapter 16; the rule here is "no Stripe inside transaction."
-- **Idempotency keys — foreshadowed, not built.** The double-submit problem: the user clicks "Create invoice" twice (or the network drops and the browser retries), the action runs twice, the database has two invoices. The senior fix is an idempotency key — the form includes a `crypto.randomUUID()` as a hidden field; the action parses it, checks a `processed_actions` table for the key, returns the prior result if seen, otherwise writes and records the key. The full pattern (the unique constraint, the deduplication table, the cleanup job) lives in Chapter 067.
+- The `_components` underscore-prefixed folder in App Router is the convention for "this folder isn't a route segment, it's shared components." Named once; the student stops trying to make every component a page.
+- `Result<T>` lives in one file and one place. The temptation to redeclare the type per action ("for clarity") is the smell — the type is the contract.
+- The provided pages call student-written form components by relative import — keep the file names and exports as documented, the page wiring breaks otherwise.
 
-  This lesson names the problem, names the slot, and writes the form-side hidden input that chapter 067's action body will read. The 2026 reflex: every action that creates a row in a non-recoverable way (charges money, sends an email, ships a package) needs an idempotency key; CRUD on internal entities can defer until the second time the bug bites.
-- **The action's full shape, end to end.** Bring the five seams together with the chapter's worked example:
+Codebase state at entry: starter cloned, Postgres up, seed run, `pnpm dev` renders `/invoices`.
+Codebase state at exit: student has read the provided files and TODO stubs. No code written. `pnpm dev` still renders `/invoices` with the seeded list; clicking through reveals empty/404 states for `new` and `[invoiceId]` (the detail page works for read, but it imports the empty edit form).
 
-  Pseudo-code shape (not load-bearing on exact syntax):
-  parse → authorize → `db.transaction(async tx => { ... })` → `revalidatePath('/invoices')` → return `ok({ id })`.
-
-  The student has seen each seam; the lesson ends with the assembled action that the project chapter (chapter 051) extends.
-- **Watch-outs.** `revalidatePath` before the mutation revalidates against stale state — order matters; calling `revalidatePath` inside a transaction has no rollback semantics (the cache is invalidated even if the transaction rolls back) — keep cache calls outside the transaction; external calls inside transactions diverge state on rollback — fire side effects after the commit; nested transactions in Drizzle are savepoints, not independent transactions — a rollback from the inner savepoint doesn't release the outer transaction; the idempotency key is on the form, not derived server-side from the input — a server-derived key (a hash of the inputs) deduplicates legitimate repeat creates that happen to have identical inputs; `redirect()` inside the action returns from the function via an exception — `try`/`catch (e) { ... }` wrappers must rethrow framework errors (Next.js exposes a check for these), the safer pattern is to call `redirect` at the very end of the action.
-
-What this lesson does not cover:
-
-- The full cache-invalidation decision tree (lesson 6 of chapter 036, lesson 2 of chapter 076).
-- Transaction isolation levels (lesson 4 of chapter 043).
-- The idempotency-key implementation (Chapter 067).
-- Optimistic UI rollback on action failure (lesson 6 of chapter 048).
-- Background jobs for external side effects (Chapter 16).
-
-Estimated student time: 40 to 50 minutes. The lesson that closes the action surface — what fires after the database write, atomicity for multi-step mutations, and the named slot for the patterns that come later.
+Estimated student time: 15 to 20 minutes.
 
 ---
 
-## Lesson 6 — Quizz
+## Lesson 3 — Schemas and actions: parse, mutate, revalidate, return
 
-Top 10 topics to quiz:
+Authoring the three `createInsertSchema`-derived mutation schemas and the create/update/delete actions in the canonical five-seam shape with `safeParse`, `Result`, tenant-scoped `where` clauses, and `revalidatePath`.
 
-- The Server Action mental model — `"use server"` as a seam, the client-side import as an opaque ID, what gets stripped from the client bundle, the file-level versus inline declaration sites.
-- The serializable-args contract — what crosses the wire (primitives, plain objects, `FormData`, `File`, `Map`, `Set`, `Date`), what doesn't (functions, class instances, Drizzle rows with prototype methods).
-- The five-seam action shape — parse, authorize, mutate, revalidate, return — and why parse is always first.
-- `safeParse` versus `parse` at the action entry — why the boundary default is the discriminated-result form, what happens when `parse` throws in an action body.
-- The canonical `Result` shape — `{ ok: true; data } | { ok: false; error: { code, userMessage, fieldErrors? } }` — what each field is for, why it ties Principle #7 to the form's `useActionState` contract.
-- The throw-versus-`Result` decision — when to `throw` (framework edge: `notFound`, `redirect`, unhandled programmer errors) and when to return `Result` (every failure the form should render inline).
-- Mapping known database errors to typed codes — the Postgres unique-violation to `conflict` pattern, the "never leak the raw error" reflex.
-- Architectural Principle #3 — pure helpers in `/lib`, side effects at named boundaries (action, route handler, job); the directory shape the chapter writes from.
-- Architectural Principle #5 — use the framework's conventions; why the course doesn't roll a generic `safeAction(schema, fn)` wrapper, and the auth carve-out in chapter 061 that's the named exception.
-- `revalidatePath` as the basic post-mutation move (the full decision tree lives in lesson 6 of chapter 036), the transaction-wrapping pattern for multi-step mutations, the "no external calls inside the transaction" rule, and the idempotency-key slot foreshadowed for chapter 067.
+Goals:
+
+- Fill `lib/invoices/mutation-schemas.ts`. Three exports:
+  - `createInvoiceInputSchema` from `createInsertSchema(invoices, { number: s => s.min(1).max(50), total: s => s.refine(n => n >= 0, 'Total must be non-negative') }).omit({ organizationId: true, createdBy: true, createdAt: true })`. The `id` column stays in the schema (optional, defaulted) so lesson 5 of chapter 047 can supply a client-generated UUIDv7 without re-shaping. Layer the form's coercion via column overrides for `total: z.coerce.number().nonnegative().multipleOf(0.01)`, `issuedAt: z.coerce.date()`, `dueAt: z.coerce.date()`, `customerId: z.uuid()`. The result is the action's input contract; `z.input<typeof ...>` is the `FormData` raw shape, `z.output<typeof ...>` is what the typed action body works with.
+  - `updateInvoiceInputSchema = createInvoiceInputSchema.extend({ id: z.uuid() })`.
+  - `deleteInvoiceInputSchema = z.object({ id: z.uuid() })`.
+- Fill `lib/invoices/actions.ts` with the three actions. The file starts with `'use server'` at the top. Each follows the five-seam shape from lesson 2 of chapter 043:
+  - `createInvoice(prevState, formData)`: `const raw = Object.fromEntries(formData);` → `const parsed = createInvoiceInputSchema.safeParse(raw);` → on `!parsed.success`, return `err('validation', 'Check the highlighted fields.', z.treeifyError(parsed.error).properties)`. Then `const { organizationId, userId } = await getActiveContext();`. Then `try { const [row] = await db.insert(invoices).values({ ...parsed.data, organizationId, createdBy: userId }).returning({ id: invoices.id }); revalidatePath('/invoices'); return ok({ id: row.id }); } catch (e) { if (isUniqueViolation(e)) return err('conflict', 'An invoice with that number already exists for this org.'); throw e; }`. Add `redirect('/invoices/' + row.id)` after the return-shape decision so the success path navigates.
+  - `updateInvoice`: same shape, `db.update(invoices).set(parsed.data).where(and(eq(invoices.id, parsed.data.id), eq(invoices.organizationId, organizationId)))`. Tenant guard in the `where`, not after the load (lesson 2 of chapter 043 rule, chapter 041 tenant-filter rule). Returns `ok({ id })` without a redirect — the edit form stays on the page.
+  - `deleteInvoice`: simple single-`db.delete(...)` form for now (lesson 6 of chapter 047 wraps it in a transaction). Returns `ok(null)` and `redirect('/invoices')` after `revalidatePath`.
+- Each action revalidates *after* the database write and *before* the return. The order from lesson 5 of chapter 043 made concrete.
+- The runnable proof for this lesson is *not* a wired-up UI yet (forms land in lesson 4 of chapter 047). The runnable proof is `pnpm dev` still serving the read paths (the list page, the detail page) without runtime errors, and a temporary scratch invocation: add a tiny "Run create with test data" button to `/invoices` that's hard-coded to call `createInvoice` with a `FormData` built in the click handler (the test-only button is removed in lesson 4 of chapter 047 when the real form lands). The student verifies the row writes, the redirect fires, the list refreshes; with a malformed `dueAt`, the returned `Result` has `fieldErrors`.
+
+Senior calls and watch-outs:
+
+- `safeParse` first, every single time. The temptation to read `formData.get('total')` field by field is the smell — the schema is the contract, the parse covers all of it.
+- The tenant filter in the `update` and `delete` `where` clauses is non-negotiable. Loading the row first and then checking the org ID is the IDOR-class bug from lesson 6 of chapter 041; structural rule is tenant ID in the `where`, never after.
+- `revalidatePath` before the return, never inside the transaction (foreshadow), never before the database write.
+- `redirect` inside an action throws a control-flow exception — don't swallow it in the unique-violation catch. The cleanest pattern is to redirect *after* the try/catch, on the success branch.
+- The `getActiveContext()` call goes *after* the parse, not before. Reading auth on every parse failure wastes a session lookup once chapter 057's wrapper replaces the stub. The lesson 4 of chapter 043 rule: parse first, everything else after.
+- The `Result` failure path returns the object shape — never `null`, never a string, never `throw`. The form layer's read shape (next lesson) depends on the object.
+
+Codebase state at entry: empty schemas and actions files; the form components are empty stubs.
+Codebase state at exit: schemas written; three actions written; the temporary scratch button on `/invoices` proves the create action end-to-end (writes a row, redirects, validation errors return in `state`). No real forms exist yet.
+
+Estimated student time: 30 to 40 minutes.
 
 ---
 
-> **Note (`revalidateTag` in Next.js 16):** the single-argument form `revalidateTag(tag)` is deprecated — every call must pass a `cacheLife` profile as the second argument (`'max'` is the senior default), e.g. `revalidateTag(tag, 'max')`.
+## Lesson 4 — Wiring the forms to the actions
+
+Building the create, edit, and delete client forms with `useActionState`, uncontrolled inputs mirroring schema constraints, the reusable `<SubmitButton>` and `<FieldError>` components, and a shadcn `<Dialog>` delete with a no-JS fallback.
+
+Goals:
+
+- Fill `app/_components/submit-button.tsx`. Client component, calls `useFormStatus()`, renders shadcn `<Button type="submit" disabled={pending}>` with a `<Loader2 className="animate-spin">` inside when `pending`. Imports `useFormStatus` from `'react-dom'` (the lesson 4 of chapter 044 watch-out). Accepts `children` and an optional `variant` prop forwarded to `<Button>`.
+- Fill `app/_components/field-error.tsx`. Takes `{ name: string; fieldErrors: Record<string, string[]> | undefined }` and renders `<p id={`${name}-error`} className="text-destructive text-sm mt-1">{fieldErrors?.[name]?.[0]}</p>` or `null`. The companion input sets `aria-describedby={`${name}-error`}` and `aria-invalid={!!fieldErrors?.[name]?.[0]}` — the accessibility wiring from lesson 5 of chapter 027.
+- Fill `app/invoices/new/new-invoice-form.tsx`. Client component. `const [state, formAction] = useActionState(createInvoice, null);` plus `const fieldErrors = state?.ok === false ? state.error.fieldErrors : undefined;`. Native `<form action={formAction}>` with the shadcn layout primitives wrapping each input. Per-field shape: `<FormField name="total"><FormLabel>Total</FormLabel><FormControl><Input name="total" type="number" step="0.01" min="0" required inputMode="decimal" defaultValue="" aria-describedby="total-error" aria-invalid={!!fieldErrors?.total?.[0]} /></FormControl><FieldError name="total" fieldErrors={fieldErrors} /></FormField>`. Repeat for `customerId` (a `<Select>` populated from a `customers` prop the page passes in), `number`, `status`, `issuedAt`, `dueAt`, `currency`. Form-level banner: `{state?.ok === false && state.error.code !== 'validation' && <p className="text-destructive">{state.error.userMessage}</p>}`. Submit: `<SubmitButton>Create invoice</SubmitButton>`. Remove the temporary scratch button from lesson 3 of chapter 047.
+- Constraint Validation API attributes mirror the schema rules: `required` on every non-optional field, `type="number"`/`type="date"` matching the schema, `inputMode="decimal"` on `total`, `autoComplete="off"` on `number`. Tailwind class for `:user-invalid` styling on the shadcn `<Input>` so the post-interaction red ring lands without `:invalid`'s on-mount red flash.
+- Fill `app/invoices/[invoiceId]/edit-invoice-form.tsx`. Same shape with `useActionState(updateInvoice, null)`, the page passes the loaded invoice as a prop, every field's `defaultValue` reads from the prop, a hidden `<input type="hidden" name="id" value={invoice.id} />` carries the ID. Success stays on the page — `updateInvoice` doesn't redirect; the Server Component page re-fetches after `revalidatePath`, the form re-renders with fresh defaults.
+- Fill `app/invoices/[invoiceId]/delete-invoice-form.tsx`. The shadcn `<Dialog>` trigger is a "Delete" button on the detail page; the dialog body holds `<form action={formAction}>` with a hidden `<input name="id" value={invoice.id} />` and two actions: "Cancel" (closes the dialog, no submit) and `<SubmitButton variant="destructive">Delete</SubmitButton>`. `deleteInvoice` redirects to `/invoices` after revalidating, so the dialog closes via the page navigation. The PE fallback: wrap the dialog in a `<noscript>`-aware pattern — when JS is off the dialog won't open, so the same `<form>` renders as a regular inline form on the detail page (a simple `<noscript>` block, or render both and let CSS / JS gate visibility). Pick the simpler pattern; the verify in lesson 7 of chapter 047 confirms the no-JS path.
+
+Senior calls and watch-outs:
+
+- The `<FieldError>` component reads from the action's `Result`, not from local state. The form layer is a renderer; the lesson 3 of chapter 044 rule.
+- `defaultValue` not `value` on every input. Reaching for controlled inputs to "make the edit form easier" is the smell — `revalidatePath` re-renders the Server Component, the new `defaultValue` flows down, the DOM reconciles by uncontrolled-input identity.
+- Constraint API attributes mirror the schema. If the schema says `.min(1)`, the input has `minLength="1"`. Drift between the two is the bug class the mirror prevents.
+- `aria-invalid` and `aria-describedby` are non-optional. The visual error is for sighted users; the ARIA wiring is for assistive tech.
+- The shadcn `<Form>` primitives don't require React Hook Form despite the docs implying it. The chapter uses them as pure layout primitives — `useActionState` owns the state. The lesson 6 of chapter 044 senior call.
+- The `<Dialog>` for delete is shadcn's primitive, which handles focus trap, Esc-close, and click-outside (lesson 4 of chapter 027 dividend). The form lives inside the dialog body — closing the dialog doesn't cancel the submit, submitting closes the dialog by virtue of the redirect.
+
+Codebase state at entry: actions exist; form components are empty stubs; the temporary scratch button proves the backend.
+Codebase state at exit: full CRUD surface visually complete. Create form renders field errors inline, edit form prefills and saves, delete form opens a dialog and submits. Every submit button shows a spinner during in-flight. JS-disabled submit still works — verified at the end of the lesson with a quick DevTools toggle.
+
+Estimated student time: 40 to 55 minutes.
+
+---
+
+## Lesson 5 — Optimistic create with a client-generated UUID
+
+Adding `useOptimistic` to the invoice list, a UUIDv7 hidden input that reconciles the optimistic and persisted rows by key, and a `?fail=1` debug branch to observe the implicit rollback.
+
+Goals:
+
+- Fill `app/invoices/_components/optimistic-invoices-list.tsx` (provided as a stub; the `/invoices` page already imports and wraps the list with it). Client component:
+  - Props: `{ initialInvoices: Invoice[] }` (the server-fetched list from `listInvoices`).
+  - `const [optimisticInvoices, addOptimistic] = useOptimistic(initialInvoices, (current, next: Invoice) => [next, ...current]);`
+  - Renders the list rows from `optimisticInvoices`. The pending row gets a visual indicator (a `<Loader2 className="animate-spin" />` next to the number, a subtle `opacity-60` row).
+  - Exports a `addOptimisticInvoice(invoice: Invoice)` function via a small React context so the create form can call it without prop-drilling.
+- Refactor `new-invoice-form.tsx`:
+  - Generate a client-side UUIDv7 at form-mount with `useState(() => uuidv7())`, render it as a hidden `<input type="hidden" name="id" value={tempId} />` — the client-generated UUID pattern from lesson 5 of chapter 044. The schema already accepts an optional `id` (lesson 3 of chapter 047 kept it in the shape for exactly this reason), so no schema changes here. The action's `db.insert(...).values({ ...parsed.data, organizationId, createdBy: userId })` passes the client ID through when supplied; missing IDs fall back to the column's `$defaultFn`.
+  - On submit, wrap the action call in a transition that fires the optimistic append before the action: `const handleSubmit = (formData: FormData) => { startTransition(() => { addOptimisticInvoice({ id: tempId, ...rawValuesFromFormData, status: 'draft' as const, pending: true }); formAction(formData); }); }`. The `<form action={handleSubmit}>` wires it; `useOptimistic`'s update only persists during the transition.
+  - The action's success path: redirects to `/invoices/[id]`; on return to `/invoices`, the server-rendered list now includes the new invoice with the same UUID the optimistic add used. React reconciles by `key={invoice.id}` and the optimistic row swaps to the real one without a flicker.
+  - The action's failure path: returns `{ ok: false, error: ... }`; the transition ends; `useOptimistic` discards the appended item; the list reverts to `initialInvoices`. The form-level banner reads `state.error.userMessage`.
+- Add a `?fail=1` debug branch to `createInvoice` (named in the code with a comment that says "remove before production"; this is for the verify step in lesson 7 of chapter 047). When `formData.get('_debug_fail') === '1'`, the action sleeps 500ms then returns `err('internal', 'Forced failure for verify')`. The form adds a hidden checkbox or button click that sets the debug flag — wire the simplest pattern (a checkbox labeled "Simulate failure", `name="_debug_fail"`, `value="1"`).
+- Run it:
+  - Submit a valid invoice without the failure flag → the row appears immediately in the list, then the redirect fires, the detail page renders, navigating back shows the same row already there with its real persisted data.
+  - Submit with the failure flag → the row appears in the list with the spinner indicator → 500ms later the row disappears → the form shows the banner with `userMessage: 'Forced failure for verify'` → the input values are still in the form (no reset).
+
+Senior calls and watch-outs:
+
+- `useOptimistic` must be called inside a transition for the update to persist; `startTransition` wrapping the `formAction` call is the pattern. The lesson 5 of chapter 044 rule.
+- The client-generated UUID pattern avoids the flicker that temp string IDs would produce. Reconciliation by key is what makes the swap invisible.
+- The optimistic reducer is pure. Logging to the console inside the reducer is the smell — React may call it multiple times during reconciliation.
+- The `_debug_fail` flag is a chapter-local pattern; production actions never accept "please fail" inputs. Name this once; the chapter strips it during the verify if desired.
+- `useOptimistic` doesn't pair well with mutations that have a high failure rate — the chapter's create has near-100% success once the schema and the auth context land. The lesson 5 of chapter 044 threshold rule made concrete.
+- Don't optimistically update the *edit* form. The trigger (visible-to-user, high success, small UI change) doesn't fire as strongly — the user is staring at the form and the save banner is enough. Optimism is for the *list-and-add* shape.
+
+Codebase state at entry: full CRUD with no optimism.
+Codebase state at exit: create is optimistic, the rollback is invisible to write (React owns it), the failure case is observable through the debug flag. Edit and delete remain non-optimistic.
+
+Estimated student time: 25 to 35 minutes.
+
+---
+
+## Lesson 6 — Delete inside a Drizzle transaction
+
+Refactoring `deleteInvoice` to a `db.transaction` block that holds the shape for later audit-log and notification extensions, with the "no external calls inside the tx" rule and a URL-param success toast.
+
+Goals:
+
+- Refactor `deleteInvoice` in `lib/invoices/actions.ts`. Replace the single `db.delete(...)` call with:
+  - `const result = await db.transaction(async tx => { const existing = await tx.query.invoices.findFirst({ where: and(eq(invoices.id, parsed.data.id), eq(invoices.organizationId, organizationId)) }); if (!existing) return { notFound: true as const }; await tx.delete(invoiceLines).where(eq(invoiceLines.invoiceId, parsed.data.id)); await tx.delete(invoices).where(and(eq(invoices.id, parsed.data.id), eq(invoices.organizationId, organizationId))); return { notFound: false as const, deletedNumber: existing.number }; });`
+  - Translate `result.notFound` to `err('not_found', 'Invoice not found.')`; on success, `revalidatePath('/invoices')` and `redirect('/invoices')`.
+- The senior framing for why this transaction earns its weight even when the FK `ON DELETE CASCADE` on `invoice_lines → invoices` would delete the children automatically: making the atomicity explicit at the action layer means the reviewer reads the action and sees the multi-step shape, the future addition (audit log write, soft-delete flag, notification dispatch, file cleanup — all coming in later units) drops into the same transaction without a re-architecture, and the senior anchor "no external calls inside the transaction" gets installed at the right moment so the Unit 7 email send and the Unit 12 file cleanup land *outside* the tx block when those layers arrive. Name the trade explicitly: the FK cascade alone would work today; the tx wrapper is the shape that holds for tomorrow.
+- Name the senior anti-patterns the transaction protects against:
+  - The pre-load → check → delete sequence outside a transaction (two round trips, race window between the check and the delete) becomes one atomic operation. Even though Postgres's FK constraint would still reject an orphan write, the application's intent is one unit of work.
+  - Calling an external API (Resend, Stripe, a webhook) inside the `tx => ...` callback diverges state on rollback — name it once, this is the lesson 5 of chapter 043 watch-out made operational. The student's instinct after seeing the tx block is "while we're here, also email the customer that their invoice was deleted." Hold the line: the email goes after the tx commits (Unit 7 + Unit 13 own the dispatch).
+- Add a small UX win the transaction's success enables: the redirect target carries a `?deleted=INV-0042` search param; the `/invoices` page reads it and renders a shadcn `Sonner` toast ("Invoice INV-0042 deleted"). The success data flows through the URL — no client state, no React context. Named once; the toast lives until the next navigation.
+- Run it: delete an invoice from the detail page → the dialog opens, confirm → the action runs the transaction, both deletes commit atomically, the redirect fires, the list page shows the toast. Open Studio: the invoice row is gone, the invoice-lines rows are gone.
+- Optional senior touch (5-minute extension, not load-bearing for the verify): the action takes ~10ms to run in dev; in prod against a network DB it would take ~50–80ms. Pair the delete with `useOptimistic` for the list-removal animation if the student wants the practice — the chapter doesn't require it because edit is the case the optimism trigger doesn't fire on, but removal is borderline. Name the call; leave the build to the student's discretion.
+
+Senior calls and watch-outs:
+
+- The transaction wraps reads-then-writes that must agree. Reading the existing row inside the tx ensures the row count check is atomic with the delete; in a read-then-delete-outside-tx pattern, a second admin could delete between the two queries and the second action's "not found" wouldn't fire.
+- `tx` is a different value from `db`. Every query inside the callback uses `tx`; missing one (`db.delete(...)` inside the callback) is the failure mode — the un-tx'd query runs in its own implicit transaction, breaks atomicity, and the rollback wouldn't include it. The Drizzle convention from lesson 4 of chapter 039.
+- Returning a value from the callback is the way to communicate to the action body what happened. Throwing inside the callback rolls back the transaction; returning a discriminated value lets the action map to the right `Result`.
+- The `revalidatePath` call lives *outside* the transaction (the lesson 5 of chapter 043 rule made operational once more). Calling `revalidatePath` inside the `tx => ...` callback would invalidate the cache even if the transaction rolls back.
+- The `?deleted=...` pattern works without JS. The redirect carries the param, the server-rendered list reads it, the toast is server-rendered (or hydrated by Sonner on mount). Progressive enhancement extends to the success toast.
+
+Codebase state at entry: delete works through a single `db.delete(...)` call.
+Codebase state at exit: delete is transactional, the success toast renders from a URL param, the action body's shape matches what every later unit will extend (Unit 9 adds audit-log writes inside the tx, Unit 10 adds the soft-delete branch, Unit 7 adds an email send *after* the tx commits).
+
+Estimated student time: 20 to 30 minutes.
+
+---
+
+## Lesson 7 — Verify and forward-reference
+
+Walking each "Done when" clause as a test (JS-disabled submit, field errors, conflict path, optimistic rollback, transactional delete, revalidation) and naming the Units 7–14 layers that will extend each discipline.
+
+Goals:
+
+- Walk every "Done when" clause as a verification step (the table in the framing).
+- **JS-disabled flow.** DevTools → settings → "Disable JavaScript" → reload `/invoices/new` → fill the form → submit. The browser POSTs to the action's URL, the action runs, the redirect to `/invoices/[newId]` fires, the detail page renders with no React hooks active. Verify in `pnpm db:studio` that the row landed. Re-enable JS; soft-reload the list page; the new invoice is there.
+- **Invalid-data field errors.** With JS enabled, submit `/invoices/new` with `total` blank and `dueAt` set to a malformed value. The constraint API catches the missing field first (the browser's native invalid-bubble before submit); remove `required` temporarily to test the server path; submit; the action's `safeParse` fails; the form re-renders with `<FieldError>` messages under both fields; the unfilled inputs keep their typed values; the submit button is enabled again. Add the `required` back.
+- **Conflict (`code: 'conflict'`) path.** Edit an existing invoice and set its `number` to one already used by another invoice in the same org. Submit. The Postgres unique violation fires; `isUniqueViolation(e)` matches; the action returns `err('conflict', 'An invoice with that number already exists for this org.')`. The form renders the form-level banner (not a field-level error, because the conflict isn't tied to one field's value alone — the org+number composite). Name this distinction.
+- **Optimistic rollback.** With the `?fail=1` debug branch (or by toggling the "Simulate failure" hidden field), submit a valid create. The row appears at the top of the list with the spinner indicator; 500ms later it vanishes; the banner shows `Forced failure for verify`. The form values persist. Disable the debug flag, resubmit; the create succeeds, the row stays, the redirect fires.
+- **Delete confirmation through a form action.** Open `/invoices/[id]`; click "Delete"; the shadcn `<Dialog>` opens; confirm. The submit fires through `formAction`. Inspect Network in DevTools: one POST to the action URL, no `/api/*` `fetch` calls. With JS disabled, the shadcn `<Dialog>` (Radix-backed) doesn't open — the no-JS fallback renders the delete `<form>` inline on the detail page (the `<noscript>`-gated pattern from lesson 4 of chapter 047) so the action still fires. Submit; the action runs the transaction; the redirect fires.
+- **Transaction atomicity check.** Add a temporary `throw new Error('debug rollback')` inside the delete transaction after `tx.delete(invoiceLines)` but before `tx.delete(invoices)`. Try to delete an invoice; the action throws; the page kicks to `error.tsx`. Refresh `pnpm db:studio` — the invoice and its lines are both still there. The tx rolled both back atomically. Remove the throw.
+- **Revalidation.** Create, edit, and delete invoices in sequence. Each time, navigate back to `/invoices` — the list reflects the change without a manual reload. `revalidatePath` is firing.
+- **Progressive enhancement edge cases.** Disable JS; the optimistic add doesn't fire (no `useOptimistic`, no transition) but the form still creates the row via the redirect. The user sees the new invoice when they land on the detail page; the list still reflects the change on next navigation. The delete works (the dialog falls back per above); the edit works (no optimism on edit anyway, so JS-disabled is the same UX).
+- **Senior recap.** Name the disciplines installed:
+  - Every action parses on entry with `safeParse`.
+  - Every action returns `Result`, never throws on expected failures.
+  - Every action revalidates *after* the database write, *before* the return.
+  - Every action runs the auth read after the parse (using the stub that chapter 057's wrapper will replace).
+  - Every form is a Client Component with uncontrolled inputs, a `name` attribute matching the schema, `defaultValue` for edits, and the action prop wiring the submit.
+  - Field errors render from the action's `Result.error.fieldErrors`, never from local state.
+  - The `<SubmitButton>` is reused across every form by reading `useFormStatus` from context.
+  - `useOptimistic` is reserved for the high-success / visible / small-UI-change case (create).
+  - The delete transaction's shape holds for the audit-log, notification, and external-call extensions of Units 7–13.
+- **Forward references.**
+  - Unit 7 (transactional email) adds a Resend send after `createInvoice`'s tx commits — *not* inside it.
+  - Unit 8 (Better Auth) replaces `getActiveContext()` with a real session read; the `users` stub goes away, the `createdBy` FK target stays valid.
+  - Unit 9 (RBAC) wraps every action in `authedAction('member', schema, fn)` so the parse, the auth read, and the `Result.error.code === 'unauthorized'` path become structural. The student's per-action `safeParse` lines disappear into the wrapper; the action body shrinks to the mutation seams.
+  - Unit 10 (URL-state list with soft delete + concurrency) adds a `version` column for optimistic concurrency control on edits (the `409` Result path) and a `deletedAt` column for soft delete; `updateInvoice` and `deleteInvoice` change shape accordingly.
+  - Unit 11 (Stripe billing + idempotency) drops the `id` hidden field in the create form to a Server Action `Idempotency-Key` shape derived from a UUIDv7 — the same client-generated UUID pattern, repurposed for replay safety.
+  - Unit 14 (cache) replaces the blunt `revalidatePath` with `updateTag('org:X:invoices')` so the cached read on the list refreshes only its tagged subset.
+
+Senior calls and watch-outs:
+
+- The verify lesson is the rehearsal of the failure modes — running each one and naming what would break without the discipline. If a verify step fails, the lesson points the student at the owning build lesson, not at "debug it yourself."
+- The JS-disabled test is the cheapest single test that proves the form pattern was built right. The 2026 reflex: every form gets one JS-disabled pass at feature-launch time.
+
+Codebase state at entry: full CRUD with optimism and transactional delete.
+Codebase state at exit: same surface, verified clause-by-clause. The `?fail=1` debug branch is removed (or left with a comment, depending on the student's preference). The student can articulate every decision made in the chapter and the unit that will extend each one.
+
+Estimated student time: 20 to 30 minutes.

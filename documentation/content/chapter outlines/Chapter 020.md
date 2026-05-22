@@ -1,147 +1,333 @@
-# Chapter 020 — Browser capability APIs
+# Chapter 020 — Layout and sizing
 
 ## Chapter framing
 
-Chapters 014–019 covered the platform end to end on the request side, the page side, and the network primitive: how a URL becomes pixels, the HTTP contract, origins and CORS, cookies, the DOM and event substrate, and `fetch` with streaming. Chapter 020 closes Unit 3 with the small catalog of `window`-scoped capability APIs a SaaS UI actually reaches for in 2026 — the `crypto` namespace, `navigator.clipboard`, the `Blob` / `File` / `URL.createObjectURL` trio, and `localStorage` / `sessionStorage`. These four surfaces are the only browser globals (outside `fetch` and the DOM) that show up in production SaaS code with regularity; the rest of the platform either lives behind a framework wrapper or is niche enough to teach when the use case earns it.
+Chapter 019 closed with the cascade, inheritance, Preflight, and the design-token substrate. Chapter 020 is the next axis: **where the element sits, how big it is, and how it relates to its neighbors.** The senior framing is that layout in 2026 is a settled stack — flexbox for one-dimensional rows and columns, grid for two-dimensional structure, `gap` for spacing inside both, sticky and fixed for the few elements that escape flow, and a small set of viewport-aware sizing primitives (`dvh`, `aspect-ratio`, `clamp`) for the responsive cases that used to need JavaScript. Floats are gone from production code, the flex-vs-grid debate is settled ("both, for different jobs"), and `gap` has replaced sibling-margin tricks. The chapter owns nine load-bearing topics — the box model and the inline/block axis (lesson 1 of chapter 020), display modes (lesson 2 of chapter 020), flexbox (lesson 3 of chapter 020), grid (lesson 4 of chapter 020), sizing (lesson 5 of chapter 020), spacing inside containers (lesson 6 of chapter 020), position and the inset utilities (lesson 7 of chapter 020), overflow and scroll containers (lesson 8 of chapter 020), and stacking context with z-index (lesson 9 of chapter 020) — plus the quiz (lesson 10 of chapter 020). Each lesson teaches the underlying CSS model, names the Tailwind v4 utility that compiles to it, and names the senior reach.
 
-Threads that run through every lesson. The senior framing is "trigger before tool": each API has a concrete trigger that justifies reaching past the platform default, and the lesson opens with that threshold named. Three of the four APIs (`crypto.subtle`, `randomUUID`, `clipboard`) are gated by the secure context (HTTPS or `localhost`) — the constraint introduced in lesson 3 of chapter 014 with `mkcert` pays off here, and the lesson names which calls silently no-op on `http://` and which throw. Three of the four are client-only and break Server Components (clipboard, object URLs, Web Storage); `crypto` works in every runtime the course touches, browser and Node 22+ alike. Where the client-only line falls, the `'use client'` discipline is consistent and the `typeof window` guard is named once and used uniformly. The 2026 reflex on every byte-or-buffer call is the `Uint8Array` over `ArrayBuffer`, with `TextEncoder` / `TextDecoder` as the only string-to-bytes conversion the course endorses (no `atob` / `btoa` outside base64 corner cases). Cleanup is a chapter-wide reflex: object URLs get revoked, listeners get aborted (the pattern from lesson 3 of chapter 018 carries forward), storage events get unsubscribed. The chapter ships four short teaching lessons plus a quiz; the student finishes able to mint a random ID, sign and verify a webhook payload at debug depth, ship a Copy button that meets the accessibility baseline, build a file-pick-to-preview flow that doesn't leak memory, and reach for `localStorage` only when the four-home decision tree says it earns its weight.
+Several threads run through every lesson. `box-sizing: border-box` is the universal default Preflight already set, so widths compose by addition. `gap` is the spacing default; `space-x` / `space-y` and sibling-margin tricks are legacy. Intrinsic-vs-extrinsic sizing is the model that demystifies "why is my width auto." Stacking context is the hidden trap — `transform`, `filter`, `opacity < 1`, or `position: fixed/sticky` on an ancestor creates one and traps every descendant's `z-index` inside, and the senior fix is to portal modals and popovers out to `<body>`. Mobile viewport units (`dvh`, `svh`, `lvh`) are the answer to the iOS address-bar bug, with `min-h-dvh` as the reflex. Logical properties (`ps-*` / `pe-*` / `ms-*` / `me-*` and the new `inset-s-*` family) are the i18n-aware form of physical margin and padding. The ordering follows the dependency — box model first, display modes second, then flex, grid, sizing, spacing, position, overflow, and stacking context last because it's the trap that wraps the others. Forward references land in Chapter 021 (responsive variants, container queries), lesson 5 of chapter 022 (portals), Chapter 027 (CSS anchor positioning and the shadcn component surface), and the project chapter chapter 028 where every layout utility cashes in.
 
 ---
 
-## Lesson 1 — Web Crypto: random IDs and HMAC signatures
+## Lesson 1 — The box model and the inline/block axis
 
-Installs the three surfaces of the `crypto` global a SaaS engineer touches in 2026 — `randomUUID` for IDs, `getRandomValues` for typed-array randomness, and the asynchronous `subtle` HMAC sign / verify pair for signature checks — with constant-time comparison named as the reflex for every signature compare and `crypto.subtle.verify` named as the preferred constant-time path on the verify side.
-
-Prerequisite note: `Uint8Array`, `TextEncoder`, `TextDecoder`, and base64url are introduced in lesson 2 of chapter 019 and are used throughout this lesson for HMAC payload bytes, secret-key bytes, and the rendering of signature output.
+How the four boxes compose under `border-box`, the Tailwind `--spacing` scale, margin collapse as a smell, logical `ps-*`/`pe-*`/`inset-s-*` utilities, and `mx-auto` as the one centering case where margin still earns its weight.
 
 Topics to cover:
 
-- **The senior question.** A webhook arrives at a Route Handler with a `x-signature` header; the handler must confirm the payload was signed with the shared secret before trusting a cent of it. What primitive does the platform give you, what's the call shape, and why does the comparison itself have a footgun? The lesson installs the `crypto` namespace front to back, names HMAC as the symmetric signature primitive (forward reference to chapter 068 Stripe and chapter 019 fetch), and lands constant-time compare as the non-negotiable.
-- **The `crypto` global in one line.** Same `crypto` object in every runtime the course touches — browser, Node 22+, Edge, Server Components. Three surfaces: `randomUUID` (one-liner UUID v4), `getRandomValues` (fill a typed array with CSPRNG bytes), `subtle` (the asynchronous algorithm surface — sign, verify, digest, encrypt, decrypt, derive, import, export). The senior cut: ignore the synchronous legacy methods, ignore `Math.random` for anything that isn't a visual jitter.
-- **`crypto.randomUUID()` — the default ID reach.** Returns a v4 UUID string with 122 bits of entropy. The reach for primary keys, idempotency keys, request IDs, correlation IDs across logs (forward reference to Unit 20 observability), and anywhere a string ID needs to be unique without a server round-trip. Watch-out: requires a secure context — fails on plain `http://` (other than `localhost`); the lesson 3 of chapter 014 `mkcert` lesson is the prerequisite. Forward reference: Drizzle UUID columns (Unit 6) and Better Auth session IDs (Unit 9) both consume this.
-- **`crypto.getRandomValues(typedArray)` — the bytes-not-UUID reach.** Fills a `Uint8Array` (or other typed array) in place with CSPRNG bytes. The reach when you need a token of a specific length and shape — URL-safe slugs, share tokens, nonce values. The canonical shape: allocate `new Uint8Array(32)`, fill, base64url-encode to a string. Maximum size is 65536 bytes per call. Named not at depth: the student writes this for short tokens and reaches for a server-side helper for bulk randomness.
-- **The `subtle` async surface — recognition map.** The asynchronous algorithm surface available as `crypto.subtle`. Five method families a SaaS engineer reaches for: `digest` (one-shot hash — SHA-256 over a buffer), `sign` / `verify` (HMAC and asymmetric signatures), `encrypt` / `decrypt` (AES-GCM is the default), `importKey` / `exportKey` (move keys in and out of the platform's `CryptoKey` opaque type), `deriveKey` / `deriveBits` (HKDF and PBKDF2 — recognition only; password hashing belongs server-side with argon2). The lesson teaches HMAC at depth, `digest('SHA-256', ...)` at the depth Unit 10 reuses, and names the rest for recognition.
-- **`crypto.subtle.digest('SHA-256', buf)` — one-shot hashing at depth.** The async one-shot hash: pass an algorithm string (`'SHA-256'` is the 2026 default) and a `BufferSource` (typically a `Uint8Array` produced by `TextEncoder.encode(...)`), get back a Promise that resolves to an `ArrayBuffer` of the raw digest bytes (32 bytes for SHA-256). The reach: content-addressable keys, request-body fingerprints, anywhere a stable identifier for a payload is needed without a server round-trip. The canonical bytes-to-hex pipeline that renders the digest as a 64-character lowercase hex string: `const bytes = new TextEncoder().encode(input); const buf = await crypto.subtle.digest('SHA-256', bytes); const hex = [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');`. The `Uint8Array` view over the `ArrayBuffer` is the iteration substrate; `padStart(2, '0')` is non-negotiable because single-digit bytes (`0x0a`) would otherwise render as one character and corrupt the string. Forward reference to Unit 10 where this exact pipeline is reused.
-- **HMAC in one line.** A keyed hash. Same secret key signs and verifies — the symmetric property that makes HMAC right for webhooks (Stripe, GitHub, etc.) where both ends share a secret, and wrong for anything where signer and verifier must be different actors. SHA-256 is the 2026 default algorithm.
-- **The HMAC import → sign → hex shape.** The canonical flow: `TextEncoder` to turn the secret and the payload into `Uint8Array` bytes; `crypto.subtle.importKey('raw', secretBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify'])` to get a `CryptoKey`; `crypto.subtle.sign('HMAC', key, payloadBytes)` to produce an `ArrayBuffer` of the signature; bytes-to-hex (or base64) to render it as a header value. Named at signature-level depth; the bytes-to-hex utility is shown once.
-- **The verify side and constant-time compare.** Two ways to verify. The platform path: `crypto.subtle.verify('HMAC', key, signatureBytes, payloadBytes)` — returns a boolean and runs in time independent of where the inputs diverge. The DIY path: re-sign the payload and compare; the comparison must be constant-time because a `===` on the hex string short-circuits at the first mismatching character and leaks the prefix length over enough timed requests. The lesson teaches both: prefer `subtle.verify`; when forced to compare buffers (mixed providers, legacy formats), write a constant-time byte-by-byte XOR-accumulator compare. Node 22+ exposes `crypto.timingSafeEqual` on the `node:crypto` namespace; the Web Crypto path is `subtle.verify`. The watch-out: `===` on the hex output is the bug class — the lesson shows the wrong-then-right pair.
-- **Where this lands later.** Stripe and Resend webhook signatures (Unit 12 and Unit 8), idempotency keys on POST retries (forward reference to lesson 1 of chapter 015 and Unit 12), session-cookie HMACs that Better Auth handles for you (recognition only — Unit 9). The recognition payoff: when a future lesson hands the student a `verifySignature` helper, they know exactly what's underneath.
-- **Watch-outs.** `crypto.subtle` is async — every call returns a Promise, lessons that forget `await` will hand back a `Promise<ArrayBuffer>` that surprises the next line. `subtle` is unavailable in non-secure contexts; the lesson 3 of chapter 014 `mkcert` setup is the prerequisite. `importKey` takes a `usages` array — passing `['sign']` and then calling `verify` with the same key throws `InvalidAccessError`; pass `['sign', 'verify']` when both are needed. Algorithm strings are case-sensitive (`'SHA-256'`, not `'sha-256'`). HMAC keys can be any length; shorter than the hash output (32 bytes for SHA-256) is hashed first by the algorithm — fine but wasteful. Comparing signatures with `===` is the timing-attack bug; constant-time compare is the fix, no exceptions. `randomUUID` is a UUID v4 — collision-resistant but not sortable; UUID v7 (sortable by time) is the senior reach when DB index locality matters and is available on the `uuid` npm package (recognition only — the course uses v4 unless a later lesson earns v7).
+- **The senior question.** A `w-64 p-4 border` element renders 256 px wide because `box-sizing: border-box` is the Preflight default; padding and border are inside the declared width, not added on top. The lesson installs the box model in this form, names the four boxes (content, padding, border, margin), explains why margin sits outside the box, and folds in CSS logical properties as the modern axis-aware form.
+- **The four boxes and the `border-box` default.** Content (where children render), padding (inside the border, takes the background), border (the styled edge), and margin (transparent, outside, the only one that participates in margin collapse). `border-box` is the universal 2026 default — Preflight already sets it on `*, ::before, ::after`. The student doesn't write the rule and only encounters `content-box` when a third-party widget assumes it (rare).
+- **The Tailwind spacing scale — `--spacing` as one CSS variable.** Every spacing utility (`p-*`, `m-*`, `gap-*`, `space-y-*`, etc.) compiles to `var(--spacing) * n`. The whole scale changes by editing one variable in `@theme`. Arbitrary values exist for rare one-offs (`p-[17px]`), but the convention is to stay on the scale. The 4-px grid is the convention every modern design system (Material, Carbon, Tailwind, shadcn) shares.
+- **Margin collapse — recognition, not pattern.** Adjacent block siblings' vertical margins collapse to the larger value; a parent's margin can collapse with its first/last child's. The 2026 reflex is `gap` on a flex/grid parent, which doesn't trigger collapse. The lesson names the rule, then lands on "don't use the pattern that triggers it."
+- **The inline/block axis and Tailwind's logical utilities.** CSS names the two box-model axes as *inline* (text-flow direction) and *block* (perpendicular); logical properties flip with `direction: rtl` or vertical writing modes. Tailwind ships `ps-*` / `pe-*`, `ms-*` / `me-*`, the block-axis `pbs-*` / `pbe-*` for vertical-writing cases, and the new `inset-s-*` / `inset-e-*` / `inset-bs-*` / `inset-be-*` family (which replaced the deprecated `start-*` / `end-*` shorthands). The senior reach: logical from day one in an RTL-bound project; physical is fine in LTR-only, with mechanical migration later.
+- **`mx-auto` centering — the one place margin still earns its weight.** `margin-inline: auto` centers a block element with a defined width inside its parent. The canonical 2026 form is `mx-auto max-w-3xl` on a centered article — the right tool when the parent has no flex/grid in between. Every other centering is flex or grid (Lessons lesson 3 of chapter 020 and lesson 4 of chapter 020).
+- **DevTools — the box-model panel.** Color-coded overlay (content / padding / border / margin) on hover; Computed panel diagram with the four values. The senior debugging move when a layout is "off by a few pixels."
+- **Watch-outs:**
+  - Don't override Preflight's `box-sizing` — a custom `*` rule breaks every utility-driven width calculation.
+  - Margin collapse only happens between block-level siblings in normal flow; flex/grid items don't collapse.
+  - `outline` doesn't take layout space — the canonical focus-ring tool (`focus-visible:outline-2`) because it doesn't shift the layout.
+  - Negative margins are legal in narrow cases (image-flush-to-edge, hero hooks) but otherwise a smell.
+  - `width: 100%` plus padding overflows on `content-box`; the project default is `border-box`, so the bug doesn't exist.
 
 What this lesson does not cover:
 
-- Password hashing — argon2id on the server is the only correct answer; out of scope for the browser-side chapter.
-- AES-GCM symmetric encryption — recognition only; no SaaS UI ships AES from the client side in 2026, key handling is server-side.
-- Asymmetric crypto (RSA, ECDSA, Ed25519) — recognition only; the Stripe and Resend examples in later units use HMAC, and JWT verification with public keys is owned by Better Auth.
-- Key derivation (HKDF, PBKDF2), key wrapping, the `JsonWebKey` format — recognition only.
-- `CryptoKey` non-extractable flags, structured-clone behavior, IndexedDB-stored keys — niche, not 2026 SaaS reach.
-- The `Web Crypto` legacy `Crypto.subtle.digest` for content-addressable storage at scale — Unit 13 (object storage) touches this if relevant.
-- The full `Algorithm` parameter dictionary — recognition only; the SHA-256 + HMAC pair is what the course writes.
+- Display modes and their box-model interactions — lesson 2 of chapter 020.
+- Flexbox-specific item sizing (`flex-grow`, `flex-shrink`, `flex-basis`) — lesson 3 of chapter 020.
+- Width / height / min-max / aspect-ratio — lesson 5 of chapter 020.
+- Spacing inside containers (`gap`, `space-x`, `divide-x`) — lesson 6 of chapter 020.
+- Position and inset (`top`, `left`, the inset utilities) — lesson 7 of chapter 020 (with logical insets cross-referenced from this lesson).
+- The `writing-mode` property at depth — out of scope; the chapter names the inline/block axis and trusts the student to apply it.
+- CSS containment (`contain: layout/paint/style/size`) — niche performance tool, not chapter material.
 
 ---
 
-## Lesson 2 — The Clipboard API: the Copy button surface
+## Lesson 2 — Display modes and the hide decision tree
 
-Installs `navigator.clipboard.writeText` as the senior copy reach, the secure-context-plus-user-activation constraint surface that decides whether the call succeeds or silently fails, the canonical "Copy" button shape with `'use client'`, `try/catch`, a feedback state, and an `aria-label`, and names `clipboard.read` / `write` with `ClipboardItem` for the rare rich-content case.
+The choice between `block`, `inline`, `inline-block`, `flex`, `grid`, and `contents` as layout primitives, plus the `display: none` / `visibility: hidden` / `aria-hidden` decision tree for the three ways to hide an element.
 
 Topics to cover:
 
-- **The senior question.** A "Copy invoice URL" button next to every row in a table — the user expects to click and have the string land on the clipboard, with visible "Copied!" feedback for two seconds. What's the platform API, what gates it (HTTPS, gesture, focus), and what does the button look like when it meets the accessibility baseline? The lesson is short because the reach is short — one async call inside one client component — but the constraints are load-bearing and the failure modes are non-obvious.
-- **`navigator.clipboard.writeText(string)` in one line.** The async write of a plain-text string to the system clipboard. Returns a Promise that resolves on success and rejects with a `NotAllowedError` (no user activation), `SecurityError` (insecure context), or `NotFoundError` (no string to write). The 2026 reflex: this call replaces every `document.execCommand('copy')` pattern from before 2022 — the legacy API is deprecated and the synchronous behavior it relied on is gone.
-- **The two constraints that decide success.** First: secure context. The clipboard write only works on HTTPS or `localhost`; on plain `http://` the call rejects with `SecurityError`. The lesson 3 of chapter 014 `mkcert` setup is the prerequisite for local dev parity. Second: transient user activation. The browser only allows a clipboard write inside the handler of a recent user gesture (`click`, `keydown`, `pointerup`). Calling `writeText` from a `setTimeout`, from a `useEffect` on mount, or from a network response that arrives after a gesture has expired all fail with `NotAllowedError`. The senior pattern: the write goes inside the `onClick` handler synchronously (after the `await` it stays in the same gesture-handler microtask) — the lesson names the boundary.
-- **The canonical Copy button.** The button is a client component (`'use client'` at the top of the file). The handler is `async`, wraps `await navigator.clipboard.writeText(value)` in `try/catch`, sets a `useState` flag to render "Copied!" feedback for ~2 seconds, and clears it with a `setTimeout` whose handle is stored in a ref (or cleared on unmount via an `AbortController` from lesson 3 of chapter 018 — recognition only here; the React side lands in Unit 4). The button has an `aria-label="Copy invoice URL"` because the visible label is just an icon or the word "Copy" without context, and `role="status"` (or a live region — recognition only, Chapter 031) on the feedback element so screen readers announce the result.
-- **The catch branch.** Three error shapes the student handles: `NotAllowedError` ("Couldn't access the clipboard — try a manual copy"), `SecurityError` (development-only — log and surface a yellow banner in dev), unknown (`'Copy failed'`). The lesson does not hide the catch — the call rejects in real browsers and the button must degrade gracefully. The recovery pattern: a fallback `<input>` rendered in a small modal with the value pre-selected so the user can `Cmd+C` manually.
-- **Reading the clipboard — recognition only.** `navigator.clipboard.readText()` and `navigator.clipboard.read()` exist; they prompt the user for permission (Chrome) or fail silently (Safari) depending on browser and origin. The SaaS reach is thin — paste handlers are usually wired to a `<textarea>` and the `paste` event, not to `clipboard.read`. The senior posture: don't read the clipboard from JavaScript unless the feature genuinely needs it (rich paste into a doc editor, screenshot drop into a chat input).
-- **`ClipboardItem` and rich content — recognition only.** `navigator.clipboard.write([new ClipboardItem({ 'text/html': htmlBlob, 'text/plain': textBlob })])` writes multiple representations at once, so a paste into a rich editor gets HTML and a paste into a terminal gets plain text. The 2026 reach: image copy buttons (chart export, generated diagrams). Named with a one-line example, not at depth.
-- **The `'use client'` placement.** The button is interactive — it must run in the browser. The lesson uses this as a recognition moment for the Server / Client component boundary that Unit 5 owns: the smallest possible client island (the button itself), passed the value as a string prop from a Server Component parent. The wrong move: making the whole page a client component to host one Copy button. Forward reference to chapter 037 (server vs client components).
-- **Watch-outs.** The call rejects on the gesture-expired branch — every production button needs the `try/catch`. The `await` keeps the gesture alive across the microtask boundary; `setTimeout` + `writeText` does not. iOS Safari has historically been strict about gesture detection — recognition only, the call shape doesn't change. The clipboard write replaces what was there; there's no "append" or "history" surface. Writing a non-string with `writeText` silently coerces to `String(value)` — pass strings, not objects. Calling `writeText` in development from `localhost:3000` works; from a `127.0.0.1` URL Safari historically scoped permissions differently — the senior reflex is to develop on `localhost` and use `mkcert` for HTTPS-equivalent flows.
+- **The senior question.** A `<span>` ignores `width` and `padding-top` because it's `inline`; switching to `<div>` makes them work because block elements accept all box-model properties. The display mode decides which box-model rules apply, which sizing utilities work, and how the element relates to its siblings. The lesson installs the modes the student reaches for (`block`, `inline-block`, `flex`, `grid`, `inline-flex`, `inline-grid`, `contents`, `none`), names the recognition-only ones (`inline`, `table`, `list-item`, `flow-root`), and frames the choice as a decision: `flex` for a row or column, `grid` for a 2D structure, `block` for stacking content, `inline` for in-text spans, `contents` for the rare unwrapping case.
+- **Block, inline, inline-block.** Block: new line, fills the parent's inline axis, accepts all box-model properties (default for `<div>`, `<p>`, headings, sectioning elements, lists, forms). Inline: flows with text, ignores `width`/`height`, vertical margin/padding visually overlaps surrounding lines (default for `<span>`, `<a>`, text-level elements). Inline-block bridges the two — flows like inline, sized like block. The 2026 reach for `inline-block` is narrow (a status dot in a sentence); most "I want width on a span" cases want flex on the parent.
+- **Flex / inline-flex, grid / inline-grid.** Flex makes a 1D container; grid makes a 2D container. The inline variants flow with text — the canonical reach for `inline-flex` is an icon-and-text button. Algorithms at depth land in Lessons lesson 3 of chapter 020 and lesson 4 of chapter 020.
+- **`display: contents` — the unwrapper.** The element disappears from the layout tree but its children participate in the parent's layout. Reaches: semantic wrappers (`<section>` around cards) that shouldn't break a flex/grid layout, and component composition where a real DOM element is needed but its layout box is unwanted. The watch-out: historically broke accessibility; modern browsers fixed most semantic elements, but test with screen readers and prefer React Fragments where possible.
+- **The three hide mechanisms — `display: none`, `visibility: hidden`, `aria-hidden`.** `display: none` removes from both layout and a11y trees (closed dialogs, unmounted routes). `visibility: hidden` reserves the box but hides the element and removes from a11y (rare; usually a grid-sizing problem). `aria-hidden="true"` keeps visible but hides from a11y (decorative icons next to redundant labels; cross-reference to lesson 3 of chapter 027). Decision tree: state-change hiding → conditional render or `display: none`; visually hidden / a11y visible → `sr-only`; visible / a11y hidden → `aria-hidden`.
+- **The default-display reset.** Preflight doesn't change `display` defaults — `<div>` is still block, `<button>` is still inline-block with browser quirks. The student writes `flex` or `inline-flex` on the button explicitly.
+- **Tailwind utility coverage.** `block`, `inline-block`, `inline`, `flex`, `inline-flex`, `grid`, `inline-grid`, `contents`, `hidden` (= `display: none`), plus `flow-root` and `table` / `table-row` / `table-cell` for the rare cases. Responsive variants (`md:flex`, `hidden md:block`) live at depth in lesson 6 of chapter 021.
+- **Watch-outs:**
+  - `<button>` defaults are inconsistent across browsers — use `inline-flex items-center gap-2` for icon-and-text alignment.
+  - `display` doesn't change semantics; pick the right element first, then the display utility.
+  - Tailwind's `hidden` utility equals the HTML `hidden` attribute in effect (both → `display: none`).
+  - `display: contents` makes the *children* the flex/grid items, not the wrapper — easy to forget when scanning a tree.
+  - Floats and clears are dead outside text-wrapping-around-an-image.
 
 What this lesson does not cover:
 
-- The `'use client'` directive at depth — recognition only here, Chapter 4 and 5 own it.
-- React `useState` and `useEffect` syntax — Chapter 028 and chapter 029; the lesson names the hook reach but doesn't teach the API.
-- ARIA live regions at depth — lesson 3 of chapter 031 owns `role="status"` / `role="alert"` and the live-region pre-mount rule.
-- Drag-and-drop and the `DataTransfer` API — separate substrate, out of scope.
-- Custom paste-event handlers and rich-text editors — out of scope for the 2026 SaaS surface this course teaches.
-- `document.execCommand('copy')` — deprecated, not covered.
-- Permissions API for clipboard read at depth — recognition only.
+- Flexbox at depth (`flex-direction`, `flex-grow`, `justify-content`, `align-items`, etc.) — lesson 3 of chapter 020.
+- Grid at depth — lesson 4 of chapter 020.
+- `sr-only` and the visually-hidden pattern — lesson 3 of chapter 027.
+- Responsive variants (`md:flex`, `lg:grid`) at depth — lesson 6 of chapter 021.
+- The semantic-element choice (when to write `<section>` vs `<div>`) — lesson 3 of chapter 017 owns it; this lesson assumes it.
+- Tables for actual tabular data — lesson 6 of chapter 017.
+- `position` (which overrides participation in normal flow but not `display`) — lesson 7 of chapter 020.
 
 ---
 
-## Lesson 3 — Blob, File, and URL.createObjectURL: the upload primitives
+## Lesson 3 — Flexbox, the 1D primitive
 
-Installs the three binary primitives every file-upload UI builds on — `Blob` as the typed byte sequence, `File` as a `Blob` with `name` and `lastModified`, and the `URL.createObjectURL` / `revokeObjectURL` pair that turns a binary into a renderable URL — together with the canonical pick-to-preview shape and the cleanup discipline that prevents the memory-leak class, foreshadowing the R2 presigned-PUT flow that Unit 13 owns.
+The flex container's main and cross axes, the `flex-1` / `flex-auto` / `flex-none` / `shrink-0` item sizing forms, `justify-*` vs. `items-*` alignment, `gap` as the spacing default, the `min-w-0` companion fix, and the five canonical layouts a senior reaches for.
 
 Topics to cover:
 
-- **The senior question.** A profile page has an `<input type="file" accept="image/*">`; on pick, the UI shows a preview image and a filename, on save the bytes go directly to R2 with a presigned URL. What are the platform primitives, what's the lifecycle of the temporary URL, and what bug class does the cleanup prevent? The lesson installs the three types and lands the `revokeObjectURL` reflex.
-- **`Blob` in one line.** A typed sequence of immutable bytes with two properties — `size` (byte length) and `type` (the MIME string the producer claimed). Construct with `new Blob([parts], { type })` where `parts` is an array of strings, `ArrayBuffer`s, `TypedArray`s, or other `Blob`s. Useful for: building an upload payload in memory, slicing larger files, downloading a generated CSV. The senior reflex: `Blob` is the universal binary container; `Response.blob()` (from lesson 1 of chapter 019) returns one, `fetch` upload bodies accept one, the FileReader rarely earns its weight when `Blob` already streams.
-- **`File` in one line.** A `Blob` subclass with two extra properties — `name` (the filename from the OS) and `lastModified` (a millisecond timestamp). Constructed by the browser, never by your code: the `<input type="file">` `change` event populates `event.target.files` (a `FileList`), drag-drop populates `event.dataTransfer.files`. Iterate the `FileList` like an array (`[...files]`). The senior recognition: anywhere the platform hands you bytes from the user's disk, you get `File` objects; anywhere your code mints bytes you mint `Blob` objects.
-- **`URL.createObjectURL(blobOrFile)` in one line.** Returns a string URL of the form `blob:https://app.example.com/<uuid>` that any DOM element can consume — `<img src>`, `<video src>`, `<a download href>`, `<iframe src>`. The browser holds an in-memory map from the URL to the underlying `Blob`. Cheap to create, cheap to read, but the underlying memory stays alive until the URL is revoked or the document unloads. The reach: image and video preview, generated-file download, in-memory PDF preview.
-- **`URL.revokeObjectURL(url)` — the cleanup reflex.** The mirror call that releases the map entry and lets the `Blob` be garbage-collected. The senior reflex: every `createObjectURL` call has a matching `revokeObjectURL` in a `useEffect` cleanup return, a ref-callback cleanup, or an `img.onload` handler. The bug class without it: every re-pick (or every re-render that recreates the URL) leaks the previous `Blob`; in a gallery component this multiplies until the tab crashes. Forward reference to Chapter 029 (`useEffect` cleanup) and lesson 4 of chapter 026 (ref callbacks with cleanup return).
-- **The canonical pick-to-preview shape.** Three steps in a client component. (1) `<input type="file" accept="image/*">` with an `onChange` that reads `event.target.files?.[0]` and stashes it in state. (2) A `useEffect` (or React 19 `use(promise)`-friendly derive — recognition only) that calls `createObjectURL` on the `File`, sets a local URL state, and returns a cleanup that calls `revokeObjectURL`. (3) An `<img src={url} alt="" />` element that renders the preview. The lesson lands the shape verbally; the React hook syntax is taught in Unit 4.
-- **The MIME type and `accept` attribute.** `<input type="file" accept="image/png,image/jpeg,image/webp">` filters the picker UI but does not validate — a determined user can still upload anything. The senior reflex: `accept` is UX, server-side content-type and magic-byte validation is security. Forward reference to Unit 13 (R2 + content-type validation).
-- **Slicing and reading at depth — recognition only.** `blob.slice(start, end, type?)` returns a new `Blob` over a byte range — the substrate for chunked uploads and "read first 16 bytes to check magic" patterns. `blob.arrayBuffer()`, `blob.text()`, `blob.stream()` are the body consumers symmetrical to `Response`. `FileReader` is the legacy API and only earns its weight when you need progress events the streaming API doesn't surface; the senior default in 2026 is `blob.arrayBuffer()` or `blob.stream()`.
-- **The R2 presigned-PUT forward reference.** The upload pipeline the course teaches in Unit 13: client picks a `File`, posts the file's name + type + size to a Server Action, the action mints a presigned PUT URL from R2's SDK, the client `fetch`-PUTs the `File` directly to R2, then notifies the server with the final object key. The lesson 3 of chapter 020 lesson is the client-side half — the `File` object that the `fetch` body accepts. Named once, not taught here.
-- **Downloading a generated file — the symmetric case.** When the app generates a CSV or PDF in the browser, the senior reach is `new Blob([csvString], { type: 'text/csv' })` → `createObjectURL` → `<a href={url} download="report.csv">Download</a>` → click programmatically or render the link. Revoke after the click. Recognition shape; the download trigger and cleanup belong on the same handler.
-- **Watch-outs.** Forgetting `revokeObjectURL` is the memory-leak bug; in a list with thumbnails this scales linearly with re-renders. Calling `revokeObjectURL` before the consumer (an `<img>`) has loaded breaks the preview — the cleanup runs on unmount or on URL change, not synchronously after the `<img>` mounts. `accept="image/*"` is UX, not validation. `FileList` is array-like but not an array — spread or `Array.from` before iterating. The `type` on a `Blob` constructed from `new Blob(['hello'])` defaults to `''`, which most consumers treat as `application/octet-stream`. `File.name` is what the user's OS shows, not a safe filename — sanitize before storing. `blob:` URLs are origin-scoped: you can't share a blob URL across tabs, and they don't survive a page reload. Setting `<img src>` to a revoked blob URL renders a broken-image icon. The browser revokes all of a page's blob URLs on unload, so cleanup is for tab lifetime, not for the OS.
+- **The senior question.** For a horizontal nav (logo left, links middle, sign-in right), the 2026 reach is `flex items-center justify-between` — flex is the 1D primitive for "rows and columns of variable-content items where the algorithm distributes leftover space." The lesson installs the flex algorithm in the form a 2026 senior reads it: container → main and cross axes → item growing, shrinking, and basis → alignment on both axes → `gap` for spacing.
+- **The flex container and the two axes.** `display: flex` makes the element a flex container; children become flex items. Main axis = direction items lay out (row by default, follows `direction`; switch with `flex-col`). Cross axis = perpendicular. Every flex property is named for one of the two axes — `justify-*` on main, `items-*` / `align-*` on cross. The student names the axis first, picks the property second.
+- **`flex-direction` and `flex-wrap`.** `flex-row` (default), `flex-col`, and the `-reverse` cousins (recognition only — visual reorder doesn't change tab order; `order` on one item is the senior reach when a single item needs to move). `flex-wrap` enables multi-line wrapping; `gap-y-*` becomes the row-gap when wrap is on.
+- **Item sizing — `flex-grow`, `flex-shrink`, `flex-basis`, and the `flex` shorthand.** The 2026 form is one of three named shorthands: `flex-1` (take available space, share equally), `flex-auto` (take available space but respect content size), `flex-none` (don't grow or shrink). `shrink-0` is the canonical reach for sidebars, fixed-width avatars, anything whose width is the design. The senior rarely writes the three values separately.
+- **Alignment — `justify-content`, `align-items`, `align-self`, `align-content`.** Main-axis `justify-*`: `start` / `end` / `center` / `between` / `around` / `evenly`. Cross-axis `items-*`: `stretch` (default) / `start` / `end` / `center` / `baseline`. `align-self` overrides one item. `align-content` controls the *lines* of a wrapped container — rarely needed; `gap-y-*` usually does the job.
+- **`gap` — the senior default for spacing flex items.** Every flex container with multiple items uses `gap-*`. Two-axis variants `gap-x-*` / `gap-y-*` for asymmetric. Adds space between items only — no leading or trailing edge collisions.
+- **The canonical flex layouts a senior reaches for.** Five patterns cover most production use: horizontal navs (`flex items-center justify-between` with `gap`), form rows (a `shrink-0` label plus a `flex-1` input), card column stacks (`flex flex-col gap-*`), toolbars with a `flex-1` spacer between clusters, and cards with bottom-pinned footers (`flex flex-col h-full` plus `flex-1` on the main region).
+- **DevTools — the flex overlay.** A button in the Elements panel toggles a colored overlay showing the axes, gaps, and item bounds. The senior debugging move when alignment looks wrong.
+- **Watch-outs:**
+  - `flex-1` sets `min-width: 0` and collapses an item's intrinsic min-width (add `min-w-0` or `min-w-fit` when content matters — the most common flex bug in 2026).
+  - `gap` is universal in flex now; `space-x-*` isn't needed.
+  - `items-baseline` aligns text baselines (the right reach for a row with mixed font sizes); `items-center` centers the box, which often visually misaligns text.
+  - Items shrink by default — `shrink-0` for items whose width is the design.
+  - `*-reverse` reverses visual order, not source order; keyboard tab order follows source.
+  - `justify-between` with one child does nothing.
+  - `<img>` and form elements have implicit min-content widths that can blow out a flex row — constrain with `min-w-0` or `max-w-*`.
 
 What this lesson does not cover:
 
-- The R2 presigned PUT flow at depth — Unit chapter 073 owns it.
-- Drag-and-drop and `DataTransfer.items` — out of scope; the file input covers the SaaS reach.
-- Image resizing / EXIF stripping / client-side image processing — niche; reach for a server-side image pipeline (Unit 13) for SaaS.
-- `FileReader` and progress events at depth — recognition only.
-- Streaming uploads with `ReadableStream` bodies — lesson 2 of chapter 019 covers streams; the upload case lands in Unit 13.
-- IndexedDB for offline storage of blobs — niche, out of scope.
-- `WebTransport` and `WebRTC` for peer-to-peer file transfer — out of scope.
-- The OPFS (Origin Private File System) and `showOpenFilePicker` — Chromium-only and overkill for SaaS upload; recognition only at most, cut here.
+- Grid at depth (lesson 4 of chapter 020).
+- Sizing utilities (`w-*`, `h-*`, `max-w-*`, `aspect-*`) — lesson 5 of chapter 020 (cross-referenced lightly here).
+- The `gap` decision vs. `space-x` / margin tricks — lesson 6 of chapter 020 owns the comparison; this lesson assumes `gap` as the default.
+- Responsive variants for flex direction (`md:flex-row`) — lesson 6 of chapter 021.
+- Animation of layout properties — lesson 5 of chapter 021.
+- The relationship between flex items and `position: absolute` children — recognition only; lesson 7 of chapter 020 owns positioning.
 
 ---
 
-## Lesson 4 — Web Storage: where localStorage earns its weight
+## Lesson 4 — Grid, the 2D primitive
 
-Installs the `localStorage` and `sessionStorage` API surface, the SSR safety dance under Next.js 16 (`typeof window` guard for inline reads, `useSyncExternalStore` for the React-aware bind), the `storage` event for cross-tab sync, and the cookie / URL state / server state / `localStorage` / `useState` decision tree that names what `localStorage` is explicitly not for.
+Explicit tracks, the `fr` unit, `repeat(auto-fit, minmax(...))` for responsive without breakpoints, `grid-template-areas` for page shells, `subgrid` for nested alignment, `place-items-*` shorthands, item placement, and the flex-vs-grid decision.
 
 Topics to cover:
 
-- **The senior question.** A user closes the "command palette tip" banner and expects it to stay closed across reloads. Where does that bit live? Not in `useState` (lost on reload), not in the URL (not shareable state), not on the server (an account-level write for one UI preference is overkill), not in a cookie (sent on every request). `localStorage` is the right answer — for *this specific shape* of state. The lesson installs the decision tree first so the API is taught against a threshold, not as a tool looking for a use case.
-- **The four-home decision tree.** The five locations a piece of state can live, with the trigger that picks each. (1) Component state (`useState`) — ephemeral, never needed after unmount. (2) URL state (search params, `nuqs` — forward reference to Unit 11) — shareable, bookmark-able, navigation-state. (3) Server state — account-level, must be queryable, must survive a logout. (4) Cookie — must be sent on every request (auth, theme picked-before-hydration), or must be HttpOnly. (5) `localStorage` — per-device UI preference, dismissed banners, draft form values, last-used filter, the "tip seen" bit, anything that's *cheap to lose* and *not worth a server round-trip*. The senior reflex: walk the tree top to bottom, take the highest match. `localStorage` is a leaf, not a default.
-- **The API surface in one paragraph.** Two near-identical objects on `window`: `localStorage` (persistent across browser sessions, scoped per origin) and `sessionStorage` (cleared when the tab closes, scoped per tab + origin). Three methods on each — `setItem(key, value)`, `getItem(key)`, `removeItem(key)` — plus `clear()` and the iteration surface (`length`, `key(i)`). Values are *strings only*; objects must be `JSON.stringify`-ed on the way in and `JSON.parse`-ed on the way out. Quota is per-origin and roughly 5–10 MB depending on the browser — the senior reflex is to assume small and write defensively. Synchronous: every call blocks the main thread; never call from inside a hot render loop.
-- **The SSR safety dance.** Next.js 16 renders Server Components on the server where `window` and `localStorage` don't exist. Reading `localStorage.getItem(...)` at module top level or inside a Server Component throws `ReferenceError`. The senior pattern: every read is guarded by `typeof window !== 'undefined'` (one-liner reads), or by `useEffect` (the React reactivity comes for free), or by `useSyncExternalStore` (the React-aware subscription that handles SSR initial-state and cross-tab updates correctly). The lesson lands the three forms with the trigger for each.
-- **`useSyncExternalStore` for the React-aware bind — recognition + minimal shape.** The 2026 reach when a React tree needs to read `localStorage` and react to changes (including the cross-tab `storage` event). The signature: `useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot)`. `subscribe` adds a `storage` event listener and returns the cleanup. `getSnapshot` reads `localStorage.getItem(key)` and parses. `getServerSnapshot` returns the SSR default (typically `null` or an explicit fallback) — without it, hydration mismatches in Next.js. Named here as the API the next-themes-style library wraps; Chapter 029 or 16 teaches the hook at depth when state primitives land.
-- **The hydration-mismatch reflex.** Reading `localStorage` on the client and rendering the result inside JSX without a server-side counterpart produces a hydration mismatch (server rendered "Welcome", client renders "Welcome back"). Two fixes: render the server-default first and patch on mount inside `useEffect`, or render through `useSyncExternalStore` with a correct `getServerSnapshot`. Cross-reference to lesson 2 of chapter 018 (attributes vs. properties — hydration mismatch class) and Chapter 5 (SSR).
-- **The `storage` event for cross-tab sync.** `window.addEventListener('storage', (event) => ...)` fires on *other* tabs (not the writing tab) of the same origin when a value changes. The reach: a logout in one tab clears the auth flag and other tabs react. The watch-out: the event does not fire in the tab that wrote — for in-tab listeners, the writer dispatches a custom event itself, or `useSyncExternalStore`'s `getSnapshot` is re-read on next React tick. The `AbortController` cleanup pattern from lesson 3 of chapter 018 applies; recognition reach.
-- **`sessionStorage` — when it earns the swap.** Identical API, scoped per tab. The reach: multi-step form draft state that should not bleed across tabs ("compose a new invoice" wizard), one-time onboarding flag that resets per session. The trigger: the value is meaningful only inside this tab's lifetime. If unsure, default to `localStorage`.
-- **What `localStorage` is explicitly not for.** Auth tokens — XSS-readable, the canonical 2022-era footgun. Cookies (`HttpOnly`) hold the session (Chapter 017); Better Auth (Unit 9) owns the surface. Sensitive PII — same XSS risk. Cart contents in a real SaaS — that belongs server-side. Large blobs — quota is small and synchronous I/O blocks; IndexedDB is the answer for large structured data (not taught in this course; recognition only). Cross-device state — `localStorage` is per-device; a user on phone and laptop sees two different values.
-- **The `try/catch` reflex on `setItem`.** Quota exceeded throws `QuotaExceededError`. Private/Incognito modes on Safari and Firefox can throw or silently no-op. The senior reflex: every `setItem` for non-trivial data is wrapped in `try/catch` with a fallback (in-memory cache, server fetch, degrade silently). The reads can fail too on locked-down browsers — `getItem` returning `null` is normal, not error.
-- **Watch-outs.** Storage is per-origin (scheme + host + port) — `https://app.example.com:3000` and `https://app.example.com:3001` are different stores; `localhost:3000` dev and the prod URL are different stores. Values are strings — `localStorage.setItem('count', 0)` stores `"0"` and `getItem('count')` returns the string `"0"`, not the number. `JSON.parse(localStorage.getItem(key) ?? 'null')` is the safe-default pattern. `localStorage.clear()` wipes the whole origin — never call from feature code, only from explicit user logout / "reset settings" flows. The Next.js dev server can change ports — keys move with the port. iframes can't access the parent's `localStorage` (origin isolation). Setting `JSON.stringify` on circular references throws. Schema migrations are on you — when the value shape changes, the old value is still there; a version key in the stored object is the senior pattern. Synchronous: never inside a hot loop, batch reads.
+- **The senior question.** For a card grid (three columns desktop, two tablet, one mobile, consistent gaps), `flex flex-wrap` produces varying widths because flex items shrink to content; the 2026 answer is `grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6`. Grid is the 2D primitive — it defines tracks (columns and rows), items snap into them. The lesson installs explicit columns and rows, named template areas for page shells, `auto-fit` / `minmax` for responsive cards without media queries, and `subgrid` for nested alignment.
+- **The grid container and the explicit-track model.** `display: grid` makes the element a grid container; children become grid items, auto-placed unless they specify a placement. Tracks are defined via `grid-template-columns` / `grid-template-rows` and sized with fixed lengths, the `fr` unit, content-based keywords (`auto`, `min-content`, `max-content`, `fit-content()`), or `minmax(<min>, <max>)`.
+- **The `fr` unit.** `1fr` = one fraction of the leftover space after fixed and content-sized tracks are subtracted. The right default for "this column grows with the container"; mix `1fr` with fixed sizes for sidebar layouts.
+- **Tailwind grid utilities.** `grid-cols-*` and `grid-rows-*` (numeric or bracket-form arbitrary), `gap-*`, `col-span-*` / `row-span-*`, `col-start-*` / `col-end-*`, `grid-flow-*` for auto-placement direction, `auto-cols-*` / `auto-rows-*` for implicit tracks. `grid-cols-3` compiles to `repeat(3, minmax(0, 1fr))` so columns can shrink below content width.
+- **Responsive grids without media queries — `repeat(auto-fit, minmax(...))`.** Creates as many tracks as fit, each at least a min width and at most `1fr`. The senior reach when the design is "however many cards fit, with a minimum size each." Responsive variants (`md:grid-cols-2 lg:grid-cols-3`) are the right reach when the design wants exact column counts at breakpoints.
+- **`grid-template-areas` — named regions for page shells.** A header-sidebar-main-footer page shell defines its tracks plus a named template; each child references its area name. Tailwind v4 ships `grid-areas-*` and `area-*` utilities. The template is readable as ASCII art; mobile rearrangement is a single template change.
+- **`subgrid` — nested alignment.** `grid-cols-subgrid` makes a nested grid's columns match the parent's. Reach: a card grid where each card has its own inner grid (header / image / body / footer) and rows must align horizontally across the row regardless of content length. Production-safe in 2026.
+- **Alignment shorthands — `place-items`, `place-content`, `place-self`.** `place-items-center` on a grid with one item is the most concise centering pattern in CSS — `grid place-items-center min-h-dvh` centers a child on both axes. `place-content-*` centers the entire grid when tracks don't fill the container.
+- **Item placement.** Span counts (`col-span-2`), explicit line numbers (`col-start-* col-end-*`), and named lines (the bracket form, where line names appear in the track definition). Span counts cover most cases; named lines are useful for complex page shells where the line names match the layout language.
+- **The canonical grid layouts a senior reaches for.** Five patterns cover most production use: card grids with fixed columns at breakpoints, card grids with `auto-fit minmax` (no breakpoints), page shells with sidebar tracks and full-width header/footer (`col-span-2`), centered heroes (`grid place-items-center min-h-dvh`), and stats dashboards with a featured card spanning multiple tracks.
+- **Flex vs. grid — the decision.** Flex for 1D (rows or columns with variable-content items distributing leftover space). Grid for 2D (rows-and-columns structure, snap-to-track items, subgrid alignment, exact column counts at breakpoints). Most SaaS UIs are a grid of flex compositions.
+- **DevTools — the grid overlay.** A "grid" badge in the Elements panel; the Layout tab toggles line numbers, line names, and area names independently. The senior debugging move when an item isn't where it should be.
+- **Watch-outs:**
+  - `repeat(3, 1fr)` overflows on narrow viewports — `minmax(0, 1fr)` lets columns shrink below content width (Tailwind's `grid-cols-3` already does this).
+  - `gap` is the row-and-column gap; no per-item margin tricks.
+  - `auto-fit` collapses empty tracks; `auto-fill` keeps them. `auto-fit` is the card-grid reach.
+  - `col-span-N` in an N-1 column grid clamps to available columns.
+  - `grid-flow-dense` reorders visually but not in source (same a11y caveat as `flex-row-reverse`).
+  - `min-content` / `max-content` are the sizing escape hatches; rare in component code, common in data tables.
 
 What this lesson does not cover:
 
-- IndexedDB — niche for SaaS UI, recognition only.
-- Cookies — Chapter 017 owns the cookie trust model and the senior default attributes.
-- URL state with `nuqs` — Unit 11 (lists and URL state).
-- The `useState` and `useEffect` hooks at depth — Unit 4.
-- `useSyncExternalStore` at depth — Chapter 029 or Unit 16 (state primitives); recognition shape here.
-- Service Workers and the Cache API — niche, out of scope.
-- The `Storage` constructor itself or custom `Storage` implementations — not 2026 SaaS reach.
-- BroadcastChannel for cross-tab messaging — adjacent to the `storage` event; recognition only.
-- Encrypted client-side storage (libraries that wrap `localStorage` with crypto) — not endorsed for 2026 SaaS work; sensitive data stays server-side.
+- Container queries (`@container`) — lesson 7 of chapter 021 (mentioned as the "responsive without breakpoints" alternative for components, vs. grid `auto-fit` for containers).
+- Sizing utilities (`w-*`, `min-h-*`, `aspect-*`) — lesson 5 of chapter 020.
+- Stacking context inside grid/flex — lesson 9 of chapter 020.
+- The `gap` decision vs. legacy alternatives — lesson 6 of chapter 020.
+- Animation of grid track changes — niche; the chapter doesn't ship it.
+- Multi-column layout (`columns: 3`) — recognition only; rare in 2026 outside long-form prose.
 
 ---
 
-## Lesson 5 — Quizz
+## Lesson 5 — Sizing, viewport units, and aspect-ratio
+
+The `w-*` / `h-*` / `size-*` / `min-*` / `max-*` sizing primitives, the `vh` / `dvh` / `svh` / `lvh` viewport-unit family with `min-h-dvh` as the iOS reflex, `aspect-ratio` for zero-CLS media containers, intrinsic vs. extrinsic sizing, and `clamp()` for fluid sizes without breakpoints.
+
+Topics to cover:
+
+- **The senior question.** An `h-screen` hero leaves a gap at the bottom on iOS Safari because `100vh` is the *largest* viewport (address bar collapsed) and the address-bar overlay leaves a gap when expanded. The fix is `100dvh` (dynamic), `100svh` (smallest), or `100lvh` (largest) depending on intent. The lesson installs the sizing primitives (`width`/`height`, `min-*`/`max-*`, `size-*`, `aspect-ratio`), the viewport-unit family, the intrinsic-vs-extrinsic mental model, and `min()` / `max()` / `clamp()` for fluid sizing.
+- **`width` and `height` — extrinsic sizing.** Forces the element to a size regardless of content. Tailwind: `w-*` / `h-*` on the spacing scale, `w-full` (100%), `w-screen` (100vw — recognition; rarely the right reach), fractional widths (`w-1/2`, `w-1/3`), arbitrary values.
+- **`size-*` — the v4 width-and-height shortcut.** A single utility for square elements (avatars, icons, status indicators, square buttons). `w-*` and `h-*` separately stay right for rectangles.
+- **`min-*` / `max-*` constraints.** Clamp the element's size after the layout algorithm computes it. Canonical reaches: `max-w-3xl` on a centered article, `max-w-[65ch]` (or `max-w-prose`) for body text reading width, `min-w-0` on flex items that should shrink below content (the `flex-1` companion fix), `min-h-dvh` on the page shell, `max-h-screen overflow-y-auto` on a tall sidebar.
+- **The viewport-unit family — `vh`, `dvh`, `svh`, `lvh` (and the `*-vw` cousins).** `vh` = largest viewport, `dvh` = dynamic (resizes with the address bar), `svh` = smallest. The 2026 reflex is `min-h-dvh` for "fill the viewport" and `h-dvh` for "exactly viewport height." `min-h-screen` is the legacy form that breaks on mobile.
+- **`aspect-ratio` — sizing without one dimension.** `aspect-square`, `aspect-video` (16/9), arbitrary `aspect-[3/2]`. Reaches: image and video containers (zero CLS because space is reserved before media loads), square thumbnails, card image areas where every card's hero height must match. Replaces the legacy `padding-bottom: 56.25%` hack.
+- **Intrinsic vs. extrinsic sizing — the mental model.** Intrinsic = content-driven (`auto`, `min-content`, `max-content`, `fit-content()`); extrinsic = parent- or utility-forced (`100%`, fixed lengths, `flex-basis: 0` + grow, a grid `1fr` track). Block elements are extrinsic on width, intrinsic on height; inline elements are intrinsic on both; flex/grid items are extrinsic on main, content-driven on cross. When sizing is wrong, the question is which axis is being computed which way.
+- **`fit-content` — `w-fit`.** Width = content, capped at parent. Reach: a content-width button inside a `flex-col` parent that would otherwise stretch.
+- **`min()`, `max()`, `clamp()` — fluid sizing without breakpoints.** `clamp(min, preferred, max)` is the 2026 sweet spot. Tailwind via bracket form. Analogous to `auto-fit` for grid columns — responsive size without media queries. The chapter names it once and points at lesson 6 of chapter 021 for when to reach.
+- **The CSS unit zoo.** `rem` for spacing and typography (the senior default, via Tailwind's scale); `dvh` / `dvw` for viewport-fill; `ch` for reading widths; `px` for hairlines, borders, focus rings; `%` rarely (a flex/grid `1fr` is usually the right substitute); `em` very rarely; `fr` in grid only.
+- **Watch-outs:**
+  - `h-screen` (= `100vh`) breaks on iOS — use `h-dvh` / `min-h-dvh`. The single most important sizing fix to install.
+  - `width: 100%` on a flex item with `min-width: auto` overflows when content is wider than the parent — add `min-w-0`.
+  - `height: 100%` requires the parent to have a defined height; surprises a `<div>` inside `<body>` without `<html>, <body>` heights.
+  - `max-w-prose` and `max-w-[65ch]` are the same idea — both cap reading width at the optimal character count.
+  - `aspect-ratio` interacts with flex item collapse the same way `flex-1` does; use `min-w-0` or restructure.
+  - `size-*` only works for square elements; use `w-*` and `h-*` separately for rectangles.
+  - Magic-number sizing (`mt-[37px]`) is a smell — use the scale or change the scale's base.
+
+What this lesson does not cover:
+
+- Container queries (`@container`) for component-scoped responsive sizing — lesson 7 of chapter 021.
+- Responsive variants (`md:w-1/2 lg:w-1/3`) — lesson 6 of chapter 021.
+- The `gap` and spacing utilities — lesson 6 of chapter 020.
+- Position and inset (`top`, `left`, etc.) — lesson 7 of chapter 020.
+- Typography sizing (`text-*`) — lesson 1 of chapter 021.
+- The `text-wrap: balance` and `pretty` properties — lesson 1 of chapter 021.
+- The `field-sizing: content` property for inputs that grow with content — niche; Unit 6 (forms) is the right place if it earns its weight.
+
+---
+
+## Lesson 6 — Gap, the universal spacing default
+
+Why `gap` replaces sibling-margin tricks and `space-x` / `space-y` inside flex and grid containers, the gap-vs-margin decision, `divide-x` / `divide-y` for visible hairlines between items, and the padding / gap / margin parallel.
+
+Topics to cover:
+
+- **The senior question.** For a vertical list, the 2018 reach was `margin-bottom` on every item except the last; 2021 was Tailwind's `space-y-*`; the 2026 reach is `flex flex-col gap-*` — the parent declares the layout primitive, `gap` does the spacing, no per-child rules. The lesson installs `gap` as the universal default for spacing inside flex and grid containers, names the legacy alternatives with the trigger that would flip back, and covers `divide-*` for borders between items.
+- **`gap` — the universal default.** Works in flex, grid, and multi-column. Adds space between items only — no leading or trailing edge collisions with the parent's padding. Two-axis variants (`gap-x-*`, `gap-y-*`). Reflows correctly when items wrap or change count.
+- **`space-x-*` / `space-y-*` — legacy compatibility.** Compiles to a sibling-margin pattern. Exists for the rare non-flex/grid parent that can't be changed without side effects. The cleaner fix is almost always `flex flex-col` on the parent. Chapter names it once, dismisses with the trigger.
+- **Why `gap` wins.** `space-x` breaks on wrap (inconsistent cross-row spacing), is sensitive to `:first-child` ordering (hidden / conditionally-rendered siblings shift the spacing), and interacts poorly with RTL. `gap` is one property on the parent with no per-child math and no edge cases.
+- **`divide-x-*` / `divide-y-*` — borders between items.** Adds a top/left border to every direct child except the first. Reach: visible separators (settings list with hairlines, nav menu with vertical dividers). Not a substitute for `gap`; the two compose when both are wanted.
+- **The gap-vs-margin decision.** Use `gap` between siblings inside a flex/grid container (~90% of cases). Use `margin` for spacing between an element and something *outside* its container (the rare push-this-element-away case). Never margin between siblings inside a flex/grid container.
+- **Padding / gap / margin — the parallel.** Padding = inside an element. Gap = between siblings. Margin = outside an element. The student hardly ever writes margin in 2026; `gap` and `padding` cover almost everything.
+- **The legacy patterns — recognition only.** The `* + *` "lobotomized owl" pattern (Heydon Pickering) and Tailwind's `space-y-*` (the modern variant) are dead for new code; the student recognizes them in legacy projects.
+- **Asymmetric gaps and the underlying CSS properties.** `gap-x-*` / `gap-y-*` decouple row and column spacing for the rare case where they differ. `gap` is shorthand for `row-gap` and `column-gap` (name recognition only; the Tailwind shorthand is what the student writes).
+- **Watch-outs:**
+  - `gap` doesn't add edge space — use parent `padding` for leading/trailing space.
+  - `grid-gap` is the legacy form; `gap` is the unified property now.
+  - `space-y` skips spacing for `null`-rendered children; `gap` doesn't (it operates on the parent, not on selectors).
+  - `divide-*` composes with parent `border` and `rounded-*` for a list-card with internal hairlines.
+  - Don't mix `gap` and `space-x` on the same container.
+  - `gap` doesn't collapse like margins do.
+
+What this lesson does not cover:
+
+- The `padding` and `margin` utilities at depth — lesson 1 of chapter 020 owns the box model.
+- Flex item sizing and alignment — lesson 3 of chapter 020.
+- Grid track and item placement — lesson 4 of chapter 020.
+- Responsive variants for spacing (`md:gap-6`) — lesson 6 of chapter 021.
+- The `<hr>` element vs. `divide-*` — `<hr>` is the semantic horizontal rule for thematic breaks (lesson 6 of chapter 017 territory).
+- Multi-column layout (`columns: 3` + `column-gap`) — niche, recognition only.
+
+---
+
+## Lesson 7 — Position and inset utilities
+
+The five `position` modes (`static`, `relative`, `absolute`, `sticky`, `fixed`), containing-block rules with the `relative` parent reflex for `absolute` children, the physical and logical `inset-*` family, canonical layouts for badges / sticky headers / toasts / drawers, and CSS anchor positioning plus the Popover API as forward references.
+
+Topics to cover:
+
+- **The senior question.** Pinning a toast bottom-right with `margin: auto` fails (parent isn't tall enough); `position: fixed` with offsets pins but overlaps the footer on scroll. The 2026 answer is `fixed bottom-4 right-4 z-50` (with the `z-50` caveat that lesson 9 of chapter 020 unpacks). The lesson installs the four positioning modes (`relative`, `absolute`, `sticky`, `fixed`), the `inset-*` utilities, the containing-block rules, and the senior reach for each mode.
+- **The five `position` values.** `static` (default, no offsets), `relative` (in normal flow, offsets shift visually — usually used to establish a containing block for `absolute` children), `absolute` (removed from flow, positioned to the nearest positioned ancestor or the initial containing block), `fixed` (positioned to the viewport, stays during scroll), `sticky` (in flow until it would scroll past an offset, then sticks).
+- **The containing block.** For an `absolute` element, the nearest *positioned* ancestor; if none, the initial containing block (the viewport, roughly). The most common bug is an `absolute` child without a `relative` parent positioning to the viewport. The 2026 reflex: every absolute overlay or badge is wrapped in a `relative` parent.
+- **The `inset` utility family.** `top-*` / `right-*` / `bottom-*` / `left-*` for single-axis; `inset-*` for all four; `inset-x-*` / `inset-y-*` for axis pairs; `inset-s-*` / `inset-e-*` / `inset-bs-*` / `inset-be-*` for logical (Tailwind vchapter 023+ replaced the deprecated `start-*` / `end-*` shorthands). `inset-0` is the canonical "fill the parent" pattern. Negative offsets (`-top-4`, `-inset-2`) pull outside the parent.
+- **The canonical position layouts.** `relative` parent plus `absolute` child for icon badges; `sticky top-0` for table headers; `sticky top-0` with `z-*` for section headings inside a scrolling main; `fixed inset-0` for modal backdrops (pre-portal); `fixed bottom-4 right-4` for toast clusters; `fixed inset-y-0 right-0 w-72` for side drawers.
+- **Sticky requires a scrollable ancestor.** `position: sticky` needs an `overflow: auto` / `scroll` / `hidden` ancestor on the relevant axis (or the page itself) and a defined offset (`top` / `bottom` / etc.). The sticky element sticks within its parent's bounds — it doesn't escape. lesson 8 of chapter 020 cashes in the overflow interaction.
+- **Anchor positioning and the Popover API — forward references.** CSS Anchor Positioning (Baseline 2026 — Chrome 125+, Firefox 147+, Safari 26+) lets an element position relative to any other element on the page, not just its parent. The native `popover` HTML attribute plus the Popover API (`showPopover()`, `popovertarget`) are the 2026 form for native popovers, dropdowns, and dialogs. shadcn's Popover (lesson 1 of chapter 027) wraps these; the student recognizes the term and reads the surface, doesn't implement it from scratch.
+- **Watch-outs:**
+  - `absolute` without a `relative` parent positions to the viewport — the single most common position-related bug.
+  - `position: fixed` doesn't escape an ancestor with `transform`, `filter`, or `perspective` — those create a new containing block (same trap as the "popover stuck inside its parent" bug in lesson 9 of chapter 020). Fix: portal to `<body>`.
+  - `position: sticky` doesn't work without a scrollable ancestor, and breaks if a non-scroll ancestor has `overflow: hidden` on the relevant axis.
+  - Bottom navbars must respect the iOS home indicator — pad with `pb-[env(safe-area-inset-bottom)]`.
+  - `z-index` only works on positioned elements (or flex/grid items) — lesson 9 of chapter 020 cashes this in.
+  - `inset-0` on an absolute element with no width/height fills the parent — the canonical full-coverage pattern, useful with `pointer-events-none` for click-through hover overlays.
+
+What this lesson does not cover:
+
+- Stacking context and z-index at depth — lesson 9 of chapter 020.
+- Overflow modes and scroll containers — lesson 8 of chapter 020.
+- React Portals (the `<Portal>` pattern for modals/popovers) — lesson 5 of chapter 022.
+- shadcn's Popover, Dropdown, Tooltip components — lesson 1 of chapter 027.
+- Drag and drop positioning — out of scope.
+- CSS `transform` for visual positioning (`translate-x-*`, `translate-y-*`) — recognition only here; lesson 5 of chapter 021 owns motion.
+- Fixed-element scroll-locking (preventing background scroll when a modal is open) — the project chapter (lesson 8 of chapter 028) cashes in `useLockBodyScroll`.
+
+---
+
+## Lesson 8 — Overflow and scroll containers
+
+The overflow modes (`visible` / `hidden` / `clip` / `auto` / `scroll`), `overscroll-behavior` for the iOS scroll-chain and pull-to-refresh bugs, `scrollbar-gutter: stable` for layout stability, sticky-inside-overflow, the page-scroll vs. app-shell-scroll decision, and `scroll-snap-*` as the modern carousel primitive.
+
+Topics to cover:
+
+- **The senior question.** A tall sidebar causes the page to scroll behind it on iOS (or pull-to-refresh fires); a long modal lets the page underneath scroll when the modal content reaches its end. The 2026 answers are `overflow-y-auto` on the scroll container, `overscroll-behavior: contain` to stop the scroll chain, and `scrollbar-gutter: stable` to prevent layout shift when the scrollbar appears. The lesson installs the overflow modes (`visible`, `hidden`, `clip`, `auto`, `scroll`), `overscroll-behavior` for the iOS scroll-chain and pull-to-refresh bugs, scroll containment, and the canonical scroll-container patterns.
+- **The overflow modes.** `visible` (default, content overflows), `hidden` (clipped, no scrollbars, *creates a new scroll container*), `clip` (like `hidden` but doesn't create a scroll container), `auto` (scrollbars only when content overflows — the senior default for scrollable regions), `scroll` (always-visible scrollbars; rare in 2026). Per-axis variants (`overflow-x-auto overflow-y-hidden` for horizontal scrollers; `overflow-y-auto overflow-x-hidden` for vertical sidebars).
+- **`overscroll-behavior` — the scroll-chain control.** The scroll-chain bug: scroll at a child's boundary chains to the parent and triggers iOS pull-to-refresh. The fix is `overscroll-contain` (Tailwind) on the modal / drawer / sidebar body. `overscroll-none` also disables bounce/glow; per-axis variants exist. Every modal, drawer, and dialog body gets it.
+- **Scroll-locking the page when a modal opens — the body-lock pattern.** Naïve `body { overflow: hidden }` works on desktop but fails on iOS touch. The senior reach combines body overflow with a `touchmove` listener that calls `preventDefault()`, wrapped into a `useLockBodyScroll` hook (the project chapter lesson 8 of chapter 028 builds this; this lesson references the pattern).
+- **Sticky inside overflow.** The most common 2026 pattern: a sidebar that scrolls internally (`h-dvh overflow-y-auto overscroll-contain`) with a `sticky top-0` header inside it. Without the overflow, sticky has nothing to stick to; without sticky, the header scrolls away.
+- **`scrollbar-gutter: stable` — preventing layout shift.** Reserves the scrollbar's space even when content fits, so the scrollbar's appearance/disappearance doesn't jolt the layout. Reach: any container that conditionally overflows on user interaction (search-results list, modal body). Tailwind vchapter 023+ via bracket form.
+- **Per-element scroll vs. page scroll — the architectural decision.** Page-level scroll (`<body>` is the scroll container) is the 2026 default; works with browser back/forward, scroll restoration, anchor links, deep linking. App-shell scroll (an inner `<main>` scrolls, `<body>` doesn't) is the right reach for dashboards and tool-style UIs where chrome stays fixed; scroll restoration needs manual handling (Next.js `experimental.scrollRestoration` or a custom hook).
+- **`scroll-snap-*` — the modern carousel primitive.** Snap-type (`snap-x snap-mandatory`), snap-align (`snap-start`), scroll-padding (account for sticky headers). Reach: image carousels, horizontal card scrollers, story-style UIs. Replaces most JS carousel libraries.
+- **Watch-outs:**
+  - `overflow: hidden` creates a scroll container (affects `position: sticky` ancestors); use `overflow: clip` if you want clipping without scroll-container creation.
+  - `overflow-x-hidden overflow-y-visible` doesn't work as expected — spec forces the other axis to `auto`.
+  - `overscroll-contain` is Baseline universal — no polyfill, no fallback needed.
+  - `-webkit-overflow-scrolling: touch` is no longer needed in 2026.
+  - Horizontal scroll containers need `shrink-0` on children, or flex items compress instead of overflowing.
+  - Modal scroll-lock breaks on iOS unless `touchmove` is intercepted (project chapter cashes in).
+  - Scrollbar styling utilities (`scrollbar-width: thin`, `scrollbar-color`) exist for dashboards; otherwise leave native.
+
+What this lesson does not cover:
+
+- Stacking context and z-index — lesson 9 of chapter 020.
+- Position and inset utilities — lesson 7 of chapter 020 (cross-referenced for sticky).
+- React Portals — lesson 5 of chapter 022.
+- The `useLockBodyScroll` custom hook implementation — project chapter (lesson 8 of chapter 028).
+- IntersectionObserver and scroll-driven animations — lesson 5 of chapter 021 has a brief touch; advanced scroll-driven animations are out of scope.
+- Custom scrollbar styling at depth — niche; the chapter mentions the surface and moves on.
+- `content-visibility: auto` for off-screen optimization — niche performance tool, Unit 19 territory.
+
+---
+
+## Lesson 9 — Stacking context and z-index
+
+How z-index is scoped to its stacking context, the trigger list (`opacity < 1`, `transform`, `filter`, `position: fixed/sticky`, `isolation: isolate`, and friends), the canonical trapped-modal bug, the three fixes (portal to `<body>`, `isolation: isolate`, restructure the DOM), and z-index tier conventions.
+
+Topics to cover:
+
+- **The senior question.** A modal with `z-50` containing a tooltip with `z-100` renders the tooltip behind the modal backdrop, even though `100 > 50`. The 2026 answer names the *stacking context* — `z-index` is scoped to a stacking context, and any of `opacity < 1`, `transform`, `filter`, `position: fixed/sticky`, `isolation: isolate`, or several other properties on an ancestor creates a new stacking context that traps every descendant's z-index inside. The lesson installs the model, the canonical bugs, and the senior fixes (portals to escape; `isolation: isolate` to scope deliberately; numeric z-index conventions to keep the layering legible).
+- **What `z-index` actually does.** Sets an element's order on the z-axis within its stacking context. Higher values stack on top within the same context. Two critical points: z-index only applies to positioned elements (or flex/grid items), and it's scoped to the containing stacking context — a `z-100` inside a trapped parent context doesn't compete with elements in another context.
+- **What creates a new stacking context.** `position: fixed` / `sticky` always; `position: relative` / `absolute` with `z-index` other than `auto`; `opacity < 1` (the most surprising trigger); `transform` / `filter` / `backdrop-filter` other than `none`; `isolation: isolate` (the deliberate, side-effect-free way); `will-change` set to certain properties; `mix-blend-mode` other than `normal`; `contain: layout` / `paint` / `style`. Common offenders in the wild: opacity fade transitions, transform animations, fixed headers, and backdrop-filter blurs.
+- **The canonical bug — z-index that "doesn't work."** A parent with `opacity-95` containing a child with `relative z-50`, and a *sibling* of that parent with `relative z-40`. The parent's opacity creates a new stacking context, scoping the child's `z-50` inside; the parent itself participates in the root context with z-index `auto` (effectively `0`). The sibling at `z-40` is in the root context and beats the parent's `auto/0`. Result: the child renders behind the sibling, even though `50 > 40`.
+- **The three fixes.** Portal the floating element to `<body>` — the most common 2026 fix for modals, popovers, tooltips (React's `createPortal`; shadcn's Dialog / Popover / Tooltip all do this). Use `isolation: isolate` (Tailwind: `isolate`) to scope a context deliberately when the design wants conflicts contained inside a card or section. Restructure the DOM to lift the floating element above the trapping parent.
+- **Numeric z-index conventions.** A small set of named tiers prevents spaghetti: `z-0` / `z-10` / `z-20` for content-level layering; `z-30` / `z-40` for page chrome; `z-50` for modals, drawers, dialogs; higher only for non-portaled toasts and tooltips (rare). Tailwind's scale is the senior tier set; arbitrary values (`z-[200]`) are reached for rarely.
+- **The `isolation` property.** `isolation: isolate` creates a new stacking context with no other side effects — replaces the `transform: translateZ(0)` hack. Reaches: scoping a card's internal layering so a badge / overlay can't accidentally escape into the page; establishing a context for `mix-blend-mode` elements.
+- **DevTools — finding the trap.** Chrome's Layers panel (Cmd+Shift+P → "Show Layers") shows compositing layers that roughly correspond to stacking contexts. The senior debugging move when z-index "doesn't work": find the element in Layers, walk up the DOM tree, look for the ancestor with `opacity` / `transform` / `filter` / `position: fixed-or-sticky` / `isolation` — that's the trap.
+- **Watch-outs:**
+  - `opacity` is the most surprising stacking-context trigger; a `transition: opacity` fade can briefly trap z-indexed children. Fix: portal the floating elements, or pair opacity with `transform: scale(...)` (no extra trap because transform already creates one).
+  - `position: fixed` on the modal itself doesn't escape an ancestor's `transform` — the modal positions relative to the transformed ancestor. Fix: portal.
+  - `z-index: -1` on a child puts it behind its parent's background — sometimes the right reach for decorative layers.
+  - `relative` without `z-index` doesn't create a stacking context, but `relative z-0` does — the two aren't equivalent.
+  - shadcn's Dialog, Popover, and Tooltip all portal to `<body>` — same lesson when writing your own floating UI.
+  - Arbitrary high z-index (`z-9999`) is a code smell, not a fix — a trap can't be defeated from inside the trap.
+  - `will-change: transform` creates a stacking context; only apply when measured.
+
+What this lesson does not cover:
+
+- React Portals at depth — lesson 5 of chapter 022.
+- shadcn's Dialog, Popover, Tooltip implementation — lesson 1 of chapter 027.
+- CSS Animation and transform — lesson 5 of chapter 021.
+- The `position` modes themselves — lesson 7 of chapter 020.
+- The browser layout engine — out of scope; the chapter teaches behavior, not implementation.
+- 3D transforms and `transform-style: preserve-3d` — niche.
+- `accent-color` and other related properties — out of scope.
+
+---
+
+## Lesson 10 — Quizz
 
 Top 10 topics to quiz:
 
-- The three surfaces of the `crypto` global — `randomUUID`, `getRandomValues`, `subtle` — and the trigger for each.
-- HMAC sign / verify with `crypto.subtle` — the symmetric-key property, SHA-256 as the 2026 algorithm, and why HMAC fits webhooks but not signer/verifier-asymmetric cases.
-- Constant-time comparison — why `===` on a hex signature leaks the prefix length, and the `subtle.verify` (or byte-wise XOR-accumulator) fix.
-- Secure-context plus user-activation as the two gates the Clipboard API checks — and the error shapes (`SecurityError`, `NotAllowedError`) the call rejects with on failure.
-- The canonical Copy button shape — `'use client'`, `try/catch`, feedback state, `aria-label`, and why the call must live inside the `onClick` handler (not in `setTimeout` or an effect).
-- `Blob` vs. `File` — the typed-bytes container vs. the `File`-subclass-with-`name`-and-`lastModified`, and which one comes from `<input type="file">`.
-- `URL.createObjectURL` / `revokeObjectURL` — the in-memory map, the leak class without revoke, and where the cleanup belongs (effect cleanup, ref-callback return).
-- The four-home decision tree for state — `useState`, URL, server, cookie, `localStorage` — and the trigger that picks each.
-- The SSR safety dance for `localStorage` under Next.js 16 — the `typeof window` guard, the `useEffect` deferred read, and `useSyncExternalStore` with `getServerSnapshot` as the React-aware bind.
-- What `localStorage` is explicitly not for — auth tokens, sensitive PII, cross-device state, large blobs — and the right home for each.
+- The box model and `box-sizing` — what `border-box` means, that Preflight set it on `*, ::before, ::after`, and how `w-64 p-4 border` computes to a `256px` rendered width.
+- The display modes and the senior reach — `flex` for 1D rows/columns, `grid` for 2D structure, `block`/`inline`/`inline-block` defaults, `display: contents` for unwrapping.
+- Flexbox — main vs. cross axis, `flex-1` and `shrink-0`, `justify-content` vs. `align-items`, `gap` as the spacing default, the `min-w-0` companion fix for `flex-1`.
+- Grid — tracks, the `fr` unit, `repeat(auto-fit, minmax(...))` for responsive without breakpoints, `grid-template-areas` for page shells, `subgrid` for nested alignment.
+- Sizing — intrinsic vs. extrinsic sizing, the viewport-unit family (`vh` / `dvh` / `svh` / `lvh`), `aspect-ratio` for media containers, `clamp()` for fluid sizing, the `size-*` v4 shortcut.
+- Spacing inside containers — `gap` as the universal default, `space-x` / `space-y` as legacy, `divide-x` / `divide-y` for visible separators between items, the gap-vs-margin decision.
+- Position modes — `relative` as the containing-block tool, `absolute` for icon overlays inside `relative` parents, `sticky` for headers in scroll containers, `fixed` for viewport overlays, the `inset-*` utility family, the `transform`/`filter` ancestor breaking `position: fixed`.
+- Overflow and scroll containers — the overflow modes, `overscroll-contain` for the scroll-chain bug, `scrollbar-gutter: stable` for layout stability, the sticky-needs-scroll-container interaction, horizontal scroll requires `shrink-0` on children.
+- Stacking context and z-index — z-index is scoped to stacking contexts, the trigger list (`opacity < 1`, `transform`, `filter`, `position: fixed/sticky`, `isolation: isolate`, etc.), the canonical trapped-modal bug, the fix is portal-to-body or `isolation: isolate`.
+- Logical properties and the inline/block axis — `padding-inline` vs. `padding-left/right`, `ms-*` / `me-*` / `ps-*` / `pe-*` Tailwind utilities, the new `inset-s-*` / `inset-e-*` / `inset-bs-*` / `inset-be-*` family that replaced the deprecated `start-*` / `end-*` shorthands, the senior reach when shipping in RTL.

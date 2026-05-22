@@ -1,230 +1,276 @@
-# Chapter 004 — The first project scaffold
+# Chapter 004 — Typing values you know
 
 ## Chapter framing
 
-Chapter 002 pinned the runtime and the package manager. Chapter 003 pinned the editor and the panels that prove code in the browser. This chapter is where the student opens an actual Next.js application for the first time — clones it, starts it, reads the file tree, hardens the TypeScript config, and locks down the environment variable surface so a missing `DATABASE_URL` fails the build instead of the first production request.
-
-The senior framing for the chapter: **the scaffold is not a tutorial app. It is the first commit of a SaaS codebase the student will carry forward for the rest of the course.** Every choice the starter makes — file layout, tsconfig flags, env validation, the `AGENTS.md` at the root — is a choice the student would defend in a code review. The chapter teaches the why behind each one so the student isn't running configurations on faith.
+Chapters 005 through 007 taught the value model — primitives, references, equality, money, strings, the container surface. The student now writes JavaScript fluently and recognizes the bug classes the language admits. This chapter is the first place the course treats TypeScript as a system, not as scattered annotations. It teaches the **type vocabulary** that maps cleanly onto those values: literal unions for finite domains, `type` for shapes, tuples for positional records, `Record` and index signatures for dynamic keys, unions and intersections for composition, narrowing for runtime branching, `as const` and `satisfies` for keeping literals literal, and the senior rule for where annotations earn their weight. Chapter 005 takes those primitives and builds **patterns that prevent whole bug classes** (discriminated unions, branded IDs, exhaustiveness, generics). This chapter is the vocabulary; chapter 005 is the grammar.
 
 Threads that must run through every lesson:
 
-- **The starter is the deliverable, not a learning sandbox.** The chapter does not have the student `create-next-app` from scratch. The course's starter (fetched via `degit` from the projects monorepo, the pattern named in lesson 5 of chapter 001) lands fully wired — Next.js 16, React 19, Tailwind v4, Drizzle skeleton, `@t3-oss/env-nextjs`, Biome already aligned with the `biome.json` from Chapter 003. The lesson reads the scaffold and explains what each piece is doing. The student does not assemble it from raw materials, and they do not run `pnpm create next-app` — the course never goes through the wizard because the wizard's choices drift, and committing to a pinned starter is the senior move.
-- **Next.js 16 owns the bundler decision.** Turbopack is the stable default for `next dev` and `next build` as of Next.js 16 (February 2026). The chapter does not mention Webpack as a default or as a fallback the student should know — one line in lesson 1 of chapter 004 names the `--webpack` opt-out for legacy reasons and moves on. No `--turbo` flag anywhere, ever.
-- **`next lint` is gone.** Confirmed in lesson 2 of chapter 003; the scaffold has Biome wired through `pnpm` scripts that match lesson 2 of chapter 003's `format` / `lint` / `check` / `check:ci`. The student should recognize the scripts from the previous chapter.
-- **`tsconfig.json` has two owners.** The project owns the strictness floor (the flags that catch bugs); Next.js owns the compatibility surface (the flags that make TypeScript and the bundler agree). Splitting the two lessons (lesson 3 of chapter 004 and lesson 4 of chapter 004) makes the ownership boundary visible — the student leaves knowing which flags they would edit in a real project and which ones they leave alone because the framework wrote them.
-- **Env validation is non-negotiable, from the first project.** The `env.ts` file is wired before the student has anything to do with it — they read it, name what it prevents, and confirm the build fails when they remove `DATABASE_URL`. This is the first encounter with the "fail-closed at the boundary" discipline that anchors Architectural Principle #3 later and SaaS pattern #12 in Unit 17.
-- **No application code yet.** The chapter ships the scaffold, an `AGENTS.md`, a `tsconfig.json` reading, and an `env.ts`. The student opens `app/page.tsx` to confirm the dev server works; they do not write components. JSX, React, and Tailwind earn their treatment in Units 4 and 5; even the Server Component vs. Client Component distinction is parked. The student finishes the chapter ready for Unit 2 (JavaScript / TypeScript fundamentals at adult depth) on a known-good codebase.
+- **Decisions before syntax.** Each lesson opens with a production failure mode TypeScript prevents — an `any` that swallowed a `null`, a `string` that should have been a literal union, a `readonly` that wasn't, an `as` that lied. The syntax follows the failure.
+- **Type the value, don't restate it.** Inference is the default; annotations live at the boundaries (exported APIs, function parameters, the public surface of a module). The senior reflex is to write the value clearly, let TypeScript read it, and add a type only where it adds information or constraint the value alone can't carry.
+- **Narrow, don't assert.** `as` and `!` are conditional escape hatches. The chapter installs control-flow narrowing as the default and names the three legitimate triggers for an assertion.
+- **`verbatimModuleSyntax` is on.** From the strict tsconfig of Chapter 003, `import type` is mandatory for type-only imports. The discipline lands in lesson 8 of chapter 004 but is named everywhere imports appear.
+- **Forward links land softly.** Discriminated unions are seeded in lesson 5 of chapter 004 and built out in lesson 1 of chapter 005. Branded IDs are mentioned in lesson 1 of chapter 004 as a one-line trigger for `unique symbol` and recovered in lesson 4 of chapter 005. Utility types are named when they earn a mention but reserved for lesson 6 of chapter 005 as a chapter. No re-teaching.
 
-The student finishes the chapter with:
-
-- The course starter cloned (via `degit`), `pnpm install` clean, `pnpm dev` serving on `localhost:3000`, `pnpm build` succeeding.
-- A read of the file tree they can defend in a sentence per file.
-- An `AGENTS.md` at the root they understand the purpose of.
-- A `tsconfig.json` they can read end to end — which flags they own, which Next.js owns, what each one catches.
-- An `env.ts` they trust to fail the build before deploy if a required variable is missing.
-
-Chapter 005 lands on this codebase and starts teaching JavaScript values, references, and equality without re-explaining anything in chapter 004.
+The student finishes the chapter able to read and author the TypeScript that the rest of the course writes without commentary — function signatures, exported types, configuration objects, dynamic-keyed records, narrowed control flow — and able to defend the choice between a literal union and a string, a tuple and an object, `as const` and an annotation, `type` and `interface`.
 
 ---
 
-## Lesson 1 — Cloning the starter and the dev/build cycle
+## Lesson 1 — Primitives, literals, and the four corners
 
-Fetch the course's pinned Next.js 16 scaffold with `degit`, read the file tree end to end, and run `pnpm dev` and `pnpm build` to commit the toolchain decisions from Chapters 002–003 into a real first commit.
+Teaches the seven primitive types, literal unions as the senior reach for finite domains, and the `any`/`unknown`/`never`/`void` corners with the trigger that earns each.
 
 Topics to cover:
 
-- The senior question: why does the course ship a starter instead of running `create-next-app`. Two reasons named plainly. First, the wizard's defaults drift across releases — the course pins May 2026's choices and ships them as a frozen commit, so a student starting six months from now lands on the same scaffold the course was written against. Second, the wizard does not produce the file layout, the strictness flags, the env validation, or the `AGENTS.md` the course teaches — recreating those from the wizard's output would take the chapter sideways. The starter is the senior call.
-- Fetching the starter with `degit`. The command pattern from lesson 5 of chapter 001 is invoked here for the first time: `pnpm dlx degit react-saas-course-projects/unit-1-starter project-name` (`pnpm dlx` runs a package without installing it — the pnpm equivalent of npx). Why `degit` over `git clone`: it pulls the folder contents without history, which is what the student wants — they are about to commit this as their own first commit, not fork the course's repo. One line on the projects monorepo layout (one folder per project, the `starter/` and `solution/` siblings from Projects.md) so the student knows what they're pulling from.
-- `pnpm install` against the pinned `pnpm-lock.yaml` from the starter. The student sees the install run and the symlinks appear; this is the moment everything from Chapter 002 fires.
-- The file tree, read once end to end. The expected shape, with one sentence per entry on what it is and why it earns a seat:
-  - `app/` — the App Router root. `layout.tsx` (the root layout, the place the `<html>` and `<body>` live), `page.tsx` (the index route), `globals.css` (Tailwind entry, one `@import "tailwindcss";` line, no SCSS, no PostCSS gymnastics).
-  - `lib/` — pure code, no side effects at import time. Empty for now, named so its purpose is clear.
-  - `db/` — Drizzle skeleton. An empty `schema.ts` and a `client.ts` that exports the Drizzle client wired to `env.DATABASE_URL` (the validated export from `env.ts`, taught in lesson 5 of chapter 004). Unit 6 fills the schema; here the wiring exists so the env validation has something real to gate.
-  - `env.ts` — the @t3-oss/env-nextjs validator. Read here at the file-tree level, taught in lesson 5 of chapter 004.
-  - `next.config.ts` — Next.js configuration, TypeScript-authored. Empty config object for now; the security baseline (Unit 17) adds headers here, the bundle analyzer (Unit 20) adds the plugin here.
-  - `tsconfig.json` — the file the next two lessons teach.
-  - `biome.json` — already aligned with lesson 2 of chapter 003.
-  - `.editorconfig`, `.vscode/`, `.mise.toml`, `.npmrc` — recognized from Chapter 002 and chapter 003.
-  - `package.json` — the four Biome scripts from lesson 2 of chapter 003 plus the three Next.js scripts (`dev`, `build`, `start`).
-  - `AGENTS.md` — the file the next lesson explains.
-- The three Next.js scripts, with one line each on what they do and when a senior reaches for each.
-  - `pnpm dev` — Next.js dev server on `localhost:3000`, Turbopack bundling, fast refresh, the loop the student lives in for development. Default port and the `-p` flag named for the case where another process is on 3000.
-  - `pnpm build` — production build through Turbopack, type-checks, runs the linter integration the project owns (Biome via the `check:ci` script in CI, not at build time — named here so the student doesn't expect `next build` to fail on a Biome diagnostic), emits the optimized output. Two senior calls: `pnpm build` is what CI runs on every PR, and the build's success is the first proof that the code is shippable. The minute or two it takes is the cost of catching type errors and missing env vars before they reach a user.
-  - `pnpm start` — serves the production build locally. Used to confirm the build runs end-to-end before pushing to deploy; not the development surface.
-- Turbopack as the default. One paragraph: Turbopack went stable in Next.js 16 (February 2026) and is now the default for both `next dev` and `next build`, no flag required. The student does not need to think about this — the only reason to name it at all is so they recognize the bundler name in CI logs and Next.js error messages, and so they don't go looking for a `--turbopack` flag in older blog posts. Webpack is the conditional fallback past `--webpack`, mentioned in one line for the inheritance case (a legacy `next.config.js` with custom Webpack rules the team hasn't ported yet) and dropped.
-- The first run. The student runs `pnpm dev`, sees the Next.js welcome page (or the starter's placeholder) on `localhost:3000`, and then runs `pnpm build` to confirm the production path works. The build's output — route summary, static vs. dynamic, bundle sizes per route — is named in passing as something the student will look at in Unit 20 (performance), not parsed here.
-- The `.gitignore` worth a glance. `node_modules/`, `.next/`, `.env*.local`, plus the conventional set. `pnpm-lock.yaml` is **not** in it — lesson 3 of chapter 002 made that rule load-bearing; the starter respects it.
-- Initial commit. One paragraph naming what the student is about to commit: every file in the tree they just read, the lockfile, the `AGENTS.md`, the `env.ts`. Not the `.env.local` (which lesson 5 of chapter 004 introduces and which the `.gitignore` excludes). The senior framing: the first commit on a SaaS codebase is the moment the toolchain decisions become permanent. The student isn't initializing a sandbox; they're starting a project.
+- The senior question. Two bugs the lesson prevents. First: a `status: string` field accepts any string the caller invents, so a typo like `'pendng'` ships and silently fails downstream checks. Second: an `any` that crept into a payload swallows a `null` and crashes three callers later. Both are vocabulary failures — the student reached for the widest type when a narrower one would have caught the bug at compile time.
+- The seven primitive types, terse. `string`, `number`, `boolean`, `bigint`, `symbol`, `null`, `undefined`. Pair each with its JavaScript primitive from chapter 001; the names are identical to `typeof` results except for `null` (which `typeof` calls `'object'`, a legacy bug). No deep tour; the student already wrote values in each shape.
+- Literal types as the bridge to finite domains. A literal type is a primitive type narrowed to a single value: `'pending'`, `42`, `true`. A union of literals (`'pending' | 'sent' | 'paid'`) is the senior reach for any field that holds one of a finite set of values. State the rule: **if the runtime values are finite and known at design time, the type is a literal union, not the primitive**. Show the invoice status example and the typo caught at compile time.
+- Where literal types come from. Three sources named with one-line triggers: a written annotation (`status: 'draft' | 'sent'`), a `const` binding on a primitive (`const status = 'draft'` infers `'draft'`), and `as const` (covered in lesson 7 of chapter 004). The non-source: `const config = { status: 'draft' }` infers `{ status: string }` because object property types widen — the bug lesson 7 of chapter 004 fixes.
+- The four corners. Each is a top or bottom of the type lattice; each has exactly one production trigger.
+  - **`any`** — the unsound escape. Disables type checking on the value and propagates outward. The course never writes `any`. Biome's `noExplicitAny` rule (lesson 5 of chapter 024) catches it; if a library forces an `any`, use `unknown` and narrow.
+  - **`unknown`** — the sound top. The right type for any value that arrived from outside the type system: JSON from the wire, `localStorage`, `catch` clause bindings, third-party APIs without types. The student cannot read or call an `unknown` value without narrowing first; that's the feature.
+  - **`never`** — the bottom. The type with no inhabitants. Produced by impossible code paths (a function that always throws, a fully-narrowed-away union). The senior reach for `never` is the exhaustiveness check (`assertNever`), covered in lesson 3 of chapter 005; named here as the foreshadow.
+  - **`void`** — function-return-only. Means "the caller should not rely on the return value." Distinct from `undefined` (a value the caller can read). The trigger: callback parameters where the framework explicitly throws the return away (event handlers, `Array.prototype.forEach`).
+- Branded primitives, named once. A `string` that represents a user ID and a `string` that represents an org ID are the same type at the compile level — `getUser(orgId)` compiles. The fix is a brand (`unique symbol` form), built out in lesson 4 of chapter 005. One sentence; the student should know the trigger exists.
+- Forward link. Discriminated unions (lesson 5 of chapter 004 and lesson 1 of chapter 005) lean on literal-union discriminants. The reach for a literal type today is the seed for the pattern next chapter.
 
 What this lesson does not cover:
 
-- The contents of `AGENTS.md` (lesson 2 of chapter 004).
-- The contents of `tsconfig.json` (lesson 3 of chapter 004 and lesson 4 of chapter 004).
-- The contents of `env.ts` (lesson 5 of chapter 004).
-- Writing any application code. `app/page.tsx` is read as proof-of-life, not edited.
-- The Drizzle client wiring or Postgres setup — Unit 6 owns that. The `db/client.ts` file exists so lesson 5 of chapter 004 has a real env variable to gate.
-- The Server Component / Client Component distinction. Unit 5 owns it.
-- Deploying to Vercel — Unit 21 owns it. `pnpm start` is the local proof, not a deploy story.
+- `enum`. The course does not use TypeScript enums — string-literal unions cover every case more cleanly, integrate with JSON, and don't emit runtime code. Named in one line so the student recognizes the form in legacy code.
+- The `object` type vs. `{}` vs. `Record<string, unknown>`. Niche; surfaced in lesson 4 of chapter 004 where dynamic keys land.
+- `unique symbol` syntax at depth (lesson 4 of chapter 005).
+- `bigint` literal types (`123n` as a type). Rare; named in one sentence.
 
-Pedagogical approach:
-
-Setup/wiring archetype with a Decision opening. Open with one paragraph naming why the course ships a starter, then a `Steps` block that walks the four commands: `degit`, `pnpm install`, `pnpm dev`, `pnpm build`. Show each command and its expected output in adjacent labeled blocks; the student sees the bundler line ("Turbopack" in the dev banner, the build summary in production output) and the page rendering on `localhost:3000`. After the commands, a `FileTree` component renders the project root with annotations on each entry — that's the lesson's center of gravity, because the file tree is the map the student will read against every later chapter. Close with one `Matching` exercise pairing six files in the tree ("the route that renders `/`," "the place imports without side effects belong," "the file CI uses to type-check," "the file Biome formats against," "the file pnpm reads to know which package manager runs," "the file the dev server reads to know which Node version to use") to their location, so the student leaves with the tree in working memory. No sandbox: the lesson's deliverable is a running app and a committed scaffold.
-
-Estimated student time: 30 to 35 minutes.
+Pedagogical approach: Concept archetype with a small Reference moment for the four corners. Open with the `'pendng'` typo bug and the `any`-swallows-`null` bug as paired snippets. Walk the literal-union pattern in a tight prose-plus-code section. Use a `Buckets` exercise sorting eight values ("HTTP method," "invoice status," "user-entered text," "JSON from the wire," "a callback return," "an impossible branch," "a third-party value with no types," "a 64-bit external ID") into "primitive," "literal union," "`unknown`," "`never`," "`void`," "needs a brand." That sort is the senior-vocabulary install.
 
 ---
 
-## Lesson 2 — AGENTS.md as the next contributor's briefing
+## Lesson 2 — Object shapes: type, interface, and field modifiers
 
-Read the starter's `AGENTS.md` to see what earns a place (thesis, pinned stack, layout, commands, conventions pointers) and what doesn't (aspirational prose, duplicated rules, hand-maintained file lists), with the deeper documentation doctrine deferred to Chapter 105.
+Teaches when to default to `type` (always) and reach for `interface` (declaration merging), paired with the per-field `?` and `readonly` modifiers plus the array-level `readonly T[]` and `Readonly<T>` cousins.
 
 Topics to cover:
 
-- The senior question: what is the file the next person to open this repo (human or AI agent) should read first, and what earns a place in it. `AGENTS.md` is that file in 2026. The Linux Foundation adopted it as an Agentic AI Foundation founding project in late 2025; major coding agents (Codex, Cursor, Claude Code, Factory) read it natively. The framing for the course: `AGENTS.md` is **operational onboarding**, not architectural prose — the durable facts the next contributor needs to be productive in their first session.
-- The starter ships an `AGENTS.md` at the repo root. The lesson reads it as written, with the student understanding why each section earns a place. Sections in the course's starter, with one-line justifications:
-  - **Thesis line** — one or two sentences naming what the project is. Without it, the agent or new contributor has to infer the domain from file names.
-  - **Stack core** — pinned versions of the load-bearing libraries (Next.js 16, React 19, TypeScript X.Y, Drizzle X.Y, Better Auth, etc.) so an agent doesn't hallucinate an old API surface.
-  - **Repo layout** — the file tree by directory with one line per directory on what lives there. Same content as lesson 1 of chapter 004's tree, expressed in prose. Saves the next contributor the discovery step.
-  - **Commands** — the daily commands (`pnpm dev`, `pnpm build`, `pnpm check`, `pnpm test` once it exists, the Drizzle scripts later) so an agent doesn't try `npm run …`.
-  - **Conventions** — pointers to where the conventions live (the `biome.json`, the `.editorconfig`, this chapter's `tsconfig.json`). The conventions are not duplicated in prose; the agent is told where to look.
-  - **Additional project context** — links to longer docs the agent should pull in *only when needed* (the course's projects ship a small set, e.g. the schema doc in Unit 6, the security baseline in Unit 17). Conditional reading so the file stays short.
-- What does **not** earn a place. Stated as a hard list because the failure mode of `AGENTS.md` is bloat — a 2026 research finding (Gloaguen et al., real-world repos) shows that LLM-generated context files reduce agent task success, and even hand-written files only help when minimal and precise. The course's hard cuts:
-  - Aspirational architecture statements. ("This codebase strives to be clean and maintainable.") Add nothing; cut.
-  - Marketing copy. Not the readme.
-  - Tutorials. The agent doesn't need to be taught Next.js; it needs to know which Next.js this repo runs on.
-  - Anything that duplicates a more authoritative source. The `biome.json` is the source of truth for formatting rules; `AGENTS.md` references it, never restates it.
-  - Hand-maintained file trees that age out the moment a directory is added. The course's `AGENTS.md` lists *directories* (the architectural shape) but not individual files (which drift).
-  - Decisions that should be ADRs. Architectural Decision Records get their own treatment in Chapter 105; `AGENTS.md` points at the ADR directory if it exists, doesn't inline the decisions.
-- The discipline. One paragraph naming the test the file passes or fails: if a section is the same five lines six months from now even though five PRs landed, it's earned its place. If it ages out on the next refactor, it doesn't belong.
-- The Chapter 105 forward link, named once. Documentation that lives next to code, the wider doctrine, owns the deeper treatment. This lesson covers the file at first-project depth so the student isn't confused when the scaffold lands with one already.
-- One concrete edit the student makes. Personalize the thesis line of the shipped `AGENTS.md` — replace the placeholder project name and the one-sentence description with the student's own. This is the only edit the chapter asks them to make in the file; the structural sections (stack, layout, commands, conventions) are already correct because the starter wrote them.
-- A note on naming. Some teams use `CLAUDE.md`, `.cursorrules`, or tool-specific equivalents. 2026 consensus has converged on `AGENTS.md` as the open spec; tool-specific files can exist alongside but should re-export or reference `AGENTS.md` rather than duplicate. Stated in one line; the course commits to `AGENTS.md`.
+- The senior question. The student joins a codebase and sees both `type User = { ... }` and `interface User { ... }` in different files. Which is right? The answer is one rule with one narrow exception. The second bug the lesson prevents: a field that should have been `readonly` got mutated by a downstream component, and the bug bled across two render cycles before anyone noticed.
+- The senior default: `type` everywhere. `type` aliases handle objects, unions, intersections, primitives, tuples, generics, conditional types, and mapped types. `interface` handles only object shapes and classes. The course defaults to `type` because it scales to every type-system construct without the student having to remember which form supports which feature.
+- The one trigger that earns `interface`: **declaration merging**. When the student needs to extend a third-party type from a package (Better Auth's `Session`, `next-intl`'s `messages`, Drizzle's relation types), `declare module` plus an `interface` declaration merges into the original. lesson 4 of chapter 006 owns the full pattern; named here as the only trigger.
+- The non-differences. `interface` vs. `type` syntactic differences (`extends` vs. `&`, the trailing semicolon) are cosmetic and not the lesson. Performance differences across very large unions exist but don't bite at the course's scale; named in one line and dropped.
+- Per-field modifiers, two only.
+  - **`?` (optional)** — the field may be missing or `undefined`. Pair with the senior rule from chapter 001: `?` means the property is absent; `| undefined` means the property is present with the value `undefined`. The two differ at `'key' in obj` and at `Object.keys` enumeration; the student needs to know the distinction. Under `strict` alone the distinction is conceptual — the language collapses the two at assignment sites — and `exactOptionalPropertyTypes` (the opt-in flag parked in lesson 4 of chapter 024 as a conditional) is what lets the compiler enforce the difference where the value flows.
+  - **`readonly`** — the field cannot be reassigned after construction. Locks the binding (per lesson 6 of chapter 001's `const`-binds-not-freezes), not the value: `readonly user: { name: string }` still allows `obj.user.name = 'x'`. The fix is recursive immutability, named in one line and reserved for the rare reach.
+- Array-level readonly cousins. `readonly T[]` (or `ReadonlyArray<T>`) forbids `.push`, `.pop`, `.splice`, and index-write on the array. `Readonly<T>` is the utility-type form for objects, named here in one line as the per-field-`readonly`-everywhere shorthand. The full utility-type surface is lesson 6 of chapter 005.
+- Excess property checks, named once. Object literals assigned to a known type are checked for extra properties; values flowing through variables are not. The student should know the rule produces friendly errors at the literal site but lets unsafe data through a variable — the fix is to type the source, not to defeat the check with `as`.
+- Index signatures and `Record` are the next lesson. One-sentence forward link to lesson 4 of chapter 004.
 
 What this lesson does not cover:
 
-- How to write documentation more broadly (Chapter 105).
-- TSDoc, code comments, or team review discipline (Chapter 106 and chapter 107).
-- ADR authoring (Chapter 105 and the Unit 22 project).
-- Tool-specific configuration of how each AI tool reads `AGENTS.md` (out of scope; the file is the same regardless of reader).
+- `extends` on interfaces at depth — the course uses `&` for type composition (covered in lesson 5 of chapter 004).
+- The `class` form as a type. Named in lesson 2 of chapter 009 where classes earn their narrow reach.
+- Deep immutability libraries (Immer, immutable.js). Not the 2026 default.
+- Property descriptors and `Object.defineProperty`. Not in the SaaS path.
 
-Pedagogical approach:
-
-Concept archetype with a Pattern flavor. Open with the senior question — who reads this file and what does it owe them — in one paragraph; the student needs to know the audience before they read the content. Then a `CodeVariants` or split block showing the course's `AGENTS.md` next to a deliberately bloated counter-example (an `AGENTS.md` with the aspirational paragraph, the duplicated formatting rules, the hand-maintained file list), and prose calling out each block on the bloated side that breaks one of the rules. The student sees the discipline operationally before it abstracts. Close with one short `Buckets` or `TrueFalse` exercise: given eight candidate sections ("project thesis," "pinned stack versions," "the team's CI strategy," "a list of every file in `/app`," "where ADRs live," "the company's mission statement," "the four daily pnpm commands," "the formatting rules"), the student sorts them into "earns a place" or "doesn't." That exercise is the lesson's confirmation that the discipline transferred, not memorization of any specific section.
-
-Estimated student time: 20 to 25 minutes.
+Pedagogical approach: Decision archetype. Open with the codebase-uses-both confusion in two sentences. State the rule (`type` always; `interface` only for declaration merging) and give the example of each. Walk the `?` and `readonly` modifiers in adjacent code blocks with the `?` vs. `| undefined` divergence shown conceptually under `strict`, naming `exactOptionalPropertyTypes` (lesson 4 of chapter 024) as the opt-in that turns the distinction into an assignment-site error. Close with a `MultipleChoice` exercise: five field-modifier scenarios where the student picks the correct combination of `?`, `readonly`, and `| undefined`.
 
 ---
 
-## Lesson 3 — The strictness floor the project owns in tsconfig.json
+## Lesson 3 — Tuples: positions with labels
 
-Walk the project-owned half of `tsconfig.json` — `strict`, `noUncheckedIndexedAccess`, `noFallthroughCasesInSwitch`, `noImplicitOverride`, `forceConsistentCasingInFileNames`, the `@/*` path aliases — naming each flag by the bug class it catches and parking `exactOptionalPropertyTypes` as the conditional.
+Teaches tuple syntax with element labels, optional and rest positions, `readonly` tuples, and the concrete patterns (`useState`, custom hooks, `Object.entries`) where a tuple beats a named-field object.
 
 Topics to cover:
 
-- The senior framing for the next two lessons together. `tsconfig.json` has two owners. The project owns the *strictness floor* — the flags that decide which classes of bugs the type-checker catches before the code ships. Next.js owns the *compatibility surface* — the flags that make TypeScript, the bundler, and the runtime agree on what a module is. This lesson covers the first half; lesson 4 of chapter 004 covers the second. Both files live in the same `tsconfig.json`; the split is mental, not physical. Naming it makes the file readable.
-- The flags the starter sets, with one line each on the bug class it catches.
-  - `"strict": true` — the umbrella flag that turns on the eight individual checks that together make TypeScript actually type-safe (`noImplicitAny`, `strictNullChecks`, `strictFunctionTypes`, `strictBindCallApply`, `strictPropertyInitialization`, `noImplicitThis`, `useUnknownInCatchVariables`, `alwaysStrict`). The senior framing: anything below `strict` is not TypeScript, it's JSDoc with hints. The course never operates below this floor.
-  - `"noUncheckedIndexedAccess": true` — accessing `array[i]` or `record[key]` returns `T | undefined` instead of `T`. The bug class it catches: reading past the end of an array or a missing key and silently passing `undefined` into the rest of the function. The cost: the student has to handle the `undefined` case (an `if` guard, a non-null assertion at a verified site, a default with `??`). The course leaves the flag on because the bug class shows up in production reads where a 99%-populated record breaks on the 1% case — exactly the failure mode that bites at scale.
-  - `"noFallthroughCasesInSwitch": true` — a `case` without an explicit `break` or `return` is an error. Catches the pattern where a senior dev intends to fall through but the next reader can't tell whether the omission was intentional. Cheap to leave on.
-  - `"noImplicitOverride": true` — overriding a base-class method without the `override` keyword is an error. The course doesn't lean on inheritance, but the flag is free insurance for the rare class hierarchies that show up.
-  - `"forceConsistentCasingInFileNames": true` — refuses imports that differ in case from the on-disk filename. Catches the bug where a Mac filesystem (case-insensitive) lets `import Foo from './foo'` work locally and then breaks in CI on Linux (case-sensitive). One of the cheapest "works on my machine" preventers in the file.
-- The flag the starter does **not** set, with the reason.
-  - `"exactOptionalPropertyTypes"` — distinguishes `{ foo: undefined }` from `{}`. Real bug class (assigning `undefined` to a key when the type said optional-not-undefined), but the friction is high across the ecosystem in 2026 — many third-party types still produce values that fail this check and the workarounds (`as` casts, conditional spreads) noise up the call site more than the flag's safety pays back. Named here so the student knows it exists and knows the trigger to turn it on (a team that wants the discipline and has the appetite for the workarounds).
-- Path aliases — the project's other strictness lever. `"paths": { "@/*": ["./*"] }` paired with `"baseUrl": "."`. Two senior questions: why use aliases at all (refactor safety — moving a file doesn't break a hundred imports written as `'../../../lib/foo'`), and why the course uses `@/` specifically (Next.js's convention since the App Router shipped, recognized by every editor and every AI tool, no debate). One line on the runtime-resolution gotcha: `tsconfig`-defined paths are *checked* by `tsc` and *resolved* by Next.js's bundler; standalone scripts run through `tsx` (not `node` native stripping, from lesson 4 of chapter 002) because native stripping doesn't read `tsconfig.json`. The student has already seen that distinction in lesson 4 of chapter 002; here it earns its weight.
-- The "Use Workspace Version" reminder from lesson 1 of chapter 003. The strictness floor only fires inside the editor if VS Code is using the project's `typescript` package, not the editor's bundled one. Named once because a misconfigured editor will silently let bugs ship that the flag would have caught.
-- One worked example. A pre-seeded `app/page.tsx`-adjacent function reads `process.env.SOME_KEY` (or, more cleanly, a record lookup) without a guard. With `noUncheckedIndexedAccess` on, TypeScript flags the access. With it off, the code type-checks and crashes at runtime when the key is missing. The student sees the flag earn its weight inline.
+- The senior question. `useState` returns `[value, setter]` — a position-indexed pair the caller destructures. Why a tuple, not an object? The lesson answers: when the caller will destructure-and-rename on every use site, a tuple is the right shape; the rename happens at the destructure, so position carries no naming penalty.
+- Tuple syntax. `[string, number]` is a tuple of length 2 with fixed positional types. Distinct from `(string | number)[]` (an array of either type, any length). The student should leave able to read the difference at a glance.
+- Element labels. `[name: string, age: number]` adds documentation at the type level; the labels appear in editor tooltips and at destructure sites. Senior reach for any tuple longer than two elements — without labels, the call site can't tell which position is which.
+- Optional and rest positions. `[string, number?]` allows a length-1 or length-2 tuple. `[string, ...number[]]` is a string followed by any number of numbers. The patterns: optional for "this callback can return either form," rest for variadic factories. Both are rare in SaaS code; named so the student recognizes them in library types.
+- `readonly` tuples. `readonly [string, number]` forbids index-write and array-mutation methods. The companion `as const` on a tuple-shaped literal produces a `readonly` tuple of literal types — `[1, 2, 3] as const` is `readonly [1, 2, 3]`, not `number[]`. Forward link to lesson 7 of chapter 004.
+- The three sites tuples earn their weight in 2026 SaaS code.
+  - **`useState`-like hook returns.** The React idiom; covered in Unit 3. The signature: `const [value, setValue] = useState(...)`. Custom hooks that follow the pattern return tuples for the same reason.
+  - **`Object.entries` and `Map` iteration.** `Object.entries(obj)` yields `[key, value]` pairs; `map.entries()` does the same. Knowing the result is a tuple lets the student destructure in the `for...of` head: `for (const [key, value] of Object.entries(obj))`.
+  - **Result-shaped returns where naming wouldn't help.** Returning `[error, value]` from a wrapper is the Go-style idiom. The course prefers a discriminated `Result` type (lesson 1 of chapter 008) for new code; the tuple form is named so the student reads it correctly in libraries that use it.
+- When to prefer an object. The flip rule: if the call site won't destructure-and-rename, or if the positions are easy to swap by accident, use a named-field object. Three coordinates is the rough boundary; past three positions, the object is the senior call.
 
 What this lesson does not cover:
 
-- The flags Next.js sets that align the language with the bundler (lesson 4 of chapter 004).
-- Writing custom strict-mode utility types (`NonNullable`, narrowing helpers) — Unit chapter 009 owns those.
-- Editing `tsconfig.json` from this starter — the file is read, not authored. The student walks through what's there and why; the chapter's only authored edits are the `AGENTS.md` personalization (lesson 2 of chapter 004) and the `.env.local` file the student copies from `.env.example` (lesson 5 of chapter 004).
+- Variadic tuple types and tuple-spread at the type level. The pattern exists for advanced library types; out of the senior-SaaS reach.
+- Tuple manipulation utility types (e.g., `[...T, U]`). Niche; reserved for library authors.
+- The `[number, number, number]` pattern for coordinates — named in one line as the obvious literal use.
 
-Pedagogical approach:
-
-Decision archetype with a small Mechanics beat per flag. The lesson is a flag-by-flag walk through the project-owned section of `tsconfig.json`, but the prose around each flag names the **bug class the flag catches** before showing the flag itself — the senior question fires before the syntax. Open with the two-owners framing in one paragraph and a small `Figure` (a Mermaid or annotated SVG) that visualizes the split: the project's strictness flags on one side, Next.js's compatibility flags on the other, both feeding into the same file. Then walk the flags in the order above. For `noUncheckedIndexedAccess` specifically, use a `CodeVariants` or before/after block showing one snippet under the flag on versus off — the student sees the type signature change inline. For the path aliases, show the resolved file tree and the import statement side by side. Close with one `PredictOutput`-style exercise: given five snippets, each violating one of the flags the lesson named, the student picks which flag would catch each. The exercise is the confirmation; no sandbox (the flags are policy, not a thing to play with).
-
-Estimated student time: 30 to 35 minutes.
+Pedagogical approach: Mechanics archetype. Open with the `useState` shape and the question "why a tuple here." Walk the syntax in three short code blocks (positional, labeled, optional/rest, `readonly`). Use a `script-coding` exercise where the student types a custom `useToggle` hook's return as a labeled `readonly` tuple. Close with one `MultipleChoice` asking which of four data shapes (`[x, y, z]` coordinates, a user record, a key-value pair from a Map, a payload with five named fields) want a tuple vs. an object.
 
 ---
 
-## Lesson 4 — The compatibility flags Next.js owns in tsconfig.json
+## Lesson 4 — Dynamic keys: index signatures and Record<K, T>
 
-Read the framework-owned half of the same file — `target`/`lib`, `module`/`moduleResolution: "bundler"`, the transpiler-alignment trio (`verbatimModuleSyntax`, `isolatedModules`, `esModuleInterop`), `jsx: "preserve"`, `noEmit`, the Next.js plugin, `next-env.d.ts` — under the rule that if you're tempted to edit a flag in this lesson, you're probably wrong.
+Teaches the two forms for dynamic-keyed objects, the completeness payoff of `Record<LiteralUnion, V>`, and how `noUncheckedIndexedAccess` narrows reads differently across the open-keyed and finite-keyed cases.
 
 Topics to cover:
 
-- The framing carried from lesson 3 of chapter 004. The flags in this lesson exist because TypeScript, the bundler, and the runtime have to agree on what a module is, what target environment the code runs against, and which DOM/Node types are available. A senior does not edit these flags on a Next.js project — Next.js writes them, the project respects them, and the consequences of fighting the framework here are subtle and slow to surface. The lesson's job is to make the flags readable so the student isn't superstitious about them.
-- The compatibility flags the starter ships, in groups.
-  - `"target": "ES2022"` and `"lib": ["dom", "dom.iterable", "esnext"]` — what JavaScript features TypeScript can emit, and which built-in types it knows about. `ES2022` is broadly the floor Next.js 16 sets; `lib` includes DOM so client components type-check against `window`, `document`, etc., and `esnext` so the latest standard-library types (ES2025 Set methods, iterator helpers from lesson 4 of chapter 007 and lesson 5 of chapter 007) are available at the type level. The student does not edit these; the framework knows the right values.
-  - `"module": "esnext"` and `"moduleResolution": "bundler"` — how `import`/`export` are interpreted and how the resolver finds files. `bundler` is the modern moduleResolution mode (TypeScript 5+) that aligns with how Turbopack actually resolves imports. The senior watch-out: older codebases use `"moduleResolution": "node"` or `"node16"`; on a fresh Next.js 16 scaffold, the right value is `bundler`. One line.
-  - The transpiler-alignment trio — the part of the lesson where the flags do real work and the student needs to know them by name even if they don't edit them.
-    - `"verbatimModuleSyntax": true` — forces the student to write `import type { Foo }` for type-only imports and rejects the `import { Foo }` form when `Foo` is only a type. The bug class it catches: a type import accidentally pulling in a runtime module's side effects on the client when the type was supposed to be erased. Without the flag, the bundler can include a server-only module in a client bundle because the import statement looked like a value import. With it, TypeScript fails the build at the import site. Named here because Unit 5 (server/client boundary) leans on this hard.
-    - `"isolatedModules": true` — every file must be transpilable in isolation, without information from other files. Required by Turbopack (and by `esbuild`/`swc` generally, the family of bundlers the course operates against). Catches `const enum` (which can't be isolated), barrel re-exports of types without `export type`, and a handful of other patterns the framework can't compile. The student doesn't have to know the patterns by heart; the flag fails the build on the rare case.
-    - `"esModuleInterop": true` — smooths over the CommonJS-vs-ESM interop friction so `import express from 'express'` works against a CommonJS module. Less load-bearing on App Router (most of the surface is ESM) but still on for compatibility with the legacy CJS dependencies the ecosystem still ships. Named once and dropped.
-  - `"jsx": "preserve"` — TypeScript leaves JSX in the source; Next.js's compiler handles the transformation. The student does not edit this.
-  - `"noEmit": true` — TypeScript only type-checks; it never writes `.js` files. Necessary because Next.js's bundler is what actually compiles the code; if `tsc` also emitted, the build would have two source-of-truth outputs. The companion script the course runs in CI (per lesson 4 of chapter 002) is `tsc --noEmit` — same flag, separate process, type-checking the codebase without competing with the build.
-  - `"plugins": [{ "name": "next" }]` — the Next.js TypeScript plugin in the editor. Adds editor-level type-checking for the metadata API, route parameters, dynamic route segments, and the validator for the App Router's typed routes. The student does not edit this; recognizing the line keeps them from deleting it.
-  - The `"include"` and `"exclude"` arrays — the files TypeScript looks at and the ones it skips. `"include"` typically lists `next-env.d.ts` (Next.js's generated declarations — never edit, always commit), the `.next/types/**/*.ts` directory (Next.js's typed-route output, auto-generated), `**/*.ts`, `**/*.tsx`. `"exclude"` lists `node_modules` and a couple of build outputs. Named once; the student does not edit these on a fresh scaffold.
-- The senior rule across the lesson, stated plainly. **The flags in this lesson are not personal preference.** The student should resist the temptation to "harden" them past what Next.js sets, because the framework's correctness depends on them. The strictness lever is the file in lesson 3 of chapter 004; the compatibility lever is left to Next.js.
-- The `next-env.d.ts` file. One paragraph: Next.js generates it on the first run, the file references the framework's ambient types, and the student commits it (the file's presence is required at build time) and never edits it. The "never edit" rule is concrete because the file has a comment header saying so; the student should recognize that comment.
-- The path-aliases pairing with lesson 3 of chapter 004. The `paths` declaration sits in this file because it's read by `tsc` and the bundler at the same time — but the *decision* to use `@/*` is project-owned, taught in lesson 3 of chapter 004. The split is intentional and the student sees the file as a single artifact even though two lessons read different halves.
+- The senior question. The student needs to type a cache keyed by user ID, a lookup table from status to label, and a JSON object with arbitrary keys parsed from the wire. Three different shapes, three different correct types — and the student who reaches for the same form for all of them ships subtle bugs.
+- The two forms.
+  - **Index signature** — `{ [key: string]: User }`. The right reach when the set of keys is genuinely open (a cache, an arbitrary JSON shape). All keys are `string`; all values are the same type. Companions: `[key: number]` for numeric-indexed objects (rare; arrays cover most cases), `[key: symbol]` for symbol keys (rare).
+  - **`Record<K, V>`** — the utility-type form. With `K extends string` (`Record<string, User>`) it's interchangeable with the index signature, semantically. With `K extends a literal union` (`Record<'draft' | 'sent' | 'paid', string>`) it requires every key in the union to be present. That completeness check is the senior payoff.
+- The senior call: use `Record<LiteralUnion, V>` when the keys are finite and known; use the index signature when the keys are genuinely open. The two forms are interchangeable for the open case; the course writes `Record<string, V>` for legibility and reserves the index-signature syntax for cases where additional named fields coexist with the dynamic surface.
+- `noUncheckedIndexedAccess` interaction. From the strict tsconfig (lesson 5 of chapter 024), every read through an index signature returns `T | undefined`. The senior reflex: narrow the result before using it. `Record<LiteralUnion, V>` reads return `V` directly (no `| undefined`) because every key is guaranteed present — that's the second payoff of the literal-union form.
+- The mixed shape. `{ name: string; [key: string]: string | number }` — a known field plus an open dynamic surface. Rare; the rule is that every named field's type must be assignable to the index signature's value type. Named so the student recognizes the constraint when TypeScript flags it.
+- Read vs. write asymmetry. The `in` operator is the most reliable existence check for an index-signature object; `obj[key] !== undefined` works under `noUncheckedIndexedAccess`. Forward link to lesson 6 of chapter 004 where narrowing lands.
+- Forward links. Drizzle's typed-row return values are `Record`-shaped (Unit 5). Better Auth's session shape and `next-intl`'s messages use module augmentation over `Record`-typed surfaces (lesson 4 of chapter 006).
 
 What this lesson does not cover:
 
-- Writing or shipping a TypeScript library — the `tsc → .js` path from lesson 4 of chapter 002 is irrelevant on an app codebase; the course doesn't return to it.
-- `tsconfig.json` for a non-Next.js project (a standalone CLI, a Cloudflare Worker) — the flags differ; the framing of "framework owns the compatibility flags" generalizes, but the specific values do not.
-- Multi-project `references` setups or composite builds — niche, not on the course's path.
-- The Next.js TypeScript plugin's behaviors in depth — surfaced in Unit 5 (App Router) at the routes that use them.
+- Mapped types (`{ [K in keyof T]: ... }`). Reserved for lesson 6 of chapter 005 where the utility types live.
+- `Map<K, V>` vs. `Record<K, V>`. The runtime distinction is covered in lesson 4 of chapter 003; the type-level summary: `Map` for runtime keyed lookup at scale, `Record` for type-shape-of-an-object.
+- `keyof` and `typeof` operators on the value. Reserved for lesson 5 of chapter 005.
+- `PropertyKey` (`string | number | symbol`). Named in one line.
 
-Pedagogical approach:
-
-Reference / survey archetype with one Decision opening paragraph. The lesson is structurally a tour of a config file the student does not edit — which means it could read as dry. The fix is to lead every group of flags with the **agreement the flags enforce** between the language, the bundler, and the runtime, so the student is reading a contract, not a list. Open with the two-owners framing (carried from lesson 3 of chapter 004) and a one-paragraph "rule of thumb" — if you're tempted to edit a flag in this lesson, you're probably wrong; if you're tempted to edit a flag in lesson 3 of chapter 004, you're probably right. Show the full `tsconfig.json` with side annotations marking which flags lesson 3 of chapter 004 covered and which this lesson covers (the `AnnotatedCode` component is a clean fit). The transpiler-alignment trio gets a small `CodeVariants` example showing one snippet that compiles under `verbatimModuleSyntax: false` and fails under `true` (a type import that smuggles a runtime side effect into a client bundle), because that flag is the one the student will see fail in their own code later in Unit 5 and they need the cause-and-effect in working memory. Close with one short `Matching` exercise pairing four flags to the agreement they enforce ("the language and the bundler agree on what a module is," "the type-checker and the bundler don't fight over emitted files," "the editor knows about Next.js's typed routes," "type-only imports don't sneak runtime side effects into a client bundle"). No coding exercise; the lesson is about reading, not writing.
-
-Estimated student time: 30 to 35 minutes.
+Pedagogical approach: Decision archetype. Open with the three-shapes scenario and ask the student to pick a type for each. Walk the two forms in adjacent code blocks. Show the `noUncheckedIndexedAccess` divergence in two output blocks — the index-signature read with `| undefined`, the `Record<LiteralUnion, V>` read without. Close with one `Buckets` exercise sorting six dynamic-keyed shapes ("cache by user ID," "status-to-label lookup," "JSON parsed at the wire," "HTTP method to handler," "i18n messages keyed by locale," "Drizzle row by primary key") into "index signature" and "`Record<LiteralUnion, V>`."
 
 ---
 
-## Lesson 5 — Type-safe environment variables with @t3-oss/env-nextjs
+## Lesson 5 — Composing types: unions and intersections
 
-Wire build-time env validation with `@t3-oss/env-nextjs` and Zod 4 so a missing `DATABASE_URL` fails `pnpm build` before deploy, covering the `server`/`client` split, the `NEXT_PUBLIC_*` convention, the `.env.example` → `.env.local` pattern, and `SKIP_ENV_VALIDATION` as a deliberate escape hatch.
+Teaches the `|` and `&` operators across literal, mixed-primitive, shape, and nullable unions plus shape-and-narrowing intersections, with the discriminated-union shape seeded for Chapter 005.
 
 Topics to cover:
 
-- The senior question, posed plainly. A SaaS app reads secrets and configuration from environment variables — `DATABASE_URL`, third-party API keys, public-vs-server flags. The failure mode every senior has seen at least once: deploy succeeds, the app boots, the first request crashes because `process.env.STRIPE_SECRET_KEY` is `undefined` and the call to Stripe throws inside a request handler. The user sees a 500; the team sees the alert ten minutes later; the fix is to redeploy with the variable set, which means the outage lasts as long as the deploy. The right place to catch this is **build time, not first-request time.** This lesson installs that discipline from the first scaffold.
-- `@t3-oss/env-nextjs` as the 2026 default. One paragraph: a thin, well-maintained wrapper around a Standard Schema-compliant validator (Zod 4 in this course; Valibot also supported) that runs at build time, enforces the Next.js naming convention (`NEXT_PUBLIC_` for client-visible variables, no prefix for server-only), and produces typed exports the rest of the app imports instead of touching `process.env` directly. Alternatives named in one sentence: hand-written `process.env` checks scattered across the code (no central enforcement), or no validation at all (the failure mode above). The trigger that would flip the choice: a non-Next.js runtime where the package's framework integration doesn't fit; the principle of validation-at-the-boundary stays the same.
-- The starter's `env.ts` file, read in full. The shape:
-  - `import { createEnv } from '@t3-oss/env-nextjs'` and `import { z } from 'zod'`.
-  - `export const env = createEnv({ server, client, experimental__runtimeEnv })`.
-  - `server` block — Zod schemas for the server-only variables, e.g. `DATABASE_URL: z.url()` (or `z.string().url()` per Zod 4), `RESEND_API_KEY: z.string().min(1).optional()` (optional in early units, required when the email project lands in Unit 8).
-  - `client` block — Zod schemas for `NEXT_PUBLIC_*` variables. Empty in the first scaffold; populated when PostHog (Unit 20) and others land.
-  - The `runtimeEnv` map that explicitly threads `process.env.X` to each schema. Why the map exists: Next.js inlines `NEXT_PUBLIC_*` at build time but leaves server vars dynamic, and the explicit map lets the validator know which is which without surprises. The student does not need the mechanics in depth; they need to know the map exists and why.
-- The Next.js naming convention, restated. `NEXT_PUBLIC_*` is shipped to the client bundle; everything else stays on the server. The `@t3-oss/env-nextjs` package refuses to validate a `NEXT_PUBLIC_*` variable in the `server` block and vice versa — structural enforcement that makes the "I accidentally leaked the API key" bug hard to write. Named here, revisited under SaaS pattern #12 in Unit 17.
-- The build-time fire. A worked example: the starter ships `DATABASE_URL` in `.env.local` (which the chapter teaches the student to create from `.env.example`, see below). The student runs `pnpm build` — succeeds. The student removes `DATABASE_URL` from `.env.local`, runs `pnpm build` again — fails with a clear error naming the missing variable and the file it was expected in. The student adds it back, the build succeeds. The discipline is mechanical, not theoretical.
-- The `.env.example` and `.env.local` pattern. Two files, two purposes.
-  - `.env.example` lives in the repo, committed, names every variable the app expects with a dummy value or empty string. The starter ships it. The next contributor (or the student themselves on a second machine) copies it to `.env.local`, fills in real values, and the app boots.
-  - `.env.local` lives on the developer's machine, never committed, holds the real secrets. The `.gitignore` from lesson 1 of chapter 004 excludes `.env*.local`.
-  - The Vercel deploy story is named in one line: production env vars are set in the Vercel dashboard, the build still validates them at build time via `env.ts`, and a missing variable fails the deploy before traffic shifts. Unit 21 owns the deploy chapter; this lesson states the connection so the student knows what they're protecting against.
-- The import-side rule. Application code imports from `~/env` (or the project's path), never from `process.env`. Two senior reasons named: typed exports (`env.DATABASE_URL` is `string`, not `string | undefined`) and the seam where validation actually fires (importing from `~/env` runs the validation; bypassing it doesn't). A `biome.json` rule or an ESLint rule could lint against `process.env` references; the course leaves that as a future hardening, named once.
-- The `SKIP_ENV_VALIDATION` escape hatch. One paragraph: the package supports `SKIP_ENV_VALIDATION=true` to bypass validation for the specific case of a CI step that builds without the secrets present (e.g. a Docker image build that injects env at runtime). The senior watch-out: the flag is for the build that doesn't need to type-check the env shape, not for "make the error go away." Set it deliberately, in the script that needs it, never as a default.
-- Forward links. Architectural Principle #3 (pure `/lib`, side effects at named boundaries) — `env.ts` is the first concrete instance of a named boundary, surfaced here and named again in Unit 7. SaaS pattern #12 (security baseline) — Unit 17 revisits env hygiene as part of the audit.
+- The senior question. The student needs to type a value that's either a `User` or a `Guest`, a function parameter that accepts a `string` or a `number`, and a `Pick<User, 'id' | 'email'> & { token: string }` payload. Three composition shapes, one operator each, and the senior reflex is to reach for the right one without thinking.
+- Unions, `|`. The set-union of inhabitants. Literal unions (`'draft' | 'sent'`), mixed-primitive unions (`string | number`), shape unions (`User | Guest`), and nullable unions (`User | null`, `User | undefined`, `User | null | undefined`). The student must internalize that a union value is one of the alternatives, not all of them — to read a field on a `User | Guest`, the field must exist on both, or the value must be narrowed first.
+- Nullable unions and the strict tsconfig. `strictNullChecks` (lesson 5 of chapter 024) makes `null` and `undefined` first-class members of the type system. The student treats `User | null` as the union it is; the narrowing happens at the read site. The pattern `?:` for optional fields and `| undefined` for optional values lands here paired.
+- Intersections, `&`. The set-intersection of constraints. With shape types, an intersection has all the fields of both: `{ id: string } & { email: string }` is `{ id: string; email: string }`. With incompatible types, the intersection is `never` (`string & number` is uninhabited). The senior reach: composing a request payload from a base type plus a discriminating extension, or extending a third-party type with project-local fields.
+- The shape-union landmine. A shape union allows reading only fields common to all variants. The student who writes `function render(value: User | Guest) { return value.email }` gets an error if `Guest` doesn't have `email`. The fix is narrowing (next lesson), not a wider type. State the rule: **never widen a shape union to access a non-shared field; narrow it instead.**
+- The discriminated-union shape, seeded. A union of object types where each variant carries a literal field that names it: `{ status: 'loading' } | { status: 'success'; data: User } | { status: 'error'; error: Error }`. Narrowing on the `status` field separates the cases at compile time. lesson 1 of chapter 005 owns the pattern; this lesson plants the shape so the next chapter has language to reference.
+- Distributive behavior, named once. When a generic type parameter is a union, conditional types and some utility types distribute over the members. Reserved for lesson 6 of chapter 005 and lesson 7 of chapter 005; named here in one sentence so the student doesn't reinvent the wheel.
 
 What this lesson does not cover:
 
-- Authoring Zod schemas in depth (Unit chapter 046).
-- Connecting Drizzle to `DATABASE_URL` (Unit 6).
-- The Vercel deploy flow for env vars (Unit 21).
-- Secret-rotation discipline, env per environment, or staging-vs-production separation (Unit 17 and 21).
-- Valibot as the alternative validator. Named in one line; the course commits to Zod.
+- Discriminated-union narrowing in depth (lesson 6 of chapter 004 and lesson 1 of chapter 005).
+- Conditional types (`T extends U ? X : Y`). Reserved for lesson 7 of chapter 005 where generics earn their lesson; the rare conditional type a SaaS engineer reaches for comes through utility types.
+- The `T | (T & {})` pattern for autocomplete-friendly string literal unions. Niche library trick; named in one line.
 
-Pedagogical approach:
+Pedagogical approach: Concept archetype with a Decision close. Open with the three-shapes scenario from the senior question. Walk unions and intersections in side-by-side code blocks with the same field set — `User | Guest` (intersection of fields readable) and `User & Guest` (union of fields readable). Use a `script-coding` exercise where the student types a `Result` shape as a discriminated union (`{ ok: true; value: T } | { ok: false; error: Error }`); the test is whether reading `.value` on a generic `Result` fails without narrowing. That failure is the seed for lesson 6 of chapter 004.
 
-Pattern archetype. The lesson teaches a failure mode and the structural enforcement that prevents it; `@t3-oss/env-nextjs` is the enforcement, the missing-variable production crash is the failure. Open with the 500-on-first-request scenario in prose — concrete, lived-experience framing, no abstraction. Show the starter's `env.ts` as one labeled code block, then walk it section by section in adjacent prose (not in comments inside the block — the prose owns the explanation, the code owns the shape). The worked example is the lesson's center: a `Steps` block with three commands. `pnpm build` succeeds. The student edits `.env.local` to remove `DATABASE_URL`. `pnpm build` fails with an error message the student reads. The student restores the variable. `pnpm build` succeeds again. Each step has its labeled output block; the student watches the build catch the missing variable cause-and-effect. Close with a small `Buckets` exercise sorting eight variable names ("`DATABASE_URL`," "`NEXT_PUBLIC_POSTHOG_KEY`," "`STRIPE_SECRET_KEY`," "`NEXT_PUBLIC_SITE_URL`," "`RESEND_API_KEY`," "`NODE_ENV`," "`NEXT_PUBLIC_GA_ID`," "`SESSION_SECRET`") into "server block," "client block," or "framework-owned, don't put in env.ts." That exercise is the senior-reflex confirmation — the student should leave knowing where each new env variable belongs before they ever add one. Offer one optional `SandboxCallout` with a minimal `env.ts` and a scratch `process.env` map, inviting the student to add a fictional variable end-to-end (schema, runtimeEnv entry, import site) — that sandbox is the lesson's freeform confirmation.
+---
 
-Estimated student time: 35 to 40 minutes.
+## Lesson 6 — Narrow, don't assert
+
+Teaches control-flow narrowing through `typeof`, equality, `in`, `instanceof`, `Array.isArray`, and discriminant fields, with the three legitimate triggers that earn `as` and `!` named as conditional escape hatches.
+
+Topics to cover:
+
+- The senior question. The student wrote `function getEmail(value: User | Guest) { return (value as User).email }` and shipped it; six months later a `Guest` flowed through and the field was `undefined`. The assertion lied. The lesson installs the senior reflex: narrow the type with runtime checks the language tracks; reach for `as` and `!` only in three named cases.
+- The narrowing surface. Each form with its trigger.
+  - **`typeof`** — narrows `string | number | boolean | ...` by primitive. The basic reach for mixed-primitive unions.
+  - **Equality narrowing** — `if (status === 'loading')` narrows a literal union. The reach for any discriminated union or literal-union switch.
+  - **`in`** — narrows shape unions by property existence: `if ('email' in value)`. The reach for shape unions without a discriminant.
+  - **`instanceof`** — narrows by constructor. The reach for error subclasses (`error instanceof ValidationError`) and class hierarchies. Pair with the cross-realm gotcha named in lesson 2 of chapter 008.
+  - **`Array.isArray`** — narrows a union of `T | T[]` to the array branch. Named separately because `typeof` reports both as `'object'`.
+  - **`switch` on a discriminant** — the canonical form for discriminated unions, set up in lesson 5 of chapter 004 and built out in lesson 1 of chapter 005.
+  - **Custom type predicates** — `function isUser(v: unknown): v is User { ... }`. Named with one example; the depth lands in lesson 3 of chapter 005 where exhaustiveness lives.
+- The narrowing scope rule. A narrow holds inside the block where the check fired and is invalidated by any assignment that could change the type. The closure trap: a narrow inside a callback can be lost if the variable is reassigned between the check and the callback execution. Senior reflex: assign the narrowed value to a `const` inside the block.
+- The three legitimate triggers for `as`. The escape hatch exists for three cases.
+  - **Boundary parse-then-trust.** After Zod validates an `unknown`, the parsed value is typed and the assertion is implicit in the parser. No `as` needed in the user code; named so the student understands where the type information comes from.
+  - **TypeScript can't see what you can prove.** A `value as 'draft' | 'sent'` where the prior code already narrowed via a non-trackable mechanism (e.g., a Map lookup the type system can't follow). Rare; the senior should ask whether a refactor removes the need.
+  - **The DOM and third-party type gaps.** `document.querySelector('button') as HTMLButtonElement`. The DOM API returns `Element | null` but the call site knows the selector matches a button. Acceptable for tightly-scoped cases; the broader fix is `instanceof HTMLButtonElement`.
+- `as unknown as T` is a smell. Named once: it always means the type system is being silenced. Sometimes it's the right call (test fixtures, intentional type-system bypass at a third-party boundary); usually it's a refactor signal.
+- The non-null assertion, `!`. Same posture as `as` — escape hatch with narrow triggers. The most common legitimate use: `array.find(...)!` when the caller has just proved the element exists via a prior check the type system can't track. The senior alternative: `array.find(...) ?? throwError()` for explicit failure.
+- Type assertions that lie at runtime. The student should leave knowing that `value as User` is a compile-time-only operation; the runtime value is unchanged. The bug class: asserting something the data doesn't honor, then crashing three lines later. The fix is to narrow with a check, not to assert.
+
+What this lesson does not cover:
+
+- Assertion functions (`asserts value is T`). Reserved for lesson 3 of chapter 005 where exhaustiveness lives.
+- The `satisfies` operator. Reserved for lesson 7 of chapter 004.
+- `unknown` narrowing in `catch` blocks at depth. Reserved for lesson 2 of chapter 008.
+
+Pedagogical approach: Pattern archetype. Open with the `as User` lie and its six-months-later crash in two sentences. Walk the narrowing surface in six tight code blocks, each with the trigger named. Use a `script-coding` exercise where the student receives a `User | Guest` value and writes the function body with narrowing, no `as`; the tests cover both branches. Close with one `Buckets` exercise sorting eight scenarios ("mixed-primitive union," "shape union with discriminant," "shape union without discriminant," "error subclass check," "DOM query result," "Zod parse result," "an array we just `.find`'d," "third-party type gap") into "narrowing form" or "`as`/`!` is acceptable here."
+
+---
+
+## Lesson 7 — Keeping literals narrow: as const and satisfies
+
+Teaches the value-site freeze that keeps literal types from widening, the contract check that validates without losing the narrow, and the combined `as const satisfies T` idiom for typed-config patterns.
+
+Topics to cover:
+
+- The senior question. The student writes `const ROUTES = { home: '/', about: '/about' }` expecting the values to be literal types. They aren't — TypeScript infers `{ home: string; about: string }`, so a typo at the call site (`ROUTES.abot`) is caught but `ROUTES.home.startsWith('/')` is the only narrowing available. The student wants the literal values preserved so unions like `keyof typeof ROUTES` and `(typeof ROUTES)[keyof typeof ROUTES]` work. `as const` is the fix.
+- `as const`, the value-site freeze. Applied to a literal, it tells TypeScript "freeze every nested literal at its narrowest type and make every property `readonly`." Three behaviors:
+  - String literals stay as their literal type (`'/' instead of `string`).
+  - Object properties become `readonly`.
+  - Arrays become `readonly` tuples of their element literal types.
+- The three sites `as const` earns its weight.
+  - **Typed config objects.** A routes map, a permission table, a feature-flag map. The downstream type derivations (`keyof typeof X`, `(typeof X)[keyof typeof X]`) become useful only when the values are literal.
+  - **Tuple literals.** `[1, 2, 3] as const` produces `readonly [1, 2, 3]`, not `number[]`. The trigger for any positional record built inline.
+  - **Discriminant values.** `{ status: 'loading' } as const` keeps the literal type that lesson 5 of chapter 004's discriminated union depends on; without it, the inferred type widens to `string`.
+- `satisfies`, the contract check that preserves the narrow. The bug it fixes: the student writes `const ROUTES: Record<string, string> = { home: '/', about: '/about' }` to enforce a contract, but the annotation widens the values to `string` and erases the literal types. `satisfies` validates the value against a type without applying the type as the value's annotation: `const ROUTES = { home: '/', about: '/about' } satisfies Record<string, string>` keeps the literal types and still errors if a non-string snuck in.
+- The two senior triggers for `satisfies`.
+  - **You want to keep the narrow type but validate against a contract.** The canonical case.
+  - **You want the structural check at write time, not at read time.** A typo in a key or a missing required field surfaces where the value is defined, not where it's consumed. Annotations do this too but at the cost of widening.
+- The combined idiom, `as const satisfies T`. The senior reach for typed-config patterns: lock the literal types (`as const`) and validate against a contract (`satisfies T`). The two compose in that order. Show one full worked example — a permissions table where keys are `Role` and values are arrays of `Permission` literals — and the type derivations it unlocks.
+- The contrast table, terse. Three forms and what they do.
+  - **Annotation** (`const X: T = ...`) — applies `T` to the value; loses the literal type if `T` is wider; catches missing fields.
+  - **`as const`** — freezes the value's inferred type at the narrowest; doesn't validate against any contract.
+  - **`satisfies T`** — validates against `T`; doesn't apply `T` to the value; keeps the inferred type.
+- Forward links. The pattern lands again in Drizzle schema definitions (Unit chapter 037), Next.js route segment configs (Unit chapter 029), and feature-flag and permission tables in the org/RBAC chapter (Unit chapter 057). One sentence each.
+
+What this lesson does not cover:
+
+- `as` for type assertions at depth (lesson 6 of chapter 004 owns it).
+- Mapped types and conditional types that operate on `as const` outputs (chapter 005 chapter).
+- `const` type parameters on generic functions (lesson 7 of chapter 005).
+
+Pedagogical approach: Pattern archetype. Open with the `ROUTES` widening surprise in two snippets — one with the inferred wide type, one with `as const` and the narrow. Walk `as const` and `satisfies` in adjacent code blocks operating on the same `ROUTES` value. Show the combined `as const satisfies T` idiom as the third block. Use a `script-coding` exercise where the student types a permissions table with `as const satisfies Record<Role, readonly Permission[]>` and the tests validate the type derivations. Close with one `MultipleChoice` matching four scenarios ("config with literal keys and values," "config with a contract and literal values," "config with a contract and widened values," "an array literal that should be a tuple") to the right combination of annotation, `as const`, and `satisfies`.
+
+---
+
+## Lesson 8 — Annotate the boundaries, infer the inside
+
+Teaches the senior rule for where annotations earn their weight (parameters, exported APIs) and where inference wins (locals, return types, inline callbacks), plus the `import type` discipline that `verbatimModuleSyntax` enforces.
+
+Topics to cover:
+
+- The senior question. The student has seen TypeScript codebases that annotate every local variable and every return type — and codebases that annotate nothing and lean on inference. Both extremes are wrong. The senior rule: **annotate where the type carries information the value alone can't (parameters, exported APIs, generic constraints); infer everywhere else.**
+- Where annotations earn their weight.
+  - **Function parameters.** Always. The function signature is the contract with the caller; the caller can't infer the type. Without an annotation, TypeScript infers `any` for parameters (the implicit-any error in strict mode).
+  - **Exported APIs.** Functions, types, and values exported from a module get explicit type signatures so the consumer reads the contract without opening the implementation. The `isolatedDeclarations` story is named in one line as the 2026 direction; not yet a hard requirement.
+  - **Return types where inference produces an unintended type.** Rare; the senior reaches for an explicit return type when the function's intent is to satisfy an interface, when the inferred type is a complex conditional the consumer shouldn't depend on, or when a recursive function's inferred return is `any`.
+- Where inference wins.
+  - **Local variables.** `const total = items.reduce(...)` — TypeScript reads the reducer and types `total` correctly. Annotating is noise.
+  - **Inline callbacks.** `items.map(item => item.price)` — the callback's parameter is inferred from the array's element type. Annotating breaks the inference and forces a redundant type.
+  - **Return types of internal functions.** When the function isn't exported and the body is small, the inferred return type is correct and stays in sync as the body changes. Senior reflex: annotate the return only when the function's signature is the lesson or the inference would be wrong.
+- The trade-off, stated plainly. Annotations are documentation and a structural enforcement; inference is concision and refactoring resilience. The boundary rule (annotate at the seams, infer inside) gives both.
+- The `import type` discipline. With `verbatimModuleSyntax: true` (from the strict tsconfig of lesson 5 of chapter 024), every type-only import must use `import type`. The compiler erases the import; the bundler never sees it; the runtime never executes it. The companion: `import { type Foo, bar }` for mixed imports where some names are types and some are values. Biome's `useImportType` rule (lesson 5 of chapter 024) catches violations automatically; the lesson installs the mental model so the student writes it correctly the first time.
+- The two failure modes `verbatimModuleSyntax` prevents.
+  - **Side-effect modules that get tree-shaken.** A value import that's only used as a type can be erased by the bundler; the side-effecting initialization at module load (e.g., a Drizzle relation declaration) goes missing. `import type` is explicit about intent.
+  - **Circular type imports that masquerade as value imports.** Drawing the import graph at type level is sound; at value level it can deadlock module initialization. `import type` lets the cycle resolve cleanly.
+- Forward link. Module graph mechanics (Chapter 006) lands the full story; this lesson installs the per-import-line discipline.
+
+What this lesson does not cover:
+
+- `isolatedModules` and `isolatedDeclarations` at depth. The former is on by default in modern setups; the latter is named as the 2026 direction in one line. Module-graph chapter chapter 006 owns the deeper treatment.
+- `tsconfig.json` options beyond the ones already enabled in lesson 5 of chapter 024. The strict baseline is assumed.
+- The `import type * as X` and `export type { X }` re-export forms. Named in one line; the canonical pattern is `import type { X }`.
+- Project references and monorepo TypeScript topology. Not in scope for a single-app SaaS course.
+
+Pedagogical approach: Decision archetype. Open with the two anti-extremes (annotate-everything, annotate-nothing) in two paired snippets. State the rule in one sentence. Walk the boundary cases — parameter annotation always, exported API annotation always, local inference always, callback inference always, return type annotation conditional — in a tight prose-plus-code section. Show `import type` and `import { type Foo, bar }` in a single code block with a comment on each line stating what gets erased. Close with one `Buckets` exercise sorting ten declaration sites ("exported function parameter," "internal helper parameter," "local sum variable," "inline `.map` callback parameter," "exported type alias," "internal function return," "exported function return," "an imported `User` used only as a type," "an imported `db` used as a value," "a mixed import with `type Foo` and `bar`") into "annotate," "infer," or "`import type` / mixed import."
+
+---
+
+## Lesson 9 — Quizz
+
+Top 10 topics to quiz:
+
+1. The seven primitive types and the senior trigger for each of the four corners (`any`, `unknown`, `never`, `void`).
+2. Literal union types as the reach for finite domains, and the typo-caught-at-compile-time payoff.
+3. `type` as the senior default; `interface` only for declaration merging.
+4. The `?` vs. `| undefined` distinction under `exactOptionalPropertyTypes`.
+5. `readonly` on fields (binding-only, not deep) and `readonly T[]` for array-level immutability.
+6. Tuple syntax with element labels, and the three sites tuples beat objects.
+7. Index signature vs. `Record<LiteralUnion, V>`, and how `noUncheckedIndexedAccess` narrows reads differently across them.
+8. Union vs. intersection semantics, and the shape-union access rule (only common fields are readable without narrowing).
+9. Narrowing forms (`typeof`, `in`, `instanceof`, `Array.isArray`, discriminant equality) and the three legitimate triggers for `as` / `!`.
+10. `as const`, `satisfies`, and the combined `as const satisfies T` idiom for typed-config patterns; plus the `import type` discipline under `verbatimModuleSyntax`.
 
 ---
 
 ## Total chapter time
 
-Roughly 145 to 170 minutes across the five lessons. The chapter splits naturally across two or three evenings — lesson 1 of chapter 004 + lesson 2 of chapter 004 (the scaffold open and the AGENTS.md read) as one sitting, lesson 3 of chapter 004 + lesson 4 of chapter 004 (the tsconfig walk) as the second, lesson 5 of chapter 004 (env validation with the build-fire exercise) as the third short evening. At the end the student has a running Next.js 16 application on their machine, a tsconfig they can defend flag by flag, an env validator that fails the build on a missing required variable, and a first commit that locks the toolchain choices from Chapters 002 through 004 into a real codebase. Unit 2 starts on that floor.
+Roughly 195 to 235 minutes across the eight content lessons plus the quiz. The chapter splits naturally across three evenings — lesson 1 of chapter 004 + lesson 2 of chapter 004 + lesson 3 of chapter 004 (the primitives-shapes-tuples vocabulary) as one sitting, lesson 4 of chapter 004 + lesson 5 of chapter 004 + lesson 6 of chapter 004 (the dynamic keys, composition, and narrowing triad) as the second, lesson 7 of chapter 004 + lesson 8 of chapter 004 (`as const`/`satisfies` and the annotation rule) plus the quiz as the third. At the end the student has the type-vocabulary fluency Chapter 005's patterns assume — and the senior reflexes (literal unions for finite domains, `type` by default, narrow-don't-assert, `as const satisfies T` for typed config, annotate at the seams) that the rest of the course never re-explains.

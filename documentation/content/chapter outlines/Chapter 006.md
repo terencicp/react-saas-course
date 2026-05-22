@@ -1,277 +1,214 @@
-# Chapter 006 — Functions, naming, and control flow
+# Chapter 006 — Modules as a graph
 
 ## Chapter framing
 
-Chapter 005 installed the value model. This chapter teaches the **shape of the code that operates on those values** — how functions are declared, how signatures stay readable past a couple of parameters, how names communicate intent, how control flow stays flat, how nullish operators replace defensive branching, how destructuring becomes the API call-shape, and how closures capture lexically by reference. These are the daily-write surfaces of a 2026 SaaS codebase. The student will reach for every one of them on the first React component, the first Server Action, and the first Drizzle query in later units, and the course never re-teaches the form.
+Chapter 005 closed the type-modeling story — discriminated unions, branded IDs, derived types, the utility-type toolbox, and constrained generics. The student can author the TypeScript the rest of the course writes. This chapter zooms out one level: every file the student writes is a node in a **directed module graph** that the runtime evaluates in a specific order, with live bindings between nodes, and a hard rule that some nodes (server-only) must never be reachable from other nodes (client bundles). The chapter teaches the graph as a first-class object — the four import/export shapes that form its edges, the evaluation order and live-binding semantics that make `let`-exports work and circular cycles tricky, the `"use client"` boundary and `server-only`/`client-only` packages that enforce the bundle split, the top-level-await vs. lazy-init call that decides where setup costs land, and the `declare module` pattern that ties third-party shapes (Better Auth's `Session`, Drizzle relations) to the project's branded types at the source.
 
 Threads that must run through every lesson:
 
-- **Decisions before syntax.** Each lesson opens with the production failure mode the form prevents — a mutated callback that fires after a route change, a six-positional-argument call site no reviewer can read, a `||` that swallowed `0`, a destructure that forwarded a stale `id`. The syntax follows the failure.
-- **One language, TypeScript-flavored.** Every example is `.ts` with inference-led typing. The JavaScript primitive is named at the call site; the type-system depth (predicates, narrowing) is referenced but parked until Chapter 008 and chapter 009.
-- **Senior reflexes, not surveys.** The course never enumerates every loop form or every operator. Each lesson commits to the default and names the one or two alternatives with the trigger that flips the choice.
-- **Forward links land softly.** Closures foreshadow `useEffect` cleanups and Server Action capture (Unit chapter 028 and lesson 4 of chapter 034). Destructuring foreshadows React props (Unit chapter 026) and Server Action `FormData`. The options-object pattern foreshadows the wrapper idioms in lesson 7 of chapter 009. One sentence each.
-- **Biome is doing half the work.** Rules from lesson 2 of chapter 003 — `useConst`, `noDoubleEquals`, `useArrowFunction`, `noUselessElse`, `useExhaustiveDependencies` — turn many of these reflexes into build-time checks. Each lesson names the rule that enforces it where one exists, so the student knows the linter is the safety net, not vibes.
+- **Modules are a graph, not a list of files.** The student leaves with a mental model of nodes (modules) and edges (imports), evaluated depth-first, with cycles as a real hazard. Every lesson reinforces the graph framing — even the syntax lesson names which edge each import form draws.
+- **`verbatimModuleSyntax` is the floor.** From lesson 4 of chapter 024 and lesson 8 of chapter 004, `import type` is mandatory for type-only imports. The chapter operates under this rule; it does not re-teach the flag but names the failure mode at the moment it applies (the side-effect import erased by tree-shaking, the circular type import that deadlocks).
+- **The client bundle is sacred.** Every server-only seam (`env.ts`'s secrets, the Drizzle client, `cookies()`, the auth handler) must not be reachable from a `"use client"` file. The chapter installs the structural enforcement (`server-only`, `client-only`, the directive boundary) as the senior reflex, not a discipline. Forward links to Unit chapter 030 (server/client boundary at depth) thread through lesson 2 of chapter 006.
+- **Setup costs decide between top-level await and lazy init.** Top-level await is the right reach for cheap, mandatory startup validation (the `env.ts` parse). A lazy `getDb()` getter is the right reach for expensive or conditional setup that should not block module evaluation. The chapter names the threshold once and applies it across the SaaS stack.
+- **`declare module` is the seam, not the workaround.** When a third-party type doesn't carry the project's branded IDs or extra session fields, the senior move is to augment the published interface in a dedicated `.d.ts` file — not to cast at every call site. The chapter installs the pattern with three canonical 2026 sites (Better Auth `Session`, Drizzle relation inference, `next-intl` typed messages).
+- **No build-tool deep dives.** Turbopack, esbuild, and SWC own the actual graph walk and bundling; the chapter teaches the **semantics every bundler agrees on**, not bundler internals. The student should leave able to predict whether a snippet ships server code to the browser, not able to recite Turbopack's chunk-split algorithm.
 
-The student finishes the chapter able to write a function any reviewer in 2026 would accept the first time — clear signature, intent-revealing name, flat control flow, no falsy defaults, destructured parameters, closures used deliberately — and to recognize the bug class each form prevents. Containers (objects, arrays, maps) arrive in chapter 007; the type-system depth that backs these forms lands in chapter 008 and chapter 009.
-
----
-
-## Lesson 1 — Arrow by default, declaration on demand
-
-Teaches the three function forms, the senior rule that arrow expressions bound to `const` are the 2026 default, and the narrow triggers (hoisting, named recursion, type-guard signatures) that earn a `function` declaration.
-
-Topics to cover:
-
-- The senior question. Three function forms exist in 2026 TypeScript — arrow expressions, `function` declarations, and `function` expressions. The team picks one default and one trigger that flips it; rotating between forms randomly is the smell. The lesson installs the default and the triggers, not the full mechanics of `this` and prototypes (which lesson 2 of chapter 013 will revisit at the narrow surface where classes still matter).
-- The default: `const name = (args) => body` bound to `const`. Why this wins as a default — concise at the call site, no `this` rebinding surprise inside callbacks (the historical 2018-era arrow-vs-`function` debate that returning devs remember), reads like data when assigned to a variable, and pairs with `const`-by-default from lesson 6 of chapter 005. Biome's `useArrowFunction` rule auto-fixes the obvious cases.
-- Implicit return vs. block body. The single-expression form (`(x) => x * 2`) for one-liners; the block form (`(x) => { ... return ...; }`) the moment a statement is needed. The watch-out: the `({ key: value })` object-return form requires the parens around the literal — without them the braces parse as a block. One short snippet of the mistake and the fix.
-- The three triggers that earn a `function` declaration.
-  - **Hoisting.** Top-of-file helper used by code declared above it. `function` declarations hoist their full body; arrow `const`s are in the Temporal Dead Zone until the line they're declared on. Rare in 2026 (most code is import-first and module-scoped), but real for in-module recursion helpers and a small set of organizational layouts.
-  - **Named recursion.** A recursive helper that wants to refer to itself by name without aliasing through the outer `const`. `function walk(node) { ... walk(child) ... }` is the cleaner form than an arrow that has to capture its own binding.
-  - **TypeScript type-guard signatures and assertion functions.** `function isUser(x: unknown): x is User { ... }` and `function assertUser(x: unknown): asserts x is User { ... }` (where `unknown`, the predicate `x is T`, and the assertion `asserts x is T` are introduced in lesson 1 of chapter 008 / lesson 6 of chapter 008 / lesson 3 of chapter 009 — named here only so the student recognizes the shape that earns a `function` declaration). Both forms require the `function` keyword today — the predicate and assertion syntax does not parse against arrow expressions. The course's narrowing chapter (lesson 6 of chapter 008) and exhaustiveness chapter (lesson 3 of chapter 009) lean on these.
-- Method shorthand inside object literals (`{ greet() { ... } }`) — named in one paragraph as the third form that earns its place inside config objects, Drizzle relation definitions, and route handler exports. Not a separate trigger; a syntactic shortcut when the function lives inside an object literal.
-- One paragraph on `function` expressions (the `const fn = function name() { ... }` form). Useful only when the expression form needs an internal name for recursion or debugging; almost always replaced by either an arrow or a declaration. Named once so the student recognizes it.
-- The `this` rule, stated and dropped. Arrow functions inherit `this` from the enclosing lexical scope; `function` forms get their own `this` based on the call site. Inside the React + Server Components stack the course teaches, the student writes essentially no `this` — components are functions, Drizzle calls are functions, server actions are functions. The rule is named so the student isn't surprised when they see it in third-party class-based code (some SDKs, the rare `Error` subclass authored in lesson 2 of chapter 013).
-- Forward links. Components in Unit 4 are arrow expressions bound to `const`. Server Actions in Unit chapter 034 are async arrow expressions exported by name. Type predicates and assertion functions appear in lesson 6 of chapter 008 and lesson 3 of chapter 009. One sentence total.
-
-What this lesson does not cover:
-
-- Generator functions (`function*`) and `yield`. The course writes them once at most, in the iteration-helpers lesson lesson 5 of chapter 007, if at all; mentioned in one line as the rare reach for custom iterables.
-- `this`, `bind`, `call`, `apply` in depth. Not relevant to functional 2026 SaaS code; named in one paragraph for recognition.
-- `arguments` and `caller`/`callee`. Replaced by rest parameters (taught in lesson 2 of chapter 006); named in one sentence as the legacy form to recognize in old code.
-- IIFE patterns. Replaced by modules; not written in modern code.
-- Decorators. Stage 3 and Next.js-irrelevant for the SaaS surface this course teaches.
-
-Pedagogical approach:
-
-Decision archetype. Open with one short snippet of each form (arrow `const`, declaration, method shorthand) and the senior framing in two sentences: arrow `const` is the default, declaration earns its place at three triggers. Walk the implicit-return and object-return-parens gotcha in a tight code beat. The three triggers each get a single short `react-coding`-style or `type-coding` snippet — type guards land especially well with a `type-coding` block where the student sees the predicate signature only resolve under `function`. Close with a `Buckets` exercise sorting eight function situations (a click callback, a `.map` projection, a recursive tree walker, a `x is Foo` predicate, a method on a config object, a React component, a top-of-file helper used above its declaration, a Server Action) into `arrow const` or `function declaration`. The sort is the senior-reflex install.
-
-Estimated student time: 25 to 30 minutes.
+The student finishes the chapter able to read any file in the codebase as a node in a graph with predictable edges, write the four import/export shapes with the correct type-only discipline, dynamically import a heavy component to defer its bundle, place a `"use client"` directive at the right leaf, decide between top-level await and a lazy getter for a new boundary file, and augment a third-party module to carry a branded ID through its session type. Chapter 007 (async semantics) and Unit 4 (App Router server/client model) land on this floor.
 
 ---
 
-## Lesson 2 — Signatures that stay readable past two parameters
+## Lesson 1 — The four import-export shapes
 
-Teaches the two-positional-parameter rule and the options-object pattern, parameter defaults firing only on `undefined`, rest parameters and call-site spread, and the TypeScript ordering of required vs. optional parameters.
-
-Topics to cover:
-
-- The senior question. A function with five positional booleans (`createUser('alex', 'a@x.com', true, false, true)`) is unreadable at the call site, unsafe to reorder, and impossible to extend without breaking every caller. The bug class isn't syntax — it's API design at the function level. The lesson teaches the two-rule shape that prevents it.
-- The two-positional-parameter rule. Two is the threshold past which positional arguments stop reading clearly. Past two, switch to an options object. The exception named once: arity-meaningful functions (e.g. a comparator `(a, b) => number`, a reducer `(acc, x) => acc`) keep their positional shape because the positions are semantic. The rule is a tool, not dogma.
-- The options-object pattern. `(options: { name: string; email: string; admin?: boolean })` (inline object-type literals and the `?` optional modifier are covered at depth in lesson 2 of chapter 008; here the student reads the shape) is the shape Server Actions, Drizzle query builders, React component props, and the entire 2026 senior surface use. Two payoffs: call sites self-document (`createUser({ name, email, admin: true })`), and adding a parameter never breaks existing callers because object fields are unordered. The companion: destructure at the signature (covered in lesson 6 of chapter 006) — `({ name, email, admin = false })` — so the body reads like the call site.
-- Parameter defaults. The exact rule: defaults fire only when the argument is `undefined`. Passing `null` does not trigger the default. Passing `0` or `''` or `false` does not trigger the default (this is the right behavior, but the returning student often expects falsy-coercion semantics from older codebases). One short snippet showing the four cases.
-- The TypeScript ordering rule. Required parameters before optional. `function fetch(url: string, options?: Options)` is legal; `function fetch(options?: Options, url: string)` is not. The fix is the options object — when everything is on one parameter, the field-level `?` ordering doesn't exist as a constraint. One sentence on the conditional escape hatch: TypeScript 5.0+ accepts an optional positional before a required one if the optional has a default value, but the course doesn't reach for it.
-- Rest parameters at the signature and spread at the call site. `(...ids: string[])` collects trailing arguments into an array; `fn(...ids)` spreads the array back into positional arguments at the call site. The mental model: rest binds positions to an array on receive; spread unpacks an array to positions on send. The most common 2026 use is forwarding arguments to a wrapped function (`(...args) => baseFn(...args)`), and the typed form covered in lesson 7 of chapter 009's generics chapter is what makes that wrapper preserve the original signature.
-- Default values inside the options-object pattern. The composition is `({ pageSize = 20, sort = 'asc' } = {})` — defaults at the field level for individual fields, and the trailing `= {}` so the function is callable with no argument at all. Show this once because every paginated list function in the course will use this exact shape.
-- The "too many params" smell as a refactor signal. If a function reaches four or five positional parameters, the senior reads that as "this function does too many things" before "this function needs an options object" — sometimes the right answer is to split. Named in one sentence as the deeper refactor heuristic; the lesson's primary teach is the options-object pattern.
-- Forward links. Server Actions take a single options-shaped argument (Unit chapter 034). Drizzle's query-builder accepts options at every chain step (Unit 6). React component props are an options object spelled with JSX (Unit chapter 026). One sentence total.
-
-What this lesson does not cover:
-
-- Function overloads (multiple call signatures for one implementation). Niche; the course names them once in lesson 7 of chapter 009 if at all, where generics replace most overload uses.
-- `arguments` legacy object — superseded by rest parameters.
-- Currying and partial application as patterns. Not in the 2026 SaaS senior daily reach; named in one line if at all.
-- The `this` parameter declaration in TypeScript (`function foo(this: Element)`). Class-adjacent, not part of the functional surface this chapter installs.
-
-Pedagogical approach:
-
-Pattern archetype. Open with the unreadable five-positional-arg call site in one snippet and its options-object replacement adjacent. State the two-param rule plainly. Walk the parameter-default fires-only-on-`undefined` semantics in a `predict-output` exercise — four cases (`undefined`, `null`, `0`, `''`) with the expected default-vs-passed-value behavior shown in adjacent output blocks. Show the rest/spread duality in one `type-coding` block where the student types a wrapper that forwards `...args` and watches the inferred signature. Close with a `code-review` exercise: present a five-positional-arg function and ask the student to refactor to the options-object shape, with the test passing on the refactored form. The refactor is the lesson's confirmation.
-
-Estimated student time: 25 to 30 minutes.
-
----
-
-## Lesson 3 — Name for intent, not implementation
-
-Teaches Architectural Principle #4 across the four naming surfaces (variables, functions, parameters, types), the boolean-prefix convention, and the three bad-name classes (implementation-leaking, vague abstractions, negated booleans).
+Teaches the named, default, side-effecting, and dynamic export forms with their matching import surface, the type-only import discipline under `verbatimModuleSyntax`, and the bare-specifier resolution algorithm that picks the file behind every `import 'pkg'`.
 
 Topics to cover:
 
-- The senior question. Three real bugs that start at the name. A variable `data` that nobody knows the shape of without reading three files of context. A function `processOrder` that the next reader has to open and read end-to-end to learn what "process" means in this codebase. A boolean `notDisabled` that a future reader misreads when they negate it with `!notDisabled` six months later. Names are a documentation surface; getting them wrong is a coordination cost paid by every future reader.
-- The principle, stated once. **A name says what the value is or what the function does, not how it's computed.** This is Architectural Principle #4 in the course's running list. The principle is asymmetric: a vague name that fits the value (`user`, `total`, `isAdmin`) is acceptable; an implementation-leaking name that pins a future reader to today's implementation (`userArray`, `totalReducer`, `adminCheckResult`) is the smell.
-- The four naming surfaces and the senior reach on each.
-  - **Variables.** Nouns. Concrete over abstract. `pendingInvoices` over `data`; `activeUser` over `obj`. Length proportional to scope — a one-line callback parameter can be `x`; a module-level constant cannot.
-  - **Functions.** Verbs or verb phrases. `loadInvoice`, `formatCurrency`, `parseExpiration`. The verb signals the kind of operation (`load`/`fetch` for I/O, `parse`/`validate` for transformation, `format`/`render` for output). The course does not standardize a verb glossary, but the team's codebase should; consistency is the rule.
-  - **Parameters.** Same rules as variables but with one tighter constraint — parameter names appear in the function's public surface (TypeScript shows them on hover, in errors, in IDE tooltips). `createUser(name, email)` reads from the call site; `createUser(a, b)` does not.
-  - **Types and type members.** PascalCase nouns for the type, camelCase for fields. `Invoice` over `InvoiceType` (the `Type` suffix is the noise the TypeScript world dropped years ago); `Status` and `state` over `StatusEnum` and `statusValue`. The course never writes `IInvoice`-style Hungarian prefixes.
-- The boolean-prefix convention. Boolean values and predicates get a verbal prefix that makes the truth condition unambiguous: `is*` (state), `has*` (membership/possession), `can*` (permission), `should*` (conditional intent), `will*` (future state). `isAdmin`, `hasUnpaidInvoices`, `canEdit`, `shouldRetry`. The rule is a recognition pattern — when the reader sees `is`, they know the value is a boolean before they read its type annotation.
-- The three bad-name classes.
-  - **Implementation-leaking.** `userArray`, `customerMap`, `loadingFlag`. The container or representation appears in the name, which means renaming the type forces renaming the variable. The fix: name what's in the container, not the container. `customers` (a plural noun), not `customerArray`.
-  - **Vague abstractions.** `data`, `info`, `result`, `manager`, `helper`, `util`. Names that could attach to anything attach to nothing. The fix: replace with the concrete thing — `data` → `weeklyMetrics`, `result` → `validatedInput`, `manager` → split the file because no class earns the name.
-  - **Negated booleans.** `notDisabled`, `isNotLoading`, `noErrors`. Negation in the name compounds with negation at the use site (`!notDisabled` is a double-negative that reads as "enabled" but doesn't say so). The fix: name the positive condition. `isEnabled`, `isLoading`, `hasErrors`.
-- Abbreviations and the senior call. The course's discipline: don't abbreviate unless the abbreviation is more common than the spelled-out form in the domain (`url`, `id`, `db`, `api`, `http`, `jwt`, `ms` for milliseconds). Never invent abbreviations (`usr`, `prfl`, `qty`). The reader-cost of disambiguating an unfamiliar abbreviation is higher than the writer-cost of typing the full word, especially in 2026 where every editor autocompletes.
-- One paragraph on consistency over correctness. Two acceptable names — `fetchUser` and `loadUser` — both communicate intent. The rule: pick one across the codebase and stick to it. Drift between synonyms in the same repo is the smell, not the choice itself.
-- Forward links. Type names in chapter 008. Component and hook naming in Unit 4 (`use*` prefix as a structural enforcement React understands). Server Action names in chapter 034. Drizzle table and column names in Unit 6. One sentence each.
+- The senior question. Every import statement the student writes is one of four shapes, and a senior reads each shape and knows what edge it draws into the graph, what the bundler will do with it, and what the runtime cost is. The lesson installs the recognition vocabulary before any other module concept lands.
+- The four shapes, named with the trigger for each.
+  - **Named export / named import.** `export const x = ...; export function f() {}; export type T = ...` paired with `import { x, f, type T } from './mod'`. The course default for everything — every utility, every component, every type. Names survive renames at one site, tree-shake cleanly, and read explicitly at the call site.
+  - **Default export / default import.** `export default ...` paired with `import X from './mod'`. The senior cut: default exports earn their weight only where the framework demands them — Next.js `page.tsx`, `layout.tsx`, `loading.tsx`, `error.tsx`, `not-found.tsx`, route handlers' HTTP-method exports (named, not default, but listed for the same framework-owned shape), and a handful of third-party libraries that ship a default. Anywhere else, named exports win. The named-vs-default debate is closed in 2026; the course teaches the cut without re-litigating it.
+  - **Side-effecting import.** `import 'pkg'` with no binding — the file runs for its side effects (a polyfill, a CSS injection, a global-state hook registration). Rare and intentional. The two canonical sites: `import 'server-only'` / `import 'client-only'` (taught in lesson 2 of chapter 006 for what they enforce) and global CSS imports in `app/layout.tsx`. Anywhere else, a side-effecting import is a smell.
+  - **Dynamic import.** `await import('./mod')` — an `import()` expression that returns a `Promise<Module>`. Different from the three static forms: the edge into the graph is **deferred**. The bundler turns it into a separate chunk, the runtime fetches it on demand. The student should leave knowing this is a value-level expression (it can appear inside a function body, conditionally), unlike the three static forms that live only at the top level.
+- The type-only discipline, restated from lesson 8 of chapter 004.
+  - **`import type { T } from './mod'`** for type-only imports. Erased at compile time; draws no runtime edge into the graph.
+  - **Inline `type` modifier** — `import { foo, type Bar } from './mod'` — mixes a value import and a type import in one statement. The senior reach when one file genuinely needs both; otherwise split into two statements for legibility.
+  - **`export type { T }`** for re-exports of type-only symbols. Same rule as imports.
+  - The failure mode `verbatimModuleSyntax` prevents, named in one paragraph: a value import that's only used as a type can be erased by the bundler, taking the side-effecting initialization with it. The flag forces the student to be explicit, and the bug class disappears.
+- Re-exports, with the two forms.
+  - **`export { foo } from './mod'`** — a transparent re-export. The module is still evaluated (the edge is real); the binding becomes available from the re-exporting module. The course's barrel-file rule: re-exports are valid but barrels of unrelated symbols (`./index.ts` re-exporting fifty things) hurt tree-shaking and editor go-to-definition. Named once.
+  - **`export * from './mod'`** — re-export everything. Cleaner for a domain module that wants to expose its entire surface, dangerous when two re-exported modules share a name (the compiler refuses the ambiguity). The senior reach is to enumerate; the wildcard is for cases where the surface is intentionally open.
+- The named-vs-default closing rule, stated plainly. **Default exports are framework-mandated; everywhere else, named.** Two practical consequences:
+  - Renaming a default-exported symbol at one site doesn't propagate (the import-side name is whatever the caller chose); renaming a named export breaks every caller and tooling can update them. Named exports are refactor-safe.
+  - The `import X from 'pkg'` form silently widens if the library's default export is `unknown`-typed in older `.d.ts` files; named imports carry their types faithfully. Old story, but still bites in 2026 with legacy CJS interop.
+- Bare specifier resolution — the algorithm behind every `import 'pkg'`. The chapter installs this once because every later lesson depends on it.
+  - **What "bare" means.** A specifier with no `./`, `../`, or absolute path — `'react'`, `'next/cache'`, `'@/lib/db'`. Three sub-cases.
+  - **`'react'` — a package name.** Node walks up `node_modules/` directories from the importing file, finds `react/package.json`, reads its `exports` field, and resolves to the file the package itself names. In 2026, `exports` is the source of truth — `main` is the legacy fallback for packages that haven't published `exports` yet. The senior watch-out: a package with `exports` blocks deep imports the field doesn't list (`import 'react/internal/foo'` fails even if the file is on disk), and this is the desired behavior (it's how libraries communicate their public surface).
+  - **`'next/cache'` — a subpath inside a package.** Resolved via the package's `exports` field with the subpath key (`"./cache"` in `next/package.json`). The subpath surface a SaaS engineer reaches for daily: `next/cache`, `next/headers`, `next/navigation`, `next/server`, `zod/v4`. Named here so the student knows what the slash means.
+  - **`'@/lib/db'` — a TypeScript path alias.** Not a node_modules lookup at all — resolved against the `paths` field in `tsconfig.json` (lesson 4 of chapter 024). The bundler and `tsc` agree on the resolution because both read the same `tsconfig.json`; runtime tools that don't (raw `node`, `tsx` without project config) fall back to the on-disk path. Named once; the student has the mental model from lesson 4 of chapter 024.
+- The `with { type: 'json' }` import attribute. The 2026 way to import JSON modules from ESM — `import config from './config.json' with { type: 'json' }`. The attribute is mandatory in modern Node and required by the V8-runtime spec for security (the runtime validates the MIME type before parsing). The senior reach when reading a static JSON file at module load. The watch-out: the import is synchronous in the source but the runtime materializes it before the module evaluates, so it works in static positions only. Named with one example; the deeper JSON parsing story lives in lesson 1 of chapter 009.
 
 What this lesson does not cover:
 
-- Hungarian notation. Named once as the historical practice this principle replaces.
-- Specific verb glossaries (`get` vs. `fetch` vs. `load`). The course doesn't legislate one; the team's codebase does.
-- File naming conventions and folder structure. Lives in Unit 22 (project documentation) and is enforced by Next.js's routing conventions for the app surface.
-- Linguistic discussions of plurality, gender, casing across languages. The course writes English-only identifiers.
+- Module evaluation order, live bindings, or circular imports (lesson 2 of chapter 006 owns the graph semantics).
+- Dynamic `import()` as a code-splitting tool (lesson 2 of chapter 006 owns the bundling consequence).
+- `"use client"`, `'server-only'`, and the bundle boundary (lesson 2 of chapter 006).
+- CommonJS, `require()`, `__dirname`, `module.exports`. The course's codebase is ESM end-to-end; CJS appears only as a third-party dependency's emitted output, never authored. Mentioned in one line where the `esModuleInterop` flag from lesson 4 of chapter 024 already paid for the interop.
+- Authoring a publishable package's `exports` field. The course writes app code, not libraries; named once as the trigger that flips the lesson.
+- AMD, UMD, and SystemJS module formats. Dead in 2026 SaaS code; not mentioned.
 
-Pedagogical approach:
-
-Concept archetype with a heavy exercise close. The lesson's center is recognition — the student should leave able to spot a bad name in a code review reflex, not just rewrite one. Open with three short before/after snippets from the bad-name classes (one each of leaking, vague, negated). State the principle in one sentence. Walk the four surfaces with one example each, then the boolean-prefix convention in a tight list. The three bad-name classes get their own beat with a `code-review` exercise on a small file containing five named values, three of which violate one of the classes — the student spots and renames. Close with a `matching` exercise pairing five abbreviations (`url`, `usr`, `qty`, `id`, `prfl`) to "acceptable" or "not acceptable" with the rule named. No sandbox — naming is a discipline, not a thing to play with.
-
-Estimated student time: 25 to 30 minutes.
-
----
-
-## Lesson 4 — Guard clauses, ternaries, and exhaustive switch
-
-Teaches flat control flow through early-return guards, expression-level ternaries, `switch` with `noFallthroughCasesInSwitch` and `assertNever`, the lookup-map alternative, and the loop forms a 2026 senior reaches for.
-
-Topics to cover:
-
-- The senior question. The two-paragraph function with five nested `if/else` branches is the daily failure mode. Every level of nesting compounds the reader's cognitive load (which condition is currently true, which else branch am I in, what does the function return on this path), and the bug shape is the missed branch that fails silently. The lesson teaches three structural forms that keep control flow flat — guard clauses, expression ternaries, and exhaustive `switch` — plus the loop reflex that prefers `for...of` over `for (let i = 0; ...)`.
-- Guard clauses, the senior default for early exits. The shape: check the invalid/edge case first, return immediately, then the happy path runs unindented. `if (!user) return null;` over `if (user) { ... happy path ... }`. The payoff: one return path per condition, the function reads top-to-bottom, the happy path lives at the outer indentation level. Show one before/after of a four-level nested function flattened to four guards plus a body.
-- The "no `else` after `return`" rule. Biome's `noUselessElse` rule enforces it. Once a branch returns, the `else` block is dead weight — drop it, dedent the rest. Named because it's the most common code-review nudge a senior writes on junior PRs.
-- Ternaries at the expression level. The rule: use a ternary when the result is a value being assigned, returned, or passed as an argument. Don't use a ternary for side effects (`condition ? doA() : doB()` reads worse than the equivalent `if`). One paragraph on nested ternaries — acceptable when they form a small decision tree (`status === 'paid' ? 'green' : status === 'pending' ? 'yellow' : 'red'`), unacceptable when they hide a complex branch.
-- `switch` for discriminated-value branching. The right reach when the branch count is fixed and the dispatch value is a literal (a discriminant field on a union, an event type, a status enum). Two pieces of structural enforcement the course leans on:
-  - **`noFallthroughCasesInSwitch`** in `tsconfig.json` (already enabled in lesson 3 of chapter 004) — makes a missing `break` a compile error. The classic C-style fallthrough bug becomes structurally impossible.
-  - **`assertNever`** in the default case — the function `function assertNever(x: never): never { throw new Error('unhandled: ' + JSON.stringify(x)); }` placed in `default:` makes a missing case a *compile* error, not a runtime one (the `never` bottom type that powers the compile-error claim is taught in lesson 1 of chapter 008; here it's named for shape recognition). When the union grows a new variant, every `switch` that doesn't handle it fails to compile. This is the discriminated-union exhaustiveness pattern the course's state-machine chapter (lesson 3 of chapter 009) lands fully; this lesson plants the `switch`-shaped use.
-- The lookup-map alternative. When `switch` is dispatching to expression-level results, an object literal often reads better — `const color = { paid: 'green', pending: 'yellow', failed: 'red' }[status]`. The trigger: the cases are uniform value-to-value mappings with no logic per case. The watch-out: under `noUncheckedIndexedAccess` (already on per lesson 3 of chapter 004), the lookup returns `T | undefined` and the student has to handle the miss with `??` or a narrowed type. Named in one paragraph.
-- Loops in 2026. The four forms ordered by reach.
-  - **`.map` / `.filter` / `.reduce` array methods** for transformation pipelines. The default for any list-to-list operation. Covered in depth in lesson 3 of chapter 007.
-  - **`for...of`** for side-effecting iteration (writes, async work, breaks). The senior reach when the operation can't or shouldn't be a `.map`. Use `.entries()` when the index is needed; use `for (const [key, value] of Object.entries(obj))` for objects.
-  - **`for (let i = 0; i < n; i++)`** the C-style loop. The narrow trigger: numeric ranges where the index is the data (matrix indexing, custom step sizes, reverse iteration without `.toReversed`). Rare in 2026 SaaS code.
-  - **`for...in`** named once as the legacy form that iterates *enumerable string keys including inherited ones*. Almost always wrong; use `Object.keys` or `Object.entries`. The course never writes `for...in`.
-- The `break` and `continue` reflex inside `for...of`. Allowed and clean for early termination. `Array.prototype.some` / `Array.prototype.every` are the array-method equivalents when the loop is searching; the trigger to drop into `for...of` is when the body has multiple statements or async work.
-- Forward link. Discriminated-union exhaustiveness gets the full type-system treatment in lesson 3 of chapter 009 (`assertNever`, `satisfies never`, type predicates, assertion functions). This lesson installs the runtime + `switch` shape; the type-level safety net is named, not derived.
-
-What this lesson does not cover:
-
-- Pattern matching (TC39 proposal). Stage 1 in May 2026; not in the stack.
-- `do { ... } while (...)` and `while (...)` loops. Rare enough to not earn a line; the student recognizes them.
-- Labeled statements (`outer: for (...) { break outer; }`). Niche; named in one line if at all.
-- `try`/`catch` as control flow — covered in Chapter 012.
-
-Pedagogical approach:
-
-Pattern archetype. The lesson's center is the failure mode (nested-if soup) and the structural forms that prevent it. Open with one before/after of a deeply nested function flattened to guard clauses. State the "early return, no else after return" rule. Walk ternaries with a tight prose-plus-code beat. Show `switch` with `noFallthroughCasesInSwitch` and `assertNever` in one full snippet — the *whole point* lands when the student watches a missing variant become a red squiggle. Use a `predict-output` exercise on three `switch` examples (one with fallthrough caught by the flag, one with `assertNever` catching a missing case, one correct). The lookup-map alternative gets one short snippet and a one-line trigger. The loop section is a tight prose list with one `script-coding` block where the student rewrites a `for...in` mistake to `Object.entries` + `for...of`. Close with a `code-review` exercise: a 12-line function with two nested-if levels and a `for...in`, refactored to guard clauses plus `for...of` plus a `switch`. The refactor is the lesson's confirmation.
-
-Estimated student time: 35 to 40 minutes.
-
----
-
-## Lesson 5 — The null-safe operator trio
-
-Teaches `?.` for nullable access at each chain link, `??` over `||` for defaults (with the `0` / `''` / `false` trap), and `??=` for lazy initialization, plus the operator-precedence rules that force parentheses.
-
-Topics to cover:
-
-- The senior question. Two bugs from the same root. First, a defensive chain `if (user && user.profile && user.profile.address) { ... }` that the team writes once per page until someone reaches for optional chaining. Second, a `const pageSize = input.pageSize || 20` that silently overrides a deliberately-set `0`. Both are nullish-vs-falsy bugs and both get fixed by reaching for the right operator out of a trio of three.
-- `?.` for safe property and call access. The full surface: `user?.profile?.address?.city` short-circuits to `undefined` at the first nullish link. `user?.greet()` calls only if `user` is not nullish; `arr?.[0]` indexes only if `arr` is not nullish. The rule: each `?.` checks the value before it for null/undefined; placing it once at the start is not enough — `a?.b.c` still throws if `b` is nullish. The senior reflex: question-dot at every link that could be missing.
-- The watch-out on overuse. `?.` sprinkled across a chain that should never have a missing link silently swallows the bug. If `user.profile` is required by the type, writing `user.profile?.address` invites a bug where `profile` becomes nullable later and the chain quietly returns `undefined` instead of failing fast. The rule: use `?.` where the type acknowledges the nullable; let TypeScript fail at the call site otherwise. Forward link to lesson 6 of chapter 008 narrowing.
-- `??` over `||` for defaults. The exact distinction: `||` returns the right operand for any *falsy* left (`0`, `''`, `false`, `null`, `undefined`, `NaN`); `??` returns the right operand only for *nullish* (`null` or `undefined`). The senior rule, stated once: **for "use a default when the value is missing," reach for `??`. `||` is for "use the right value when the left is truthy" — different semantics, narrower reach.**
-- The three concrete `||`-vs-`??` traps. `pageSize || 20` swaps `0` for `20`. `name || 'Anonymous'` swaps the empty string for `'Anonymous'`. `enabled || true` swaps `false` for `true`. Each is a real bug the student will ship once if they reach for `||` by reflex. The fix in all three is `??`.
-- `??=` for lazy initialization. The shape: `cache[key] ??= computeExpensiveValue(key)` assigns to `cache[key]` only if it's currently nullish. The payoff: one line, one read, one conditional write — the cache-or-compute pattern in three characters. The companion forms `||=` and `&&=` named in one sentence each; the course writes `??=` by reflex because nullish-not-falsy is almost always what the caller wants.
-- The operator-precedence rule that forces parentheses. JavaScript intentionally rejects `??` mixed with `||` or `&&` without parens — `a || b ?? c` is a syntax error. The reason the language did this: the precedence was ambiguous enough to ship bugs, and the spec authors picked "require explicit grouping" over "pick one and let half the readers get it wrong." The fix is one set of parens; the lesson states the rule once and moves on.
-- The `??` and Zod default interaction. Forward note in one sentence: Zod schemas with `.default(value)` apply the default during parse, before the value reaches the application. Most "default to 20 if missing" decisions should live at the schema boundary (Unit 7), not at the call site. `??` at the call site is the right reach for values that aren't passing through a schema — local state, derived values, lazy initialization.
-- Forward links. Zod `.default()` in Unit 7. React state initialization with `?? initialValue` in chapter 027. The `useState((init) => ...)` lazy form pairs with the `??=` mental model. One sentence each.
-
-What this lesson does not cover:
-
-- The full operator-precedence table. The student does not memorize it; they reach for parens when in doubt.
-- The TC39 short-circuit-with-side-effects subtleties. Not relevant to the senior surface.
-- The `void` operator. Named in one line as the legacy form to recognize; not used.
-- Truthiness as a broader concept — already named in lesson 2 of chapter 005 where `==` was forbidden.
-
-Pedagogical approach:
-
-Mechanics archetype with a strong Decision beat. Open with the two bugs (defensive chain and `pageSize || 20` swap) in adjacent snippets. State the trio: `?.` for nullable access, `??` for nullish-default, `??=` for lazy init. Walk each with one short snippet and one watch-out. The `||`-vs-`??` distinction lands as a `predict-output` exercise with six left-side inputs (`0`, `''`, `false`, `null`, `undefined`, `'value'`) crossed against both operators — the table makes the semantic difference unavoidable. Close with one `script-coding` block where the student writes a `getConfig(input)` function that uses `??` for three defaults and `?.` for an optional nested access, with tests catching the `0`-vs-undefined case. Offer a `SandboxCallout` for the operator-precedence rule — the student types `a || b ?? c` and watches the parser reject it.
-
-Estimated student time: 25 to 30 minutes.
-
----
-
-## Lesson 6 — Destructuring as the API call-shape
-
-Teaches object and array destructuring with rename, defaults, and rest, the signature-level destructure that React and server actions consume, and the destructure-then-rebuild pattern that prevents accidental field forwarding.
-
-Topics to cover:
-
-- The senior question. Two bugs from one root. First: a function takes an `options` object and forwards `options` wholesale to a downstream call (`callDownstream(options)`), and a new field added upstream silently leaks to a third-party API. Second: a React component prop destructure misses a field on rename, and the renamed variable shadows an outer binding the developer didn't realize they were using. Destructuring is the call-site shape; the lesson teaches the form *and* the failure modes the form prevents.
-- Object destructuring, the daily reach. The shape: `const { name, email } = user`. The four extensions:
-  - **Rename.** `const { name: customerName } = user` — pulls `user.name` into the local binding `customerName`. The trigger: the local context wants a different name than the field's name, often because the wider scope already has a `name`.
-  - **Default.** `const { pageSize = 20 } = options` — fires only when the field is `undefined` (the same semantics as parameter defaults from lesson 2 of chapter 006, since signature destructure is parameter default at the field level).
-  - **Combined rename and default.** `const { pageSize: limit = 20 } = options` — the senior form when the local binding wants a different name *and* a default. The order matters and reads in two passes: rename first, then default on the renamed binding.
-  - **Rest.** `const { id, ...rest } = user` — pulls `id` out into its own binding, collects every other field into `rest`. The senior reach for the destructure-then-rebuild pattern (below).
-- Array destructuring. `const [first, second] = arr`. The two daily reaches: positional unpacking (a `useState` tuple in React, an `Object.entries` pair), and skipping with the hole form (`const [, second] = arr`). The companion: `const [head, ...tail] = arr` for the head-and-rest split. Less common than object destructuring in SaaS code (most data is shaped, not positional), but load-bearing for `useState` and `useReducer` returns.
-- Signature-level destructure. The form most 2026 functions write: `function createUser({ name, email, admin = false }: { name: string; email: string; admin?: boolean })` (the inline object-type literal syntax, including the `?` optional modifier, is covered in lesson 2 of chapter 008; here the student reads the canonical shape). The payoff: the function's body reads the same names as the call site uses, the defaults live at the signature, and the type annotation reads adjacent. This is the shape Server Actions consume (`async function createInvoice({ customerId, amountCents }: CreateInvoiceInput)`), the shape React components consume (`function InvoiceRow({ invoice, onDelete }: InvoiceRowProps)`), and the shape every options-object function from lesson 2 of chapter 006 writes. Show it once as the canonical form.
-- The destructure-then-rebuild pattern. The "no accidental forwarding" reflex. When passing data to a downstream call, destructure exactly the fields needed and rebuild the object literal that goes downstream — never forward the original object wholesale. Example: a function receives `{ name, email, password, ...rest }` from a form submission and passes `{ name, email }` to the database (not `{ name, email, password }`, not the full object). The pattern is structural — a new field added upstream cannot reach the downstream call without the developer choosing to destructure it. Forward link to Server Actions and SQL injection: the same principle applies to which fields are passed to Drizzle's `insert()`.
-- The watch-out on nested destructure. `const { profile: { address: { city } } } = user` throws if `profile` or `address` is nullish. The fix isn't more nesting; it's `const city = user.profile?.address?.city` or destructuring with intermediate defaults. The course writes shallow destructures by default and reaches for optional chaining for nullable paths.
-- One sentence on the "destructure inside the body vs. signature" call. Both are legal. Signature destructure is the senior default for API-shaped functions. Body destructure (`const { x, y } = options;` on the first line) is the right reach when the same options object is used multiple times in the body and the parameter name itself needs to stay (`options`) for forwarding or logging.
-- Forward links. React props in chapter 026. Server Action input parsing in lesson 4 of chapter 034. The `useState` array destructure in lesson 1 of chapter 027. One sentence each.
-
-What this lesson does not cover:
-
-- Destructuring inside complex assignment patterns (`({ a, b } = obj)`). The parens-required form is named in one line; rare in modern code.
-- Property descriptors and the destructure interaction. Not relevant.
-- Symbol-keyed destructuring. Niche.
-
-Pedagogical approach:
-
-Mechanics archetype with a Pattern close. Open with the two bugs (wholesale forward, missed rename shadow) in short snippets. Walk the four extensions (rename, default, combined, rest) as four small adjacent code blocks with the same input object — the variation across the blocks is the lesson. Show the signature-level destructure in one full snippet labeled as the canonical Server Action / React prop shape. Walk the destructure-then-rebuild pattern with a before/after: a `createUser` that forwards wholesale (and leaks `password` to the audit log) versus one that destructures exactly the fields the audit log needs. The before/after lands the structural-enforcement point. Close with a `script-coding` block where the student writes `function summarize({ user, invoices })` taking a signature destructure, with rename and default applied, and tests confirming the behavior. Then one `Buckets` exercise sorting six destructure forms into "valid," "syntactically wrong," "throws at runtime if input field is nullish."
-
-Estimated student time: 25 to 30 minutes.
-
----
-
-## Lesson 7 — Closures: lexical capture by reference
-
-Teaches closures as lexical capture by reference (not by value), the stale-closure trap in async code, and the three production sites the model later explains: Server Actions, `useEffect` cleanups, and route-handler factories.
-
-Topics to cover:
-
-- The senior question. The student will ship the stale-closure bug at least once. The shape: a `setTimeout` callback fires with a `count` value from when the timer was set, not when it fired. A React `useEffect` cleanup runs with the props from the *previous* render. A Server Action references a `user` binding that the route handler captured at module load. All three are the same bug — a function captured a binding lexically, and the binding's value changed before the function ran. The lesson installs the mental model that makes those bugs predictable and the fix obvious.
-- The mechanics, stated once. A closure is a function paired with the lexical environment where it was defined. When the function runs, it sees the bindings (not the values) that were in scope at definition. The key word is **bindings** — the closure holds a reference to the variable, not a snapshot of its value. When the variable changes, the closure sees the new value. This is the same binding-vs-box distinction from lesson 1 of chapter 005, applied to scope chains.
-- The three components of the model.
-  - **Lexical.** Determined at write time, not at call time. The closure's captured scope is the scope it was *written in*, not the scope it's called from.
-  - **By reference, not by value.** The closure holds a reference to the binding. Reassigning the binding in the outer scope is visible to the closure on its next call. (`const` prevents the reassignment of the binding itself; mutation of the value the binding points to is still visible, which is the same rule as lesson 6 of chapter 005.)
-  - **The full environment, not just one variable.** A closure captures the whole enclosing scope's bindings, which means even bindings the function doesn't visibly use can keep memory alive — the GC won't reclaim them until the closure is dropped. This is the closures-and-memory-leak shape, named once.
-- The stale-closure trap in async code. One worked example: a function takes a list of items and sets a timeout per item. The naive version with `var i` (or a shared mutable counter) prints the same final value for every timeout. The fix is the `let`/`const` block-scope-per-iteration of `for...of` (which the language gives for free) — or, in older patterns, an IIFE per iteration. Show the bug, show the fix, name the rule: each callback wants its own captured binding.
-- The three 2026 production sites the model explains. Each is one paragraph, foreshadowing later units.
-  - **`useEffect` cleanups.** The cleanup function runs with the props and state from the render that *created* the effect, not the next one. When state changes between effect-create and cleanup-fire, the cleanup sees the old value. The senior reflex: reach for `useRef` for values the cleanup needs to read mutably, or include the value in the dependency array so the effect re-runs with fresh capture. Full treatment in chapter 028.
-  - **Server Action closures over request-time data.** A Server Action defined at module scope can't capture per-request state (no `user` from this request, no `cookies()` from this call) because the binding is captured at module load. The senior reflex: read request-time data *inside* the action, not before. Full treatment in lesson 4 of chapter 034.
-  - **Route-handler factories.** Higher-order functions that return route handlers — `const withAuth = (handler) => (req) => { ... handler(req) }` — close over the `handler` parameter and any factory-time config. The pattern is the foundation for the wrapper idioms in lesson 7 of chapter 009 (`safeAction`, `requireRole`). Full treatment in Unit chapter 036 and the wrappers chapter.
-- One paragraph on closures as a deliberate design tool. Closures are *the* mechanism for hiding state behind a function boundary (a counter that returns a value and increments internally), composing higher-order functions (`pipe`, `compose`, `memoize`), and building partially-applied helpers. The course's reaches are functional, not OOP — most "private state" in 2026 SaaS code lives in a module's lexical scope, not in a class field, and that works because closures make it work.
-- The cleanup discipline. Closures keep their environment alive — when the closure is dropped (no more references), the GC reclaims. The two sites this matters: long-lived event listeners and timers that capture large objects (covered fully with `AbortController` in lesson 4 of chapter 011 and lesson 3 of chapter 018), and React effects that don't run their cleanup (covered in chapter 028). The student doesn't need to memorize GC mechanics; they need to know that a forgotten closure is a forgotten memory leak.
-- Forward links. `useEffect` and cleanup in lesson 2 of chapter 028. Server Action capture in lesson 4 of chapter 034. The `AbortController` cleanup idiom in lesson 4 of chapter 011. Higher-order wrappers in lesson 7 of chapter 009. One sentence each.
-
-What this lesson does not cover:
-
-- The execution-context internals (lexical environment record, scope chain at the spec level). Not the right mental model for the student; the binding-with-reference framing is enough.
-- The interaction of closures with `this` in classes. Class-adjacent and outside the functional surface.
-- Closure-based encapsulation patterns from pre-module JS (the revealing module pattern). Superseded by ES modules.
-- Performance-tuning around closure allocation. Microoptimization; not on the senior path.
-
-Pedagogical approach:
-
-Concept archetype. The lesson is a model — the diagram and the trap come first, the production sites land second. Open with the stale-closure-in-setTimeout snippet and its output, then the model in three sentences (lexical, by reference, full environment). Use a hand-authored SVG or Mermaid diagram showing one function definition with arrows to two outer bindings, then a call-site arrow into the function, with a callout on the binding-not-value point. Walk the stale-closure trap with a `script-coding` block where the student rewrites a `var`-based loop to `let`-based and watches the output change. The three production sites get one paragraph each — short, forward-linked, not deeply worked. Close with a `predict-output` exercise on four small closure scenarios (a counter factory, a delayed-fire timer set inside a loop, a Server-Action-shaped function that tries to capture per-request data at module scope, a `useEffect`-shaped function that references stale state). The predictions confirm the model installed.
+Pedagogical approach: Reference / survey archetype with one Decision opening. Open with the four-shape recognition framing in one paragraph — every import is one of four shapes, and the senior reads the shape before the contents. Walk the four shapes in tight code blocks, with one-line framing on what edge each draws into the graph. Show the type-only modifier next to the value-only modifier in adjacent snippets, then a paired snippet showing the value-import-of-a-type bug that `verbatimModuleSyntax` catches. Walk re-exports briefly. Then the bare-specifier resolution algorithm gets a small `ArrowDiagram` or annotated SVG showing the three sub-cases (`'react'`, `'next/cache'`, `'@/lib/db'`) resolved against their respective resolution rules — the diagram makes the algorithm concrete in one glance. Close with a `Buckets` exercise sorting twelve import statements ("`import { Button } from './ui/button'`," "`import 'server-only'`," "`import Page from './page'`," "`import type { User } from '@/lib/db'`," "`const m = await import('./heavy')`," "`import config from './config.json' with { type: 'json' }`," "`import { cookies } from 'next/headers'`," "`export { foo } from './mod'`," "`import { foo, type Bar } from './mod'`," "`import './styles.css'`," "`import 'client-only'`," "`import { sql } from 'drizzle-orm'`") into the four shapes plus type-only and re-export. The exercise is the recognition confirmation; no sandbox.
 
 Estimated student time: 30 to 35 minutes.
 
 ---
 
-## Lesson 8 — Quizz
+## Lesson 2 — Walking the graph: evaluation, live bindings, and the client bundle
+
+Teaches modules as a depth-first-evaluated directed graph with live-binding semantics, dynamic `import()` as a deferred edge that drives code splitting, and `"use client"` plus `import 'server-only'`/`'client-only'` as the module-graph rule that keeps server code out of the browser.
+
+Topics to cover:
+
+- The senior question. The student wrote two utility modules: `auth.ts` (calls the database, reads cookies) and `format.ts` (a pure date formatter). The bundle ships, and the user's browser downloads 800 KB of database driver code because a client component imported a helper that imported `auth.ts` for one type. The framing: every import is an edge in a graph, and the bundler walks that graph to decide what ships to the client. The lesson teaches the graph at the depth a SaaS engineer needs to predict that walk.
+- Modules as a directed graph. Nodes are files; edges are static `import` statements (and dynamic `import()` expressions, treated specially). The runtime (Node or the browser, via the bundler's output) walks the graph from the entry module, evaluating each node once, in **depth-first post-order** — a module's dependencies finish evaluating before the module's own top-level code runs. The student should leave with this picture: a tree-shaped traversal, leaves first, root last.
+- Live bindings, the ES-modules semantic. Imports are **bindings to the exporter's variable**, not copies of the value. If module A does `export let count = 0; export function increment() { count++ }` and module B does `import { count, increment } from './a'`, calling `increment()` from B updates the `count` B sees. The senior takeaway: ES modules pass variable references at the binding level, not values. Two consequences named.
+  - The `import` statement is not an assignment of a snapshot. Re-exports preserve the live binding too.
+  - This is one of the differences from CommonJS `require()`, which copies the value at the time of the require — named in one line for context, not taught at depth.
+- Circular dependencies. The graph framing makes the failure mode legible. When A imports B and B imports A, the runtime evaluates one of them first (depth-first from the entry); when the second one's top-level code runs, the first is still mid-evaluation, and any value the second tries to read from the first that hasn't been assigned yet is `undefined`. The compile-time vs. runtime split:
+  - **Type-only circular imports** are safe. `import type` is erased; the cycle exists in the type checker (where it's resolved cleanly) but not at runtime.
+  - **Value-level circular imports** are a bug class. Top-level usage of a not-yet-exported value crashes (or worse, silently uses `undefined`); function-body usage of the same value is fine because the function runs after both modules finish evaluating.
+  - The senior reflex: when a cycle appears, extract the shared types into a third module that neither side imports as a value. The pattern lands in Drizzle relations (Unit chapter 037) where this comes up regularly.
+- Dynamic `import()` as a deferred edge. Static imports draw an edge the bundler **must** include in the importing chunk; dynamic `import()` draws an edge the bundler **defers** into a separate chunk fetched on demand. The senior reach when:
+  - **A heavy module is rarely used.** A chart library (Recharts, `@nivo/*`) imported only in a settings page. Static import bloats the main bundle; dynamic import keeps it out until the page renders.
+  - **A module is conditionally used.** A locale-specific date-fns module loaded based on the user's locale. Static import would force all locales; dynamic import loads one.
+  - **Code-splitting at the route level is already automatic.** Next.js route segments split automatically — the student doesn't need dynamic `import()` for page-to-page splits, only for component-to-component or feature-flag splits inside a single page.
+- The Next.js `next/dynamic` wrapper. One paragraph: `next/dynamic` is a Next.js helper that wraps `React.lazy` with SSR controls (e.g., `ssr: false` for components that depend on browser APIs). The senior reach when the dynamic import is a React component the page renders inside Suspense. Forward link to Unit chapter 030 (client components and `next/dynamic` together). Named here so the student knows the wrapper exists; the depth lives where React components are taught.
+- The bundle boundary — the load-bearing 2026 rule.
+  - **`"use client"`** at the top of a file marks it as a client entry. Every module reachable from that file becomes part of the client bundle. Server code (database calls, secrets, `cookies()`, `headers()`) reached from a `"use client"` file is a build error or a security failure depending on enforcement.
+  - **`import 'server-only'`** at the top of a server-only module installs structural enforcement: if any client module ever reaches this file, the build fails with an explicit error. The reach for `env.ts` (so the server-only env keys can't leak), the Drizzle client, the auth handler, any file that touches secrets or the database. The cost is one line; the value is the build refuses to ship the bug.
+  - **`import 'client-only'`** is the mirror — installs enforcement that the module never enters a server-rendering path. The reach for code that touches `window`, `localStorage`, or a browser-only API and would crash in SSR. Less commonly needed than `'server-only'`; named for completeness.
+  - The pairing rule, stated plainly. **`env.ts` imports `'server-only'`.** The Drizzle client imports `'server-only'`. The auth handler imports `'server-only'`. The chapter installs this discipline once; Unit chapter 030 enforces it across the App Router boundary.
+- The "looks fine, ships everything" trap. A short worked example. A `lib/utils.ts` file exports a pure `formatDate` and also a `getCurrentUser` that calls the database. A client component imports `formatDate`. Without enforcement, the bundler can pull `getCurrentUser`'s dependency chain into the client bundle because the file is reachable. The fix: split into `lib/format.ts` (pure, client-safe) and `lib/auth.ts` (`import 'server-only'`). The senior reflex: pure utilities live in their own files; anything that touches a server seam imports `'server-only'`.
+- The build-time vs. runtime split. The bundler resolves the graph at build time; the runtime evaluates it. Most bugs in this lesson are **build-time errors** when enforcement is on (good — the build refuses to ship), and **runtime errors or silent leaks** when enforcement is off (bad). The senior reflex is to install enforcement as early as possible.
+
+What this lesson does not cover:
+
+- The full server/client boundary at App Router depth (Unit chapter 030).
+- React Server Components rendering model, RSC payload, streaming (Unit chapter 030 and chapter 031).
+- Turbopack or esbuild internals (chunk-split algorithms, hoisting, etc.). Out of scope; the course teaches semantics, not bundler internals.
+- The `import.meta` surface (`import.meta.url`, `import.meta.glob`). Named once — Vite-ecosystem feature surfaced by some Next.js plugins; not a daily reach in 2026 Next.js code.
+- `import()` as a tool for breaking circular dependencies. The right fix is to extract shared modules; dynamic import as a circularity workaround is a smell.
+- Web Workers and `new Worker(new URL('./worker.ts', import.meta.url))`. Real 2026 surface but a niche; covered in Unit 19 (performance) if it earns a lesson.
+
+Pedagogical approach: Concept archetype with a Mermaid diagram at the center. Open with the 800-KB-bundle scenario in prose. Show the module graph as a small Mermaid diagram (4–6 nodes with directed edges, two of them marked `'server-only'`, one marked `"use client"`) and walk the depth-first evaluation order in adjacent prose. The diagram does the heavy lifting; the prose names what the picture shows. Walk live bindings with a 6-line paired snippet (the `count` and `increment` example) showing the binding semantics. Walk circular dependencies with a wrong-then-right example: A and B importing each other at the value level (crashes) versus extracting the shared type into a third module (resolves). Walk dynamic `import()` with one snippet showing the deferred edge and a one-line note that the bundler emits a separate chunk. The bundle-boundary section gets a paired snippet — the same `lib/utils.ts` file before and after the `'server-only'`-split fix — with explicit annotations on which file is now reachable from a client component. Use a `script-coding` exercise where the student is given a 4-file graph with one circular dependency and one server-leak; they refactor to fix both. Close with a `PredictOutput`-style exercise: given five snippets (one circular cycle, one live-binding mutation, one `'use client'` file importing `'server-only'`, one dynamic-import code split, one type-only circular import), the student predicts whether each succeeds or fails at build/runtime.
+
+Estimated student time: 40 to 50 minutes.
+
+---
+
+## Lesson 3 — Top-level await vs. lazy init
+
+Teaches top-level `await` as a graph-level change that turns every upstream consumer async, the canonical `env.ts` shape, and the senior call between top-level await for cheap startup validation and a lazy `getDb()` for expensive or conditional setup.
+
+Topics to cover:
+
+- The senior question. A module needs to do work before it can export — validate env vars, open a database connection, read a remote config. Two patterns are available: **top-level await** (the module's top-level code waits for a promise before evaluation completes, all consumers wait too) or **lazy init** (a getter function that does the work on first call). The lesson teaches the trade-off and names the canonical SaaS sites for each.
+- Top-level await — the graph-level change. ES modules allow `await` at the top level outside any `async` function. The runtime guarantees the module's exports are available only after the top-level promise resolves, and every upstream consumer that statically imports this module becomes implicitly async (the consumer's top-level code waits too). The senior takeaway: **adding a top-level await to a leaf module makes every module in the graph above it wait.** This is fine when the wait is cheap and the work is mandatory; it's wrong when the wait is expensive or conditional.
+- The canonical site: `env.ts` validation. The starter's `env.ts` (taught in lesson 2 of chapter 037) uses `@t3-oss/env-nextjs` and Zod. The package fires synchronously at module load — no top-level await needed. Named here so the student sees the pattern in context: the env validation is the **right shape** for top-level work (cheap, mandatory, deterministic) but happens to be synchronous, so the question of `await` doesn't arise. The lesson uses `env.ts` as the canonical shape for "validate at module load, fail closed."
+- When top-level await earns its weight. The trigger: the module exports a value that requires an async call to produce, and every consumer needs that value to exist. Two concrete sites:
+  - **A remote config loader.** A module that fetches feature-flag config from a service at startup and exports the resolved values. Every consumer reads the resolved flags; the wait is mandatory.
+  - **A pre-warmed certificate or signing key.** A module that loads a signing key from a secret manager and exports a configured signer. The signer can't function without the key; the wait is mandatory.
+- Lazy init — the alternative. The module exports a function (`getDb()`, `getStripe()`) that, on first call, does the setup work and caches the result. The senior reach when:
+  - **The setup is expensive.** Opening a database connection pool, instantiating an SDK with retry config. A test that doesn't use the database shouldn't pay the cost.
+  - **The setup is conditional.** The Stripe SDK only initializes if the env var is set; the module gracefully exports a `null` or throws on use otherwise.
+  - **The module is imported in environments without the dependency.** A file that imports the auth handler from a CLI script doesn't need to spin up the auth handler.
+- The canonical `getDb()` shape. A module-level cached singleton:
+  - A `let cached: Database | null = null` at module scope.
+  - An exported `getDb()` function that returns `cached` if set, otherwise creates the connection, stores it, and returns it.
+  - One line of `import 'server-only'` at the top (from lesson 2 of chapter 006) so the client bundle can never reach this code.
+  - A brief note that in a serverless environment (Vercel functions, Cloudflare Workers), the cache is per-instance — cold starts pay the connection cost, warm starts reuse it. Forward link to Unit 5 for the database connection-pooling story.
+- The decision rule. State it plainly:
+  - **Top-level await** if the work is cheap, mandatory for every consumer, and synchronous-feeling (env validation, locale registry, log formatter setup).
+  - **Lazy init** if the work is expensive, conditional, or only needed by a subset of consumers (database client, Stripe SDK, Redis client, S3 client).
+  - The wrong reach: a top-level await for a database connection (every consumer pays the cost, even ones that never query); a lazy init for env validation (the bug doesn't surface until first request).
+- The cascading-async cost. A small mental model: if `featureFlags.ts` has a top-level await, then every module that imports it has an implicit top-level await, then every module that imports those has an implicit top-level await, all the way up to the entry. In a server-rendered Next.js page, this cascades into the page render — the page can't render until the chain of top-level awaits completes. The senior watch-out: top-level await for a slow remote call is a render-blocker. Two paragraphs on the impact, and the cut: top-level await is for **fast, deterministic** work.
+- The forward link to Unit 5 (database) and Unit 6 (Server Actions). The `getDb()` pattern lands again in Unit 5 with the Drizzle-specific shape; the lesson here teaches the **decision shape**, not the Drizzle wiring. Same for `getStripe()` in Unit 11.
+- Module-level singletons, the wider rule. The lazy-init pattern is one application of a broader rule: **stateful singletons that need setup are exposed through getters, not as top-level exports.** This protects the module graph from doing work eagerly and from doing work twice (the getter caches). Named once; the chapter doesn't generalize further.
+
+What this lesson does not cover:
+
+- Drizzle connection wiring, pool sizing, or serverless edge cases (Unit 5).
+- Stripe SDK initialization at depth (Unit 11).
+- The `async`/`await` mechanics themselves (lesson 3 of chapter 007 owns the semantics).
+- Module reset / hot-reload behaviors in dev. Next.js's hot reload handles module re-evaluation correctly for the patterns in this lesson; the student doesn't need to think about it.
+- Worker-thread or child-process module loading.
+
+Pedagogical approach: Decision archetype. Open with the two-pattern framing in one paragraph and a small decision-tree diagram (Mermaid flowchart) — three questions ("Is the work expensive?", "Is the work mandatory for every consumer?", "Is the work conditional on env or feature flags?") and the leaves landing on "top-level await" or "lazy init." Walk the cascading-async cost with a small Mermaid diagram showing three modules with arrows pointing up the import chain, the leaf marked `await`, and the implicit `await` propagating to each upstream node. Show the canonical `env.ts` shape (which is synchronous — that's the point) and the canonical `getDb()` shape side by side as adjacent labeled code blocks. Use a `Buckets` exercise sorting eight setup scenarios ("env var validation," "Postgres connection pool," "feature-flag registry from a remote service," "Stripe SDK init," "i18n locale messages," "Redis cache client," "JWT signing key from secret manager," "PostHog analytics client") into "top-level await," "lazy init," or "neither (synchronous at module load)." Close with a short `script-coding` exercise where the student rewrites a wrongly-eager `db.ts` (top-level `await createConnection()`) into the lazy `getDb()` shape and the tests verify no work happens at import time.
+
+Estimated student time: 30 to 35 minutes.
+
+---
+
+## Lesson 4 — Augmenting third-party modules
+
+Teaches the `declare module` pattern in dedicated `.d.ts` files to extend a published package's interfaces (Better Auth `Session`, Drizzle relations, `next-intl` messages) and tie branded IDs to the third-party session shape at the source.
+
+Topics to cover:
+
+- The senior question. The student set up Better Auth (Unit 8). The default `Session` type the package exports has a `user.id: string` field. The project's `UserId` is a branded type from lesson 4 of chapter 005. At every call site that reads `session.user.id` and needs to pass it to a function expecting `UserId`, the student is currently casting (`session.user.id as UserId`) or unbranding at the boundary. Both are wrong: the cast is a discipline that drifts, and the unbranding loses the safety the brand exists for. The fix is to **augment the third-party type at the source** so `session.user.id` is `UserId` everywhere it's read.
+- Module augmentation, the mechanism. TypeScript's `declare module` block, written in a `.d.ts` file the project owns, extends or merges into an existing module's type declarations. Two flavors named.
+  - **Interface merging.** For interfaces (and only interfaces — `type` aliases don't merge), the augmentation adds fields. `declare module 'better-auth' { interface Session { user: User & { id: UserId } } }` merges the `Session` interface, replacing or extending the `id` field's type.
+  - **Whole-module augmentation.** Adding new exports the package doesn't ship. Rare; the senior reach is to augment what exists, not invent new module surface.
+- The dedicated `.d.ts` file convention. Augmentations live in a project-owned file under `types/` or `src/types/` — `types/better-auth.d.ts`, `types/drizzle.d.ts`, `types/next-intl.d.ts`. Reasons:
+  - **One file per package.** Easy to find, easy to delete when the augmentation is no longer needed.
+  - **Outside the regular source tree.** The file is type-only; placing it in a dedicated directory makes the intent obvious and keeps it from being imported as a value module.
+  - **Included by `tsconfig.json` `include`.** lesson 4 of chapter 024's `include` array picks up `**/*.ts` and `.d.ts` files; the augmentation fires automatically.
+- The three canonical 2026 augmentation sites.
+  - **Better Auth's `Session`.** The library uses module augmentation (rather than generics) as its primary extension mechanism in 2026 because it keeps types clean across the app without threading generics through every helper. The course's augmentation: `interface Session { user: User & { id: UserId; orgId: OrgId; role: Role } }`, with a placeholder `type Role = 'owner' | 'admin' | 'member'` shown above the snippet (the real `Role` is wired in Unit 9's permissions config; here it's a stand-in so the augmentation reads cleanly). The result: `session.user.id` is `UserId`, `session.user.orgId` is `OrgId`, the role is the literal-union `Role` type from the permissions config. Every Server Action that reads the session gets the right types without casting. Forward link to Unit 8 (Better Auth setup) for the full pattern.
+  - **Drizzle relation inference.** Drizzle's `relations()` helper returns inferred types for the related rows; the augmentation pattern lets the project add convenience selectors or override widened relations with narrower branded types. The course's site: when Drizzle infers a relation as `User | undefined` and the application's query always joins it, the augmentation narrows to `User`. Forward link to chapter 037.
+  - **`next-intl` typed messages.** The i18n library reads message keys at runtime; the augmentation registers the project's messages JSON shape so `useTranslations('home')` and `t('title')` are autocompleted and type-checked. The pattern: `declare module 'next-intl' { interface AppConfig { Messages: typeof import('./messages/en.json') } }` (the exact shape depends on the `next-intl` version; the lesson teaches the **augmentation pattern**, not the specific config keys). Forward link to Unit chapter 084 (i18n).
+- The trigger that earns an augmentation. Three questions stated plainly.
+  - **Does the third-party type appear in five or more places without the augmentation?** Below that count, casting at the call site is faster and survives the augmentation's maintenance cost.
+  - **Does the augmentation tie a branded ID or domain type to the third-party shape?** The augmentation is the right reach when the cast would erase a brand the project authored.
+  - **Is the third-party type designed to be extended?** Better Auth, Auth.js, and `next-intl` document module augmentation as the extension mechanism. Augmenting a type the library treats as internal is a smell — the library can change the shape between minor versions and the augmentation breaks.
+- The wrong reach. Three anti-patterns named.
+  - **Augmenting to bypass a strict type.** If the library's type says `string | undefined` and the project augments to `string`, the augmentation is lying — the runtime can still be `undefined`. The fix is a narrow at the call site, not an augmentation.
+  - **Augmenting application types.** Augmentation is for third-party modules. The project's own types are owned by the project; edit them in place.
+  - **Augmenting `globalThis` to add ambient values.** Rare and almost always wrong in app code. The course's rule: every value enters through an import, not through global ambient declarations. Named once.
+- The build-time fire. The augmentation lands in the editor and the type checker immediately. A worked example: the student adds the Better Auth augmentation, opens an existing handler that reads `session.user.id`, and the editor now infers `UserId` instead of `string`. The student tries to pass `session.user.id` to a function expecting `OrgId` — the compiler refuses. The augmentation pays for itself the moment a downstream type catches a real mismatch.
+- The `import type` discipline inside `.d.ts` files. The augmentation file imports the project's branded-ID types at the top: `import type { UserId, OrgId, Role } from '@/types/ids'`. Type-only imports keep the `.d.ts` file free of runtime cost (it has none anyway — `.d.ts` files are pure types) and document that the file is exclusively type-level.
+
+What this lesson does not cover:
+
+- The full Better Auth configuration (Unit 8).
+- Drizzle's relation API at depth (Unit chapter 037).
+- `next-intl` setup, locale routing, or message authoring (Unit chapter 084).
+- Global type augmentation (`declare global { ... }`) — niche and often wrong; named once as the form to avoid.
+- Writing publishable library types with proper extension points (the inverse: how to design a library that wants to be augmented). Out of scope.
+- Patches to third-party `.d.ts` files via `pnpm patch`. The augmentation pattern handles the type story; runtime patches earn a different lesson if they earn one at all.
+
+Pedagogical approach: Pattern archetype. Open with the `session.user.id as UserId` bug — the cast that drifts and erases the brand — as a paired snippet. Walk the `declare module` shape in a tight code block, named clearly so the student recognizes the construct. Show the three canonical augmentation sites in three small adjacent code blocks: Better Auth `Session`, Drizzle relations, `next-intl` messages. The Better Auth example gets the most weight because it ties back to lesson 4 of chapter 005's branded IDs and is the load-bearing site every later auth lesson depends on. Use a `script-coding` exercise where the student is given a stub `better-auth` module export and a partial `Session` interface; they write the `declare module` block in a `.d.ts` file that adds branded `UserId` and `OrgId` to the session, and the test verifies the augmentation fires (the type checker now refuses a mismatched call). Close with a `Buckets` exercise sorting six "should I augment?" scenarios ("Better Auth `Session.user.id` should be `UserId`," "my own `User` type needs an `email` field," "the library returns `string | undefined` and I want it to be `string`," "`next-intl` should know about my messages JSON," "the global `window` needs a `dataLayer` property," "Drizzle infers a relation as nullable but my query never returns null") into "augment," "don't augment," or "narrow at the call site instead."
+
+Estimated student time: 30 to 35 minutes.
+
+---
+
+## Lesson 5 — Quizz
 
 Top 10 topics to quiz:
 
-1. Arrow `const` as the 2026 default and the three triggers that earn a `function` declaration (hoisting, named recursion, type-guard / assertion signatures).
-2. The two-positional-parameter rule and the options-object pattern with field-level defaults.
-3. Parameter defaults fire only on `undefined` — not on `null`, `0`, `''`, or `false`.
-4. Rest parameters at the signature vs. spread at the call site.
-5. The four naming surfaces (variable, function, parameter, type) and the boolean-prefix convention (`is*`, `has*`, `can*`, `should*`).
-6. The three bad-name classes (implementation-leaking, vague abstractions, negated booleans).
-7. Guard clauses plus "no else after return" as the senior flat-control-flow form.
-8. `switch` with `noFallthroughCasesInSwitch` and `assertNever` as the compile-time exhaustiveness pattern.
-9. `??` over `||` and the `0` / `''` / `false` trap; `?.` at every nullable link; `??=` for lazy initialization.
-10. Closures as lexical capture by reference, the stale-closure trap, and the three production sites (Server Actions, `useEffect` cleanups, route-handler factories).
+1. The four import-export shapes (named, default, side-effecting, dynamic) with the trigger for each, and the senior cut that defaults to named everywhere the framework doesn't demand otherwise.
+2. The `import type` discipline under `verbatimModuleSyntax`, the inline `type` modifier, and the side-effect-erasure bug class the flag prevents.
+3. Bare specifier resolution: package names resolved via `exports`, subpath imports gated by the `exports` field, and `@/*` path aliases resolved through `tsconfig.json` `paths`.
+4. Modules as a depth-first-evaluated directed graph with live bindings — the import is a reference to the exporter's variable, not a snapshot of its value.
+5. Circular dependencies: when they crash at runtime, when they resolve cleanly, and the type-only-import escape hatch for circular type references.
+6. Dynamic `import()` as a deferred edge that drives code splitting, with the senior trigger (heavy + rarely used, or conditional) and the Next.js `next/dynamic` wrapper.
+7. The `"use client"` directive plus `import 'server-only'` and `import 'client-only'` as the structural enforcement that keeps server code out of the browser bundle.
+8. Top-level await vs. lazy init: the cascading-async cost of top-level await, and the canonical `env.ts` (mandatory + cheap) vs. `getDb()` (expensive + conditional) shapes.
+9. Module-level singleton patterns: the cached-getter shape with `import 'server-only'`, and the per-instance cache reality in serverless environments.
+10. The `declare module` augmentation pattern in dedicated `.d.ts` files: interface merging for Better Auth `Session`, Drizzle relations, and `next-intl` messages, with the trigger that earns an augmentation over a call-site cast.
 
 ---
 
 ## Total chapter time
 
-Roughly 190 to 225 minutes across the seven content lessons plus the quiz. The chapter splits naturally across two evenings — lesson 1 of chapter 006 + lesson 2 of chapter 006 + lesson 3 of chapter 006 (the function-shape spine) as one sitting, lesson 4 of chapter 006 + lesson 5 of chapter 006 + lesson 6 of chapter 006 + lesson 7 of chapter 006 (the operator and capture surface) as the second. The quiz is the closing 15 to 20 minutes. At the end the student writes functions any 2026 reviewer would accept the first time — arrow `const` by default, options-object past two params, intent-revealing names, flat control flow, `??` over `||`, signature-level destructure, closures used deliberately — and recognizes the bug class each form prevents.
+Roughly 130 to 155 minutes across the four content lessons plus the quiz. The chapter splits naturally across two evenings — lesson 1 of chapter 006 + lesson 2 of chapter 006 (import shapes and the graph) as one sitting since they share a mental model, lesson 3 of chapter 006 + lesson 4 of chapter 006 (the boundary-file patterns: lazy init and module augmentation) plus the quiz as the second. At the end the student can read any file as a node in a typed graph with predictable edges, write the four import shapes with the right type-only discipline, defer a heavy module with dynamic `import()`, place `'server-only'` at every secret-touching seam, decide between top-level await and lazy init for a new setup task, and augment a third-party module to carry the project's branded IDs through its session shape. Chapter 007 lands on this floor and starts teaching async semantics without re-explaining what a module is.

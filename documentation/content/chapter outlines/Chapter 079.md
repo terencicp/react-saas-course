@@ -1,319 +1,365 @@
-# Chapter 079 — Project: Upstash rate limits on the auth surface
+# Chapter 079 — Project: routed customer wizard with Zustand
 
 ## Chapter framing
 
-Chapter 079 cashes in chapter 078 — the public-URL-plus-auth trigger (lesson 1 of chapter 078), the Upstash primitives and sliding-window default (lesson 2 of chapter 078), the three module-scope limiters, dual-keying, `RateLimit-*` headers, user-safe 429 body, fail-open policy, and the Better-Auth-built-in replacement (lesson 3 of chapter 078) — as one runnable surface on the chapter 059 email+password auth flows. The student writes `lib/rate-limit.ts` (three module-scope `Ratelimit` instances), `lib/keys.ts` (`getClientIp`, `normalizeEmail`), `safeLimit(limiter, key)` (fail-open wrapper), `rateLimitHeaders(result)` (IETF-draft headers), and wraps sign-in / sign-up / reset at the action seam — sign-in with per-IP **and** per-email dual gates. Better Auth's built-in limiter is turned off. Each build closes runnable: lesson 3 of chapter 079 ends with limiters declared and the inspector's "Remaining tokens" panel live; lesson 4 of chapter 079 ends with the three endpoints wrapped and 429s firing with correct headers and body; lesson 5 of chapter 079 walks "Done when" against the inspector and the Upstash dashboard.
+Chapter 079 cashes in the three-trigger funnel (lesson 1 of chapter 078), the v5 primitives (lesson 2 of chapter 078), and the worked-screen framing (lesson 3 of chapter 078) as one runnable four-step "new customer" wizard on top of the Unit chapter 062 customers surface. The student builds the per-feature store with four slices (contact / billing / preferences / meta), the `useRef`-pinned `WizardStoreProvider` on the shared `/customers/new` layout, the typed `useWizardStore<T>(selector)` hook, per-step Zod schemas shared client and server side, each step's form wired with atomic selectors, the Next-gate validation that runs `safeParse` on the current slice on every keystroke, the step-4 review that reads all three preceding slices, the `createCustomerAction` Server Action that re-parses the composite payload at the boundary, and the success-reset + redirect path. Each build slice closes on a runnable state: lesson 3 of chapter 079 ends with the store + provider + typed hook live so step 1's route loads with empty form values from the store; lesson 4 of chapter 079 ends with each step's form writing into its slice with field-level errors and the Next-gate gating per validity; lesson 5 of chapter 079 ends with the step-4 review submit firing the action and redirecting on success; lesson 6 of chapter 079 walks the "Done when" clause-by-clause.
 
-Threads through every lesson: the limiter is a named seam — call sites import from `lib/rate-limit.ts`, never construct inline; module-scope declaration is load-bearing (the in-memory `ephemeralCache` only survives across hot invocations when the instance is reused); sign-in runs two `limit()` calls — `ip:<addr>` and `email:<normalized>`, both must pass, cheaper first; gating runs **before** the password hash and the database lookup; the 429 body is identical regardless of which gate tripped (no information leak); `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` ship on every response, `Retry-After` added on rejection; `pending` analytics handed to `after()` (from `next/server`) so the user response is not blocked; `safeLimit` wraps every `limit()` call so a Redis outage logs a structured event and fail-opens on the auth path; Better Auth's built-in `rateLimit: { enabled: false }` — replacing the in-memory limiter with the application-level limiter is the architectural point; the inspector's "Spam X" buttons hammer endpoints deterministically so the 11th-as-429-with-headers is the on-page reading every verify step uses.
+Threads through every lesson: Zustand is **per-feature and client-only** — the store lives under `src/lib/wizard/`, is imported nowhere outside the four step pages and the shared layout, and never crosses into a Server Component or Server Action body; the store factory uses `createStore` from `zustand/vanilla` not `create` — the per-request leak from lesson 2 of chapter 078 is the load-bearing reason; the `WizardStoreProvider` sits on the shared `/customers/new` layout (not on each step page — the canonical mistake) so back/forward navigation preserves state across the four route segments; selectors are atomic at the call site — components subscribe to the field or action they read, not the whole slice, and `useShallow` is reserved for the review step's mapped pick; each step's Zod schema is the single source of truth — the same `contactSchema` parses the slice at the Next-gate (client) and parses the composite payload at the action (server); refresh loses the store and this is the explicit product call named on the screen and in the verify recipe — anything that must survive refresh would need server-side draft persistence (out of scope); the submit boundary is a Server Action, the store does not insert; reset fires after submit-success (and is named once for sign-out and org-switch as the future tenancy boundary).
 
 ### Dependency carry-in
 
-- **From chapter 059:** Better Auth catch-all at `app/api/auth/[...all]/route.ts`; the `auth` instance in `src/lib/auth.ts` with email+password, verification, reset; `sendVerificationEmail` / `sendResetPasswordEmail` wired to `lib/email.ts` (mocked — bumps `MOCK_EMAIL_SENT_COUNT`); `proxy.ts` gate; `/dashboard`; sign-out action; seeded `alice@example.com` with a known password.
-- **From lesson 1 of chapter 057 / lesson 2 of chapter 057 / lesson 4 of chapter 057:** `auth.api.signUpEmail`, `auth.api.signInEmail`, `auth.api.forgetPassword` — the student wraps these at the action boundary.
-- **From lesson 1 of chapter 078:** the public-URL-plus-auth trigger; two-layer architecture (edge WAF + application limiter); fail-open-on-auth policy.
-- **From lesson 2 of chapter 078:** `Redis.fromEnv()`; the `Ratelimit` constructor (`redis`, `limiter`, `prefix`, `analytics`); `Ratelimit.slidingWindow(max, window)`; `{ success, limit, remaining, reset, pending }` shape; IETF `RateLimit-*` headers; module-scope rule; `ephemeralCache`.
-- **From lesson 3 of chapter 078:** dual-keying (`ip:` and `email:` prefixes through one limiter); gate-before-work; user-safe 429 body; `safeLimit` fail-open; Better-Auth-built-in replacement; `getClientIp`; `normalizeEmail` (trim + lowercase, no `+` strip).
-- **From chapter 045 (origin lesson 5 of chapter 004):** `src/env.ts` with Zod-validated env — extended with `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
-- **From chapter 047 + chapter 051:** Result shape, Zod 4 `strictObject` at the action boundary, `'use server'`.
-- **From chapter 013:** `RateLimitError` subclass (`RATE_LIMITED`).
-- **From chapter 096 (foreshadowed):** structured log shape `{ event: 'rate_limit_rejected' | 'rate_limit_unavailable', limiter, key, remaining, reset }`.
+- **From chapter 062:** the toolbar / table / pagination pattern reused in the starter's `app/(app)/customers/page.tsx`, which is provided as a thin clone of chapter 062's invoices surface.
+- **From chapter 059:** `tenantDb(orgId)`, `authedAction(role, schema, fn)`, the active-org session slot, `logAudit(tx, event)`.
+- **From chapter 041:** `customers` table (`id uuid pk`, `organizationId uuid fk`, `name`, `email`, `createdAt`). chapter 079 ships a migration that adds `phone`, `line1`, `line2`, `city`, `region`, `postalCode`, `country`, `taxId`, `paymentTerms`, `defaultCurrency`, `language`, `notificationChannels jsonb` to match the four-slice payload.
+- **From chapter 042 / chapter 043:** Zod 4 `strictObject`, canonical Result `{ ok: true, data } | { ok: false, error }`, `useActionState` (named but not used here — see lesson 5 of chapter 079's alternative-rejected note).
+- **From chapter 047 + chapter 059 + chapter 062:** Server Action wrapper pattern, audit-log write on customer creation.
+- **From lesson 1 of chapter 078:** the three-trigger funnel and the wizard as the case that clears it.
+- **From lesson 2 of chapter 078:** `createStore` from `zustand/vanilla`, `StateCreator<Store, Mws, Mws, Slice>` typed slice factory, atomic selectors as default, `useShallow` from `zustand/react/shallow` for mapped picks, the `useRef`-pinned provider, the typed `useStore(store, selector)` hook, the explicit `reset()` action.
+- **From lesson 3 of chapter 078:** the four-slice shape, per-step Zod contract, Server-Action submit boundary, back/forward preserves vs. refresh loses as the senior call.
 
 ### Starter file tree (stubs marked with TODO)
 
 ```
 docker-compose.yml              # provided: postgres:18
 drizzle.config.ts               # provided
-.env.example                    # provided: DATABASE_URL, BETTER_AUTH_SECRET, BETTER_AUTH_URL,
-                                #           RESEND_API_KEY, APP_URL,
-                                #           UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN
-package.json                    # provided: db:migrate, db:seed, dev, build
-scripts/
-  seed.ts                       # provided: alice@example.com + bob@example.com (verified, known
-                                #           passwords); eve@example.com (password-reset target)
+next.config.ts                  # provided: cacheComponents: true
+.env.example                    # provided (no new entries)
+package.json                    # provided: zustand@^5 added over chapter 062
+scripts/seed.ts                 # provided: 2 orgs, 4 users, 60 invoices + 8 customers per org
 src/
-  env.ts                        # provided; TODO student adds the two Upstash entries
   db/
-    schema.ts                   # provided: Better Auth's four core tables
+    schema.ts                   # provided: chapter 041 customers table + chapter 079 migration
+                                #           adding phone, line1, line2, city, region,
+                                #           postalCode, country, taxId, paymentTerms,
+                                #           defaultCurrency, language,
+                                #           notificationChannels jsonb
     client.ts                   # provided
   lib/
-    auth.ts                     # provided from chapter 059; TODO student disables built-in rateLimit
-    auth-client.ts              # provided
-    email.ts                    # provided: mocked in inspector mode (MOCK_EMAIL_SENT_COUNT)
-    redis.ts                    # TODO student: Redis.fromEnv() one-liner
-    rate-limit.ts               # TODO student: three Ratelimit instances
-    keys.ts                     # TODO student: getClientIp + normalizeEmail
-    safe-limit.ts               # TODO student: fail-open wrapper + structured log
-    rate-limit-headers.ts       # TODO student: rateLimitHeaders + rateLimitedResponse
-    rate-limit-log.ts           # provided: logRateLimit helper writing to rate_limit_log
-    errors.ts                   # provided: RateLimitError subclass (chapter 013)
-  app/
-    (auth)/
-      sign-in/page.tsx          # provided shell from chapter 059
-      sign-in/actions.ts        # provided from chapter 059; TODO student wraps with dual-keying
-      sign-up/page.tsx          # provided shell
-      sign-up/actions.ts        # provided from chapter 059; TODO student wraps per-IP
-      reset/page.tsx            # provided shell
-      reset/actions.ts          # provided shell; TODO student wraps per-IP + per-email
-    api/
-      auth/[...all]/route.ts    # provided: Better Auth catch-all (NOT wrapped — limits land
-                                #           at the action seam that calls auth.api.* directly)
-    inspector/page.tsx          # provided: "Spam X" + "Send one" buttons, "Remaining tokens"
-                                #           panel, recent-responses log, "Force Upstash down"
-                                #           toggle, structured-log tail, failure-mode toggles
-                                #           (gate-after-work, disable-per-email, distinct-429),
-                                #           Upstash-dashboard link, reset-counters action
+    tenant-db.ts                # provided (chapter 056)
+    authed-action.ts            # provided (chapter 057)
+    audit-log.ts                # provided
+    wizard/
+      types.ts                  # TODO: WizardState = ContactSlice & BillingSlice
+                                #       & PreferencesSlice & MetaSlice
+      schemas.ts                # provided: contactSchema, billingSchema,
+                                #           preferencesSchema, createCustomerInput
+      contact-slice.ts          # TODO: StateCreator + setters + validate()
+      billing-slice.ts          # TODO: same shape
+      preferences-slice.ts      # TODO: same shape
+      meta-slice.ts             # TODO: currentStep, completedSteps, goNext,
+                                #       goBack, markStepComplete, reset
+      store.ts                  # TODO: createWizardStore() factory composing
+                                #       four slices via createStore (vanilla)
+      store-provider.tsx        # TODO: 'use client'; useRef-pinned store +
+                                #       React context provider
+      use-wizard-store.ts       # TODO: typed useWizardStore<T>(selector) hook
+      actions.ts                # TODO: createCustomerAction (authedAction +
+                                #       composite Zod + insert + audit log)
+  app/(app)/customers/
+    new/
+      layout.tsx                # provided shell; TODO: wrap in <WizardStoreProvider>
+      progress.tsx              # provided: reads currentStep + completedSteps
+      footer.tsx                # provided shell; TODO: Back/Next reading isValid
+      step-1/page.tsx           # provided shell; TODO: contact form fields
+      step-2/page.tsx           # provided shell; TODO: billing form fields
+      step-3/page.tsx           # provided shell; TODO: preferences fields
+      step-4/page.tsx           # provided shell; TODO: review via useShallow
+      step-4/submit-button.tsx  # TODO: 'use client'; isPending guard, calls
+                                #       action, resets store, router.push on ok
+  app/inspector/page.tsx        # provided: session+org switcher, store-snapshot
+                                #           panel via wizard iframe + postMessage,
+                                #           "Force action failure" toggle, "Force
+                                #           double-submit" button, "Reset store",
+                                #           "Refresh wizard", audit-log tail,
+                                #           re-render-counter panel
 ```
 
 ### Reference solution signatures lessons display
 
-- **Redis client** (`src/lib/redis.ts`): `export const redis = Redis.fromEnv();` — one line. The `env.ts` validation ensures URL/token exist before this module loads.
-- **Three limiters** (`src/lib/rate-limit.ts`), all at module scope, all with `analytics: true` and per-limiter `ephemeralCache: new Map()`:
-  - `signInLimiter = new Ratelimit({ redis, limiter: Ratelimit.slidingWindow(10, '1 m'), prefix: 'rl:signin', ... })`.
-  - `signUpLimiter = new Ratelimit({ redis, limiter: Ratelimit.slidingWindow(5, '10 m'), prefix: 'rl:signup', ... })`.
-  - `resetLimiter = new Ratelimit({ redis, limiter: Ratelimit.slidingWindow(3, '15 m'), prefix: 'rl:reset', ... })`.
-  - Distinct prefixes namespace keys in Redis.
-- **Key parse helpers** (`src/lib/keys.ts`):
-  - `getClientIp(headers: Headers): string` — read `x-forwarded-for`, split on `,`, trim, return first; fall back to `x-real-ip`; fall back to `'unknown'`. Trust boundary noted in prose.
-  - `normalizeEmail(email: string): string` — `email.trim().toLowerCase()`. No `+`-alias stripping (lesson 3 of chapter 078).
-- **Safe-limit wrapper** (`src/lib/safe-limit.ts`):
-  - `safeLimit(limiter, key): Promise<RatelimitResponse>` — `try { return await limiter.limit(key); } catch (err) { logRateLimit({ event: 'rate_limit_unavailable', limiter: limiter.prefix, key }); return { success: true, limit: 0, remaining: 0, reset: 0, pending: Promise.resolve() }; }`.
-  - The fail-open policy is the one-place decision; flipping to fail-closed is a one-line change here.
-- **Header helpers** (`src/lib/rate-limit-headers.ts`):
-  - `rateLimitHeaders(result)` — `{ 'RateLimit-Limit', 'RateLimit-Remaining', 'RateLimit-Reset' }` (Reset as delta-seconds via `Math.ceil((result.reset - Date.now()) / 1000)`).
-  - `rateLimitedResponse(result): Response` — 429, the three headers plus `Retry-After: <delta-seconds>`, body `{"error":"Too many attempts. Please try again later."}`. Identical body regardless of gate.
-- **Sign-in action** (`src/app/(auth)/sign-in/actions.ts`): `signInAction(state, formData)` returning `Result<never, 'invalid-credentials' | 'email-not-verified' | 'rate-limited'>` — Zod parse; resolve `ip` and `email`; `ipLimit = await safeLimit(signInLimiter, 'ip:' + ip)`; on `!success` attach `rateLimitHeaders(ipLimit)` + `Retry-After` via Next.js 16's server-action `headers()` API and return `Result.err('rate-limited')`; same for `emailLimit = await safeLimit(signInLimiter, 'email:' + email)`; call `auth.api.signInEmail`; on success attach `rateLimitHeaders(ipLimit)` and `redirect(sanitizeNext(formData.get('next')) ?? '/dashboard')`. `after(ipLimit.pending)` + `after(emailLimit.pending)` flush analytics off-path (Next.js 16 `after()` from `next/server`).
-- **Sign-up action** (`src/app/(auth)/sign-up/actions.ts`): one `safeLimit(signUpLimiter, 'ip:' + ip)` gate, then `auth.api.signUpEmail`. Per-IP only — the email is the attacker's choice (lesson 3 of chapter 078).
-- **Reset action** (`src/app/(auth)/reset/actions.ts`): `safeLimit(resetLimiter, 'ip:' + ip)` then `safeLimit(resetLimiter, 'email:' + email)`; the per-email gate protects victim's inbox + Resend cost. Calls `auth.api.forgetPassword` on success.
-- **Better Auth built-in disabled** (`src/lib/auth.ts`): inside `betterAuth({...})`, set `rateLimit: { enabled: false }`. Application-level limiters at the action boundary are the one place.
-- **`env.ts` extension:** `UPSTASH_REDIS_REST_URL: z.string().url()`, `UPSTASH_REDIS_REST_TOKEN: z.string().min(1)`. Boot fails fast on missing vars.
+- **Store types** (`src/lib/wizard/types.ts`):
+  - `type ContactSlice = { contact: { firstName: string; lastName: string; email: string; phone: string }; setContactField: <K extends keyof ContactSlice['contact']>(k: K, v: ContactSlice['contact'][K]) => void; validateContact: () => z.SafeParseReturnType<...> }`.
+  - `BillingSlice` mirrors with `billing: { line1, line2, city, region, postalCode, country, taxId, paymentTerms: 'net15'|'net30'|'net60' }` + `setBillingField` + `validateBilling`.
+  - `PreferencesSlice` with `preferences: { channels: Array<'email'|'sms'|'inApp'>; defaultCurrency: string; language: 'en-US'|'en-GB'|'fr-FR' }` + `togglePreferenceChannel` + `setPreferenceField` + `validatePreferences`.
+  - `MetaSlice = { currentStep: 1|2|3|4; completedSteps: Set<1|2|3|4>; goNext(); goBack(); markStepComplete(s); reset() }`.
+  - `type WizardState = ContactSlice & BillingSlice & PreferencesSlice & MetaSlice`.
+- **Zod schemas** (provided): `contactSchema = z.strictObject({ firstName: z.string().min(1).max(80), lastName: …, email: z.string().email(), phone: z.string().min(7).max(20) })`; `billingSchema` with `paymentTerms: z.enum(['net15','net30','net60'])` and `country: z.string().length(2)`; `preferencesSchema` with `channels: z.array(z.enum([...])).min(1)`; `createCustomerInput = z.strictObject({ contact: contactSchema, billing: billingSchema, preferences: preferencesSchema })`.
+- **Contact slice** (`contact-slice.ts`): `export const createContactSlice: StateCreator<WizardState, [], [], ContactSlice> = (set, get) => ({ contact: {firstName: '', lastName: '', email: '', phone: ''}, setContactField: (k, v) => set((s) => ({ contact: {...s.contact, [k]: v} })), validateContact: () => contactSchema.safeParse(get().contact) })`.
+- **Store factory** (`store.ts`): `import { createStore } from 'zustand/vanilla'`; `export type WizardStore = ReturnType<typeof createWizardStore>`; `export const createWizardStore = (initial?: Partial<WizardState>) => createStore<WizardState>()((...a) => ({ ...createContactSlice(...a), ...createBillingSlice(...a), ...createPreferencesSlice(...a), ...createMetaSlice(...a), ...initial }))`.
+- **Provider** (`store-provider.tsx`): `'use client'`; `export const WizardStoreContext = createContext<WizardStore | null>(null)`; `export function WizardStoreProvider({ children }) { const ref = useRef<WizardStore | null>(null); if (ref.current === null) ref.current = createWizardStore(); return <WizardStoreContext.Provider value={ref.current}>{children}</WizardStoreContext.Provider> }`.
+- **Typed hook** (`use-wizard-store.ts`): `'use client'`; `import { useStore } from 'zustand'`; `export function useWizardStore<T>(selector: (s: WizardState) => T): T { const store = useContext(WizardStoreContext); if (!store) throw new Error('useWizardStore must be used inside WizardStoreProvider'); return useStore(store, selector) }`.
+- **Server Action** (`actions.ts`): `export const createCustomerAction = authedAction('member', createCustomerInput, async (input, ctx) => { try { const inserted = await tenantDb(ctx.orgId).transaction(async (tx) => { const [row] = await tx.insert(customers).values({ organizationId: ctx.orgId, name: \`${input.contact.firstName} ${input.contact.lastName}\`, email: input.contact.email, phone: input.contact.phone, ...input.billing, ...input.preferences }).returning(); await logAudit(tx, { action: 'customer.created', subjectType: 'customer', subjectId: row.id, actorUserId: ctx.user.id, orgId: ctx.orgId, payload: {} }); return row }); return { ok: true as const, data: { id: inserted.id } } } catch (e) { if ((e as { code?: string }).code === '23505') return Result.error({ code: 'conflict', userMessage: 'A customer with this email already exists in this organization.' }); throw e } })`.
+- **Layout** (`layout.tsx`): `import { WizardStoreProvider } from '@/lib/wizard/store-provider'`; renders `<WizardStoreProvider><WizardProgress />{children}<WizardFooter /></WizardStoreProvider>`.
+- **Atomic field selector** (in `step-1/page.tsx`): `'use client'`; `const firstName = useWizardStore((s) => s.contact.firstName); const setContactField = useWizardStore((s) => s.setContactField)`.
+- **Next-gate** (in `footer.tsx`): `const isValid = useWizardStore((s) => { if (s.currentStep === 1) return s.validateContact().success; if (s.currentStep === 2) return s.validateBilling().success; if (s.currentStep === 3) return s.validatePreferences().success; return true })`.
+- **Review with `useShallow`** (in `step-4/page.tsx`): `import { useShallow } from 'zustand/react/shallow'`; `const { contact, billing, preferences } = useWizardStore(useShallow((s) => ({ contact: s.contact, billing: s.billing, preferences: s.preferences })))`.
+- **Submit button** (`step-4/submit-button.tsx`): `'use client'`; reads slices via `useShallow`, `reset` action, `router` from `next/navigation`; `const [isPending, startTransition] = useTransition()`; `onSubmit = () => startTransition(async () => { const r = await createCustomerAction({...}); if (!r.ok) { setError(r.error.userMessage); return } reset(); router.push(\`/customers/${r.data.id}\`) })`; `<Button disabled={isPending} onClick={onSubmit}>Create customer</Button>`.
+- **Env entries:** unchanged from chapter 062.
 
 ### Inspector page spec
 
-Single Server Component at `/inspector`. Reads server-side from Upstash; refreshes via `router.refresh()` and Server Actions.
+Single Server Component at `/inspector`, the verification surface. The inspector is outside the wizard tree, so it does not mount the provider — it reads store snapshots through a small client component that opens the wizard in an iframe and broadcasts state via `postMessage` (starter ships this wiring; the student does not write it).
 
-- **Header:** session-user switcher (`alice` / `bob` / unauthenticated); "Reset Upstash counters" Server Action via a starter-provided `clearLimiterKeys()` helper — the inspector tracks touched keys in a `seen-keys` Redis set because Upstash REST has no `SCAN`.
-- **"Remaining tokens" panel:** live readouts for `rl:signin` (per-IP and per-email for the active identity), `rl:signup` (per-IP), `rl:reset` (per-IP and per-email). Each row shows `prefix`, `key`, `remaining`, `limit`, `reset` countdown. Reads via `limiter.getRemaining(key)` — no budget consumed.
-- **"Spam X" buttons:** "Spam sign-in" runs `signInAction` 11x against `alice` with a wrong password; "Spam sign-up" runs `signUpAction` 6x with random-suffix emails (per-IP is the gate); "Spam reset" runs `resetAction` 4x against `eve@example.com` (4th trips the per-email gate).
-- **"Send one" buttons:** non-spamming single-call versions of each endpoint — used in verify to walk request 1 through 11 and watch `RateLimit-Remaining` decline.
-- **Recent-responses log:** last 20 calls — `endpoint`, `status`, the three `RateLimit-*` headers, `Retry-After`, truncated body.
-- **"Force Upstash down" toggle:** when on, `lib/redis.ts` swaps to a mocked client that throws `UpstashConnectionError`. Verifies `safeLimit` fail-open — every call logs `rate_limit_unavailable` and the request proceeds.
-- **Structured-log tail:** Server Component reading the last 20 rows from `rate_limit_log` (`{ event, limiter, key, remaining, reset, firedAt }`). The operator-honest surface from lesson 3 of chapter 078.
-- **Failure-mode toggles:** "Gate after work" (runs `auth.api.signInEmail` **before** `safeLimit`); "Disable per-email gate" (skips the `email:` call — paired with a "Distinct IPs runner" that spoofs `x-forwarded-for`); "Distinct 429 bodies" (rejection body leaks "Email rate-limited" vs. "IP rate-limited").
-- **Upstash dashboard panel:** deep link to the project's Upstash console derived from the REST URL.
+- **Header:** session-user switcher (admin / member per org), org switcher (two seeded orgs).
+- **Store-snapshot panel:** live mirror of `currentStep`, `completedSteps`, and each slice's values, updating on every store change inside the iframed wizard. Used to verify atomic-selector re-render scoping (only the changed field flashes).
+- **"Force action failure" toggle:** when on, sets a server-side flag that makes the next `createCustomerAction` return `{ ok: false, error: { code: 'forced_failure', userMessage: 'Forced action failure for verification' } }` after a 200ms delay. Auto-clears. Verifies the store stays intact on failure.
+- **"Force double-submit" button:** triggers the wizard iframe's step-4 submit button twice 10ms apart via `postMessage` to verify the `isPending` guard.
+- **"Reset store" button:** broadcasts a reset message.
+- **"Refresh wizard" button:** force-reloads the wizard iframe.
+- **Audit-log tail:** last 20 `customer.created` rows in the active org.
+- **Re-render counter panel:** each step page broadcasts its render count via `postMessage`. Verifies atomic-selector surgical re-rendering.
 
-The inspector is provided in full; the student writes only `redis.ts`, `rate-limit.ts`, `keys.ts`, `safe-limit.ts`, `rate-limit-headers.ts`, and the three action wrappers.
+Student writes only `types.ts`, the four slice files, `store.ts`, `store-provider.tsx`, `use-wizard-store.ts`, `actions.ts`, the layout wrap, the footer wiring, the four step pages, and the submit button.
 
 ### Verify recipe mapped to "Done when"
 
 | Done-when clause | Verify step |
 | --- | --- |
-| 11th sign-in request from the same IP in 1 min returns 429 | "Spam sign-in" against `alice`. Log: requests 1-10 return 401 (Better Auth — wrong password) with `RateLimit-Remaining` counting 9 → 0; request 11 returns 429 with `Remaining: 0` and `Retry-After: <≤60>`. |
-| Same email from a different IP is throttled separately on the per-email gate | Spoof `x-forwarded-for`; "Send one" against `alice` ten times from the new IP. The per-IP gate stays fresh; the per-email gate counts down (same `alice@example.com`); the 11th from the new IP returns 429 with `key: 'email:alice@example.com'`. |
-| Response includes `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` | Every log entry shows all three; 429s also show `Retry-After`. |
-| 429 body is user-safe and identical | Every 429 body reads `{"error":"Too many attempts. Please try again later."}`. Toggle "Distinct 429 bodies" on — the leaky variants appear; toggle off. |
-| Window resets release tokens | After the 11th 429, wait until `Retry-After` reaches 0 (or "Reset counters"); send one → 401 again with `Remaining: 9`. |
-| Upstash dashboard shows the keys | Click the dashboard link → Data Browser → filter `rl:signin`; rows for `rl:signin:ip:<addr>` and `rl:signin:email:alice@example.com` present with TTLs ≤ 60s. Analytics tab shows the rejection blip. |
-| Sign-up rate-limited per-IP | "Spam sign-up" with 6 random-suffix emails; request 6 returns 429 — 5 successes used 5 different emails so per-IP is the gate. |
-| Reset rate-limited per-IP and per-email | "Spam reset" against `eve@example.com` 4 times; request 4 returns 429 (`limiter: 'reset'`, `key: 'email:eve@example.com'`). Switch IP; "Send one" → still 429 on the per-email gate. |
-| Gate runs before the password hash | Toggle "Gate after work" on; spam sign-in; the starter-provided `verify_ms` timing shows every request paying the hash even past the budget. Toggle off; the 11th+ requests skip the hash (verify_ms ≈ 0). |
-| Per-email gate closes the cross-IP credential-stuffing vector | Toggle "Disable per-email gate" on; "Distinct IPs runner" hits `alice` 10x from IP-A then 10x from IP-B — all 20 succeed reaching Better Auth. Toggle off; rerun — the 11th attempt overall trips the email gate regardless of source IP. |
-| Better Auth's built-in limiter is off | Grep `lib/auth.ts` — the only `rateLimit` entry is `{ enabled: false }`. |
-| Fail-open under Upstash outage | Toggle "Force Upstash down" on; spam sign-in 15x; every request goes through; structured-log tail shows 15 `rate_limit_unavailable` rows. Toggle off → normal behavior. |
-| Module-scope declaration | First request after cold start hits Redis (one round-trip per `limit()`); subsequent requests in the cache window hit `ephemeralCache` (zero Redis round-trips). Visible in the starter's request-trace panel. |
-| `pending` analytics flushed off-path | "Await pending instead of after()" toggle adds 5-10ms per call to the user-visible timing panel. |
-| Env validation gates Redis usage | Comment out `UPSTASH_REDIS_REST_URL`; restart dev → boot fails with the Zod error. Uncomment → boot succeeds. |
+| Filling step 1 then navigating to step 2 and back returns to step 1 with data intact | Type contact fields in step 1, Next to step 2, fill billing, Back. Step 1 still populated. Snapshot panel shows both slices. The provider on the shared layout is the structural reason — confirm in `layout.tsx`. |
+| Submit on step 4 fires the action with the composite payload | Complete all four steps with valid data. Click "Create customer". Network shows one Server-Action POST; response is `{ ok: true, data: { id } }`. Audit-log tail shows new `customer.created` row. Router pushes to `/customers/[newId]`. |
+| After submit, navigating back to step 1 shows the wizard reset | Click "New customer" or navigate to `/customers/new/step-1`. Fields empty. Snapshot shows initial slices, `currentStep: 1`, `completedSteps: empty`. Success-reset closed the loop. |
+| Refresh mid-flow loses state (the senior call) | Fill steps 1+2, advance to step 3, fill some. Inspector "Refresh wizard". Wizard reloads at step 1; snapshot empty. Confirm in `store.ts`: no `persist`. Refresh-loses is the explicit product decision. |
+| Double-submit on step 4 does not fire twice | Inspector "Force double-submit". Network shows one Server-Action POST, not two. Audit-log shows one `customer.created` row. The `isPending` from `useTransition` is the guard. |
+| The Next-gate disables until the current slice is valid | On step 1 with empty fields, Next disabled. Type valid firstName; still disabled. Fill every field; enables. Type invalid email; disables; field shows inline error. The selector subscribing to `validateContact().success` re-evaluates per keystroke. |
+| Same Zod schema validates client-side at gate and server-side at action | `step-1/page.tsx`'s field errors call `contactSchema.safeParse` via `validateContact`; `actions.ts` parses `createCustomerInput` which embeds `contactSchema` again. Single source in `schemas.ts`. Bypass: programmatic action call with malformed payload → `{ ok: false, error: { code: 'invalid-input' } }`. Store unchanged. |
+| Action failure does not wipe the draft | Inspector "Force action failure" ON. On step 4, click "Create customer". 200ms spinner then inline error banner under the button. Navigate back to step 1 — fields still populated, store intact. Compare to hypothetical `reset()`-in-`onError` bug: deliberately add `reset()` to error branch, repeat, observe wipe — revert. |
+| Atomic selectors keep re-renders surgical | Re-render-counter panel: focus step-1 firstName; type ten characters. firstName mirror counter increments by ten; siblings stay flat. Footer's `isValid` re-renders only when boolean flips. |
+| `useShallow` is used only on the review step | Grep `useShallow`. One hit: `step-4/page.tsx` (and possibly `submit-button.tsx` if combined). All other selectors atomic. |
+| Store is per-request and does not leak across sessions | Session A: fill step 1+2. Switch to session B; `/customers/new/step-1` empty. Then flip `STORE_MODULE_SCOPED` debug flag (swaps factory for module-scoped instance); repeat → session B sees session A's draft. Revert. |
+| Provider sits on shared layout, not each step page | `<WizardStoreProvider>` only in `layout.tsx`. Flip `PROVIDER_ON_STEP_PAGE` debug branch (moves into each `step-N/page.tsx`); navigate step 1 → 2 → 1; each navigation creates a fresh provider and the store resets. Revert. |
+| Reset fires after submit-success only | `submit-button.tsx`: `reset()` inside the success branch after `router.push`. Failure branch has no `reset()` — draft preserved on failure. |
+| Zustand scoped to the wizard surface only | Grep `useWizardStore`, `createWizardStore`, `WizardStoreProvider` across the codebase. Hits only under `src/lib/wizard/` and `app/(app)/customers/new/`. No leak into invoices, dashboard, or any other surface. |
+| No Server Component imports the store | Grep imports of `/lib/wizard/store` and `/lib/wizard/use-wizard-store` — only Client Components. The action file imports schemas, never the store. |
 
 ### Concepts demonstrated → owning lesson
 
-- Public-URL-plus-auth trigger and two-layer architecture — lesson 1 of chapter 078.
-- Upstash Redis as the 2026 default for the application limiter — lesson 1 of chapter 078.
-- `Redis.fromEnv()` and the connectionless HTTP/REST client — lesson 2 of chapter 078.
-- Module-scope `Ratelimit` declaration and `ephemeralCache` — lesson 2 of chapter 078.
-- Sliding-window as the default algorithm — lesson 2 of chapter 078.
-- `{ success, limit, remaining, reset, pending }` return shape — lesson 2 of chapter 078.
-- IETF `RateLimit-*` headers, `Retry-After` precedence — lesson 2 of chapter 078 + lesson 3 of chapter 078.
-- `prefix` namespacing and key design (`ip:` / `email:`) — lesson 2 of chapter 078 + lesson 3 of chapter 078.
-- Dual-keying rule on sign-in — lesson 3 of chapter 078.
-- Gate-before-work order — lesson 3 of chapter 078.
-- User-safe 429 body, operator-honest log — lesson 3 of chapter 078.
-- Fail-open policy via `safeLimit` — lesson 3 of chapter 078.
-- Replacing Better Auth's built-in limiter — lesson 3 of chapter 078.
-- `getClientIp` + `x-forwarded-for` trust boundary — lesson 3 of chapter 078.
-- `normalizeEmail` (trim + lowercase) — lesson 3 of chapter 078.
-- `after()` for `pending` analytics flush — lesson 2 of chapter 078 + Next.js 16 (chapter 034).
-- Zod-validated env — lesson 5 of chapter 004.
-- `RateLimitError` subclass — chapter 013.
+- Three-trigger funnel; wizard as the case that clears it — lesson 1 of chapter 078 + lesson 3 of chapter 078.
+- `createStore` from `zustand/vanilla` vs. `create`; cross-request leak as reason — lesson 2 of chapter 078.
+- `StateCreator<Store, Mws, Mws, Slice>` typed slice factory + composition — lesson 2 of chapter 078.
+- Atomic selectors as default subscription shape — lesson 2 of chapter 078.
+- `useShallow` for mapped picks (review step composite read) — lesson 2 of chapter 078.
+- `useRef`-pinned provider on App Router shared layout — lesson 2 of chapter 078 + lesson 3 of chapter 078.
+- Typed `useFooStore<T>(selector)` hook reading store from context — lesson 2 of chapter 078.
+- Zod-per-step contract; same schema at client gate and server action — chapter 042 + lesson 3 of chapter 078.
+- Server Action submit boundary; the store does not insert — chapter 043 + lesson 3 of chapter 078.
+- `useTransition` for submit pending state + double-submit guard — chapter 044.
+- `reset()` action and success-only reset; tenancy-boundary forward pointer — lesson 2 of chapter 078 + lesson 3 of chapter 078 + chapter 056.
+- Architectural Principle #6 — per-feature, named, never global ambient — lesson 1 of chapter 078 + lesson 2 of chapter 078.
+- Zod parse at action boundary with canonical Result — chapter 042 + chapter 043.
 
 ---
 
 ## Lesson 1 — Project brief
 
-Frames the build: wrap the chapter 059 sign-in, sign-up, and reset actions with three Upstash limiters, swap out Better Auth's built-in limiter, and verify the 11th-request 429 against the inspector and the Upstash dashboard.
+Frames the four-step routed customer wizard you will build on top of the chapter 062 customers surface, states the "Done when" clauses, and calls out the two structural decisions (shared-layout provider, vanilla `createStore`) that prevent the canonical bugs.
 
 Goals:
 
-- Frame the build: take the chapter 059 email+password auth surface and instrument sign-in, sign-up, and reset with `@upstash/ratelimit` at the action boundary. Sign-in carries the dual-keying rule. Better Auth's built-in limiter goes off. Every response carries `RateLimit-*` headers; rejections add `Retry-After`. A Redis outage fails open and logs alertable events. Show one screenshot of `/inspector` after a finished "Spam sign-in": the recent-responses log with ten 401s counting `RateLimit-Remaining` 9 → 0 and the 11th flipping to 429 with `Retry-After`.
-- State the "Done when" in one paragraph: hammering sign-in with 11 requests from the same IP in a minute returns the 11th as 429; the same email from a different IP also gets throttled separately on the per-email gate; sign-up and reset gate per-IP (reset additionally per-email); every response carries the three `RateLimit-*` headers; the Upstash dashboard shows the keys with TTLs.
-- Scope cuts: no per-user or per-org limits beyond auth (named, deferred); no Vercel WAF rule configuration (named in lesson 1 of chapter 078, the dashboard wiring is two clicks); no captcha (the next layer past the limiter for human abuse; named, deferred); no `Ratelimit.deny()` blocklist (named in lesson 2 of chapter 078); no multi-region Upstash replication (named); no Playwright assertions on `RateLimit-*` (deferred to chapter 092); no migration from Better Auth `secondary-storage` (named in lesson 3 of chapter 078 as the alternative, not chosen).
-- Senior payoff: this is the canonical limiter shape every other abusable endpoint copies — webhook receivers, file uploads, AI generation. Adding a fourth limiter is one new `Ratelimit` instance plus one action wrap; same headers, same fail-open. `safeLimit` and `rateLimitHeaders` are the seam.
-- Show the end UX: a short capture — 11 sign-ins (the 11th red-bordered as a 429), the Upstash dashboard screenshot showing the keys, "Force Upstash down" producing 15 fail-opens.
+- Frame the build: take the chapter 062 customers surface and add a four-step routed wizard at `/customers/new/step-1` through `step-4`. Each step has its own route segment; a shared `WizardStoreProvider` on the layout pins a Zustand store across the four navigations. Four slices (contact / billing / preferences / meta). Each step writes via atomic selectors; Next gates on the current slice's Zod validity; step 4 reviews three slices and submits via a Server Action that re-parses the composite payload server-side. On success, the store resets and the router pushes to the new customer's detail page. Show one screenshot of step 4's review screen.
+- State the "Done when" in one paragraph: filling step 1 then navigating away and back preserves data; submit on step 4 fires the action with the composite payload; success-reset and redirect close the loop; refresh loses state (the senior call); double-submit does not fire twice; Next enables only when the slice's Zod parse succeeds.
+- Scope cuts: no server-side draft persistence (refresh-loses is the product call); no per-step animations; no `persist` middleware autosave (named in lesson 2 of chapter 078, skipped here); no skip-to-step navigation; no edit-existing-customer flow; no `useActionState` shape on submit (see lesson 5 of chapter 079's alternative-rejected note).
+- Senior payoff: canonical Zustand-on-App-Router shape for the rest of the course. Future surfaces clearing the three-trigger funnel (routed cart, multi-step settings, long form split across panes) reuse the skeleton — `createStore` factory + `useRef`-pinned provider on shared layout + typed hook + atomic selectors + per-slice Zod + Server-Action submit + success-reset. Placement of the provider on the *shared layout* (not step pages) and use of `createStore` (not `create`) are the two structural calls that prevent the canonical bugs.
+- Show the end UX: a capture of the wizard — fill, Next, Back (preserved), Next, review, submit, redirect — plus a refresh-mid-flow showing loss-by-design.
 - Link the starter via `degit`.
 
 Senior calls and watch-outs:
 
-- The starter ships chapter 059 working end-to-end. This project layers limiters on top — no Better Auth core changes, only the action wrappers and the `auth.ts` config flag flip.
-- Better Auth's built-in limiter is on by default in the starter (matching chapter 059). The student turns it off in lesson 4 of chapter 079 as the deliberate architectural swap; the before-and-after is visible in one diff.
-- The Upstash free tier covers the project. The Vercel Marketplace integration is the recommended provisioning path; for local-only, create a free database via the Upstash dashboard and paste the two env vars.
-- The `/api/auth/[...all]` catch-all stays unwrapped — limits land at the action seam that calls `auth.api.*` directly. Direct traffic to the catch-all (a misbehaving client) bypasses the application limiter. The frontend forms all go through the wrapped actions; route-handler-level limits as defense-in-depth are named, deferred.
+- Starter ships chapter 062 end-to-end plus four route segments, shared layout shell, progress indicator, footer shell, and schemas in full. The chapter 062 surface stays untouched — every change lives under `src/lib/wizard/` and `app/(app)/customers/new/`.
+- The TOC's split (store + slices vs. form wiring + Next-gate) is preserved because the runnable midpoint matters: lesson 3 of chapter 079 ends with the provider mounting and the wizard navigating empty across four routes; lesson 4 of chapter 079 ends with each form writing into its slice and the Next-gate working.
+- The submit lives in lesson 5 of chapter 079 with the success-reset because the action and the reset are the same architectural call.
 
 Codebase state at entry: empty repo (student runs `degit`).
-Codebase state at exit: starter cloned, Postgres up, schema migrated, seed loaded, Upstash provisioned, `.env.local` populated, `pnpm dev` shows the chapter 059 auth flows working; `/inspector` loads but "Remaining tokens" reads `n/a` and the "Spam X" buttons throw on use.
+Codebase state at exit: starter cloned, Postgres up, schema migrated, seed loaded; `/customers` lists customers; `/customers/new/step-1` shows the step-1 shell with empty fields and no provider, Next always disabled; `/inspector` loads with empty store-snapshot.
 
-Estimated student time: 15 to 20 minutes.
+Estimated student time: 10 to 15 minutes.
 
 ---
 
-## Lesson 2 — Tour the chapter 059 auth starter and the inspector
+## Lesson 2 — Tour the starter
 
-Reads the provided file tree, the still-on Better Auth built-in limiter, the empty `lib/` stubs, the seeded `alice` / `bob` / `eve` accounts, the mocked email counter, and every panel and toggle on `/inspector`.
+Walks the file tree, the per-step Zod schemas, the four route segments, the progress and footer shells, and the inspector page with its debug flags so you know exactly which eight files you will fill in.
 
 Goals:
 
-- Walk the file tree, calling out provided vs. stubbed. Linger on `src/lib/redis.ts`, `rate-limit.ts`, `keys.ts`, `safe-limit.ts`, `rate-limit-headers.ts` (all empty — lesson 3 of chapter 079 / lesson 4 of chapter 079) and the three action files (provided shells, no wrapping — lesson 4 of chapter 079).
-- Read `src/lib/auth.ts`: confirm `rateLimit: { enabled: true }` (the chapter 059 default). The lesson 4 of chapter 079 step flips it off once the application-level limiters are wired; the before-and-after is visible in one diff.
-- Read `src/env.ts`: existing entries; the student adds the two Upstash vars in lesson 3 of chapter 079. The Zod validation is the gate that prevents a deploy without the limiter (lesson 5 of chapter 004).
-- Read the inspector end-to-end — every panel, button, toggle. Confirm the "Remaining tokens" panel calls `limiter.getRemaining(key)` (shimmed to `n/a` when undefined); the panel becomes live once the limiters exist. The "Spam X" buttons throw until the actions are wrapped.
-- Read the seed: `alice@example.com` and `bob@example.com` are verified with known passwords (read by the inspector as constants); `eve@example.com` is the password-reset target — a verified user whose mailbox is the deliverability concern the per-email reset gate protects.
-- Read the provided `rate_limit_log` table and the `logRateLimit` helper exported from `src/lib/rate-limit-log.ts` for `safeLimit` to call alongside every rejection / `rate_limit_unavailable`.
-- Read `src/app/api/auth/[...all]/route.ts`: one-liner Better Auth handler. The student does not modify this — all limits land at the action seam that calls `auth.api.*` directly.
-- Run the app: sign in as `alice` (form posts to the unprotected action), redirect to `/dashboard`; sign out; visit `/inspector`; click "Spam sign-in" — throws (the action stub is not yet wrapped).
+- Walk the file tree, calling out provided vs. stubbed. Linger on the eight student files (`types.ts`, four slice files, `store.ts`, `store-provider.tsx`, `use-wizard-store.ts`, `actions.ts`) plus the seven consumer files (`layout.tsx` shell, `footer.tsx` shell, four `step-N/page.tsx` shells, `step-4/submit-button.tsx`).
+- Read `src/lib/wizard/schemas.ts` — three step schemas and the composite. Same schemas parse the slice client-side at the Next-gate and parse the composite server-side at the action. Single source of truth.
+- Read the `customers` table columns — chapter 041's narrow row (`id`, `organizationId`, `name`, `email`, `createdAt`) extended by a chapter 079 migration that adds `phone`, `line1`, `line2`, `city`, `region`, `postalCode`, `country`, `taxId`, `paymentTerms`, `defaultCurrency`, `language`, `notificationChannels jsonb` so the four-slice payload maps column-for-column. The action maps `{ contact: {firstName, lastName} }` into `name: \`${firstName} ${lastName}\`` plus email / phone / billing / preferences columns directly.
+- Read `progress.tsx` (provided) — reads `currentStep` + `completedSteps` via two atomic selectors and renders the four-pip indicator. The student doesn't write this but reads it to understand the consumer pattern.
+- Read `footer.tsx` shell — Back/Next placeholders present; the student wires `currentStep`, per-step `validate...().success`, `goBack`/`goNext` in lesson 4 of chapter 079.
+- Read each step shell — every field has empty `value` and no `onChange`; TODO markers indicate the atomic-selector wires. Step 4's review is a stub.
+- Read the inspector end-to-end — store-snapshot panel, "Force action failure" toggle, "Force double-submit" button, "Reset store", "Refresh wizard", audit-log tail, re-render-counter. Two starter-shipped debug branches (`STORE_MODULE_SCOPED`, `PROVIDER_ON_STEP_PAGE`) live behind flags for the verify lesson.
+- Read `next.config.ts`: `cacheComponents: true` from chapter 062; the customers list above the wizard tree stays cached; the wizard routes are leaf Client Components, no cache interaction.
+- Run the app: `/customers` renders the seeded list; `/customers/new/step-1` renders the step-1 shell but the layout doesn't yet wrap in the provider so the hook would throw if invoked — fields are unwired, no throw fires.
 
 Senior calls and watch-outs:
 
-- `lib/rate-limit.ts` will be the only place `new Ratelimit(...)` exists. Constructing inline anywhere else defeats the in-memory cache (lesson 2 of chapter 078) and corrupts the prefix namespace.
-- The starter's `lib/email.ts` is mocked in inspector mode: `sendResetPasswordEmail` bumps `MOCK_EMAIL_SENT_COUNT`. The reset-rate-limit verify reads the counter to confirm successful resets triggered emails and rate-limited ones did not.
-- `auth.api.signInEmail` and friends accept `{ body, headers }` and return a success response or throw — the action wrapper handles both branches.
-- `next/server`'s `after()` is the canonical 2026 way to flush analytics off the response path (introduced in chapter 034).
+- `src/lib/wizard/` is feature-shaped (Architectural Principle #4): the directory groups store, slices, schemas, provider, hook, action. Future routed wizards get their own sibling directory; per-feature, never global.
+- Eight student files + seven consumer files is the entire build surface. The chapter 062 customers list and detail page do not change.
+- The shared-layout placement of the provider is the load-bearing structural choice. Naming it on the file-tree read so the student notices the layout's role before writing the wrap in lesson 3 of chapter 079.
+- The `customers` table is already org-scoped via `organizationId`; the submit action uses `tenantDb(ctx.orgId)`. The store knows nothing about `orgId` — server concern only.
+- Seeded customers mean the redirect-to-`/customers/[id]` after submit lands on a meaningful detail page.
 
-Codebase state at entry: starter cloned, Postgres running, schema migrated, seed loaded, Upstash provisioned, env populated.
-Codebase state at exit: every provided file read, inspector clicked through, `alice` sign-in tried, "Spam" buttons error as expected. No code written.
+Codebase state at entry: starter cloned, Postgres running, schema migrated, seed loaded.
+Codebase state at exit: every provided file read, inspector clicked through, wizard routes navigated as empty shells. No code written.
 
 Estimated student time: 15 to 25 minutes.
 
 ---
 
-## Lesson 3 — Declare the Redis client and three module-scope limiters
+## Lesson 3 — Build the store skeleton
 
-Adds the two Upstash env vars, writes `redis.ts` as `Redis.fromEnv()`, declares the sign-in, sign-up, and reset `Ratelimit` instances at module scope with distinct prefixes and per-limiter `ephemeralCache`, and lights up the inspector's "Remaining tokens" panel via `getRemaining`.
+Defines the four-slice `WizardState`, writes the typed slice factories, composes them through a vanilla `createStore` factory, mounts the `useRef`-pinned provider on the shared layout, and exposes the typed `useWizardStore<T>(selector)` hook.
 
 Goals:
 
-- Add the two Upstash entries to `src/env.ts` per reference. Restart dev; boot now refuses to start without them. The runtime gate from lesson 5 of chapter 004 covers the limiter prerequisite.
-- Fill `src/lib/redis.ts`: `export const redis = Redis.fromEnv();`. Add a small `redis.ping()` health-check the inspector uses to render the "Upstash up?" badge green.
-- Fill `src/lib/rate-limit.ts`: declare the three `Ratelimit` instances per reference. All three at module scope, `analytics: true`, per-limiter `ephemeralCache: new Map()`. Distinct prefixes (`rl:signin`, `rl:signup`, `rl:reset`). Budgets per lesson 3 of chapter 078: sign-in 10/min, sign-up 5/10m, reset 3/15m.
-- Wire the inspector's "Remaining tokens" panel: the starter calls `limiter.getRemaining(key)` for the active identity. Once the three exports exist, the panel becomes live. Surface what `getRemaining` returns and why the inspector uses it instead of `limit()` for the readout (no budget consumed).
-- Run the app: open `/inspector`; "Upstash up?" green; the panel shows `signin → ip:<addr> → 10/10`, `signup → ip:<addr> → 5/5`, `reset → ip:<addr> → 3/3`, `reset → email:<active-email> → 3/3`. "Spam sign-in" still errors (action stub unwrapped) but the readout is operational.
+- Fill `types.ts`: define `ContactSlice`, `BillingSlice`, `PreferencesSlice`, `MetaSlice`, and `WizardState = ContactSlice & BillingSlice & PreferencesSlice & MetaSlice`. Each slice lists its data, per-field setter signatures, and (first three) `validate...()` returning `z.SafeParseReturnType`. `MetaSlice` lists `currentStep`, `completedSteps` (a `Set<1|2|3|4>`), `goNext`, `goBack`, `markStepComplete`, `reset`. The intersection is the single state shape every `StateCreator` is parameterized on, so `set`/`get` see the whole store from inside any slice.
+- Fill the four slice files. Each: `export const createContactSlice: StateCreator<WizardState, [], [], ContactSlice> = (set, get) => ({ contact: {firstName: '', lastName: '', email: '', phone: ''}, setContactField: (k, v) => set((s) => ({ contact: {...s.contact, [k]: v} })), validateContact: () => contactSchema.safeParse(get().contact) })`. Billing/preferences mirror; preferences also exposes `togglePreferenceChannel` toggling array membership. Meta: `goNext` reads `currentStep` via `get()`, calls `markStepComplete(currentStep)`, then `set({ currentStep: currentStep + 1 })`; `goBack` decrements; `markStepComplete` adds to `completedSteps`; `reset: () => set(initialState, true)` — the `true` flag is the rare replace-mode; name why `set({}, true)` would be wrong (loses the action methods).
+- Fill `store.ts`: `import { createStore } from 'zustand/vanilla'` (not `create` from `zustand` — the load-bearing call). `export type WizardStore = ReturnType<typeof createWizardStore>`. `export const createWizardStore = (initial?: Partial<WizardState>) => createStore<WizardState>()((...a) => ({ ...createContactSlice(...a), ...createBillingSlice(...a), ...createPreferencesSlice(...a), ...createMetaSlice(...a), ...initial }))`. The factory returns a fresh vanilla store on every call; the provider calls it once per mount.
+- Fill `store-provider.tsx`: `'use client'`. Create `WizardStoreContext = createContext<WizardStore | null>(null)`. The provider: `const ref = useRef<WizardStore | null>(null); if (ref.current === null) ref.current = createWizardStore(); return <WizardStoreContext.Provider value={ref.current}>{children}</WizardStoreContext.Provider>`. `useRef` (not `useState`) is deliberate — exactly one creation per component instance, never on re-render. The lazy `if (ref.current === null)` is React's documented pattern for refs holding initialized values.
+- Fill `use-wizard-store.ts`: `'use client'`. Import `useStore` from `zustand` (the React-binding hook). `export function useWizardStore<T>(selector: (s: WizardState) => T): T { const store = useContext(WizardStoreContext); if (!store) throw new Error('useWizardStore must be used inside WizardStoreProvider'); return useStore(store, selector) }`. The generic gives call sites like `const firstName = useWizardStore((s) => s.contact.firstName)` an inferred `string` return.
+- Edit `layout.tsx`: import `WizardStoreProvider`; wrap `<WizardProgress />` + `{children}` + `<WizardFooter />` in `<WizardStoreProvider>`. The provider sits on the shared layout so all four step children share the same store instance.
+- The progress indicator's consumption is already shipped — reads `currentStep` + `completedSteps` via two atomic selectors. The student confirms the hook resolves and the first pip highlights on step 1.
+- Run the app: navigate to `/customers/new/step-1`. Progress shows "1 of 4" with first pip highlighted. Form fields render unwired. Footer Next is disabled (the `isValid` selector isn't wired yet — lesson 4 of chapter 079). Inspector's store-snapshot shows initial state: empty slices, `currentStep: 1`, `completedSteps: new Set()`. The snapshot stays in sync across renders while the iframe is mounted.
 
 Senior calls and watch-outs:
 
-- Module scope is load-bearing. The library caches `pending` writes and counters in process memory; declaring inside the handler defeats both. A sustained hot key would otherwise hit Redis on every request.
-- Each limiter gets its own `ephemeralCache: new Map()`. Sharing one across limiters works but blurs eviction.
-- `analytics: true` adds one extra write per call (the rolling counter for the dashboard). The `pending` promise is the deferral seam — wired in lesson 4 of chapter 079.
-- Prefix discipline: distinct prefixes so two limiters cannot collide on a shared key. Cross-app collisions are prevented by per-database scope (each project gets its own Upstash database).
-- `getRemaining(key)` does **not** consume budget. Using `limit(key)` for the readout would burn one budget per render and lock the user out via the panel itself.
-- Budget choices (10/min, 5/10m, 3/15m) are senior calls from lesson 3 of chapter 078: sign-in tolerates more attempts (legitimate typos); reset is tightest because the abuse cost is concrete (inbox noise + Resend deliverability).
+- `createStore` from `zustand/vanilla` + provider is the App Router-correct shape. The default-tutorial `create((set) => ({...}))` puts a module-scoped store in the server bundle's memory; the per-request leak surfaces the first time two users hit the layout in the same Node process. The bug is named at the import.
+- `useRef`-pinned store is mandatory. `useState(() => createWizardStore())` technically works but React's strict-mode double-invoke can create two stores on first mount in dev; documented pattern is `useRef` with lazy init.
+- The provider lives on the shared layout, not on each step page. Surfaced twice — at file location and at wrap call — because misplacing under a step page is the canonical bug that destroys the entire premise (every navigation re-mounts provider, re-creates store, wipes state). Verify lesson exercises this as deliberate-misuse demo.
+- `reset()` uses `set(initialState, true)` (replace-mode flag). Plain `set({})` would partial-merge (no-op); `set(initialState)` without `true` would also work because the merged result equals initial; `set(initialState, true)` is the explicit "wipe and replace" that future-proofs against new slice fields being added without updating `initialState`.
+- The slices composition `((...a) => ({ ...createA(...a), ...createB(...a) }))` is the standard `StateCreator` spread. The `[]`-`[]`-`Slice` middleware generics are empty tuples — this chapter doesn't use `persist`, `devtools`, `subscribeWithSelector` (named in lesson 2 of chapter 078, skipped). When middlewares enter, the generics fill out.
+- The typed hook's `if (!store) throw` is the runtime contract catching the most common usage bug — a component reaches outside the provider's subtree.
+- Fields are still unwired after this lesson — the deliberate runnable midpoint. Provider mounts, store survives navigation, progress reads from it; next lesson connects inputs.
 
-Codebase state at entry: `redis.ts`, `rate-limit.ts`, the two env entries empty; inspector "Remaining tokens" reads `n/a`.
-Codebase state at exit: env validated, Redis client wired, three limiters declared at module scope; inspector's "Remaining tokens" reads live for the active identity. **Runnable — the limiters exist and the inspector verifies state from Redis; no endpoint is gated yet.**
+Codebase state at entry: empty `wizard/` directory, empty layout, unwired form fields, footer disabled.
+Codebase state at exit: `types.ts`, four slice files, `store.ts`, `store-provider.tsx`, `use-wizard-store.ts` filled. Provider wraps the wizard layout. Progress reads `currentStep`. Wizard navigates between four routes (back/forward) but every field is empty and Next is permanently disabled. **Runnable — provider mounts on shared layout, store survives navigation, inspector snapshot mirrors live state.**
 
-Estimated student time: 40 to 55 minutes.
+Estimated student time: 60 to 75 minutes. The chapter's heaviest mechanics lesson.
 
 ---
 
-## Lesson 4 — Gate the actions: dual-keying, headers, fail-open
+## Lesson 4 — Wire the forms and the Next-gate
 
-Fills `keys.ts`, `safe-limit.ts`, and `rate-limit-headers.ts`; wraps sign-in with per-IP-and-per-email gates, sign-up with per-IP, and reset with per-IP-plus-per-email; flips Better Auth's built-in limiter off; and hands each `pending` to `after()`.
+Binds every step-1/2/3 field through atomic selectors and slice setters, renders inline Zod errors, and wires the footer so Next gates on the current slice's `safeParse` and advances both store and URL together.
 
 Goals:
 
-- Fill `src/lib/keys.ts`: `getClientIp(headers)` and `normalizeEmail(email)` per reference. Two pure functions. Surface the senior call on `+`-alias stripping inline.
-- Fill `src/lib/safe-limit.ts`: `safeLimit(limiter, key)` per reference. The catch logs `{ event: 'rate_limit_unavailable', limiter: limiter.prefix, key }` via `logRateLimit` and returns `{ success: true, ... }` so call sites have one branch. The failure mode is observable in the log, not in user behavior. Real production logging goes through chapter 096's structured logger; the starter's `logRateLimit` writes to the `rate_limit_log` table the inspector tails.
-- Fill `src/lib/rate-limit-headers.ts`: `rateLimitHeaders(result)` (three headers, Reset as delta-seconds) and `rateLimitedResponse(result)` (429, four headers including `Retry-After`, user-safe identical body).
-- Edit `src/app/(auth)/sign-in/actions.ts` per reference: keep the chapter 059 `(state, formData)` `useActionState` callback shape returning `Result<never, 'invalid-credentials' | 'email-not-verified' | 'rate-limited'>`. Zod parse (`z.strictObject({ email: z.email(), password: z.string().min(1), next: z.string().optional() })`); resolve `ip` and `email`; `safeLimit(signInLimiter, 'ip:' + ip)` first, attach `rateLimitHeaders` + `Retry-After` via Next.js 16's server-action `headers()` API and return `Result.err('rate-limited')` on rejection; then `safeLimit(signInLimiter, 'email:' + email)`, same treatment on rejection; call `auth.api.signInEmail`. On success attach `rateLimitHeaders(ipLimit)` and `redirect(sanitizeNext(formData.get('next')) ?? '/dashboard')`. Hand both `pending` promises to `after()`.
-- Edit `src/app/(auth)/sign-up/actions.ts` per reference: one `safeLimit(signUpLimiter, 'ip:' + ip)` gate, then `auth.api.signUpEmail`.
-- Edit `src/app/(auth)/reset/actions.ts` per reference: `safeLimit(resetLimiter, 'ip:' + ip)` then `safeLimit(resetLimiter, 'email:' + email)`, then `auth.api.forgetPassword`.
-- Flip Better Auth's built-in limiter off: `rateLimit: { enabled: false }` in `src/lib/auth.ts`. The application-level limiters are now the one place. Add a one-line comment naming the architectural rule for future readers.
-- Run the app: open `/inspector`; "Spam sign-in" produces 11 log entries — 10 are 401 with `RateLimit-Remaining` counting 9 → 0, the 11th is 429 with `Retry-After`. The 429 body reads exactly the user-safe message. "Remaining tokens" updates after the burst. "Force Upstash down" toggle on → the next 15 sign-in attempts all return 401 (fail-open) and the structured-log tail captures 15 `rate_limit_unavailable` rows.
+- Wire `step-1/page.tsx` field by field. Each field: one input bound to one slice setter through one atomic selector: `const firstName = useWizardStore((s) => s.contact.firstName); const setContactField = useWizardStore((s) => s.setContactField); <Input value={firstName} onChange={(e) => setContactField('firstName', e.target.value)} />`. Repeat for `lastName`, `email`, `phone`. The atomic-selector default is the load-bearing choice — typing in email re-renders only the email input. The re-render counter panel verifies.
+- Render field-level errors. Below each field: `const contactErrors = useWizardStore((s) => { const result = s.validateContact(); return result.success ? null : z.flattenError(result.error).fieldErrors })`. Display `contactErrors?.email?.[0]` below the email input. The selector returns a new object only when the parse moves success↔failure or the error map shape changes — adequate for this surface. For finer control (per-field error subscription), one selector per field's error would be the move; this surface keeps the single-selector shape for clarity.
+- Repeat for `step-2/page.tsx`: each billing field bound via `setBillingField`; errors via `validateBilling` + `flattenError`. `paymentTerms` is a select with three options; `country` is a 2-letter input (in production a country picker; course keeps the surface lean).
+- Repeat for `step-3/page.tsx`: `defaultCurrency` and `language` are selects; `channels` is a multi-select via three checkbox toggles bound to `togglePreferenceChannel`.
+- Wire `footer.tsx`: `const currentStep = useWizardStore((s) => s.currentStep)`. The `isValid` selector branches on `currentStep` (validateContact / validateBilling / validatePreferences `.success`; step 4 returns `true`). `const goNext = useWizardStore((s) => s.goNext); const goBack = useWizardStore((s) => s.goBack)`. Next: `<Button disabled={!isValid} onClick={() => { goNext(); router.push(\`/customers/new/step-${currentStep + 1}\`) }}>`. `goNext` mutates `currentStep`; `router.push` advances the URL. Both fire on click. Back mirrors with `goBack` + `router.push` to prior step. On step 4 the Next button is replaced by the submit button rendered by the step-4 page itself — footer's Next only shown when `currentStep < 4`.
+- Run the app: navigate `/customers/new/step-1`. Type firstName; Next stays disabled while other fields empty. Re-render counter shows only firstName field's count incrementing. Type invalid email → "Invalid email" inline; Next disabled. Fix → Next enables. Fill remaining → click Next. URL advances to `/step-2`; store's `currentStep` becomes `2`; progress highlights pip 2; step-2 renders empty. Click Back; URL returns to step-1; previously typed values still there. Click Next; step-2 empty (its slice never touched). Fill step 2 → step 3 → step 4 (renders the review stub).
 
 Senior calls and watch-outs:
 
-- Gate before work. The two `safeLimit` calls run **before** `auth.api.signInEmail`. Putting them after pays the password-hash cost on every request even past the budget — the "Gate after work" inspector toggle is the deliberate failure-mode demo for lesson 5 of chapter 079.
-- Both sign-in gates must pass. Checking `success` on only one leaves the other vector open: per-IP alone misses credential stuffing across IPs; per-email alone is the lockout vector. The two-`if` shape (early return on each `!success`) is the structural enforcement.
-- The 429 body is identical across both gates. Returning `"IP rate-limited"` vs. `"email rate-limited"` leaks which gate tripped, and per-email leaks confirms the email exists. The "Distinct 429 bodies" toggle surfaces the leak; production never ships that variant.
-- The `pending` promise must be handled or the analytics write is lost on cold shutdown. `after()` (from `next/server`) is the 2026 way — let the response flush while analytics continue. `await ipLimit.pending` on the response path adds 5-10ms.
-- `safeLimit` is the one place the fail-open policy lives. Flipping to fail-closed for a higher-stakes future endpoint is a one-line change here — or, more honestly, a second `safeLimitClosed` helper exported alongside so the choice is named per call site.
-- Disabling Better Auth's built-in is the deliberate swap. With it on, two limiters compete (in-memory inside Better Auth, Upstash in the action) — different budgets, different keys, debugging hell. Off, the action wrapper is the one place. The `secondary-storage` adapter (Better Auth 1.5+) that would point the built-in at Upstash is named in lesson 3 of chapter 078 as an alternative; not the chapter's choice (the application-level pattern is the more flexible seam for non-auth endpoints later).
-- Trust boundary on `x-forwarded-for`: Vercel sets it correctly. On self-hosted (Fly, Railway, VPS), trust requires gating at the load balancer. `'unknown'` as the IP fallback means a single key for every unidentifiable request — overly tight in aggregate; rejecting when `x-forwarded-for` is absent in production is the senior call deferred to chapter 085.
-- The `email:` key uses the normalized email. The same normalization runs at the database lookup so limiter and lookup count the same identifier. Tightening to strip `+` is a per-app senior decision: Gmail's `+` aliasing lets a crawler bypass per-email by varying `+rand`; the trade-off is stripping incorrectly on `+`-supporting providers that treat aliases as distinct mailboxes. The chapter's default is trim + lowercase only.
+- Atomic selectors are mandatory for re-render scoping. A naive `const { firstName, lastName, ... } = useWizardStore((s) => ({ ...s.contact, setContactField: s.setContactField }))` returns a new object every state change; default `Object.is` fails; component re-renders on every keystroke. Re-render counter is the demo. If a step genuinely needs a composite read (review), `useShallow` is the right tool — lesson 5 of chapter 079.
+- The Next-gate `isValid` calls `validate...()` on every store change. Returns fresh `SafeParseResult` each time; the `.success` boolean is primitive — `Object.is(true, true)` short-circuits re-render. Button re-renders only when boolean flips. Pattern: derive a primitive from a complex computation inside the selector.
+- The Next-gate is UX. The action on submit re-parses the composite schema server-side; the *contract* is the action's parse. A bypass (calling the action with malformed data) returns `{ ok: false, error }`; client gate is defense against UX confusion, not malformed data.
+- Next button's `onClick` does two things: store action `goNext` + router push. Bundling into one handler is canonical for routed wizards. Splitting (e.g., a `useEffect` watching `currentStep` and firing `router.push`) is wrong — effects-as-side-effect-orchestrators is the pattern the course rejects (AP #6 — explicit over magic).
+- `validate...()` runs `safeParse` on every store change. For tiny schemas this is cheap; for very large schemas, debouncing or memoizing would be a future move. Don't pre-optimize at this size.
+- Errors render conditionally and unobtrusively. Course UX baseline (Unit 3) — short red text under the field, no toast for validation errors.
+- Resist per-field `validateField` for finer error scoping. Whole-slice `validateContact` is right: form-state machines tracking "touched" fields complicate the model.
+- `markStepComplete` inside `goNext` populates `completedSteps`; progress indicator distinguishes completed pips from upcoming.
 
-Codebase state at entry: limiters declared, no action wraps, every endpoint unprotected.
-Codebase state at exit: three actions wrapped (sign-in with dual-keying, sign-up + reset documented strategies), Better Auth built-in off, headers on every response, fail-open on Upstash outage, `pending` handed to `after()`, `rate_limit_log` populated. **Runnable — every inspector "Spam" button produces the expected sequence with the expected headers; the architectural swap is complete.**
+Codebase state at entry: provider mounted, four-slice store, hook works; no form wired, Next permanently disabled.
+Codebase state at exit: every input on steps 1, 2, 3 writes into its slice via atomic selector; every field error renders inline; footer Next-gate enables only when current slice is valid; clicking Next advances both store and URL; clicking Back returns and prior step's data is intact. **Runnable — wizard navigates with state across all four routes; step 4 review still a stub; no submit yet.**
 
-Estimated student time: 70 to 90 minutes. The chapter's heaviest lesson — dual-keying, header contract, fail-open, Better Auth swap all land together because each depends on the others to be observable.
+Estimated student time: 50 to 65 minutes.
 
 ---
 
-## Lesson 5 — Verify against "Done when"
+## Lesson 5 — Submit, reset, and guard
 
-Walks every clause: the 11th-request 429 with `Retry-After`, the cross-IP per-email proof, window resets, opaque 429 bodies, gate-before-work timing, the fail-open log, module-scope cache hits, `pending` off-path, and the Upstash dashboard keys with TTLs.
+Builds the composite-payload Server Action with audit log, reads the three slices on step 4 through `useShallow`, and wires the submit button with `useTransition` for the pending guard, success-reset, and redirect.
 
 Goals:
 
-- Walk every "Done when" clause from the framing's verify recipe in order. The recipe lists the steps; this lesson is the execution and the surrounding senior commentary.
-- **The 11th-request baseline:** "Reset counters"; "Spam sign-in" against `alice` with a wrong password. Log shows 10 entries status 401, `RateLimit-Limit: 10`, `Remaining` declining 9 → 0, `Reset` declining (sliding-window effect). Entry 11 → 429, body `{"error":"Too many attempts. Please try again later."}`, `Remaining: 0`, `Retry-After: <≤60>`. The panel shows `signin → ip:<addr> → 0/10` with countdown.
-- **Cross-IP per-email proof:** spoof `x-forwarded-for`; "Send one" against `alice` (wrong password). 401 with `Remaining: 9` on the `ip:` gate (fresh) but `Remaining: <9-prev>` on the `email:` gate (the inspector renders both header sets). Repeat from the new IP until the email gate hits 0 → next request is 429, log line `key: 'email:alice@example.com'`. The per-email gate caught the across-IPs vector — the chapter's load-bearing proof.
-- **Window reset:** after the 429s, wait until `Retry-After` reaches 0 (or "Reset counters"). Send one → 401 with `Remaining: 9` (fresh window).
-- **Sign-up per-IP only:** "Spam sign-up" with 6 random-suffix emails; request 6 is 429 with `key: 'ip:<addr>'`. Five different emails accepted — per-email could not have been the gate.
-- **Reset per-IP and per-email:** "Spam reset" against `eve@example.com` 4x from one IP; request 4 is 429 with `key: 'email:eve@example.com'`. Switch IP; "Send one" → still 429 (per-email didn't reset). `MOCK_EMAIL_SENT_COUNT` ticked by 3 — the three successes triggered `sendResetPasswordEmail`; the 4th and the cross-IP attempt did not.
-- **Header completeness:** every log entry shows the three `RateLimit-*` headers; 429s also show `Retry-After`. Successful responses include the headers from the per-IP limiter.
-- **Body opacity (the leak demo):** flip "Distinct 429 bodies" on; rerun spam; the rejection body now reads `"Email rate-limited"` or `"IP rate-limited"`. Information leak visible. Flip off → opaque again. The user-safe contract is enforced by the helper, not by the call site.
-- **Gate-before-work (other load-bearing failure):** flip "Gate after work" on; spam sign-in; timing panel shows every request paying ~80-150ms hash cost — even the 11th, 12th, 20th. Flip off; the 11th+ requests skip the hash (timing collapses to ~5-15ms — Upstash round-trip alone).
-- **Per-email-gate-disabled (cross-IP attack reproducer):** flip "Disable per-email gate" on; "Distinct IPs runner" simulates 10 wrong-password attempts against `alice` from IP-A, then 10 from IP-B. All 20 reach `auth.api.signInEmail`; both per-IP gates fresh. Flip off; rerun; the 11th attempt overall trips the `email:` gate. The dual-keying value is the diff between the two runs.
-- **Fail-open under outage:** flip "Force Upstash down" on; spam sign-in 15x; every request 401 (limiter fails open, request reaches Better Auth); structured-log tail shows 15 `rate_limit_unavailable` rows. A sustained run of these is a Upstash incident; alerting lives in chapter 096.
-- **Better Auth built-in disabled:** open `src/lib/auth.ts`; `rateLimit: { enabled: false }` is the only entry. Two limiters competing on the same surface is debugging hell; one place is the rule.
-- **Module-scope cache hits:** request-trace panel shows the first request after cold start hitting Redis (one round-trip per `limit()` call); subsequent requests within the in-memory window hit `ephemeralCache` (zero Redis round-trips).
-- **`pending` off-path:** flip "Await pending instead of after()" on; user-visible response time inflates by 5-10ms per call. Flip off; baseline. The 2026 `after()` pattern (chapter 034) is the off-path flush.
-- **Upstash dashboard:** click the dashboard panel → Data Browser → filter `rl:`; keys present with TTLs ≤ their window. Analytics tab → rejection blips for the spam runs visible per prefix. The dashboard is the operator's incident-review surface; the structured-log tail is the in-app development-time analog.
-- **Env-gates-Redis:** comment out `UPSTASH_REDIS_REST_URL` in `.env.local`; restart → Zod validation fails the boot. Uncomment → boots. The runtime gate from lesson 5 of chapter 004 prevents a deploy without the limiter.
+- Fill `actions.ts`: `createCustomerAction = authedAction('member', createCustomerInput, async (input, ctx) => { ... })`. Inside the callback, wrap the insert in `tenantDb(ctx.orgId).transaction`: map the four-slice payload into the `customers` row (concatenate firstName + lastName into `name`; spread billing + preferences directly because column names match), insert + `returning()`, call `logAudit(tx, { action: 'customer.created', subjectType: 'customer', subjectId: row.id, actorUserId: ctx.user.id, orgId: ctx.orgId, payload: {} })`. Return `{ ok: true, data: { id: row.id } }`. Parse failure returns `{ ok: false, error }` via the wrapper. Wrap the transaction in `try/catch` and map Postgres `23505` (the `unique (organizationId, email)` violation from chapter 041) to `Result.error({ code: 'conflict', userMessage: 'A customer with this email already exists in this organization.' })`, mirroring chapter 047's `createInvoice` pattern; rethrow other errors. The action does not know about the store; the store doesn't import the action either; the submit button is the seam.
+- Wire `step-4/page.tsx`: review reads three preceding slices via `useShallow` because rendered JSX combines three slice objects into one component. `import { useShallow } from 'zustand/react/shallow'; const { contact, billing, preferences } = useWizardStore(useShallow((s) => ({ contact: s.contact, billing: s.billing, preferences: s.preferences })))`. Render three subsections (Contact, Billing, Preferences) as `<dl>`s. Mount `<SubmitButton />` below. This is the **only** `useShallow` use in the project. Reason: this component genuinely reads three slice objects, returns one new object each render; step 4 isn't mounted during steps 1-3 (route segments exclusive), so re-renders during typing don't apply. On step 4, re-renders fire only if a slice reference changes — but step 4 is read-only by design.
+- Fill `submit-button.tsx`. `'use client'`. Reads three slices via `useShallow`, the `reset` action, `router` from `next/navigation`. Use `useTransition`:
+  - `const [isPending, startTransition] = useTransition()`.
+  - `const [error, setError] = useState<string | null>(null)`.
+  - `actions.ts` also exports a plain wrapper for programmatic client use: `export async function submitCustomer(input: z.infer<typeof createCustomerInput>) { return createCustomerAction(null, input as unknown as FormData) }` — or, equivalently, the action body is factored into a shared `createCustomerImpl(input, ctx)` that both `authedAction(...)` and `submitCustomer` call. The submit button imports `submitCustomer`, not `createCustomerAction` directly, because `authedAction`'s return type is `(prev, formData) => Promise<Result>`.
+  - `const onSubmit = () => startTransition(async () => { setError(null); const result = await submitCustomer({ contact, billing, preferences }); if (!result.ok) { setError(result.error.userMessage); return } reset(); router.push(\`/customers/${result.data.id}\`) })`.
+  - `<Button disabled={isPending} onClick={onSubmit}>{isPending ? 'Creating…' : 'Create customer'}</Button> {error && <p className='text-destructive'>{error}</p>}`.
+  - `isPending` prevents double-submit: first click sets pending, button disables, second click fires no handler.
+- Submit is the Server Action call, not `<form action>` with `useActionState`. Alternative-rejected note:
+  - **Chosen path:** explicit button-handler calling the action programmatically. Right because submit composes three slices read via `useShallow` and the post-success path is store reset + router push (not the redirect-and-revalidate pattern `useActionState` is built for).
+  - **Considered and rejected:** `<form action={createCustomerAction}>` with `useActionState`. Native and progressive-enhancement-friendly, but payload would have to be encoded as `FormData` (hidden input per slice field serialized to JSON). The read side already has parsed slices in memory; serializing back through `FormData` is ceremony with no upside. Senior call: when data already lives in a client store, programmatic call is right; reach for `<form action>` when data is in form fields the user just typed.
+- Wire success-reset and redirect: on `{ ok: true }`, call `reset()` first (clears four slices, `currentStep: 1`, `completedSteps: empty`), then `router.push(\`/customers/${result.data.id}\`)`. Order matters — `router.push` triggers navigation that may unmount the wizard layout; resetting before pushing guarantees the next mount sees fresh state. The wizard layout *is* unmounted on navigation to `/customers/[id]` so the next visit to `/customers/new/step-1` mounts a fresh provider anyway. `reset()` is belt-and-suspenders here — but the discipline of "reset at submit-success" is the named senior call that generalizes to other Zustand surfaces where the provider stays mounted across reset (a cart inside a layout that doesn't unmount, for example).
+- Run the app: complete four steps with valid data. Step 4 review shows three filled slices. Click "Create customer". Button shows "Creating…" for ~100ms. Router pushes to `/customers/[newId]`. New customer detail renders. Navigate back to `/customers/new/step-1` — form empty (success-reset fired). Audit-log tail shows new `customer.created` row.
+- Verify action-failure path: inspector "Force action failure" toggle ON. Complete four steps; submit. Button shows "Creating…" for ~200ms; error banner under button; wizard stays on step 4 with data intact. Navigate back to step 1 — still populated. User can edit and retry.
+- Verify double-submit guard: complete four steps; click "Create customer"; click again within 10ms (or inspector "Force double-submit"). Network shows one POST. Audit-log shows one row.
+
+Senior calls and watch-outs:
+
+- Action org-scoped via `authedAction`'s session resolution; store knows nothing about `orgId`. Tenancy lives at the action, the `organizationId` column, and `tenantDb`. Defense in depth.
+- Store/action separation is the architectural seam. Store owns the draft in memory; action owns the DB write. Submit button is the only place they meet. Architectural Principle #3 (pure /lib, side effects at named boundaries) applied to the client/server split.
+- `useShallow` is right *only* for this composite read. Senior reflex: if selector returns a fresh literal object/array, equality check is `useShallow`; if it returns a primitive or existing reference, default `Object.is` is fine. Reaching for `useShallow` everywhere is the over-reach.
+- `useTransition`'s `isPending` is the right pending-state shape for a Server Action call. Plain `useState<boolean>` works but loses the transition's automatic suspension/concurrency benefits.
+- `reset()` fires *before* `router.push`. Order documented; push-first/reset-after still works because wizard layout unmounts on navigation. Keep reset-first to teach the discipline: in surfaces where the layout stays mounted (cart in header), reset-first is required.
+- Action failure leaves the wizard intact deliberately. Common bug: `if (!result.ok) { reset(); setError(...) }` — wiping draft on a network blip. Verify recipe catches this.
+- The `error` state is local `useState`, not in store. Transient UI error state belongs in component state (lesson 1 of chapter 078's "useState is fine" default); store is for draft data the user owns.
+- `crypto.randomUUID()` not used (DB generates id); idempotency keys deferred to Unit 11. Customer-create is naturally idempotent at the application layer because one user, one transition, one submit (the `isPending` guard); `processed_events` pattern lands when trigger is external retries.
+- Redirect to `/customers/${newId}` lands on the real customer detail page (chapter 062). Seamless landing is the UX payoff.
+- Resist writing the new customer's id into the wizard store. Store is for draft; new id is server state; redirect transitions client from one to the other. Storing the id is role creep the per-feature discipline rejects.
+
+Codebase state at entry: forms wire steps 1-3, Next-gate works, step 4 a stub, no submit, no action.
+Codebase state at exit: `createCustomerAction` writes row + audit log + returns canonical Result. Step 4 reviews three slices via `useShallow`. Submit button uses `useTransition` for pending + double-submit guard, calls action, on success resets store and redirects, on failure shows error and leaves draft intact. **Runnable — full happy and unhappy paths live; ready for verify pass.**
+
+Estimated student time: 50 to 65 minutes.
+
+---
+
+## Lesson 6 — Verify clause by clause
+
+Walks every "Done when" clause through the inspector — back/forward preserves, refresh loses by design, atomic re-render scoping, per-request store isolation, action-failure keeps the draft, double-submit fires once — with deliberate flag flips to demo each canonical bug.
+
+Goals:
+
+- Walk every "Done when" clause from the framing's verify recipe in order. The recipe lists the steps; this lesson is the execution plus surrounding senior commentary.
+- **Back/forward preserves:** fill step 1; advance; fill step 2; Back; step-1 fields show original values. Next; step 2 intact. Use browser back (not wizard Back) to land on step 1; same result. Snapshot panel shows both slices populated throughout. Confirm `<WizardStoreProvider>` is one level above `{children}` in `layout.tsx`.
+- **Refresh loses (the senior call):** complete steps 1-2, advance to step 3. Inspector "Refresh wizard". Wizard reloads at step 1 empty. Snapshot empty. Confirm `store.ts` has no `persist`. Compare to hypothetical persist wiring: deliberately wrap factory in `persist((set, get) => ({...}), { name: 'wizard-v1', storage: createJSONStorage(() => sessionStorage) })`; refresh; wizard resumes mid-flow. Revert.
+- **Submit fires with composite payload:** complete four steps; click "Create customer". Network shows one POST; response `{ ok: true, data: { id } }`. Router pushes to `/customers/[newId]`. Audit-log shows new row in active org.
+- **Success-reset fires only after success:** after redirect, navigate to `/customers/new/step-1`. Empty. Snapshot at initial. Then deliberately remove `reset()` from success branch; complete fresh customer; back to step 1 — fields show previous customer's data. Revert.
+- **Action failure leaves draft intact:** "Force action failure" ON. Complete four steps; submit. Error banner; wizard stays on step 4. Back to step 1 — all fields populated. Then deliberately add `reset()` to error branch; repeat; observe wipe. Revert.
+- **Double-submit fires once:** "Force double-submit" (or manual rapid click). Network shows one POST. Audit-log one new row. `isPending` from `useTransition` is the guard.
+- **Next-gate per-step:** empty step-1 → Next disabled. Valid email but empty firstName → still disabled (whole-slice validity). Fill all → enables. Invalid phone → disables; inline error renders. Next re-renders only when boolean flips — verify via re-render counter.
+- **Atomic selectors keep re-renders surgical:** focus step-1 firstName; type ten characters. Counter shows: firstName + 10, siblings unchanged, footer + 1 (boolean stayed false), progress + 0. Then deliberately change one selector to `useWizardStore((s) => s.contact)` (slice-object read); type ten characters; counter shows all four fields re-rendering ten times each. Revert.
+- **`useShallow` reserved for review step:** grep `useShallow`. One hit in `step-4/page.tsx` (and possibly `submit-button.tsx` if combined). Then deliberately replace step-4's reads with three separate atomic selectors and remove `useShallow`; page still renders correctly. The rule isn't "you must use `useShallow`"; it's "use `useShallow` when read is genuinely a composite mapped-pick."
+- **Store per-request, no leak:** session A: fill step 1. Switch to session B. `/customers/new/step-1` empty. Then flip `STORE_MODULE_SCOPED` debug flag (swaps factory for module-scoped instance); repeat cross-session test; session B sees session A's draft. Flip back.
+- **Provider on shared layout:** read `layout.tsx` — provider wraps four step children. Then flip `PROVIDER_ON_STEP_PAGE` (moves provider into each `step-N/page.tsx`); navigate step 1 → 2 → 1; form clears every navigation. Flip back.
+- **Same Zod schema parses at gate (client) and action (server):** read `step-1/page.tsx` — calls `contactSchema.safeParse` via `validateContact`. Read `actions.ts` — parses `createCustomerInput` which embeds `contactSchema`. Single import, both ends. Then in devtools, fetch the action with a malformed body bypassing the form; action returns `{ ok: false, error: { code: 'invalid-input' } }`; audit-log unchanged.
+- **Zustand scoped to wizard only:** grep `useWizardStore`, `createWizardStore`, `WizardStoreProvider`. Hits only under `src/lib/wizard/` and `app/(app)/customers/new/`.
+- **No Server Component imports the store:** grep imports of `/lib/wizard/store` and `/lib/wizard/use-wizard-store`. Every importer has `'use client'`. The action file imports schemas, not the store. RSC body remains store-free.
+- **Audit log inside the action's transaction:** force-fail the insert by introducing a unique-constraint violation (e.g., email already in seed); action returns `{ ok: false }`; audit-log unchanged because transaction rolled back insert + audit row together. Revert.
+- **Tenancy at the action:** session A (org X) completes the wizard; submit; new customer appears in org X's list, not org Y's. `authedAction`'s session resolution + `tenantDb(ctx.orgId)` scopes the insert.
 - Name the senior calls one more time:
-  - Application-level rate limiting is non-negotiable from the public URL onward; Better Auth's built-in is off because the application-level pattern is the one place.
-  - Three limiters at module scope, distinct prefixes, `ephemeralCache` per limiter, `analytics: true`.
-  - Sign-in gates per-IP **and** per-email through one limiter with two key prefixes; both must pass.
-  - The limiter runs before the password hash and the database lookup.
-  - The 429 body is identical across gates; the structured log carries the diagnosis.
-  - `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` ship on every response; `Retry-After` adds on rejection.
-  - `safeLimit` owns the fail-open policy; flipping to fail-closed is a one-place decision.
-  - `pending` handed to `after()` keeps analytics off the response path.
-  - `getClientIp` trusts the platform's `x-forwarded-for`; non-Vercel hosts gate trust at the load balancer.
-  - `normalizeEmail` runs the same normalization the database lookup runs.
-  - Zod-validated env vars gate the limiter — boot fails fast on missing credentials.
+  - Library scoped to the leaf that meets the threshold; the rest stays Server-Component / Server-Action.
+  - Store factory uses `createStore` from `zustand/vanilla` so each provider mount creates a fresh instance — the per-request pattern.
+  - Provider on shared layout, never on step pages.
+  - Atomic selectors default; `useShallow` reserved for genuine composite mapped picks.
+  - Zod schema is the contract — same parse at client gate and server action.
+  - Store owns the draft; action owns the DB write; submit button is the seam.
+  - Success-reset fires after success; action-failure leaves draft intact.
+  - Refresh-loses is the explicit product call — anything that must survive refresh needs server-side draft persistence (out of scope).
+  - `isPending` from `useTransition` prevents double-submit.
 - Forward references:
-  - lesson 4 of chapter 078 chapter quiz — the topics covered here.
-  - chapter 067 / chapter 069 — webhook receivers carry the same shape (per-Stripe-webhook-ID, per-origin keys).
-  - chapter 072 / 23 — file uploads and AI generation endpoints copy the pattern with per-user / per-org keys.
-  - chapter 085 — security baseline audit; the limiter coverage is one of the checkpoints.
-  - chapter 092 — integration tests for `RateLimit-*` and the 429 path.
-  - chapter 096 — structured logs; `rate_limit_log` is the production-dashboard analog.
-  - Unit 22 — the "Upstash earns three more workloads" promise (cache, session-shaped tokens, dispatcher pub/sub) cashes in as triggers fire.
+  - Chapter 080 — error discipline at seams; action-failure error rendering is one audited finding (user/operator message split).
+  - Chapter 082 — security baseline audit; wizard's tenancy at the action is one audited finding.
+  - Unit chapter 070 — notifications dispatcher; a "customer created" notification routes through the dispatcher after the audit-log write, not from the submit button.
+  - Unit chapter 089 — component tests; Next-gate validity transitions and submit pending/error states are mechanical against a mocked action.
+  - Chapter 056 — active-org-switch action; production should call wizard `reset()` from inside the org-switch flow as a tenancy-boundary discipline (named once as forward pointer).
+  - Unit chapter 092 — structured logs; `customer.created` audit-log entry is operator-truth side, in-app "Customer created" notification (Unit 13) is user-facing side.
 
 Senior calls and watch-outs:
 
-- The verify lesson rehearses every failure mode the chapter exists to prevent. If a verification fails, point at the owning build lesson.
-- The cross-IP per-email proof must use the inspector's `x-forwarded-for` spoof, not real network changes — the spoof is the deterministic version of the attack.
-- The fail-open demo runs as its own dedicated step; flipping the toggle mid-verification is confusing.
-- After the chapter, spam-burst keys live in Upstash for up to the window's TTL. Resetting counters before walking away is the cleanup courtesy on a shared free-tier database.
+- Verify lesson rehearses every failure mode the chapter exists to prevent. If a verification fails, point at the owning build lesson.
+- Deliberate failure demos (remove `reset()` from success, add `reset()` to error, flip `STORE_MODULE_SCOPED`, flip `PROVIDER_ON_STEP_PAGE`, wrap factory in `persist`, replace atomic with slice-object selector) must run as named single-flag changes. Verify each in isolation, then revert.
+- Org-switch reset is a forward pointer, not implementation. The chapter does not ship it because the active-org-switch action lives in chapter 056 and the reset hook is a single line — name where it goes, don't reach in.
+- Refresh-loses is the load-bearing product decision named throughout. The chapter does not turn this into a feature flag — anything that must survive refresh would force a server-side draft table, garbage collection, surfacing-on-return UX, and tenancy on drafts. Senior call: accept refresh-loses as the product trade and call out the cost of the alternative.
 
-Codebase state at entry: full limiter wiring, three actions wrapped, Better Auth built-in off, inspector verifying surface live.
-Codebase state at exit: every "Done when" clause verified clause-by-clause; the student can articulate every primitive (`Redis.fromEnv`, three module-scope `Ratelimit` instances, sliding-window default, `prefix` discipline, dual-keying with two prefixes through one limiter, `getClientIp` + `normalizeEmail`, `safeLimit` fail-open, `rateLimitHeaders`, `rateLimitedResponse`, `after()` for `pending`, Better Auth built-in disabled) and which forward unit will lean on each.
+Codebase state at entry: full wizard + submit + success-reset + double-submit guard wired.
+Codebase state at exit: every "Done when" clause verified clause-by-clause; the student can articulate every primitive (`createStore` factory, `useRef`-pinned provider on shared layout, typed `useWizardStore<T>(selector)` hook, atomic selectors, `useShallow` for composite reads, Zod-per-step gate, Server-Action submit boundary, success-reset discipline, `useTransition` double-submit guard, refresh-loses as product call) and which forward unit will lean on it.
 
-Estimated student time: 35 to 50 minutes.
+Estimated student time: 30 to 45 minutes.

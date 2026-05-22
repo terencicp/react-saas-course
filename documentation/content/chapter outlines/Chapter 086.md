@@ -1,240 +1,177 @@
-# Chapter 086 — Project: the pre-launch audit pass
+# Chapter 086 — The shape of a test suite
 
 ## Chapter framing
 
-Chapter 086 closes Unit 17 by running the two audit passes the unit installed — the error discipline from chapter 084 (fail-closed, the user-vs-operator message split) and the security baseline from chapter 085 (headers, rate-limit coverage, audit-log gaps, GDPR posture, consent gate, secrets, env validation, dep hygiene) — against a seeded audit-target repo. The deliverable is not new code in the audit target; it is a `findings/` directory the student commits, one Markdown file per finding, every file using the rule-location-consequence-fix template. The target ships with eight planted issues, one per audit category, and the answer key (tagged `v1.0-answer-key` on `react-saas-course-projects`) is published only after the student commits. The chapter ships 1 brief + 1 walkthrough + 2 audit-pass lessons + 1 verify lesson; the "runnable state" rule lands as "the audit target still runs unchanged at the end of every lesson and the findings directory grows."
+Chapter 086 opens Unit 18 by installing the three architectural decisions every later testing lesson depends on: **which runner**, **what shape of suite**, and **what shape of a single test**. Vitest is the runner — chosen for native ESM, near-zero TypeScript config, Jest-compatible API (`describe`/`it`/`expect`), and the test-projects surface that lets one config split node-environment tests (the `/lib` and DB-touching surface) from jsdom-environment tests (the conditional component-tests surface from chapter 089). The suite shape is the **honeycomb for a Next.js SaaS**: most tests are unit tests over `/lib`; a meaningful middle layer covers integration at the seams (Server Actions, route handlers, webhook receivers, Drizzle queries against a real test Postgres); component tests and E2E are conditional. The single-test shape is **Arrange / Act / Assert, one behavior per test, descriptive name** — and the rule that survives every refactor: **test behavior, not implementation**.
 
-Threads that run through every lesson. The audit is a **read-only pass on the target codebase** — students do not patch the seeded findings, they document them; the proposed fix is a paragraph, not a diff. The **template is the contract** — every finding names its rule (from chapter 084 or chapter 085), its location (file + line range, or "missing — should be at X"), its consequence (the user-visible failure mode if exploited, or the legal exposure), and its fix (the senior reach, named with the helper or wrapper it lives in). The **eight categories are exhaustive for this audit** — anything outside them is out of scope for the pass; the student notes such observations in a separate `out-of-scope.md` rather than scoring them as findings. The **two commitments from chapter 084 carry through** — fail-closed reasoning powers the error pass; the user-vs-operator split powers the consequence column. **Coverage matters more than depth** — every category gets a finding (or a written "no findings in this category"); a deep dive on one category that leaves another silent is the failure mode. **Self-grading is the senior reach** — the answer key publishes after the student commits; partial credit goes to "rule + location correctly named, fix differs from the senior reach" because the rule is the load-bearing piece.
-
-### Dependency carry-in
-
-The audit pass invokes every rule and helper Unit 17 installed plus the canonical seams from earlier units.
-
-- **From Chapter 084:** fail-closed (lesson 1 of chapter 084); the user-vs-operator message split, the read-aloud test, the `error.tsx` discipline, the redactor (lesson 2 of chapter 084); the six seams catalog and the grep audit step per seam (lesson 3 of chapter 084).
-- **From Chapter 085:** the six non-negotiable headers and the static/dynamic split (lesson 1 of chapter 085); the seven endpoint categories and three mandatory-limiter triggers, `safeLimit` as the single seam (lesson 2 of chapter 085); the six audit-log event categories and transaction discipline (lesson 3 of chapter 085); the retention catalog and the async deletion job with three deletion shapes (lesson 4 of chapter 085); the consent gate's pre-consent boundary (lesson 5 of chapter 085); the secrets rules (no `NEXT_PUBLIC_*` for secrets, three env sets, rotation order) (lesson 6 of chapter 085); the four env-validation invariants (lesson 7 of chapter 085); pnpm 11+ supply-chain defaults (lesson 8 of chapter 085).
-- **From prior units:** `authedAction(role, schema, fn)` and `tenantDb(orgId)` from chapter 061 / chapter 063; `logAudit(tx, event)` from lesson 5 of chapter 061; the verify-then-claim-then-mutate transaction from chapter 067; `@upstash/ratelimit` with dual keying from lesson 3 of chapter 078; typed `env` from lesson 5 of chapter 004. The seeded target ships these helpers so every finding references a real call site.
-
-### Audit-target spec
-
-A separate repo at `react-saas-course-projects/error-security-audit/starter/` cloned via `degit`. The target is a fork of the course's running project around the end of Unit 16 — invoices list, CRUD, auth, organizations, RBAC, Stripe webhook, the durable export job, PostHog wired but ungated, the basic surface a senior is about to take to a launch review. Eight findings are seeded across the eight audit categories. The target runs end-to-end (`pnpm install && docker compose up -d && pnpm db:migrate && pnpm db:seed && pnpm dev`); the student navigates the running app and reads the source side-by-side. The answer key lives in `solution/findings/` on a `v1.0-answer-key` tag, accessible only after the student opens a PR with their own findings — the tag is documented in the brief but the student is on the honor system.
-
-The eight seeded findings, one per category, tuned so each lands on a rule the student has been taught (details unpacked in lesson 3 of chapter 086 and lesson 4 of chapter 086):
-
-1. **Fail-closed violation (error discipline, lesson 1 of chapter 084).** `lib/admin/transferOwnership.ts` wraps `requireRole('owner')` in a `try/catch` that logs and falls through on exception.
-2. **`dangerouslySetInnerHTML` on user content (XSS sink, lesson 2 of chapter 084 + lesson 1 of chapter 085).** `app/(app)/invoices/[id]/notes.tsx` renders the user-submitted note body as raw HTML.
-3. **Missing audit-log write (audit log gap, lesson 3 of chapter 085).** `lib/billing/transferOwnership.ts` updates `organizations.ownerId` without `logAudit(tx, event)` inside the transaction.
-4. **CSP header omission (security headers, lesson 1 of chapter 085).** `next.config.ts` ships HSTS but no CSP; `proxy.ts` does not generate a per-request nonce.
-5. **Secret in `NEXT_PUBLIC_*` (secrets, lesson 6 of chapter 085).** `NEXT_PUBLIC_RESEND_API_KEY` consumed by a Client Component that calls Resend from the browser.
-6. **Missing rate limit on password-reset (rate-limit coverage, lesson 2 of chapter 085).** `app/api/auth/reset-password/route.ts` triggers Resend with no limiter.
-7. **Outdated dep + missing pnpm 11+ defaults (dep hygiene, lesson 8 of chapter 085).** A pinned dep with a synthetic CVE; `.npmrc` missing `minimumReleaseAge` and `blockExoticSubdeps`.
-8. **GDPR deletion leaves rows behind (lesson 4 of chapter 085).** `lib/account/deleteAccount.ts` deletes the `users` row only — no graph walk, no externals, no audit-log anonymization.
-
-The answer key also acknowledges two bonus findings a thorough audit surfaces: (9) a missing consent gate on PostHog (`opt_out_capturing_by_default: false`), and (10) a `safeLimit` bypass on a worker endpoint. The brief names "8 is the floor, 10 is the senior reach."
-
-### Finding template (`findings/template.md`)
-
-The provided template the student copies once per finding:
-
-```
-# Finding NNN — <short title>
-
-**Category:** one of the eight audit categories.
-**Severity:** critical | high | medium | low (senior call, justified in two lines).
-
-## Rule
-The named rule from chapter 084 or chapter 085 this finding violates. One sentence; link the lesson section by ID.
-
-## Location
-File path(s) and line range(s). For "missing-piece" findings, name the file where the piece should live.
-
-## Consequence
-The failure mode in user-visible or legal terms. Two to four sentences. No "could potentially" hedging.
-
-## Fix
-The senior reach, named in terms of the helper / wrapper / config block it lives in. Five to ten lines.
-A short illustrative snippet is allowed when the fix is structural — no full diffs.
-```
-
-`findings/` ships with the template plus a numbered placeholder per category (`001-fail-closed.md`, `002-xss-html-sink.md`, … `008-gdpr-deletion.md`); the student replaces the placeholder body with their finding. Out-of-scope observations go in `findings/out-of-scope.md`.
-
-### Verify recipe mapped to "Done when"
-
-| Done-when clause | Verify step |
-| --- | --- |
-| Audit report surfaces all eight seeded findings | The student's `findings/00N-*.md` files cover all eight categories with rule + location + consequence + fix; the answer-key diff is the join. |
-| Each finding has rule, location, consequence, and proposed fix | Template adherence: every file has all four sections, no blanks. |
-| Missing findings are quantified at the bottom | `findings/SUMMARY.md` lists coverage (8/8, 7/8, etc.) and names any miss with one sentence of why it was missed. |
-| Self-graded against the published answer key | After commit, the student checks out `v1.0-answer-key` and runs the comparison: rule match, location match, consequence match, fix match — partial credit for "rule + location match, fix differs." |
-
-### Concepts demonstrated → owning lesson
-
-- The fail-closed rule and the canonical fail-open failure modes — lesson 1 of chapter 084.
-- The two-message rule (user vs. operator), the read-aloud test, the redactor — lesson 2 of chapter 084.
-- The six seams catalog and the per-seam audit step (grep targets) — lesson 3 of chapter 084.
-- Security headers (HSTS, CSP with nonce + `'strict-dynamic'`, etc.) and the `next.config.ts` / `proxy.ts` split — lesson 1 of chapter 085.
-- Rate-limit coverage matrix and the three mandatory-limiter triggers — lesson 2 of chapter 085.
-- Audit-log canonical event set, transaction discipline, payload redaction — lesson 3 of chapter 085.
-- GDPR retention catalog + the async deletion job + the three deletion shapes — lesson 4 of chapter 085.
-- The consent gate's load-bearing rule (nothing fires pre-consent) — lesson 5 of chapter 085.
-- Secrets in code / in `NEXT_PUBLIC_*` / rotation order — lesson 6 of chapter 085.
-- Env-validation invariants and the typed `env` import — lesson 7 of chapter 085.
-- pnpm 11+ supply-chain defaults — lesson 8 of chapter 085.
-- The Server-Action / route-handler wrappers as the single place to lint — lesson 2 of chapter 061, lesson 3 of chapter 061, lesson 3 of chapter 084.
-- `dangerouslySetInnerHTML` as an XSS sink even with strict CSP — lesson 1 of chapter 085 (CSP defense in depth), chapter 030 (React fundamentals).
-- The `processed_events` dedup pattern and the verify-then-claim-then-mutate transaction — chapter 067.
+Threads that run through every lesson. Vitest is **the** runner — Jest is named once and never again. The honeycomb is **not a pyramid** for a Next.js SaaS — bug density shifts toward the seams where the framework, the database, the auth layer, and the third-party APIs meet, and the suite shape follows the bug density. Coverage is a **diagnostic, not a target** — 100% coverage is the canonical theatre metric the senior reads as a code smell; the reach is per-directory thresholds on `/lib` and the seams, an absence-of-tests audit on the files coverage doesn't reach. The single-test rule is **behavior over implementation** — a test that breaks on a rename is testing implementation; a test that survives the rename is testing behavior. The chapter is short (four teaching lessons plus the quiz); it exists so 091 through 095 can lean on these decisions without re-justifying them.
 
 ---
 
-## Lesson 1 — Eight categories, one template
+## Lesson 1 — Picking Vitest and wiring the runner
 
-Teaches the audit's coverage contract — the eight categories drawn from chapter 084 and chapter 085, the rule-location-consequence-fix template, the read-only scope, and the honor-system answer-key tag.
+Installs Vitest as the 2026 runner, walks `vitest.config.ts` with `globals: false` and `vite-tsconfig-paths`, and splits node from jsdom suites via test-projects.
 
-Goals:
+Topics to cover:
 
-- Frame what's being built: the audit pass that chapter 084 and chapter 085 install, run against a seeded target. The deliverable is a `findings/` directory the student commits, not patches to the audit target. Eight categories; one or more findings per category.
-- State the "Done when" verifications in one paragraph (all eight seeded findings surfaced with rule + location + consequence + fix; misses quantified; the report is self-graded against the answer key once committed).
-- Walk the eight audit categories and the rule each anchors on, with the owning lesson ID. The student should read this list as the audit's coverage contract: error discipline (1) fail-closed checks, (2) user-vs-operator message split, (3) `dangerouslySetInnerHTML` and other XSS sinks, and security baseline (4) security headers, (5) rate-limit coverage, (6) audit-log gaps, (7) secrets / env / GDPR posture (the three are linked; secrets first), (8) dep hygiene. Eight categories, eight (or more) findings.
-- Show the rule-location-consequence-fix template and walk the canonical filled example (one of the modeled findings from lesson 3 of chapter 084's exercise). Linger on the consequence column: it must be user-visible or legal — "an attacker could escalate privileges" is right; "code smell" is wrong.
-- Name the scope cuts: not a full pen test (no fuzz testing, no SAST scanner output read end-to-end — `pnpm audit` is the one tool we run); not a code-quality review (no architectural critiques outside the eight categories — those go in `out-of-scope.md`); not a performance audit (Unit chapter 099 is the observability + performance audit on the same target); not a UX audit; the audit is read-only — the student does not patch the target.
-- Set the senior payoff: the audit pass is the discipline every senior runs (with adjustments per stack) before a launch review. The same template, the same eight categories, the same grep targets. The artifact is portable — the student takes this `findings/` shape into every later job.
-- Name the answer-key contract: the answer-key tag is published from day one but the student is on the honor system not to check it out until their findings are committed. The senior call: a real audit has no answer key — running it under the constraint of "no peeking" is the rehearsal.
-- Show one screenshot of a filled finding (the modeled one) and one of the `findings/` directory layout.
-- Link the starter via `degit`; name the answer-key tag.
+- **The senior question.** A Next.js 16 SaaS in 2026 needs a test runner. Two candidates land — Jest (the historical default) and Vitest (the Vite-native runner, Jest-compatible API). The threshold: which one starts faster, understands ESM and TypeScript without a 100-line config, and runs the same tests across the node and jsdom environments the codebase actually has? The lesson installs Vitest, walks the install, names the config surface, and lands the test-projects pattern that splits node-environment from jsdom-environment tests in one config.
+- **Why Vitest and not Jest.** Native ESM (no `babel-jest`/`ts-jest` plumbing). TypeScript out of the box. API surface is Jest-compatible (`describe`, `it`, `expect`, `beforeEach`, `vi.fn()` where Jest writes `jest.fn()`) so any migration from Jest is mechanical. Watch mode is "HMR for tests" — changed file plus dependents re-run, not the whole suite. Vitest 3 (January 2025) is the line the project pins to; Vitest 4 (the awaited-assertion enforcement) is the upcoming change to flag in watch-outs. Jest is named here once as "the predecessor"; the rest of the unit does not return to it.
+- **The install — node 26 / pnpm.** `pnpm add -D vitest @vitest/coverage-v8` is the baseline. `@vitest/ui` lands when the team wants the dashboard. `jsdom` and `@testing-library/react` come in conditionally with chapter 089 — not installed here. `package.json` scripts: `"test": "vitest"`, `"test:run": "vitest run"`, `"test:coverage": "vitest run --coverage"`. `vitest` (no args) is the watch reflex locally; `vitest run` is what CI calls.
+- **`vitest.config.ts` — the one config.** A `defineConfig` with `test` options. Defaults installed: `globals: false` (the senior reach — import from `'vitest'` per file, no ambient globals; codebase stays grep-able), `environment: 'node'`, `setupFiles: ['./vitest.setup.ts']`, `include: ['src/**/*.{test,spec}.{ts,tsx}']`, `exclude` adds `'node_modules', 'dist', '.next'`. Path aliases (`@/lib`) come from `tsconfig.json` via `vite-tsconfig-paths`. Senior anchor: every option is named with intent; defaults are not blindly accepted.
+- **Test-projects — the multi-environment split.** Vitest v3's `test.projects` (renamed from `workspaces`) lets one root config define multiple projects, each with its own environment, setup, include glob. The course's split: **`unit`** (`environment: 'node'`, `include: ['src/lib/**/*.test.ts']`); **`integration`** (`environment: 'node'`, files filtered by `*.int.test.ts` convention, DB lifecycle from chapter 088); **`component`** (conditional, lands in chapter 089 — `environment: 'jsdom'`). `vitest --project unit` runs one slice; `vitest` runs all.
+- **The runner model — files in workers, tests sequential by default.** Each test file gets a worker (`worker_threads` default; `forks` for libraries that don't play well with workers); files run in parallel, tests within a file run sequentially. Implications: file-level isolation is free (a module mock in file A doesn't leak to file B); test-level isolation inside a file requires `beforeEach` discipline. Parallel-by-default is why the chapter teaches "no run-order dependency, no shared state" from day one.
+- **The Jest-compatible API surface the course uses.** `describe`, `it`, `expect` matchers (`toBe`/`toEqual`/`toContain`/`toThrow`/`toMatchObject`); `beforeEach`/`afterEach`/`beforeAll`/`afterAll`; `vi.fn()`, `vi.spyOn(obj, 'method')`, `vi.mock(moduleSpecifier, factory?)` (hoisted — `vi.doMock` for runtime scoping); `vi.useFakeTimers()` / `vi.setSystemTime()` (lesson 3 of chapter 087 owns depth). Small surface on purpose — these are what every test in the course imports.
+- **`it.concurrent` and `describe.concurrent`.** Tests in a `describe.concurrent` block run in parallel; opt in only when tests are genuinely independent. The Vitest 3 rule: assertions in a concurrent test must use `expect` from the test context (`async ({ expect }) => ...`) or snapshot attribution lands on the wrong test. Name once; do not lean on it in exercises.
+- **Watch mode.** `vitest` runs in watch by default; saved files trigger only dependent tests. Press `p` to filter by file pattern, `t` to filter by test name, `q` to quit. HMR-shaped feedback is why the runner is fast enough to leave running while editing.
+- **The `expect` surface — typed matchers.** `expect<T>(actual).toBe(expected)` infers; catches comparing `Temporal.Instant` to a string at the matcher level. `expect.assertions(n)` and `expect.hasAssertions()` guard async tests that might not reach their assertions (the forgotten-`await` trap; lesson 5 of chapter 087 owns depth). Vitest 4 turns the missing-await into a failure — write tests as if v4 has already landed.
+- **`expectTypeOf` and `assertType`.** Vitest bundles `expectTypeOf<X>().toEqualTypeOf<Y>()` and `assertType<X>(value)` natively. Files named `*.test-d.ts` are picked up as type tests; `vitest --typecheck` runs them. Forward reference to lesson 4 of chapter 087; named here so the runner's full surface is on the table.
+- **The `vitest.setup.ts` file.** One file, imported via `setupFiles`, runs before each test file. Baseline: load `dotenv` for `.env.test`, set `process.env.TZ = 'UTC'` to match production from lesson 1 of chapter 083, register global cleanups (`afterEach(cleanup)` lands here when jsdom comes in). Rule: setup is for *every* test; per-feature fixtures live in `src/test/fixtures/` and import where needed.
+- **`vitest run` vs. `vitest`.** CI calls `vitest run --reporter=junit --reporter=default` (the JUnit XML reporter for GitHub Actions; chapter 097 wires it). Locally, `vitest` is watch; `vitest --ui` opens the dashboard for heavy debug sessions. Never run `vitest` (watch) in CI — the test job hangs.
+- **Coverage — the v8 provider.** `@vitest/coverage-v8` uses Node's built-in V8 coverage (faster, no source instrumentation); `@vitest/coverage-istanbul` is the alternative when V8's coverage doesn't fit (rare). Thresholds and excludes land in the next-but-one lesson.
+- **`vitest --typecheck`.** Runs the TypeScript compiler against `*.test-d.ts` and surfaces type errors as test failures. Useful for catching regressions in the type-level guarantees from Unit 1; depth in lesson 4 of chapter 087.
+- **Watch-outs.** Leaving `globals: true` ambient — refactor tools lose a hook; running `vitest` (watch) in CI hangs the job — always `vitest run`; importing from a project's barrel file that triggers framework runtime pulls Next.js into the test runtime and slows the suite — import the specific module; `vi.mock` is hoisted by the Vite transform; reaching for a local variable from inside the mock factory is a TDZ error — use `vi.importActual(...)` and `vi.hoisted(...)`; a `setupFiles` import that loads the Drizzle client at module evaluation time opens a DB connection on every test file — keep DB setup in the integration project's setup file.
 
-Senior calls and watch-outs:
+What this lesson does not cover:
 
-- The audit reads top-down: start at the eight categories, find one finding per category, then iterate to depth. Inverting the order — find every issue then bucket them — runs into the "depth on one category, silence on another" trap.
-- Coverage matters more than depth. A short finding in every category is the senior delivery; a deep dive on CSP that leaves audit logs unaddressed is a fail.
-- The consequence column is read aloud at the launch review by someone who has not read the code. If it is not user-visible or legally actionable, rewrite it.
-- "Missing piece" findings are valid — a CSP that does not exist is a finding, not "not applicable." Location is "missing from `next.config.ts`" or "should be added at `proxy.ts`."
+- The honeycomb suite-shape rationale — lesson 2 of chapter 086.
+- Coverage thresholds and the "100% as theatre" rule — lesson 3 of chapter 086.
+- The AAA single-test shape — lesson 4 of chapter 086.
+- Unit-test surface for `/lib` — Chapter 087.
+- The test-DB lifecycle, MSW, transaction rollback — Chapter 088.
+- React Testing Library setup, jsdom configuration — Chapter 089.
+- Playwright (separate runner) — Chapter 090.
+- CI wiring (GitHub Actions, JUnit reporter) — Chapter 097.
 
-Codebase state at entry: empty repo (student runs `degit`).
-Codebase state at exit: the audit target cloned, `pnpm install` clean, `docker compose up -d` running Postgres, `pnpm db:migrate && pnpm db:seed && pnpm dev` shows the running app on `:3000`, the `findings/` directory created with the template and eight numbered placeholder files. No finding bodies written yet.
-
-Estimated student time: 15 to 20 minutes.
-
----
-
-## Lesson 2 — Tour the target, model finding one
-
-Teaches the audit target's file tree and canonical helpers, the running-app reading rhythm, and walks the fail-closed finding in `lib/admin/transferOwnership.ts` end-to-end as the reference shape.
-
-Goals:
-
-- Walk the audit target's file tree, calling out the eight directories where findings cluster: `next.config.ts` and `proxy.ts` for headers; `lib/admin/`, `lib/billing/`, `lib/account/` for action wrappers and ownership / billing / deletion paths; `app/api/auth/` for the auth endpoints and rate-limit coverage; `lib/env.ts` and `.env.example` for env / secrets; `app/(app)/invoices/[id]/` for the invoice notes XSS sink; `.npmrc` and `package.json` for dep hygiene; the `lib/admin/transferOwnership.ts` and `lib/account/deleteAccount.ts` files for the audit-log and GDPR seams.
-- Read the existing helpers the audit is run against: `lib/authed-action.ts` (the canonical wrapper from lesson 2 of chapter 061), `lib/safe-limit.ts` (the rate-limiter wrapper with the documented fail-open carve-out from lesson 3 of chapter 084), `lib/audit-log.ts` (the transaction-scoped writer from lesson 5 of chapter 061), `lib/env.ts` (the `@t3-oss/env-nextjs` schema from lesson 5 of chapter 004), `lib/rate-limit.ts` (the limiter declarations from lesson 3 of chapter 078 with the seeded gap on password-reset). These are the canonical seams — every finding refers back to one of them.
-- Read the running app: navigate the dashboard as the seeded admin user; create an invoice; add a note that includes a tame `<b>tag</b>` and watch it render as raw HTML — the fingerprint of finding 2. Open DevTools network tab and watch a Client Component fire a request that carries the `NEXT_PUBLIC_RESEND_API_KEY` — the fingerprint of finding 5. Open the password-reset form and submit it ten times in a row — no 429 — the fingerprint of finding 6. The student is taught to read the running app as a complement to the source; some findings (a missing header, a leaked secret) show up faster in the browser than in the diff.
-- Model one finding end-to-end: walk finding 1 (the fail-closed violation in `lib/admin/transferOwnership.ts`). Read the file, point at the `try/catch` around `requireRole('owner')`, point at the catch block that logs and continues. Quote the failure mode (a Postgres blip during the membership read silently allows an owner-only mutation; a malicious user who triggers a connection blip — or a panicked operator who runs `kill` on a slow query — can use the window). Name the rule with the lesson ID (lesson 1 of chapter 084 — "errors fail closed"). Walk the fix: remove the try/catch, let `requireRole` throw, let the outer `authedAction` wrapper convert the throw to `{ ok: false, error: { code: 'unauthorized' } }` per lesson 3 of chapter 084's seam-1 reading. Write the finding into `findings/001-fail-closed.md` with all four sections filled. The lesson surfaces the *shape* of a finding before the student writes their own; finding 1 is the gift the student starts with.
-- The modeled-finding sub-section is the chapter's reference shape; the student re-reads it whenever a later finding feels stuck.
-- Name the audit cadence: open the running app, open the source, hold both side-by-side, walk one category at a time, write the finding before moving on. Switching categories mid-finding fragments the report.
-
-Senior calls and watch-outs:
-
-- The audit target ships with all the canonical helpers — `authedAction`, `safeLimit`, `logAudit`, `tenantDb`, the typed `env`. Findings live in the call sites that *bypass* the helpers, not in the helpers themselves. Reading the helpers first calibrates the eye for the bypass.
-- The "missing piece" findings (CSP, password-reset rate limit) are read off the running app, not the source. Curl the app for the headers (`curl -I http://localhost:3000`); spam the auth endpoint with a small script. The browser-side audit is half the pass.
-- Finding 1 is the freebie; the student should not skip it. Writing one full finding in the template before tackling the rest is the rhythm-setting move.
-- The consequence column for finding 1 names the *user-visible failure mode* (an unauthorized ownership transfer) and the *operator failure mode* (the fail-open dressed as "we log it then continue"). Both audiences land in the consequence; the user-visible side carries the weight.
-
-Codebase state at entry: target cloned and running; empty findings placeholders.
-Codebase state at exit: target unchanged; `findings/001-fail-closed.md` filled in (the modeled finding); the student has navigated the running app, walked the eight category locations, and read the canonical helpers. Seven placeholder files remain empty.
-
-Estimated student time: 35 to 45 minutes.
+Estimated student time: 35 to 45 minutes. Setup-and-wiring lesson; the rest of the unit assumes this is on disk.
 
 ---
 
-## Lesson 3 — Error-discipline pass
+## Lesson 2 — The honeycomb shape for a Next.js SaaS
 
-Teaches the grep-driven audit of the three error-discipline categories — fail-closed bypasses, the user-vs-operator message split, and `dangerouslySetInnerHTML` plus adjacent XSS sinks — and surfaces findings one, two, and three.
+Names the honeycomb over the pyramid and trophy, sets integration at the seams as the center of gravity, and gates component and E2E tests behind triggers.
 
-Goals:
+Topics to cover:
 
-- Walk the three error-discipline categories and surface a finding per category. The lesson is grep-heavy — every audit step has a concrete command — and the student writes three finding files by the end.
-- **Category 1 — fail-closed checks (finding 1 already modeled).** Re-confirm the modeled finding in `lib/admin/transferOwnership.ts`. Run the audit step from lesson 3 of chapter 084: grep `'use server'` in files that don't import `authedAction`, grep for `try { await require` patterns. Some hits are legitimate (the sign-up action — public by design, different wrapper); the rest are findings. The seeded target has the one fail-closed bug, but the audit step itself is the deliverable — the student documents which grep commands they ran and how many hits each returned.
-- **Category 2 — user-vs-operator message split.** Walk the four sub-rules: (a) no `error.message` rendered to the user in `error.tsx`, (b) no inner `cause` exposed in user-rendered strings, (c) no raw Postgres error codes / constraint names in the user message, (d) the redactor is wired in Sentry's `beforeSend` and the structured logger. Audit steps: grep `error.message` in `app/**/error.tsx` and in JSX; grep for `cause:` reads in user-facing components; grep for `error.code === '23505'` patterns landing in user strings; open `lib/sentry.ts` and confirm `beforeSend` runs the redactor. The seeded target has the audit log gap (finding 3) which lands in this lesson as well — naming the missing `logAudit` call is a message-split-adjacent finding because the *operator record* is what's missing.
-- The lesson splits finding 3 across categories 2 and 6 — the audit-log gap is *primary* in category 6 (audit-log gaps); category 2 mentions it for completeness when the message-split discussion lands. The student writes the finding once, in `findings/003-audit-log-ownership-transfer.md`.
-- **Category 3 — `dangerouslySetInnerHTML` and other XSS sinks.** The grep target: `dangerouslySetInnerHTML` across the codebase. Each hit is examined; the seeded target has one in `app/(app)/invoices/[id]/notes.tsx`. The student walks finding 2 — the user content rendered raw, the failure mode (stored XSS in any org's invoice notes), the rule (the rendered content is operator-trustworthy or it isn't; user-submitted is never operator-trustworthy without sanitization), the fix (sanitize at write *and* read; store the sanitized output). Adjacent grep targets named for completeness: `eval`, `new Function`, `setTimeout(string, ...)`, `innerHTML =` direct assignments — none seeded in the target but named so the student knows the shape.
-- Tie the XSS finding back to category 4 (security headers, lesson lesson 4 of chapter 086): strict CSP with a nonce is the *defense in depth* but does not save a `<img onerror="...">` payload — the lesson surfaces the layering. Finding 2 stays in category 3 (the sink itself); finding 4 (missing CSP) lands in category 4. The student writes them as separate findings; the senior framing is "two findings, one threat model, two layers of defense to restore."
-- Write the three findings: `001-fail-closed.md` (re-confirmed from lesson 2 of chapter 086; if the modeled body needs adjustments after the deeper read, revise), `002-xss-html-sink.md`, and `003-audit-log-ownership-transfer.md` (touched here in category 2 framing, primary location for the body is `findings/`'s slot 3 — the lesson permits writing it now, or deferring the body to lesson 4 of chapter 086's audit-log pass).
-- Run the audit summary at the end: three findings written, the grep commands run and their hit counts, the bypass call sites named.
+- **The senior question.** A Next.js 16 SaaS has roughly four bug layers: pure logic in `/lib` (validators, mappers, error-code mapper, Temporal codecs); the seams where the framework, the database, the auth layer, and third-party APIs meet (Server Actions, route handlers, webhook receivers, Drizzle queries, the rate limiter); presentational and interactive components; end-to-end money paths (auth, checkout). The classic test-pyramid prescription is "many unit tests, fewer integration, very few E2E" — right for a backend with deep business logic, wrong for this codebase. The framework owns most orchestration; bugs cluster at the boundaries. The right shape is the **honeycomb**: a meaningful slab of integration tests at the seams, a wide base of unit tests for pure logic, thin component and E2E layers gated by trigger.
+- **The honeycomb, named.** Spotify's testing honeycomb (Martin Fowler catalogs it) places the center of gravity on **integration** tests. Suits microservices and any architecture where most behavior is interaction with external systems. A Next.js SaaS in 2026 fits — Server Components and Server Actions are framework-orchestrated, the database is external, Stripe is external, Resend is external. The bugs are at the boundaries.
+- **Honeycomb vs. pyramid vs. trophy.** The pyramid is right when the system has a deep, framework-independent business-logic core (banking back-ends, simulation engines). The trophy (Kent C. Dodds, often shown for front-end-heavy apps) adds component tests as a third layer. The honeycomb is the senior pick for a Next.js SaaS because the business logic is shallow per-feature, the framework owns orchestration (component tests over framework-owned trees re-test the framework), and value-per-test is highest at the seams. Three shapes named, the course pins to the honeycomb.
+- **What lives in each band.** **Unit (wide base)** — every file in `/lib` ships a test; validators (Zod schemas), error mappers, Temporal codecs, the redactor, pure data transformations, type-level tests for the moves from Unit 1 (narrowing, branding, discriminated unions). **Integration (center of gravity)** — every Server Action, every route handler, every webhook receiver, every Drizzle query helper, auth fixtures, rate-limiter wrapper; MSW at the network boundary (lesson 4 of chapter 088), real test Postgres with transaction rollback (lesson 1 of chapter 088). **Component (thin)** — only when the trigger is met (shared component library, complex stateful component, critical UX path); chapter 089 owns the trigger. **E2E (thinner)** — the 20–30 paths where failure costs real money (auth, checkout, Stripe-touching flows); chapter 090 owns the trigger; some 2026 SaaS skip E2E in year one.
+- **The bug-density argument.** Bugs in a Next.js SaaS cluster at the seams — the cross-tenant query that forgot the `orgId` filter, the Server Action that didn't go through `authedAction`, the webhook receiver that JSON-parsed before signature verification, the cache tag that mismatched the read tag, the rate-limiter that swallowed the Redis throw and let the action proceed. None surface in a unit test of a pure function. They surface in integration tests against a real test database with a real auth fixture. The honeycomb's center of gravity follows the bug density.
+- **"Shape follows the bug" rule.** The senior reach is not "this is the shape, write to it" but "where do the bugs land, write the test at that layer." For `/lib` purity, bugs land inside the function; unit test. For Server Actions, at the wrapper-to-business-logic seam; integration test. For UI, mostly visual or framework-mediated, best caught by manual review and Playwright on money paths. The shape is a consequence of the rule, not a prescription.
+- **What the honeycomb is not — coverage targets.** The shape names where tests live, not how many of each. A year-one SaaS might ship 200 unit, 80 integration, 0 component, 4 Playwright tests; year-three integration count might pass unit count as the seam surface grows. The shape adjusts to the codebase.
+- **The conditional-trigger pattern at the suite level.** Both component tests (chapter 089) and E2E (chapter 090) are conditional in the same sense Chapter 16's TanStack Query and Zustand are: they earn weight against a named threshold. The course's "default by capability, conditional reach with a named trigger" pattern applied to the test suite the same way it's applied to the runtime stack.
+- **The "test at the seam, not the unit" model for integration.** The senior question for any integration test is "what's the seam this exercises?" — `authedAction`, `authedRoute`, webhook receiver, rate-limiter, the `error.tsx` boundary, the Drizzle query helper. The seam catalog from lesson 3 of chapter 080 is the integration-test catalog. Each seam gets coverage on the fail-closed branch and the message-split branch.
+- **What does not get a test.** **The framework's surface** — a page that calls `requireOrgUser()` and renders a list: routing, server rendering, the cache are the framework's job. The component's render output and the data-fetching function are exercised at unit and integration levels. Tests against `<Link>`, `<Image>`, `redirect()`, `notFound()`, App Router segment behavior — out of scope. **UI plumbing without behavior** — a presentational component with no state earns no test; snapshot tests pay off only on contracts the caller depends on (email templates, RFC 9457 bodies), not on every `<Card>`.
+- **The honeycomb diagram.** A mermaid figure with four horizontal bands; the middle band (integration) drawn wide, unit base wide but shorter, component and E2E thin. Annotated with the "what lives here" callouts. Visual anchor for the rest of the unit.
+- **Cost-per-test as the secondary axis.** Unit: ms to write, ms to run, no fixtures. Integration: minutes to write (fixtures, mocks, DB setup), tens of ms to run, real DB. Component: minutes to write (DOM queries, async user events), hundreds of ms to run, jsdom overhead. E2E: tens of minutes to write, seconds to run, browser overhead, flake risk. The honeycomb optimizes value-to-cost for this codebase's bug distribution.
+- **"Server Actions and webhook receivers are integration tests."** A Server Action under test is not pure — it reads the session, parses input, calls into Drizzle, writes the audit log, returns a `Result`. Unit-testing an inner business function extracted from the action is fine for non-trivial logic; testing the action itself requires the seam.
+- **Forward references.** Chapter 087 owns `/lib` unit tests. chapter 088 owns integration at the seams. chapter 089 owns component tests with the trigger. chapter 090 owns E2E with the trigger. chapter 091 is the project on the Stripe checkout flow.
+- **Watch-outs.** Treating the honeycomb as a coverage prescription — the shape names where bugs land, not numbers; defaulting to component tests because the front-end is visible — the bugs usually live elsewhere; skipping integration tests because "unit tests cover the same code" — they don't, the seam is the test; writing E2E tests as a coverage tool — flake destroys the signal and the suite gets ignored; testing the framework is the framework's responsibility; "we have tests" is not the bar — "do the tests fail on the bugs that ship" is the bar.
 
-Senior calls and watch-outs:
+What this lesson does not cover:
 
-- The grep commands are the load-bearing tool. A finding without a grep target the student can show in the report is a "code review opinion," not an audit finding. Every finding's location section names the command that surfaced it.
-- The XSS finding (2) is the kind a senior catches at the first read of the rendered DOM. The fix is *not* "disable rich text" — many products need rich text. The senior fix is "sanitize at write *and* read, store sanitized." Naming "I'll just sanitize at write" misses the historical-data attack vector (a write before the sanitizer was added still ships).
-- The audit-log finding (3) is the kind that hides easily — there's no error, no broken behavior, nothing renders wrong. The audit catches it only by reading the canonical event set (lesson 3 of chapter 085) and checking each mutation against it. Pattern matching on "this mutation touches a security-relevant field, does it write an audit-log entry?" is the senior reflex.
-- Finding 2's CSP defense (finding 4) is the textbook "single layer is not enough" lesson. The student should read the two findings as a pair when writing them.
+- Runner setup and config — lesson 1 of chapter 086.
+- Coverage philosophy and thresholds — lesson 3 of chapter 086.
+- The AAA single-test shape — lesson 4 of chapter 086.
+- The unit-test surface for `/lib` — Chapter 087.
+- The seam-by-seam integration coverage — Chapter 088.
+- Component-test trigger and React Testing Library — Chapter 089.
+- E2E trigger and Playwright — Chapter 090.
+- Contract testing (Pact-style) — out of scope; MSW handlers are the contract surface (lesson 5 of chapter 088).
+- Mutation testing — out of scope.
 
-Codebase state at entry: target unchanged; finding 1 written from lesson 2 of chapter 086; seven placeholders empty.
-Codebase state at exit: target unchanged; findings 1, 2, and 3 written in `findings/`; the grep audit log is reproducible (commands documented). Five placeholders remain empty (4, 5, 6, 7, 8 — headers, secrets/`NEXT_PUBLIC_*`, rate limits, dep hygiene, GDPR deletion).
-
-Estimated student time: 60 to 75 minutes.
-
----
-
-## Lesson 4 — Security-baseline pass
-
-Teaches the curl-and-grep audit of the five remaining categories — security headers, rate-limit coverage, audit-log gaps, secrets and env validation with GDPR deletion, and pnpm 11+ supply-chain defaults — and surfaces findings four through eight plus the two bonus senior-reach findings.
-
-Goals:
-
-- Walk the five remaining security-baseline categories and surface one finding per category. Same rhythm as lesson 3 of chapter 086: a documented audit step per category (a curl, a grep, a config-file read), then the rule-location-consequence-fix template, then the next category.
-- **Category 4 — security headers.** Audit step: `curl -I http://localhost:3000/` and read the response; open `next.config.ts` (the `headers()` block) and `proxy.ts` (nonce generation). The seeded target ships HSTS and `X-Content-Type-Options` but no CSP, `Referrer-Policy`, `Permissions-Policy`, or `frame-ancestors`. Finding 4 names the rule (lesson 1 of chapter 085's CSP with per-request nonce + `'strict-dynamic'`), the location (missing from `next.config.ts` and `proxy.ts`), the consequence (no defense-in-depth against the XSS in finding 2 or any future sink), and the fix (static CSP in `next.config.ts`, per-request nonce in `proxy.ts`, `x-nonce` header for Server Components, the marketing-site trade-off acknowledged). `securityheaders.com` is the alternative tool for the curl pass.
-- **Category 5 — rate-limit coverage.** Audit step: open `lib/rate-limit.ts` and read the declared limiters; open `app/api/auth/*/route.ts` and confirm each handler runs through `safeLimit`. Seeded gap: `app/api/auth/reset-password/route.ts` has no limiter. Finding 6 names the rule (lesson 2 of chapter 085's three triggers; password-reset hits two — costs money via Resend, attacks a third party via the user's inbox), the consequence (mass spam, account-enumeration, inbox-bomb), the fix (declare `passwordResetLimiter` with per-IP + per-email keying, wrap with `safeLimit`, emit `RateLimit-*` headers, generic 429 body). The student also attaches the coverage matrix from lesson 2 of chapter 085 (endpoint category, file, limiter, key strategy, coverage Y/N) to the fix.
-- **Category 6 — audit-log gaps.** Audit step: walk the canonical six-category event set from lesson 3 of chapter 085 against every mutation in `lib/`; grep `db.transaction` and `.update(` to confirm each security-relevant mutation calls `logAudit(tx, event)`. Seeded gap: `lib/billing/transferOwnership.ts` updates `organizations.ownerId` silently. Finding 3 (written here if deferred from lesson 3 of chapter 086) names the rule, the location, the consequence (compliance auditor blind to the ownership history; the customer-facing Activity page silent on one of the most security-relevant events), and the fix (add `org.ownership.transferred` to the canonical set, write inside the transaction, redacted payload `{ previousOwnerId, nextOwnerId }`).
-- **Category 7 — secrets and env validation (combined since they share `lib/env.ts`).** Audit step: grep `NEXT_PUBLIC_*` in `.env.example` and `lib/env.ts`; grep `process.env.` outside `lib/env.ts`; check `SKIP_ENV_VALIDATION` usage. Seeded gap: `NEXT_PUBLIC_RESEND_API_KEY` consumed by a Client Component. Finding 5 names the rule (lesson 6 of chapter 085's no-secrets-in-`NEXT_PUBLIC_*` plus lesson 7 of chapter 085's server/client split that the prefix bypassed), the consequence (the key ships in the client bundle; an attacker mails from the verified domain — domain-reputation hit, deliverability loss, customer-base phishing risk), and the fix (move the call to a Server Action, rename to `RESEND_API_KEY` in the `server` partition, run the rotation runbook from lesson 6 of chapter 085 with Vercel-before-provider order). The follow-up lint rule (no `NEXT_PUBLIC_*` matching `*_KEY` / `*_SECRET` / `*_TOKEN`) is noted.
-- **Category 7 (continued) — GDPR deletion.** Audit step: open `lib/account/deleteAccount.ts` and walk the data graph — every table holding the deleted user's data, every external. Seeded gap: only the `users` row gets deleted; `org_members`, `invitations`, `audit_logs`, Stripe, Resend, PostHog, R2 — all untouched. Finding 8 names the rule (lesson 4 of chapter 085's async deletion job with the three deletion shapes; audit logs anonymized, never hard-deleted), the consequence (PII persists past a successful deletion request; Article 17 legal exposure; the confirmation email is a lie), and the fix (route through the async Trigger.dev `deleteUser` job, mark `deletion_in_progress` to block sign-in, anonymize audit-log rows, call Stripe / Resend / PostHog deletes, log `account.deletion.completed`).
-- **Category 8 — dep hygiene.** Audit step: open `.npmrc` and check for `minimumReleaseAge`, `blockExoticSubdeps`, `only-built-dependencies`; run `pnpm audit --prod` and read the output; confirm `packageManager` in `package.json`; confirm CI uses `--frozen-lockfile`. Seeded gaps: missing `.npmrc` settings; one outdated pin flagged by audit. Finding 7 names the rule (lesson 8 of chapter 085's pnpm 11+ defaults; the 24-hour `minimumReleaseAge` is the pre-install defense against typosquats and maintainer compromises like the Shai-Hulud vector), the consequence (a malicious release lands the day it ships; the project has no defense; `pnpm audit` is a post-install signal, not a pre-install defense), and the fix (enable both `.npmrc` settings, declare the `only-built-dependencies` allow-list, bump the pinned dep, gate CI per lesson 3 of chapter 101).
-- **Bonus findings — the senior reach.** The target ships two unrequested findings the answer key acknowledges: (9) PostHog initialized with `opt_out_capturing_by_default: false` (consent gate missing); (10) a worker endpoint calling `limiter.limit()` directly, bypassing `safeLimit`. The brief named "8 is the floor, 10 is the senior reach" — the student who catches one or both earns the credit.
-- Audit summary at the end: five new findings written (4 through 8) plus any bonus; the grep / curl commands documented; the call sites named; the rate-limit coverage matrix attached.
-
-Senior calls and watch-outs:
-
-- The headers finding (4) is read off curl in 60 seconds. The senior anchor: a launch review starts with the headers — the cheapest, highest-value pass. A target without a CSP is "not launched" by the senior's bar.
-- The rate-limit finding (6) is found by reading the route list, not by exercising the app. The audit step grep is faster than the manual hammer-the-endpoint test, but both should land in the documentation (one as the discovery method, one as the verification).
-- The audit-log finding (3) is the one most likely to be missed because nothing visibly breaks. The discipline that catches it is the *canonical event set* — read the six categories from lesson 3 of chapter 085 against every mutation in `lib/`. Senior reach: the audit-log set is a project-level invariant, not a per-feature decision.
-- The `NEXT_PUBLIC_RESEND_API_KEY` finding (5) is a *naming* finding — the developer chose the prefix to bypass the build error. The `env` schema's `server` partition would have caught it had the developer used the right side. The fix is structural (rename and move) not configurational (lint rule alone). The rotation step is part of the fix — the leaked key is *in production already* by the time the audit catches it; pretending otherwise is a fail.
-- The GDPR deletion finding (8) often gets a partial answer (the student names `org_members` but misses Stripe / Resend / PostHog). The senior fix names every external the user's PII could have leaked to — that's the discipline lesson 4 of chapter 085 installs.
-- The dep hygiene finding (7) is sometimes resisted with "but we just enabled Dependabot." The senior counter: Dependabot raises PRs *after* a malicious release has landed in the registry. `minimumReleaseAge` is the *pre-install* defense — the 24 hours is the window the community catches and yanks. They are not the same control.
-- The bonus findings (9, 10) reward attention to the running app (the consent finding shows up as a network request on the first page load) and to the seam catalog (the worker endpoint bypass shows up as a `limit(` grep hit not preceded by `safeLimit`).
-
-Codebase state at entry: target unchanged; findings 1, 2, 3 (if written in lesson 3 of chapter 086) in `findings/`; placeholders 4-8 empty.
-Codebase state at exit: target unchanged; all eight seeded findings written; optional bonus findings (9, 10) written by students who reached past the floor; `findings/SUMMARY.md` lists coverage and any deliberate misses. The student is ready to self-grade against the answer key in lesson 5 of chapter 086.
-
-Estimated student time: 90 to 110 minutes.
+Estimated student time: 35 to 45 minutes. Decision lesson; the unit references the shape installed here.
 
 ---
 
-## Lesson 5 — Commit, then self-grade
+## Lesson 3 — Coverage as a diagnostic, not a target
 
-Teaches the irreversible-commit-then-peek discipline, the clause-by-clause comparison against the `v1.0-answer-key` tag, the partial-credit scoring rule (rule and location are the floor, fix detail is the senior reach), and the forward references into Units 19 through 22.
+Reads branch over line, sets per-directory thresholds on `/lib` and the seams, and adds the absence-of-tests audit via `coverage.all: true`.
 
-Goals:
+Topics to cover:
 
-- Commit the findings: `git add findings/ && git commit -m "Unit 17 audit findings"`. The senior anchor: the commit is the irreversible step — once committed, the student looks at the answer key. Before commit, no peeking.
-- Check out the answer-key tag: `git fetch && git checkout v1.0-answer-key -- solution/findings/`. The answer-key directory lands at `solution/findings/`. The student's findings stay at `findings/`. Side-by-side diff is the comparison.
-- Walk every finding clause-by-clause and partial-credit the common gaps. The answer key names the senior-reach details students most often miss: finding 1 — let `authedAction` convert the throw, do not re-throw inside a custom catch; finding 2 — sanitize at write *and* read (historical-data defense), not only at write; finding 3 — the exact event slug (`org.ownership.transferred`) plus the redacted payload schema; finding 4 — the per-request nonce + `'strict-dynamic'`, not just "add a CSP header"; finding 5 — *rotation* of the leaked key, not only rename-and-move; finding 6 — dual per-IP *and* per-email keying, not per-IP alone; finding 7 — both `.npmrc` settings (`minimumReleaseAge` *and* `blockExoticSubdeps`), `pnpm audit` is not the pre-install defense; finding 8 — the full graph (six tables, three externals, audit-log anonymization), coverage of every PII seam. The scoring rule: rule + location match is the audit floor; the fix-detail match is the senior reach.
-- Score the bonus findings if the student wrote them — finding 9 (consent gate on PostHog) and finding 10 (`safeLimit` bypass on the worker endpoint). The senior reach is a 10/10; the floor is 8/8.
-- Walk the senior calls one more time:
-  - The two commitments from chapter 084 (fail-closed, two-message split) ran through every error-discipline finding.
-  - The single-place-to-lint pattern (one `authedAction` wrapper, one `safeLimit`, one `logAudit`, one `env` schema, one `.npmrc`) is what makes the audit pass grep-able. Findings are call sites that *bypass* the canonical seam; the seam itself is correct.
-  - Coverage on all eight categories is the floor; depth on any one is the senior reach. A 5/8 audit that goes deep on CSP is a fail.
-  - The audit-target shape (eight categories, one finding per minimum, one Markdown file per finding, rule-location-consequence-fix template) is portable — the student writes this audit at every later launch review, against a different codebase, with the same template.
-  - The follow-up is to *fix* the findings — out of scope for this chapter, in scope for the next sprint. The audit is the discipline of finding them; the fix is the discipline of shipping the safer version.
-- Forward references:
-  - Unit chapter 092 writes integration tests against `authedAction` and the message-mapper — the discipline this audit found gaps in.
-  - Unit chapter 094 writes a Playwright money-path test that exercises the rate limit and the consent gate as system-level invariants.
-  - Unit chapter 096 wires Sentry's `beforeSend` redactor — the operator side of the message split this audit confirmed isn't fully wired.
-  - Unit chapter 099 audits the same target for observability and performance findings (Sentry not wired, missing correlation IDs, RSC waterfalls, bundle size, the consent-gate finding from this audit re-surfaces if not fixed).
-  - Unit chapter 101 wires CI gates that catch some of these findings at PR time (`pnpm audit --prod` clean, `--frozen-lockfile`, lint rule against `NEXT_PUBLIC_*` matching secret patterns).
-  - Unit chapter 108 reviews a seeded PR against the architectural principles — the same disciplined-reading muscle this chapter built.
+- **The senior question.** The coverage report says 87% lines, 72% branches. Two reads diverge. The naive read sets a CI gate at "≥80% lines" and chases the missing 13%; the senior read asks **which files and which lines** — because the percentage hides the worse failure mode where the seams (webhook receiver, `authedAction` wrapper, cross-tenant filter) sit at 40% and trivial getters sit at 100%. The lesson installs coverage as a **diagnostic instrument** for finding under-tested seams, not a CI threshold to optimize against. **100% coverage is the canonical theatre metric** the senior reads as a smell; the reach is per-directory thresholds on the load-bearing surface, no thresholds on the framework-mediated surface, and an absence-of-tests audit.
+- **What coverage measures.** Lines executed, branches taken, functions called, statements run. The V8 provider produces them from runtime data. The metric the lesson grants weight: **branch coverage** (not line). A 100% line-covered function with a single `if (x) return early` where the test never hits the `true` branch is 100% lines, 50% branches. Line coverage rewards reading every line; branch coverage rewards exercising every decision. Read branch coverage first.
+- **Why 100% is theatre.** A 100%-covered codebase requires tests for every getter, every defaulted parameter, every error class's `name` getter, every framework-injected branch (the `else` of a runtime-only feature flag). Cost is high; bug-finding signal is near zero. Worse, chasing 100% incentivizes tests that exercise *code paths* rather than *behaviors* — a test that calls a function with a fixture, asserts nothing meaningful, and ticks the line count is positive coverage and zero value. The 100%-culture produces a suite the team stops trusting and test code becomes a mirror of source instead of a contract about behavior.
+- **The "where the bugs land" coverage read.** The report is a map of *un-exercised* code paths. Read it for under-coverage in the seams — `authedAction`'s catch branch, the webhook receiver's signature-failure path, the rate limiter's fail-open carve-out, the cross-tenant 404 branch, the error mapper's fallback case. Those are the lines a missed test ships as a production bug. A 100%-covered `/lib` mapper and a 40%-covered Server Action wrapper is the suite that ships bugs.
+- **Per-directory thresholds.** Vitest's `coverage.thresholds` supports per-glob thresholds. The course baseline: `/lib/**` at 90% lines, 85% branches; `/app/api/webhooks/**` at 85% branches (high-stakes seam); `/lib/auth/**`, `/lib/error-mapping.ts`, `/lib/rate-limit/**` at 85% branches (load-bearing helpers); everything else **unthresholded**. Thresholds are a CI gate on surfaces where coverage *means* something; the rest is exempt because chasing it there is theatre.
+- **"Thresholds are a backstop, not a goal."** The gate is the floor that catches a regression where a previously tested helper loses coverage. The team writes tests for behaviors that exist; the threshold catches the case where someone added an `else` branch without an accompanying test. The threshold is the speed-bump, not the destination. Every threshold ships with a one-line justification ("/lib/auth at 85% branches because every uncovered branch is an auth bypass risk").
+- **The exclusion list.** `coverage.exclude` strips files from the report. Course exclusions: `**/*.config.{ts,js}`, `**/*.d.ts`, `**/types.ts`, `**/index.ts` (barrels), `app/**/page.tsx` and `app/**/layout.tsx` (framework-orchestrated; tested via integration at the seam), `**/*.stories.tsx`, `scripts/**`, `**/__mocks__/**`. A file with an exclusion has a reason recorded next to it.
+- **The absence-of-tests audit.** Coverage tells you what *ran*; not what was never *written*. A file with one trivial test that runs every line is 100% covered and untested. Audit step: for every file in `/lib` and `/app/api`, check the test file next to it exists and exercises the public surface; absence is a finding, not "100% covered." `coverage.all: true` pulls untested files into the report at zero coverage; without it, untested files vanish silently. Turn it on.
+- **Reading the coverage HTML.** `vitest run --coverage` produces an HTML report under `coverage/`. Open it once a sprint, drill into the seams, read *which lines* are uncovered — not the percentage. CI surfaces the `text-summary` reporter; depth lives in the HTML the developer reads locally.
+- **Differential coverage on PRs.** A PR that adds 20 lines and covers 15 is the signal the reviewer reads — not "the overall percentage moved 0.4%." `coverage.thresholds.perFile` plus `autoUpdate` lets the threshold ratchet up; signal-to-noise on `autoUpdate` is too low for the gains. Surface differential, no automatic ratcheting.
+- **What "100% as theatre" looks like.** A test file with `it('exports the function', () => { expect(typeof fn).toBe('function') })`; a snapshot test that asserts nothing about behavior; a test that asserts a function's return type matches its declared type (the type system already enforces this); a test that mocks every dependency and asserts the mocks were called with the values the test wired in. Each is positive coverage and zero bug-finding signal. Review reflex: "what would have to change for this test to fail meaningfully?" — if the answer is "the test file would have to be deleted," it's theatre.
+- **The mutation-testing angle, named once.** Mutation testing (Stryker) measures whether changing source breaks a test — the inverse of coverage. A 100%-covered function whose tests all pass when you flip `<` to `>` is 0% mutation-covered. The concept is the right mental model — coverage is what *ran*, mutation is what's *checked* — but Stryker is overkill for most SaaS suites. Name the idea; don't install the tool.
+- **CI surface.** Coverage runs in CI on every PR; the JUnit reporter from lesson 1 of chapter 086 carries the result; a PR comment surfaces the differential. Thresholds gate merge; an override leaves a trail. Wiring is chapter 097's job.
+- **"No coverage gate on first-pass features" carve-out.** A new feature behind a flag, in the first sprint, may legitimately ship under-tested while the surface stabilizes. The call: add the directory to a temporary `exclude`, ship, write tests in the follow-up PR, remove the exclude. The discipline is honesty — the absence is named and time-boxed, not hidden by a coverage line that happens to clear the threshold.
+- **Watch-outs.** A CI gate at "≥80% lines" with no per-directory split rewards trivial tests on trivial files and lets the seams rot; treating coverage as a quality metric creates a culture that games it; including framework-rendered components (`page.tsx`, `layout.tsx`) produces low percentages and tests written against them re-test the framework; running `vitest run --coverage` on every save locally is slow — CI only; reading V8 line percentage and not branch coverage misses the half-tested decision; chasing 100% on a Drizzle query helper means writing a test for "the helper returns a query builder, which compiles to SQL" — at that point the test re-implements Drizzle's behavior; the actual test is the integration test against the real DB.
 
-Senior calls and watch-outs:
+What this lesson does not cover:
 
-- The self-grading is the rehearsal. A real audit has no answer key; the student who needed the answer key to know they missed `minimumReleaseAge` will catch it next time without one.
-- Missed findings are not failure — they are *the next audit's lesson*. The senior reflex is to read the answer-key entries for misses and update the personal grep / curl checklist; the audit gets sharper every pass.
-- The fix column's partial-credit pattern (rule + location match, fix differs) is the most common outcome. The rule is the load-bearing piece. A student who names the rule and the location correctly but proposes a less-thorough fix is still doing the audit; a student who names neither has not run the pass.
+- The single-test shape — lesson 4 of chapter 086.
+- The unit-test surface for `/lib` — Chapter 087.
+- Integration fixtures, MSW, test-DB lifecycle — Chapter 088.
+- Component-test trigger and tooling — Chapter 089.
+- E2E trigger and Playwright — Chapter 090.
+- CI wiring (JUnit reporter, PR comment, merge gate) — Chapter 097.
+- Type-level coverage via `vitest --typecheck` — lesson 4 of chapter 087.
+- Mutation testing setup — out of scope.
 
-Codebase state at entry: target unchanged; all eight findings written; bonus optional.
-Codebase state at exit: findings committed; answer-key checked out; the student has a side-by-side comparison, a scored coverage percentage, and an updated personal audit checklist for the next pass.
+Estimated student time: 35 to 45 minutes. Decision lesson on coverage discipline.
 
-Estimated student time: 30 to 45 minutes.
+---
+
+## Lesson 4 — Arrange, act, assert one behavior
+
+Installs the AAA shape with descriptive `it('<outcome> when <conditions>')` names and the rule that asserts the contract the caller observes, not private helpers.
+
+Topics to cover:
+
+- **The senior question.** A test passes today, breaks tomorrow on an internal refactor that didn't change behavior. The author opens the test, sees it asserts on a private helper's arguments, fixes the assertion, re-runs, green. Three months later the same pattern: green-red-fix-green. The team learns to ignore the test. The bug class is **testing implementation, not behavior** — the test couples to *how* the function does its work, not *what* it does for the caller. The lesson installs the shape that survives the refactor: **Arrange / Act / Assert, one behavior per test, descriptive name, assert on the contract the caller observes**.
+- **Arrange / Act / Assert — the structure.** **Arrange** sets up inputs and fixtures. **Act** invokes the unit under test once. **Assert** verifies the observable outcome. Three sections in this order in every test; visual rhythm makes the test scannable. Blank line between sections is the senior convention. Counter-examples: a test that interleaves assertions inside the arrange (`expect(fixture.id).toBe('test')` before the act fires); two act-and-assert pairs in one `it` block (two behaviors, should be two tests); no arrange (act hits a global, symptom of missing fixture).
+- **One behavior per test, named precisely.** A test exercises *one* observable behavior — one path through the function, one branch, one shape of output. "Behavior" is what the caller sees: return value, side effect, thrown error, DB row written. Multiple `expect` calls per test are fine when they describe the *same* behavior (the returned object's `id`, `status`, `createdAt`). Multiple `expect` calls describing *different* behaviors are two tests jammed into one. Reading test: if the test fails, can the reader name the broken behavior from the test name alone?
+- **Descriptive test names.** A test name reads as the behavior it asserts. The 2026 senior shape: `it('returns 403 when the role is below admin', ...)` or `it('rolls back the transaction when the audit-log insert fails', ...)` — present tense, names conditions and outcome. Pattern: **`it('<observable outcome> when <conditions>')`**. The describe carries the unit name (`describe('authedAction', () => { ... })`); the it names the specific behavior. Reading `describe` + `it` aloud produces a sentence the team reads on the PR. BDD's "given / when / then" is the same shape; AAA + descriptive-name is the canonical course surface.
+- **Behavior over implementation — the rule that survives refactor.** The test asserts on what the caller observes: return value, thrown error, DB row, response status. It does *not* assert on: which private helper got called, the internal data structure before returning, the order of internal DB queries, the implementation language of a regex. A test asserting "the function called `_buildQuery` with these arguments" couples to structure; inlining `_buildQuery` breaks the test even though behavior is identical. A test asserting "the function returns rows ordered by `created_at` desc" couples to contract; the refactor doesn't break it.
+- **The "function as black box" test.** Senior thought experiment: replace the function with a different implementation satisfying the same contract — does the test still pass? If yes, the test is on behavior. If no, on implementation. The black-box read is how you write the test: "what's the contract, what's the observable, what would a caller depend on?"
+- **What counts as "observable" per layer.** **Pure function:** return value, thrown error. **Async function:** resolved value, rejected error, side effects on injected dependencies. **Server Action:** `Result` shape, the row in the test DB, the audit-log entry, the thrown error caught by `error.tsx`. **Route handler:** HTTP status, response body (RFC 9457 shape), headers. **Webhook receiver:** HTTP status, dedup table row, side effects on business tables. **Component (chapter 089):** rendered text, buttons present, side effect of a click. Each layer has its own observable surface; the test asserts there, not below.
+- **Mocking the network, not the function.** From lesson 4 of chapter 088 (forward-referenced): when a test needs an external dependency stubbed, the stub goes at the network boundary (MSW for HTTP), not at the function calling the network. Mocking the function couples to implementation ("the code called `fetchInvoice`") and breaks on a refactor that calls a different helper; mocking the network couples to the contract ("a request to `GET /invoices/:id` returns this body") and survives any internal refactor still going to the same URL.
+- **Test naming as documentation.** A test file's `describe` / `it` lines, listed by Vitest's reporter, are a behavior catalog. `vitest run --reporter=verbose` lists the unit's documented behaviors. A new engineer reads test names and knows what the unit does without opening source. `it('works', ...)` or `it('test 1', ...)` is documentation theatre. Names earn their weight by being read first when something breaks.
+- **Three or four asserts per test, max.** Soft signal. A test with 12 `expect` calls is usually two or three behaviors jammed in. A test with 3 asserts on the same returned object's three fields is fine. Read test length as a smell when it grows.
+- **"Test the public surface, not the private helper."** A `/lib` file with one exported function and three internal helpers gets tests for the exported function. The internal helpers are exercised through it; if a helper is so complex it deserves its own tests, *export* it (and document why; the file's public surface grew). Testing un-exported helpers via test-file imports of internals is a sign the helper should be public or shouldn't need direct testing.
+- **Snapshot tests — the narrow valid case.** They're behavior tests *only* when the snapshot represents a contract the caller depends on (an email template's HTML, an RFC 9457 response body shape). They're implementation tests when capturing whatever the function happened to return today (deeply-nested internal data). The course uses snapshots for email-template render output (chapter 089) and RFC 9457 response shape; nowhere else. Snapshot churn is the warning — if a snapshot updates on every other PR, it's testing implementation.
+- **"No test the framework."** A unit test for a Server Component that exercises Next.js's rendering pipeline is a test of the framework, not the application. Vercel ships the Next.js test suite. The app tests the business logic the framework calls into — the Server Action body, the data-fetching helper, the validation schema. Tests stop at the framework's boundary.
+- **"Test the unhappy path."** Every behavior has at least two paths — success and failure. A function that throws on invalid input has two tests: one for success, one for the throw. A Server Action's `Result.err` path is a behavior with its own assertions. lesson 6 of chapter 087 owns the depth.
+- **Failure messages — assertion errors are documentation too.** A test name names the behavior; the assertion failure names what diverged. `expect(result.ok).toBe(true)` produces "expected false to be true" — generic. `expect(result).toMatchObject({ ok: true, data: { id: expect.any(String) } })` produces a structural diff. Prefer the matcher that produces the most readable diff (`toMatchObject` over `toEqual` for partial match; `toContainEqual` for arrays; `toMatchInlineSnapshot` for stable structured output).
+- **"Reads only the test file" review.** The reviewer reads the test file and answers: what does this unit do, what behaviors does it have, what does each look like, could I reimplement the unit from these tests alone? If yes, the tests are good documentation and behavior-anchored. If the test reads like a transcript of the implementation, the rule has slipped.
+- **Watch-outs.** Test names like `'works correctly'`, `'returns the right value'`, `'handles the case'` — content-free, rename for the behavior; `expect.toHaveBeenCalledWith(privateHelper, ...)` couples to implementation; one `it` block with five `expect` calls testing five behaviors — split; testing both success and failure ("returns data on success and throws on failure") — two tests; mocking the function-under-test's collaborators with `vi.mock` and asserting the mocks got called — the test is about the mock's wiring, not the function's behavior; shared mutable state in a `describe` modified inside `it` blocks — fragile, run-order-dependent (lesson 8 of chapter 088 repeats at the seam level); `it.only` left in a commit — `no-focused-tests` ESLint rule (chapter 097) catches it; copying a test from a sibling file and renaming variables produces near-duplicates that all break on the same refactor — write the test once at the right layer.
+
+What this lesson does not cover:
+
+- Runner setup and config — lesson 1 of chapter 086.
+- Honeycomb suite shape — lesson 2 of chapter 086.
+- Coverage as a diagnostic — lesson 3 of chapter 086.
+- Fixtures, factories, determinism (time / random / IDs) — lesson 2 of chapter 087 / lesson 3 of chapter 087.
+- Type-level testing with `expectTypeOf` — lesson 4 of chapter 087.
+- Testing async at depth — lesson 5 of chapter 087.
+- Testing the unhappy path at depth — lesson 6 of chapter 087.
+- Integration-test fixtures and MSW — Chapter 088.
+- React Testing Library queries — lesson 3 of chapter 089.
+
+Estimated student time: 40 to 50 minutes. Pattern lesson — every test in the unit references the AAA shape and the behavior-over-implementation rule.
+
+---
+
+## Lesson 5 — Quizz
+
+Top 10 topics to quiz:
+
+- Vitest as the 2026 runner — native ESM and TypeScript, Jest-compatible API (`describe` / `it` / `expect`), watch mode as HMR for tests; Jest named once as the predecessor.
+- `vitest.config.ts` with `globals: false` (per-file imports from `'vitest'`), `environment: 'node'` for the unit default, `setupFiles` as the single setup seam, path aliases via `vite-tsconfig-paths`.
+- The test-projects surface — one config defines multiple projects (unit / integration / component), each with its own environment, include glob, and setup; `vitest --project unit` runs one slice.
+- The honeycomb shape for a Next.js SaaS — wide unit base over `/lib`, integration as the center of gravity at the seams, thin component and E2E layers gated by trigger; bug density at the boundaries justifies the shape.
+- The conditional-trigger rule for component tests (chapter 089) and E2E (chapter 090) — both earn weight against a named threshold, neither is default; some 2026 SaaS skip E2E in year one.
+- Coverage as a diagnostic, not a target — 100% is the canonical theatre metric; read branch over line; per-directory thresholds on `/lib`, `/app/api/webhooks`, the auth and rate-limit helpers; nothing on the framework-mediated surface.
+- The absence-of-tests audit — `coverage.all: true` surfaces untested files at zero coverage; coverage tells you what *ran*, not what was *written*.
+- Arrange / Act / Assert — three blank-line-separated sections, one act per test, descriptive name `it('<observable outcome> when <conditions>')`.
+- One behavior per test, behavior over implementation — assert on the contract the caller observes (return value, thrown error, DB row, response shape), never on private helpers or internal data; the black-box read is the writing reflex.
+- Mocking at the boundary, not the function — MSW at the network seam couples to the contract and survives refactors; `vi.mock` on the collaborator function couples to implementation and breaks on every rename.

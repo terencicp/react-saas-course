@@ -1,131 +1,242 @@
-# Chapter 018 — The DOM and event substrate
+# Chapter 018 — Tailwind v4 inside the React component
 
 ## Chapter framing
 
-Chapters 014–017 walked the request side of the browser platform — how a URL becomes pixels, the HTTP contract, origins and CORS, and the cookie trust model. Chapter 018 turns to the page side: the live tree the parser produced and the event substrate that drives every interaction. The senior framing is that in a React + Next.js 16 codebase the student almost never calls `querySelector` or `addEventListener` directly — JSX builds the tree, React owns the listeners, refs hand out the rare imperative escape hatch. But the substrate underneath those abstractions still leaks through, and the four places it leaks are exactly what this chapter installs: hydration mismatches that only make sense if you know attribute-versus-property semantics, ref callbacks that have to clean up listeners on unmount, event delegation patterns React's synthetic system already implements (so the student recognizes them), and `passive` plus `AbortController` as the 2026 listener-options surface every framework now reaches for under the hood.
+Chapter 017 closed with the student writing semantic JSX; every element so far has been unstyled. Chapter 018 paints them. The senior framing: **Tailwind v4 is the CSS surface a 2026 SaaS UI ships with, and that surface lives inside the React component, on the JSX tag, not in a sibling `.css` file.** The chapter installs *why* utility-first earns its weight on a React stack, *what shape* Tailwind v4 takes (CSS-first config in `app/globals.css` via `@import "tailwindcss"`, `@theme`, `@utility`, `@custom-variant`, `@container` — no `tailwind.config.ts`), *how* to compose classes safely when components accept overrides (the `cn()` helper wrapping `clsx` + `tailwind-merge`), and *where* the JSX and the CSS meet — `data-*`/`aria-*`/`group-*`/`peer-*`/`has-*`/`*:`/`not-*` variants that read state the DOM already tracks, so state-driven styling doesn't need `useState`. Cascade, layout, typography, and motion are not this chapter's job (Chapters 023, chapter 020, chapter 021 own them). This chapter is the React-Tailwind seam.
 
-Threads that run through every lesson. The DOM is a live tree of typed Node objects, not the HTML string the server sent — that distinction owns the attribute-versus-property split and the hydration story. React abstracts this surface but doesn't replace it: every `ref`, every event handler, every hydration mismatch is the abstraction leaking, and a senior reads the leak in DOM terms. The 2026 listener cleanup reflex is one `AbortController` per setup site, its signal threaded into every `addEventListener` call, `abort()` called from the cleanup branch — this pattern composes cleanly with React 19's ref callback cleanup return value and replaces the named-handler-plus-`removeEventListener` ceremony. `passive: true` is the default reflex for scroll, wheel, and touch listeners, with the trigger for opting out named (the rare `preventDefault` case). The chapter is deliberately substrate-only: no React syntax, no JSX, no hooks — those land in Unit 4. The student finishes able to read DevTools' Elements panel as a live tree, predict why a `value` attribute and a `value` property disagree, write a delegated click handler with `closest()` and `data-*`, and clean up listeners with a signal.
+The six teaching lessons run in order — utility-first thinking and the variant surface; Tailwind v4's CSS-first directives; `cn()` composition with `className` last so consumer overrides win; state and structural variants; the `dark:` variant with semantic tokens (the shadcn model where a `.dark { ... }` block swaps token values rather than per-utility `dark:`); and `next-themes` for the React-side wiring with `<ThemeProvider>` in a client `<Providers>` wrapper, `suppressHydrationWarning` on `<html>`, and an inline script that sets the class before paint to prevent FOUC. The quiz closes. Forward references: `@theme` tokens and the cascade deepen at Chapter 019, container queries at lesson 7 of chapter 021, CVA variants at lesson 3 of chapter 022, shadcn's copy-paste model at lesson 1 of chapter 027, the accessibility consequences at lesson 2 of chapter 027 and lesson 5 of chapter 021. The chapter ends with the student writing a themed `<Card>` that accepts `className` overrides, styles its trigger via `data-state` variants, ships semantic tokens for both themes, and toggles theme without FOUC.
 
 ---
 
-## Lesson 1 — The DOM as a live tree of typed nodes
+## Lesson 1 — Utility-first on JSX
 
-Teaches the DOM as a tree of typed node objects built once at parse time and mutated thereafter, walks the `Node` / `Element` / `HTMLElement` / tag-specific subclass hierarchy, names the access surface (`getElementById`, `querySelector`, `closest`, `matches`) and the live-vs-static collection distinction (`childNodes`, `children`, `NodeList`, `HTMLCollection`), and frames every primitive against its rare 2026 reach behind refs, portals, and DevTools.
+Teaches the utility-class families, the theme scale, prefix-and-colon variants, opacity modifiers, and arbitrary values as the escape hatch.
 
 Topics to cover:
 
-- **The senior question the lesson opens with.** Why does inspecting a hydrated `<input>` in DevTools show a `value` that disagrees with the page source? Because the source is the byte string the parser saw; the inspector reads the live DOM tree the parser produced and JavaScript has been mutating since. The lesson installs that distinction up front, then walks the structure of the tree.
-- **The DOM in one line.** A tree of typed `Node` objects the parser built from the HTML byte stream. The tree is live: every JavaScript mutation, every React render, every form input updates the same in-memory tree. The HTML source is a snapshot; the DOM is the program state.
-- **The node-type hierarchy.** `Node` (abstract base — every tree member) → `Element` (anything with attributes) → `HTMLElement` (the HTML-flavored element, with `style`, `dataset`, `hidden`, `tabIndex`) → tag-specific subclasses (`HTMLInputElement`, `HTMLAnchorElement`, `HTMLImageElement`, `HTMLButtonElement`). Named so the student reads a `Element` type in TypeScript and knows what's missing versus `HTMLInputElement`. Cross-reference forward to React 19 `useRef<HTMLInputElement>(null)`.
-- **Non-element node types named for recognition.** `Text` (the run of characters between tags), `Comment`, `DocumentFragment` (an off-tree container — the substrate behind React Portals, named here as a forward reference to lesson 5 of chapter 026), `Document` and `DocumentType`. The 2026 reach is rare; the student needs to recognize `node.nodeType === Node.TEXT_NODE` in a debugger trace.
-- **The access surface — five methods that cover the rare reach.** `document.getElementById(id)` (the fastest, exact-match lookup). `element.querySelector(selector)` / `querySelectorAll(selector)` (CSS-selector match — the universal reach when `id` isn't enough). `element.closest(selector)` (walk up the ancestor chain — the delegation companion, used in lesson 3 of chapter 018). `element.matches(selector)` (does this element match a selector — also delegation-related). The senior recognition: in a React codebase these appear inside `useEffect` blocks, ref callbacks, and external-library glue, never in render code.
-- **Live vs. static collections.** `element.children` is an `HTMLCollection` and is live — adding a child mutates the collection while you iterate. `element.childNodes` is a `NodeList` and is live. `element.querySelectorAll(...)` returns a `NodeList` that is *static* — the snapshot at call time. The bug pattern: iterating a live collection while removing items skips elements. The 2026 reflex: `[...element.children]` or `Array.from(...)` to snapshot before mutating.
-- **Tree-walking primitives.** `parentElement`, `children`, `firstElementChild` / `lastElementChild`, `nextElementSibling` / `previousElementSibling`. The element-flavored versions skip text and comment nodes — the surface the student reaches for in delegation handlers. The `parentNode` / `childNodes` family includes text nodes; recognition only.
-- **Where this leaks in a React 19 codebase.** Five places, named not at depth: refs to imperative DOM elements (focus, scroll, measure, integration with third-party libraries); portals (a `DocumentFragment` mounted into a different parent); hydration (React compares the server-rendered HTML against the DOM tree it would build client-side); DevTools (every inspection); external libraries (a tooltip library handed a DOM element to mount inside). The pattern: a senior reaches for DOM primitives when the React abstraction can't reach a use case the platform owns.
-- **DevTools — reading the live tree.** The Elements panel *is* the DOM tree, not the HTML source. The "Inspect" reflex; `$0` in the Console as the last-inspected element; right-click → "Store as global variable" for repeated probing. Cross-reference to lesson 3 of chapter 003.
-- **Watch-outs:** the HTML source view and the Elements panel often disagree (hydration, JavaScript mutations); `getElementById` is case-sensitive and only checks `id` attributes; `querySelector(".foo")` searches the entire descendant subtree, not just children; live collections mutate during iteration (snapshot first); `innerHTML` rebuilds a subtree from a string and is an XSS surface (named here, owned by Chapter 5 on Next.js where `dangerouslySetInnerHTML` lands); `textContent` is the safe text-only reach.
+- The senior question: a component needs padding, background, rounded corners, border, hover, focus ring, and a responsive override. The lesson names the decision (utility-first by default for component-internal styling) and the thresholds (bespoke CSS earns its weight for prose, animations, third-party overrides).
+- **What utility-first replaces.** Named-class CSS (`.card-header`) paired with JSX. Components in React are already named; duplicating the name as a CSS class adds nothing. Utility classes describe what the element *does* visually.
+- **The utility class surface.** A short tour of the families the student writes daily — layout primitives (`flex`, `grid`, `hidden`), spacing (`p-*`, `m-*`, `gap-*`), sizing (`w-*`, `h-*`, `size-*`), color (`bg-*`, `text-*`, `border-*`), typography (`text-sm`, `font-medium`), border/radius, effects (`shadow`, `opacity`, `transition`). The senior recognition is the *families* and the *naming convention*, not memorized lists.
+- **The theme scale.** Numbers in utility names are theme tokens (`p-4` → `padding: var(--spacing-4)` → `1rem`), consistent across spacing utilities. Reach for the scale before arbitrary values. (Chapter 019 owns the token model.)
+- **Variants — the prefix-and-colon model.** `variant:utility`, stackable left-to-right. The lesson installs state variants (`hover:`, `focus-visible:`, `active:`, `disabled:`), form-state variants (`checked:`, `invalid:`), responsive variants (`sm:`, `md:`, mobile-first), the `dark:` variant (wired in lesson 5 of chapter 018/lesson 6 of chapter 018), and the accessibility variants (`print:`, `motion-reduce:`, `contrast-more:`).
+- **Modifiers — the `/` postfix.** Opacity on color and ring utilities (`bg-foreground/10`, `text-primary/80`) for translucent overlays without writing `rgba(...)`.
+- **Arbitrary values — `[...]`.** The escape hatch when the theme scale doesn't fit (`w-[37rem]`, `bg-[#1a1a2e]`, `grid-cols-[200px_1fr_200px]`). Every arbitrary value is a signal that the theme scale should grow.
+- **Arbitrary properties — `[property:value]`.** When no utility exists at all. Rare; named for recognition.
+- **CSS variables in arbitrary values.** `bg-[--card-overlay]`, `w-[var(--sidebar-width)]` for JS-set properties driving utilities. Chapter 019 owns CSS variables at depth.
+- **Important modifier — `!`.** Postfix `!` forces `!important` (`text-red-500!`). Rare; for third-party CSS overrides. Chapter 019 owns the cascade.
+- **What utility classes don't do well, and the escape hatches.** Complex selectors (`@custom-variant` or bespoke CSS), keyframe animations (`@theme --animate-*`, lesson 5 of chapter 021), pseudo-elements at depth (`before:`/`after:` with `content-['']`).
+- **The reading instrument.** Browser Elements panel — class string visible in DOM, resolved styles in the Computed panel.
+- **Watch-outs the lesson names.** `@apply` is not the senior default (reintroduces named classes); long class strings are not a code smell; no template-literal conditional concatenation (foreshadows lesson 3 of chapter 018); enable the Tailwind IntelliSense extension; class purging is text-based, so dynamic class names (`bg-${color}-500`) never emit.
 
 What this lesson does not cover:
 
-- The attribute-versus-property split (lesson 2 of chapter 018).
-- The event model and delegation (lesson 3 of chapter 018).
-- React refs and `useRef` — Chapter 026 owns the React side; this lesson frames the DOM nodes refs *point at*.
-- React Portals — lesson 5 of chapter 026; named here as a `DocumentFragment` use case.
-- Hydration at depth — Chapter 5 owns the SSR/hydration story; named here as a leak site.
-- `innerHTML` / `outerHTML` / DOM mutation methods (`appendChild`, `insertAdjacentHTML`, `replaceChildren`) at depth — out of scope; the student writes JSX, not imperative tree-building.
-- The Shadow DOM and custom elements — niche for 2026 SaaS work; cut.
-- XPath, `TreeWalker`, `NodeIterator` — historical, cut.
+- Tailwind v4's CSS-first config and the `@theme`/`@utility`/`@container` directives (lesson 2 of chapter 018).
+- The `cn()` helper, `clsx`, `tailwind-merge`, and CVA composition (lesson 3 of chapter 018, lesson 3 of chapter 022).
+- The structural and state variants (`group-*`, `peer-*`, `data-[...]`, `aria-*:`, `has-*`) (lesson 4 of chapter 018).
+- The `dark:` variant and the dark-mode wiring (lesson 5 of chapter 018).
+- `next-themes` and the React-side theme wiring (lesson 6 of chapter 018).
+- The cascade, specificity, and `@layer` (lesson 1 of chapter 019).
+- CSS custom properties and design tokens at depth (lesson 4 of chapter 019).
+- Tailwind Preflight, the implicit base reset (lesson 3 of chapter 019).
+- The full layout model — flex, grid, sizing, spacing (Chapter 020).
+- Typography, color, motion, responsive variants at depth (Chapter 021).
+- shadcn/ui and the copy-paste model (lesson 1 of chapter 027).
+- The Tailwind v3 → v4 migration story — out of scope; the course pins v4.
+- The legacy `tailwind.config.ts` form — named once for recognition, never taught.
 
 ---
 
-## Lesson 2 — Attributes vs. properties: parsed state vs. live state
+## Lesson 2 — CSS-first config in globals.css
 
-Teaches the split between HTML attributes (the strings the parser captured at load time) and DOM properties (the live values JavaScript reads and mutates), walks the four canonical patterns (identical-name pairs, renamed properties like `class`/`className` and `for`/`htmlFor`, default-vs-current pairs on `value`/`checked`/`selected`, and attribute-only or property-only cases), maps every example to its JSX prop name, and installs the recognition vocabulary that makes hydration mismatches and boolean-attribute traps legible.
+Teaches the v4 directives — `@import "tailwindcss"`, `@theme` tokens, `@utility`, `@custom-variant`, `@container`, `@source`, `@plugin` — that replace `tailwind.config.ts`.
 
 Topics to cover:
 
-- **The senior question.** The user types into an `<input>`; the page source still shows `<input value="">`; `inputElement.value` returns the typed string; `inputElement.getAttribute('value')` returns `""`. Which is the truth? Both — they're tracking different things. The lesson installs the model that explains every form bug, every `defaultValue`-vs-`value` React decision, every hydration mismatch.
-- **The model in one line.** An *attribute* is a string the HTML parser captured at the moment it built the node. A *property* is a typed live value on the node object that the runtime reads and writes. They sometimes synchronize, often diverge, occasionally have different types, and frequently have different names.
-- **Four canonical patterns.** The recognition vocabulary the lesson installs:
-  - *Identical-name pairs, live sync.* `id`, `tabindex`/`tabIndex`, `hidden`, `lang`. Reading and writing either side stays in sync. Use the property in code.
-  - *Renamed properties.* `class` → `className`, `for` → `htmlFor`, `tabindex` → `tabIndex`, `readonly` → `readOnly`, `maxlength` → `maxLength`. The DOM property uses camelCase because the JavaScript identifier can't be a reserved word. JSX prop names follow the property side — `<label htmlFor="...">`, `<input className="...">`. The recognition payoff: JSX prop names aren't React inventions; they're the existing DOM property names.
-  - *Default-vs-current pairs.* `value`/`defaultValue`, `checked`/`defaultChecked`, `selected`/`defaultSelected`. The attribute is the initial value the parser saw; the property is the current live value. After user input or programmatic `.value = ...`, they diverge. React's `defaultValue` prop writes the attribute (initial), `value` writes the property (controlled). The lesson lands the model so Unit 4's controlled-vs-uncontrolled lesson reads as a consequence of platform semantics, not a React invention.
-  - *Attribute-only or property-only cases.* `data-*` attributes mirror to the `dataset` property (with kebab-case → camelCase rename). `style` as a string attribute, `style` as a typed `CSSStyleDeclaration` object on the property side. `aria-*` lives as attributes (no property mirror). `textContent`, `innerHTML`, `nodeName`, `tagName` are property-only — no attribute exists.
-- **Boolean attributes — presence semantics.** `disabled`, `checked`, `readonly`, `required`, `hidden`, `multiple`, `selected`. The attribute is present (any value, including empty string, including the literal string `"false"`) or absent. `disabled="false"` *disables* the element. The property side is a typed boolean. The 2026 reflex: in JSX you pass a boolean (`disabled={isLoading}`) and React handles the presence-or-absence translation; in raw DOM you call `element.disabled = true` (property) or `element.removeAttribute('disabled')` (attribute).
-- **Enumerated attributes — the canonicalization step.** `<input type="numbr">` has `getAttribute('type')` return `"numbr"` (what was parsed) and `.type` return `"text"` (the canonicalized fallback the spec defines). The student needs to recognize that the property is the engineered value, not the raw string.
-- **Where this leaks in a React codebase.**
-  - JSX prop naming — `className`, `htmlFor`, `tabIndex` — is the property side speaking through React, not a React rename.
-  - `defaultValue` vs. `value` controls whether the input is uncontrolled or controlled. Owned by Chapter 7 (forms), foreshadowed here.
-  - Hydration mismatch errors: React renders server HTML (attributes) then hydrates against the live DOM (properties). Boolean-attribute and `value`/`checked` mismatches are the canonical bug class. Cross-reference forward to Chapter 5.
-  - Server-rendered HTML that includes `value="initial"` on a controlled input warns in the console — React expects the controlled side to own the value. Recognition only.
-- **The `dataset` property and `data-*` attributes.** `<div data-user-id="42">` is read as `element.dataset.userId`. The rename: kebab-case → camelCase, `data-` prefix stripped. The 2026 reach: state hooks for Tailwind variants (`data-[state=open]`), event-delegation discriminators (in lesson 3 of chapter 018), test selectors. The student writes `data-*` in JSX and reads it as `dataset.*` in delegation handlers.
-- **DevTools — the Properties pane.** The Elements panel's right-side tabs include a "Properties" subpanel listing the full property surface of the selected node. The "Attributes" view shows the parsed strings. The senior debugging move when an attribute looks right but the page misbehaves (or vice versa): check both sides.
-- **Watch-outs:** `getAttribute` returns `null` for missing attributes, `""` for present-but-empty; the property side returns the typed empty value. `setAttribute('disabled', false)` *still disables* (the string `"false"` is a present value). `class` is the attribute, `className` is the property, JSX uses `className`. `style` as an attribute string overwrites everything; as a property object you mutate one declaration. `aria-*` and `data-*` have no property mirrors beyond `dataset` for `data-*` — `aria-label` is always `getAttribute('aria-label')`. Boolean coercion of attribute strings is a footgun (`Boolean(getAttribute('disabled'))` is `true` even when value is `"false"`).
+- The senior question: brand color, custom spacing scale, custom utility, container-query layout. In v3 this lived in `tailwind.config.ts`; in v4 it lives in `app/globals.css` through `@import "tailwindcss"`, `@theme`, `@utility`, `@custom-variant`, `@container`. The lesson installs the CSS-first model and the four directives.
+- **The 2026 v4 baseline.** Lightning CSS engine, OKLCH default palette, `@import "tailwindcss"` replaces v3's three directives, container queries first-class, JS config optional. The student writes one `app/globals.css`, imported once into `app/layout.tsx`.
+- **`@import "tailwindcss"`.** The single import brings in Preflight (lesson 3 of chapter 019), the utility classes, and the default theme. Line 1 of `app/globals.css`.
+- **`@theme` — design tokens as CSS variables.** Defines theme tokens (e.g. `--color-brand: oklch(...)`, `--spacing-section: 6rem`, `--radius-card: 0.75rem`). Every variable becomes a utility (`bg-brand`, `p-section`, `rounded-card`). Naming is `--{namespace}-{name}`; namespaces map deterministically to utility families.
+- **Token reference and naming conventions.** Which namespace produces which family: `--color-*` → `bg-*`/`text-*`/`border-*`/`ring-*`/etc.; `--spacing-*` → `p-*`/`m-*`/`gap-*`/etc.; `--radius-*` → `rounded-*`; `--font-*` → `font-*`; `--text-*` → `text-*` (size + line-height); `--breakpoint-*` → responsive variants; `--animate-*` → `animate-*` (lesson 5 of chapter 021).
+- **Disabling default tokens — `--color-*: initial`.** Reset Tailwind defaults to keep IntelliSense focused on project tokens. Senior reach for tightly-scoped design systems.
+- **`@utility` — custom utilities defined in CSS.** For cross-cutting patterns that don't map to a single Tailwind utility (e.g. `@utility scroll-snap-x` for a scroll container). Functional form `@utility tab-* { tab-size: --value(integer) }` generates `tab-2`, `tab-4`, etc. Threshold: if it appears in three+ components, name it.
+- **`@custom-variant` — custom variants in CSS.** New `variant:` prefixes. Two forms: selector-based (e.g. `pointer-coarse` for `@media (pointer: coarse)`) and DOM-state-based (e.g. `theme-blue` for `[data-theme=blue]`). The dark-mode variant in lesson 5 of chapter 018 is a `@custom-variant`.
+- **`@container` — container queries, first-class in v4.** Mark a container (`@container`, or named `@container/sidebar`); query it (`@sm:p-6`, `@lg:grid-cols-3`); named queries (`@sm/sidebar:p-6`); max-width queries (`@max-md:hidden`). Replaces responsive variants when layout depends on the *component's* width. lesson 7 of chapter 021 owns container queries at depth.
+- **`@source` for non-default content paths.** `@source "../packages/ui/src/**/*.tsx"`. Senior reach for monorepos with shared UI packages.
+- **The legacy JS config.** `tailwind.config.ts` still works via `@config`. Named only for recognition on older projects.
+- **Plugins in v4.** Official plugins (`@tailwindcss/typography`, `@tailwindcss/forms`) load via `@plugin "..."`. Typography ships the `prose` class for Markdown content; Forms ships reset-friendly form-element defaults. Both named for recognition.
+- **The compile pipeline.** `app/globals.css` plus source files feed into Lightning CSS, which emits a single CSS file with only used utilities. No PostCSS, no separate build step; Turbopack handles it.
+- **Importing globals in the root layout.** `import './globals.css'` at the top of `app/layout.tsx`. Ships from the Chapter 004 scaffold.
+- **Watch-outs the lesson names.** Tokens not appearing (wrong namespace prefix); default theme still applies unless overridden; `@theme` tokens are global on `:root`; `@custom-variant` needs `:where()` wrap for specificity 0 (lesson 1 of chapter 019); container queries need an `@container` ancestor; source scanning is text-based (restated from lesson 1 of chapter 018); v3 plugin compatibility lag.
 
 What this lesson does not cover:
 
-- Tree structure, node hierarchy, query methods (lesson 1 of chapter 018).
-- The event model (lesson 3 of chapter 018).
-- React's controlled-vs-uncontrolled component pattern — Chapter 7 owns forms.
-- The full hydration story — Chapter 5 owns SSR. This lesson installs why mismatches happen.
-- `style` and `CSSStyleDeclaration` at depth — Chapter 023 owns CSS and tokens.
-- The `dataset` API beyond recognition — used in lesson 3 of chapter 018 for delegation.
-- ARIA semantics — lesson 6 of chapter 021 owns the `aria-*` surface.
-- Reflection rules per element — recognition vocabulary only; the spec table is not chapter material.
+- The `cn()` helper for composition (lesson 3 of chapter 018).
+- The structural and state variants (lesson 4 of chapter 018).
+- Dark mode (lesson 5 of chapter 018, lesson 6 of chapter 018).
+- The cascade and `@layer` directive (lesson 1 of chapter 019).
+- Tailwind Preflight (lesson 3 of chapter 019).
+- CSS custom properties at depth and how `@theme` compiles to them (lesson 4 of chapter 019).
+- Typography plugin and the `prose` class — out of scope for this chapter; cited at lesson 1 of chapter 021.
+- Forms plugin and form-element defaults — out of scope for this chapter; cited at Chapter 044.
+- Animations and `@theme --animate-*` (lesson 5 of chapter 021).
+- Container queries at depth (lesson 7 of chapter 021).
+- The v3 → v4 migration story — out of scope; the course pins v4.
 
 ---
 
-## Lesson 3 — The event model: capture, bubble, delegate
+## Lesson 3 — Composing classes with cn()
 
-Teaches the three-phase DOM event model (capture, target, bubble), installs event delegation as the canonical pattern with `event.target.closest` and `data-*` hooks, distinguishes `event.target` from `event.currentTarget` and `preventDefault` from `stopPropagation`, names the `addEventListener` option surface (`capture`, `once`, `passive`, `signal`), and locks in the 2026 cleanup reach with `AbortController` and the `{ passive: true }` default for scroll, wheel, and touch listeners.
+Teaches the `clsx` + `tailwind-merge` helper, the defaults-then-`className`-last override pattern, and conditional class forms for component props.
 
 Topics to cover:
 
-- **The senior question.** A click on a button fires a handler bound to the button, but also a handler bound to the surrounding `<form>`, also one on `document`. Why? Because every event walks the tree, twice: down to the target (capture), then back up (bubble). Listeners can register on either leg. Delegation — one listener on a common ancestor handling clicks for many descendants — is the senior pattern this enables and the substrate React's synthetic event system implements.
-- **The three phases.** Capture (from `window` down to the target's parent), target (on the element itself, in registration order), bubble (back up to `window`). `addEventListener(type, handler)` registers on the bubble phase by default; `addEventListener(type, handler, { capture: true })` registers on the capture phase. Most production code uses bubble; capture is the niche reach (intercepting before a child handles, or listening for non-bubbling events like `focus`/`blur` at a parent — though `focusin`/`focusout` are the bubble-friendly alternatives and the senior reach).
-- **`event.target` vs. `event.currentTarget`.** `target` is the element the user actually interacted with (deepest hit). `currentTarget` is the element the *handler is bound to*. In a delegation handler bound on `<ul>`, `currentTarget === ul` always; `target` is whichever `<li>` (or descendant of one) was clicked. The 2026 reflex: `target` for "what was clicked," `currentTarget` for "what the handler is on."
-- **Event delegation — the canonical pattern.** One listener on a stable ancestor. Inside the handler, `event.target.closest('[data-action]')` walks up to the nearest matching element. A `data-*` attribute discriminates the action; the handler routes on it. The pattern that scales to dynamically-added children, hundreds of items, and is exactly how React's synthetic event system works under the hood (one listener on the root, dispatched by the React fiber tree). Recognition payoff: the student knows what React is doing the moment they read `onClick` on a JSX element.
-- **`event.preventDefault()` vs. `event.stopPropagation()`.** Different jobs. `preventDefault` cancels the browser's default action (form submission, link navigation, checkbox toggle) but lets the event keep propagating. `stopPropagation` halts the trip up (or down) the tree but doesn't cancel the default. `stopImmediatePropagation` also blocks other listeners on the *same* element. The watch-out: `stopPropagation` breaks delegation; the senior almost never reaches for it. `preventDefault` is the common one.
-- **The `addEventListener` options object.** Four flags worth naming.
-  - `capture: true` — register on capture phase. Niche.
-  - `once: true` — auto-remove after first invocation. Useful for "first interaction" telemetry, one-shot setup.
-  - `passive: true` — promise not to call `preventDefault`. Lets the browser scroll without waiting for the handler. *The default for scroll/wheel/touch listeners on `Window`, `Document`, and `Document.body` is already passive in modern browsers (Chrome, Safari, Firefox)*, but the explicit reach is the senior form on every other element. Default reflex on `touchstart`, `touchmove`, `wheel`, `mousewheel`, `scroll` listeners.
-  - `signal: AbortSignal` — the 2026 cleanup reach. Pass a signal from an `AbortController`; calling `controller.abort()` removes the listener (and every other listener that shares the signal). Replaces the named-handler + `removeEventListener` ceremony.
-- **The `AbortController` cleanup pattern.** The senior 2026 form for any non-React listener:
-  - One controller per setup site.
-  - The same signal threaded into every `addEventListener` call in that scope.
-  - One `controller.abort()` call in the cleanup branch (effect teardown, ref callback return, unload handler).
-  - One signal can clean up many listeners across many targets — fewer references to hold, fewer leak surfaces.
-  - This pattern composes directly with React 19 ref callback cleanup (cross-reference forward to Chapter 026) and with `useEffect` teardown. The mental model is "one shutdown switch per scope" instead of "match each `add` with an exact `remove`."
-- **The `useEffect`/ref-callback parallel — forward reference.** Named once, lightly: in React 19, a ref callback can return a cleanup function, and a `useEffect` callback returns one too. The shape is identical: in setup, create a controller, register listeners with its signal; in cleanup, `controller.abort()`. The chapter doesn't teach React here; it primes the pattern so when the React lesson lands the student recognizes the substrate.
-- **Synthetic events — what React owns and what it doesn't.** Recognition vocabulary. React intercepts every native event at the root, normalizes it across browsers, dispatches through its component tree, exposes it as `event` on `onClick={...}`. Most native semantics carry through (`preventDefault`, `stopPropagation`, `target`, `currentTarget`), but a few don't (some native events don't synthesize, `e.persist()` is gone in React 17+, passive option is React-managed for scroll/touch). The student leaves knowing that React owns the listener and they don't reach for `addEventListener` for component-tree events — they use `onClick`.
-- **Where the student still writes `addEventListener` in a 2026 codebase.** Three sites: window/document listeners (`keydown` for global shortcuts, `resize`, `scroll` on `window`); third-party DOM integrations (Stripe Elements, Mapbox, charting library callbacks); browser APIs that aren't event-driven through JSX (`MediaQueryList.change`, `BroadcastChannel.message`, `WebSocket.message`). Each lives inside a `useEffect` or ref callback with the `AbortController` cleanup.
-- **Watch-outs:** `stopPropagation` breaks delegation — don't reach for it. A passive listener that calls `preventDefault` is a console warning and the call is ignored. `focus` and `blur` don't bubble; `focusin` and `focusout` do — use the bubbling pair for delegation. `click` fires for keyboard activation (Enter/Space on a button), `mousedown`/`mouseup` don't — keyboard-accessible code branches on `click`. Anonymous-function handlers can't be removed by `removeEventListener` (the reference doesn't match) — `AbortController` sidesteps the problem entirely. `once: true` removes the listener after one invocation but the controller can still abort early — they compose. `event.target` can be a descendant text node — use `.closest()` to climb to the element you actually care about. `preventDefault` on a form's submit handler suppresses navigation but doesn't stop validation or browser autofill. Touch events fire alongside mouse events on mobile — listen for `pointer*` (unified) when possible, or pick one family and stay consistent.
+- The senior question: a `<Button>` accepts a `className` prop for consumer overrides. Naive template-literal concat produces conflicting classes (consumer's `px-8` and component's `px-4` both in the string), and the cascade picks whichever Tailwind emits last — build-dependent, unpredictable. The lesson installs `cn()` and the reflex of "always `cn`, never template-string concat for Tailwind classes."
+- **The naive failure shape.** Two classes setting the same property both land on the element; Tailwind emits rules in fixed source order; the later rule wins by cascade. Bug is silent and build-dependent.
+- **`clsx`.** A tiny dependency-free utility that builds class strings from conditionals — strings, arrays, objects, falsy values dropped. Doesn't know Tailwind conflicts; just concatenates.
+- **`tailwind-merge`.** A Tailwind-aware deduplicator that resolves conflicts last-wins (e.g. `twMerge('px-4 py-2 px-8')` → `'py-2 px-8'`). Knows variant prefixes, responsive prefixes, shorthand/longhand. Pin a version compatible with the installed Tailwind.
+- **The `cn()` helper.** Canonical wrapper at `src/lib/cn.ts` — `clsx` first (flatten conditionals), `tailwind-merge` second (resolve conflicts). Every shadcn component imports this exact helper.
+- **The component-with-override pattern.** Reusable components accept `className` and pass it through `cn()` *last* — defaults first, conditional/variant classes next, consumer `className` last. The order is the rule that lets consumer overrides win.
+- **Conditional class composition — the four forms.** `&&` (boolean toggles, canonical), object form (`{ active: isActive }`), ternary (two-branch), array form (rare). Pick what reads cleanest.
+- **CVA — `class-variance-authority` (foreshadowed).** When components have orthogonal variants (size × variant × state), CVA declares the matrix once. lesson 3 of chapter 022 owns CVA in depth. Every shadcn component uses CVA + `cn` together.
+- **What `tailwind-merge` knows and doesn't.** Knows: Tailwind's utility surface, variant prefixes, responsive prefixes, shorthand/longhand. Doesn't know: bespoke CSS classes, third-party CSS, arbitrary properties without Tailwind conventions.
+- **Where `cn()` lives.** `src/lib/cn.ts`, imported as `@/lib/cn`. Ships from the Chapter 004 scaffold.
+- **Reading the output.** DOM contains only the surviving classes; the merge happens at render time. Debugging move: if a class isn't in the DOM, `cn()` merged it out.
+- **Watch-outs the lesson names.** Never template-literal concat for Tailwind classes; `className` last in `cn()` (consumer wins); don't `cn()` in `useEffect` or non-render paths (useEffect: lesson 2 of chapter 025); `cn()` cost is sub-millisecond per call (rarely matters at SaaS scale); `extendTailwindMerge` configures conflict groups for custom utilities (rare); the `className` prop is the convention; don't `cn()` when no conditionals or overrides exist; v4's `!` important modifier interacts predictably with `tailwind-merge`.
 
 What this lesson does not cover:
 
-- React's `onClick` / `onChange` / `onSubmit` props at depth — Chapter 026 owns React events.
-- React Synthetic Events versus native events at depth — recognition only.
-- `useEffect` cleanup and ref callback cleanup — Chapter 026.
-- Pointer events vs. mouse vs. touch event families at depth — out of scope; the chapter names `pointer*` as the unifying primitive.
-- The `KeyboardEvent` keycode/key surface at depth — Chapter 026 or chapter 031 will handle keyboard shortcuts when it earns its weight.
-- Custom events and `CustomEvent` for component messaging — out of scope; the course communicates via props and context, not DOM events.
-- `IntersectionObserver`, `ResizeObserver`, `MutationObserver` — covered as they earn their weight in later chapters (lazy-loading, layout, virtualization); not part of the event-substrate chapter.
-- The full event-type taxonomy — recognition only on the families the chapter names.
+- CVA — `class-variance-authority` (lesson 3 of chapter 022).
+- The `asChild` + Radix Slot polymorphic pattern (lesson 3 of chapter 022).
+- shadcn/ui's component templates (lesson 1 of chapter 027).
+- The cascade and specificity at depth (lesson 1 of chapter 019).
+- The `!important` modifier at depth (lesson 1 of chapter 019).
+- The `style` prop for dynamic CSS — out of scope; lesson 1 of chapter 017 introduced it.
+- The structural and state variants (lesson 4 of chapter 018).
+- React 19's `ref` as a prop and forwarding `className` through (lesson 4 of chapter 022).
 
 ---
 
-## Lesson 4 — Quizz
+## Lesson 4 — Variants that read DOM state
 
-Top 10 topics to quiz:
+Teaches `data-*`, `aria-*`, `group-*`, `peer-*`, `has-*`, `*:`, `not-*`, and positional variants so state-driven styling skips `useState`.
 
-- The DOM as a live tree vs. the HTML source — what the parser produces, what JavaScript mutates, why DevTools and "View Source" can disagree.
-- The node-type hierarchy — `Node` → `Element` → `HTMLElement` → tag-specific subclasses (`HTMLInputElement`, etc.), and why TypeScript ref types pick a specific one.
-- Live vs. static collections — `children` and `childNodes` are live, `querySelectorAll` returns a static `NodeList`, the iterate-while-mutating bug pattern and the `[...]` snapshot fix.
-- The attribute-vs-property model — attribute = parsed string at load time, property = live typed value; the four canonical patterns (identical, renamed, default-vs-current, attribute-only or property-only).
-- Boolean attributes — presence semantics, `disabled="false"` still disables, why the property side returns a typed boolean.
-- The renamed-property table — `class`/`className`, `for`/`htmlFor`, `tabindex`/`tabIndex`, `readonly`/`readOnly` — and why JSX prop names follow the property side.
-- The three event phases (capture, target, bubble) and the `event.target` vs. `event.currentTarget` distinction.
-- `preventDefault` vs. `stopPropagation` — different jobs, when to reach for each, why `stopPropagation` breaks delegation.
-- Event delegation with `closest` and `data-*` — the canonical pattern, what React's synthetic event system does under the hood.
-- The `addEventListener` options surface (`capture`, `once`, `passive`, `signal`) and the `AbortController` cleanup pattern that replaces `removeEventListener`, with `passive: true` as the default reflex for scroll, wheel, and touch.
+Topics to cover:
+
+- The senior question: a disclosure widget's chevron rotates when open, an error message turns red on invalid input, a card highlights on hover, a submit button disables when any child input is invalid. Naive reach: `useState` for each. Senior reach: read state the DOM already tracks (`data-state`, `:invalid`, `:hover`, `:has()`) and let variants paint accordingly — no `useState`, no handlers.
+- **The model.** A Tailwind variant is a selector wrapper — `hover:bg-primary` becomes `&:hover { ... }`, `data-[state=open]:rotate-180` becomes `&[data-state="open"] { ... }`. Any state a CSS selector can read, a variant can express: DOM-tracked (`:hover`, `:focus`, `:invalid`, `:checked`, `:disabled`), JSX-set (`data-*`, `aria-*`), descendant/sibling/parent (`has-*`, `*:`, `peer-*`, `group-*`).
+- **`data-*` attribute variants.** Form: `data-[attr=value]:utility`. Three use cases — Radix-style `data-state` (`open`, `closed`, `active`, `inactive`) for disclosures/accordions/tabs/dropdowns; project-defined `data-*` (`data-loading`, `data-variant`); toggle states (`data-theme="dark"` from lesson 5 of chapter 018/lesson 6 of chapter 018). Form without `=value` tests for attribute presence.
+- **`aria-*` attribute variants — the canonical eight.** Built-in variants: `aria-expanded:`, `aria-pressed:`, `aria-selected:`, `aria-checked:`, `aria-disabled:`, `aria-busy:`, `aria-current:`, `aria-invalid:`. ARIA attributes serve two purposes: assistive tech reads them and Tailwind styles by them — one source of truth.
+- **`group-*` — parent-state variants.** The `group` utility marks a parent; `group-hover:`, `group-focus:`, `group-data-[state=open]:` etc. let children read the parent's state. Named groups (`group/item`, `group-hover/item:`) disambiguate when multiple ancestors are marked.
+- **`peer-*` — sibling-state variants.** The `peer` utility marks a sibling; `peer-invalid:`, `peer-checked:`, `peer-focus:`, `peer-placeholder-shown:` let later siblings read it. Form inline errors driven by native `:invalid` (lesson 7 of chapter 044 cashes the Constraint Validation API). Only reaches *later* siblings — source order matters.
+- **`has-*` — descendant-state variants.** Tailwind ships `has-[...]:` over the CSS `:has()` parent selector. Use cases: a form highlights when any child input is `:invalid`; a label lifts when it contains a `:checked` input; a list item bolds when its link is `aria-current="page"`. Replaces a lot of `useState` mirroring.
+- **`*:` — direct-children variants.** `*:py-2` styles every direct child. For ad-hoc child styling when the children aren't components the parent controls.
+- **`not-*` — negation.** `not-disabled:`, `not-hover:`, `not-data-[state=open]:`. "Every element not in this state." Composes with other variants.
+- **Positional variants.** `first:`, `last:`, `odd:`, `even:`, `only:`, `empty:` — for grouped corners, striped rows, collapsing empty containers.
+- **`open:` — for `<details>` and `<dialog>`.** Reads the native `open` attribute. Rare in modern SaaS (Radix is the senior reach for richer interactions); named for recognition.
+- **Stacking and combining.** Variants compose left-to-right; senior reach is "constraint outermost" — breakpoint or theme outside, state inside.
+- **The senior pattern — read state, don't mirror it.** Every state-driven style change starts with "can the DOM already tell me this?" If yes, write a variant. If no (server-fetched value, derived computation), use `useState` and conditional classes via `cn`.
+- **Watch-outs the lesson names.** `peer` only reaches later siblings; `:has()` performance at scale (rarely a problem at SaaS component scale); ARIA values are strings, not booleans; `data-state` is Radix's convention, not Tailwind's; group/peer slash-names disambiguate at scale; `*:` is easy to over-apply; `:has()` browser support is solid in 2026; don't fight the DOM model — pick the right tool.
+
+What this lesson does not cover:
+
+- The full Radix UI surface (lesson 1 of chapter 027).
+- shadcn/ui components that ship with these variants pre-wired (lesson 1 of chapter 027).
+- The Constraint Validation API for form `:invalid` (lesson 7 of chapter 044).
+- ARIA at depth — roles, live regions, the first rule of ARIA (lesson 3 of chapter 027).
+- The `data-*` attribute as a script-delegation hook (lesson 6 of chapter 017 covered).
+- Focus management and tab order (lesson 4 of chapter 027).
+- The `not-disabled:` and `:not()` selector pattern at depth — covered lightly here, deepened at lesson 4 of chapter 021.
+- Pseudo-class details (`:focus-visible` etc.) — lesson 4 of chapter 021 owns.
+- Animation and motion variants (`motion-reduce:`, `motion-safe:`) — lesson 5 of chapter 021.
+- Container queries (`@container`, `@sm:`) — lesson 7 of chapter 021.
+
+---
+
+## Lesson 5 — Dark mode via semantic tokens
+
+Teaches the shadcn-style `@custom-variant dark` plus `@theme` and `.dark` OKLCH token overrides so components ship one theme-agnostic class string.
+
+Topics to cover:
+
+- The senior question: light and dark theme. Naive reach is `dark:` everywhere, doubling color utilities. Senior reach is semantic tokens (`bg-background`, `text-foreground`, `border-border`) that resolve differently per theme — one set of utilities, theme decides the values. The lesson installs both forms, the threshold, and the `@custom-variant dark` wiring. lesson 6 of chapter 018 owns the React side.
+- **The naive `dark:` form and what it costs.** Maintenance cost (every component re-derives the dark palette), inconsistency (different darks drift), class string weight (six to ten extra utilities per element). `dark:` per utility earns its weight only for one-off cases.
+- **Semantic tokens — the shape.** The 2026 senior pattern (the shadcn model): an `@theme` block with the canonical role-named color tokens (`--color-background`, `--color-foreground`, `--color-card`, `--color-primary`, `--color-muted`, `--color-border`, `--color-ring`, `--color-destructive`, `--color-accent`, plus matching `*-foreground` pairs) defined in OKLCH for light, then a `.dark { ... }` block redefining the same tokens for dark. Names are *semantic* (role), not *visual* (color).
+- **The `@custom-variant dark` directive.** `@custom-variant dark (&:where(.dark, .dark *));` in `app/globals.css`. The `:where()` wrap keeps specificity at 0. The variant exists so the *token override* takes effect when `.dark` is on `<html>`; the senior reach is *not* per-utility `dark:`.
+- **Putting it together.** `app/globals.css`: `@import`, `@custom-variant dark`, `@theme` light tokens, `.dark { ... }` dark overrides. Components: semantic-token utilities only. `<html>`: the `dark` class toggles between themes (lesson 6 of chapter 018 wires it).
+- **Why OKLCH.** Perceptually-uniform lightness — a `0.1` step looks the same magnitude regardless of hue, unlike hex/RGB. Form is `oklch(L C H)`. Shadcn's palette is OKLCH; no color theory required.
+- **The `system` mode and `prefers-color-scheme`.** OS preference is readable via the media query. With the class-based variant, system preference is wired by the React side (lesson 6 of chapter 018); Tailwind just reads the class.
+- **The "one-off `dark:` per utility" carve-out.** Specifically-tuned shadow, gradient that flips in dark, illustration overlay — `dark:` inline is the right reach. Threshold: if the same `dark:` adjustment appears in two components, promote it to a token.
+- **Semantic tokens in the wild.** Shadcn's `<Input>` reads from the model — `bg-input`, `border-input`, `focus-visible:ring-ring`, `aria-invalid:border-destructive aria-invalid:bg-destructive/10` (lesson 4 of chapter 018's pattern crossing with the token model). One class string carries through every theme variation.
+- **Non-color tokens.** The same model applies to radius (`--radius-md`, `--radius-lg`), shadow (`--shadow-card`), font sizes — any design-system value that varies by theme, surface, or component tier.
+- **Hue-shifted dark themes.** Dark themes that shift hues, not just lightness. The token model handles this transparently — values per theme are independent.
+- **Testing the dark theme.** Per-component reach: `<ThemeToggle>` and inspect. Team-level: visual regression on both themes (Unit 18, Chapter 095).
+- **Watch-outs the lesson names.** Don't reach for `dark:` per utility as the default; don't define the dark palette inline; `:where()` wrap is not optional (specificity); `prefers-color-scheme` is the OS preference, not the user's site preference; color contrast is theme-dependent (lesson 2 of chapter 027); custom themes beyond light/dark extend via the `data-theme` attribute strategy.
+
+What this lesson does not cover:
+
+- The React-side theme wiring with `next-themes` (lesson 6 of chapter 018).
+- The full design-token treatment and CSS custom properties (lesson 4 of chapter 019).
+- The OKLCH color space at depth and color theory (out of scope; cited at lesson 2 of chapter 021).
+- Color contrast testing and the WCAG AA discipline (lesson 2 of chapter 027).
+- Visual regression testing (Chapter 089 and Chapter 095).
+- The `<ThemeToggle>` component implementation — lesson 6 of chapter 018 owns the React side, this lesson is Tailwind side.
+- The `prefers-color-scheme` media-query syntax at depth — lesson 6 of chapter 021 covers media queries.
+
+---
+
+## Lesson 6 — Theme switching without FOUC
+
+Teaches the `next-themes` `<ThemeProvider>` wiring, `suppressHydrationWarning`, the `useTheme()` hook, and a hydration-safe `<ThemeToggle>`.
+
+Topics to cover:
+
+- The senior question: the `dark` class on `<html>` (from lesson 5 of chapter 018) must be set before paint, or the user sees a flash of light theme. A naive `useEffect` reads `localStorage` *after* hydration — the flash is the bug. Senior reach: `next-themes` injects a synchronous `<head>` script before paint. The lesson installs the wiring, `<ThemeProvider>`, `useTheme()`, `suppressHydrationWarning`, the React-19 warning, and the canonical `<ThemeToggle>`.
+- **The FOUC problem.** SSR doesn't know the user's theme. Without a pre-paint class, the page renders default, then JS hydrates and flashes to dark. The fix is setting the class *before* the body parses — an inline `<head>` script. `next-themes` is that script plus the React provider.
+- **`next-themes` in one paragraph.** ~3KB package. `<ThemeProvider>` wraps the app, configures `attribute`, `defaultTheme`, `enableSystem`, `disableTransitionOnChange`, injects the synchronous script. `useTheme()` returns `{ theme, setTheme, resolvedTheme, systemTheme, themes }`. Handles script injection, `localStorage` persistence, `prefers-color-scheme` listener.
+- **The canonical setup.** `src/components/providers.tsx` is a `'use client'` wrapper rendering `<ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>{children}</ThemeProvider>`. `app/layout.tsx` keeps the Server Component default with `<html lang="en" suppressHydrationWarning>` wrapping `<body>` and `<Providers>{children}</Providers>`. `<html>`/`<body>` stay on the server; the provider is the client boundary.
+- **`attribute="class"` vs. `attribute="data-theme"`.** `class` (senior default) pairs with `@custom-variant dark (&:where(.dark, .dark *))` from lesson 5 of chapter 018. `data-theme` pairs with the equivalent attribute selector and is the senior reach for multi-theme apps.
+- **`defaultTheme` and `enableSystem`.** `defaultTheme="system"` respects OS preference on first visit; `enableSystem` makes `'system'` a valid theme value. Senior defaults.
+- **`disableTransitionOnChange`.** Adds temporary `transition: none` during theme switch so `transition-colors` utilities don't animate the swap. Senior default.
+- **`suppressHydrationWarning` on `<html>`.** The script mutates `<html>` before React hydrates, creating a class-attribute mismatch. The prop tells React this is expected — non-negotiable on `<html>`, and only there.
+- **The `useTheme()` hook.** A `'use client'` component destructures `{ theme, setTheme, resolvedTheme }`, calls `setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')` on click. The toggle reads `resolvedTheme` (always `'light'` or `'dark'`), not `theme` (which can be `'system'`).
+- **The hydration-safe rendering pattern.** Rendering the current-theme icon at first render produces a hydration mismatch. Fix: mount-gate with a same-size placeholder (a `useState`-tracked `mounted` flag flipped in `useEffect` — useState: lesson 1 of chapter 024; useEffect: lesson 2 of chapter 025 — named here for recognition; this lesson's recommended path is the alternative), or — the senior alternative — a CSS-only icon swap.
+- **A CSS-only icon swap.** Render both icons inside the button; let variants pick which is visible (`<SunIcon className="hidden dark:inline" />` next to `<MoonIcon className="inline dark:hidden" />`). No React state read, no mount gate, no hydration mismatch. Senior reflex for simple toggles.
+- **The React-19 script-tag warning.** Known dev-only warning when `next-themes` injects its inline `<script>`. Tracked upstream; doesn't affect production. Named so the student doesn't waste time investigating.
+- **The `themes` prop for multi-theme apps.** `themes={['light', 'dark', 'blue', 'high-contrast']}` plus `attribute="data-theme"` and per-theme `[data-theme=blue] { ... }` overrides. Rare in SaaS; common in marketing sites.
+- **Persistence and storage.** Writes to `localStorage` under `theme` (configurable `storageKey`). Survives reloads.
+- **The reading instrument.** DevTools on `<html>` — class or `data-theme` should be present. If absent: script didn't run, provider isn't wrapping, or `attribute` misconfigured. If present but colors don't change: `@custom-variant dark` in `globals.css` is wrong.
+- **Watch-outs the lesson names.** `'use client'` on `<Providers>`, not the root layout; `suppressHydrationWarning` non-negotiable on `<html>`; don't render theme-dependent content at first render without a mount gate or CSS-only swap; CSS icon-swap is the senior reach for simple toggles; `disableTransitionOnChange` defaults on; `next-themes` is React-side only (SSR-rendered theme-dependent content needs cookie-based reading); `theme` vs. `resolvedTheme` distinction; test both themes (Unit 18 visual regression); class belongs on `<html>`, not `<body>` or a wrapper.
+
+What this lesson does not cover:
+
+- The Tailwind-side `@custom-variant dark` and semantic tokens (lesson 5 of chapter 018 owns).
+- The full root-layout structure and Server-Component defaults (lesson 2 of chapter 017 owns).
+- The `<Providers>` pattern at depth (lesson 2 of chapter 030 cashes in the Client-Component boundary).
+- Server-side theme reading via cookies — out of scope; cited as a watch-out.
+- Visual regression testing (Unit 18, chapter 095).
+- The `prefers-reduced-motion` and other a11y media queries (lesson 2 of chapter 027).
+- Multi-theme apps beyond light/dark — light treatment via the `themes` and `attribute="data-theme"` props.
+- The `useTheme()` hook's full API surface beyond `theme`, `setTheme`, `resolvedTheme` — out of scope.
+
+---
+
+## Lesson 7 — Quizz
+
+Top ten topics to quiz:
+
+1. Utility-first is a decision — co-locates styling with the JSX, scales when the codebase grows, replaces named-class CSS for component-internal styling. Bespoke CSS still earns its weight for prose content, animations, and global resets. `@apply` is the legacy escape hatch, not the senior default. Long class strings are not a code smell when the alternative is a bespoke class with the same declarations.
+2. Tailwind v4 is CSS-first. The 2026 senior reach is `@import "tailwindcss"`, `@theme` for tokens, `@utility` for custom utilities, `@custom-variant` for custom variants, `@container` on JSX for container queries — all in `app/globals.css`. The legacy `tailwind.config.ts` is named for recognition only. Lightning CSS is the engine; OKLCH is the default color space.
+3. `@theme` defines design tokens as CSS variables. The namespace (`--color-*`, `--spacing-*`, `--radius-*`, `--font-*`) maps deterministically to utility families. `--color-brand: oklch(...)` produces `bg-brand`, `text-brand`, `border-brand` automatically. To strip Tailwind's defaults, set `--color-*: initial`.
+4. Variants are prefix-and-colon — `hover:`, `focus-visible:`, `disabled:`, `sm:`, `md:`, `dark:`, `motion-reduce:`. Each compiles to a CSS selector or media query wrapper. Stacking is left-to-right (`md:hover:bg-primary` = "at md and up, when hovered"). Modifiers are postfix `/` for opacity (`bg-primary/80`).
+5. Arbitrary values via `[...]` are the escape hatch when the theme scale doesn't fit (`w-[37rem]`, `bg-[#1a1a2e]`, `grid-cols-[200px_1fr_200px]`). Every arbitrary value is a signal — often the right fix is a new theme token. Dynamic class strings (`bg-${color}-500`) don't get emitted because Tailwind reads source files as text.
+6. The `cn()` helper — `clsx` then `tailwind-merge` — is the canonical composition primitive. The signature: `cn(...inputs)` returning a deduplicated, conflict-resolved class string. The senior pattern: defaults first, conditional variants next, consumer `className` last (so consumer overrides win). Template-literal class concatenation breaks at the first override; never reach for it on Tailwind classes.
+7. State and structural variants — `data-[state=open]:`, `aria-expanded:`, `aria-current:`, `group-hover:`, `peer-invalid:`, `has-[:invalid]`, `*:`, `not-disabled:`, `first:`, `last:`, `odd:`. The senior pattern: read state from the DOM that's already true (Radix's `data-state`, ARIA attributes, browser pseudo-classes), don't mirror it in React state. `useState` and conditional classes are the fallback when the DOM can't tell you.
+8. Dark mode is a semantic-token swap, not per-utility `dark:`. The canonical setup: `@custom-variant dark (&:where(.dark, .dark *))` in `globals.css`, `@theme` with default light values, `.dark { ... }` with dark overrides. Components write `bg-card text-card-foreground border-border` (one class string, theme-agnostic). The `dark:` per-utility variant earns its weight only for one-off carve-outs.
+9. `next-themes` is the React-side wiring. The `<ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>` shape, wrapped in a `<Providers>` client component, mounted under the root layout. The `<html>` carries `suppressHydrationWarning`. The inline script in `<head>` prevents FOUC by setting the class before paint. The `useTheme()` hook returns `{ theme, setTheme, resolvedTheme }`.
+10. The hydration-safe `<ThemeToggle>` is either a CSS-only icon swap (`SunIcon className="hidden dark:inline"` + `MoonIcon className="inline dark:hidden"`) or a mount-gated `useTheme()` read with a same-size placeholder during the unmounted phase. The CSS-only form is the senior reach for simple toggles; the React form is for richer logic.
+
+---
+
+## Total chapter time
+
+Roughly 280 to 340 minutes across the six teaching lessons plus the quiz, fitting across three to four evenings: utility-first thinking (50-60 min); Tailwind v4 CSS-first config (45-55 min); the `cn()` helper (40-50 min); state and structural variants (55-65 min); the `dark:` semantic-token model and `next-themes` together (90-110 min) plus the quiz. Chapter 019 picks up on the other side with the cascade, inheritance, and the design-token model at depth.

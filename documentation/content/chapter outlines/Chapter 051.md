@@ -1,333 +1,170 @@
-# Chapter 051 — Project: CRUD via Server Actions
+# Chapter 051 — The auth mental model
 
 ## Chapter framing
 
-Chapter 051 cashes in Unit 7: Zod 4 as the schema vocabulary (chapter 046), the Server Action as the mutation seam with the five-seam shape and the canonical `Result` return (chapter 047), and the native React 19 form pattern with `useActionState` / `useFormStatus` / `useOptimistic` plus the Constraint Validation API and progressive enhancement (chapter 048). The student takes the Unit 6 invoicing schema and ships a full CRUD surface: a "new invoice" form, an "edit invoice" form, and a delete-with-confirmation button. Every mutation goes through one of three Server Actions, each parsing its input with a `drizzle-zod`-derived Zod schema, each returning the canonical `Result`, each revalidating the list after success. The create form layers `useOptimistic` so the row appears immediately and rolls back when the action returns `ok: false`. The delete is wrapped in a Drizzle transaction so the pattern lands explicitly even when the FK cascade would do the same work. Field errors render inline from the action's `Result.error.fieldErrors`, not from client state. The whole thing works with JavaScript disabled.
+Unit 8 wires identity onto the data backplane: Better Auth, Drizzle-adapted, with sessions read in middleware, layouts, and Server Actions. Chapter 051 lands the conceptual ground before any code calls `auth.api.*`. The student arrives knowing what cookies are (Chapter 013), what same-origin and CORS mean (Chapter 012), what Web Crypto and constant-time compare buy (lesson 1 of chapter 016), and what a Server Action and middleware look like (Chapters 034, chapter 033, chapter 043). What they don't yet have is the senior mental model that lets them read Better Auth's surface without confusion: *what* the system is proving (authn) versus *what* it lets the proven identity do (authz); *how* the proof travels across requests (session-id-in-cookie vs. self-contained token, and the consequences of each for revocation, storage, and reputation); and *why* the social-login button in the corner is, underneath, an OAuth 2.1 authorization-code flow with PKCE, with `state`, redirect-URI rules, and a tokens-versus-userinfo exchange the senior must be able to describe.
 
-Threads that run through every lesson: the schema is the contract — `createInsertSchema(invoices)` + refinement is the action's input shape, the form's input `name`s match the schema's keys, drift is impossible; `safeParse` + return `Result` is the action body's opening discipline, never `parse`, never throw on validation; `useActionState` reads the same `Result` the action writes — both sides see one shape; the form is a Client Component with uncontrolled inputs and `defaultValue`, the action prop fires the submit, the JS-disabled path still works; `useOptimistic` rolls back implicitly when the surrounding transition fails — no manual rollback bookkeeping; the transaction is for atomicity, external calls don't go inside it. The chapter ships 1 brief + 1 starter walkthrough + 4 build lessons + 1 verify lesson; every build closes on a runnable state.
-
-### Dependency carry-in
-
-- **From chapter 045 (Unit 6 project):** the full `db/schema.ts` (`organizations`, `users` stub, `org_members`, `customers`, `invoices`, `invoice_lines`), `db/relations.ts`, the seeded data with two orgs and 50+ invoices each, the `listInvoices` and `getInvoiceDetail` query helpers in `lib/invoices/queries.ts`, the `lib/invoices/schema.ts` with `statusSchema` and `listInvoicesInputSchema`, the cursor encode/decode in `db/cursor.ts`, the pooled `db` client.
-- **From lesson 4 of chapter 046 / lesson 5 of chapter 046 / lesson 6 of chapter 046 / lesson 7 of chapter 046:** `createInsertSchema(invoices)` plus the override-and-refine pattern, `.omit` for server-owned columns, `z.coerce.number()` / `z.coerce.date()` for `FormData`, `z.preprocess(v => v === 'on', z.boolean())` for the optional draft checkbox, `safeParse(Object.fromEntries(formData))`, `z.treeifyError`.
-- **From lesson 1 of chapter 047 / lesson 2 of chapter 047 / lesson 3 of chapter 047 / lesson 4 of chapter 047 / lesson 5 of chapter 047:** the `"use server"` file-level directive, the five-seam shape (parse → authorize → mutate → revalidate → return), the canonical `Result<T>` type and the `ok`/`err` helpers in `lib/result.ts`, the error code set (`validation` / `conflict` / `not_found` / `internal`), the unique-violation-to-`conflict` mapping helper, `revalidatePath`, `db.transaction(async tx => ...)`, `redirect('/invoices/' + id)` from inside the action.
-- **From lesson 1 of chapter 048 / lesson 2 of chapter 048 / lesson 3 of chapter 048 / lesson 4 of chapter 048 / lesson 5 of chapter 048 / lesson 6 of chapter 048 / lesson 7 of chapter 048:** uncontrolled inputs with `name` + `defaultValue`, `<form action={formAction}>`, `useActionState(action, null)` and the `(prevState, formData)` action signature, the `<SubmitButton>` reading `useFormStatus`, `useOptimistic(actualState, reducer)` inside the action's transition, the Constraint Validation API attributes (`required`, `type`, `minLength`, `pattern`, `inputmode`, `autocomplete`), `:user-invalid` styling, the no-JS test discipline.
-- **From lesson 1 of chapter 037 / lesson 3 of chapter 037:** `searchParams` reads in the Server Component page, `redirect()` from a Server Action, `notFound()` for missing resources.
-- **From lesson 1 of chapter 031 / lesson 5 of chapter 031:** the shadcn install discipline (primitives copied into `components/ui/`, never reinstalled), `Button` from the chapter 032 set, the `cn()` helper, `aria-describedby` / `aria-invalid` accessibility wiring on inputs with errors. The form primitives (`Input`, `Label`, `Textarea`, `Select`, `Dialog`, `Form`, `FormField`, `FormItem`, `FormLabel`, `FormControl`, `FormDescription`, `FormMessage`) are added by the chapter 051 starter via `pnpm dlx shadcn add` and ship pre-installed in `components/ui/`.
-
-### Auth carve-out (deferred to Unit 10)
-
-The action body needs an `organizationId` and a `createdBy` to write rows. Unit 9 (Better Auth) and 10 (`authedAction` + `tenantDb`) don't exist yet. The starter exposes a `getActiveContext()` helper in `lib/auth-stub.ts` that returns `{ organizationId, userId }` for the seeded "Acme" org and the seeded owner user — a fixed value at module scope, no cookie or session read. The action calls it once at the top of the body where chapter 061 will inject the `authedAction` wrapper later. Naming this so the student doesn't reach for `cookies()` or invent a session shape mid-chapter.
-
-### Starter file tree (stubs marked with TODO)
-
-```
-src/
-  db/                            # provided: full schema, relations, client, cursor (from chapter 045)
-  lib/
-    invoices/
-      schema.ts                  # provided: statusSchema, listInvoicesInputSchema (from chapter 045)
-      mutation-schemas.ts        # TODO student: createInvoiceInput, updateInvoiceInput, deleteInvoiceInput
-      queries.ts                 # provided: listInvoices, getInvoiceDetail (from chapter 045)
-      actions.ts                 # TODO student: createInvoice, updateInvoice, deleteInvoice (file-level 'use server')
-    result.ts                    # provided: Result<T>, ok(), err(), unique-violation mapping helper
-    auth-stub.ts                 # provided: getActiveContext() returning fixed org + user
-  app/
-    invoices/
-      page.tsx                   # provided: server component, list of invoices, "New invoice" link
-      new/
-        page.tsx                 # provided: server-rendered shell
-        new-invoice-form.tsx     # TODO student: client component
-      [invoiceId]/
-        page.tsx                 # provided: server component, loads detail, renders edit form + delete button
-        edit-invoice-form.tsx    # TODO student: client component
-        delete-invoice-form.tsx  # TODO student: client component
-    _components/
-      submit-button.tsx          # TODO student: useFormStatus + shadcn Button
-      field-error.tsx            # TODO student: reads Result.error.fieldErrors[name]
-  components/ui/                 # provided: shadcn primitives (Input, Label, Textarea, Select, Button, Dialog, Form*)
-```
-
-The provided pages assume the student-written form components exist at those paths and accept their documented props.
-
-### Reference solution signatures lessons display
-
-- `CreateInvoiceInput = z.input<typeof createInvoiceInputSchema>` and `Output = z.output<typeof ...>` — the schema is derived from `createInsertSchema(invoices, { number: s => s.min(1).max(50), total: s => s.refine(n => n >= 0) })` then `.omit({ organizationId: true, createdBy: true, createdAt: true })`. The `id` column is *not* omitted — it stays optional (the column has a `$defaultFn` UUIDv7) so the create form can supply a client-generated UUIDv7 in lesson lesson 5 of chapter 051 for the optimistic-reconcile pattern without re-shaping the schema mid-chapter. Fields the form posts: `id` (optional uuid), `customerId` (uuid), `number` (string), `status` (enum), `total` (coerced number), `currency` (string with default), `issuedAt` (coerced date), `dueAt` (coerced date).
-- `UpdateInvoiceInputSchema` = `CreateInvoiceInputSchema.extend({ id: z.uuid() })`. The form posts the `id` as a hidden input.
-- `DeleteInvoiceInputSchema = z.object({ id: z.uuid() })`.
-- `createInvoice(prevState: Result<{ id: string }> | null, formData: FormData): Promise<Result<{ id: string }>>` — file-level `'use server'`.
-- `updateInvoice(prevState: Result<{ id: string }> | null, formData: FormData): Promise<Result<{ id: string }>>`.
-- `deleteInvoice(prevState: Result<null> | null, formData: FormData): Promise<Result<null>>` — wrapped in `db.transaction(async tx => ...)`.
-- `Result<T>` from `lib/result.ts`: `{ ok: true; data: T } | { ok: false; error: { code: 'validation' | 'conflict' | 'not_found' | 'internal'; userMessage: string; fieldErrors?: Record<string, string[]> } }`.
-- `<SubmitButton>{children}</SubmitButton>` — calls `useFormStatus`, renders shadcn `<Button type="submit" disabled={pending}>` with a spinner.
-- `<FieldError name="email" fieldErrors={state?.ok === false ? state.error.fieldErrors : undefined} />` — renders `<p id={`${name}-error`} className="text-destructive text-sm">{message}</p>` or null; the form's `<Input>` references it via `aria-describedby={`${name}-error`}` and `aria-invalid={!!message}`.
-- Env entries: none new (the project reuses chapter 045's `DATABASE_URL`, `DATABASE_URL_UNPOOLED`).
-- The optimistic-list reducer (in the client list component, named `OptimisticInvoicesList`): `(current: Invoice[], next: Invoice) => [next, ...current]`. Optimistic row uses a client-generated UUIDv7 passed as a hidden input to the action so the optimistic and revalidated rows reconcile by key.
-
-### Surface spec
-
-This project uses production-shaped surfaces, not an inspector dashboard — the verifies run against the real `/invoices` UI.
-
-- **`/invoices`** (Server Component): renders the list via the provided `listInvoices` call, a header with a "New invoice" link, and a `<OptimisticInvoicesList>` client wrapper around the rendered rows so optimistic appends work. Each row links to `/invoices/[invoiceId]` and shows the row's number, customer, status, total, due date.
-- **`/invoices/new`** (Server Component shell + client `NewInvoiceForm`): renders the create form. On success the action redirects to `/invoices/[newId]`.
-- **`/invoices/[invoiceId]`** (Server Component): loads the invoice via the provided `getInvoiceDetail`, renders the read-only detail panel above the `EditInvoiceForm`, and renders a `DeleteInvoiceForm` (a small `<form>` with a confirmation `<Dialog>` from shadcn).
-- **No new inspector page** — every verify runs against these three routes.
-
-### Verify recipe mapped to "Done when"
-
-| Done-when clause | Verify step |
-| --- | --- |
-| The form submits without JavaScript | DevTools → settings → "Disable JavaScript", reload `/invoices/new`, submit a valid invoice — the browser navigates to the new detail page, `pnpm db:studio` shows the row. |
-| Field errors display on validation failure | Submit `/invoices/new` with `total` blank and a malformed `dueAt` — the form re-renders with messages under each field, the unfilled fields keep their typed values, the submit button is enabled again. |
-| The optimistic UI rolls back on action failure | Add `?fail=1` support to the create action that returns `{ ok: false, error: 'internal' }` after a 500ms delay; submit a valid invoice with `?fail=1`; the row appears optimistically in the list, then disappears, and a banner shows the action's `userMessage`. |
-| The delete confirmation submits through a form action, not a `fetch` | Open `/invoices/[id]`, click "Delete", confirm the dialog — the submit fires through the Server Action (one POST to the action URL in DevTools Network, no `/api/*` fetches). With JS disabled, the shadcn `<Dialog>` (Radix-backed) doesn't open; the delete form renders inline as the no-JS fallback so the submit still works. |
-| `revalidatePath` refreshes the list | After every create/edit/delete, navigating back to `/invoices` shows the change without a manual reload. |
-| The delete action is wrapped in a transaction | Read `actions.ts`: the delete body is `await db.transaction(async tx => { ... })`. |
-
-### Concepts demonstrated → owning lesson
-
-- SaaS pattern #6 (canonical Server Action `Result` shape) — lesson 3 of chapter 047.
-- Architectural Principle #3 (pure `/lib`, side effects at named boundaries) — lesson 4 of chapter 047.
-- Architectural Principle #5 (use the framework's conventions) — lesson 4 of chapter 047.
-- Architectural Principle #6 (explicit over magic at `"use server"`) — lesson 1 of chapter 047.
-- Zod 4 `z.strictObject` / top-level format builders / `z.infer` — lesson 1 of chapter 046, lesson 2 of chapter 046, lesson 4 of chapter 046.
-- `createInsertSchema` + override + `.omit` — lesson 7 of chapter 046.
-- `Object.fromEntries(formData)` + `safeParse` — lesson 6 of chapter 046 + lesson 2 of chapter 047.
-- `z.treeifyError` for field-error rendering — lesson 5 of chapter 046.
-- `<form action={serverAction}>`, uncontrolled inputs with `name`, the auto-reset on success — lesson 1 of chapter 048, lesson 2 of chapter 048.
-- `useActionState` shape — lesson 3 of chapter 048.
-- `useFormStatus` + the `<SubmitButton>` pattern — lesson 4 of chapter 048.
-- `useOptimistic` reducer + implicit rollback + client-generated UUID — lesson 5 of chapter 048.
-- Constraint Validation API attributes + `:user-invalid` — lesson 6 of chapter 048.
-- Progressive enhancement — lesson 7 of chapter 048.
-- `revalidatePath` after a mutation — lesson 5 of chapter 047 (full tree lesson 6 of chapter 036).
-- `db.transaction(async tx => ...)` — lesson 5 of chapter 047 (full mechanics lesson 4 of chapter 043).
-- Idempotency-key slot named — lesson 5 of chapter 047 (full pattern chapter 067).
+Threads that must run through every lesson: terminology is precise — *authentication* proves identity, *authorization* gates capability, and conflating them produces the recurring "I logged the user in, why can't they edit?" misframe; the default in this stack is server-stored opaque session IDs in `__Host-` prefixed `HttpOnly; Secure; SameSite=Lax` cookies, with JWT-shaped sessions named as the threshold tool for stateless edge reads and explicitly *not* the default for browser sessions; revocation is the load-bearing property — server-stored sessions revoke instantly via a row delete, JWTs cannot until they expire (or a denylist undoes the statelessness); the cookie attributes from Chapter 013 get applied here at the call site, not re-derived; OAuth is a *delegated-authorization* protocol the app uses for *authentication* by reading the provider's `userinfo` after the code-for-tokens exchange, and PKCE is mandatory in 2026 regardless of client type (OAuth 2.1, draft-15, March 2026); Better Auth is named once as "what implements this in Unit 8," but no Better Auth API is taught yet — the student leaves with the model, not the syntax. Three teaching lessons plus a chapter quiz.
 
 ---
 
-## Lesson 1 — Project brief
+## Lesson 1 — Authn, authz, and the 401/403 split
 
-The scope, the five "Done when" clauses, the deferred-to-later-units carve-outs, and the senior payoff of installing the canonical Server Action shape on a real CRUD surface.
+Distinguishes authentication from authorization, places each check at its proper boundary in the request lifecycle, and catalogues the misframes (identification-vs-authentication, signed-in-vs-allowed, paid-vs-authorized) that produce the 401-versus-403 bugs seniors must recognize.
 
-Goals:
+Topics to cover:
 
-- Frame the CRUD surface as the canonical SaaS mutation flow: every later unit (auth gates in 10, soft delete in 11, billing-gated mutations in 12) layers on top of this exact shape. The chapter ships create / read / update / delete against the Unit 6 invoices schema and nothing more.
-- State the "Done when" five clauses in one paragraph: JS-disabled submit works, field errors render inline from the Result, optimistic create rolls back on failure, delete submits through the form action (not `fetch`), `revalidatePath` updates the list.
-- Name the scope cuts: no auth (Unit 9/10 owns sessions and RBAC; the starter ships a fixed-org stub), no soft delete (Unit 11), no audit log (Unit 10), no idempotency key (Chapter 067 — the slot is named in lesson 5 of chapter 047 and the form hidden-field shape is foreshadowed here but not enforced), no React Hook Form (the trigger doesn't fire — chapter 049), no route handlers (the form is in-app — chapter 050).
-- Set the senior payoff: the three actions written here are the shape every action in Units 8–23 reuses. The discipline installed — parse on entry, return `Result`, revalidate, transaction for multi-step, optimistic only when the trigger fires — is what turns "form code" into "audit-clean form code" later.
-- Show the end UX: one screenshot strip of `/invoices` → `/invoices/new` → field error state → success redirect → optimistic add → delete confirmation.
-- Link the starter via `degit` from the `react-saas-course-projects` monorepo.
+- **The senior question.** A user clicks "Sign in," types an email and password, the page redirects to a dashboard. The next click — "Delete this invoice" — returns 403. Where does each step live in the system, what gets decided where, and why is the recurring "I logged the user in, why can't they do X?" question almost always a category error between two separate concerns? The lesson installs the authn/authz vocabulary that the rest of Unit 8 (and Unit 9's RBAC) leans on.
+- **Authentication — proving identity.** The system answers *who is this request from?* Inputs: something the user knows (password), has (a device with a passkey, a TOTP authenticator), or is (biometric, behind a passkey gesture). Output: a verified principal — a user row — and a session that carries that identity forward on subsequent requests. Authn is binary: the request is either authenticated as user X or it isn't. The bar is the strength of the proof and the protection of the credential at rest (Argon2id / bcrypt with a cost factor sized for 2026 hardware; never plaintext; never reversible encryption).
+- **Authorization — gating capability.** The system answers *is this principal allowed to do this thing on this resource?* Inputs: the authenticated principal, the action (read invoice, delete invoice, invite a teammate), the resource (this specific invoice in this specific org), and the rules (role, ownership, plan tier, feature flag). Output: allow or deny. Authz is not binary at the system level — it's per-action, per-resource, evaluated at the action boundary every time. Unit 9's RBAC owns the full surface; this lesson plants the frame.
+- **Where each check lives in this stack.** Authn lives at the session-read boundary — `proxy.ts` middleware (Chapter 033, formerly `middleware.ts`) for protected-route gating, layouts for sign-in-required surfaces, Server Actions and route handlers for per-call identity reads. Authz lives at the action boundary — the `authedAction` wrapper around every mutating Server Action checks the role and the org scope (Chapter 057). The two checks compose: authn establishes the principal, authz reads the principal plus the request and decides. The senior reflex: never put authz checks in components or layouts; layouts get bypassed under partial pre-rendering and component-level checks invite "rendered but not allowed" bugs.
+- **Identification, authentication, authorization — the three-way distinction the senior keeps straight.** *Identification* is the claim ("I am `ada@acme.com`"). *Authentication* is the proof of the claim (the password matches, the passkey signed the challenge). *Authorization* is the permission to act under the verified identity. A username on a sign-in form is identification; the password check is authentication; the role lookup at the action handler is authorization. Most "auth bugs" in production code are identification-versus-authentication confusions (treating an unverified email as if it were proven) or authentication-versus-authorization confusions (treating "signed in" as "allowed").
+- **Anonymous, authenticated, and elevated.** Three principal states the system handles distinctly: anonymous (no session — public pages, the sign-in surface itself), authenticated (session present, identity proven, baseline capabilities), and elevated (recent re-authentication — required for credential changes, billing changes, destructive admin actions; full coverage in lesson 2 of chapter 054). The elevation re-prompt is *authentication* triggered by an *authorization* policy that says "this capability requires recent proof." Worth naming because Better Auth surfaces this directly and Unit 9's RBAC writes the policy that requires it.
+- **The 2026 factor landscape — what counts as proof.** Knowledge factor (password) on its own clears the bar for low-value SaaS but not for admin, billing, or PII access; possession factor (passkey, TOTP) is the senior baseline-add for those surfaces; biometrics are platform-level inputs into the possession factor (the passkey on the device), not a separate protocol. The framing: passwords are the historical default, passkeys are the 2026 default-when-the-user-has-them, TOTP is the universal fallback. The full sign-in-method surface is Chapter 053 — this lesson states the line, not the syntax.
+- **The misframe-catalog the senior recognizes.** "The user is signed in, so they can edit" — that's authn confused for authz. "Their email is in the database, so they're authenticated" — that's identification confused for authentication. "They paid, so they're authorized" — billing entitlements are a slice of authz, not the whole policy (org-scoping and role still apply). "Once authenticated, the session can do anything for 30 days" — ignoring the elevation tier collapses high-value actions into the baseline. Each misframe maps to a specific bug class that ships if the vocabulary stays fuzzy.
+- **Why the order matters in the request lifecycle.** Every request runs authn first, authz second. Authn fails → 401 (unauthenticated, the client can fix by signing in). Authz fails → 403 (authenticated but forbidden, the client cannot fix by retrying). Returning 403 when no session is present, or 401 when the session is fine but the role is wrong, hides the real cause from clients, monitoring, and incident response. The Server Action `Result` shape (Chapter 043) carries `'unauthenticated'` and `'forbidden'` as distinct discriminants for the same reason.
+- **What this lesson does not name yet.** The cookie attributes, the session table shape, the JWT alternative, the OAuth flow, the role model, the audit trail — all are downstream. This lesson is the dictionary.
+- **Watch-outs.** Treating "the cookie exists" as authentication (a forged or stolen cookie is exactly that — the proof has to be cryptographically tied to the server's session record or signed by a server key); putting authz checks inside React components rather than at the action boundary (a Server Component that renders nothing for a forbidden user is a UX problem, not a security boundary — Chapter 057 writes the boundary); collapsing identification and authentication in account-recovery flows (a password-reset link sent to an unverified email gives anyone who typed the email control of the account); mixing 401 and 403 in API contracts so clients can't distinguish "sign in" from "ask for access."
 
-Senior calls and watch-outs:
+What this lesson does not cover:
 
-- The `getActiveContext()` stub is intentionally not session-shaped. Reaching for `cookies()` or inventing a session reader now creates code Unit 10 will rewrite — leave the stub alone, the wrapper drops in cleanly later.
-- Every action returns `Result`, never throws on validation. The student's instinct from older codebases is to `throw new ValidationError(...)`; the chapter's discipline is the opposite.
+- Session storage, cookie attributes, and the wire format that carries the proven identity (lesson 2 of chapter 051).
+- OAuth as the authorization-code-for-authentication flow (lesson 3 of chapter 051).
+- Sign-in surfaces — passwords, passkeys, TOTP, magic-links (Chapter 053).
+- Better Auth's API or table layout (Chapter 052).
+- RBAC roles, the `authedAction` wrapper, audit trail (Chapter 057).
+- Password hashing parameters, brute-force defenses, rate limits (lesson 2 of chapter 053 and Unit chapter 074).
+- Elevation flows in implementation (lesson 2 of chapter 054 for re-auth on credential change).
 
-Codebase state at entry: empty working directory.
-Codebase state at exit: starter cloned, `docker compose up -d` running the Unit 6 Postgres, `pnpm install` clean, `pnpm db:migrate && pnpm db:seed` populated, `pnpm dev` shows `/invoices` with the seeded list of invoices (read path inherited from chapter 045; mutations not wired).
-
-Estimated student time: 10 to 15 minutes.
-
----
-
-## Lesson 2 — Reading the starter
-
-A tour of the provided files (`Result<T>`, the auth stub, the page shells, the shadcn `<Form>` primitives) and the TODO stubs the student will fill across the chapter.
-
-Goals:
-
-- Walk the file tree, separating provided from stub. Linger on four files: `lib/result.ts` (the `Result<T>` type, `ok` and `err` helpers, the `mapUniqueViolation` helper — students read it, don't write it, the unique-violation-to-`conflict` pattern from lesson 3 of chapter 047 lives here), `lib/auth-stub.ts` (the fixed-context helper and the reason it exists), `app/invoices/page.tsx` (the server component reading the list and rendering the `OptimisticInvoicesList` client wrapper — the wrapper is stubbed too and gets filled in lesson 5 of chapter 051), and `components/ui/form.tsx` (the shadcn `<Form>`, `<FormField>`, `<FormItem>`, `<FormLabel>`, `<FormControl>`, `<FormMessage>` primitives — the layout primitives the chapter uses without RHF, the discipline from lesson 6 of chapter 048).
-- Read `lib/invoices/mutation-schemas.ts` — empty with TODO comments naming the three exports the actions will import.
-- Read `lib/invoices/actions.ts` — the file starts with `'use server'` and three empty function signatures with TODOs.
-- Read `app/_components/submit-button.tsx` and `field-error.tsx` — empty TODOs with the expected props.
-- Sonner's `<Toaster>` is preinstalled in the root layout (the starter wires `<Toaster />` from `sonner` in `app/layout.tsx`); the `toast.success(message)` call shape lands in lesson 6 of chapter 051 for the URL-param success toast after a delete.
-- Read the three form components' page-side parents to lock in what the student-written client components receive as props and what they must render. The edit page passes the loaded invoice; the new page passes nothing; the detail page passes the invoice and the delete is a separate small form.
-- Bring up the dev surface: `pnpm dev` renders `/invoices` with the seeded list. Clicking "New invoice" 404s because `new-invoice-form.tsx` is empty. That's the runnable starting point.
-
-Senior calls and watch-outs:
-
-- The `_components` underscore-prefixed folder in App Router is the convention for "this folder isn't a route segment, it's shared components." Named once; the student stops trying to make every component a page.
-- `Result<T>` lives in one file and one place. The temptation to redeclare the type per action ("for clarity") is the smell — the type is the contract.
-- The provided pages call student-written form components by relative import — keep the file names and exports as documented, the page wiring breaks otherwise.
-
-Codebase state at entry: starter cloned, Postgres up, seed run, `pnpm dev` renders `/invoices`.
-Codebase state at exit: student has read the provided files and TODO stubs. No code written. `pnpm dev` still renders `/invoices` with the seeded list; clicking through reveals empty/404 states for `new` and `[invoiceId]` (the detail page works for read, but it imports the empty edit form).
-
-Estimated student time: 15 to 20 minutes.
+Estimated student time: 25 to 35 minutes. Concept-archetype lesson — vocabulary and the misframe catalog do the work; one decision-tree diagram (request → authn → authz → 401/403) earns its weight.
 
 ---
 
-## Lesson 3 — Schemas and actions: parse, mutate, revalidate, return
+## Lesson 2 — Sessions versus JWTs, and the cookie that carries them
 
-Authoring the three `createInsertSchema`-derived mutation schemas and the create/update/delete actions in the canonical five-seam shape with `safeParse`, `Result`, tenant-scoped `where` clauses, and `revalidatePath`.
+Compares server-stored opaque sessions against signed JWTs with revocation as the load-bearing trade, then specifies the `__Host-` cookie defaults, the session row's load-bearing columns, and the issue/refresh/revoke/expire lifecycle that the rest of Unit 8 assumes.
 
-Goals:
+Topics to cover:
 
-- Fill `lib/invoices/mutation-schemas.ts`. Three exports:
-  - `createInvoiceInputSchema` from `createInsertSchema(invoices, { number: s => s.min(1).max(50), total: s => s.refine(n => n >= 0, 'Total must be non-negative') }).omit({ organizationId: true, createdBy: true, createdAt: true })`. The `id` column stays in the schema (optional, defaulted) so lesson 5 of chapter 051 can supply a client-generated UUIDv7 without re-shaping. Layer the form's coercion via column overrides for `total: z.coerce.number().nonnegative().multipleOf(0.01)`, `issuedAt: z.coerce.date()`, `dueAt: z.coerce.date()`, `customerId: z.uuid()`. The result is the action's input contract; `z.input<typeof ...>` is the `FormData` raw shape, `z.output<typeof ...>` is what the typed action body works with.
-  - `updateInvoiceInputSchema = createInvoiceInputSchema.extend({ id: z.uuid() })`.
-  - `deleteInvoiceInputSchema = z.object({ id: z.uuid() })`.
-- Fill `lib/invoices/actions.ts` with the three actions. The file starts with `'use server'` at the top. Each follows the five-seam shape from lesson 2 of chapter 047:
-  - `createInvoice(prevState, formData)`: `const raw = Object.fromEntries(formData);` → `const parsed = createInvoiceInputSchema.safeParse(raw);` → on `!parsed.success`, return `err('validation', 'Check the highlighted fields.', z.treeifyError(parsed.error).properties)`. Then `const { organizationId, userId } = await getActiveContext();`. Then `try { const [row] = await db.insert(invoices).values({ ...parsed.data, organizationId, createdBy: userId }).returning({ id: invoices.id }); revalidatePath('/invoices'); return ok({ id: row.id }); } catch (e) { if (isUniqueViolation(e)) return err('conflict', 'An invoice with that number already exists for this org.'); throw e; }`. Add `redirect('/invoices/' + row.id)` after the return-shape decision so the success path navigates.
-  - `updateInvoice`: same shape, `db.update(invoices).set(parsed.data).where(and(eq(invoices.id, parsed.data.id), eq(invoices.organizationId, organizationId)))`. Tenant guard in the `where`, not after the load (lesson 2 of chapter 047 rule, chapter 045 tenant-filter rule). Returns `ok({ id })` without a redirect — the edit form stays on the page.
-  - `deleteInvoice`: simple single-`db.delete(...)` form for now (lesson 6 of chapter 051 wraps it in a transaction). Returns `ok(null)` and `redirect('/invoices')` after `revalidatePath`.
-- Each action revalidates *after* the database write and *before* the return. The order from lesson 5 of chapter 047 made concrete.
-- The runnable proof for this lesson is *not* a wired-up UI yet (forms land in lesson 4 of chapter 051). The runnable proof is `pnpm dev` still serving the read paths (the list page, the detail page) without runtime errors, and a temporary scratch invocation: add a tiny "Run create with test data" button to `/invoices` that's hard-coded to call `createInvoice` with a `FormData` built in the click handler (the test-only button is removed in lesson 4 of chapter 051 when the real form lands). The student verifies the row writes, the redirect fires, the list refreshes; with a malformed `dueAt`, the returned `Result` has `fieldErrors`.
+- **The senior question.** Authn happens once, at the sign-in click. Every later request also needs to know "who is this?" without making the user re-type a password. What travels between browser and server to carry that proven identity, where does it live on each side, and what's the 2026 default for a Next.js SaaS — a server-stored opaque session ID in a cookie, or a self-contained signed JWT? The lesson names the two shapes, the trade matrix that picks between them, and the cookie discipline that any browser-side choice inherits from Chapter 013.
+- **What a "session" is, conceptually.** A server-side record that says "this opaque ID maps to user X, created at time T, last-used at time U, expires at time E, on this device fingerprint." The browser holds the opaque ID only — never the user data. Each request presents the ID, the server looks it up, and the request runs as the mapped user. The senior framing: a session is a *handle*; the source of truth lives on the server.
+- **The two session shapes — server-stored opaque sessions vs. JWTs.**
+  - **Server-stored opaque sessions (the 2026 default for browser-driven SaaS).** The cookie carries a random unguessable token (e.g., `crypto.randomUUID()` or a 32-byte URL-safe random) that's the primary key of a `session` row. Server validates by `SELECT ... WHERE token = ?` on every protected request. Properties: instant revocation (delete the row), arbitrary metadata on the row (last-used, IP, user-agent, current org), index-lookup cost per request (typical 1–3 ms on a connected pool), stateful by definition. Better Auth's default and the path the rest of Unit 8 takes.
+  - **JWTs / signed tokens (the conditional alternative).** The cookie carries a JSON payload `{sub, iat, exp, ...}` signed with the server's secret (HS256) or a private key (RS256/EdDSA). Server validates by verifying the signature and the `exp` claim — no database read. Properties: faster per-request validation (no I/O), portable across services (the same token authenticates against a separate API), no instant revocation (the token is valid until `exp` unless a denylist is layered in, which reintroduces the state JWTs claimed to escape), payload visible to any holder of the cookie. The threshold: edge-rendered routes or service-to-service calls where the database round-trip per request is the bottleneck and revocation can be eventual (15-minute access tokens with refresh-token rotation).
+  - **Hybrid (the production-grade reach).** Short-lived access JWT (5–15 min) for fast reads, refresh token stored server-side for revocation. Named once; the senior call for early-stage SaaS is "don't reach for it yet — the operational overhead of refresh-token rotation doesn't pay off until the database round-trip is a measured bottleneck."
+- **The revocation property as the load-bearing trade.** Revocation is what the senior trades when picking JWT. With server-stored sessions, "sign me out everywhere" is one DELETE statement, "this account is compromised" is one DELETE statement, "this stolen cookie must stop working in the next second" is one DELETE statement. With JWTs, every reach above is impossible without a denylist that re-introduces a per-request database read — at which point the stateless advantage is gone. The 2026 default for browser-driven SaaS is sessions, period; JWTs are the special-case reach.
+- **The cookie is the carrier — `__Host-` prefix and the senior defaults.** Chapter 013 taught the cookie attribute palette; this lesson names the auth-cookie configuration the rest of the unit assumes:
+  - `__Host-` prefix on the name (`__Host-session`) — the browser enforces `Secure`, `Path=/`, and rejects `Domain=` on set. The prefix moves "is this cookie scoped tightly?" from "the developer remembered" to "the browser refused to accept a misscope."
+  - `HttpOnly` — JS cannot read it via `document.cookie`. XSS that runs arbitrary script in the page still can't exfiltrate the session token. Non-negotiable for auth cookies.
+  - `Secure` — HTTPS-only transport. Implied by `__Host-` but stated.
+  - `SameSite=Lax` — sent on top-level navigations, withheld on cross-site `POST`s. The 2026 CSRF mitigation that lesson 4 of chapter 054 names; `SameSite=Strict` is too aggressive for sign-in-from-external-link flows (the user clicks a link from email and lands logged-out on the dashboard), `SameSite=None` re-opens the CSRF vector and is reserved for third-party-embed use cases this SaaS doesn't have.
+  - `Path=/` — implied by `__Host-`; the cookie is sent on every same-origin request.
+  - Expiration — session lifetime (e.g., 30 days) with sliding renewal on use. Persistent vs. session-only is a UX call; "remember me" toggles the cookie's `Max-Age`.
+- **Token entropy and the constant-time compare.** The session token must be unguessable to a network attacker — at least 128 bits of entropy from a CSPRNG. `crypto.randomUUID()` is fine (122 bits of entropy in a v4 UUID); 32 bytes from `crypto.getRandomValues()` (lesson 1 of chapter 016) is more. When verifying, compare tokens in constant time — never with `===` on raw bytes, because string comparison short-circuits on the first mismatched byte and leaks length-prefix information through timing. The library does the right thing by default; the senior recognizes it when reviewing custom code.
+- **What's on the session row — the load-bearing fields.** Beyond `(id, userId, expiresAt)`, the columns that earn their weight in 2026:
+  - `lastActiveAt` — for the "last seen 3 hours ago" UI in lesson 3 of chapter 054 and for idle-timeout policies.
+  - `userAgent` / `ipAddress` — for the active-sessions list (lesson 3 of chapter 054) and anomaly detection.
+  - `activeOrganizationId` — the multi-tenancy hook (Unit 9) that lets the session remember which org's data to show.
+  - `impersonatedBy` — admin support reach; named, not built here.
+  Full Drizzle schema is lesson 1 of chapter 052; this lesson names the columns and *why* each.
+- **Session lifecycle — issue, refresh, revoke, expire.** *Issue* on successful authentication: insert row, set cookie. *Refresh* on activity: update `lastActiveAt`, optionally rotate the token (defense-in-depth against session fixation); Better Auth rotates on a configurable cadence (default ~24h). *Revoke* on sign-out, password change, or admin action: delete the row; the next request from the stale cookie fails authn cleanly. *Expire* by `expiresAt`: the server treats expired rows as absent and a background job (or a query-time `WHERE expires_at > now()`) prevents stale rows from accumulating.
+- **The session-fixation defense.** When a user signs in, regenerate the session token — never reuse a pre-auth session ID for the post-auth session. The attack: a sign-in form that races a victim's browser into using an attacker-controlled session ID, so post-sign-in the attacker holds the authenticated cookie. Better Auth handles this by issuing a fresh token at sign-in; the senior recognizes the pattern when reviewing hand-rolled auth.
+- **Multi-device sessions and the active-sessions list.** Each browser/device gets its own session row. The user UI at "Settings → Security" reads `WHERE userId = ? ORDER BY lastActiveAt DESC` and shows the list with revoke buttons (lesson 3 of chapter 054). "Sign out everywhere" is `DELETE WHERE userId = ?`. The model is straightforward exactly because sessions are stateful.
+- **Where the cookie gets read in this stack.**
+  - **`proxy.ts` middleware** (Next.js 16) — runs before the route renders, reads the cookie, does the protected-routes redirect; fast path because the lookup is one indexed query.
+  - **Layouts and Server Components** — read via `auth.api.getSession({ headers: await headers() })` (lesson 4 of chapter 052) to drive UI based on identity.
+  - **Server Actions and route handlers** — read on every mutating call to enforce identity at the action boundary.
+  - The thread is the same — same cookie, same lookup, same `User | null` result; the difference is where the lookup happens and what the caller does with the answer.
+- **CSRF, lightly — the SameSite reflex and the full coverage downstream.** A `SameSite=Lax` cookie is not sent on cross-site form `POST`s, which kills the classic CSRF vector for the Server Action surface. The framing here: same-site cookies are the default mitigation; lesson 4 of chapter 054 names the residual cases (e.g., a cross-origin `GET` that triggers a state change — which the API design already prohibits, since GETs don't mutate). No separate CSRF tokens needed in this stack's default shape.
+- **Storage anti-patterns — what not to do.** Storing the session token (or a JWT) in `localStorage` exposes it to any XSS that runs in the page (lesson 4 of chapter 016 already taught the line). Storing user data in the cookie itself (instead of an opaque ID) breaks "single source of truth" and lets a stale cookie show stale data after a server-side change. Putting the user's email or role in the JWT and then trusting it at the action boundary lets a stale token act with stale capabilities — the action boundary always re-reads from the database for authz.
+- **Watch-outs.** Reaching for JWTs because "stateless is modern" — the operational cost of revocation will be paid eventually, and paying it via session rows is cheaper than via a denylist; using a non-`__Host-` cookie name and forgetting `Secure` in production — the prefix is the structural enforcement, not a style choice; comparing session tokens with `===` instead of `timingSafeEqual` in custom paths; rotating the session token on every request (defeats the multi-device model and creates a race condition with concurrent tabs); reading the session in a leaf React Server Component and trusting the result for authz at deep render time (the boundary is the action, not the render) — covered in Chapter 057 but the seed is here.
 
-Senior calls and watch-outs:
+What this lesson does not cover:
 
-- `safeParse` first, every single time. The temptation to read `formData.get('total')` field by field is the smell — the schema is the contract, the parse covers all of it.
-- The tenant filter in the `update` and `delete` `where` clauses is non-negotiable. Loading the row first and then checking the org ID is the IDOR-class bug from lesson 5 of chapter 045; structural rule is tenant ID in the `where`, never after.
-- `revalidatePath` before the return, never inside the transaction (foreshadow), never before the database write.
-- `redirect` inside an action throws a control-flow exception — don't swallow it in the unique-violation catch. The cleanest pattern is to redirect *after* the try/catch, on the success branch.
-- The `getActiveContext()` call goes *after* the parse, not before. Reading auth on every parse failure wastes a session lookup once chapter 061's wrapper replaces the stub. The lesson 4 of chapter 047 rule: parse first, everything else after.
-- The `Result` failure path returns the object shape — never `null`, never a string, never `throw`. The form layer's read shape (next lesson) depends on the object.
+- The Drizzle schema for `user` / `session` / `account` (lesson 1 of chapter 052).
+- The `auth.api.getSession` call shape and where to call it (lesson 4 of chapter 052).
+- The OAuth code-for-tokens exchange (lesson 3 of chapter 051).
+- Password hashing parameters and credential storage (lesson 1 of chapter 053).
+- CSRF in detail and the `dangerouslySetInnerHTML` opt-out (lesson 4 of chapter 054).
+- Rate limiting and brute-force defenses (Chapter 074).
+- Cookie attribute mechanics — taught in Chapter 013.
 
-Codebase state at entry: empty schemas and actions files; the form components are empty stubs.
-Codebase state at exit: schemas written; three actions written; the temporary scratch button on `/invoices` proves the create action end-to-end (writes a row, redirects, validation errors return in `state`). No real forms exist yet.
-
-Estimated student time: 30 to 40 minutes.
-
----
-
-## Lesson 4 — Wiring the forms to the actions
-
-Building the create, edit, and delete client forms with `useActionState`, uncontrolled inputs mirroring schema constraints, the reusable `<SubmitButton>` and `<FieldError>` components, and a shadcn `<Dialog>` delete with a no-JS fallback.
-
-Goals:
-
-- Fill `app/_components/submit-button.tsx`. Client component, calls `useFormStatus()`, renders shadcn `<Button type="submit" disabled={pending}>` with a `<Loader2 className="animate-spin">` inside when `pending`. Imports `useFormStatus` from `'react-dom'` (the lesson 4 of chapter 048 watch-out). Accepts `children` and an optional `variant` prop forwarded to `<Button>`.
-- Fill `app/_components/field-error.tsx`. Takes `{ name: string; fieldErrors: Record<string, string[]> | undefined }` and renders `<p id={`${name}-error`} className="text-destructive text-sm mt-1">{fieldErrors?.[name]?.[0]}</p>` or `null`. The companion input sets `aria-describedby={`${name}-error`}` and `aria-invalid={!!fieldErrors?.[name]?.[0]}` — the accessibility wiring from lesson 5 of chapter 031.
-- Fill `app/invoices/new/new-invoice-form.tsx`. Client component. `const [state, formAction] = useActionState(createInvoice, null);` plus `const fieldErrors = state?.ok === false ? state.error.fieldErrors : undefined;`. Native `<form action={formAction}>` with the shadcn layout primitives wrapping each input. Per-field shape: `<FormField name="total"><FormLabel>Total</FormLabel><FormControl><Input name="total" type="number" step="0.01" min="0" required inputMode="decimal" defaultValue="" aria-describedby="total-error" aria-invalid={!!fieldErrors?.total?.[0]} /></FormControl><FieldError name="total" fieldErrors={fieldErrors} /></FormField>`. Repeat for `customerId` (a `<Select>` populated from a `customers` prop the page passes in), `number`, `status`, `issuedAt`, `dueAt`, `currency`. Form-level banner: `{state?.ok === false && state.error.code !== 'validation' && <p className="text-destructive">{state.error.userMessage}</p>}`. Submit: `<SubmitButton>Create invoice</SubmitButton>`. Remove the temporary scratch button from lesson 3 of chapter 051.
-- Constraint Validation API attributes mirror the schema rules: `required` on every non-optional field, `type="number"`/`type="date"` matching the schema, `inputMode="decimal"` on `total`, `autoComplete="off"` on `number`. Tailwind class for `:user-invalid` styling on the shadcn `<Input>` so the post-interaction red ring lands without `:invalid`'s on-mount red flash.
-- Fill `app/invoices/[invoiceId]/edit-invoice-form.tsx`. Same shape with `useActionState(updateInvoice, null)`, the page passes the loaded invoice as a prop, every field's `defaultValue` reads from the prop, a hidden `<input type="hidden" name="id" value={invoice.id} />` carries the ID. Success stays on the page — `updateInvoice` doesn't redirect; the Server Component page re-fetches after `revalidatePath`, the form re-renders with fresh defaults.
-- Fill `app/invoices/[invoiceId]/delete-invoice-form.tsx`. The shadcn `<Dialog>` trigger is a "Delete" button on the detail page; the dialog body holds `<form action={formAction}>` with a hidden `<input name="id" value={invoice.id} />` and two actions: "Cancel" (closes the dialog, no submit) and `<SubmitButton variant="destructive">Delete</SubmitButton>`. `deleteInvoice` redirects to `/invoices` after revalidating, so the dialog closes via the page navigation. The PE fallback: wrap the dialog in a `<noscript>`-aware pattern — when JS is off the dialog won't open, so the same `<form>` renders as a regular inline form on the detail page (a simple `<noscript>` block, or render both and let CSS / JS gate visibility). Pick the simpler pattern; the verify in lesson 7 of chapter 051 confirms the no-JS path.
-
-Senior calls and watch-outs:
-
-- The `<FieldError>` component reads from the action's `Result`, not from local state. The form layer is a renderer; the lesson 3 of chapter 048 rule.
-- `defaultValue` not `value` on every input. Reaching for controlled inputs to "make the edit form easier" is the smell — `revalidatePath` re-renders the Server Component, the new `defaultValue` flows down, the DOM reconciles by uncontrolled-input identity.
-- Constraint API attributes mirror the schema. If the schema says `.min(1)`, the input has `minLength="1"`. Drift between the two is the bug class the mirror prevents.
-- `aria-invalid` and `aria-describedby` are non-optional. The visual error is for sighted users; the ARIA wiring is for assistive tech.
-- The shadcn `<Form>` primitives don't require React Hook Form despite the docs implying it. The chapter uses them as pure layout primitives — `useActionState` owns the state. The lesson 6 of chapter 048 senior call.
-- The `<Dialog>` for delete is shadcn's primitive, which handles focus trap, Esc-close, and click-outside (lesson 4 of chapter 031 dividend). The form lives inside the dialog body — closing the dialog doesn't cancel the submit, submitting closes the dialog by virtue of the redirect.
-
-Codebase state at entry: actions exist; form components are empty stubs; the temporary scratch button proves the backend.
-Codebase state at exit: full CRUD surface visually complete. Create form renders field errors inline, edit form prefills and saves, delete form opens a dialog and submits. Every submit button shows a spinner during in-flight. JS-disabled submit still works — verified at the end of the lesson with a quick DevTools toggle.
-
-Estimated student time: 40 to 55 minutes.
+Estimated student time: 35 to 45 minutes. Concept-archetype lesson; a comparison table for session-vs-JWT and a small sequence diagram for "sign-in → cookie set → next request" earn their weight.
 
 ---
 
-## Lesson 5 — Optimistic create with a client-generated UUID
+## Lesson 3 — OAuth 2.1, PKCE, and the code-for-tokens exchange
 
-Adding `useOptimistic` to the invoice list, a UUIDv7 hidden input that reconciles the optimistic and persisted rows by key, and a `?fail=1` debug branch to observe the implicit rollback.
+Walks the eight-step authorization-code-with-PKCE flow end-to-end — verifier/challenge derivation, `state` for CSRF, exact-match redirect URIs, the token exchange, `id_token` verification against JWKS — and names the OAuth-2.1 hardenings that make the 2026 social-login button legible.
 
-Goals:
+Topics to cover:
 
-- Fill `app/invoices/_components/optimistic-invoices-list.tsx` (provided as a stub; the `/invoices` page already imports and wraps the list with it). Client component:
-  - Props: `{ initialInvoices: Invoice[] }` (the server-fetched list from `listInvoices`).
-  - `const [optimisticInvoices, addOptimistic] = useOptimistic(initialInvoices, (current, next: Invoice) => [next, ...current]);`
-  - Renders the list rows from `optimisticInvoices`. The pending row gets a visual indicator (a `<Loader2 className="animate-spin" />` next to the number, a subtle `opacity-60` row).
-  - Exports a `addOptimisticInvoice(invoice: Invoice)` function via a small React context so the create form can call it without prop-drilling.
-- Refactor `new-invoice-form.tsx`:
-  - Generate a client-side UUIDv7 at form-mount with `useState(() => uuidv7())`, render it as a hidden `<input type="hidden" name="id" value={tempId} />` — the client-generated UUID pattern from lesson 5 of chapter 048. The schema already accepts an optional `id` (lesson 3 of chapter 051 kept it in the shape for exactly this reason), so no schema changes here. The action's `db.insert(...).values({ ...parsed.data, organizationId, createdBy: userId })` passes the client ID through when supplied; missing IDs fall back to the column's `$defaultFn`.
-  - On submit, wrap the action call in a transition that fires the optimistic append before the action: `const handleSubmit = (formData: FormData) => { startTransition(() => { addOptimisticInvoice({ id: tempId, ...rawValuesFromFormData, status: 'draft' as const, pending: true }); formAction(formData); }); }`. The `<form action={handleSubmit}>` wires it; `useOptimistic`'s update only persists during the transition.
-  - The action's success path: redirects to `/invoices/[id]`; on return to `/invoices`, the server-rendered list now includes the new invoice with the same UUID the optimistic add used. React reconciles by `key={invoice.id}` and the optimistic row swaps to the real one without a flicker.
-  - The action's failure path: returns `{ ok: false, error: ... }`; the transition ends; `useOptimistic` discards the appended item; the list reverts to `initialInvoices`. The form-level banner reads `state.error.userMessage`.
-- Add a `?fail=1` debug branch to `createInvoice` (named in the code with a comment that says "remove before production"; this is for the verify step in lesson 7 of chapter 051). When `formData.get('_debug_fail') === '1'`, the action sleeps 500ms then returns `err('internal', 'Forced failure for verify')`. The form adds a hidden checkbox or button click that sets the debug flag — wire the simplest pattern (a checkbox labeled "Simulate failure", `name="_debug_fail"`, `value="1"`).
-- Run it:
-  - Submit a valid invoice without the failure flag → the row appears immediately in the list, then the redirect fires, the detail page renders, navigating back shows the same row already there with its real persisted data.
-  - Submit with the failure flag → the row appears in the list with the spinner indicator → 500ms later the row disappears → the form shows the banner with `userMessage: 'Forced failure for verify'` → the input values are still in the form (no reset).
+- **The senior question.** Sign in with Google. Under the button, what actually happens between the app, the browser, and Google's servers? Why does the redirect URL contain `?code=...&state=...`, what's the exchange that turns the `code` into the user's email, and why does every public client — including this Next.js SaaS — need PKCE in 2026 even though the server holds a client secret? The lesson installs the mental model that lets the student read Better Auth's social-provider config (lesson 8 of chapter 053) without confusion.
+- **OAuth, the precise name.** *Open Authorization*. The protocol's *job* is delegated authorization — letting a third-party app act on a resource owner's behalf at a resource server with the user's consent and without sharing the user's password. The protocol's *common use* in SaaS is authentication — "sign in with Google" leverages the OAuth flow to read the provider's `userinfo` endpoint and treat "Google says this is `ada@acme.com`" as proof of identity. OAuth itself is authz; the authentication layer on top is OpenID Connect (OIDC), which standardizes the `id_token` and the `userinfo` shape. The senior says "OAuth login" knowing it's "OIDC over OAuth" underneath.
+- **The four roles, named once.** *Resource owner* — the human user. *Client* — the application requesting access (this SaaS). *Authorization server* — Google's identity endpoint. *Resource server* — the API the access token unlocks (Google APIs; for pure-login flows the only resource read is `userinfo`). The same servers often play multiple roles in practice; the role names exist so the spec can describe what each party does without ambiguity.
+- **OAuth 2.1 status, May 2026.** OAuth 2.1 is `draft-ietf-oauth-v2-1-15` (March 2026) — still an Internet Draft, not yet an RFC, but the security guidance is universally adopted by the major identity providers and by every library the student will use. The three things 2.1 hardens versus 2.0:
+  - **PKCE is mandatory for all clients**, not just public ones (2.0 made it optional and recommended for SPAs/mobile; 2.1 makes it required everywhere — including server-side web apps with a client secret).
+  - **Implicit grant (`response_type=token`) is removed.** It returned the access token in the URL fragment; the security model never survived browser history, server logs, and analytics scripts.
+  - **Resource-Owner Password Credentials grant is removed.** Sending the user's password to a third-party app defeats the point of delegation.
+  - **Redirect URIs must be compared by exact string match** — no prefix matching, no query-string flexibility. The senior recognizes this when configuring Google/GitHub OAuth apps: the redirect URI in the dashboard must match the app's URL down to the trailing slash.
+- **The grant taxonomy in 2026 — what's alive.**
+  - **Authorization code with PKCE** — the only browser-side flow that survives 2.1. The full focus of this lesson.
+  - **Client credentials** — service-to-service, no user involved. Named once; out of scope for this chapter (the SaaS uses it to talk to Stripe, but Stripe's SDK abstracts it).
+  - **Refresh token** — paired with authorization code; rotates short-lived access tokens. Named at the bottom of this lesson.
+  - **Device code** — TVs and CLI tools; not in scope for the web SaaS.
+- **The authorization-code flow with PKCE, end to end.** The student should be able to draw this from memory.
+  1. **Client prepares the request.** Generate a `code_verifier` — a high-entropy random string (43–128 characters from `[A-Z][a-z][0-9]-._~`). Derive the `code_challenge` = `BASE64URL(SHA256(code_verifier))`. Generate a `state` — random nonce stored server-side in the pre-auth session, used to verify the callback isn't a CSRF reply. Optionally generate a `nonce` (OIDC) for the `id_token` binding.
+  2. **Client redirects the browser to the authorization server.** URL: `https://accounts.google.com/o/oauth2/v2/auth?response_type=code&client_id=...&redirect_uri=https://app.example.com/api/auth/callback/google&scope=openid+email+profile&state=...&code_challenge=...&code_challenge_method=S256`. The browser navigates (full-page redirect); the user sees Google's consent screen, picks an account, approves the scopes.
+  3. **Authorization server redirects back to the client's `redirect_uri`** with `?code=AUTH_CODE&state=...`. The `code` is a one-time, short-lived (typically 30–60 seconds) handle.
+  4. **Client verifies `state`** against the server-stored value, rejecting on mismatch. Without this check, an attacker can trick a victim into accepting an attacker-issued `code` and binding the attacker's identity to the victim's app account.
+  5. **Client exchanges the `code` for tokens** at the authorization server's token endpoint: `POST /token` with `grant_type=authorization_code&code=AUTH_CODE&redirect_uri=...&client_id=...&client_secret=...&code_verifier=...`. The server validates the code, the redirect-URI match, the client credentials, *and* that `SHA256(code_verifier)` equals the originally sent `code_challenge` — closing the PKCE loop.
+  6. **Authorization server returns the tokens.** `{ access_token, refresh_token?, id_token?, expires_in, token_type: 'Bearer', scope }`. For pure-login flows, the client reads the `id_token` (a JWT containing `sub`, `email`, `email_verified`, `name`, `picture`) or calls the `userinfo` endpoint with the access token to get the same data.
+  7. **Client provisions or links the local account.** Look up by `(provider, providerAccountId)`. If a row exists in the `account` table, sign that user in; if not, create a `user` row plus an `account` row binding the provider identity (lesson 9 of chapter 053 covers account linking; lesson 1 of chapter 052 covers the schema).
+  8. **Client issues its own session** (the cookie-carried session ID from lesson 2 of chapter 051). The OAuth tokens themselves are *not* the app's session — they're the proof-of-identity input that the local session is built on top of. Storing the access/refresh tokens depends on whether the app needs to call Google APIs later; for a pure-login flow, they can be discarded after `userinfo`.
+- **PKCE — the mechanism, the threat, the 2.1 mandate.**
+  - **The mechanism.** Code verifier (kept by the client, never transmitted) and code challenge (sent in the authorization request) are bound at the authorization server. Only the holder of the verifier can complete the token exchange.
+  - **The threat it closes.** Authorization-code interception — an attacker who captures the `code` in transit (a malicious browser extension, a network attacker, a logging proxy) cannot redeem it without the verifier. In 2.0, this protection was optional for confidential clients (server-side apps with a secret); the assumption was that the client secret was enough. The 2024–2025 wave of attacks (PKCE downgrade, code injection variants) showed that adding PKCE everywhere costs nothing and closes attack classes that the secret alone doesn't.
+  - **Why 2.1 makes it universal.** A confidential client running in Node behind a CDN with logging, replay attacks against staging environments, and shared secrets across deployments — all of these survive the "client secret is enough" model only theoretically. The senior call: PKCE on every flow, regardless of client type. Every library default in 2026 is PKCE-on.
+- **The `state` parameter — CSRF for the callback.** The authorization-code flow's callback is, structurally, a cross-site request the browser makes. Without `state`, an attacker can force a victim's browser to hit the app's callback with the attacker's code, and the app — believing the code came from its own redirect — links the attacker's Google identity to the victim's logged-in app account. The fix: the client generates a random `state`, stashes it in a server-side pre-auth session (or in a short-lived signed cookie), includes it in the authorization request, and rejects callbacks where `state` doesn't match. `state` is mandatory; libraries that omit it are broken.
+- **Redirect URI hygiene — exact match, no wildcards.** OAuth 2.1 mandates exact string comparison. The implications:
+  - Register every environment's redirect URI explicitly: `https://app.example.com/api/auth/callback/google`, `https://staging.example.com/api/auth/callback/google`, `http://localhost:3000/api/auth/callback/google` for dev.
+  - Path matters; trailing slashes matter; query strings cannot be added at runtime.
+  - Open redirects on the app's domain (a `?next=https://attacker.com` in the redirect URI) are the senior's pet failure mode — never reflect untrusted input into the URL the OAuth callback redirects to post-sign-in; allowlist the post-sign-in destination against a fixed set of paths.
+- **Scopes — least privilege by default.** Request only what the app reads. For sign-in: `openid email profile`. Adding `https://www.googleapis.com/auth/drive` to the consent screen makes the user grant Drive access to a sign-in flow, which scares users and fails app-review for sensitive scopes. The senior reflex: scopes are part of the user's trust judgment, and the consent screen reveals what you ask for — ask narrowly. If a later feature needs Drive access, run a separate consent flow at that feature's entry point.
+- **Tokens — access, refresh, ID — and what each is for.**
+  - **Access token.** Bearer credential for calling the resource server's APIs. Short-lived (minutes to ~1 hour). Opaque or JWT depending on provider; the client treats it as opaque.
+  - **Refresh token.** Long-lived credential for getting new access tokens without re-prompting the user. Server-side only — never touches the browser in this stack. For pure-login flows, the app often skips storing refresh tokens entirely; needed only when the app calls provider APIs on a schedule.
+  - **ID token (OIDC).** A signed JWT containing the user's identity claims (`sub`, `email`, `email_verified`, `aud`, `iss`, `iat`, `exp`). Verifying the signature (against the provider's JWKS endpoint) and the `aud`/`iss`/`exp` claims is *required* before trusting the contents. Better Auth handles this; the senior recognizes the verification step when reading the library's source.
+- **OIDC versus raw OAuth — the line.** OAuth gives you tokens; OIDC tells you who the user is. The `openid` scope opts into OIDC, returns an `id_token`, and standardizes the `userinfo` endpoint. The senior says "OAuth" in conversation, but every "sign in with X" flow this stack uses is OIDC-shaped. Providers that don't speak OIDC (a few legacy APIs) require a non-standard call to read user info; Better Auth's adapters paper over the difference.
+- **Where the flow lives in this stack — Better Auth handles it, the senior reads the config.** The student doesn't hand-write the redirect, the PKCE handshake, or the token exchange — Better Auth's social-provider configuration (lesson 8 of chapter 053) does all of it. The point of this lesson is that when the student configures `google: { clientId, clientSecret, scope: ['openid', 'email', 'profile'] }`, they understand what those values *mean*, why the redirect URI registered at Google must exactly match the callback path, why the consent screen shows what it shows, and what arrives at the callback (a `code` and a `state`, exchanged for tokens, mapped to a local user). The mental model survives the framework; the framework call doesn't.
+- **The provider quirks — named once, deferred to lesson 8 of chapter 053.** Google requires the consent screen to be configured for the project (publishing status, sensitive-scope review for non-OIDC scopes); GitHub returns the primary email only when `user:email` is requested and the user may have set it to private (requires a separate API call); Apple's flow has its own response shape (`form_post` mode, the email returned only on first sign-in); Microsoft separates personal accounts and organizational accounts via the `tenant` parameter. The senior expects each provider to have surface-level quirks and reads the provider docs; the underlying flow is the one in this lesson.
+- **Watch-outs.** Treating the access token as the app's session — they're independent; the session lives in a cookie, the access token (if kept at all) lives server-side keyed by user; trusting the `id_token` payload without verifying the signature against the provider's JWKS endpoint and checking `aud`/`iss`/`exp`; missing `state` validation, so the callback accepts any attacker-supplied code; reflecting `?next=` into the post-sign-in redirect without allowlisting; configuring the redirect URI with a trailing slash in one environment and without in another — exact-match rules mean one of the two breaks silently; reusing the same `client_secret` across `dev`/`staging`/`production` (a staging breach exposes prod); requesting more scopes than needed because a future feature might want them — the user's trust judgment happens at the consent screen, not at the feature; logging the `code` or the `id_token` in request logs (treat both as secrets, with the same redaction discipline as passwords).
 
-Senior calls and watch-outs:
+What this lesson does not cover:
 
-- `useOptimistic` must be called inside a transition for the update to persist; `startTransition` wrapping the `formAction` call is the pattern. The lesson 5 of chapter 048 rule.
-- The client-generated UUID pattern avoids the flicker that temp string IDs would produce. Reconciliation by key is what makes the swap invisible.
-- The optimistic reducer is pure. Logging to the console inside the reducer is the smell — React may call it multiple times during reconciliation.
-- The `_debug_fail` flag is a chapter-local pattern; production actions never accept "please fail" inputs. Name this once; the chapter strips it during the verify if desired.
-- `useOptimistic` doesn't pair well with mutations that have a high failure rate — the chapter's create has near-100% success once the schema and the auth context land. The lesson 5 of chapter 048 threshold rule made concrete.
-- Don't optimistically update the *edit* form. The trigger (visible-to-user, high success, small UI change) doesn't fire as strongly — the user is staring at the form and the save banner is enough. Optimism is for the *list-and-add* shape.
+- Better Auth's `socialProviders` config and the provider-specific quirks list (lesson 8 of chapter 053).
+- The `account` table schema that stores provider identities (lesson 1 of chapter 052).
+- Account linking — multiple providers on one user (lesson 9 of chapter 053).
+- The OAuth callback route in App Router (lesson 8 of chapter 053 covers `/api/auth/callback/[provider]`).
+- Hand-implementing the flow without a library (out of scope — every production SaaS uses a library; the lesson teaches the model so the library config is legible).
+- Service-to-service OAuth and client-credentials flows (out of scope — Stripe, Resend, etc. handle their own).
+- Token revocation endpoints and full OIDC RP-initiated logout (named once as the senior reach for enterprise SSO; out of scope for this chapter).
 
-Codebase state at entry: full CRUD with no optimism.
-Codebase state at exit: create is optimistic, the rollback is invisible to write (React owns it), the failure case is observable through the debug flag. Edit and delete remain non-optimistic.
-
-Estimated student time: 25 to 35 minutes.
-
----
-
-## Lesson 6 — Delete inside a Drizzle transaction
-
-Refactoring `deleteInvoice` to a `db.transaction` block that holds the shape for later audit-log and notification extensions, with the "no external calls inside the tx" rule and a URL-param success toast.
-
-Goals:
-
-- Refactor `deleteInvoice` in `lib/invoices/actions.ts`. Replace the single `db.delete(...)` call with:
-  - `const result = await db.transaction(async tx => { const existing = await tx.query.invoices.findFirst({ where: and(eq(invoices.id, parsed.data.id), eq(invoices.organizationId, organizationId)) }); if (!existing) return { notFound: true as const }; await tx.delete(invoiceLines).where(eq(invoiceLines.invoiceId, parsed.data.id)); await tx.delete(invoices).where(and(eq(invoices.id, parsed.data.id), eq(invoices.organizationId, organizationId))); return { notFound: false as const, deletedNumber: existing.number }; });`
-  - Translate `result.notFound` to `err('not_found', 'Invoice not found.')`; on success, `revalidatePath('/invoices')` and `redirect('/invoices')`.
-- The senior framing for why this transaction earns its weight even when the FK `ON DELETE CASCADE` on `invoice_lines → invoices` would delete the children automatically: making the atomicity explicit at the action layer means the reviewer reads the action and sees the multi-step shape, the future addition (audit log write, soft-delete flag, notification dispatch, file cleanup — all coming in later units) drops into the same transaction without a re-architecture, and the senior anchor "no external calls inside the transaction" gets installed at the right moment so the Unit 8 email send and the Unit 13 file cleanup land *outside* the tx block when those layers arrive. Name the trade explicitly: the FK cascade alone would work today; the tx wrapper is the shape that holds for tomorrow.
-- Name the senior anti-patterns the transaction protects against:
-  - The pre-load → check → delete sequence outside a transaction (two round trips, race window between the check and the delete) becomes one atomic operation. Even though Postgres's FK constraint would still reject an orphan write, the application's intent is one unit of work.
-  - Calling an external API (Resend, Stripe, a webhook) inside the `tx => ...` callback diverges state on rollback — name it once, this is the lesson 5 of chapter 047 watch-out made operational. The student's instinct after seeing the tx block is "while we're here, also email the customer that their invoice was deleted." Hold the line: the email goes after the tx commits (Unit 8 + Unit 14 own the dispatch).
-- Add a small UX win the transaction's success enables: the redirect target carries a `?deleted=INV-0042` search param; the `/invoices` page reads it and renders a shadcn `Sonner` toast ("Invoice INV-0042 deleted"). The success data flows through the URL — no client state, no React context. Named once; the toast lives until the next navigation.
-- Run it: delete an invoice from the detail page → the dialog opens, confirm → the action runs the transaction, both deletes commit atomically, the redirect fires, the list page shows the toast. Open Studio: the invoice row is gone, the invoice-lines rows are gone.
-- Optional senior touch (5-minute extension, not load-bearing for the verify): the action takes ~10ms to run in dev; in prod against a network DB it would take ~50–80ms. Pair the delete with `useOptimistic` for the list-removal animation if the student wants the practice — the chapter doesn't require it because edit is the case the optimism trigger doesn't fire on, but removal is borderline. Name the call; leave the build to the student's discretion.
-
-Senior calls and watch-outs:
-
-- The transaction wraps reads-then-writes that must agree. Reading the existing row inside the tx ensures the row count check is atomic with the delete; in a read-then-delete-outside-tx pattern, a second admin could delete between the two queries and the second action's "not found" wouldn't fire.
-- `tx` is a different value from `db`. Every query inside the callback uses `tx`; missing one (`db.delete(...)` inside the callback) is the failure mode — the un-tx'd query runs in its own implicit transaction, breaks atomicity, and the rollback wouldn't include it. The Drizzle convention from lesson 4 of chapter 043.
-- Returning a value from the callback is the way to communicate to the action body what happened. Throwing inside the callback rolls back the transaction; returning a discriminated value lets the action map to the right `Result`.
-- The `revalidatePath` call lives *outside* the transaction (the lesson 5 of chapter 047 rule made operational once more). Calling `revalidatePath` inside the `tx => ...` callback would invalidate the cache even if the transaction rolls back.
-- The `?deleted=...` pattern works without JS. The redirect carries the param, the server-rendered list reads it, the toast is server-rendered (or hydrated by Sonner on mount). Progressive enhancement extends to the success toast.
-
-Codebase state at entry: delete works through a single `db.delete(...)` call.
-Codebase state at exit: delete is transactional, the success toast renders from a URL param, the action body's shape matches what every later unit will extend (Unit 10 adds audit-log writes inside the tx, Unit 11 adds the soft-delete branch, Unit 8 adds an email send *after* the tx commits).
-
-Estimated student time: 20 to 30 minutes.
+Estimated student time: 45 to 55 minutes. Concept-archetype, the densest of the three — a Mermaid sequence diagram for the eight-step flow is load-bearing.
 
 ---
 
-## Lesson 7 — Verify and forward-reference
+## Lesson 4 — Quizz
 
-Walking each "Done when" clause as a test (JS-disabled submit, field errors, conflict path, optimistic rollback, transactional delete, revalidation) and naming the Units 8–15 layers that will extend each discipline.
+Top 10 topics to quiz:
 
-Goals:
-
-- Walk every "Done when" clause as a verification step (the table in the framing).
-- **JS-disabled flow.** DevTools → settings → "Disable JavaScript" → reload `/invoices/new` → fill the form → submit. The browser POSTs to the action's URL, the action runs, the redirect to `/invoices/[newId]` fires, the detail page renders with no React hooks active. Verify in `pnpm db:studio` that the row landed. Re-enable JS; soft-reload the list page; the new invoice is there.
-- **Invalid-data field errors.** With JS enabled, submit `/invoices/new` with `total` blank and `dueAt` set to a malformed value. The constraint API catches the missing field first (the browser's native invalid-bubble before submit); remove `required` temporarily to test the server path; submit; the action's `safeParse` fails; the form re-renders with `<FieldError>` messages under both fields; the unfilled inputs keep their typed values; the submit button is enabled again. Add the `required` back.
-- **Conflict (`code: 'conflict'`) path.** Edit an existing invoice and set its `number` to one already used by another invoice in the same org. Submit. The Postgres unique violation fires; `isUniqueViolation(e)` matches; the action returns `err('conflict', 'An invoice with that number already exists for this org.')`. The form renders the form-level banner (not a field-level error, because the conflict isn't tied to one field's value alone — the org+number composite). Name this distinction.
-- **Optimistic rollback.** With the `?fail=1` debug branch (or by toggling the "Simulate failure" hidden field), submit a valid create. The row appears at the top of the list with the spinner indicator; 500ms later it vanishes; the banner shows `Forced failure for verify`. The form values persist. Disable the debug flag, resubmit; the create succeeds, the row stays, the redirect fires.
-- **Delete confirmation through a form action.** Open `/invoices/[id]`; click "Delete"; the shadcn `<Dialog>` opens; confirm. The submit fires through `formAction`. Inspect Network in DevTools: one POST to the action URL, no `/api/*` `fetch` calls. With JS disabled, the shadcn `<Dialog>` (Radix-backed) doesn't open — the no-JS fallback renders the delete `<form>` inline on the detail page (the `<noscript>`-gated pattern from lesson 4 of chapter 051) so the action still fires. Submit; the action runs the transaction; the redirect fires.
-- **Transaction atomicity check.** Add a temporary `throw new Error('debug rollback')` inside the delete transaction after `tx.delete(invoiceLines)` but before `tx.delete(invoices)`. Try to delete an invoice; the action throws; the page kicks to `error.tsx`. Refresh `pnpm db:studio` — the invoice and its lines are both still there. The tx rolled both back atomically. Remove the throw.
-- **Revalidation.** Create, edit, and delete invoices in sequence. Each time, navigate back to `/invoices` — the list reflects the change without a manual reload. `revalidatePath` is firing.
-- **Progressive enhancement edge cases.** Disable JS; the optimistic add doesn't fire (no `useOptimistic`, no transition) but the form still creates the row via the redirect. The user sees the new invoice when they land on the detail page; the list still reflects the change on next navigation. The delete works (the dialog falls back per above); the edit works (no optimism on edit anyway, so JS-disabled is the same UX).
-- **Senior recap.** Name the disciplines installed:
-  - Every action parses on entry with `safeParse`.
-  - Every action returns `Result`, never throws on expected failures.
-  - Every action revalidates *after* the database write, *before* the return.
-  - Every action runs the auth read after the parse (using the stub that chapter 061's wrapper will replace).
-  - Every form is a Client Component with uncontrolled inputs, a `name` attribute matching the schema, `defaultValue` for edits, and the action prop wiring the submit.
-  - Field errors render from the action's `Result.error.fieldErrors`, never from local state.
-  - The `<SubmitButton>` is reused across every form by reading `useFormStatus` from context.
-  - `useOptimistic` is reserved for the high-success / visible / small-UI-change case (create).
-  - The delete transaction's shape holds for the audit-log, notification, and external-call extensions of Units 8–14.
-- **Forward references.**
-  - Unit 8 (transactional email) adds a Resend send after `createInvoice`'s tx commits — *not* inside it.
-  - Unit 9 (Better Auth) replaces `getActiveContext()` with a real session read; the `users` stub goes away, the `createdBy` FK target stays valid.
-  - Unit 10 (RBAC) wraps every action in `authedAction('member', schema, fn)` so the parse, the auth read, and the `Result.error.code === 'unauthorized'` path become structural. The student's per-action `safeParse` lines disappear into the wrapper; the action body shrinks to the mutation seams.
-  - Unit 11 (URL-state list with soft delete + concurrency) adds a `version` column for optimistic concurrency control on edits (the `409` Result path) and a `deletedAt` column for soft delete; `updateInvoice` and `deleteInvoice` change shape accordingly.
-  - Unit 12 (Stripe billing + idempotency) drops the `id` hidden field in the create form to a Server Action `Idempotency-Key` shape derived from a UUIDv7 — the same client-generated UUID pattern, repurposed for replay safety.
-  - Unit 15 (cache) replaces the blunt `revalidatePath` with `updateTag('org:X:invoices')` so the cached read on the list refreshes only its tagged subset.
-
-Senior calls and watch-outs:
-
-- The verify lesson is the rehearsal of the failure modes — running each one and naming what would break without the discipline. If a verify step fails, the lesson points the student at the owning build lesson, not at "debug it yourself."
-- The JS-disabled test is the cheapest single test that proves the form pattern was built right. The 2026 reflex: every form gets one JS-disabled pass at feature-launch time.
-
-Codebase state at entry: full CRUD with optimism and transactional delete.
-Codebase state at exit: same surface, verified clause-by-clause. The `?fail=1` debug branch is removed (or left with a comment, depending on the student's preference). The student can articulate every decision made in the chapter and the unit that will extend each one.
-
-Estimated student time: 20 to 30 minutes.
+- Authentication versus authorization — the precise dictionary, the request-lifecycle order (authn first, authz second), and the 401/403 distinction at the action boundary.
+- Identification, authentication, authorization as three distinct things — the canonical misframes (email-in-DB ≠ authenticated; signed-in ≠ allowed; paid ≠ authorized).
+- Anonymous, authenticated, elevated as the three principal states; what triggers elevation and why credential changes require it.
+- Server-stored sessions versus JWTs — the trade matrix, with revocation as the load-bearing property, and why the 2026 default for browser-driven SaaS is server-stored sessions.
+- The `__Host-` cookie prefix and the senior auth-cookie defaults — `HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`, with the rationale for each.
+- The session row's load-bearing columns — `lastActiveAt`, `userAgent`, `ipAddress`, `activeOrganizationId` — and how each feeds a downstream feature (active-sessions list, multi-tenancy, anomaly detection).
+- Session-fixation defense — regenerating the token on sign-in — and the constant-time-compare reflex on token verification.
+- OAuth's precise name and job (delegated authorization), the four roles, and how OIDC adds the authentication layer on top.
+- The 2.1 hardenings versus 2.0 — PKCE mandatory for all clients, implicit grant removed, ROPC removed, redirect URIs exact-match — and why each closes a real attack class.
+- The eight-step authorization-code-with-PKCE flow end-to-end — code verifier/challenge derivation, `state` for CSRF, redirect-URI exact match, the code-for-tokens exchange, `id_token` verification against JWKS, and provisioning the local session on top of the verified identity.

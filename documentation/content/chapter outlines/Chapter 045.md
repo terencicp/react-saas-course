@@ -1,288 +1,188 @@
-# Chapter 045 — Project: the org-scoped invoicing data layer
+# Chapter 045 — React Hook Form
 
 ## Chapter framing
 
-Chapter 045 cashes in everything Unit 6 installed: the relational model and the unpooled-URL discipline (chapter 040), the schema authoring vocabulary — `pgTable`, types, modifiers, UUIDv7 PKs, FK + `ON DELETE`, unique/check, junction tables, Relations v2, `$inferSelect`/`$inferInsert` (chapter 041) — the query toolkit — joins, the relational query API, cursor pagination with the n+1 trick, `EXPLAIN ANALYZE` (chapter 042, chapter 043) — and the migration + seed workflow (chapter 044). The student ships the canonical org-scoped invoicing data layer: `organizations`, `users` (Better Auth tables stubbed for now), `org_members`, `customers`, `invoices`, `invoice_lines`. They generate and run the migration against local Docker Postgres, write a deterministic `drizzle-seed` script that produces two orgs with overlapping members and 50+ invoices each, and write the two reads every later unit will reuse: a cursor-paginated org-scoped invoice list with a status filter, and a single-round-trip "one invoice with lines and customer" detail load.
+Chapter 044 built the 2026 default form: native `<form action={serverAction}>`, uncontrolled inputs identified by `name`, the Constraint Validation API for cheap pre-submit checks, `useActionState` for the result, `useFormStatus` for the nested submit button, `useOptimistic` for the small set of mutations where immediate feedback pays off. That pattern covers most CRUD forms a SaaS will ever ship. This chapter is the conditional follow-up — the trigger has fired (per-keystroke validation, dynamic field arrays, multi-step wizards spanning many components, controlled UI library inputs the native pattern can't reach) and React Hook Form is the senior reach. The chapter teaches RHF without re-teaching forms: the threshold to adopt it, the core hooks the chapter writes from, the Zod resolver that keeps the same schema honest on both sides of the wire, and the two production patterns (`useFieldArray`, the wizard with `FormProvider`) that consume most of RHF's value.
 
-Threads that run through every lesson: the schema is the source of truth — types, queries, the inspector page, and every later unit derive from `db/schema.ts`; every tenant-owned row carries an `organization_id` FK and every read on a tenant table starts with `where eq(organizationId, ...)` — Unit 10's `tenantDb` helper is the structural enforcement, this chapter just installs the manual discipline so the helper has something to wrap; FK `ON DELETE` is a decision per edge, defaulted to `cascade` for owned-children edges and `restrict` for referenced-entity edges; indexes earn their weight by being demanded by a query the chapter actually ships — composite `(organization_id, created_at, id)` for the cursor list, `customer_id` for the detail join; the seed is idempotent (`reset` then `seed` with a fixed seed number) so re-runs produce the same data, and FK-aware so parents land before children; `EXPLAIN ANALYZE` is the proof step, not a feeling. The chapter ships 1 brief + 1 starter walkthrough + 3 build lessons + 1 verify lesson, each build ending on a runnable state.
-
-### Dependency carry-in
-
-- **From lesson 2 of chapter 040 / lesson 4 of chapter 040:** Docker Postgres compose file for local; the unpooled `DATABASE_URL_UNPOOLED` wired for Drizzle Kit, the pooled `DATABASE_URL` wired for the app's `db` client.
-- **From lesson 2 of chapter 041–lesson 10 of chapter 041:** `pgTable`, `casing: 'snake_case'`, the Postgres types (`uuid`, `numeric(12, 2)`, `timestamptz`, `text`, `jsonb`, enum via `pgEnum`), `NOT NULL` / `DEFAULT` / `$defaultFn`, UUIDv7 primary keys via `$defaultFn(() => uuidv7())`, FK + `ON DELETE`, `unique()` + `check()`, junction-table shape for `org_members`, `defineRelations` in `db/relations.ts`, `$inferSelect` / `$inferInsert`.
-- **From lesson 1 of chapter 042 / lesson 2 of chapter 042 / lesson 3 of chapter 042 / lesson 6 of chapter 042:** `select` + `where eq(...)` + `orderBy` + `limit` parameterization; `innerJoin` mechanics; `db.query.invoices.findFirst({ with: { lines: true, customer: true } })` for the detail load; cursor pagination's `or(lt(sortKey, x), and(eq(sortKey, x), lt(id, y)))` predicate with the `limit(pageSize + 1)` "has next page" trick.
-- **From lesson 1 of chapter 043 / lesson 3 of chapter 043:** Composite index ordering matches the query's `orderBy`; B-tree as the default; `EXPLAIN ANALYZE` reading bottom-up.
-- **From lesson 1 of chapter 044 / lesson 3 of chapter 044:** `drizzle-kit generate --name ...`, the meta snapshot, `db:migrate` / `db:seed` scripts, `seed(db, schema, { seed: 1 }).refine(...)` shape with `weightedRandom`, `valuesFromArray`, `with`, the `reset(db, schema)` idempotency move.
-- **From chapter 039 / chapter 037:** The Next.js App Router scaffold and server-side data reads — the inspector page is a Server Component.
-- **From chapter 008 / chapter 009:** Zod schemas for the cursor and the status filter at the read boundary.
-
-### Better Auth carry-out
-
-The Unit 9 Better Auth Drizzle adapter owns `users`, `sessions`, `accounts`, `verifications`. This project stubs `users` as a minimal table (`id` UUIDv7, `email` unique, `name`) so `org_members.user_id` and `invoices.created_by` have a target; the stub schema matches Better Auth's table name and the columns later layers read. Unit 9's project drops the stub and switches to Better Auth's generated tables — the FK targets stay the same so the migration is additive, not destructive.
-
-### Starter file tree (stubs marked with TODO)
-
-```
-docker-compose.yml             # provided: postgres:18 service on :5432
-drizzle.config.ts              # provided: dialect, schema path, out, dbCredentials, casing
-.env.example                   # provided: DATABASE_URL, DATABASE_URL_UNPOOLED, SEED
-package.json                   # provided: db:generate, db:migrate, db:seed, db:studio scripts
-src/
-  db/
-    client.ts                  # provided: pooled `db` instance + relations
-    schema.ts                  # TODO student: every table
-    relations.ts               # TODO student: defineRelations
-    cursor.ts                  # provided: base64url encode/decode + Zod cursor schema
-  lib/
-    invoices/
-      queries.ts               # TODO student: listInvoices, getInvoiceDetail
-      schema.ts                # provided: statusSchema, listInvoicesInputSchema
-  app/
-    inspector/
-      page.tsx                 # provided: server component, reads ?orgId & ?cursor & ?status, renders list + detail
-      seed-button.tsx          # provided: client form -> server action that calls the seed script
-scripts/
-  seed.ts                      # TODO student: reset + seed.refine with two orgs, 50+ invoices each
-drizzle/                       # generated by db:generate, committed
-```
-
-### Reference solution signatures lessons display
-
-- `organizations`: `id uuid pk`, `name text not null`, `slug text not null unique`, `createdAt timestamptz default now()`.
-- `users` (stub for Unit 9): `id uuid pk`, `email text not null unique`, `name text not null`, `createdAt timestamptz default now()`.
-- `orgMembers` (junction): composite PK `(organizationId, userId)`, `role` pgEnum `('owner', 'admin', 'member')` not null, `createdAt timestamptz default now()`, both FKs `on delete cascade`.
-- `customers`: `id uuid pk`, `organizationId uuid not null references organizations(id) on delete cascade`, `name text not null`, `email text not null`, `createdAt timestamptz default now()`, `unique (organizationId, email)`.
-- `invoices`: `id uuid pk`, `organizationId uuid not null references organizations(id) on delete cascade`, `customerId uuid not null references customers(id) on delete restrict`, `createdBy uuid not null references users(id) on delete restrict`, `number text not null`, `status` pgEnum `('draft', 'sent', 'paid', 'overdue')` not null default `'draft'`, `total numeric(12, 2) not null`, `currency text not null default 'USD'`, `issuedAt timestamptz not null`, `dueAt timestamptz not null`, `createdAt timestamptz not null default now()`, `unique (organizationId, number)`, `check (total >= 0)`.
-- `invoiceLines`: `id uuid pk`, `invoiceId uuid not null references invoices(id) on delete cascade`, `description text not null`, `quantity numeric(12, 2) not null`, `unitPrice numeric(12, 2) not null`, `position integer not null`, `unique (invoiceId, position)`.
-- Indexes (named): `invoices_org_status_created_id_idx` on `(organizationId, status, createdAt desc, id desc)`; `invoices_org_created_id_idx` on `(organizationId, createdAt desc, id desc)`; `invoices_customer_id_idx` on `(customerId)`.
-- `defineRelations` exports: `organization -> many(orgMembers, customers, invoices)`, `user -> many(orgMembers, invoices via createdBy)`, `invoice -> one(organization), one(customer), one(createdBy), many(invoiceLines)`.
-- Cursor type: `{ createdAt: string; id: string }`, base64url-encoded JSON, validated with Zod.
-- `listInvoices({ organizationId: string, status?: InvoiceStatus, cursor?: Cursor, pageSize?: number }): Promise<{ rows: Invoice[]; nextCursor: string | null }>` — uses `db.query.invoices.findMany` with `where`, `orderBy: [desc(createdAt), desc(id)]`, `limit(pageSize + 1)`, includes `customer: true` for the list cell.
-- `getInvoiceDetail({ organizationId: string, invoiceId: string }): Promise<InvoiceWithRelations | null>` — uses `db.query.invoices.findFirst` with `with: { lines: { orderBy: asc(position) }, customer: true }` and a `where` that AND-includes `organizationId` (tenant guard).
-- Env entries (in `.env.example`): `DATABASE_URL=postgres://postgres:postgres@localhost:5432/app?sslmode=disable`, `DATABASE_URL_UNPOOLED=postgres://postgres:postgres@localhost:5432/app?sslmode=disable` (same URL locally; the variable split exists so the deploy story in Unit 21 plugs Neon in without renaming), `SEED=1`.
-
-### Inspector page spec
-
-A single Server Component at `/inspector` with these surfaces, all read from `searchParams`:
-
-- **Header:** Org switcher (two seeded orgs, `?orgId=...`), status filter buttons (`all` / `draft` / `sent` / `paid` / `overdue`), a "Reset and re-seed" form that posts to a Server Action calling the student's seed script.
-- **List panel (left):** Calls `listInvoices` with the current `orgId`, `status`, `cursor`. Renders the rows (number, customer name, status badge, total, due date). Footer shows "Next page" `<Link>` carrying the `nextCursor` in the URL, disabled when null.
-- **Detail panel (right):** When `?invoiceId=...` is present, calls `getInvoiceDetail` and renders the invoice header, the customer, the line items ordered by `position`. When absent, shows an empty-state.
-- **Plan panel (bottom):** A `<details>` that, when expanded, fires the detail query wrapped in `db.execute(sql\`explain (analyze, buffers, format text) ...\`)` and renders the plan text in a `<pre>`. Pre-built so the student doesn't write it; verifies that the index gets used.
-- **Verification banner:** Renders the row counts (`organizations`, `users`, `org_members`, `invoices`, `invoice_lines`, `customers`) at the top so re-running the seed and counting is one glance.
-
-The inspector is provided in full; the student fills the queries it imports.
-
-### Verify recipe mapped to "Done when"
-
-| Done-when clause | Verify step |
-| --- | --- |
-| `drizzle-kit migrate` runs cleanly on an empty database | Drop the local `app` database, `pnpm db:migrate`, no errors; `__drizzle_migrations` has one row. |
-| Seed populates two orgs with overlapping members and 50+ invoices each | After `pnpm db:seed`, the inspector banner shows `organizations: 2`, `org_members: 5+` (with at least one user belonging to both orgs), `invoices: ≥ 100`. |
-| Seed is idempotent | Run `pnpm db:seed` twice; row counts and a sampled row's primary key set are identical between runs. |
-| Inspector paginates one org's invoices | Click "Next page" 3 times; URL carries a fresh `?cursor=...` each time, list rows don't repeat. |
-| `?status=paid` filters server-side | Click "paid"; URL shows `?status=paid`, list only shows paid rows, hard reload preserves. |
-| Detail loads in a single round trip | Click an invoice; the plan panel shows one query plan with one outer `Index Scan` on `invoices`, joined to `customers` and `invoice_lines` in the same plan. |
-| `EXPLAIN ANALYZE` on the detail query uses the right indexes | The list query plan shows `Index Scan using invoices_org_status_created_id_idx` (or the no-status variant) — not `Seq Scan`. |
-
-### Concepts demonstrated → owning lesson
-
-- Architectural Principle #2 (schema is the source of truth) — lesson 1 of chapter 041.
-- `pgTable`, casing — lesson 2 of chapter 041. Postgres types via Drizzle (`uuid`, `numeric`, `timestamptz`, `jsonb`, `pgEnum`) — lesson 3 of chapter 041.
-- Column modifiers (NOT NULL, DEFAULT, `$defaultFn` for UUIDv7) — lesson 4 of chapter 041. UUIDv7 PKs — lesson 5 of chapter 041.
-- FK + `ON DELETE` decisions — lesson 6 of chapter 041. UNIQUE + CHECK — lesson 7 of chapter 041. Junction tables (`org_members`) — lesson 8 of chapter 041.
-- `defineRelations` v2 declarative API — lesson 9 of chapter 041. `$inferSelect` / `$inferInsert` — lesson 10 of chapter 041.
-- Joins (relational query API does the work) — lesson 2 of chapter 042. Relational query API nested reads — lesson 3 of chapter 042.
-- Cursor pagination with the n+1 trick — lesson 6 of chapter 042.
-- Composite index ordering matching `orderBy` — lesson 1 of chapter 043. `EXPLAIN ANALYZE` — lesson 3 of chapter 043.
-- `drizzle-kit generate` / `migrate` / studio — lesson 1 of chapter 044. `drizzle-seed` with `.refine`, `weightedRandom`, `with`, the reset-then-seed idempotent pattern — lesson 3 of chapter 044.
-- Server-side `searchParams` reads, Zod at the boundary (cursor validation) — lesson 4 of chapter 037.
+The threads that must run through every lesson. RHF is a conditional tool, not a replacement for the chapter 044 pattern — every lesson names the trigger threshold and respects it. The Zod schema from Chapter 042 is the single source of truth for both client and server validation; the resolver feeds RHF the same schema the Server Action parses with on entry, and the watch-out for client/server schema drift is named on every relevant lesson. The Server Action seam from chapter 043 is unchanged — RHF owns the client form state, the action still parses `FormData` (or a typed payload) on entry and still returns the canonical `Result`. The shadcn `<Form>` primitives from chapter 027 are the form's layout layer regardless of which form-handling library is underneath, and this chapter is where the RHF resolver inside shadcn's `<Form>` finally earns its weight. The chapter ships four teaching lessons plus a quiz.
 
 ---
 
-## Lesson 1 — The brief: what we're building and what we're not
+## Lesson 1 — The four triggers that flip the choice
 
-Frames the org-scoped invoicing surface, the seven "Done when" verifications, the explicit scope cuts (no mutations, no real auth, no RBAC yet), and the senior payoff of installing tenant-aware schema discipline now.
+Names the four UX shapes that break the native chapter 044 form pattern and justify reaching for React Hook Form, the cost of adopting it, and the 2026 form-library landscape (Conform, TanStack Form) at one paragraph each.
 
-Goals:
+Topics to cover:
 
-- Frame the SaaS shape being built: org-scoped invoicing is the canonical relational surface every later unit (CRUD, auth gates, RBAC, billing) layers on top of; this chapter ships the schema and the two reads, nothing else.
-- State the seven "Done when" verifications in one paragraph (clean migrate, two orgs, idempotent seed, paginated list, server-side status filter, single-round-trip detail, indexed plans).
-- Name the scope cut: no mutations (Unit 7 owns Server Actions and CRUD on top of this schema), no real Better Auth tables (Unit 9 swaps the stub), no RBAC at the query layer (Unit 10 wraps these reads with `authedAction` and `tenantDb`).
-- Set the senior payoff: the schema decisions made now — `organizationId` on every tenant-owned row, the composite index for cursor pagination, the relations declaration that turns "one invoice with lines and customer" into one query — are the foundation that makes the rest of the course's data layer cheap. Skipping them surfaces three units later as N+1s, full table scans, and tenant-leak bugs.
-- Show the end UX: one screenshot of the inspector with the org switcher, the paginated list, an expanded detail, and the visible plan panel.
-- Link the starter via `degit`.
+- **The senior question.** The chapter 044 form pattern (native `<form action>`, uncontrolled inputs, `useActionState`) is the 2026 default and covers most CRUD. But four UX shapes break that pattern: change/blur-triggered validation per field, dynamic lists of repeated fields, multi-step wizards whose state spans many components, and controlled UI library inputs (combobox, date picker, rich text) that don't round-trip through `FormData`. When does the trigger fire, what does the cost of adopting RHF look like, and why is RHF the senior reach over inventing a custom form-state system? The lesson installs the threshold so the student doesn't reach for RHF on every form.
+- **The four triggers that flip the choice.** Each named with the failure mode the native pattern hits and the RHF feature that addresses it.
+  - *Validation timing past submit.* The Constraint Validation API fires on submit; the Server Action parses on receive. Both run after the user has typed the whole form. When the UX requires "show the email-is-invalid error after blur" or "show the password-strength meter as the user types," the native pattern needs per-field client schemas, `onBlur` handlers, and ref reads. RHF's `mode: 'onBlur' | 'onChange' | 'onTouched'` setting plus the resolver gives this for free.
+  - *Dynamic field arrays.* An invoice with a variable number of line items, a survey with add/remove questions, a permissions matrix with row controls — flat `FormData` and uncontrolled inputs make the add/remove/reorder bookkeeping painful. RHF's `useFieldArray` owns the array's identity-tracking and re-render coordination.
+  - *Multi-step wizards across many components.* An onboarding flow with five steps, each its own component, the user can go back and edit prior steps. The native pattern would need a parent `useState` or context per field; RHF's `FormProvider` + `useFormContext` carries the form's state across the tree without prop-drilling.
+  - *Controlled UI library inputs.* shadcn's `Combobox`, `DatePicker`, `Select` built on Radix — these are controlled components that don't expose a native `<input name=...>` to participate in `FormData`. RHF's `Controller` (or `useController`) wraps them so they integrate with the form's state.
+- **What the native pattern still owns.** Forms with text inputs and checkboxes that submit once and either succeed or surface field errors — login, signup, create-invoice, edit-profile, comment-create. The 2026 reach is the native pattern until one of the four triggers above fires; the chapter's project (chapter 047) is deliberately written with the native pattern to anchor the senior default.
+- **The cost of adopting RHF — what changes.** The form becomes a Client Component with `'use client'`, but that was already the case in chapter 044. The inputs become *controlled* — RHF's `register` wires `value`/`onChange` per input, and the DOM no longer owns the live value. The submit goes through RHF's `handleSubmit` instead of the action prop directly — the action becomes a callback RHF invokes after client validation passes. The form's progressive enhancement (lesson 7 of chapter 044) degrades — RHF requires JS to function, so the no-JS submit doesn't validate client-side. The 2026 senior call: accept the PE degradation when the trigger fires, because the UX wins outweigh the no-JS case for the affected forms (wizards, complex configurators) — these aren't the forms the no-JS user uses.
+- **The form-library landscape in 2026, one paragraph each.** Named once so the senior decision is visible.
+  - *React Hook Form.* The 2026 default for the conditional pattern. Battle-tested, performant via uncontrolled-by-default plus subscription model, the largest ecosystem of resolvers and adapters, the documented integration with shadcn primitives. The course's reach.
+  - *Conform.* Optimizes for progressive enhancement on top of Server Actions — the same Zod schema validates client and server, the action receives `FormData` directly. The right reach when PE is non-negotiable for forms past the simple CRUD case (legally required forms, public marketing forms with complex validation). Named once; out of scope for this chapter.
+  - *TanStack Form.* Smallest bundle, strongest TypeScript inference, per-validator timing. The right reach for form-heavy products (config UIs, dashboards) where the type system pays off. Named once; out of scope.
+  - The 2026 reflex is the native pattern by default, RHF when one of the four triggers fires. The other libraries earn their weight on specific axes that don't dominate most SaaS forms.
+- **The threshold restated as a single line.** Reach for RHF when (a) the form needs per-field validation timing other than on-submit, or (b) the field shape is dynamic, or (c) the form spans multiple steps with persistent state, or (d) controlled UI library inputs must participate in form state. Otherwise the chapter 044 native pattern.
+- **The seam to the Server Action stays.** Adopting RHF does *not* mean the Server Action goes away. The action still parses on entry, still returns `Result`, still revalidates. RHF replaces the *client* form-state layer; the *server* mutation seam from chapter 043 is untouched. The senior anchor: any architecture that puts validation only in RHF and skips the action's `safeParse` has the wrong trust boundary.
+- **Watch-outs.** Reaching for RHF on every form (the "I learned a new tool" trap) — the native pattern's lower coordination cost and PE wins are real, RHF is conditional; thinking RHF replaces server-side validation — the resolver runs client-side only, the action still parses on receive (named again every lesson); using RHF without the Zod resolver — the client schema drifts from the server's, the validation rules duplicate, named in lesson 3 of chapter 045; expecting the form's submit to still POST without JS — the RHF-managed submit needs the bundle, PE is a casualty of the trigger firing.
 
-Senior calls and watch-outs:
+What this lesson does not cover:
 
-- The "schema is the source of truth" decision means the project's row types come from `$inferSelect`, not hand-written types — anything else drifts.
-- `organizationId` on every tenant-owned row is non-negotiable. Skipping it on one table is the failure mode that turns into a multi-day RLS migration two units later. Name the structural rule.
+- The hooks themselves (lesson 2 of chapter 045).
+- The Zod resolver wiring (lesson 3 of chapter 045).
+- `useFieldArray` and wizard patterns (lesson 4 of chapter 045, lesson 5 of chapter 045).
+- Conform and TanStack Form in depth (named once, out of scope).
 
-Codebase state at entry: empty repo (student runs `degit`).
-Codebase state at exit: starter cloned, `docker compose up -d` running Postgres, `pnpm install` clean, `pnpm dev` shows the inspector with empty banners (no tables exist yet).
-
-Estimated student time: 10 to 15 minutes.
-
----
-
-## Lesson 2 — Tour of the starter and the inspector contract
-
-Walks the provided file tree (`drizzle.config.ts`, the pooled `db` client, the cursor helpers, the inspector page, the `db:*` scripts), brings up Docker Postgres, and pins the contracts the student's queries must satisfy.
-
-Goals:
-
-- Walk the file tree, calling out provided vs. stubbed. Linger on three files: `drizzle.config.ts` (the one config that drives `generate`, `migrate`, `push`, `studio` — point at the unpooled URL, casing, schema path), `src/db/client.ts` (the pooled `db` exported with the relations bag attached), `src/db/cursor.ts` (the encode/decode helpers and Zod schema the queries reuse — provided because the encoding contract is not the lesson).
-- Read `src/lib/invoices/schema.ts` — the `statusSchema` enum, the `listInvoicesInputSchema` (orgId, optional status, optional cursor, pageSize default 20, cap 100). The Zod input is what the inspector page calls with; the same shape will be reused in Unit 7's Server Action.
-- Read `src/app/inspector/page.tsx` end-to-end — the searchParams reads, the call sites for `listInvoices` and `getInvoiceDetail`, the plan-panel `<details>` that runs `EXPLAIN ANALYZE`. Name what each call expects so the student knows the contract their queries must satisfy.
-- Read the `package.json` scripts — `db:generate`, `db:migrate`, `db:seed`, `db:studio` — and the env loading path (`dotenv-cli` wraps Drizzle Kit invocations because Drizzle Kit doesn't read `.env` by itself, lesson 1 of chapter 044).
-- Bring up Postgres: `docker compose up -d`, `psql` in to confirm the empty `app` database exists. `pnpm db:migrate` will succeed against it (no tables yet, just creates `__drizzle_migrations`).
-- Open `pnpm db:studio`, confirm an empty schema browser.
-
-Senior calls and watch-outs:
-
-- The pooled URL drives the app's runtime queries; the unpooled URL drives Drizzle Kit. Running migrations against the pooled URL silently truncates long DDL — this is the lesson from lesson 4 of chapter 040 made concrete. The starter wires both correctly; the watch-out is reaching for the pooled URL in any new script the student writes later.
-- The cursor encoder/decoder lives in `db/cursor.ts`, not duplicated per query. Same shape every paginated list will reuse — Architectural Principle #3 (named seams) starting early.
-
-Codebase state at entry: starter cloned, Postgres running.
-Codebase state at exit: student has read every provided file, run `db:migrate` against the empty DB once, opened Studio. No code written. The inspector still renders empty.
-
-Estimated student time: 20 to 25 minutes.
+Estimated student time: 25 to 35 minutes. Decision archetype. The chapter's gate: a student who reads only this lesson should still know when not to use RHF.
 
 ---
 
-## Lesson 3 — Authoring the schema and shipping the init migration
+## Lesson 2 — The five primitives: useForm, register, Controller, handleSubmit, formState
 
-Fills `db/schema.ts` and `db/relations.ts` with the six tables (`organizations`, `users` stub, `org_members`, `customers`, `invoices`, `invoice_lines`) including UUIDv7 PKs, FK `ON DELETE` decisions, tenant-scoped uniques, the three composite indexes, and the `$inferSelect` row types, then generates and runs the initial migration.
+Teaches RHF's core surface — the form root, the uncontrolled and controlled field paths, the submit interceptor, the read-side state, and how the shadcn `<Form>` wrapper consumes the form instance.
 
-Goals:
+Topics to cover:
 
-- Fill `src/db/schema.ts` table by table in the order FKs demand: `organizations`, `users` (stub), `orgMembers` (composite PK referencing the two), `customers`, `invoices`, `invoiceLines`. Each table calls out the senior decisions inline:
-  - `id uuid` with `$defaultFn(() => uuidv7())` (UUIDv7 from lesson 5 of chapter 041 — sortable, no cross-table guess-leak).
-  - `timestamptz` for every timestamp, never `timestamp` (the lesson 3 of chapter 041 rule).
-  - `numeric(12, 2)` for money, never `real` or `double precision`.
-  - `pgEnum` for `role` and `status` (DB-enforced).
-  - FK `ON DELETE`: `cascade` on `org_members → organizations/users`, `cascade` on `customers → organizations`, `cascade` on `invoices → organizations`, `restrict` on `invoices → customers` (customers shouldn't disappear under an invoice — the lesson 6 of chapter 041 decision), `restrict` on `invoices → users`, `cascade` on `invoice_lines → invoices`.
-  - `unique(organizationId, number)` on invoices, `unique(organizationId, email)` on customers, `unique(invoiceId, position)` on invoice_lines — every uniqueness scope is tenant-aware (the structural rule).
-  - `check(sql\`total >= 0\`)` on invoices — DB-enforced invariant (lesson 7 of chapter 041).
-  - Indexes declared at the bottom of each table: composite `(organizationId, status, createdAt desc, id desc)`, `(organizationId, createdAt desc, id desc)`, `(customerId)`. Order matches the query's `orderBy` direction — the rule from lesson 1 of chapter 043.
-- Fill `src/db/relations.ts` using `defineRelations` v2: `organization` → many of `orgMembers`/`customers`/`invoices`, `user` → many `orgMembers` and `invoices` (via `createdBy`), `customer` → many `invoices` and one `organization`, `invoice` → one `organization`/`customer`/`createdBy`, many `invoiceLines`, `invoiceLine` → one `invoice`. Two relations from `invoices` to two different roles must be named (e.g., `creator` for the user-side join) — the senior call from lesson 9 of chapter 041.
-- Export `Invoice = typeof invoices.$inferSelect`, `NewInvoice = typeof invoices.$inferInsert`, same for the other tables — the canonical row types that flow into `queries.ts` and the inspector.
-- Run `pnpm db:generate --name init_schema`. Open the emitted SQL. Read it together: confirm every `CREATE TABLE`, every FK with the right `ON DELETE`, every index, every constraint. This is the review step from lesson 1 of chapter 044.
-- Run `pnpm db:migrate`. Confirm in Studio: six tables, indexes visible, FKs visible.
-- Re-run `db:generate` immediately: emits an empty migration ("no changes"). The senior signal that the snapshot is in sync.
+- **The senior question.** The trigger from lesson 1 of chapter 045 fired and the form is moving to RHF. What's the smallest set of primitives that does the work, what's the call shape the rest of the chapter writes from, and how does each hook map to the form's three concerns (field registration, field state, submit)? The lesson teaches RHF's surface as five primitives — `useForm`, `register`, `Controller`/`useController`, `handleSubmit`, `formState` — and the senior posture for picking among them.
+- **`useForm` — the form root.** A single call at the top of the form component creates the form's state container: `const form = useForm<FormValues>({ resolver, defaultValues, mode })`. The returned object exposes `register`, `control`, `handleSubmit`, `formState`, `watch`, `setValue`, `reset`, and the rest. `defaultValues` is non-optional in practice — it sets the initial values *and* the field set RHF tracks. The `mode` setting (`'onSubmit'` default, `'onBlur'`, `'onChange'`, `'onTouched'`, `'all'`) is the validation-timing choice that the lesson 1 of chapter 045 trigger named. The senior reach: `'onBlur'` for most forms past the native pattern — validates after the user leaves a field, the canonical "blur to see your error" UX.
+- **`register` — the uncontrolled path.** `<input {...form.register('email')} />` spreads `name`, `ref`, `onChange`, `onBlur` onto a native input. The DOM owns the live value; RHF reads it via the ref on submit and on validation. This is RHF's high-performance path — equivalent to the chapter 044 uncontrolled pattern, but with RHF's resolver firing on the configured mode. The senior reach for any native input where a UI library wrapper isn't needed: text, email, password, number, textarea, checkbox, radio.
+- **`Controller` and `useController` — the controlled path.** UI library components (shadcn's `Combobox`, Radix `Select`, a date picker, a rich text editor) own their value through `value`/`onChange` props rather than a native input. `Controller` wraps them: `<Controller name="role" control={form.control} render={({ field }) => <Select value={field.value} onChange={field.onChange} />} />`. The hook form `useController` returns the same `field` object for cases where a custom component prefers a hook over a render prop. The senior call: `Controller` for one-off integrations in the form's JSX; `useController` inside a reusable field component that owns its own UI. Both are the bridge between RHF's state model and a controlled child.
+- **`handleSubmit` and the submit wiring.** RHF's `handleSubmit(onValid, onInvalid?)` returns a submit handler. The form uses it via `<form onSubmit={form.handleSubmit(onSubmit)}>` — the handler runs client validation against the resolver, then invokes `onSubmit(values)` with the typed values if validation passes, or `onInvalid(errors)` if not. The senior anchor: the action prop of chapter 044 is *not* used here — RHF needs to intercept the submit to run validation. The Server Action is invoked from inside `onSubmit`: `await createInvoice(values)` (or, when payload shape forces `FormData`, build it from `values` and call `await createInvoice(formData)`).
+- **`formState` — the form's read-side.** The `formState` object exposes `errors`, `isDirty`, `isValid`, `isSubmitting`, `isSubmitSuccessful`, `touchedFields`, `dirtyFields`. The senior reach in the typical form: `errors` for inline error rendering per field, `isSubmitting` for the submit button's disabled state, `isDirty` for "unsaved changes" prompts on navigation away. The rest are situational. The watch-out: reading `formState` triggers a re-render when *any* of its properties changes — destructure only what the component needs.
+- **`watch` versus subscription — the re-render model.** RHF's value proposition is per-field re-render isolation: registered inputs do not re-render the form root on every keystroke. `watch('fieldName')` opts the calling component into re-renders when that field changes (the controlled side of RHF). The senior reach: use `watch` inside small components that need a derived value (a character count, a conditional render), not in the form's root component. The pattern is `const role = useWatch({ control, name: 'role' })` in a child component, keeping the parent stable.
+- **`defaultValues` and the form's identity.** RHF tracks the field set from `defaultValues`. Reach for it to (a) prefill an edit form with the row's current values, (b) declare empty defaults for create forms so the field set is known. Calling `form.reset(newDefaults)` re-sets both the values and the dirty/touched state — the canonical move after a successful save when the form should stay open with the saved values. The 2026 senior anchor: server-rendered prefill flows through the Server Component, the entity is passed as a prop to the Client Component form, the form's `defaultValues` reads from the prop.
+- **The shadcn `<Form>` wrapper — the layout layer.** Chapter 027 introduced shadcn's `<Form>`, `<FormField>`, `<FormItem>`, `<FormLabel>`, `<FormControl>`, `<FormDescription>`, `<FormMessage>`. The chapter 044 chapter used these without RHF; this lesson is where the `<Form>` wrapper finally consumes the RHF instance. The pattern: `<Form {...form}>` provides the form context, `<FormField control={form.control} name="email" render={...}>` renders a single field with its label/control/message slots. The `<FormMessage />` automatically reads the field's `formState.errors[name]` and renders the message. The senior reach: use the shadcn primitives for every form in the chapter — they encode the label/control/error-row layout the design system standardizes on.
+- **The canonical form component shape.** One pseudo-code skeleton that lesson 3 of chapter 045, lesson 4 of chapter 045, and lesson 5 of chapter 045 build on:
+  - `const form = useForm({ resolver: zodResolver(InvoiceSchema), defaultValues: {...}, mode: 'onBlur' })`
+  - `<Form {...form}> <form onSubmit={form.handleSubmit(onSubmit)}> <FormField name="email" .../> ... <SubmitButton form={form}/> </form> </Form>`
+  - `async function onSubmit(values) { const result = await createInvoice(values); if (!result.ok) form.setError(...); }`
+  The submit button reads `form.formState.isSubmitting` instead of `useFormStatus().pending` because RHF owns the submit, not the action prop.
+- **Watch-outs.** Forgetting `defaultValues` makes some inputs render as uncontrolled, switch to controlled on first user input, and trigger React warnings — always declare defaults for every field; spreading `register` after other props that include `onChange` lets the consumer's handler shadow RHF's — spread `register` last or use the field's combined handler; calling `useForm` outside `'use client'` fails the build — the hook is client-only; reading `formState.errors` without the field name discriminator on a deeply nested object surprises type-narrowing — the resolver-fed schema's types should drive the access; using `Controller` for a native input that `register` would cover adds re-renders for no reason — `register` is the default, `Controller` is the controlled-component bridge; calling `form.reset()` inside `onSubmit` resets the form *before* the action runs because of React batching — call it inside the `.then` or after the `await`.
 
-Senior calls and watch-outs:
+What this lesson does not cover:
 
-- Every tenant-owned table carries `organizationId` as a NOT NULL FK. The one table that doesn't carry it is `users` (which is global across orgs); that's the structural distinction membership tables make explicit (`org_members` joins them).
-- The composite index column order matches the `where` + `orderBy` of the list query, not alphabetical or random — the cursor query's plan depends on it. Name the rule, then verify with `EXPLAIN ANALYZE` in lesson 6 of chapter 045.
-- `cascade` vs. `restrict` is a decision per edge, not a default to copy. The mental model: cascade for owned children that lose meaning without the parent, restrict for referenced entities whose absence the schema can't make sense of. Name it once at `customers → invoices` and the student carries it through.
-- Don't reach for `drizzle-kit push` here — even on a fresh database, the generate-and-commit loop is the muscle. The push-as-prototype lane is lesson 2 of chapter 044's escape hatch, not the project's default.
+- The Zod resolver setup itself (lesson 3 of chapter 045 — next lesson).
+- `useFieldArray` (lesson 4 of chapter 045).
+- `FormProvider` and multi-step wizards (lesson 5 of chapter 045).
+- The full shadcn `<Form>` API (chapter 027 owns the design-system pass).
 
-Codebase state at entry: empty `db/schema.ts`, no migration files.
-Codebase state at exit: schema and relations committed; one migration file (`0000_init_schema.sql`) plus its `meta/` snapshot committed; six tables exist in Postgres; `db:generate` reports no further changes. Inspector still renders empty (no rows yet).
-
-Estimated student time: 50 to 70 minutes.
+Estimated student time: 45 to 55 minutes. Mechanics archetype. The lesson where RHF's surface lands; runs long because every subsequent lesson builds on these primitives.
 
 ---
 
-## Lesson 4 — A deterministic, idempotent seed for two orgs
+## Lesson 3 — zodResolver: one schema, both sides of the wire
 
-Writes `scripts/seed.ts` using `reset` plus `seed().refine(...)` with `weightedRandom`, `valuesFromArray`, and `with` to produce two orgs with overlapping members and 100+ invoices, dropping to direct `db.insert` where the seeder's shape doesn't fit.
+Wires `@hookform/resolvers/zod` so the form and the Server Action validate against the same Zod schema, covering the `z.input` vs `z.output` type bridge, the `FormData` vs typed-object action call shape, and mapping server-returned `fieldErrors` back into RHF via `setError`.
 
-Goals:
+Topics to cover:
 
-- Fill `scripts/seed.ts`: import `db`, the schema bag, `seed` and `reset` from `drizzle-seed`. The script's shape is `await reset(db, schema); await seed(db, schema, { seed: Number(process.env.SEED ?? 1) }).refine(...)`.
-- Refine table by table:
-  - `organizations`: `count: 2`, columns `name` from a curated `valuesFromArray` (`Acme`, `Globex`), `slug` matching.
-  - `users`: `count: 4`, `email` unique (`valuesFromArray` with 4+ curated values), `name` from name generators.
-  - `orgMembers`: insert explicitly after the seed call — `drizzle-seed`'s `with` doesn't model the overlapping-membership shape cleanly. Use a small follow-up `db.insert(orgMembers).values([...])` block to assign: user 1 → org 1 (owner), user 2 → org 1 (member), user 3 → org 2 (owner), user 4 → org 2 (member), user 1 → org 2 (admin) — the overlap that the Unit 10 RBAC project will exercise. Name the senior call: when the seeder's shape doesn't fit, drop to direct inserts; mixing both is the pattern.
-  - `customers`: `count: 30`, `with: { invoices: 4-7 }` per customer — drives the invoice count past 100 organically. Columns: `name` from `companyName`, `email` unique-ish per org. Distribute customers across the two orgs via `organizationId` from `valuesFromArray` of the two org IDs (read after the orgs land — done by splitting the seed into two `.refine` calls, or by manual inserts; the lesson teaches the split).
-  - `invoices`: `count` driven by `with` from customers, columns: `status` via `weightedRandom` (`paid` 50%, `sent` 25%, `draft` 15%, `overdue` 10% — realistic distribution from lesson 3 of chapter 044), `total` `f.number({ minValue: 100, maxValue: 25000, precision: 100 })`, `number` from a sequence helper (`INV-0001`...), `issuedAt` `f.date` spread over the last 90 days, `dueAt` 30 days after `issuedAt` (computed post-seed or via a small follow-up update). `createdBy` from `valuesFromArray` of the relevant org's members.
-  - `invoiceLines`: `with: { count: 1-5 }` per invoice, `quantity`, `unitPrice`, `description` from `valuesFromArray` of curated service descriptions, `position` 1..N per invoice (post-seed update to renumber within each invoice).
-- Add the `db:seed` script: `dotenv -e .env -- tsx scripts/seed.ts`. The script `process.exit(0)`s on success.
-- Run it. Open Studio; eyeball: two orgs visible, the membership rows show the overlap, customers have a realistic spread, invoices show status distribution, line items count.
-- Run it again. Confirm row counts and a sampled invoice's `id` are identical — the determinism guarantee. This is the idempotency the inspector banner will read.
-- Update the inspector banner to count rows (already wired; just confirm).
+- **The senior question.** The Server Action's first line is `Schema.safeParse(Object.fromEntries(formData))` (lesson 2 of chapter 043). The RHF form needs to validate the same shape *before* the action runs to drive the inline error UX. The lazy reach is to declare a parallel client-side schema or hand-write per-field rules in `register`. Both produce drift the day the schema gains a field. The senior reach is the Zod resolver: RHF reads validity from the *same* Zod schema the action uses. The lesson teaches the resolver wiring, the type bridge, the input-vs-output transform handling, and the rule of one schema per form.
+- **The resolver model — what a resolver is.** RHF's `resolver` option is a function `(values, context, options) => { values, errors }`. The package `@hookform/resolvers` ships pre-built resolvers for Zod, Yup, Valibot, ArkType, and others; `zodResolver(Schema)` is the wrapper that turns a Zod schema into the resolver function. The senior anchor: the resolver is the only validation source the form needs — no per-field `register` rules, no manual `setError` calls for shape-level issues.
+- **The wiring — three lines.** Install `@hookform/resolvers`. Import `zodResolver`. Pass it to `useForm`: `useForm({ resolver: zodResolver(InvoiceSchema), defaultValues: {...} })`. The resolver runs on the configured `mode` (submit, blur, change) and on every `handleSubmit` invocation; errors map to `formState.errors` keyed by the schema's field paths.
+- **The type bridge — `z.input` vs. `z.output`.** Zod's `.transform()`, `.coerce`, and `.default()` produce different input and output types — a `z.coerce.number()` accepts `string` but produces `number`. The form's `defaultValues` and the values RHF tracks are the *input* type; the values passed to `onSubmit` after validation are the *output* type. The senior reach: type `useForm<z.input<typeof Schema>>()` for the field registration and type the `onSubmit` parameter as `z.output<typeof Schema>`. The new `useForm` generic accepts both as separate parameters in recent versions; the chapter shows the explicit form. The watch-out: declaring `useForm<z.infer<typeof Schema>>()` works when no transforms are present but misleads the moment one is added — explicit is right.
+- **One schema for the form, one schema for the action — the same import.** The `/lib/schemas/invoice.ts` file (or wherever the chapter's project (chapter 047) lands the schemas) exports `InvoiceSchema`. The action imports it, parses `Object.fromEntries(formData)` against it. The form imports the *same* `InvoiceSchema`, hands it to `zodResolver`. Field rules, error messages, transforms — one definition, both sides. The senior anchor: any time a new field is added or a rule changes, the change happens once in `/lib/schemas`. The watch-out: a senior code review rejects PRs that add validation in the form component that isn't in the schema.
+- **The `FormData` vs. typed-object input split.** RHF tracks typed values; the Server Action's classic signature takes `FormData`. Two reaches the senior picks between:
+  - *Typed-object action.* The form's `onSubmit(values)` calls `await createInvoice(values)` — the action's signature is `async function createInvoice(input: InvoiceInput)`, the action's first line is `Schema.safeParse(input)` (no `FormData` round-trip). The 2026 reflex when the form is RHF-managed — RHF already has the typed object, the `FormData` step is unnecessary.
+  - *`FormData`-keeping action.* The form builds `FormData` from values, calls `await createInvoice(formData)`, the action stays compatible with non-RHF callers (a no-JS fallback URL, a chapter 044-style native form). Reach for this when the action serves multiple front-end shapes or PE matters for the same endpoint.
+  The chapter's project picks the typed-object form when RHF is the only caller; otherwise it keeps `FormData`.
+- **Error mapping — server-returned errors back into RHF.** The action returns `{ ok: false, error: { fieldErrors: { email: ['Already taken'] } } }` for cross-resource failures (uniqueness, business rules) the client schema can't predict. The form maps these into RHF: `for (const [name, messages] of Object.entries(result.error.fieldErrors)) form.setError(name, { message: messages[0] })`. The senior reach: a small `applyServerErrors(form, result)` helper in `/lib/forms` does this once. The `<FormMessage />` shadcn primitive renders both client-side resolver errors and server-pushed errors uniformly because they all land in `formState.errors`.
+- **The schema-once-for-both discipline restated.** The validation rule the user sees as a red message comes from one place. Email format, password minimum length, line-item count — all in the Zod schema. The form is the renderer; the action is the gatekeeper; the schema is the source. The watch-out: the resolver runs *only* the schema's rules; any business rule the client can't evaluate (uniqueness, plan limits) cannot live in the schema, must live in the action, must round-trip back via `fieldErrors`.
+- **Async validation in the schema — the rare case.** Zod's `.refine()` accepts async predicates, which the resolver supports — useful for "this username is available" debounced checks. The senior reach: the async refinement triggers a fetch to a route handler (Chapter 046) that runs the uniqueness check; the route handler reuses the same schema. Named once; most forms route uniqueness checks through the action's failure path and don't need async client validation.
+- **`mode` versus `reValidateMode`.** `mode` controls when validation first runs for a field (default: submit); `reValidateMode` controls when validation re-runs after the first error (default: `onChange`). The senior reach: `mode: 'onBlur'`, `reValidateMode: 'onChange'` for the canonical "validate on blur, fix-as-you-type" UX. Named once.
+- **Watch-outs.** Declaring the schema once for the form and a *different* schema for the action — drift waiting to happen, the resolver's whole value is lost, reject in code review; reaching for client-side schema rules that depend on server state (uniqueness, plan limits) — those don't validate client-side, the action's `fieldErrors` is the path; assuming `z.coerce.number()` will accept a number from RHF — RHF tracks strings for `<input type="number">` register unless the resolver runs the coercion, the input type and the output type differ; using `setValue('field', value, { shouldValidate: true })` to push server-pushed values into the form re-runs the resolver and may overwrite the server's specific error — `setError` is the right move for server-pushed errors; transforming the schema's output to a shape the action doesn't accept (a renamed key, a flattened nested object) breaks the contract — keep transforms inside the schema, keep the schema's output shape and the action's input shape identical; reusing the same schema for create and edit when one allows partial updates — `.partial()` for the edit schema, named once.
 
-Senior calls and watch-outs:
+What this lesson does not cover:
 
-- `drizzle-seed`'s `with` is per-parent count, not total. `customers` with `with: { invoices: 4-7 }` and `count: 30` produces 120-210 invoices, not 4-7. Name the trap from lesson 3 of chapter 044.
-- When `drizzle-seed`'s shape doesn't fit (overlapping memberships, computed columns), drop to direct `db.insert(...)` after the `seed(...)` call. The seeder is the bulk shape; manual inserts are the targeted corrections. Mixing both inside one script is the senior pattern, not the smell.
-- The fixed seed number is the determinism contract. Bumping it intentionally shifts the data shape; changing the `.refine` config without bumping the number silently breaks the contract — the watch-out from lesson 3 of chapter 044.
-- `reset(db, schema)` uses `TRUNCATE ... CASCADE` which holds locks; fine against local Docker, would be a problem against a shared dev branch. Local-only is the rule.
-- The script reaches the unpooled URL via `DATABASE_URL_UNPOOLED` to handle the longer transaction the seed produces — the same rule as migrations.
+- The schema's authoring rules themselves (Chapter 042).
+- The action's parse-authorize-mutate seam (Chapter 043).
+- Dynamic field arrays (lesson 4 of chapter 045).
+- Multi-step wizards with FormProvider (lesson 5 of chapter 045).
 
-Codebase state at entry: schema and migration in place, but the database is empty (or holds only the `__drizzle_migrations` row).
-Codebase state at exit: running `pnpm db:seed` populates the database; the inspector banner shows the expected counts; running it twice produces identical state. The list and detail panels still don't render (queries still TODO).
-
-Estimated student time: 55 to 75 minutes.
+Estimated student time: 40 to 50 minutes. Pattern archetype. The lesson where RHF stops being a parallel system and starts being the same schema in two places.
 
 ---
 
-## Lesson 5 — Writing the two tenant-scoped reads
+## Lesson 4 — useFieldArray: dynamic lists of fields
 
-Implements `listInvoices` (cursor pagination with the composite tiebreaker predicate and the `limit(pageSize + 1)` trick) and `getInvoiceDetail` (relational `findFirst` with `lines` and `customer`), with the `organizationId` tenant guard baked into every `where`.
+Teaches the hook for variable-length row sets — the `append`/`remove`/`move`/`replace` operations, the `field.id` vs domain-ID split, the `z.array(z.object(...))` schema shape with per-row error access, and the action-side insert/update/delete diff inside a transaction.
 
-Goals:
+Topics to cover:
 
-- Fill `src/lib/invoices/queries.ts` with `listInvoices`. The shape:
-  - Validate inputs against `listInvoicesInputSchema` (orgId required, status optional, cursor optional decoded via `cursor.decode`, pageSize default 20 cap 100).
-  - Use `db.query.invoices.findMany`: `where` AND-combines `eq(invoices.organizationId, organizationId)`, optional `eq(invoices.status, status)`, and the cursor predicate `or(lt(invoices.createdAt, cursor.createdAt), and(eq(invoices.createdAt, cursor.createdAt), lt(invoices.id, cursor.id)))` when cursor is present. `orderBy: [desc(invoices.createdAt), desc(invoices.id)]`. `limit(pageSize + 1)`. `with: { customer: true }` because the list cell shows the customer's name and that's still a single query through the relational API (the join is one round trip).
-  - Slice the first `pageSize` rows; `nextCursor = rows.length > pageSize ? cursor.encode({ createdAt, id } of the last returned) : null`. Return `{ rows, nextCursor }`.
-- Fill `getInvoiceDetail`:
-  - Validate inputs (`organizationId`, `invoiceId`).
-  - `db.query.invoices.findFirst({ where: and(eq(invoices.id, invoiceId), eq(invoices.organizationId, organizationId)), with: { lines: { orderBy: asc(invoiceLines.position) }, customer: true } })`. The tenant guard is `eq(organizationId, ...)` in the `where`, not "load and then check" — security at the query, not the post-condition.
-  - Return `null` if not found.
-- The inspector page already calls both; refresh the page. The list panel paginates, the detail loads. Click "Next page", confirm a new `?cursor=...` in the URL. Click an invoice, confirm the detail loads with its lines and customer in one paint.
-- Switch the org in the org switcher; confirm rows differ. Try `?status=paid`; confirm filtering. Try `?invoiceId=<id-from-org-A>&orgId=<org-B>`; confirm the detail returns `null` (the tenant guard holds).
+- **The senior question.** An invoice has a variable number of line items. The native pattern would name them `lineItems[0].description`, `lineItems[0].amount`, walk the keys after `Object.fromEntries`, track an `useState` array of IDs for the add/remove UI, generate uncontrolled inputs from the array, manually handle delete-then-renumber. Working but verbose, and the field-error rendering against the schema's array path is the second pile of bookkeeping. RHF's `useFieldArray` is the canonical reach for the dynamic-array trigger from lesson 1 of chapter 045. The lesson teaches the hook, the operations it exposes, the rendering pattern with stable keys, and the Zod schema shape (`z.array(z.object(...))`) that pairs with it.
+- **The hook's signature.** `const { fields, append, prepend, insert, remove, swap, move, update, replace } = useFieldArray({ control: form.control, name: 'lineItems' })`. `fields` is the array RHF tracks — each entry has a stable RHF-assigned `id` (separate from the entity's domain ID, used for React's `key` prop and nothing else). The operations are the imperative API: `append({ description: '', amount: 0 })` adds a row, `remove(index)` deletes one, `move(from, to)` reorders. RHF handles the re-indexing and the field-state migration.
+- **The canonical rendering shape.**
+  - `<ul>{fields.map((field, index) => (<li key={field.id}><FormField name={`lineItems.${index}.description`} .../><FormField name={`lineItems.${index}.amount`} .../><Button onClick={() => remove(index)}>Remove</Button></li>))}</ul>`
+  - `<Button onClick={() => append({ description: '', amount: 0 })}>Add line</Button>`
+  - The `<FormMessage />` inside each `<FormField>` reads `formState.errors.lineItems?.[index]?.description?.message` and renders per-row errors.
+- **The `field.id` versus the domain ID.** `field.id` is RHF's bookkeeping — stable across reorders, useful for React's `key`. The entity's domain ID (the invoice line item's UUID) is a separate field the schema includes if the row already exists in the database. For edit forms, the schema's array element shape is `{ id?: string; description: string; amount: number }` — present `id` means update, absent means insert. The senior reach: include `id` in `defaultValues` for existing rows; let `append` create rows without an `id`; the action's mutation logic splits the inserts from the updates.
+- **The Zod schema for arrays.** `z.array(z.object({ id: z.uuid().optional(), description: z.string().min(1), amount: z.coerce.number().positive() })).min(1, 'Add at least one line')`. The `.min(1)` constraint catches "user removed every row." The resolver maps the schema's array errors into `formState.errors.lineItems` (an array-shaped error tree) and individual element errors into `formState.errors.lineItems[index].fieldName`. Named on the lesson because the access pattern is the only non-obvious part.
+- **The Sortable variant — drag to reorder.** When the row order is meaningful (invoice lines, task priorities), the senior reach pairs `useFieldArray`'s `move(from, to)` with a drag-and-drop library (`@dnd-kit/core` is the 2026 default). The pattern: dnd-kit fires `onDragEnd` with the source and target indices; the handler calls `move(from, to)`; RHF re-renders the new order. Named once; the project chapter (or 16's UI patterns if applicable) writes it.
+- **Performance — when arrays grow.** RHF's per-field re-render isolation means a 50-row array doesn't re-render every row on each keystroke; the changed row re-renders, the rest stay stable. The senior anchor for arrays past a few hundred rows: the form becomes the wrong shape — a paginated list or a bulk-edit table is the 16-level reach, not a single form. The lesson names the ceiling so the student doesn't stretch the pattern.
+- **Validation timing for arrays.** With `mode: 'onBlur'`, blurring a single row's input validates *that input only*. Cross-row rules (totals, uniqueness within the array) need either a top-level schema `.refine()` on the array (runs on submit) or a separate `watch` + effect (runs on change). The senior reach for "the sum of `amount` must be positive": a `.refine()` on the array with `path: ['lineItems']`, the error renders as the form's top-level array message. Named once.
+- **The `replace` operation — bulk reset.** `replace(newArray)` swaps the entire array at once. The senior reach: after the action saves and returns the canonical row list (with real IDs), call `replace(result.data.lineItems)` to reconcile the form's array to the server's truth. Cheaper than `form.reset()` when only the array changed.
+- **The action's side — the typed-object call shape.** The action receives the typed object (from lesson 3 of chapter 045's typed-object call shape): `async function saveInvoice(input: { lineItems: LineItemInput[] }) { const parsed = Schema.safeParse(input); ... db.transaction(...) }`. The transaction inserts new rows, updates existing ones, deletes any the form removed (the action takes the form's list as the new truth, computes the diff against the database). The senior trigger for the diff pattern: an array form that owns the entity's row set, the action reconciles. Named here; the full transaction wrapping was lesson 4 of chapter 039.
+- **Watch-outs.** Using the `field.id` as the database key — the IDs are RHF-only, not stable across page reloads, use the entity's domain ID for any cross-request identity; forgetting `key={field.id}` on the rendered row — React's key heuristic falls back to index, reorders break input focus and dirty state; appending an empty object without all the schema's required fields — defaults the input rendering for empty fields, fix by passing the full default shape to `append`; using the array as nested objects with non-array keys — `useFieldArray` requires the field to be an array, named once; calling `remove()` without confirming destructive action when the row maps to a server-deleted record — the action's side does the actual delete on submit, the form's `remove` is local until submit (the user can cancel by not submitting); reading `fields` as the *current* values is wrong — `fields` is the array at render time, the live values are `watch('lineItems')` or `form.getValues('lineItems')`.
 
-Senior calls and watch-outs:
+What this lesson does not cover:
 
-- Cursor pagination requires the tiebreaker — sorting only by `createdAt` skips or duplicates rows when two invoices share a timestamp. The composite predicate is mandatory, not optional. The lesson 6 of chapter 042 rule made concrete.
-- Tenant filter goes in the `where`, not after the load. The "load then check" pattern is the failure mode that surfaces as IDOR — anyone with a valid invoice ID from any org reads it. The structural rule is `where: and(eq(organizationId), eq(id))`; this is what Unit 10's `tenantDb` will enforce structurally but the manual discipline starts here.
-- The relational query API (`with: { ... }`) issues either one query or a small batch under the hood — well within "single round trip" territory because the planner sees the joins. Compare to a manual loop of `getCustomer(invoice.customerId)` + `getLines(invoice.id)` which would be 3 round trips. Name the contrast, point at lesson 2 of chapter 043 for the N+1 deep dive.
-- The `nextCursor` is null when fewer than `pageSize + 1` rows came back; the inspector's "Next page" link is disabled in that case. The n+1 trick avoids a separate `count()` round trip — the lesson 6 of chapter 042 punchline.
-- The Zod parse on `listInvoicesInputSchema` is the same shape Unit 7 will reuse against a Server Action `formData`. Architectural Principle #3 at work — the schema is in `/lib`, callers compose it.
+- The shadcn primitives' layout (Chapter 027).
+- The transaction wrapping in the action body (lesson 4 of chapter 039).
+- Drag-and-drop in depth (named once, optional).
+- Multi-step wizards (lesson 5 of chapter 045).
 
-Codebase state at entry: schema and seeded data ready; inspector renders empty list and empty detail.
-Codebase state at exit: inspector fully functional. List paginates with cursors, filters by status, switches between orgs; detail loads with relations; tenant guard verified by attempting a cross-org `invoiceId`. Plan panel `<details>` still un-inspected — that's lesson 6 of chapter 045's verification step.
-
-Estimated student time: 50 to 70 minutes.
+Estimated student time: 35 to 45 minutes. Mechanics archetype. The lesson installs the single highest-value RHF pattern past the resolver itself.
 
 ---
 
-## Lesson 6 — Verifying the seven "Done when" clauses
+## Lesson 5 — Multi-step wizards with FormProvider
 
-Runs each Done-when check end-to-end (clean migrate, idempotent seed, cursor pagination, server-side status filter, cross-org tenant guard, single-round-trip detail, `EXPLAIN ANALYZE` showing the right indexes) and forward-references Units 7, 9, 10, and 11.
+Builds an end-to-end wizard with one `useForm` at the root, `useFormContext` per step, `trigger(fieldNames)` plus schema `.pick()` for per-step validation, `shouldUnregister: false` for back-navigation, and the progressive-enhancement casualty named explicitly.
 
-Goals:
+Topics to cover:
 
-- Walk every "Done when" clause as a verification step (the table in the framing).
-- Drop and re-create the database (`docker compose down -v && docker compose up -d && pnpm db:migrate`) — confirm a clean migrate on a fresh database with no errors and one row in `__drizzle_migrations`.
-- `pnpm db:seed` twice in a row — confirm the banner shows identical row counts and a sampled invoice's `id` is the same across runs (the determinism guarantee).
-- Inspector pagination: click "Next page" three times against one org; copy each cursor value; confirm no row repeats across the three pages (open Studio if needed).
-- Status filter: click `paid`; URL shows `?status=paid`; only paid rows render; hard reload preserves; URL share to a second tab reproduces the view.
-- Cross-org tenant guard: hand-construct an inspector URL with `orgId` of org A and `invoiceId` from org B (read from Studio); confirm the detail panel renders empty-state, not the leaked invoice.
-- Expand the plan panel on the detail load — confirm the plan shows `Index Scan using invoices_pkey` (the PK lookup) joined to `customers` and `invoice_lines` in one plan. Read the plan bottom-up using the lesson 3 of chapter 043 vocabulary. Note the `actual time` per node and the buffer hit/read counts.
-- Switch the plan panel to the list query (provided control). Confirm without `?status=...` the plan uses `invoices_org_created_id_idx`; with `?status=paid` the plan uses `invoices_org_status_created_id_idx`. If either falls back to `Seq Scan`, the index column order is wrong — point at lesson 3 of chapter 045 and the lesson 1 of chapter 043 rule.
-- Name the senior calls one more time:
-  - Schema is the source of truth: types, queries, the inspector, every later layer flow from `db/schema.ts`.
-  - Every tenant-owned read filters by `organizationId` in the `where`, never after the load.
-  - Cursor pagination requires the tiebreaker; the composite index column order matches the `orderBy`.
-  - `EXPLAIN ANALYZE` is the proof of "this query is fast for the reason I think it is" — feel doesn't count.
-  - Seeds are deterministic and idempotent; the reset-then-seed shape is the contract.
-- Forward references:
-  - Unit 7 will add Server Actions that mutate this schema with Zod validation at the action boundary, and `useOptimistic` on top of `listInvoices`.
-  - Unit 9 will drop the `users` stub and switch to Better Auth's tables — additive migration, the FK targets stay.
-  - Unit 10 will wrap `listInvoices` and `getInvoiceDetail` in a `tenantDb(orgId)` helper that makes the missing `organizationId` filter structurally impossible to write — this chapter built the discipline manually so the wrapper has something to enforce.
-  - Unit 11 will turn the inspector's URL-state into the production list view with soft delete, sort controls, and optimistic concurrency.
+- **The senior question.** An onboarding flow takes the user through five steps: company details, billing address, plan selection, payment method, confirmation. Each step is its own component, each renders a subset of the schema's fields, the user can go back and edit a prior step, the wizard validates per step but submits as one form. The native chapter 044 pattern would need a parent `useState` per field (or context), an action call per step (no — the wizard submits once), manual error-state plumbing across components. RHF's `FormProvider` + `useFormContext` carries the single form instance across the tree without prop-drilling; per-step validation reuses the same Zod schema with `.pick()` for the step's fields; the wizard submits once at the end. The lesson teaches the wizard shape end to end.
+- **`FormProvider` and `useFormContext` — the context bridge.** The wizard's root component calls `useForm` once and wraps the steps in `<FormProvider {...form}>`. Each step component calls `const form = useFormContext<FormValues>()` to read the same instance — `register`, `control`, `formState`, `trigger`, `getValues` are all available without prop-drilling. The senior anchor: one `useForm` call per wizard, every step shares it. The shadcn `<Form>` primitive is itself a `FormProvider` wrapper — using `<Form {...form}>` at the root gives the same context.
+- **The per-step validation — `trigger` and schema-`pick`.** Advancing from step 1 to step 2 should validate step 1's fields only, not the entire form. RHF's `form.trigger(['company.name', 'company.taxId'])` runs the resolver against the named fields and returns `boolean`. The senior reach: the step component knows its field set (or derives it from `StepOneSchema = FullSchema.pick({ company: true })`), calls `trigger` with that set on the "Next" button, only advances if it returns true. The schema-`pick` keeps the per-step rules in lockstep with the full schema.
+- **The wizard's state container.** RHF's form *is* the wizard's state — every step writes through `register`/`Controller` into the same `form` instance, the values persist across step changes because RHF doesn't unmount fields it remembers. The current step is local component state (`useState`), not part of the form. The senior anchor: the form owns field state, the wizard owns navigation state — keep them separate.
+- **The unmount-and-remount question.** Two patterns for rendering steps:
+  - *Conditional rendering.* `{step === 1 && <StepOne />}` unmounts step 2 when on step 1. RHF's `shouldUnregister: false` option (the default) keeps the unmounted fields' values; setting it to `true` clears them on unmount. The senior reach: keep `shouldUnregister: false` — the user expects values to persist when going back. The watch-out: validation errors for unmounted fields still trigger on submit; the wizard's "Next" button validates only the visible step's fields via `trigger`, the final submit validates the whole schema.
+  - *Render all steps, show one.* Render every step in the tree, hide non-current ones with CSS. Heavier for very tall forms but no unmount concerns. The senior reach for short wizards (3–5 steps) where the cost is negligible; conditional rendering for longer wizards.
+- **The "back" button — preserving values.** Going back to a prior step does *not* reset its values; RHF kept them. The user edits, then "Next" re-validates and advances. The senior anchor: no per-step submit, no intermediate persistence to the server (unless the wizard is long enough to need draft-save — Chapter 061 territory). The whole wizard submits once.
+- **The final submit.** The last step's "Submit" button runs `form.handleSubmit(onFinalSubmit)`. The resolver validates the whole schema (catches any cross-step rules, e.g., "billing country must match company country"). `onFinalSubmit(values)` calls the Server Action with the typed values; the action parses, authorizes, mutates inside a transaction (lesson 4 of chapter 039), revalidates, returns `Result`. The form maps `Result.fieldErrors` back into RHF (`applyServerErrors`) which surface on the step that owns the offending field — the wizard's UX layer is responsible for navigating the user to that step on a server error.
+- **Cross-step validation — the schema's `.refine`.** Rules that span steps (the billing country example, password match, "trial selected requires no payment method") live on the schema as a top-level `.refine()` with `path: ['fieldName']` to attach the error to the right field. The senior reach: the resolver fires this on the final submit; the wizard's flow doesn't need to re-implement the rule. Named once.
+- **`useWatch` inside a step component — derived state without re-rendering the wizard.** A step that conditionally shows a "VAT number" field when `country === 'EU'` reads the country via `const country = useWatch({ name: 'billing.country' })`. The watch is scoped to the calling component — only that component re-renders on change. The senior reach for any cross-field conditional render inside a wizard. Named once; the pattern repeats in any non-trivial form.
+- **The wizard's progress UI.** A `<Steps current={step} total={5} />` indicator reads the current step from the wizard's local state. The senior anchor: the indicator is the navigation surface, the form is the data surface. Optional: surface the per-step validity (`form.formState.errors` keyed by step) as a red badge on completed-but-now-invalid steps. Named once.
+- **When the wizard is too long for one client form.** Past 8–10 steps or when each step has 20+ fields, the wizard becomes a draft-save problem — the user expects to leave and come back. The senior reach: per-step persistence to a draft row in the database, the wizard reads from the draft on mount, each step's "Next" calls a small action that updates the draft. Out of scope for this chapter; named once as the trigger for the longer-form pattern.
+- **Progressive enhancement — fully a casualty here.** Wizards do not work without JS — the navigation, the per-step validation, the deferred submit all need the bundle. The senior anchor: the affected user segment is small for in-app wizards (signed-in users with JS), and the UX wins justify the PE loss. For public marketing-funnel wizards, the senior reach is a single-page progressive-disclosure form, not a multi-step JS-required wizard.
+- **Watch-outs.** Calling `useForm` inside each step component creates a new form per step — call it once at the wizard root and share via `FormProvider`; advancing without `trigger` skips client validation for the step's fields — the final submit catches them but the UX is wrong; setting `shouldUnregister: true` and using conditional rendering loses values on "back" — the default is correct for wizards; expecting `formState.isValid` to mean "this step is valid" — `isValid` is whole-form, use `trigger` to check a subset; mounting the wizard inside a Server Component without `'use client'` on the wrapper — the form is client-only; relying on the URL to track the step (`?step=2`) without restoring values from the form — the URL is a navigation aid, the form's RHF state is the source of value truth (URL-state list views are different — Chapter 060).
 
-Senior calls and watch-outs:
+What this lesson does not cover:
 
-- The verify lesson is the rehearsal of the failure modes — running each one and naming what would break without the discipline the student just installed.
-- If a verification fails, the lesson points at the owning build lesson, not at "debug it yourself."
+- The shadcn `<Steps>` indicator visual (Chapter 027 owns components).
+- Draft-save persistence across sessions (out of scope, named once).
+- The action's transaction wrapping (lesson 4 of chapter 039).
+- The PE-friendly single-page progressive-disclosure alternative (named once).
 
-Codebase state at entry: full schema, seed, and queries working.
-Codebase state at exit: same surface, verified clause-by-clause; the plan output proves the indexes earn their weight; the student can articulate every schema decision and which later unit will lean on it.
+Estimated student time: 45 to 55 minutes. Pattern archetype. The lesson runs long because the wizard is the cumulative payoff of the chapter's other lessons — the resolver, the field arrays, and the multi-component form context all combine here.
 
-Estimated student time: 25 to 35 minutes.
+---
+
+## Lesson 6 — Quizz
+
+Top 10 topics to quiz:
+
+- The four triggers that flip from the native chapter 044 pattern to RHF — per-field validation timing past submit, dynamic field arrays, multi-step wizards, controlled UI library inputs; the line that RHF doesn't replace server-side validation.
+- The `useForm` setup — `resolver`, `defaultValues`, `mode`, the difference between `mode` and `reValidateMode`, the senior default for forms past submit-only validation.
+- `register` versus `Controller` versus `useController` — which one for which input type, the spread-last rule for `register`, the render-prop vs hook-form patterns.
+- `handleSubmit` and the submit flow — RHF intercepts the submit, runs the resolver, calls `onSubmit(values)` with typed output; the action prop of chapter 044 is replaced by an `onSubmit` handler that calls the Server Action imperatively.
+- `formState` — `errors`, `isDirty`, `isValid`, `isSubmitting`; the re-render rule (destructure only what's read); `watch`/`useWatch` for derived values without re-rendering the form root.
+- The Zod resolver — `zodResolver(Schema)`, the one-schema-for-both-sides discipline, `z.input` vs `z.output` for transform schemas, mapping server-returned `fieldErrors` back into RHF via `setError`.
+- `useFieldArray` — the operations (`append`, `remove`, `move`, `replace`), `field.id` versus the domain ID, the schema shape (`z.array(z.object(...))`), the per-row error access path (`formState.errors.lineItems?.[index]?.field`).
+- `FormProvider` and `useFormContext` — one `useForm` per wizard at the root, every step reads the same instance, `shouldUnregister: false` for wizards to keep values across back-navigation.
+- Per-step validation in wizards — `form.trigger(fieldNames)` or `FullSchema.pick({...})`, the final submit validates the whole schema, server-returned errors map back to the step that owns the field.
+- The progressive-enhancement tradeoff — RHF requires JS, the affected forms (wizards, dynamic arrays) accept the PE loss, the Server Action seam is unchanged and still parses on entry.

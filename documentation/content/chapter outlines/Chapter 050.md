@@ -1,211 +1,318 @@
-# Chapter 050 — Route handlers and API contracts
+# Chapter 050 — Project: the welcome email send path
 
 ## Chapter framing
 
-Chapter 047 made the Server Action the default mutation seam — the typed POST the framework wires for in-app forms. But not every untrusted-input boundary is a form. Webhooks arrive as raw bodies, public APIs need GETs with deterministic cache headers, BFF endpoints proxy third-party services with their own auth shape, mobile and external clients can't invoke a Server Action, and large streaming payloads exceed the action's 1 MB body cap. The Next.js 16 answer is `route.ts` — HTTP-method-exported functions handling `NextRequest` / `NextResponse` directly. This chapter teaches when route handlers earn their weight over Server Actions, how to design the request/response contracts with the Zod vocabulary from chapter 046, how to apply HTTP semantics (methods, status codes, idempotency, content negotiation) to *your own* endpoints rather than just consuming them from chapter 015, and how filtering/sorting/search at the API boundary works once `searchParams` is the input surface.
+Chapter 050 cashes in Unit 7: the verified-domain ceremony, the SPF/DKIM/DMARC plumbing, the transactional subdomain split, and the `email_suppressions` read discipline (chapter 048); plus the React Email component vocabulary, the preview dev loop, and the plain-text/accessibility/dark-mode posture (chapter 049). The student wires Resend on their own verified domain, writes `lib/email.ts` as the suppression-gated send wrapper, ships the `<WelcomeEmail />` React Email template, and exposes a Server Action that the pre-built inspector page fires from a single button. Every clause of "Done when" — real inbox arrival on the student's domain, DKIM=pass and SPF=pass in headers, plain-text fallback present, suppression path returns `{ ok: false, reason: 'suppressed' }` without calling Resend — is the verify recipe for the chapter.
 
-The threads that must run through every lesson. The route handler is a public endpoint, same trust posture as the Server Action — parse on entry with Zod's `safeParse`, authorize before any database touch (the lesson 3 of chapter 061 carve-out for `authedAction` ported to `route.ts` is the slot named here). The Result shape from lesson 3 of chapter 047 is for internal callers (Server Actions return it because forms read it directly); route handlers return *HTTP* — a status code plus a body, with RFC 9457 Problem Details (`application/problem+json`) as the canonical error shape (introduced in lesson 2 of chapter 015, made operational here). Zod schemas are still the single source of truth, but now they validate the request and *describe* the response — schemas-as-contract is the discipline that lets the OpenAPI generator (named once, not built) keep external clients honest. Architectural Principle #5 (use the framework, don't invent) still holds: no tRPC-style RPC wrapper layered on top, no parallel router — `route.ts` files in the App Router are the surface. Idempotency moves from foreshadowing to operational here: the `Idempotency-Key` header pattern for POST endpoints, hashed into the dedup row, sets up chapter 067's webhook treatment. The chapter ships four teaching lessons plus a quiz.
+Threads that run through every lesson: `lib/email.ts` is the single named seam — Architectural Principle #3 made operational; Resend is NOT wrapped in a generic adapter, the wrapper only adds the suppression read, the default `from`, and the `Result` shape (Principle #5 reminder from lesson 7 of chapter 064); the React Email template is a pure renderer with typed props, callers compute values, the template stays stateless; the Server Action follows the chapter 043 five-seam shape (parse → authorize → suppression-read → send → return `Result`); `@t3-oss/env-nextjs` schema-validates `RESEND_API_KEY`, `EMAIL_FROM`, `EMAIL_REPLY_TO` at boot — fail-closed; the `email_suppressions` read is at the wrapper, never at callers; the idempotency key is set on every transactional send (verification token / row ID); the verify is run against a real inbox on the student's own verified domain, not Resend's sandbox. The chapter ships 1 brief + 1 starter walkthrough + 2 build slices + 1 verify lesson; every build closes on a runnable state.
 
----
+### Dependency carry-in
 
-## Lesson 1 — When to reach past Server Actions
+- **From lesson 1 of chapter 048 / lesson 2 of chapter 048 / lesson 3 of chapter 048:** Resend account, the verified transactional subdomain (`send.<student>.<tld>`), SPF/DKIM/DMARC records published, the `resend` Node SDK, the per-purpose `from` address discipline, the `reply_to` pattern. The student walks chapter 048's setup again in lesson 2 of chapter 050 to land it on their *own* domain (not just read about it).
+- **From lesson 4 of chapter 048:** the `email_suppressions` Drizzle table shape (`id`, `email`, `reason` enum, `provider_event_id`, `bypass_until`, `metadata`, `created_at`, `updated_at`), the normalize-on-read rule (lowercase + trim), the read-at-the-wrapper pattern, the `bypassSuppression` carve-out semantics, the `reason`-aware bypass (transactional bypasses `manual_unsubscribe` only). The webhook *writer* lands in lesson 5 of chapter 063 — out of scope here.
+- **From lesson 1 of chapter 049 / lesson 2 of chapter 049 / lesson 3 of chapter 049:** the React Email primitives (`<Html>`, `<Head>`, `<Preview>`, `<Container>`, `<Section>`, `<Heading>`, `<Text>`, `<Button>`, `<Img>`, the `<Tailwind>` wrapper), `PreviewProps` as the mock-data contract, the `pnpm email dev` loop, the head meta plumbing for dark mode, the `lang`/`<Title>` accessibility floor. The student writes the template once in lesson 4 of chapter 050 against this vocabulary.
+- **From lesson 1 of chapter 043 / lesson 2 of chapter 043 / lesson 3 of chapter 043 / lesson 4 of chapter 043 / lesson 5 of chapter 043:** the `'use server'` file-level directive, the five-seam action shape, the `Result<T>` type plus `ok`/`err` helpers in `lib/result.ts`, the `validation` / `conflict` / `not_found` / `internal` codes (`'suppressed'` is added here as a fifth common code), `revalidatePath` is NOT used (no list to revalidate), no transaction (the send is one external call).
+- **From lesson 2 of chapter 042 / lesson 6 of chapter 042 / lesson 7 of chapter 042:** `z.email()`, `z.uuid()`, `safeParse(Object.fromEntries(formData))`, `z.treeifyError(parsed.error).properties` for the `fieldErrors` shape.
+- **From chapter 041 / chapter 047:** the pooled `db` client, `db/schema.ts` already contains the `email_suppressions` table from lesson 4 of chapter 048 (the starter adds it if lesson 4 of chapter 048 didn't seed it into the running project — the starter README flags both paths), the `lib/auth-stub.ts` returning a fixed `{ organizationId, userId }` (Better Auth lands in Unit 8).
+- **From chapter 030 / chapter 004:** `lib/env.ts` already exists with `@t3-oss/env-nextjs`; the student adds the new entries (`RESEND_API_KEY`, `EMAIL_FROM`, `EMAIL_REPLY_TO`) to the existing `server` block. The `import 'server-only'` poisoning at the top is inherited.
 
-The five triggers that flip a mutation from Server Action to `route.ts`, the route-handler file shape, and the dynamic-by-default caching posture.
+### Auth carve-out (deferred to Unit 8)
 
-Topics to cover:
+The Server Action needs a recipient and a logged-in identity. Unit 8 (Better Auth) doesn't exist yet — the inspector page's "Send to {your email}" button passes the recipient address as a `FormData` entry; the action calls `getActiveContext()` from `lib/auth-stub.ts` for the `userId` slot used in the idempotency key. Reaching for `cookies()` or inventing a session reader is the smell — leave the stub alone, Unit 8 swaps it in cleanly.
 
-- **The senior question.** Server Actions cover in-app mutations from Client Components — the form submits, the action runs, the page revalidates. So when does the senior reach past the action and write `route.ts` instead? The lesson installs the five triggers that flip the choice, and the rule for everything else: stay with the action. The failure mode is the codebase that ships every endpoint as a route handler "for symmetry" and loses the action's automatic revalidation, typed call, and progressive enhancement.
-- **The Server Action's working envelope, restated.** POST-only, framework-wired call from React (client or server) components, automatic revalidation via `revalidatePath`, 1 MB default body cap, typed call from the caller, opaque action ID stamped into the bundle. The 2026 reflex for any in-app mutation that fits this envelope.
-- **The five triggers that flip to a route handler.**
-  - *Non-React callers.* A mobile app, a Zapier integration, a partner backend, a CLI — anything that can't import a Server Action and call it as a function needs an HTTP endpoint. Public REST or BFF surfaces live in `route.ts`.
-  - *Webhooks.* The provider POSTs to a URL with a raw body for signature verification (Stripe, Resend, Svix). The Server Action's `FormData` / typed-payload contract is the wrong shape; the route handler reads `request.text()` to get the bytes the HMAC signs over. Chapter 067 is built on this.
-  - *GET endpoints.* Server Actions are POST-only by protocol; any cacheable read surface (a public `/api/posts/[slug]`, an autocomplete endpoint, a JSON feed) needs a GET. Server Components read directly from the database for in-app GETs — the route handler GET is for *external* readers or for the rare in-app endpoint a client component fetches because it can't be turned into a Server Component (Chapter 080's TanStack Query trigger).
-  - *Streaming and large bodies.* Server Actions cap at 1 MB. Direct multipart uploads, AI streaming responses (`streamText` from the AI SDK lands in Unit 23), Server-Sent Events for live progress, file downloads larger than 1 MB — all need the route handler's direct `Request` / `Response` surface and the platform's streaming runtime.
-  - *Custom HTTP semantics.* When the endpoint genuinely needs `Cache-Control`, `ETag`, content negotiation, conditional requests, or a non-200 status the action's Result shape can't express — the protocol is the contract, the route handler is the surface that speaks it.
-- **What stays as a Server Action.** Every in-app form, every authenticated dashboard mutation, every CRUD action a React component invokes — the working envelope above. The rule of thumb: if the caller is a React component on the same Next.js app, the answer is the action. Past that envelope, the route handler earns its weight.
-- **The `route.ts` shape and the file convention.** A file named `route.ts` in `app/api/.../route.ts` (or anywhere in `app/` that isn't a `page.tsx` segment) exports async functions named for HTTP methods — `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, `HEAD`. Each receives a `NextRequest` and a `{ params }` context (with `params` now a `Promise` in Next.js 16, matching the page convention) and returns a `Response` or `NextResponse`. The framework wires the route. `OPTIONS` is auto-implemented from the methods exported.
-- **The caching default, named once.** GET handlers in Next.js 15 and 16 default to *dynamic* (uncached) — no automatic full-route cache. Reach for `'use cache'` (Cache Components, Next.js 16) or explicit `Response` headers (`Cache-Control: public, s-maxage=…`) when caching earns its weight. The senior anchor: most route handlers serve authenticated requests, where caching is wrong by default; opt into caching deliberately at the endpoint where it's correct, not globally.
-- **The seam discipline carries.** The five-seam action shape from lesson 2 of chapter 047 (parse, authorize, mutate, revalidate, return) maps onto the route handler one-to-one with two substitutions: *revalidate* becomes "set cache headers / call `revalidateTag` when the handler mutates," and *return Result* becomes "return a `Response` with a status code and body." The shape is the same; only the wire format changes. lesson 2 of chapter 050 walks the substitutions.
-- **`route.ts` cannot coexist with `page.tsx` at the same segment.** The route conflict is named here so the student doesn't try; the convention is "a segment is either a page or an API route, never both."
-- **Authorization moves with the boundary.** The action's `authedAction(role, schema, fn)` wrapper (lesson 2 of chapter 061) ports to a `authedRoute(role, schema, handler)` wrapper (lesson 3 of chapter 061) at the route handler boundary — same trust posture, same parse-then-authorize order, different return shape. Named here as the carry-over so the student doesn't write a parallel auth check per route.
-- **The "do not invent a parallel router" anchor.** Architectural Principle #5 restated. `route.ts` files are the surface; no Hono, no tRPC, no Express-on-the-side. The triggers that would flip to Hono (an externally-published versioned REST surface with autogenerated OpenAPI and an SDK) are named once and out of scope — most SaaS products don't ship a public API in year one, and when they do, Hono running inside a single Next.js route handler is the senior reach (named, not taught).
-- **Watch-outs.** Reaching for a route handler for an in-app form because "REST feels right" — the Server Action is shorter, typed, and revalidates for free, the reach is the failure mode; treating every route handler as cacheable — the default is dynamic and the senior reach is to *not* add `Cache-Control` until the endpoint earns it; assuming `OPTIONS` needs to be hand-written for CORS preflight — it's auto-implemented from the exported methods, the senior call is to *add* `OPTIONS` only when the response headers diverge; writing one fat `route.ts` per resource with a manual method switch — export `GET`, `POST` separately, the framework dispatches; using `request.body` as a stream when `request.json()` would do — the higher-level method is the default, stream only when the payload size or shape forces it; reaching for the route handler to bypass an action's PE behavior — actions degrade gracefully with `<form action>`, route handlers don't ship with a form contract at all.
+### Starter file tree (stubs marked with TODO)
 
-What this lesson does not cover:
+```
+src/
+  db/
+    schema.ts                      # provided: email_suppressions table (carry-in from lesson 4 of chapter 048)
+  lib/
+    env.ts                         # provided: existing schema; TODO student: add RESEND_API_KEY, EMAIL_FROM, EMAIL_REPLY_TO
+    email.ts                       # TODO student: Resend client singleton + sendEmail wrapper with suppression read
+    suppressions.ts                # TODO student: isSuppressed(email, { kind }) helper, normalize-on-read
+    result.ts                      # provided: Result<T>, ok(), err() (carry-in from chapter 043)
+    auth-stub.ts                   # provided: getActiveContext() (carry-in from chapter 047)
+  emails/
+    WelcomeEmail.tsx               # TODO student: React Email template + PreviewProps
+    components/
+      EmailLayout.tsx              # provided: brand header + footer (logo URL + legal address from env)
+  app/
+    inspector/
+      send-welcome/
+        page.tsx                   # provided: server-rendered inspector page with one-button form
+        send-welcome-form.tsx      # provided: client component reading useActionState
+    actions/
+      send-welcome.ts              # TODO student: sendWelcomeEmail Server Action
+scripts/
+  seed.ts                          # provided: inserts one pre-suppressed row at suppressed@<student-domain>
+.env.example                       # provided: lists the new entries with example values
+README.md                          # provided: the verified-domain ceremony recap, the DNS checklist
+```
 
-- The Zod request/response contract shape (lesson 2 of chapter 050).
-- HTTP status codes and the idempotency operationalization (lesson 3 of chapter 050).
-- Filter/sort/search as the GET payload (lesson 4 of chapter 050).
-- Streaming bodies, SSE, and AI streaming (Unit 23).
-- Webhook signature verification (Chapter 067).
-- The auth wrapper at the route boundary (lesson 3 of chapter 061).
-- The Hono / OpenAPI-published-API track (named once, out of scope).
+The provided inspector page calls the student-written action by relative import and renders the action's `Result` as a result card (success: shows the Resend send ID and a link to the Resend dashboard; failure: shows the error code and `userMessage`, plus a "Suppression path hit" banner when `code === 'suppressed'`).
 
-Estimated student time: 35 to 45 minutes. Decision archetype. The lesson the student keeps as the trigger reference for every "should this be an action or a handler" question.
+### Reference solution signatures lessons display
 
----
+- `env.server` additions in `lib/env.ts`:
+  - `RESEND_API_KEY: z.string().min(1)`
+  - `EMAIL_FROM: z.string().min(1)` — full `Display Name <local-part@send.domain.tld>` format
+  - `EMAIL_REPLY_TO: z.email()` — a monitored mailbox
+- `sendEmail({ to, subject, react, idempotencyKey, replyTo, bypassSuppression }: SendInput): Promise<Result<{ id: string }>>` in `lib/email.ts`. `SendInput`:
+  - `to: string`
+  - `subject: string`
+  - `react: React.ReactElement`
+  - `idempotencyKey: string` — required, not optional (the senior call from lesson 1 of chapter 048)
+  - `replyTo?: string` — defaults to `env.EMAIL_REPLY_TO`
+  - `bypassSuppression?: boolean` — defaults to `false`
+- `Result<T>` error codes after this chapter: `'validation' | 'conflict' | 'not_found' | 'internal' | 'suppressed'`. The `'suppressed'` code's `userMessage` is `"This recipient is on the suppression list."` and never surfaces to end users in production (only the inspector reads it).
+- `isSuppressed(email: string, opts: { kind: 'transactional' | 'marketing' }): Promise<{ suppressed: boolean; reason?: string; bypassUntil?: Date }>` in `lib/suppressions.ts` — the helper the wrapper calls. The `kind` arg drives the `reason`-aware bypass (transactional bypasses `manual_unsubscribe` only).
+- `WelcomeEmail` template — default-exported React component with props `{ firstName: string; verifyUrl: string }` and a `PreviewProps` named export. Wrapped in `<EmailLayout>`, the body is one `<Section>` with a `<Heading>`, a `<Text>`, and a `<Button href={verifyUrl}>`. Sets `<Preview>` to `"Welcome to {appName} — verify your email"` and `<Title>` to `"Welcome to {appName}"`.
+- `sendWelcomeEmail(prevState: Result<{ id: string }> | null, formData: FormData): Promise<Result<{ id: string }>>` — file-level `'use server'` in `app/actions/send-welcome.ts`. Five-seam shape:
+  1. `safeParse({ recipientEmail: z.email(), firstName: z.string().min(1).max(80) })` over `Object.fromEntries(formData)`.
+  2. `const { userId } = await getActiveContext()`.
+  3. Construct `idempotencyKey = `welcome:${userId}:${recipientEmail}`` (stable across retries of the same action invocation; rotate by including a daily token if a "resend welcome" UX lands later).
+  4. `await sendEmail({ to: recipientEmail, subject: 'Welcome to <App>', react: <WelcomeEmail firstName={firstName} verifyUrl={...} />, idempotencyKey })`.
+  5. Return the wrapper's `Result` unchanged.
+- `.env.example` entries:
+  - `RESEND_API_KEY=re_xxx`
+  - `EMAIL_FROM='Acme <noreply@send.acme.example>'`
+  - `EMAIL_REPLY_TO=support@acme.example`
 
-## Lesson 2 — Wire contracts as Zod schemas
+### Inspector page spec
 
-Authoring `Params`/`Headers`/`Query`/`Body` schemas parsed in cheapest-first order, typed response schemas, and RFC 9457 Problem Details as the canonical error shape.
+The inspector lives at `/inspector/send-welcome` and is the verification surface. It carries:
 
-Topics to cover:
+- **Controls.** One `<form>` containing `recipientEmail` (email input, defaulted to the seeded `suppressed@<student-domain>` for one-click suppression testing — the student types their own address for the success-path test), `firstName` (text input, defaulted to `Ada`), and a single `<SubmitButton>Send welcome</SubmitButton>`.
+- **Observation panels.** Three result cards rendered conditionally from `useActionState`:
+  - **Success card.** Shows `Result.data.id` (the Resend send ID), a "View in Resend dashboard" link, and an instruction line ("Check the inbox for {recipientEmail} — the email should arrive within ~15 seconds").
+  - **Suppression card.** Shows when `Result.error.code === 'suppressed'`: a banner "Suppression path hit — Resend was NOT called", the recipient's normalized email, and a reminder that the `email_suppressions` table is the gate.
+  - **Validation/error card.** Shows when `Result.error.code` is `'validation'` or `'internal'`: the `userMessage` plus `fieldErrors` if present.
+- **No webhook surface, no event log, no metrics panel** — the bounce/complaint webhook handler is lesson 5 of chapter 063; the dashboard panel is out of scope here. The Resend dashboard *is* the observation surface for the send itself.
 
-- **The senior question.** The Server Action contract was "the schema's input type, the canonical Result." The route handler contract is `Request` in, `Response` out — wire bytes both directions, no implicit shape, no typed call site. What's the discipline that makes the contract honest? The answer: one Zod schema per input source (path params, query, body, headers when they carry data) and one Zod schema per response shape (success body, error body). The lesson teaches the contract authoring posture, the parse order inside the handler, the response shape conventions, and the OpenAPI-from-Zod escape hatch named once.
-- **The four input sources, parsed in order.**
-  - *Path params.* `app/api/invoices/[invoiceId]/route.ts` → `(_, { params }) => { const { invoiceId } = await params; ParamsSchema.parse({ invoiceId }) }`. In Next.js 16 `params` is a `Promise` — await before parsing. The schema is usually a `z.object({ invoiceId: z.uuid() })` — the format check is the cheapest "is this even a valid request" gate.
-  - *Query string.* `request.nextUrl.searchParams` parsed against a `QuerySchema`. The full filter/sort/search treatment is lesson 4 of chapter 050; the contract-level point is that `searchParams` is just strings and Zod's coercion / preprocessing bridge is the same as the `FormData` story from lesson 6 of chapter 046.
-  - *Headers that carry data.* `Idempotency-Key`, `Content-Type`, `Accept`, `If-None-Match` — read via `request.headers.get(...)` and parsed against a `HeadersSchema` when the handler relies on their shape. Most handlers parse one or two headers explicitly, not all of them.
-  - *Body.* `await request.json()` for typed JSON, `await request.text()` for the raw bytes a webhook signature is computed over, `await request.formData()` for multipart uploads, `request.body` for a `ReadableStream` when streaming earns its weight. Each output feeds a `BodySchema.safeParse(...)`.
-- **The parse-order rule.** Path params first (cheapest), headers next (auth / content type / idempotency), query, body — fail fast on the cheapest check that disqualifies the request. A malformed UUID in the path returns 400 without ever reading the body. The senior anchor: the handler's first ten lines are four `safeParse` calls and four short-circuits — no business logic until everything parses.
-- **The response schemas — typed success bodies.** The success response is a JSON shape the schema declares: `const InvoiceResponse = z.object({ id: z.uuid(), total: z.number(), status: z.enum(['draft', 'sent', 'paid']) })`. The handler returns `NextResponse.json(InvoiceResponse.parse(data))` — the schema *validates the response on the way out*, not just for documentation, because a senior code review catches "the handler returns a field the schema doesn't declare" before deploy, and `parse` is how. For internal-only endpoints the cost may not justify the runtime cost; the senior reach is "validate on the way out for public APIs, type the return for internal-only handlers."
-- **The error shape — RFC 9457 Problem Details.** Section lesson 2 of chapter 015 introduced the wire format; this lesson makes it operational. Every error response is `application/problem+json` with `{ type, title, status, detail, instance, ...extensions }`. The senior reach: a `problem(status, code, options?)` helper in `/lib/api` that takes a status code and an internal error code, returns a `NextResponse` with the right `Content-Type` and a typed body. The `type` field is a stable URI (e.g., `https://example.com/problems/validation-failed`) the docs page anchors. The `errors` extension carries `fieldErrors` for 422 validation failures — same `fieldErrors` shape the Server Action's Result returns, so the form-mapping helper from lesson 3 of chapter 049 still works.
-- **Mapping `safeParse` failures to 422.** When the body parse fails, the handler returns 422 (Unprocessable Entity) with a Problem Details body whose `errors` field carries the Zod issue tree flattened to per-field messages. The senior reach: a `parseOr422(schema, input)` helper that returns the parsed value or short-circuits to the Problem response — the same one-liner at the top of every handler. The shape stays consistent across handlers; clients write one error renderer.
-- **The action-vs-handler return-shape table, named once.** Server Action returns `Result` (an object the React form layer reads). Route handler returns `Response` (an HTTP message the client decodes). The action's `Result` body and the handler's success/Problem JSON can share field names (`fieldErrors`, `userMessage`, `code`) so the form layer's error renderer is reusable when a route handler is the caller. Named here; the rule is "stay HTTP-native at the handler boundary, stay JS-native at the action boundary, share the field vocabulary in the middle."
-- **One schema, two callers — when the same operation has both.** A create-invoice operation that needs both a form-driven Server Action and a public API endpoint shares one `CreateInvoiceInput` schema (defined in `/lib/schemas`) and one pure mutator (defined in `/lib/invoices`). The action parses `FormData`, calls the mutator, returns `Result`. The route handler parses JSON body, calls the mutator, returns `Response`. The pure function in `/lib` is Architectural Principle #3 made operational — the seam is the wire format, the business logic is shared. The senior anchor: any time a handler and an action would duplicate logic, the shared mutator is the right reach.
-- **Type inference on the way back.** `type InvoiceResponse = z.infer<typeof InvoiceResponse>` is the type external clients see (and the type the OpenAPI generator picks up). The internal call site uses the same type. Same one-source-of-truth principle as chapter 046, applied to the wire boundary.
-- **Schemas-as-OpenAPI, named once.** When the API leaves the codebase (public REST, partner integrations, a generated SDK), `next-openapi-gen` or the `@hono/zod-openapi` route inside a `route.ts` (the Hono-inside-Next pattern) generates the OpenAPI chapter 014 document from the same Zod schemas. The reach is gated on "is this API published externally" — most SaaS products don't ship a public API in year one, and a hand-written README on `/docs` covers the few internal-mobile or partner endpoints they do ship. Named once; the chapter does not build it.
-- **The contract changelog discipline.** Adding a required field to a request schema breaks every existing client. The senior reach: required fields are added behind a version bump (a new path or a `X-Api-Version` header), or shipped as optional first. Removing fields from the response is the breaking change clients notice silently. Named once; full versioning treatment is the published-API track.
-- **Content negotiation, in the senior subset.** `request.headers.get('accept')` parsed against the supported MIME types — `application/json` is the default response, `text/csv` is the export reach, `application/problem+json` is the error reach. Status 406 (Not Acceptable) when the client demands a type the handler can't produce. Named once; most SaaS handlers serve JSON only and the negotiation is a one-line guard.
-- **Watch-outs.** Skipping `safeParse` on the body because "TypeScript already says it's typed" — the type comes from the schema, not from the wire, the body is `unknown` until parsed, reject in review; using `parse` (throws) on user input — `safeParse` is the wire-boundary reflex, `parse` is for internal trusted data; declaring the request schema in the handler file (private to the route) and inventing a parallel type in the client — the schema lives in `/lib/schemas` and both sides import it (mirror of lesson 3 of chapter 049's discipline); returning an arbitrary JSON shape on error instead of Problem Details — the consistent error renderer breaks, the API loses its contract; returning the same Problem `type` URI for different error classes — the URI is the error code, one URI per class, the `detail` carries the instance-specific message; coercing query strings without `safeParse` and letting `z.coerce.number()` swallow a malformed value as `NaN` — the schema's `.refine` catches it; awaiting `params` and then forgetting it's a `Promise` because TypeScript still inferred the shape under the hood — the runtime error is "Cannot use 'params.invoiceId' on a Promise"; mixing query and body for the same operation in the same handler (a PATCH that takes some fields from query, others from body) — pick one input source, the contract reads better.
+### Verify recipe mapped to "Done when"
 
-What this lesson does not cover:
+| Done-when clause | Verify step |
+| --- | --- |
+| Real-inbox arrival on the student's verified domain | At `/inspector/send-welcome`, set `recipientEmail` to the student's own monitored inbox (Gmail or Apple Mail), click "Send welcome". The success card shows the Resend send ID within ~2 seconds; the inbox shows the email within ~15 seconds. The `from` reads as the configured `EMAIL_FROM` (display name + `noreply@send.<student-domain>`); the `reply_to` lands at the configured monitored mailbox. |
+| DKIM=pass and SPF=pass in headers | In Gmail: "Show original" → confirm `SPF: PASS` and `DKIM: PASS` for `send.<student-domain>`, plus `DMARC: PASS`. Re-run the test send to `check-auth@verifier.port25.com` and read the auto-reply's parsed-headers section. |
+| React Email template renders | The body of the inbox email matches the preview (the heading, the welcome text, the verify CTA button). Mobile view (open on phone) wraps cleanly at 375 px. Dark mode (toggle in Apple Mail or read on Gmail Android) renders without inverted-logo nightmares. |
+| Plain-text fallback present | In Gmail: "Show original" → confirm the message has both `text/plain` and `text/html` MIME parts. The text part contains the heading, the welcome paragraph, and the verify URL as `Verify your email [https://...]`. |
+| Suppression path returns `{ ok: false, reason: 'suppressed' }` without calling Resend | At `/inspector/send-welcome`, set `recipientEmail` to the seeded `suppressed@<student-domain>`, click "Send welcome". The suppression card shows; the Resend dashboard shows NO new send for that recipient. Add a temporary `console.log('calling resend')` before the SDK call and confirm it never fires on this path. Remove the log. |
+| Idempotency key prevents double-sends on retry | Click "Send welcome" to a fresh inbox; immediately click again with the same recipient. The Resend dashboard shows the second call returning the *same* send ID (the SDK retains the idempotency key for 24 hours); the inbox shows exactly one email. |
+| Env validation fails closed | Comment out `RESEND_API_KEY` in `.env.local`; run `pnpm dev`. The server fails to boot with the Zod env error — the `@t3-oss/env-nextjs` schema rejects the missing variable. Restore the value. |
 
-- HTTP status code semantics and idempotency (lesson 3 of chapter 050).
-- Filter/sort/search authoring in the query schema (lesson 4 of chapter 050).
-- Authorization wrapping (lesson 3 of chapter 061).
-- Webhook signature verification on the raw body (Chapter 067).
-- The shadcn form's mapping of Problem `errors` back into RHF (lesson 3 of chapter 049 already covered the field-error shape).
-- The OpenAPI generator and the published-API track (named once).
+### Concepts demonstrated → owning lesson
 
-Estimated student time: 45 to 55 minutes. Pattern archetype. The lesson the project (chapter 051 is the form CRUD; route handlers reappear in 11 / 12 / 16) writes back to for the contract discipline.
-
----
-
-## Lesson 3 — Methods, status codes, and idempotency
-
-Method-by-intent (GET/POST/PUT/PATCH/DELETE), the status-code table a reviewer enforces (400 vs. 422, 404 over 403 on tenant scope, 409 on conflict), and operationalizing the `Idempotency-Key` header.
-
-Topics to cover:
-
-- **The senior question.** Chapter 015 named the methods, status codes, and the idempotency contract from the *consumer* side — what to expect when calling someone else's API. Now the student is the author. Which method does a "soft-delete this invoice" endpoint use? Which status code does a "create-or-update" idempotent upsert return? Which response body does a 202 include? The lesson takes the chapter 015 vocabulary and turns it into the authoring discipline a senior reviewer enforces on every PR that adds a handler.
-- **Method selection, by intent.**
-  - *GET* — safe, idempotent, cacheable. Reading data, search, listing. No side effects, period. Repeat-call with the same query returns the same data (modulo concurrent writes). The senior reflex: every handler that "lists" or "fetches" is a GET.
-  - *POST* — non-idempotent by default. Creating a resource the server names (`POST /invoices` returns the new `id`), invoking a non-idempotent operation (sending an email, charging a card). Repeat-call may produce duplicates unless the handler enforces idempotency itself (see below). The senior reflex: every "create" without a known ID is POST.
-  - *PUT* — idempotent full replacement. `PUT /users/me/profile` with the full profile body. The handler replaces the resource. Repeat-call with the same body lands the same state. The senior reach: idempotent updates where the client provides the full new shape.
-  - *PATCH* — partial update. `PATCH /invoices/[id]` with `{ status: 'sent' }`. Idempotent *only* if the change is itself idempotent (setting a status to a fixed value is; incrementing a counter is not). The senior reach for "modify these specific fields."
-  - *DELETE* — idempotent removal. `DELETE /invoices/[id]` — first call deletes, second call returns 404 (or 204 if the senior reach is "report the desired end state, not the operation"). The 200/204 vs. 404 decision is a contract choice named once.
-- **The "POST is not for updates" anchor.** Many handlers use POST for everything because the spec is loose enough to permit it. The senior posture: methods are documentation — the method is the first signal of intent, the URL is the second. A `POST /invoices/[id]/cancel` action endpoint is correct *because* cancel is a non-idempotent intent (sends an email, fires a webhook). A `POST /invoices/[id]/status` carrying `{ status: 'cancelled' }` is wrong — it's a PATCH wearing a POST. The reviewer rejects.
-- **Status code selection, by outcome.**
-  - *200 OK* — the request succeeded and a body is returned. GET reads, mutations that return the updated resource.
-  - *201 Created* — POST that created a resource. Include a `Location` header pointing at the new resource's URL.
-  - *202 Accepted* — the work has been accepted but not completed (queued for a background job, Chapter 070). The body includes a poll URL or a job ID.
-  - *204 No Content* — the request succeeded and there's no body. DELETE, some PATCH operations. The senior call: 200 with the updated resource is usually better than 204 — the client doesn't have to re-fetch.
-  - *301 / 308* — permanent redirect (308 preserves method, 301 historically did not). For canonical URL moves.
-  - *303 See Other* — POST-redirect-GET pattern; the redirect target is always a GET regardless of the original method. The senior reach for "the form submitted, navigate the browser to the new resource."
-  - *307 Temporary Redirect* — preserves method. Rare in SaaS.
-  - *400 Bad Request* — the request is malformed (syntax error, missing required body). Generic "I can't even understand this."
-  - *401 Unauthorized* — no valid credentials. The handler couldn't identify the caller. The auth wrapper from lesson 3 of chapter 061 returns this.
-  - *403 Forbidden* — the caller is identified but lacks permission. The role check fails. The lesson 3 of chapter 061 wrapper returns this.
-  - *404 Not Found* — the resource doesn't exist, *or* the caller doesn't have access (the senior posture: prefer 404 over 403 for resources scoped to a tenant, to avoid leaking existence; named once).
-  - *409 Conflict* — the request collides with the resource's current state (a duplicate unique key, an optimistic-concurrency mismatch from lesson 3 of chapter 065, a re-invite where one is pending from lesson 3 of chapter 062). The body's Problem Details carries the conflict reason.
-  - *410 Gone* — the resource existed and has been permanently removed. Rare; used for sunset URLs.
-  - *413 Content Too Large* — the body exceeds the platform limit (1 MB for the action seam; route handlers can stream past this).
-  - *415 Unsupported Media Type* — the `Content-Type` is wrong (sending `text/plain` to a JSON-only endpoint).
-  - *422 Unprocessable Entity* — the request is syntactically valid JSON but fails the Zod schema (field-level validation errors). The 2026 senior reach for "validation failed at the schema layer" — 400 for "the JSON didn't parse," 422 for "the JSON parsed but the schema rejected the shape."
-  - *429 Too Many Requests* — rate limit exceeded. The `Retry-After` header carries the wait time. Chapter 085's security baseline owns the rate-limit wiring; the response shape is set here.
-  - *500 Internal Server Error* — uncaught exception. The senior reach: the global error boundary catches and returns this with a Problem body that does *not* leak the stack trace; the trace goes to the observability sink (Chapter 14).
-  - *502 / 503 / 504* — upstream failure / temporarily unavailable / gateway timeout. The handler propagates these when an upstream call (Stripe, Resend, the AI provider) fails — the body carries the upstream's identity so the client doesn't blame the wrong service. Named once.
-- **The 422 vs. 400 line.** The 2026 senior anchor: 400 is "the wire payload is malformed" (truncated JSON, wrong content type); 422 is "the wire payload parsed but failed validation." A schema's `safeParse` failure returns 422 with the per-field error list. Some teams collapse both into 400 — name the team convention once and stay consistent.
-- **The 404 vs. 403 line on tenant-scoped resources.** A request for `/api/invoices/[id]` where `id` exists but belongs to another tenant returns *404*, not 403. Returning 403 leaks the resource's existence. The senior reach: tenant-scope the read first, return 404 if the row doesn't match the scope. Named once; the `tenantDb` helper from lesson 5 of chapter 063 enforces this structurally.
-- **Idempotency operationalized.** A POST endpoint that creates a charge, sends an email, fires a webhook, or otherwise has a non-idempotent side effect must accept an `Idempotency-Key` request header (a client-generated UUID v4). The handler hashes the key with the route and the authenticated tenant, looks up the dedup row in `processed_requests`, and either returns the cached response or claims the key and proceeds. The `INSERT ... ON CONFLICT DO NOTHING` claim primitive — same shape lesson 2 of chapter 067 uses for webhooks — is named here; the full transaction wrapping is Chapter 067. The senior anchor for 2026: every public POST that has a side effect accepts `Idempotency-Key`; the form-driven Server Actions use a form-supplied UUID as the equivalent (foreshadowed in lesson 5 of chapter 047).
-- **The `Idempotency-Key` lifetime.** The dedup row expires after a tunable window (24 hours by default — the Stripe convention). After expiry, replay produces a new row. Named once; the cleanup job is Chapter 070 territory.
-- **The conditional-request surface, named once.** `If-Match` and `If-None-Match` headers carrying the resource's `ETag` enable optimistic concurrency at the HTTP layer (412 Precondition Failed on mismatch). The lesson 3 of chapter 065 `version` column is the in-app version of the same pattern, surfaced through the Result's 409. The senior reach: the route handler can read `If-Match` and translate to the same `version` precondition; the form-driven action uses the Result shape directly. Named once.
-- **Cache headers, the operational reach.** GET handlers that serve public, infrequently-changing data set `Cache-Control: public, s-maxage=60, stale-while-revalidate=300` — the CDN caches the response, the origin sees one request per minute per region. Private/per-user data sets `Cache-Control: private` or omits the header (the default). `ETag` and `Last-Modified` enable 304 Not Modified responses. The senior anchor for SaaS: most authenticated handlers don't cache; the few public-read endpoints opt in deliberately. Named here, not built (full caching surface is Chapter 036 / Chapter 14).
-- **The `Allow` header on 405.** When a route exports `GET` and `POST` and a client sends `DELETE`, Next.js returns 405 Method Not Allowed automatically with an `Allow: GET, POST` header. Named once; the convention is "let the framework return 405, don't hand-write it."
-- **`Location` and the create-redirect pattern.** A 201 from a `POST /invoices` returns `Location: /api/invoices/[newId]` so the client knows where to fetch the resource. The browser-driven equivalent (a 303 redirect to the new resource's UI page) is rare with React 19's Server Actions but earns its weight for non-React POST callers.
-- **Watch-outs.** Returning 200 with `{ error: ... }` in the body instead of a 4xx status — the protocol is the contract, the body is the explanation; clients that read only the status get the wrong picture; using POST for an update because the client library "doesn't support PATCH" — fix the client, the method is the documentation; mapping every error to 400 — 422 for validation, 409 for conflict, 401 vs. 403 for auth, 404 for not-found-or-not-authorized on tenant data, 429 for rate limit; the reviewer reads the status code first; returning 204 from a mutation and forcing the client to re-fetch the resource — return 200 with the updated row body when the client cares about the new state; treating `Idempotency-Key` as optional when the operation has external side effects — the platform retries the call, two charges land, name the dedup discipline on every charge/send/webhook-fire endpoint; setting `Cache-Control: public` on an endpoint that returns per-user data — the CDN caches and serves another user's response, the privacy bug bites in production; emitting `Retry-After` as a date instead of seconds — the seconds-form is the 2026 convention because clients parse it without timezone bugs; returning 500 with the stack trace in the body — leaks server internals, the senior reach is a Problem body with a `correlationId` the support team looks up in observability.
-
-What this lesson does not cover:
-
-- The Zod schema authoring for the request and response (lesson 2 of chapter 050).
-- Filter/sort/search query authoring (lesson 4 of chapter 050).
-- Rate-limit wiring (Chapter 085).
-- Webhook signature verification and the outer-transaction dedup (Chapter 067).
-- Background-job 202 patterns end-to-end (Chapter 070).
-- Tenant scoping mechanics — the `tenantDb` helper (lesson 5 of chapter 063).
-- HTTP caching at the CDN edge (Chapter 036 and 14).
-
-Estimated student time: 50 to 60 minutes. Decision archetype. The lesson runs long because every status code and method choice maps to a senior review comment; the student leaves with the table the reviewer enforces.
+- Resend account, verified domain, API key shapes (full-access vs. sending-only) — lesson 1 of chapter 048.
+- SPF / DKIM / DMARC records, the alignment rule, the 2026 enforcement bar — lesson 2 of chapter 048.
+- Transactional / marketing subdomain split, per-purpose `from` local parts, the `reply_to` pattern — lesson 3 of chapter 048.
+- `email_suppressions` schema, the read-at-the-wrapper discipline, the `bypassSuppression` carve-out, the `reason`-aware bypass — lesson 4 of chapter 048.
+- React Email primitives, the `<Tailwind>` component, `<Preview>` as the preheader, `<Img>` width/height discipline, the 102 KB clipping budget — lesson 1 of chapter 049.
+- `pnpm email dev` iteration loop, the viewport + dark-mode toggles, the test-send as the verification gate — lesson 2 of chapter 049.
+- Plain-text fallback via `render({ plainText: true })`, the email accessibility checklist, the dark-mode three-tier posture and head meta plumbing — lesson 3 of chapter 049.
+- Architectural Principle #3 (pure `/lib`, side effects at named boundaries — `lib/email.ts` is the named seam) — lesson 4 of chapter 043 (the principle), lesson 7 of chapter 064 (the do-not-wrap rule for Resend / Trigger.dev / R2).
+- Architectural Principle #5 (use the framework's conventions — don't invent a generic email adapter over Resend) — lesson 7 of chapter 064.
+- The Server Action five-seam shape and the canonical `Result<T>` — lesson 2 of chapter 043, lesson 3 of chapter 043.
+- Zod `z.email()`, `Object.fromEntries(formData)` + `safeParse`, `z.treeifyError` — lesson 2 of chapter 042, lesson 6 of chapter 042, lesson 5 of chapter 042.
+- `@t3-oss/env-nextjs` env validation, fail-closed at the boundary — chapter 030 (named), chapter 006 (the canonical `env.ts` shape).
+- The idempotency-key reflex on transactional sends — lesson 1 of chapter 048 (named), chapter 063 (generalized).
+- `useActionState` + the action prop on the form, the `<SubmitButton>` with `useFormStatus` — lesson 3 of chapter 044, lesson 4 of chapter 044.
 
 ---
 
-## Lesson 4 — List endpoints: filter, sort, search, paginate
+## Lesson 1 — Brief and scope cuts
 
-The query-schema shape, the prefix-form sort convention, opaque base64 cursors with `{ data, pageInfo }` envelope, and the shared `where`-builder pure function consumed by both the handler and the in-app Server Component.
+Frames the welcome send as the canonical transactional surface every later unit reuses, states the six "Done when" clauses, names the scope cuts, and calls out the cheap-real-domain prerequisite.
 
-Topics to cover:
+Goals:
 
-- **The senior question.** A GET handler serves a list — `/api/invoices?status=sent&sort=-issuedAt&q=acme&cursor=...&limit=20`. The query string is the input surface. What does the schema look like, how does the handler translate the parsed query into a Drizzle query (Chapter 042 territory), and where is the line between the API's surface and what the URL-state list view from Chapter 064 owns? The lesson teaches the query-schema discipline, the four canonical query dimensions (filter, sort, search, paginate), the Drizzle composition shape, and the cursor pattern at the wire level.
-- **The query-schema shape.** A `ListInvoicesQuery` Zod schema declares every legal parameter:
-  - Filters as `z.enum([...]).optional()` per filterable column, or `z.array(z.enum([...]))` for multi-value filters (parsed from `?status=sent&status=overdue` repeats or `?status=sent,overdue` CSV — pick one convention, the senior reach is the repeated-key form).
-  - Sort as a single string the schema parses into a `{ field, direction }` shape (`?sort=-issuedAt` parses to `{ field: 'issuedAt', direction: 'desc' }`).
-  - Search as `z.string().min(1).max(100).optional()` — a free-text query the handler routes to a full-text search column or an ILIKE depending on the column's index (Chapter 042 owns the SQL side).
-  - Paginate as `cursor` (an opaque base64-encoded string the handler decodes) and `limit` (a `z.coerce.number().int().positive().max(100).default(20)`).
-- **The `searchParams` parse — the same coercion story.** `request.nextUrl.searchParams` returns a `URLSearchParams` instance. Convert to a plain object with `Object.fromEntries(searchParams)` for single-valued params, or use `searchParams.getAll('key')` per multi-valued key. The Zod schema's `z.coerce` builders handle the string-to-number / string-to-boolean / string-to-date conversions from lesson 6 of chapter 046; the discipline is the same as the `FormData` boundary because both arrive as strings only.
-- **The sort syntax convention.** Three forms in the wild:
-  - *Prefix form.* `?sort=-issuedAt` for descending, `?sort=issuedAt` for ascending. The senior reach for single-column sort — shortest, readable in the URL bar.
-  - *Field+order pair.* `?sortBy=issuedAt&sortOrder=desc`. Verbose; the right reach when the handler needs a typed enum per dimension.
-  - *Comma-separated multi-sort.* `?sort=-issuedAt,total` for two-key sort. The senior reach when multi-column sort earns its weight (rare in lists, common in reports).
-  Pick one per project. The chapter's project (chapter 051 / chapter 066) uses the prefix form.
-- **The cursor pattern at the wire boundary.** `cursor` is an opaque token the client treats as a string and the server decodes. The shape: base64url-encoded JSON of `{ id, sortKey }` for keyset pagination on `(sortKey, id)` (the Chapter 045 thread). The handler decodes, parses the inner JSON with a Zod schema, and translates to a SQL `WHERE (sortKey, id) < ($cursor.sortKey, $cursor.id)` predicate. The senior reach: never expose the raw cursor JSON to the client — the base64 wrapper signals opacity and discourages clients from constructing cursors by hand. Named here; the full keyset SQL is Chapter 045.
-- **The response envelope for paginated lists.** `{ data: Invoice[], pageInfo: { nextCursor: string | null, hasMore: boolean } }`. The senior reach: a top-level envelope, not a bare array, because future fields (total counts, applied-filter echo, search-result-rank metadata) land in the envelope without breaking the contract. The naked-array response that the v1 ships and v2 has to break is the failure mode; envelope from day one.
-- **The translate-to-Drizzle shape.** The handler's body, in five lines after the parse: build a `where` from the parsed filters (`and(eq(invoices.tenantId, ctx.orgId), inArray(invoices.status, parsed.status ?? []))`), an `orderBy` from the parsed sort (`parsed.sort.direction === 'desc' ? desc(column) : asc(column)`), a `limit` of `parsed.limit + 1` (read one extra to detect "has more"), a cursor predicate from `parsed.cursor`. The senior reach: the `where` builder is a pure function in `/lib/invoices/list-query.ts` returning the Drizzle condition tree — the route handler imports it, the Server Component that renders the same list (Chapter 064) imports the same function. Architectural Principle #3 again; the shared pure function is the source.
-- **Search — full-text vs. ILIKE.** Quick reach for free-text search:
-  - *ILIKE on a small searchable column.* `WHERE name ILIKE '%' || $q || '%'` with a trigram index (GIN indexes for `tsvector` / `jsonb` are introduced in lesson 1 of chapter 043; trigram GIN specifically rides on the `pg_trgm` extension named at recognition level in lesson 8 of chapter 042, which the worked example here assumes is available). The senior default for "search by name" on a few-thousand-row table.
-  - *Postgres FTS.* `WHERE to_tsvector('english', name || ' ' || description) @@ plainto_tsquery('english', $q)` with a stored generated column. The reach when the searchable text spans columns or the table is large.
-  - *External search.* Algolia, Typesense, Meilisearch — out of scope for the chapter, named once as the trigger past Postgres FTS (Chapter 16 may name it).
-  The route handler's schema sees `q` as a string; the SQL layer picks the right operator. Decoupled.
-- **Filter normalization.** A `?status=sent&status=sent` repeat collapses to a single value; the schema's `z.array(z.string()).transform(arr => [...new Set(arr)])` handles dedup. Empty-string filter values get treated as "not specified," not as "match empty" — the schema's preprocessing drops empty strings before the enum check. The senior anchor: the URL is the user's surface, defensive parsing is the handler's job.
-- **The "include" / field-selection knob, named once.** Some APIs accept `?include=lineItems,customer` to expand related resources or `?fields=id,total,status` to project a subset. The senior call for 2026: avoid both unless the API is published externally and pays the contract complexity off — internal handlers serve the canonical shape, the client takes what it needs from the typed response. Named once; default is "fixed response shape per endpoint."
-- **The handler and the URL-state list view, complementary.** Chapter 064's URL-state pattern is for *in-app* lists where the user's URL bar is the state and a Server Component reads the same `searchParams`. The route handler is for *external* callers (mobile, partners, BFF) or for the rare in-app endpoint a Client Component fetches because the Server Component can't (Chapter 080's TanStack Query trigger). The shared `where`-builder pure function (above) makes both surfaces consistent. Named here; the chapter's project (chapter 051) uses the action seam for mutations and reads directly from Server Components; chapter 066 lifts the URL state; the route-handler list lands in chapter 081 when TanStack Query is the caller.
-- **The pagination type, restated.** Cursor by default (stable across writes, doesn't double-count when rows are added), offset when the dataset is small and the user expects "page 3 of 7" affordances (admin tables). The senior reach: cursor is the API default, offset is opt-in for the affordances. Chapter 064 owns the in-app reflex; this lesson sets it for the wire boundary.
-- **`limit` ceiling.** The schema's `.max(100)` is the contract — clients can't request a thousand rows per page. The senior anchor: every list endpoint has a hard ceiling; without it the first careless client request brings the database down. The default is 20, the ceiling is 100, both are part of the API contract.
-- **Empty-result vs. error.** A list with no matches returns 200 with `{ data: [], pageInfo: { nextCursor: null, hasMore: false } }`. Returning 404 for "no results" is wrong — the resource is the list, not the items. Named once.
-- **The `count` decision.** Returning a total count for "showing 1–20 of 1,247" pagination affordances triggers a second query (`SELECT COUNT(*)`) that scans the table — expensive on large tables. The senior reach: omit `total` from the envelope by default, opt in via `?withCount=1` for admin lists; or return an approximate count via Postgres's `pg_class.reltuples` for very large tables. Named once.
-- **Watch-outs.** Parsing `searchParams` with `Object.fromEntries` when a key repeats — only the last value survives, use `searchParams.getAll('key')` for multi-valued; declaring `z.coerce.number()` on `limit` without `.int().positive().max(...)` — a client sends `?limit=999999` and the handler returns a million rows, name the ceiling; using offset pagination on a list that gets writes during scroll — rows duplicate or vanish across pages, cursor is the default; exposing the cursor's inner JSON as URL-readable — clients build cursors by hand, the contract calcifies, base64-wrap; sorting by a column without an index — the query scans the whole table, every list page slows linearly, the senior reflex is "every sortable column gets an index covering `(tenant, sortColumn, id)`"; allowing arbitrary fields in `?sort` — the enum-allowlist in the schema is the senior reach, not a free string; treating "empty filter" as "match nothing" — empty means "not specified," normalize in the schema; mixing cursor and offset in the same endpoint contract — clients can't tell which is canonical, pick one per endpoint; building the SQL `where` in the route handler inline and duplicating it in the Server Component — the pure function in `/lib` is the source.
+- Frame the send as the canonical SaaS transactional surface: every later unit (auth verification email in Unit 8, invitation email in Unit 9, billing receipts in Unit 11, the notification dispatcher in Unit 13) reuses this exact wrapper, this exact suppression discipline, and this exact `Result` shape. The chapter ships one Server Action calling one template through one wrapper — the structural floor that holds for every send the student will ever wire.
+- State the "Done when" six clauses in one paragraph: real-inbox arrival on the student's verified domain, DKIM=pass and SPF=pass in headers, the React Email template renders (desktop + mobile + dark), the plain-text fallback is present, the suppression path short-circuits without calling Resend, the idempotency key prevents double-sends on retry.
+- Name the scope cuts: no webhook handler for bounces and complaints (lesson 5 of chapter 063 — the *write* side of `email_suppressions`), no batch sends (Unit 13 — `/emails/batch`), no marketing email (Resend Broadcasts is out of scope, the project is transactional only), no per-tenant custom-domain sending (named once in lesson 3 of chapter 048, dropped), no rate-limiter on the action (Chapter 075 wraps the auth surface; the inspector button is rate-limit-immune by being internal), no audit log on the send (Unit 9 owns the `audit_logs` write), no React Hook Form (`useActionState` owns the form state — chapter 044 chapter discipline).
+- Set the senior payoff: the wrapper shape installed here is the chokepoint for every email the SaaS will send. Adding a new send is "write the template, write the action, call `sendEmail`" — never "remember to check suppressions, remember to set the idempotency key, remember to default the `from`." The chokepoint is the discipline.
+- The prerequisite call-out: this chapter requires a cheap real domain. Resend's `onboarding@resend.dev` sandbox sender is explicitly out — deliverability is the point, and the sandbox sender lands in the spam folder for most providers. Namecheap / Porkbun / Cloudflare Registrar cost $8–12 per year for a `.com`. The student that already has a personal domain (a portfolio site, a side-project domain) uses a subdomain on it (`send.<existing>.<tld>`). The setup is one-time; later units (auth, invites, billing) reuse the same domain and key.
+- Show the end UX: one screenshot strip of `/inspector/send-welcome` → success card with the Resend ID → the Gmail inbox showing the rendered template → the Gmail "Show original" headers panel with the SPF/DKIM/DMARC pass lines.
+- Link the starter via `degit` from the `react-saas-course-projects` monorepo.
 
-What this lesson does not cover:
+Senior calls and watch-outs:
 
-- The keyset-pagination SQL (Chapter 045).
-- The trigram index and Postgres FTS authoring (Chapter 044).
-- The URL-state in-app list view with Server Components (Chapter 064).
-- The Client Component fetcher (TanStack Query, Chapter 080).
-- The optimistic-concurrency surface for updates (lesson 3 of chapter 065).
-- Tenant scoping at the database layer (lesson 5 of chapter 063).
-- The OpenAPI generation of the query schema (named once in lesson 2 of chapter 050).
+- The `onboarding@resend.dev` sandbox sender is forbidden in this project. Reaching for it to skip the DNS step trains a bad reputation (Resend's shared sandbox is widely deny-listed for inbox placement) and means the verify step can't prove DKIM-pass on the student's domain. The point of the chapter is to land deliverability *on the student's own domain*.
+- `lib/email.ts` is the chokepoint. Reaching for `resend.emails.send(...)` from anywhere except `lib/email.ts` is the structural smell — Unit 8's verification email, Unit 9's invitation email, Unit 11's billing receipt, Unit 13's notification dispatcher all go through this one function.
+- The Resend client is *not* wrapped in a generic `EmailProvider` interface for "future provider swap." The lesson 7 of chapter 064 rule: Resend, Trigger.dev, R2 are not wrapped; the swap cost doesn't justify the abstraction tax. The wrapper is a *convenience* layer (suppression + defaults + `Result` shape), not an *abstraction* layer.
 
-Estimated student time: 45 to 55 minutes. Mechanics archetype with a pattern thread (the shared `where`-builder pure function). The lesson the in-app list view chapter (chapter 064) references back to.
+Codebase state at entry: empty working directory.
+Codebase state at exit: starter cloned, `docker compose up -d` running Postgres, `pnpm install` clean, `pnpm db:migrate && pnpm db:seed` populated (the seed includes one pre-suppressed `suppressed@<student-placeholder>` row), `pnpm dev` shows `/inspector/send-welcome` with the button rendered. Clicking the button errors (`sendWelcomeEmail` is empty) — that's the runnable starting point.
+
+Estimated student time: 10 to 15 minutes.
 
 ---
 
-## Lesson 5 — Quizz
+## Lesson 2 — Starter tour and the verified-domain ceremony
 
-Top 10 topics to quiz:
+Walks the provided file tree, then re-runs the Resend + SPF/DKIM/DMARC setup against the student's own registrar so the transactional subdomain is `Verified` before any code is written.
 
-- The five triggers that flip from Server Action to route handler — non-React callers, webhooks, GETs, streaming/large bodies, custom HTTP semantics; the rule for everything else (stay with the action).
-- The `route.ts` shape — HTTP-method-named exports, the `NextRequest` and `{ params }` (now a `Promise` in Next.js 16) signature, the auto-`OPTIONS`, the dynamic-by-default caching, the no-coexistence with `page.tsx` at the same segment.
-- The parse-order rule — path params, headers, query, body; cheapest checks first; `safeParse` (not `parse`) at every wire boundary; the 422 Problem response on failure.
-- The Zod request/response contract — `BodySchema`, `QuerySchema`, `ParamsSchema`, `HeadersSchema` for input; typed response schemas validated on the way out for public APIs; the schema lives in `/lib/schemas` and both action and handler import the same one.
-- RFC 9457 Problem Details — `application/problem+json`, the `{ type, title, status, detail, instance }` fields, the `errors` extension carrying `fieldErrors`, the one-helper-for-every-error-response discipline.
-- Method-by-intent — GET safe and idempotent, POST non-idempotent and create-or-action, PUT idempotent full replace, PATCH partial, DELETE idempotent remove; the "POST is not for updates" anchor.
-- Status code selection — 200 vs. 201 vs. 202 vs. 204; 400 vs. 422 for malformed-vs-validation; 401 vs. 403 vs. 404 for auth-and-tenant; 409 for conflicts; 429 for rate-limit; 500 hides the trace.
-- The `Idempotency-Key` header for POST endpoints with side effects — client-generated UUID, hashed with route and tenant, claimed via `INSERT ... ON CONFLICT DO NOTHING` on `processed_requests`, returns cached response on replay; the 24-hour dedup window.
-- The 404-not-403 on tenant-scoped resources — never leak existence; scope the read first.
-- Query-string list pattern — filter (enum, multi-value), sort (prefix-form), search (ILIKE / FTS / external), cursor pagination (base64-wrapped opaque token, `limit` with hard ceiling, `{ data, pageInfo: { nextCursor, hasMore } }` envelope); the shared `where`-builder pure function consumed by the route handler and the in-app Server Component.
+Goals:
+
+- Walk the file tree, separating provided from stub. Linger on three areas:
+  - **`lib/env.ts`** — the existing `@t3-oss/env-nextjs` schema; the TODO comment naming the three new entries. Students read the existing entries (`DATABASE_URL` and friends from chapter 041) and add the email block in lesson 3 of chapter 050.
+  - **`db/schema.ts` + `db/seed.ts`** — confirm the `email_suppressions` table exists (carry-in from lesson 4 of chapter 048 if the project repo carries it; the starter applies the migration if not). The seed inserts one row at `suppressed@<student-domain-placeholder>`; the README explains the placeholder gets replaced with the student's actual transactional subdomain before `pnpm db:seed` runs.
+  - **`app/inspector/send-welcome/page.tsx` + `send-welcome-form.tsx`** — read them to lock in the form's `FormData` shape: `recipientEmail` and `firstName` are the two fields, the form posts to the student-written `sendWelcomeEmail` action. The result cards are wired against the three `Result` shapes the action will return.
+- Walk the Resend ceremony on the *student's own* domain — this re-runs lesson 1 of chapter 048 + lesson 2 of chapter 048 + lesson 3 of chapter 048 against the student's real registrar account:
+  - Create a Resend account if not already done; create one sending-only API key for `dev` and one for `production` (one key per environment from day one — lesson 1 of chapter 048's senior call).
+  - Add the sending subdomain (`send.<student>.<tld>`) at Resend; Resend publishes the SPF TXT, the DKIM TXT (selector `resend._domainkey`), and the optional MX record.
+  - At the registrar (Namecheap / Porkbun / Cloudflare), add the records exactly as Resend issued them. Watch-out: some registrars truncate long TXT values — the DKIM key must be the full string; some registrars want the host as `resend._domainkey` and some as `resend._domainkey.send` (relative vs. absolute), the chapter names both conventions and the student picks based on their registrar's UI.
+  - Wait for verification (typically minutes, up to 24 hours). The Resend dashboard's domain page flips to `Verified` when SPF and DKIM resolve.
+  - Publish the apex DMARC record at `_dmarc.<student>.<tld>`: `v=DMARC1; p=none; rua=mailto:dmarc-reports@<student>.<tld>;` — `p=none` is the starting policy (lesson 2 of chapter 048's progression). The aggregate-report mailbox can be the student's personal inbox for a side project; production teams use a parsing service.
+  - Confirm the verification by sending a test from Resend's dashboard "Send test email" feature to the student's personal inbox; in Gmail's "Show original" panel, confirm SPF=PASS, DKIM=PASS, DMARC=PASS. *This is the unblocking gate for the rest of the chapter* — if verification fails here, no later step works.
+- Read the provided `emails/components/EmailLayout.tsx` to lock in the brand-surface contract: it reads `env.NEXT_PUBLIC_APP_NAME`, renders a header band with the logo (the URL is in `EmailLayout`'s constants — the student can swap it for their own asset hosted on the marketing site or R2 once Unit 13b lands), and a footer with the legal address (a placeholder the student edits to their real address). The template the student writes in lesson 4 of chapter 050 wraps its body in `<EmailLayout>`.
+- Bring up the dev surface twice: `pnpm dev` for the Next.js app, `pnpm email dev --port 3001` for the React Email preview server (the lesson 2 of chapter 049 port-clash watch-out). Both run side-by-side for the rest of the chapter.
+
+Senior calls and watch-outs:
+
+- DKIM verification failure is almost always a TXT-record truncation or a wrong host. The chapter names this once: when verification stalls past 30 minutes, re-paste the DKIM value from Resend into the registrar field and compare against `dig TXT resend._domainkey.send.<domain> +short`.
+- The DMARC record at `_dmarc.<apex>` covers subdomains by inheritance (lesson 2 of chapter 048). Publishing DMARC at `_dmarc.send.<domain>` only and not at the apex leaves the apex unprotected.
+- The DMARC starts at `p=none` and `rua` reports flow for a week before the student bumps to `p=quarantine` (lesson 2 of chapter 048's progression). The chapter's project ships at `p=none`; the student schedules a calendar reminder to graduate the policy.
+- The student's seed-row email at `suppressed@send.<student>.<tld>` is *not* a real receiving address — the suppression read short-circuits before Resend would attempt delivery, so the address never needs to exist. The senior anchor: the suppression check happens at the application layer, the destination is irrelevant on that path.
+
+Codebase state at entry: starter cloned, Postgres up, seed run, dev servers boot but the action is empty.
+Codebase state at exit: the student's transactional subdomain is `Verified` in the Resend dashboard, SPF/DKIM/DMARC records are live (verified with a Resend-dashboard test send), the `RESEND_API_KEY` is in the student's password manager ready to drop into `.env.local`, both dev servers (`pnpm dev` and `pnpm email dev`) run side-by-side. No application code written yet.
+
+Estimated student time: 30 to 45 minutes (heavy on real-world DNS waits; the wait time is the dominant variable).
 
 ---
 
+## Lesson 3 — Env, suppression helper, and the send wrapper
+
+Adds the three Resend env entries, fills `lib/suppressions.ts` with the normalize-on-read `isSuppressed` helper, and builds the `lib/email.ts` wrapper as the single suppression-gated, idempotency-key-required send seam.
+
+Goals:
+
+- Fill the email block in `lib/env.ts`. Add to the `server` section of the existing `@t3-oss/env-nextjs` schema:
+  - `RESEND_API_KEY: z.string().min(1)` — fail-closed if missing.
+  - `EMAIL_FROM: z.string().min(1)` — the full `Display Name <local-part@send.domain.tld>` format. The student sets it in `.env.local` to their verified subdomain (e.g., `'Acme <noreply@send.acme.example>'`).
+  - `EMAIL_REPLY_TO: z.email()` — a monitored mailbox at the apex (`support@<student>.<tld>` or the student's personal inbox for the project).
+  Also add `NEXT_PUBLIC_APP_NAME: z.string().min(1)` and `NEXT_PUBLIC_APP_URL: z.url()` to the `client` section so `EmailLayout.tsx` can read the brand name and the action in lesson 4 of chapter 050 can compute the `verifyUrl` (Unit 8 reuses the same `NEXT_PUBLIC_APP_URL` when it swaps the placeholder for a real signed verification link). Confirm `pnpm dev` boots cleanly; comment out `RESEND_API_KEY` and confirm the boot fails with the Zod error (one verify step landed early).
+- Fill `lib/suppressions.ts`. Single named export:
+  - `isSuppressed(email: string, opts: { kind: 'transactional' | 'marketing' }): Promise<{ suppressed: boolean; reason?: string; bypassUntil?: Date }>`
+  - Normalize the email first (`email.trim().toLowerCase()`).
+  - Query `email_suppressions` by the normalized email — a single index lookup on the unique-on-email index from lesson 4 of chapter 048.
+  - No row → `{ suppressed: false }`.
+  - Row with `bypass_until > now()` → `{ suppressed: false, bypassUntil }` (the carve-out is active).
+  - Row with `reason === 'manual_unsubscribe'` and `kind === 'transactional'` → `{ suppressed: false, reason: 'manual_unsubscribe' }` (the transactional bypass from lesson 4 of chapter 048 — the user can't opt out of password resets).
+  - Otherwise → `{ suppressed: true, reason: row.reason }`.
+  Mark the helper `import 'server-only'` at the top — never bundle into a client component.
+- Fill `lib/email.ts`. The structure:
+  - `import 'server-only'` at the top, then the Resend client singleton: `const resend = new Resend(env.RESEND_API_KEY);` at module scope.
+  - The `SendInput` type and `sendEmail` function with the signature from the framing. Body:
+    1. Normalize `to` (lowercase, trim) — same rule as the suppression helper.
+    2. `const check = await isSuppressed(normalizedTo, { kind: 'transactional' });` — every transactional send through this wrapper passes `kind: 'transactional'` (the marketing send path lands in a hypothetical Unit 13 sibling; not built here).
+    3. If `check.suppressed && !bypassSuppression`, return `err('suppressed', 'This recipient is on the suppression list.')` — *do not call Resend*. Log the disposition (`console.info('[email] suppressed', { to: normalizedTo, reason: check.reason })`) so the operator sees it.
+    4. Otherwise: `const { data, error } = await resend.emails.send({ from: env.EMAIL_FROM, to: normalizedTo, replyTo: replyTo ?? env.EMAIL_REPLY_TO, subject, react }, { idempotencyKey });`.
+    5. On `error`, return `err('internal', 'Email send failed.')` (log the error structure). On `data`, return `ok({ id: data.id })`.
+- The `'suppressed'` code is added to the `Result.error.code` union in `lib/result.ts`. Update the type once (the file is provided; this is a one-line edit) so action callers can branch on `code === 'suppressed'` exhaustively.
+- Runnable proof: the inspector form still errors because the action is empty, but the helpers compile and the env loads. Test the suppression helper directly: add a temporary scratch route or run a one-liner via `pnpm tsx` that imports `isSuppressed` and prints the result for the seeded suppressed address (`true`) and an unrelated address (`false`). Confirm both, delete the scratch.
+
+Senior calls and watch-outs:
+
+- The Resend client is `new Resend(env.RESEND_API_KEY)` at module scope, not inside the function. The SDK is cheap to construct, but the module-scope singleton matches the lesson 1 of chapter 048 pattern and avoids re-allocating per-request. Watch-out: in tests the singleton needs to be mockable — Unit 18 (testing) names the MSW boundary; this chapter doesn't test the wrapper directly.
+- The suppression check is at the wrapper, never at callers. The temptation in lesson 4 of chapter 050 will be "I'll check it in the action too, just in case." The lesson 4 of chapter 048 rule: the wrapper is the chokepoint; double-checking is the smell. Trust the chokepoint.
+- `idempotencyKey` is a required parameter, not optional. Reaching to make it optional ("for ad-hoc sends") is the smell — every transactional send has a logical event to key on (verification token ID, password-reset request ID, invoice send-job ID, in this chapter's case `welcome:${userId}:${recipientEmail}`). The required-parameter shape forces the caller to think about replay safety.
+- The `from` defaults to `env.EMAIL_FROM`, never accepts an override at the call site. Allowing per-call `from` is how multi-tenant sends accidentally land on the wrong subdomain. The lesson 3 of chapter 048 rule made structural: the wrapper owns the sender identity.
+- Log structure matters. `console.info('[email] sent', { id, to, subject })` and `console.error('[email] failed', { to, error })` — the structured-log pattern Unit chapter 092 generalizes. Don't reach for `console.log(JSON.stringify(...))` or freehand strings.
+- The wrapper's signature returns the union from lesson 3 of chapter 043 — no throws on expected failures (suppression, validation, Resend errors). Action callers read the `ok` boolean, never wrap in try/catch.
+
+Codebase state at entry: env is missing the email block; `lib/email.ts` and `lib/suppressions.ts` are empty stubs; the action is empty.
+Codebase state at exit: env loads with the new variables, `isSuppressed` works against the seeded row, `sendEmail` compiles and is importable. The action is still empty (next lesson) but every supporting piece is in place. `pnpm dev` boots cleanly; the inspector page renders.
+
+Estimated student time: 30 to 40 minutes.
+
 ---
 
-> **Note (`revalidateTag` in Next.js 16):** the single-argument form `revalidateTag(tag)` is deprecated — every call must pass a `cacheLife` profile as the second argument (`'max'` is the senior default), e.g. `revalidateTag(tag, 'max')`.
+## Lesson 4 — Welcome template and the send action
+
+Writes the props-only `<WelcomeEmail />` React Email template, eyeballs it in the preview server (desktop, mobile, dark, plain-text), then wires the five-seam `sendWelcomeEmail` Server Action that the inspector button fires.
+
+Goals:
+
+- Fill `emails/WelcomeEmail.tsx`. Default-exported React component, typed props `{ firstName: string; verifyUrl: string }`, wrapped in `<EmailLayout>`. The structure mirrors lesson 1 of chapter 049's component vocabulary:
+  - `<Html lang="en">` + `<Head>` with `<Title>Welcome to {appName}</Title>`, the dark-mode meta tags (`color-scheme`, `supported-color-schemes`) from lesson 3 of chapter 049, and the inline `<style>` with `:root { color-scheme: light dark; }`.
+  - `<Preview>` set to `Welcome to {appName} — verify your email` (the inbox preheader from lesson 1 of chapter 049).
+  - `<Body>` → `<EmailLayout>` → `<Container>` → `<Section>` containing `<Heading as="h1">Welcome, {firstName}</Heading>`, `<Text>` with a one-paragraph welcome, `<Button href={verifyUrl}>Verify your email</Button>`, and a small `<Text>` with the alternate-text-link version (`If the button doesn't work, paste this link: {verifyUrl}`).
+  - Wrapped in `<Tailwind>` for utility-class styling (`text-zinc-900 dark:text-zinc-100`, `max-w-[600px] mx-auto`, `bg-zinc-50 dark:bg-zinc-900`).
+  - Exports `WelcomeEmail.PreviewProps = { firstName: 'Ada', verifyUrl: 'https://example.com/verify/abc-123' }` so the preview server renders without a separate fixtures file.
+- Eyeball the template in `pnpm email dev` at `http://localhost:3001`:
+  - Desktop view — heading wraps cleanly, button width comfortable.
+  - Mobile view (375 px toggle) — text reflows, button stays tappable (44 px touch target — lesson 3 of chapter 049 floor).
+  - Dark-mode toggle — background and text invert, brand color on the button stays readable.
+  - HTML tab — confirm `<Preview>` text is in the document, the `<Tailwind>` classes compiled to inline styles, the dark-mode meta tags are in `<head>`.
+  - Plain-text tab — read it top to bottom: `Welcome, Ada\n\n[paragraph]\n\nVerify your email [https://example.com/verify/abc-123]\n\nIf the button doesn't work...`. Confirm it stands alone as a coherent message (lesson 3 of chapter 049's coherence check).
+- Send a test from the preview server's "Send test" button to the student's personal Gmail and Apple Mail. Eyeball each in the real client. Cross-client check: does the button render correctly in Outlook (if the student has one)? Does Gmail Android's blanket inversion break anything?
+- Fill `app/actions/send-welcome.ts`. File-level `'use server'`. The `sendWelcomeEmail(prevState, formData)` action follows the five-seam shape:
+  1. **Parse.** `const raw = Object.fromEntries(formData);` → `const parsed = z.strictObject({ recipientEmail: z.email(), firstName: z.string().min(1).max(80) }).safeParse(raw);` → on `!parsed.success`, return `err('validation', 'Check the highlighted fields.', z.treeifyError(parsed.error).properties)`.
+  2. **Authorize (stub).** `const { userId } = await getActiveContext();` — Unit 8 swaps this for the real session read. No role check in this project (no `authedAction` wrapper yet — Unit 9).
+  3. **Idempotency key.** `const idempotencyKey = `welcome:${userId}:${parsed.data.recipientEmail.trim().toLowerCase()}`;` — the same retry of this action invocation produces the same key, Resend returns the same send ID, the inbox gets one email regardless of how many times the inspector button is clicked.
+  4. **Compute the verify URL.** For this project the URL is a placeholder: `const verifyUrl = `${env.NEXT_PUBLIC_APP_URL}/verify/placeholder-${idempotencyKey}`;` — Unit 8 replaces this with a real signed token. The placeholder is named in a `// TODO Unit 8` comment.
+  5. **Send.** `const result = await sendEmail({ to: parsed.data.recipientEmail, subject: `Welcome to ${env.NEXT_PUBLIC_APP_NAME}`, react: <WelcomeEmail firstName={parsed.data.firstName} verifyUrl={verifyUrl} />, idempotencyKey });`. Return `result` unchanged — the wrapper already returns `Result<{ id: string }>` with all three failure shapes (`'suppressed'`, `'internal'`, plus the action's own `'validation'`).
+- The inspector form (provided) already reads `useActionState(sendWelcomeEmail, null)` and renders the three result cards. Submitting now works end-to-end.
+- Runnable proof: at `/inspector/send-welcome`, set `recipientEmail` to the student's own inbox, click "Send welcome". Within ~2 seconds the success card shows the Resend send ID. Within ~15 seconds the email arrives in the inbox with the rendered template, the correct `from` and `reply_to`, and the plain-text part viewable via "Show original".
+
+Senior calls and watch-outs:
+
+- The template is *props-only* — no env reads inside the component, no DB reads, no session reads. The action computes the values, passes them as props (lesson 1 of chapter 049's pure-renderer rule). The reach to "just import the app name from env inside the template" is the smell — the template's `PreviewProps` then drift from production, the preview server lies, the test-send doesn't match the real send. Read `env.NEXT_PUBLIC_APP_NAME` *outside* the template, pass it as a prop or read it in `EmailLayout` once where the brand surface lives.
+- The action's `safeParse` runs before `getActiveContext()` — the parse is cheap, the auth read is going to be a session-cookie + DB hit once Unit 8 lands. Parse-first means malformed inputs don't pay the auth cost. The lesson 4 of chapter 043 ordering rule made operational again.
+- The `recipientEmail` validation is `z.email()`, the modern Zod 4 top-level format builder from lesson 2 of chapter 042. The action does *not* do an MX-record probe (named in lesson 4 of chapter 048 as the high-stakes-signup defense, out of scope for this chapter) — for the welcome flow the suppression read after a bounce catches the typo case.
+- The `verifyUrl` placeholder is intentional — the student doesn't invent a real token-signing scheme to fill it. Unit 8 owns Better Auth's email-verification token flow; this chapter ships the placeholder URL and the `// TODO Unit 8` comment so the swap is obvious.
+- Returning the wrapper's `Result` unchanged is the discipline. The instinct to "wrap and re-shape" — `if (!result.ok && result.error.code === 'suppressed') return err('validation', 'Bad email')` — collapses the failure surface and the inspector loses the diagnostic. The action is a thin orchestrator; the wrapper owns the failure taxonomy.
+- The JSX in the action body (`<WelcomeEmail .../>`) compiles fine inside a `.ts` file because Next.js's tsconfig has `jsx: 'preserve'` and the file *is* a server file — the React element is constructed on the server, never serialized to a client, the Resend SDK runs `render` on it server-side. Watch-out for stale ESLint configs that flag JSX in non-`.tsx` files; rename to `send-welcome.tsx` if the linter complains (the chapter ships the file as `.tsx` for that reason).
+
+Codebase state at entry: env loaded, helpers in place, action and template both empty.
+Codebase state at exit: full send path works end-to-end against the student's verified domain. The success path delivers a real email; the suppression path (testing with the seeded `suppressed@...` recipient) short-circuits; the validation path returns `fieldErrors` from an empty `recipientEmail`. Every clause of "Done when" is satisfiable from this state; lesson 5 of chapter 050 walks the verify.
+
+Estimated student time: 40 to 55 minutes.
+
+---
+
+## Lesson 5 — Verify the send path clause by clause
+
+Walks every "Done when" clause as a verification step — real-inbox arrival, DKIM/SPF/DMARC pass in headers, template render across clients, plain-text fallback, suppression short-circuit, idempotency-key retry, and env fail-closed — then recaps disciplines and forward references.
+
+Goals:
+
+- Walk every "Done when" clause as a verification step (the table in the framing).
+- **Real-inbox arrival on the verified domain.** Set `recipientEmail` to the student's own Gmail. Click "Send welcome". The success card renders within ~2 seconds with the Resend send ID; the inbox shows the email within ~15 seconds. Read the `from` line — it matches `EMAIL_FROM`. Click "Reply" in Gmail — the recipient field is `EMAIL_REPLY_TO`, not the `noreply@` mailbox. The `noreply@`-plus-`reply_to` pattern from lesson 3 of chapter 048 lands visibly.
+- **DKIM and SPF pass.** In Gmail, three-dot menu → "Show original". Confirm `SPF: PASS with IP <Resend's outbound IP>`, `DKIM: PASS with domain send.<student>.<tld>`, `DMARC: PASS`. If any line says `FAIL` or `NEUTRAL`, the chapter points at the DNS step in lesson 2 of chapter 050 — re-check the TXT records via `dig`. Re-run the send to `check-auth@verifier.port25.com` and read the auto-reply for a second confirmation.
+- **Template renders correctly.** Eyeball the email body. The heading reads `Welcome, Ada` (or whatever `firstName` was submitted). The CTA button renders with the brand color, not a default Outlook blue or a missing-style gray. Mobile (open the same email on the student's phone): the layout reflows, the button stays tappable. Dark mode (toggle Apple Mail to dark, or open in Gmail Android): the background inverts, the text stays readable, the logo doesn't disappear.
+- **Plain-text fallback present.** "Show original" → scroll to the MIME parts. Confirm `Content-Type: multipart/alternative` with both `text/plain` and `text/html` boundaries. The text part contains the heading, the welcome paragraph, the verify link rendered as `Verify your email [https://...]`. Test the no-HTML case by viewing the message in a plain-text-only mode (Apple Mail's "Plain Text" view setting, or a corporate mailbox with HTML stripping if available).
+- **Suppression path returns `{ ok: false, reason: 'suppressed' }`.** Set `recipientEmail` to the seeded `suppressed@send.<student>.<tld>`. Click "Send welcome". The suppression card renders. Open the Resend dashboard's "Logs" tab — no entry for this address (the SDK was never called). Add a temporary `console.log('[email] calling resend')` in `lib/email.ts` immediately before `resend.emails.send(...)` and confirm via `pnpm dev` terminal output that it never fires on the suppressed path. Remove the log.
+- **Idempotency key prevents double-sends.** Set `recipientEmail` to a fresh test inbox (the student's secondary Gmail or an iCloud alias). Click "Send welcome"; the success card shows send ID `re_abc`. Immediately click again with the same recipient and same `firstName`. Watch the Resend dashboard — the second call returns the same `re_abc` (the SDK retains the idempotency key for 24 hours). The inbox shows exactly one email, not two. Now change the `firstName` and click — *still* the same key (the key is `welcome:${userId}:${recipientEmail}`), so still one email. Name the constraint: the chapter's key shape is "one welcome per user per recipient" — a per-day rotation (`welcome:${userId}:${recipientEmail}:${dailyToken}`) is the production reach when a "resend welcome" UX needs to bypass; the chapter ships the simpler form.
+- **Validation error path.** Submit the form with `recipientEmail` empty. The validation card renders with `fieldErrors.recipientEmail = ['Invalid email']` (or the Zod 4 default message). The `firstName` keeps its typed value. Submit with `firstName` blank — `fieldErrors.firstName` shows.
+- **Env validation fail-closed.** Comment out `RESEND_API_KEY` in `.env.local`; restart `pnpm dev`. The server fails to boot with the `@t3-oss/env-nextjs` Zod error pointing at the missing variable. Restore. Same test with `EMAIL_FROM` malformed (not a valid `Display Name <addr@domain>` shape) — the boot fails because the schema's `.min(1)` matches but the runtime will fail; tighten the schema if desired (a regex check on the full format) or leave as-is per the chapter's pragmatic floor. Name the trade.
+- **DKIM/SPF/DMARC headers on a second test send.** Run the test send from `/inspector/send-welcome` to an Outlook.com inbox (or Proton, or any non-Gmail). Confirm in the receiving client's "view source" or equivalent that the same three authentication results pass. This catches the case where Gmail's lenient parsing hides a misconfiguration that Outlook flags.
+- **Senior recap.** Name the disciplines installed:
+  - One named seam (`lib/email.ts`) for every email the SaaS will ever send.
+  - The suppression check is at the wrapper, never at the call site.
+  - The idempotency key is required, not optional.
+  - The template is a pure renderer; props in, HTML+text out.
+  - The action follows the chapter 043 five-seam shape; suppression failures and Resend failures both return through the same `Result` channel.
+  - Env validates at boot via `@t3-oss/env-nextjs`; missing `RESEND_API_KEY` fails the build, not the production send.
+  - The verified domain plus DKIM-pass plus DMARC-pass plus the suppression discipline is the deliverability floor for every later flow.
+- **Forward references.**
+  - Unit 8 (Better Auth) replaces the `verifyUrl` placeholder with a real signed verification token and calls `sendEmail({ react: <VerificationEmail ... /> })` from the sign-up flow — same wrapper, new template.
+  - Unit 9 (RBAC + invitations) ships `<InvitationEmail />` and calls `sendEmail` from the invite-create action; the audit log writes a row for every send.
+  - lesson 5 of chapter 063 (webhook handler — Resend bounces and complaints) is the *writer* for `email_suppressions`. Once it ships, the table populates from real-world delivery telemetry; the suppression read this chapter installs immediately benefits.
+  - Unit chapter 064 (billing) sends receipt emails through the same wrapper.
+  - Unit 13a (Trigger.dev) sends the export-ready email through the same wrapper from inside a durable task — the chapter's signature works unchanged inside a Trigger task body.
+  - Unit 13 (notification dispatcher) adds the per-channel and per-preference layer *on top of* `sendEmail`; the wrapper this chapter installs is the email-channel leaf of that dispatcher.
+  - The DMARC policy graduates from `p=none` to `p=quarantine` to `p=reject` over the project's lifetime (lesson 2 of chapter 048's progression) — the chapter ships at `p=none`, the student schedules the bump.
+
+Senior calls and watch-outs:
+
+- The verify lesson is the rehearsal of every failure mode the chapter installs the disciplines against. If a verify step fails, the chapter points the student at the owning build lesson — DKIM fail → lesson 2 of chapter 050's DNS step; suppression path called Resend → lesson 3 of chapter 050's wrapper structure; template missing `<Preview>` → lesson 1 of chapter 049.
+- The "Show original" headers panel in Gmail is the cheapest single source of truth for deliverability — every later unit's email send gets one "Show original" eyeball at feature-launch time. The 2026 reflex.
+- The cross-client test (Outlook or Proton) catches the misconfiguration Gmail's lenient parser hides. Run it once per chapter, not per send.
+- Production rollout — when the student deploys this to a real Vercel preview or production environment, the `RESEND_API_KEY` and `EMAIL_FROM` set in Vercel's env panel use the *production* Resend key (not the dev key). The per-environment key discipline from lesson 1 of chapter 048 lands here in practice.
+
+Codebase state at entry: the full send path works end-to-end against the student's verified domain.
+Codebase state at exit: same surface, verified clause-by-clause. The student can articulate every decision made in the chapter and the unit that will extend each one. The `lib/email.ts` wrapper is the foundation for every send Units 8–13 will wire on top.
+
+Estimated student time: 25 to 35 minutes.

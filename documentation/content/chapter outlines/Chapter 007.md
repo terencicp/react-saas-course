@@ -1,300 +1,224 @@
-# Chapter 007 — Picking the right container
+# Chapter 007 — Async semantics
 
 ## Chapter framing
 
-Chapter 005 installed the value model and chapter 006 installed the shape of the code that operates on values. This chapter teaches the **container surface** a 2026 SaaS senior reaches for — the object as the workhorse record, the array as the ordered list with its non-mutating update family and method pipeline, `Set` and `Map` for the two cases plain objects can't carry, the iteration protocol behind every `for...of`, and the modern regex flavor. The lesson is *which container fits which shape of data* and *which method on that container is the senior reflex*. Containers are the substrate every later unit operates on — React state holds objects and arrays, Drizzle returns arrays of rows, the URL parser hands back a `URLSearchParams`, a Zod schema parses into shapes the rest of the system trusts.
+Chapter 006 closed the module-graph story — the four import shapes, depth-first evaluation, live bindings, the `'server-only'` boundary, and the top-level-await-vs-lazy-init call. The student can read any file as a node in a typed graph. This chapter zooms into what happens *inside* a node when the work it does isn't synchronous: how the runtime decides what runs next (the event loop and the microtask queue), how Promises model the three-state work-not-done-yet contract, how `async`/`await` collapses Promise chains into linear-looking code without losing the parallel-by-default reflex, and how `AbortSignal` carries cancellation through every modern web and Node API the course writes against. Every later chapter — `fetch` (chapter 015), the four async files (chapter 031), Server Actions (chapter 043), webhook ingestion (chapter 063), background work (chapter 066), streaming AI responses (chapter 106) — assumes the student can predict the order of any small async program and reach for `AbortSignal.any([...])` without ceremony.
 
 Threads that must run through every lesson:
 
-- **Decisions before syntax.** Each lesson opens with the production failure mode the form prevents — a `state[0] = x` that React didn't re-render, a `for...in` that picked up an inherited property, a `JSON.stringify(new Map())` that produced `'{}'`, a regex without the `u` flag that miscounted emoji. The syntax follows the failure.
-- **Defaults before conditionals.** Object literal is the default record. Array is the default ordered list. `for...of` is the default loop. `.map`/`.filter`/`.reduce` is the default pipeline. `Set`, `Map`, `WeakMap`, the ES2025 lazy `Iterator.prototype` helpers, and the regex `v` flag each have a named threshold the default crosses before the student reaches for them.
-- **Immutability where the framework requires it.** React, Server Actions, and Zustand all assume input-as-record discipline — never mutate, always replace. The ES2023 non-mutating update family (`.toSorted`, `.toReversed`, `.toSpliced`, `.with`) and the spread/rest idiom from lesson 6 of chapter 006 are the structural enforcement. The lesson does not preach "immutability" as a philosophy; it teaches the form the React reconciler and the Server Action serializer demand.
-- **TypeScript-flavored, inference-led.** Every snippet is `.ts`. `noUncheckedIndexedAccess` (already on per lesson 3 of chapter 004) is the strictness that makes `arr[0]` return `T | undefined`, and every lesson respects it. Generic constraints and the deeper utility-type surface land in chapter 009; this chapter uses what chapter 008 will name (literal unions, `readonly`, `Record<K, V>`) without re-teaching.
-- **Forward links land softly.** Objects foreshadow Drizzle row shapes (Unit 6), React props (Unit chapter 026), and Server Action input (lesson 4 of chapter 034). Arrays foreshadow Drizzle result sets, React list rendering with keys (chapter 026), and TanStack Query's `data` shape (Unit 16). `Map`/`Set` foreshadow the LRU cache idiom in Unit 15. Regex foreshadows Zod string refinements in Unit 7. One sentence each.
+- **The student leaves able to predict execution order.** The event-loop model from lesson 1 of chapter 007 is the substrate the rest of the chapter rides on. Every later snippet that interleaves `await`, `setTimeout`, and `queueMicrotask` should be readable as a tick-by-tick trace.
+- **Parallel by default, sequential by dependency.** The senior reflex is to check whether each `await` depends on the previous one's result. If not, the work runs through `Promise.all`. This rule fires in lesson 3 of chapter 007 and recurs in lesson 2 of chapter 031 (streaming a page), lesson 2 of chapter 039 (N+1), and lesson 6 of chapter 094 (RSC waterfalls).
+- **The four combinators are not interchangeable.** `Promise.all`, `Promise.allSettled`, `Promise.any`, and `Promise.race` each model a different "what counts as done" contract; the chapter installs the trigger and the failure mode for each so the student stops reaching for `Promise.all` when one rejection shouldn't kill the rest.
+- **Cancellation is structural, not a flag.** `AbortSignal` is the 2026 lingua franca every `fetch`, every `setTimeout`, every database query (Drizzle, `pg`), every AI SDK call, every route handler, and every Server Action passes around. The chapter installs the `{ signal }` parameter shape as the senior reflex, not a niche feature.
+- **Errors at the async seam preview Chapter 008.** Async throws, `AbortError` discrimination, the `unknown`-in-catch narrow — named at the moment they apply in this chapter, taught at depth in chapter 008. The chapter does not re-teach `try`/`catch` mechanics; it shows where they land in async code.
+- **No history.** Callback hell, `util.promisify`, `Bluebird`, `q`, jQuery deferreds — gone. The chapter writes the form a senior writes in 2026 and names the legacy only where it still leaks into third-party SDKs.
 
-The student finishes the chapter able to pick the right container by reflex, write the senior method form on each, recognize the mutating-method footguns React forbids, and reach for `Set`/`Map`/`WeakMap`, lazy iteration, or the `v`-flag regex only when the default is the wrong tool.
+The student finishes the chapter able to trace `await`/`setTimeout`/`queueMicrotask` interleavings tick-by-tick, pick the right combinator for a "what counts as done" contract, write `Promise.withResolvers()` instead of the deferred-pattern boilerplate, rewrite serial `await`s into `Promise.all` when no data flows between them, bound parallelism with `for await...of` or `pMap` instead of unbounded `.map(async ...)`, wire `AbortSignal` through every `fetch` and timer with `AbortSignal.timeout(ms)` and `AbortSignal.any([...])`, and discriminate `AbortError` at the catch from real failures. Chapter 008 lands on this floor with the error-channel discipline.
 
 ---
 
-## Lesson 1 — The object as workhorse record
+## Lesson 1 — The event loop and the microtask queue
 
-Read, build, and reshape a record-shaped value with dot and bracket access, the three construction sugars (shorthand, computed keys, spread), and the `Object.*` static surface including `Object.groupBy`.
+Teaches the three-part runtime model (call stack, microtask queue, macrotask queue), the tick recipe that drains microtasks before the next macrotask, and `await` as a microtask-paced suspension so the student can predict the order of output in any small async program.
 
 Topics to cover:
 
-- The senior question. Two real bugs from the same root. First, a function reaches into an object with `obj[userInput]` and the property comes back as `Object.prototype.toString` — the prototype chain leaked. Second, a `{ ...patch }` over a base object silently overwrote an `id` field the patch wasn't supposed to touch. Both are object-construction bugs the senior form prevents. The lesson installs the daily reach for *building*, *reading*, and *reshaping* record-shaped values.
-- The two access forms and when each fires. `obj.prop` is the default — static, type-checked against the known shape, the form every reader expects. `obj['prop']` is the conditional reach for three triggers: keys that aren't valid identifiers (`obj['user.email']`), keys held in a variable (`obj[fieldName]`), and dynamic-key patterns. Under `noUncheckedIndexedAccess`, bracket access on a `Record<string, T>` returns `T | undefined`; dot access on a typed shape returns `T`. The course writes dot access by reflex and reaches for brackets only when the trigger fires.
-- The three construction sugars, named once each.
-  - **Shorthand property.** `{ name, email }` over `{ name: name, email: email }` when the field name matches a binding in scope. The senior reflex for any object literal built from local variables.
-  - **Computed keys.** `{ [fieldName]: value }` when the key itself is dynamic. The trigger is rare in 2026 application code (most keys are known at write time) but lives in factory helpers, reducer patterns, and the `Record<K, V>` literal shape.
-  - **Spread.** `{ ...base, name: 'new' }` for shallow merge with override. The "right-most key wins" rule. This is the form React state setters, Server Action input merging, and Drizzle update payloads all consume. Watch-out: spread is shallow — nested objects keep their reference (already named in lesson 1 of chapter 005; recalled in one sentence).
-- Reading: `in` vs. `hasOwn` vs. `?.`. The three checks have different semantics. `'foo' in obj` walks the prototype chain. `Object.hasOwn(obj, 'foo')` is the 2026 replacement for `hasOwnProperty.call(obj, 'foo')` — own-property only, the senior reach when the answer must exclude inherited keys. `obj.foo !== undefined` (or `obj.foo ?? default`) is the right reach for "is there a value here," which is what application code usually wants. One paragraph naming all three with their triggers.
-- The `Object.*` static surface a senior reaches for.
-  - **`Object.keys`, `Object.values`, `Object.entries`.** The iteration triad. Each returns an array of own enumerable keys / values / `[key, value]` pairs. Drives `for...of` over an object (covered in lesson 5 of chapter 007) and `.map` over key-value pairs. The TypeScript watch-out: `Object.keys(obj)` returns `string[]`, not `keyof T` — the type widens because at runtime, `obj` could have more keys than its compile-time type. Reach for `Object.entries` plus a type assertion only at trusted boundaries.
-  - **`Object.assign(target, ...sources)`.** Mutates `target`, returns it. The watch-out: the mutation surprises callers. The senior reach for non-mutating merge is spread (`{ ...a, ...b }`); `Object.assign` earns its place only when the mutation is the point (extending a prototype, patching a config object the caller already owns).
-  - **`Object.fromEntries`.** The inverse of `Object.entries`. The senior reach for "I have an array of `[key, value]` pairs and want an object" — `Object.fromEntries(map)` to convert a `Map` to a plain object, `Object.fromEntries(new URLSearchParams(query))` for shallow query-string parsing.
-  - **`Object.freeze` and `Object.isFrozen`.** Named in one line as the runtime immutability primitive. The course rarely reaches for it (TypeScript's `readonly` is the design-time enforcement); useful for genuinely shared constants where a runtime guarantee is needed.
-  - **`Object.groupBy(items, keyFn)`.** ES2024, shipping in every runtime the course targets in 2026 (Chrome 117+, Firefox 119+, Safari 17.4+, Node 20.12+). Returns a plain object grouping array items by the string key the function returns. The senior reach for "group an array of rows by a categorical field" — `Object.groupBy(invoices, (i) => i.status)`. Pairs with `Map.groupBy` (covered in lesson 4 of chapter 007) when the grouping key isn't a string.
-- The prototype-chain rule, stated and dropped. Every object literal inherits from `Object.prototype` (and therefore has `.toString`, `.hasOwnProperty`, `.constructor` available on the chain). The senior never relies on inherited methods through user-controlled keys, which is why `Object.hasOwn` exists. For the rare case where prototype-less is needed (a strict map of user keys), `Object.create(null)` is the form — named once, parked.
-- Forward links. Drizzle returns row objects (Unit 6). React props are an object shape (Unit chapter 026). Server Actions consume an options-object input (lesson 4 of chapter 034). Zod's `.parse()` returns a typed object (Unit 7). One sentence each.
+- The senior question. A function logs `'a'`, awaits a resolved Promise, logs `'b'`. A `setTimeout(..., 0)` logs `'c'`. A `queueMicrotask(...)` logs `'d'`. In what order does the output appear, and why does the answer not depend on the timer's `0`? The lesson installs the model that answers it deterministically, because every later async snippet rides on this prediction.
+- The three-part runtime. Named once, used for the rest of the chapter.
+  - **The call stack.** Synchronous JavaScript runs here, top to bottom. Nothing else runs while the stack is non-empty.
+  - **The microtask queue.** Promise continuations (`.then` callbacks, the code after each `await`), `queueMicrotask(fn)` callbacks. Drained completely between every two macrotasks — the loop does not move on until the microtask queue is empty.
+  - **The macrotask queue (the "task" queue).** `setTimeout`, `setInterval`, `setImmediate` (Node only), I/O completion callbacks, message events, user input. One task per tick.
+- The tick recipe, stated as an algorithm.
+  1. Run a macrotask to completion (a script load counts as the first one).
+  2. Drain the microtask queue completely. If a microtask schedules another microtask, that one runs too, in this same drain.
+  3. Render (browser only, and only when the renderer decides to).
+  4. Pick the next macrotask. Go to 1.
+- `await` as microtask-paced suspension. The senior takeaway in one line: **`await p` does not block the thread; it pauses the surrounding `async` function and schedules its continuation as a microtask when `p` settles.** Three consequences named.
+  - Code *before* the first `await` in an `async` function runs synchronously on the call stack. The function returns a Promise as soon as it hits the first `await`.
+  - Code *after* each `await` is a microtask. It runs before any pending macrotask (any `setTimeout(..., 0)`), even if the awaited Promise was already resolved.
+  - An `async` function with no `await` still returns a Promise. The body runs synchronously; the Promise resolves on the next microtask.
+- Walked example, the canonical interleaving. A small program that logs `'sync 1'`, schedules `setTimeout(() => log('macro'), 0)`, schedules `queueMicrotask(() => log('micro'))`, calls an `async` function that logs `'sync 2'` then `await`s a resolved Promise then logs `'micro 2'`, and finally logs `'sync 3'`. The output order: `sync 1`, `sync 2`, `sync 3`, `micro`, `micro 2`, `macro`. The lesson walks the queues step by step and the student can read the trace.
+- Promise resolution does not jump the queue. `Promise.resolve()` does not run the `.then` synchronously; the continuation is scheduled as a microtask. Stated once because students often expect a pre-resolved Promise to skip the queue.
+- `queueMicrotask(fn)` — the explicit microtask scheduler. The senior reach when a callback needs to run "after this synchronous work but before any rendering or I/O." Rare in app code; appears in libraries that batch work (state libraries, the React scheduler). Named once with one trigger; the student should recognize it, not reach for it.
+- Node specifics, named in one paragraph. Node has `process.nextTick` (drains before microtasks — a Node-only sub-queue) and `setImmediate` (a separate macrotask family that runs after I/O callbacks). The senior watch-out: `process.nextTick` recursion starves the event loop; do not reach for it in app code. `setImmediate` is for libraries; the app code in this course reaches for `setTimeout` when it needs a macrotask and never for `process.nextTick`.
+- The browser-vs-Node split, stated once. The model in this lesson holds in both runtimes. The Node-only extras (`process.nextTick`, `setImmediate`) are runtime-specific; the microtask/macrotask split is universal.
+- The performance reflex. The senior implication of the tick recipe: a long-running microtask (a Promise chain that synchronously does heavy compute) blocks rendering, blocks I/O, blocks every other task. The fix is to yield by scheduling a macrotask (a `setTimeout(..., 0)` or a `MessageChannel` ping) between batches of work. Named once; the deeper performance treatment lives in Unit 19.
 
 What this lesson does not cover:
 
-- The full reflective surface (`Object.getOwnPropertyDescriptor`, `Object.defineProperty`, `Object.getPrototypeOf`). Class-adjacent, not on the daily senior path. Named once if at all.
-- `Object.create(proto)` for prototype-based inheritance. Replaced by ES classes, which themselves are narrowly used (per lesson 2 of chapter 013).
-- The historical `__proto__` accessor. Named in one line as the legacy form to recognize; the course writes `Object.getPrototypeOf` or `Object.setPrototypeOf` if either is needed at all.
-- JSON serialization and round-tripping. Owned by lesson 1 of chapter 013.
-- Deep-merge libraries (`lodash.merge`, etc.). Not in the 2026 senior reach; deep merges are almost always a structural smell that calls for explicit object construction.
+- Authoring Promises (lesson 2 of chapter 007 owns the constructor and combinators).
+- The `async`/`await` syntax beyond the microtask framing (lesson 3 of chapter 007 owns the parallel-by-default and sequential-by-dependency rules).
+- Cancellation (lesson 4 of chapter 007).
+- `try`/`catch` discipline at depth (Chapter 008).
+- Node's event loop *phases* (timers / pending callbacks / poll / check / close). The course's app code does not depend on the phase split; named in one line for completeness.
+- Worker threads, `MessageChannel`, `BroadcastChannel`. Niche; not in this lesson.
+- React's scheduler or `useTransition`'s priority queue. Unit chapter 025 owns that.
 
-Pedagogical approach:
+Pedagogical approach: Concept archetype with an interactive widget at the center. Open with the prediction prompt (the four-line `'a'`/`'b'`/`'c'`/`'d'` program) and refuse to answer it until the model lands — the student should feel the gap. Show a small interactive widget where the user steps through one of two pre-written programs tick by tick: a "Next tick" button advances the call stack, the microtask queue, and the macrotask queue panels side by side, with the log accumulating in a fourth panel. The widget does the heavy lifting because the model has three moving parts and a static picture can't show the cause-and-effect. Walk the tick recipe in adjacent prose. The canonical interleaving example gets a labeled code block with the predicted output below it; do not show the output until the student reads the prose explanation. Use a `PredictOutput` exercise with three short programs the student must trace to the right log order. Close with one short `TrueFalse` set covering the three consequences of the `await`-as-microtask model. No sandbox: the widget is the play surface.
 
-Mechanics archetype with a Reference closing beat. Open with one tight snippet of a record being built with shorthand + spread, then read with dot access and `Object.hasOwn`. Walk the three construction sugars in three small adjacent code blocks. The `Object.*` static surface earns a tight enumerated walk — one snippet per method, no padding. `Object.groupBy` lands with a real example (group invoices by status). Close with a `Buckets` exercise sorting eight access patterns into "dot," "bracket," "use `Object.hasOwn`," "use `?.`" — the senior reflex install. Offer a `SandboxCallout` where the student plays with spread merge semantics and watches "right-most key wins."
-
-Estimated student time: 30 to 35 minutes.
+Estimated student time: 35 to 45 minutes.
 
 ---
 
-## Lesson 2 — Arrays and the non-mutating update
+## Lesson 2 — Promises: combinators and withResolvers
 
-Index arrays under `noUncheckedIndexedAccess`, reach for `.at()` and the ES2023 non-mutating update family (`.toSorted`, `.toReversed`, `.toSpliced`, `.with`), and recognize the mutating methods that React state forbids.
+Teaches the Promise three-state model, the four combinators (`all`, `allSettled`, `any`, `race`) with the senior trigger and failure mode for each, and `Promise.withResolvers()` as the modern replacement for the deferred-pattern boilerplate when resolvers must live outside the constructor's executor.
 
 Topics to cover:
 
-- The senior question. The day-one React bug: a component sorts its state array with `.sort()`, the array mutates in place, and React skips the re-render because the reference didn't change. The same bug class shows up with `.reverse()`, `.splice()`, and `.push()`. The fix isn't a defensive copy reflex; it's reaching for the ES2023 non-mutating twin by name. The lesson installs the array surface that's safe to use inside any state-holding code.
-- Indexing and `noUncheckedIndexedAccess`. With the strictness on (per lesson 3 of chapter 004), `arr[0]` returns `T | undefined`. The senior reflex: handle the undefined explicitly (`arr[0] ?? fallback`) or narrow with a length check. The watch-out: developers coming from looser configs will write `arr[0].name` and TypeScript will complain — this is the right behavior, and the fix is `arr[0]?.name` or `arr.at(0)?.name`.
-- `.at()` for safe positional access. The ES2022 method that handles negative indices natively. `arr.at(0)` (first), `arr.at(-1)` (last), `arr.at(-2)` (second-to-last). Returns `T | undefined`. The senior reach over `arr[arr.length - 1]` for "last element" — shorter, no off-by-one bugs, reads as intent.
-- The mutating/non-mutating split. The four method pairs the student must recognize.
-  - **`.sort()` mutates and returns the same array; `.toSorted(compareFn)` returns a new array, leaves the original alone.**
-  - **`.reverse()` mutates; `.toReversed()` doesn't.**
-  - **`.splice(start, deleteCount, ...items)` mutates; `.toSpliced(start, deleteCount, ...items)` returns a new array.**
-  - **`arr[i] = value` mutates the element; `.with(i, value)` returns a new array with the index replaced.**
-- The four ES2023 non-mutating forms are universally available in 2026 — Node 20+ (Node 22 LTS / 24 are the course targets), every current browser. The senior reach by reflex when the array is held in state.
-- The mutating methods that still earn their place. `.push`, `.pop`, `.shift`, `.unshift` — each mutates. The trigger that earns them: a local array being built up inside a function that owns it (not shared, not in React state). The form is fine for "build a result inside a `for...of`" and wrong for "modify state in a React reducer." One paragraph stating the rule.
-- The shallow `[ ...arr, newItem ]` and `arr.slice()` reach. The two forms that produce a shallow copy. Spread is the default for "array with one or two changes at the end" (`[...arr, x]`, `[head, ...rest]`). `.slice()` is the default for "shallow copy of the whole thing" or "extract a sub-range without mutating" — `arr.slice(0, 3)` for the first three, `arr.slice(-3)` for the last three. Note: `.slice` is the non-mutating cousin of `.splice` (which mutates); the names are unfortunately one letter apart.
-- The `Array.from` and `Array.of` static surface. `Array.from(iterable, mapFn?)` converts any iterable (a `NodeList`, a `Set`, a generator, a string) into an array, with an optional map step in one pass. `Array.of(...items)` is the rare safe constructor that avoids the `Array(3)` ambiguity (`Array(3)` makes a length-3 hole-array; `Array.of(3)` makes `[3]`). One paragraph naming both with one short snippet for `Array.from(new Set(arr))` as the dedup idiom.
-- The `length` write trap, named once. Setting `arr.length = 0` mutates in place and is sometimes seen in old code. The course never reaches for it; `[]` reassignment is the form for "I need this binding to point to an empty array."
-- Forward links. React `useState<T[]>` and the non-mutating update rule (Unit chapter 027). The Drizzle result-set array (Unit 6). The `Array.from(formData.entries())` pattern in Server Actions (lesson 4 of chapter 034). One sentence each.
+- The senior question. A page must fetch the user, the org, and the recent invoices. Three independent reads, one render. What does the page do if one of them fails? What if the user read is required and the invoices read is optional? What if any of the three taking longer than 2 seconds should fail the whole render? Each answer is a different combinator. The lesson installs the four-way cut so the student stops reaching for `Promise.all` reflexively.
+- The Promise three-state model. Named for the vocabulary.
+  - **Pending.** The work hasn't finished. The Promise has no value yet.
+  - **Fulfilled.** The work finished successfully. The Promise holds a value.
+  - **Rejected.** The work finished with a reason (an error, conventionally).
+  - Two transitions only: pending → fulfilled, pending → rejected. Once settled, a Promise never changes state. This permanence is what makes the combinators predictable.
+- The Promise constructor, named briefly. `new Promise((resolve, reject) => { ... })` is the low-level shape. The course rarely authors raw Promises — most async work returns a Promise from a platform API (`fetch`, a Drizzle query, the `node:timers/promises` helpers). The constructor earns its weight only when wrapping a callback-style API or a manually-resolved event. Forward link to `Promise.withResolvers()` below for the modern shape.
+- The four combinators, with the trigger and the failure mode for each.
+  - **`Promise.all([p1, p2, p3])`.** Resolves with `[v1, v2, v3]` when *every* input resolves; rejects with the first rejection's reason. The senior trigger: the caller needs every value to proceed, and any failure should bubble up as a single failure. The failure mode: a `Promise.all` over heterogeneous critical/non-critical work loses the non-critical results when the critical one fails — the wrong tool for "render what you can."
+  - **`Promise.allSettled([p1, p2, p3])`.** Always resolves with an array of `{ status, value? , reason? }` objects after every input settles. The senior trigger: the caller wants every result, success or failure, to make a render decision per item. The failure mode: the caller forgets to inspect each entry's `status` and treats the array as values; the type system flags this if the result is consumed correctly.
+  - **`Promise.any([p1, p2, p3])`.** Resolves with the first fulfillment; rejects with an `AggregateError` only when every input rejects. The senior trigger: redundant providers (a CDN fallback, two analytics endpoints, a primary and a replica read). The failure mode: a single fast-but-wrong response wins, masking that the slower-but-correct ones rejected. The reach is narrow.
+  - **`Promise.race([p1, p2, p3])`.** Settles with the first input's settlement, fulfilled or rejected. The senior 2026 reach: very narrow now that `AbortSignal.timeout(ms)` exists for the canonical "fail if it takes too long" case (taught in lesson 4 of chapter 007). `race` still earns its weight as a primitive for composing custom "first to settle wins" semantics where one of the racers is a signal-driven cancellation flag, but the timeout pattern is no longer one of them.
+- The combinator decision rule, stated as one question. **What counts as "done"?**
+  - Every result needed: `Promise.all`.
+  - Every result reported, success or failure: `Promise.allSettled`.
+  - The first success, others discarded: `Promise.any`.
+  - The first settlement of any kind: `Promise.race`.
+- `Promise.withResolvers()` — the 2026 replacement for the deferred pattern. Returns `{ promise, resolve, reject }` so the resolvers can live outside the constructor's executor. The senior reach when:
+  - **An event-driven flow needs a Promise.** A `socket.once('message', resolve)` handler, a UI dialog whose Promise resolves when the user clicks one of three buttons. Without `withResolvers()`, the code wraps the handler in `new Promise(...)` which forces the handler-installation logic to live inside the executor; with it, the resolvers are values in scope.
+  - **A Promise is exposed for external resolution.** A test fixture, a request-deduplication cache, a singleton "first-load" gate. The pattern that used to require a hand-rolled `deferred` helper is now one standard call.
+  - Failure mode of the legacy pattern, named in one line: `let resolve; const p = new Promise(r => { resolve = r; })` — the executor runs synchronously, so it works, but it's fragile (a stack trace through `Promise` is unhelpful) and the `let resolve` declaration before the assignment trips type inference. `withResolvers()` makes the pattern explicit.
+- Promise chaining vs. `await`, named in one paragraph. The `.then`/`.catch`/`.finally` chain is the underlying form; `async`/`await` is its sugar. The course writes `await` by default. The two sites where `.then` still earns its weight: returning a Promise from a function that immediately transforms its result (when wrapping for an API surface where adding `async` would change the signature), and the `finally` cleanup hook in callers that don't want to mark themselves `async`. Beyond those, `await`.
+- The unhandled-rejection failure mode. A Promise rejection with no `.catch` and no `await ... try/catch` becomes an *unhandled rejection*. In Node, the default behavior in 2026 (since Node 20+) is to crash the process; in the browser, it fires a `window.onunhandledrejection` event. The senior reflex: every Promise the app creates either is `await`ed inside a `try`/`catch`, has a `.catch`, or is fed to a combinator that handles rejection (`allSettled`, `any`) (try/catch mechanics: lesson 1 of chapter 008). Forward link to lesson 1 of chapter 008 for the throw-vs-return discipline that decides which branch handles the rejection.
+- A note on `Promise.resolve(x)` and `Promise.reject(reason)`. The synchronous shortcuts for already-settled Promises. The reach when wrapping a synchronous value to fit an async signature; rare in app code, common in framework adapters. Named once.
 
 What this lesson does not cover:
 
-- Typed arrays (`Uint8Array`, `Int32Array`, etc.). Rarely reached for in the SaaS UI/server surface; named once if at all when binary data (file upload, Web Crypto) lands in chapter 020.
-- The `Array.prototype.fill` and `.copyWithin` methods. Niche; not in the daily reach.
-- Sparse arrays and the holes-vs-undefined distinction. The course writes dense arrays by default; sparse-array semantics are named in one line where `Array(n)` could trap.
-- The `.map`/`.filter`/`.reduce`/`.find` family. Owned by lesson 3 of chapter 007.
+- The `async`/`await` mechanics in depth (lesson 3 of chapter 007).
+- Cancellation (lesson 4 of chapter 007).
+- `try`/`catch` discipline and the `Result<T, E>` return shape (lesson 1 of chapter 008).
+- Authoring custom `AggregateError` subclasses. The default `AggregateError` is enough; lesson 2 of chapter 008 covers the broader custom-error story.
+- Async iterators (`for await...of`). lesson 3 of chapter 007 owns the iteration shape.
+- `Promise.try` (Stage 4 2026 — wraps a callback that may be sync or async into a Promise without throwing synchronously). Named in one line; not load-bearing in app code where the call sites are already `async` functions.
 
-Pedagogical approach:
+Pedagogical approach: Decision archetype with a small `Figure` (a comparison matrix). Open with the three-read scenario in prose to motivate the four-way cut. Show the four combinators as a tight comparison table (combinator / resolves when / rejects when / canonical trigger) — the table is the lesson's center of gravity because the differences are structural. Walk each combinator with one short labeled snippet using the user/org/invoices example, swapping one combinator at a time so the difference is concrete. The `Promise.race` entry gets one paragraph explicitly naming "the legacy timeout pattern is gone — `AbortSignal.timeout(ms)` in lesson 4 of chapter 007 owns it now." Walk `Promise.withResolvers()` with two adjacent code blocks: the legacy `let resolve; new Promise(r => resolve = r)` pattern and the modern `const { promise, resolve, reject } = Promise.withResolvers()` shape. Use a `Matching` exercise pairing six scenarios ("rendering what you can when some reads fail," "picking the fastest of two replica reads," "loading three resources where any failure should fail the page," "waiting for a user to click one of three buttons," "running cleanup after a Promise no matter how it settles," "two analytics endpoints — succeed if either works") to the right combinator or `withResolvers()`. Close with a short `script-coding` exercise: the student rewrites a `new Promise((resolve) => { ... })` wrapping an event handler into the `withResolvers()` shape.
 
-Pattern archetype. Open with the React state-mutation bug (`arr.sort()` failing to re-render) in adjacent before/after snippets. State the four mutating/non-mutating pairs in a tight table. Walk `.at()` with a one-line snippet. The `[ ...arr ]` and `.slice()` forms get one paragraph each. Use a `predict-output` exercise on six small array operations — three mutating, three non-mutating — where the student predicts the resulting state of `original` and `result`. Close with a `react-coding` exercise where a buggy sort-mutating component is fixed by swapping `.sort()` for `.toSorted()` and the re-render lands.
-
-Estimated student time: 30 to 35 minutes.
+Estimated student time: 35 to 45 minutes.
 
 ---
 
-## Lesson 3 — The array method surface
+## Lesson 3 — async/await: parallel by default, sequential by dependency
 
-Walk `.map`, `.filter` with type predicates, `.reduce`, the `.find` family, `.some`/`.every`, `.flatMap`, and `.forEach`, and learn the rule for when to drop out of a chain into a `for...of` loop.
+Teaches the dependency-check reflex that picks `Promise.all` over consecutive `await`s when no data flows between them, the N+1 trap inside `.map(async ...)` with its bounded (`Promise.all`), unbounded (`pMap`), and database-batched fixes, `for await...of` for streams and paginated APIs, and the `return await` discipline that preserves stack traces.
 
 Topics to cover:
 
-- The senior question. Two bugs at the opposite ends of a spectrum. First: a developer who hasn't internalized array methods reaches for a `for (let i = 0; ...)` loop for every transformation, and the code reads as a stream of imperative push-into-result lines. Second: a developer who has over-internalized array methods reaches for a six-step `.map().filter().reduce()` chain for an operation that includes async work and early termination, and the chain is unreadable and twice as slow as it needs to be. The lesson teaches the senior reflex — which method is the right reach for which shape of operation, and when to drop into `for...of`.
-- The eight methods, grouped by what they produce.
-  - **Transform (`.map`, `.flatMap`).** Same-length transform (`.map`); one-to-many transform that flattens one level (`.flatMap`). `.flatMap` is the senior reach for "for each item produce zero or more results" — returning `[]` from the callback drops the item, returning `[a, b]` adds two. The shape that replaces `arr.filter(fn).map(fn)` when the two steps share work.
-  - **Subset (`.filter`).** Returns elements passing the predicate. The TypeScript watch-out: `.filter(Boolean)` doesn't narrow `(string | null)[]` to `string[]` without a type predicate. The senior form: `.filter((x): x is string => x !== null)` or the helper `function isPresent<T>(x: T | null | undefined): x is T { return x != null; }` reached for repeatedly. This is the foreshadowing of the type-predicate pattern that lands fully in lesson 6 of chapter 008 and lesson 3 of chapter 009.
-  - **Reduce (`.reduce`, `.reduceRight`).** The fold over the array. The senior reach when the result is a single value built up from every element — a sum, a min, a built-up object. The watch-outs named once: always pass the initial value (omitting it makes the first element the accumulator with confusing typing); prefer specialized methods (`.some`, `.every`, `.find`) when one of them fits, because they short-circuit and read better. The "reduce-to-object" pattern (`.reduce((acc, x) => ({ ...acc, [x.id]: x }), {})`) is named with one watch-out: it's `O(n²)` due to spread per iteration; `Object.fromEntries(arr.map((x) => [x.id, x]))` or a `Map` is the linear form.
-  - **Find (`.find`, `.findIndex`, `.findLast`, `.findLastIndex`).** Short-circuit search. `.find` returns the first matching element or `undefined`; `.findIndex` returns its index or `-1`. The ES2023 `.findLast` and `.findLastIndex` walk from the end — the senior reach for "the most recent matching event" without a `.reverse()` first.
-  - **Test (`.some`, `.every`).** Short-circuit boolean checks. `.some` returns `true` on the first match; `.every` returns `false` on the first miss. The senior reach over `.filter(fn).length > 0` (which walks the full array) for "is there at least one" / "are they all".
-  - **Side-effecting (`.forEach`).** Iterate purely for side effects. Named once. The course almost never reaches for it — `for...of` reads better, supports `break`/`continue`/`return`, and works with async/await. The narrow reach for `.forEach`: short side-effecting callbacks where readability of the chain matters more than control flow, and `for await` integration with `for...of` is not relevant.
-- The `for...of` trigger, stated explicitly. Four conditions that flip the choice away from the array-method chain.
-  - **Async work that needs sequencing.** `for...of` supports `await`; chaining `.map(async ...)` returns an array of promises that needs a `Promise.all` and runs in parallel (often the wrong choice; covered in lesson 3 of chapter 011).
-  - **Early termination (`break`, `return`).** Array methods (other than `.find`/`.some`/`.every`) walk the whole array. `for...of` can `break` out the moment the condition fires.
-  - **Multiple side effects per iteration.** A chain of three or four statements per element reads as a `for...of` body; the same in a `.forEach` callback feels stuffed.
-  - **Need both index and value with custom step.** `arr.entries()` gives `[index, value]` pairs to `for...of`. If the step isn't 1 (every other element, backward), the C-style `for (let i = 0; ...)` is still the right reach.
-- The chain-readability rule. Two to three chained methods read clearly; four or more often hide what's happening. The senior reach when the chain is getting long: pull intermediate results into named `const`s with the intent in the name (`const activeUsers = users.filter(isActive); const emails = activeUsers.map((u) => u.email);`) instead of one long fluent line. The course teaches that *naming the intermediate result is often the lesson*, not the chain.
-- The "drop into `Map`/`Set`" trigger, foreshadowed. A `.filter` doing membership check inside a callback (`arr.filter((x) => other.includes(x.id))`) is `O(n × m)`. The senior reflex: build a `Set` of IDs first, then `.filter` over the constant-time `.has`. The trigger and the full set composition surface land in lesson 4 of chapter 007.
-- Forward links. React list rendering with `.map((item) => <Row key={item.id} ... />)` (Unit chapter 026). TanStack Query's `data?.map(...)` pattern (Unit 16). Drizzle's result-set transforms before they hit the response (Unit 6). One sentence each.
+- The senior question. The code reads `const user = await getUser(); const org = await getOrg(); const invoices = await getInvoices();`. Three sequential awaits, three round trips, total time is the sum. Each await is its own request — but the org and invoices reads don't depend on the user. The senior reads the code, notices no data flows from one to the next, and rewrites to `Promise.all`. The lesson installs that **dependency-check reflex** as the default reading of any block of consecutive awaits.
+- The parallel-by-default rule, stated plainly. **If two awaits don't share data, they run in parallel.** The default rewrite shape: `const [user, org, invoices] = await Promise.all([getUser(), getOrg(), getInvoices()])`. Total time becomes `max(t1, t2, t3)` instead of `t1 + t2 + t3`. Same correctness, lower latency, no extra cost.
+- The dependency check, stated as a question. **Does the next `await` need the previous one's value?**
+  - **No.** Promote to `Promise.all`. The default.
+  - **Yes.** Sequential is correct. Keep the awaits in order. Comment the dependency at the call site if it's non-obvious.
+- The `Promise.all` destructuring shape, named once. `const [a, b, c] = await Promise.all([...])` — TypeScript infers a tuple from the array literal, so `a`, `b`, `c` get the right types in order. Senior watch-out: if the array is built dynamically, the inference widens to a union; in that case, the call site needs a typed signature on the function returning the array.
+- The N+1 trap inside `.map(async ...)`. The canonical broken shape: `const results = items.map(async (i) => fetchOne(i.id))` — returns an array of Promises, the caller awaits the array, and the bundler issues every fetch in parallel. Three problems named.
+  - **Unbounded parallelism.** A list of 500 items issues 500 concurrent requests. The downstream service rate-limits or falls over; the database's connection pool exhausts. The "parallel by default" rule has a ceiling.
+  - **The await-in-loop variant.** `for (const i of items) { results.push(await fetchOne(i.id)) }` — sequential, slow, but at least bounded. The wrong fix for the wrong reason: it solves the rate-limit but at the cost of N times the latency.
+  - **The hidden round trip.** Each `fetchOne` is a network call. The right fix in a data-fetch context is often a *single batched call* (`fetchMany([ids])` or `db.select().where(inArray(table.id, ids))`).
+- The three correct fixes for `.map(async ...)`, named with the trigger.
+  - **`Promise.all` over a bounded list.** The list size is small (< 10) and the calls are cheap. `await Promise.all(items.map((i) => fetchOne(i.id)))` is fine.
+  - **`pMap` (from `p-map`) for bounded concurrency.** The list is large but the call site is the right place to fan out. `await pMap(items, (i) => fetchOne(i.id), { concurrency: 8 })` issues at most 8 concurrent calls and feeds the next as each completes. The senior reach when the work is genuinely independent and the throughput-vs-rate-limit trade is the call to make.
+  - **Database batch.** If the work is N database reads, the right answer is one query: `db.select().where(inArray(table.id, items.map((i) => i.id)))`. Forward link to lesson 2 of chapter 039 (N+1) for the deeper treatment. Named here because the reflex is general — when N awaits in a loop are all hitting the same backend, the right fix is to ask the backend for the batch.
+- `for await...of` — the async-iteration shape. Two canonical sites.
+  - **Async iterators and streams.** Reading the body of a streaming response: `for await (const chunk of response.body) { ... }`. The iteration suspends between chunks; the surrounding `async` function yields to the event loop while the next chunk arrives.
+  - **Paginated APIs.** Consuming a paginated iterator: `for await (const page of client.invoices.list())` — the SDK's `list()` returns an async iterable that fetches the next page on demand. The student gets bounded per-page work without writing the pagination loop.
+  - The watch-out: `for await...of` is sequential. Inside it, every iteration waits for the previous. This is the right shape for streams and pagination (where order matters and parallelism would defeat the purpose) and the wrong shape for "process 500 independent items" (where `pMap` is the answer).
+- `return await` — the stack-trace discipline. A one-line primer on the minimal shape used below: `try { … } catch (err) { … }` runs the `try` block and, if any awaited Promise inside rejects (or any synchronous `throw` fires), jumps to `catch` with the rejection reason bound as the block-scoped `err`; full treatment in lesson 1 of chapter 008. Two snippets.
+  - **`return getX()`** — returns the Promise without awaiting it. The caller's stack frame is gone by the time the Promise rejects. The error's stack trace lacks the function that called `getX`.
+  - **`return await getX()`** — awaits, then returns. The function's stack frame is alive when the rejection lands; the error trace includes the function name.
+  - The senior rule: **inside a `try`/`catch`, `return await` is mandatory** (otherwise the `catch` doesn't catch the rejection). Outside a `try`/`catch`, the stack-trace difference still matters for debugging but the correctness is the same.
+- The "fire-and-forget" pattern, named once. A function that kicks off async work it doesn't wait for: `void logEvent(...)` or `logEvent(...).catch((err) => log(err))`. The senior watch-out: an unhandled rejection from a fire-and-forget call still crashes the process; the explicit `.catch` is non-negotiable. Forward link to chapter 066 (background work) for the durable version of "fire and forget" — most of the time, the right move is to enqueue to a job runner, not to drop a Promise on the floor.
+- The `async` function signature, named in one paragraph. An `async` function always returns a `Promise<T>` (TypeScript infers `Promise` automatically). The function's `return` value is wrapped; the function's `throw` becomes a rejection. The student should never type-annotate the return as `T` when the function is `async` — the compiler refuses it, but newer students reach for the unwrapped type out of habit.
+- Top-level await pattern, named in one line. lesson 3 of chapter 006 owns the decision (top-level await vs. lazy init). Here, the student should recognize that top-level `await` is legal in modules and reaches for it only on the senior-call cases from lesson 3 of chapter 006. No re-teaching.
 
 What this lesson does not cover:
 
-- `.indexOf` and `.includes` as primary tools. Named in one line — `.includes` is fine for short primitive arrays; for anything else, `Set.has` is the right reach (lesson 4 of chapter 007).
-- The `.concat` method. Replaced by spread (`[...a, ...b]`) in 2026 senior code; named once.
-- The `.join` and `.split` string-array methods. Already on the radar from lesson 4 of chapter 005; named here in one sentence if at all.
-- Imperative builds with `.push` inside a `.forEach`. Anti-pattern in 2026; `.map`/`.flatMap` is always the right reach for that shape.
-- Lazy iteration over array-like sources. Owned by lesson 5 of chapter 007.
+- Authoring the Promises themselves (lesson 2 of chapter 007 owns the constructor and combinators).
+- Cancellation (lesson 4 of chapter 007).
+- `try`/`catch` discipline and `Result<T, E>` (Chapter 008).
+- The Drizzle batch-query API at depth (lesson 2 of chapter 039).
+- Node streams (`Readable`, `Writable`, pipelines). Niche; the chapter covers the Web Streams iteration via `for await...of` and stops there.
+- React's `use(promise)` hook for unwrapping Promises in Server Components (lesson 7 of chapter 025 and chapter 031 own that).
+- Concurrency primitives beyond `pMap` — semaphores, channels, work pools. Out of scope.
 
-Pedagogical approach:
+Pedagogical approach: Pattern archetype with two wrong-then-right beats. Open with the three-sequential-awaits snippet and the dependency-check reflex in prose — the student should feel the rewrite before the lesson states the rule. Show the `Promise.all` rewrite as the paired snippet; mark the before/after clearly. The N+1 trap gets the lesson's center: a `.map(async ...)` snippet that issues 500 concurrent fetches, framed as a production incident, followed by the three fixes (bounded `Promise.all`, `pMap`, database batch) in three adjacent code blocks with the trigger for each. Use a `react-coding` or `script-coding` exercise where the student is given a function that sequentially awaits four independent reads and rewrites it to `Promise.all`; tests verify that the total wait time is `max`, not `sum`. The `return await` discipline gets a paired snippet (the `try`/`catch` that doesn't catch) with one paragraph on the stack-trace consequence. Walk `for await...of` with one small streaming-response example. Close with a `Dropdowns` or `Buckets` exercise: given six scenarios ("read three independent resources," "process 500 items through a rate-limited API," "iterate a paginated SDK response," "fetch 5 records from the database," "stream a response body," "kick off an analytics ping without waiting"), the student picks the right shape (`Promise.all`, `pMap`, `for await...of`, single batch query, fire-and-forget with `.catch`). Optional `SandboxCallout` with a four-read function the student can play with to compare `Promise.all` vs. sequential timings via `performance.now()`.
 
-Reference/survey archetype done tightly — eight methods, but each gets only one line of prose plus one short snippet because the surface is the lesson. Open with the two bugs (imperative-loop-everywhere and overlong-chain). Walk the eight methods grouped by the four output shapes (transform, subset, reduce, find/test/iterate). The `.filter` type-predicate point gets one full `type-coding` snippet — students should see `(string | null)[]` narrow to `string[]` only with the predicate form. The `.reduce`-to-object O(n²) watch-out earns one snippet showing the linear `Object.fromEntries` rewrite. State the four `for...of` triggers in a tight list. Close with a `code-review` exercise: present a 15-line function with three nested array-method calls plus a `.forEach` doing async work; the student rewrites with `for...of` for the async loop and named intermediates for the chained transforms. The rewrite confirms the senior reflex.
-
-Estimated student time: 35 to 40 minutes.
+Estimated student time: 40 to 50 minutes.
 
 ---
 
-## Lesson 4 — When Set and Map earn their weight
+## Lesson 4 — Cancellation with AbortController and AbortSignal
 
-Pick `Set` for dedup and membership, `Map` for keyed lookup at scale, `WeakMap` for GC-coupled caches, and reach for the ES2025 Set composition methods and `Map.groupBy` that retire the lodash habit.
+Teaches the `{ signal }` parameter shape every modern web API speaks, the canonical user-cancel pattern with `AbortError` discrimination at the catch, `AbortSignal.timeout(ms)` as the 2026 replacement for `Promise.race` timeouts, and `AbortSignal.any([...])` for composing user-cancel, timeout, and shutdown signals into one.
 
 Topics to cover:
 
-- The senior question. The plain object as a map smells once the team hits any of three conditions — non-string keys, frequent insertion/deletion at scale, or the need to iterate in insertion order. The plain array as a set smells once a membership check (`arr.includes(x)`) shows up inside a loop. `Set` and `Map` are the data structures that close those gaps. The lesson installs the four-way pick: object, array, `Set`, `Map` (and `WeakMap`/`WeakSet` at the narrow edge).
-- The trigger that earns `Set`. Three concrete shapes.
-  - **Dedup.** `new Set(arr)` returns a `Set` of unique values. `Array.from(new Set(arr))` is the canonical dedup idiom for arrays of primitives.
-  - **Membership check inside a loop.** `Set.has(x)` is `O(1)`; `Array.prototype.includes` is `O(n)`. The instant the membership check is inside another loop or a `.filter` callback, the senior reflex builds a `Set` first.
-  - **Set algebra.** Union, intersection, difference, symmetric difference, subset and superset checks. The ES2025 methods (covered below) are the senior reach.
-- The trigger that earns `Map`. Three shapes.
-  - **Non-string keys.** Objects, numbers (where you want the actual number not the string coercion), other complex values. Plain objects coerce every key to a string; `Map` keeps the key as the original value.
-  - **Frequent insert/delete.** `Map` is optimized for the operation; plain objects are not, and adding/removing fields can deoptimize hidden classes.
-  - **Insertion-ordered iteration the contract is allowed to depend on.** `Map` guarantees insertion order on iteration; plain objects do too in modern JS, but the senior reads `Map` and *knows* the contract.
-- The four `Set` methods that ship in 2026 (ES2025, universally available). Each is one line.
-  - **`a.union(b)`** — elements in either.
-  - **`a.intersection(b)`** — elements in both.
-  - **`a.difference(b)`** — in `a` but not `b`.
-  - **`a.symmetricDifference(b)`** — in exactly one.
-  - **`a.isSubsetOf(b)`, `a.isSupersetOf(b)`, `a.isDisjointFrom(b)`** — three boolean checks.
-- All seven retire the lodash `_.union`, `_.intersection`, `_.difference` habit returning students remember. One short snippet showing `activeUsers.intersection(adminUsers)` is the entire ergonomic case.
-- The `Map.groupBy(items, keyFn)` static. ES2024, shipping in every runtime the course targets. The right reach when grouping by a non-string key (an object, a Date, a tuple) — `Map.groupBy(events, (e) => e.date)` for grouping events by `Date` object. Pairs with `Object.groupBy` from lesson 1 of chapter 007 when the key is a string.
-- `Map` and `Set` API touch points. The minimum surface a senior writes by reflex:
-  - **`Set`.** `add(v)`, `has(v)`, `delete(v)`, `size`, iteration via `for...of` (yields values), `new Set(iterable)`.
-  - **`Map`.** `set(k, v)` (chainable), `get(k)` (returns `V | undefined`), `has(k)`, `delete(k)`, `size`, iteration via `for...of` (yields `[k, v]` pairs), `.keys()`, `.values()`, `.entries()`, `new Map(iterableOfPairs)`.
-- The `.get` return-type rule and `noUncheckedIndexedAccess`-like discipline. `Map.get(k)` always returns `V | undefined` even when TypeScript types the map as `Map<K, V>` (there's no way to know at compile time which keys are present at runtime). The senior reflex: handle the miss with `??` or narrow with a `.has` check first.
-- `WeakMap` and `WeakSet`, named at the narrow edge. The key difference from `Map`/`Set`: keys are weakly held — when the only reference to the key is the `WeakMap` entry, the entry is reclaimed by GC. The two production sites named in one paragraph each:
-  - **Caches keyed by object identity.** Cache a computed value per object instance without preventing the object from being garbage-collected when it goes out of scope elsewhere. The DOM-element-keyed cache, the React-element-keyed metadata, the request-keyed memoization.
-  - **Private state per instance.** The pre-class-field pattern for hiding state outside the class instance itself. Mostly obsolete given class private fields (`#field`); named once.
-- The watch-out: keys must be objects (not primitives), and `WeakMap` has no `.size` or iteration — the keys can be reclaimed at any time. The course rarely writes `WeakSet` (uses are even narrower); named in one line for recognition.
-- The serialization watch-out. `JSON.stringify(new Map())` returns `'{}'`. `JSON.stringify(new Set())` returns `'{}'`. Crossing a wire boundary (Server Action input, fetch body, localStorage) requires converting to a serializable form first — `Array.from(map)` or `Object.fromEntries(map)`. Forward link to lesson 1 of chapter 013 where serialization is the lesson.
-- Forward links. The LRU cache idiom in Unit 15 (cache and rate limiting). The Set-based dedup in Drizzle result transforms (Unit 6). The `WeakMap`-keyed metadata pattern in TanStack Query's internal cache (Unit 16, named only). One sentence each.
+- The senior question. A user types in a search box; each keystroke triggers a `fetch` for suggestions. The user types five characters in a second. Without cancellation, five requests fly out, five responses race back, and the slowest-but-latest response can clobber the fastest-and-newest result — the dropdown shows results for "rea" after "react" already arrived. The fix is to cancel the previous request when the next keystroke fires. The 2026 mechanism for that is `AbortController` and `AbortSignal`, and the student should leave the lesson knowing that every modern API — `fetch`, `setTimeout`, `addEventListener`, the AI SDK, Drizzle queries with the underlying driver, the Stripe SDK, Better Auth, every Server Action signature the course writes — accepts an `AbortSignal`.
+- The two-part contract. Named once.
+  - **`AbortController`** — the producer. The caller creates one (`const controller = new AbortController()`), holds the reference, and calls `controller.abort(reason?)` when it wants the operation to stop.
+  - **`AbortSignal`** — the consumer's view. The controller exposes a `signal` property; the awaitable API takes `{ signal }` as an option. When the controller aborts, the signal's `aborted` becomes `true` and its `'abort'` event fires.
+  - Why the split: the producer and the consumer are different parties. The producer (the React component, the parent function) decides *when* to cancel; the consumer (the `fetch`, the database driver) listens. The signal is a read-only view so a consumer can't trigger cancellation on someone else's controller.
+- The `{ signal }` parameter shape, the 2026 convention. Every modern web/Node API that does any kind of async work takes a `signal` option. The canonical sites named in one paragraph.
+  - `fetch(url, { signal })` — the call rejects with an `AbortError` when the signal fires.
+  - `setTimeout(fn, ms, { signal })` (Node) and `AbortSignal.timeout(ms)` (universal) — the timer clears when the signal fires.
+  - `addEventListener('click', fn, { signal })` — the listener is removed when the signal fires. Cleaner than `removeEventListener` for one-shot listeners.
+  - `crypto.subtle.*` (the async crypto surface) — supports `signal` for long-running operations.
+  - The Vercel AI SDK's `streamText({ abortSignal })`, Drizzle queries that pass `signal` to the underlying `pg` driver, the Stripe and Better Auth SDKs in 2026. The student doesn't need the full surface today; they need the reflex that **if an async function does I/O, it should accept and thread a `signal`**.
+- The user-cancel pattern, the canonical shape. A small worked example: a search-suggestions function that takes a `signal` parameter and passes it through to `fetch`. The caller (the React component, taught in Unit 3) holds an `AbortController` ref, aborts the previous one on each keystroke, creates a new one for the new request, and calls the function with the new signal. The lesson teaches the *function shape* — the React wiring lands in lesson 2 of chapter 025's effect-cleanup pattern.
+- `AbortError` discrimination at the catch. A `fetch` that aborts rejects with a `DOMException` whose `name === 'AbortError'`. The senior reflex: at every catch around an abortable call, the first branch distinguishes the abort from a real failure.
+  - **The shape.** The `try`/`catch` form introduced in lesson 3 of chapter 007 (full treatment in lesson 1 of chapter 008) wraps the abortable call: `catch (err) { if (err instanceof Error && err.name === 'AbortError') return; throw err }` — the abort is intentional; treat it as a no-op. Anything else is a real failure and should propagate.
+  - The cross-realm `instanceof DOMException` gotcha lives in lesson 2 of chapter 008; here, name the `error.name` check as the portable form.
+  - Why `name` and not `instanceof`: `DOMException` is a browser type; `AbortError` in Node (from `node:fs`, the `pg` driver, etc.) can be different concrete classes that share the `name`. The `name` check is the durable form across the SaaS stack.
+- `AbortSignal.timeout(ms)` — the 2026 timeout pattern. A static factory that returns a signal that auto-aborts after `ms` milliseconds. The canonical shape: `fetch(url, { signal: AbortSignal.timeout(5000) })`. No controller to manage, no `Promise.race`, no `setTimeout`/`clearTimeout`/cleanup dance. One line. The lesson states once that **this is what replaces the legacy `Promise.race` timeout pattern from lesson 2 of chapter 007**.
+- `AbortSignal.any([...signals])` — composition. The 2026 static factory that creates a signal which aborts when any of the input signals abort. The senior reach when a single operation needs to be canceled by *any of* user cancellation, timeout, or shutdown.
+  - **The canonical SaaS shape:** `const signal = AbortSignal.any([userController.signal, AbortSignal.timeout(30_000), serverShutdownSignal])`. The fetch (or the AI stream, or the database query) aborts the moment any of the three sources fires. Forward link to lesson 1 of chapter 106 (AI streaming) where this composes user-cancel and stream-timeout.
+- `AbortSignal.abort(reason?)` — the static factory for a pre-aborted signal. The reach: passing an already-aborted signal to skip the call entirely (a guard against starting work the caller already knows it doesn't want). Named in one line.
+- Propagation discipline. Every `async` function in the chain that *does* I/O should accept `signal` and pass it through. A function that only awaits work it already kicked off doesn't need to thread the signal — but the moment it adds an I/O step, it does. The senior reflex: when authoring an async function, **the `signal` parameter is part of the signature, not an afterthought**. Forward link to chapter 043 (Server Actions) where every action accepts and threads a signal.
+- The cleanup contract — what cancellation guarantees and what it doesn't. Stated plainly.
+  - **Guaranteed.** The signal's `'abort'` event fires; consumers that registered a listener (or used `{ signal }`) stop their pending work.
+  - **Not guaranteed.** Work already completed isn't reversed. A database query that already wrote a row doesn't roll back because the signal aborted. The senior reflex: cancellation prevents *further* work, not work already done. For "undo what was done," the right tool is a transaction (lesson 4 of chapter 039) or compensating action.
+- The "Why not Promise cancellation?" aside, in one paragraph. Promises in JavaScript do not natively support cancellation — the design predates `AbortSignal`. The pattern in 2026 is that the *operation* is canceled via its signal, and the Promise the operation returned rejects with `AbortError`. The student should leave knowing that **the unit of cancellation is the work, not the Promise**.
 
 What this lesson does not cover:
 
-- The full prototype surface of `Set` and `Map`. The eight + seven listed methods are the entire daily reach.
-- Iteration helpers chained off `Set` and `Map`. Owned by lesson 5 of chapter 007 (the ES2025 `Iterator.prototype` surface).
-- Custom hash functions and equality for `Map` keys. JavaScript uses SameValueZero — named once. There is no way to override; if value-equality keying is needed, key by a canonical string form.
-- Production-grade LRU and TTL implementations. Named in Unit 15.
-- Concurrent data structures and the `SharedArrayBuffer` surface. Out of scope.
+- The React-side wiring (effect cleanup, ref-held controllers, request deduplication). lesson 2 of chapter 025 owns it.
+- The Drizzle and `pg` cancellation specifics (lesson 4 of chapter 039 names the connection-level effect briefly).
+- Server-side request cancellation in Next.js (Server Actions, route handlers — Unit chapter 043 and chapter 046).
+- The AI SDK's streaming cancellation contract (Unit chapter 106).
+- Background-job cancellation (`ctx.run.abortSignal` from Trigger.dev). lesson 5 of chapter 066 owns it.
+- Authoring custom abort reasons and reading `signal.reason`. Named in one line — `controller.abort(new Error('user-canceled'))` makes the reason readable in the catch; the deeper custom-error story is in lesson 2 of chapter 008.
+- Polyfills for environments missing `AbortSignal.timeout` or `AbortSignal.any`. Both are universally supported in Node 22+ and modern browsers in 2026; no polyfill discussion.
 
-Pedagogical approach:
+Pedagogical approach: Pattern archetype. Open with the search-suggestions race condition in prose — a concrete production failure mode the student can picture. Show the controller/signal split as one small `ArrowDiagram` or annotated SVG (controller on one side, signal threaded through three consumers — a `fetch`, an `addEventListener`, an `AbortSignal.any` composition). Walk the canonical user-cancel shape as a labeled code block of a small `searchSuggestions(query, signal)` function and the caller pattern that creates a fresh controller per keystroke. The `AbortError` discrimination gets a tight paired snippet showing the catch with and without the `name === 'AbortError'` branch — the version without it logs "search failed" on every keystroke and the user sees the noise. Walk `AbortSignal.timeout(ms)` and `AbortSignal.any([...])` as two adjacent code blocks with the canonical SaaS shape (user signal + timeout + shutdown). Use a `script-coding` exercise where the student takes a function that does a `fetch` with no signal and refactors it to accept `signal`, pass it through, and discriminate `AbortError` at the catch. Tests verify that an aborted call rejects with `AbortError` and that the signal-less version leaks the request. Close with a `Matching` exercise pairing five scenarios ("user typed a new search query," "request taking longer than 30 seconds should fail," "server is shutting down, drain in-flight work," "one-shot event listener that auto-removes on cancel," "compose user-cancel and timeout into one signal") to the right `AbortController` / `AbortSignal.timeout` / `AbortSignal.any` / `{ signal }` listener move. Optional `SandboxCallout` with a working `fetch`/`AbortController` playground where the student aborts an in-flight request and watches the rejection land.
 
-Decision archetype. Open with the four-way pick (object, array, `Set`, `Map`) as a small decision-tree diagram — questions are "Is the key dynamic-string?", "Are you doing membership or set algebra?", "Are the keys objects?". State the trigger for each container in one sentence. The ES2025 Set methods earn one tight enumerated block — each method named with a one-line trigger and an example like `activeUsers.intersection(adminUsers)`. The `Map.groupBy` example uses a non-string key (a `Date`) to land the trigger. Walk `WeakMap` with one short snippet of the DOM-element-keyed cache. The serialization watch-out lands in a callout. Close with a `Buckets` exercise sorting eight data shapes into the right container: e.g. "set of user IDs to filter against," "lookup table from order ID to row," "cache of computed metadata per DOM node," "count occurrences of words in a string" — the sort is the senior-reflex install.
-
-Estimated student time: 35 to 40 minutes.
-
----
-
-## Lesson 5 — Iteration and the lazy helpers
-
-Learn the iteration protocol behind every iterable, default to `for...of` for side effects, and reach for the ES2025 `Iterator.prototype` helpers when the input is large, lazy, or short-circuited.
-
-Topics to cover:
-
-- The senior question. Two bugs from the same root. First, a function reads a million-row stream into memory by calling `.toArray()` early in the pipeline, then `.filter`s down to ten — nine hundred ninety-nine thousand nine hundred ninety rows allocated for nothing. Second, a developer writes `for (const k in obj) { ... }` to iterate an object's keys and the loop picks up an inherited property added by a polyfill. Both are iteration bugs. The lesson installs the iteration protocol, the `for...of` default, and the ES2025 lazy-helper surface that lands the right reach for the streaming case.
-- The iteration protocol, in one paragraph. Anything with a `[Symbol.iterator]()` method returning an iterator is *iterable*. An iterator is anything with a `.next()` method returning `{ value, done }`. Every array, string, `Map`, `Set`, `arguments` object, `NodeList`, generator function return value, and `URLSearchParams` instance implements the protocol. Custom iterables are rare in application code; the protocol matters because it's *what `for...of` consumes*. Named once, parked.
-- `for...of` as the default. The five-line model:
-  - Iterates the iterable, not its keys.
-  - Calls `.next()` until `done: true`.
-  - Supports `break`, `continue`, `return`, and `throw` inside the body.
-  - Plays naturally with `await` — `for...of` is the only loop form that doesn't fight `async/await`.
-  - Plays with destructure in the binding (`for (const [key, value] of map)`, `for (const { id, name } of users)`).
-- The `for...of` triggers, restated from lesson 4 of chapter 006 and lesson 3 of chapter 007 (one sentence each): side effects, async work, early termination, multiple statements per iteration. The course writes `for...of` over `.forEach` by reflex.
-- The four iteration entry points on an object.
-  - **`Object.entries(obj)`** for `[key, value]` pairs. The default.
-  - **`Object.keys(obj)`** when only keys are needed.
-  - **`Object.values(obj)`** when only values are needed.
-  - **`for...in`** — named *only* to be banned. Walks the prototype chain, returns string keys including inherited enumerable ones, almost always wrong in modern code. The senior course never writes `for...in`.
-- Generator functions, named at the narrow edge. The `function* name() { ... yield value; ... }` form returns an iterator on call. The two production sites a senior writes: custom iterables that are *easier to write as generators than as `[Symbol.iterator]` methods* (rare), and stateful resumable computations (rarer). Named in one paragraph with one short snippet — the student needs to recognize the syntax, not write generators by reflex.
-- The ES2025 `Iterator.prototype` helpers. The lazy method surface that ships natively in 2026 (Node 22+, Chrome 122+, every current browser). The trigger: the source is large, lazy, or short-circuited.
-  - **The methods.** `.map(fn)`, `.filter(fn)`, `.take(n)`, `.drop(n)`, `.flatMap(fn)`, `.reduce(fn, init)`, `.toArray()`, `.forEach(fn)`, `.some(fn)`, `.every(fn)`, `.find(fn)`, plus the static `Iterator.from(iterable)`.
-  - **The laziness.** Each helper returns a new iterator. Nothing materializes until a terminal step (`.toArray`, `.reduce`, `.forEach`, `.some`, `.every`, `.find`, or a `for...of`) pulls the chain.
-  - **The trigger restated.** When the source is a generator, a large file stream, a paginated API, or a sequence whose total size is unknown, the array-method chain materializes the wrong thing. The iterator-helper chain pulls only what the terminal step asks for.
-  - **The reach.** Wrap any iterable with `Iterator.from(source)` to enter the helper chain. The example: `Iterator.from(stream).filter(isError).take(10).toArray()` to grab the first ten errors from a stream without buffering the stream.
-- The "stay with arrays" reminder. Most application data fits in memory, and `.map`/`.filter` over an array is the right reach. The iterator helpers earn their place when the source itself is lazy. Don't reach for them by reflex on a 100-element array — the eager form reads better and runs comparably.
-- The async iteration cousin (`for await...of` and `AsyncIterator`). Foreshadowed in one paragraph — streamed fetch responses, server-sent events, paginated APIs. Full treatment in lesson 3 of chapter 011. The course does not teach the async `Iterator.prototype` helpers (the spec for async helpers shipped later and the surface is identical-shaped); one sentence is enough.
-- Forward links. Streamed `ReadableStream` consumption in lesson 1 of chapter 019. Server-sent events in lesson 2 of chapter 019. The `for await...of` paginated-API pattern in lesson 3 of chapter 011. The `Iterator.from(formData.entries())` shape in Server Actions in lesson 4 of chapter 034. One sentence each.
-
-What this lesson does not cover:
-
-- Writing custom iterables from scratch with `[Symbol.iterator]`. Rare; the generator form is the right reach when an iterable is needed.
-- The `Symbol.asyncIterator` and the full async-generator surface. Owned by Chapter 011.
-- Performance benchmarking of eager vs. lazy iteration. The trigger (lazy source / large size / short-circuit) is the call; microbenchmarks distract.
-- Stream backpressure and the WHATWG `ReadableStream` API. Lives in chapter 019.
-- Tree traversal and visitor patterns. Outside the SaaS daily reach.
-
-Pedagogical approach:
-
-Concept archetype. Open with the two bugs (eager-toArray-then-filter and `for...in` on object). State the iteration protocol in one paragraph. Walk the `for...of` model in five short bullets. The four object-iteration entry points get a tight comparison block. Generator functions get one short snippet for recognition. The ES2025 helpers earn the central beat — a Mermaid or hand-authored SVG showing a generator source piping through `.filter` → `.take(10)` → `.toArray`, with annotations on which step pulls and which step yields. Use a `predict-output` exercise on two short programs — one that materializes early with `.toArray`, one that stays lazy with `Iterator.from` — and the student predicts how many times the source generator's `yield` fires. Close with a `script-coding` block where the student rewrites a buffered-then-filtered chain into the lazy form and watches the `console.log` inside the source fire fewer times.
-
-Estimated student time: 30 to 35 minutes.
+Estimated student time: 40 to 50 minutes.
 
 ---
 
-## Lesson 6 — Regex: the modern flavor
-
-Write 2026-flavor regex with named capture groups, lookarounds, the `u` and `v` Unicode flags and property escapes, the `.matchAll` iterator surface, and the boundary where a parser replaces the regex.
-
-Topics to cover:
-
-- The senior question. Regex is the place juniors over-reach and seniors *deliberately* under-reach. The common bug shapes — a username pattern that allows emoji and breaks downstream, an email regex that misses a real address, an HTML-parsing regex that misses a `<` inside an attribute. The lesson teaches the modern regex flavor a 2026 senior actually writes (small, anchored, named-grouped, Unicode-aware) *and* the threshold where a regex stops being the right tool and a real parser replaces it.
-- The two construction forms. The literal `/pattern/flags` is the default — short, the flags are visible, the regex compiles once. The constructor `new RegExp(pattern, flags)` is the reach when the pattern is built from variables. Watch-out: with the constructor, backslashes double (`new RegExp('\\d+')` not `new RegExp('\\d+')` — backslash is a string escape too). The senior reach: literal regex by default, constructor only when interpolation is required.
-- The flag surface. Six flags the course actually reaches for.
-  - **`g` (global).** Required for `.matchAll` and global `.replaceAll(regex, ...)`. Without it, `.match` returns only the first match.
-  - **`i` (case-insensitive).** The daily reach for human input.
-  - **`m` (multiline).** Changes `^` and `$` to match at every line, not just at the string boundaries.
-  - **`s` (dotAll).** Makes `.` match newlines. Required for any regex that spans lines.
-  - **`u` (unicode).** Enables Unicode mode — full code-point matching, validation of escape sequences, `\p{...}` property escapes. Always on for human text.
-  - **`v` (unicode sets, ES2024).** Successor to `u`. Enables set operations inside character classes (intersection `&&`, difference `--`, nested classes), properties-of-strings (`\p{RGI_Emoji}`), and fixed safer escape semantics. Universally available in 2026 (Chrome 117+, Firefox 119+, Safari 17.4+, Node 20.12+). The senior reach over `u` when matching emoji sequences or composing classes; otherwise `u` is fine.
-- The two flags do *not* go together — `v` is a strict upgrade and is mutually exclusive with `u` at the API level (using both is a syntax error). The course writes `u` by default and switches to `v` when the trigger fires.
-- Named capture groups. The senior form for any regex that captures structure. `/(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})/`.  Accessed by name on the match result (`match.groups.year`). Reads at the call site; refactor-safe (renaming a group is a one-place change); and TypeScript-friendly (the groups object is typed where the type system can infer the pattern). The senior never reaches for `match[1]`, `match[2]` in 2026 except in the rarest of cases.
-- Backreferences, named and indexed. `\k<name>` for named, `\1` for indexed. Useful for matching repeating patterns (HTML tag pairs, repeated words). One short snippet, one sentence on the watch-out: regex backreferences have polynomial worst-case complexity on adversarial input (the ReDoS class of bugs).
-- Lookarounds. The four forms.
-  - **`(?=...)`** positive lookahead — assert what follows.
-  - **`(?!...)`** negative lookahead.
-  - **`(?<=...)`** positive lookbehind — assert what precedes.
-  - **`(?<!...)`** negative lookbehind.
-- All four ship in every runtime the course targets. The senior reach when the surrounding context is part of the match condition but shouldn't be part of the captured text — e.g. "match a number that's followed by `px` without capturing the `px`."
-- Unicode property escapes (`\p{...}` under `u` or `v`). The categorical primitive. `\p{Letter}` (any letter in any script), `\p{Number}`, `\p{White_Space}`, `\p{Emoji}`, `\p{Script=Latin}`. The senior reach over `[a-zA-Z]` for any human text — `[a-zA-Z]` misses accented letters, every non-Latin script, and the bugs land in production the moment a non-English user signs up.
-- The `v`-flag set operations, named at the trigger. `[\p{Letter}&&\p{ASCII}]` (intersection — Latin letters only). `[\p{Letter}--\p{ASCII}]` (difference — non-ASCII letters). `[[\p{Letter}][\p{Number}]]` (nested classes — union by default). One short snippet showing one operation; this is a recognition surface, not a daily-write surface.
-- The result surface — three methods, three behaviors.
-  - **`pattern.test(string)`** — boolean. The senior reach for "does the string match." Fastest, cleanest. Watch-out: a `g`-flag regex carries state across calls of `.test()` and `.exec()` (`lastIndex`); avoid `g` on patterns reused with `.test`.
-  - **`string.match(pattern)`** — returns the first match (without `g`) or all matches as strings (with `g`). Without `g`, the result has groups, indices, and the captured groups; with `g`, the result has just the matched strings (no group access). The asymmetry is the footgun.
-  - **`string.matchAll(pattern)`** — requires `g`, returns an iterator of full match objects (each with groups, indices, captures). The senior reach over `.match` with `g` when any captured group is needed.
-- The `.replaceAll(pattern, replacement)` reach. With a string-replacement, `.replaceAll('a', 'b')` is the senior form for non-regex replacement. With a regex, the pattern must have the `g` flag (TypeScript errors otherwise) — the strict form prevents the historical `.replace(/a/, 'b')` bug that replaced only the first occurrence. The replacement function form (`(match, ...groups) => string` or `(match, ...indexed, offset, full, groups) => string`) is named in one paragraph.
-- The "drop the regex" threshold. The two triggers that flip the choice.
-  - **Parsing structured formats.** Email, URL, HTML, JSON, CSV, Markdown — all have parsers built in (`URL`, `JSON.parse`, `DOMParser`) or as standard libraries. The senior never writes a regex against any of these. The cost of a wrong regex on a structured format is silent acceptance of malformed input.
-  - **The regex is becoming unreadable.** When the pattern hits twenty characters of escapes and the next reviewer can't see what it matches, the threshold is crossed. The fix: a small parser (a few `.indexOf`/`.slice` calls, or a real tokenizer if the format earns it).
-- ReDoS in one sentence. Adversarial input on certain pattern shapes (nested quantifiers like `(a+)+`) causes catastrophic backtracking. The 2026 mitigation: build patterns that don't nest quantifiers, avoid unbounded `.*` followed by alternation, and run untrusted input through length limits before the regex sees it.
-- Forward links. Zod's `.regex(...)` and `.email()` / `.url()` validators (Unit 7) — most string validation in the course's code happens at the schema, not at hand-rolled regex. URL parsing with `new URL(...)` (Unit chapter 016). The `dedent` and `sql` tagged-template parsers from lesson 5 of chapter 005 (named) showed where parsers replace regex on multi-line strings. One sentence each.
-
-What this lesson does not cover:
-
-- Regex internals (NFA vs. DFA, the V8/JSC engine differences). The course uses regex as a tool; engine choice doesn't affect the senior reach.
-- Sticky flag `y` and the `lastIndex` write surface. Niche; named in one line if at all.
-- The `d` flag (hasIndices) for match positions. Useful for highlighting/tooling but rare in application code; named in one line.
-- Regex performance tuning beyond the ReDoS sentence.
-- Building regex from regex literals at runtime (`new RegExp(literal.source + ...)`). The course composes regex from strings under the constructor form; the literal-composition path is unusual.
-
-Pedagogical approach:
-
-Mechanics archetype with a strong Decision close. Open with the "regex is over-reached" framing and one bug example (a username regex `[a-zA-Z0-9]+` that rejects every non-Latin name). Walk the two construction forms in one short beat. The flag surface gets a tight enumerated block — six flags, one line each, with the `u`/`v` distinction highlighted. Named capture groups get one full snippet showing the date-parsing example. Lookarounds get one snippet of negative lookahead (match a number not followed by `px`). The `\p{...}` property escape lands with a before/after — `[a-zA-Z]` over a list of names where half fail, then `\p{Letter}` with the same list passing. The result-surface asymmetry (`.match` with vs. without `g`) earns a `predict-output` exercise. State the "drop the regex" threshold with two real examples (parse email with regex vs. with Zod's `.email()`; parse a date with regex vs. with `Temporal.PlainDate.from`). Close with a `code-review` exercise: a small validation function reaching for a regex where a parser belongs, refactored to use `new URL` instead. The refactor is the lesson's confirmation.
-
-Estimated student time: 35 to 40 minutes.
-
----
-
-## Lesson 7 — Quizz
+## Lesson 5 — Quizz
 
 Top 10 topics to quiz:
 
-1. Dot-access default vs. bracket-access triggers (dynamic key, non-identifier key) and the `Object.hasOwn` reach over `'foo' in obj` for own-property checks.
-2. The three object-construction sugars (shorthand, computed keys, spread) and the "right-most key wins" rule on spread merge; `Object.groupBy` for string-keyed grouping.
-3. The four ES2023 non-mutating array methods (`.toSorted`, `.toReversed`, `.toSpliced`, `.with`) as the React-state-safe twins of the mutating originals.
-4. `.at(-1)` for last-element access and `noUncheckedIndexedAccess` requiring `?? fallback` or narrowing on `arr[i]` reads.
-5. The eight array methods grouped by what they produce (transform, subset, reduce, find/test, side-effecting) and the four `for...of` triggers (async, early break, multiple statements, custom step).
-6. The `.filter` type-predicate shape (`(x): x is T => ...`) needed to narrow `(T | null)[]` to `T[]`.
-7. The triggers that earn `Set` (dedup, membership check inside a loop, set algebra) and `Map` (non-string keys, frequent insert/delete, insertion-order contract); the ES2025 Set methods (`union`, `intersection`, `difference`, `symmetricDifference`, `isSubsetOf`, `isSupersetOf`, `isDisjointFrom`).
-8. `WeakMap` for GC-coupled identity-keyed caches; the serialization watch-out (`JSON.stringify(new Map())` returns `'{}'`).
-9. The iteration protocol (`Symbol.iterator`, `.next()` returning `{ value, done }`), `for...of` as the default, the ban on `for...in`, and the ES2025 `Iterator.prototype` lazy helper surface (`Iterator.from(...).filter(...).take(n).toArray()`) for lazy/large/short-circuit sources.
-10. The 2026 regex flavor: named capture groups, the `u` and `v` flag distinction, `\p{Letter}` property escapes over `[a-zA-Z]` for human text, the `.match`-with-`g` vs. `.matchAll` asymmetry, and the "drop the regex for a parser" threshold (URL, JSON, email-via-Zod).
+1. The three-part runtime model (call stack, microtask queue, macrotask queue) and the tick recipe that drains microtasks completely between macrotasks.
+2. `await` as microtask-paced suspension: the code before the first `await` runs synchronously, the code after each `await` runs as a microtask, and a pre-resolved Promise does not skip the queue.
+3. The Promise three-state model (pending, fulfilled, rejected) and the permanence of settled state that makes the combinators predictable.
+4. The four combinators with the trigger for each: `Promise.all` (every result needed), `Promise.allSettled` (every result reported), `Promise.any` (first success), `Promise.race` (first settlement of any kind, with the note that `AbortSignal.timeout` replaces the legacy timeout use case).
+5. `Promise.withResolvers()` as the modern replacement for the deferred-pattern boilerplate, with the canonical event-driven and externally-resolved sites.
+6. The parallel-by-default rule: consecutive `await`s with no data dependency between them get rewritten to `Promise.all`, turning sum-of-latencies into max-of-latencies.
+7. The N+1 trap inside `.map(async ...)` and the three fixes: bounded `Promise.all`, `pMap` with a concurrency cap, or a single batched query at the data-layer.
+8. `for await...of` for sequential consumption of async iterables (streams, paginated SDK responses), with the watch-out that it's the wrong shape for independent parallel work.
+9. `return await` inside a `try`/`catch` so the catch actually catches, and the stack-trace discipline that justifies it outside `try`/`catch` too.
+10. The `{ signal }` parameter shape every 2026 API speaks, the `AbortError` `name`-based discrimination at the catch, and the canonical `AbortSignal.any([userSignal, AbortSignal.timeout(ms), shutdownSignal])` composition.
 
 ---
 
 ## Total chapter time
 
-Roughly 195 to 225 minutes across the six content lessons plus the quiz. The chapter splits naturally across two sittings — lesson 1 of chapter 007 + lesson 2 of chapter 007 + lesson 3 of chapter 007 (the object/array spine) as one evening, lesson 4 of chapter 007 + lesson 5 of chapter 007 + lesson 6 of chapter 007 (the conditional containers and the regex tool) as the second. The quiz closes the chapter in 15 to 20 minutes. At the end the student picks the right container by reflex, reaches for the senior method on each, recognizes the React-state-forbidden mutating methods, knows the threshold at which `Set` and `Map` earn their place, and writes Unicode-correct regex without reaching for it where a parser belongs.
+Roughly 150 to 190 minutes across the four content lessons plus the quiz. The chapter splits naturally across three evenings — lesson 1 of chapter 007 (the event loop and microtask queue) as a tight first sitting that earns its own evening because the mental model is load-bearing for everything after, lesson 2 of chapter 007 + lesson 3 of chapter 007 (Promises and `async`/`await` patterns) as the second sitting since they share the parallel-by-default rule, and lesson 4 of chapter 007 (cancellation) plus the quiz as the third. At the end the student can predict the execution order of any small async program, pick the right combinator for any "what counts as done" contract, reach for `Promise.withResolvers()` instead of the deferred-pattern boilerplate, rewrite sequential `await`s into `Promise.all` when no data flows between them, bound parallelism with `pMap` or pivot to a batched query, iterate streams and paginated APIs with `for await...of`, thread `AbortSignal` through every I/O call with `AbortSignal.timeout(ms)` and `AbortSignal.any([...])` as the composition reach, and discriminate `AbortError` at the catch. Chapter 008 lands on this floor and installs the error-channel discipline (throw vs. return, the `unknown`-in-catch narrow, custom domain errors) on top of the async substrate.

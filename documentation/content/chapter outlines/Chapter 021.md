@@ -1,416 +1,284 @@
-# Chapter 021 — JSX and HTML semantics
+# Chapter 021 — The visual surface
 
 ## Chapter framing
 
-Unit 4 opens here, bridging the substrate of Units 1–3 to the UI layer. JSX and HTML are taught as one surface viewed from two sides: the student writes JSX, the browser receives HTML, and every prop, element, and attribute is a decision read by the browser, the accessibility tree, the crawler, and React's reconciler. Core threads run through every lesson: semantics over visuals (reach for `<button>`, `<a>`, `<nav>`, `<main>`, `<ul>`, `<table>` first; reach for `<div>`/`<span>` only when no semantic element fits); accessibility installed at the call site (Chapter 031 picks up the cross-cutting baseline on top); the JSX-as-property-syntax model and rename table from lesson 2 of chapter 018 (`className`, `htmlFor`, camelCase events, boolean attributes); lists with stable data-tied keys (`key={row.id}`, never the index); forms as a contract where `name` attributes key the `FormData` Chapter 048 will read; and the Elements panel plus the accessibility tree as the daily recognition instruments. The chapter installs the minimum viable element vocabulary a 2026 SaaS UI ships — document structure, landmarks, headings, buttons, links, lists, forms, `data-*` and `aria-*`, tables — and refuses the long-tail HTML catalog.
+Chapter 020 closed with the layout stack — where elements sit and how big they are. Chapter 021 is the visual surface that sits on top: how text reads, how colors render, how the element decorates itself, how it responds to user state, how it moves, and how it adapts across viewports and containers. The senior framing is that the 2026 visual layer is settled — system font stacks plus one or two `next/font` faces with `font-display: swap` baked in; OKLCH as the color space the design tokens live in, with `color-mix()` as the runtime mixer; `border-radius` and `box-shadow` as the only decoration utilities a senior reaches for; `:focus-visible` as the canonical focus reflex and `:has()` as the parent-selector that retired a generation of JavaScript class toggles; Tailwind's `animate-*` plus `tw-animate-css` as the shadcn-compatible animation surface; responsive variants for page-level breakpoints and container queries for component-level adaptation. Every lesson teaches the CSS primitive, names the Tailwind v4 utility that compiles to it, and surfaces the senior reach.
 
-Six teaching lessons plus a quiz, ordered by dependency: lesson 1 of chapter 021 installs the JSX surface every later lesson rides on; lesson 2 of chapter 021 the Next.js root layout (which lands again at Server Components, the metadata API, and `next-themes`); lesson 3 of chapter 021 semantic landmarks and the heading hierarchy; lesson 4 of chapter 021 buttons, links, and lists; lesson 5 of chapter 021 forms as the element contract Chapter 048 will wire; lesson 6 of chapter 021 folds tables into the data-and-aria lesson because tables are short enough in 2026 SaaS code that a standalone lesson would be padding, and they share the "structural markup for assistive tech" frame with `aria-*`. Senior anchors seeded here land again across later units (reconciliation in lesson 2 of chapter 027, resetting state with key in lesson 5 of chapter 027, Server Components in chapter 034, the metadata API in lesson 9 of chapter 038, native forms in chapter 048, security headers in lesson 1 of chapter 085, the full ARIA treatment in lesson 3 of chapter 031). The deliverable is fluency: the student writes a root layout, a navigation surface, and a sign-in form in JSX with the right elements, the right props, the right ARIA, and the right keys — and recognizes each of those choices as a decision, not a default.
+Several threads run through every lesson. Tokens flow from `:root` and recolor on `.dark` (the `next-themes` plumbing was installed in lesson 6 of chapter 018 and the cascade machinery in chapter 019) — typography, color, shadows, and motion all read tokens rather than literal values. `:focus-visible` is the default focus reflex on every interactive element. `prefers-reduced-motion` and `prefers-color-scheme` are first-class media queries, not afterthoughts. Container queries are the component-level reach when a card or sidebar needs to adapt to its parent, not the viewport. Animation lives in CSS (`@keyframes` declared in `@theme`, compiled to `animate-*` utilities), not JavaScript. The chapter avoids the long tail — no calligraphy effects, no font-display deep dives, no historical detours through `@font-face`, no JS animation libraries. The chapter ships seven teaching lessons plus the quiz, in dependency order: typography (lesson 1 of chapter 021), color (lesson 2 of chapter 021), borders and shadows (lesson 3 of chapter 021), pseudo-classes for interaction state (lesson 4 of chapter 021), animation (lesson 5 of chapter 021), media queries and responsive variants (lesson 6 of chapter 021), container queries (lesson 7 of chapter 021). Forward references land in lesson 3 of chapter 022 (CVA variants for component-level styling), lesson 5 of chapter 022 (portals for animated dialogs), chapter 027 (the shadcn surface and the accessibility baseline), lesson 7 of chapter 034 (`next/font` at depth), and chapter 029 (the app-router where responsive layouts ship).
 
 ---
 
-## Lesson 1 — JSX is property syntax for HTML
+## Lesson 1 — Type, scale, and the reading surface
 
-The JSX surface every later lesson rides on: the rename table (`className`, `htmlFor`, camelCase events), curly-brace expressions, fragments, void self-close, list keys tied to data, and the `&&` zero trap.
+Teaches the system-plus-`next/font` stack, Tailwind's `text-*`/`leading-*`/`tracking-*` scales, `text-balance` and `text-pretty` reflexes, `max-w-prose` reading width, and the `truncate` / `line-clamp-*` / `tabular-nums` utilities the student writes daily.
 
 Topics to cover:
 
-- **The senior question.** The student writes `<button className="btn" onClick={handleSubmit}>Save</button>` and the browser receives `<button class="btn">Save</button>` with a click handler attached at the React root. The lesson names JSX as property-syntax sugar that compiles through the JSX transform into element descriptors React renders into the DOM, and walks the differences from HTML — each one a specific bug class.
-- **JSX in one paragraph.** JavaScript with an XML-like element syntax. The React automatic runtime (run by Turbopack) turns `<div className="row">Hello</div>` into `jsx('div', { className: 'row', children: 'Hello' })`. The student writes JSX; the transform handles the rest.
-- **Element name as tag vs. component.** Lowercase names (`<div>`, `<button>`) are HTML tags; uppercase names (`<Button>`, `<SignInForm>`) are React components. The capitalization rule is structural. Chapter 026 owns components in depth.
-- **Props are property syntax** — the rename table from lesson 2 of chapter 018 operating on the JSX surface:
-  - **`className`** (not `class` — reserved word; DOM property is `className`).
-  - **`htmlFor`** (not `for` — reserved word).
-  - **`tabIndex`, `readOnly`, `maxLength`, `colSpan`, `rowSpan`** — camelCase matches the DOM property name, not the HTML attribute.
-  - **`data-*` and `aria-*`** — stay kebab-case in JSX; passed through to the DOM as-is.
-  - **Event props** — `onClick`, `onChange`, `onSubmit`, `onKeyDown`, `onFocus`, `onBlur`. CamelCase, value is a function. lesson 6 of chapter 027 owns synthetic events; lesson 3 of chapter 018 owns the DOM event model.
-- **JavaScript in `{}`.** The expression slot. Valid uses: interpolation as a prop value (`href={profileUrl}`), interpolation as a child (`{user.name}`), conditional rendering with `&&` (`{isAdmin && <AdminPanel />}`), ternaries for two-branch rendering (`{user ? <Dashboard /> : <SignInPrompt />}`), nested function calls (`{formatCurrency(amount)}`). Statements are not allowed.
-- **The `&&` short-circuit and the `0` trap.** `{items.length && <List />}` renders the literal `0` when the array is empty. Senior fix: explicit boolean coercion (`items.length > 0 && ...`) or a ternary.
-- **Rendering lists with `.map` and the key rule.**
-  - **The pattern.** `{rows.map(row => <Row key={row.id} {...row} />)}`.
-  - **The key rule.** Keys must be stable, sibling-unique, and tied to the data — usually `key={row.id}`.
-  - **The array-index trap** — the canonical wrong key; bug fires on filter/sort/reorder (the row at position 0 changes but React reuses the same DOM node and stale state).
-  - **When data has no natural ID** — generate one at fetch time and persist (senior default), or `crypto.randomUUID()` at creation (lesson 1 of chapter 020). Never `Math.random()`, never the index.
-  - **Forward references.** lesson 2 of chapter 027 owns reconciliation; lesson 5 of chapter 027 owns the resetting-state-with-`key` pattern.
-- **Fragments — `<>...</>`.** Group siblings without a wrapping `<div>`. Use `<React.Fragment key={...}>` when the fragment itself needs a key (fragments in a `.map`). A `<div>` wrap purely to satisfy JSX's "one root" rule pollutes the DOM tree and breaks CSS/a11y assumptions.
-- **Void elements and self-closing.** `<img>`, `<input>`, `<br>`, `<hr>`, `<meta>`, `<link>`, `<source>`, `<col>`, `<area>`, `<base>`, `<embed>`, `<param>`, `<track>`, `<wbr>` must self-close in JSX. Non-void elements may self-close when childless.
-- **`dangerouslySetInnerHTML`** — the explicit XSS escape hatch. JSX children are escaped by default; legitimate sites are sanitized Markdown (`react-markdown`) and CMS-sanitized rich text (`dompurify` for user input). lesson 4 of chapter 058 owns the security depth.
-- **Comments in JSX.** `{/* ... */}` inside JSX trees; usual `//` and `/* */` outside.
-- **The JSX type system.** TypeScript types JSX via `JSX.IntrinsicElements` for built-ins and the component's prop type for components — autocomplete on props, compile-time errors on typos like `classname`.
-- **`children` as a prop.** Content between a component's opening and closing tags arrives as `children`. lesson 1 of chapter 026 owns the children-as-API pattern.
-- **The `style` prop** — an object with camelCase CSS property names, not a string. Rare in the course's stack (Tailwind utilities are the default — Chapter 022); reserved for dynamic values that don't fit a utility.
-- **The watch-outs a senior names:**
-  - The `&&` `0` trap — coerce to boolean when the left-hand side is numeric.
-  - The array-index key trap — keys tied to data, never to position.
-  - Forgetting the self-close on void elements (JSX parse error).
-  - `className` not `class`, `htmlFor` not `for` — the two most-common typos.
-  - Numbers vs. strings — `<div data-count={5}>` produces `data-count="5"` (attributes are strings); `<div>{5}</div>` produces a text node.
-  - `null`/`undefined`/`false`/`true` render nothing; accessing properties on `undefined` throws (guard with `?.` or `&&`).
-  - Multiple roots without a fragment is a syntax error.
-  - `onClick={handleClick()}` calls on every render — pass the reference or wrap in an arrow.
-  - The whitespace rule — JSX collapses whitespace between elements; use explicit `{' '}` when spacing matters.
-  - JSX expressions accept expressions, not statements — use ternaries, `&&`, or extract above the return.
+- **The senior question.** A heading rendered in Inter at `text-3xl font-semibold tracking-tight` looks tight; the same heading with `text-balance` reflows so no line is a one-word orphan. The lesson installs the typography surface a senior writes in 2026 — the font stack (system plus one display face via `next/font`), the type scale, line-height and letter-spacing reflexes, and the modern `text-wrap` properties.
+- **The font stack — system first, one branded face via `next/font`.** Preflight wires `font-family: ui-sans-serif, system-ui, ...` as the default; the project usually ships one branded font (Inter, Geist, Manrope) loaded through `next/font/google` and exposed as a CSS variable in `@theme`. Variable fonts are the 2026 reach — one file, every weight, no FOUT. `next/font` at depth lives in lesson 7 of chapter 034; this lesson names the surface (declaration, variable, `@theme` binding) and trusts that lesson for the wiring.
+- **The Tailwind type scale.** `text-xs` through `text-9xl` is one rem-based scale with paired `font-size` and `line-height` values. The senior writes off the scale; arbitrary values (`text-[17px]`) are a smell. The scale is editable via `@theme` for projects that want a denser or larger type system.
+- **`font-weight`, `font-style`, and the variable-font reach.** `font-thin` through `font-black` map to 100–900; variable fonts expose the full range without separate files. Italic is `italic`; underline is `underline` (the inherited text-decoration is named explicitly because the JSX student often expects the link to be unstyled by default after Preflight strips it).
+- **`line-height` — Tailwind's paired scale plus the `leading-*` override.** Every `text-*` ships with a sensible default `line-height`; `leading-*` overrides it. The reflex: body text wants `leading-relaxed` or `leading-7`; headings want `leading-tight` or `leading-none`. Long-form prose at `leading-loose` reads slowly on purpose.
+- **`letter-spacing` — `tracking-*`.** Tight tracking on large headings (`tracking-tight`, `tracking-tighter`), normal on body, loose tracking on small all-caps eyebrow labels (`tracking-wide`, `tracking-widest`). Negative values exist via bracket form for display type.
+- **`text-wrap: balance` and `text-wrap: pretty` — the 2026 reflex.** `text-balance` (Tailwind: `text-balance`) on headings under ten lines balances the line breaks so no orphan word sits alone; `text-pretty` on body paragraphs runs a slower wrapping algorithm that avoids end-of-paragraph orphans. The senior reach: `text-balance` on every `h1`/`h2`/`h3`, `text-pretty` on every long-form paragraph. Firefox shipped `pretty` in 2025; Baseline-newly-available in 2026.
+- **Reading width — `max-w-prose` and the 65ch heuristic.** Body text reads best at 60–75 characters per line. `max-w-prose` (= `max-w-[65ch]`) is the senior reflex on any long-form column. Wider columns lose the eye between line ends.
+- **Text utilities the student actually writes.** `text-left` / `center` / `right`; `truncate` (one-line ellipsis with overflow-hidden); `line-clamp-*` (multi-line ellipsis, the canonical reach for card descriptions); `whitespace-nowrap` / `pre-wrap`; `break-words` for long URLs and emails; `uppercase` / `lowercase` / `capitalize`; `font-mono` for code and tabular numbers; `tabular-nums` (font-variant-numeric) for aligned digits in tables and stat cards.
+- **The Preflight typography reset cashed in.** Preflight removes margins on headings and paragraphs, strips list bullets, and inherits font properties through form elements (cross-reference to lesson 3 of chapter 019). Every typography utility the student writes is on top of that clean slate; no fighting browser defaults.
+- **Watch-outs:**
+  - `text-base` is the body default; the scale is a system, not a menu — staying on it is the cost of consistency.
+  - `font-display: swap` is the default `next/font` ships; FOUT is the price of not blocking render. Variable fonts plus `subset` cut the swap to imperceptible.
+  - `truncate` requires `min-w-0` on a flex item (same trap as lesson 3 of chapter 020); without it the text overflows the container.
+  - `line-clamp-*` uses `-webkit-line-clamp` under the hood — production-safe in 2026 but cross-browser by convention, not by spec name.
+  - Heading semantics live in lesson 3 of chapter 017; this lesson styles them, doesn't choose them.
+  - `tabular-nums` is the reflex for numeric tables and dashboards; without it, the digit `1` is narrower than `8` and columns misalign.
+  - Don't rely on `text-justify` — produces uneven word spacing on the web; reach for `text-pretty` instead.
 
 What this lesson does not cover:
 
-- The HTML document structure at the Next.js root layout (lesson 2 of chapter 021).
-- Semantic landmarks and heading hierarchy (lesson 3 of chapter 021).
-- The button/link/list element families (lesson 4 of chapter 021).
-- Forms (lesson 5 of chapter 021).
-- `data-*` and `aria-*` at depth (lesson 6 of chapter 021).
-- React components, props, and composition at depth (Chapter 026).
-- The render model and reconciliation (Chapter 027).
-- Synthetic events at depth (lesson 6 of chapter 027).
-- `children` as an API (lesson 1 of chapter 026).
-- The Tailwind class composition surface and `cn()` (lesson 3 of chapter 022).
-- The full XSS treatment and `dangerouslySetInnerHTML` security depth (lesson 4 of chapter 058).
-- The JSX transform mechanics, classic vs. automatic runtime configuration — out of scope; Next.js handles it.
+- `next/font` setup at depth (subsetting, preload, weight axes, `display` strategy) — lesson 7 of chapter 034.
+- Heading semantics and the outline (`h1`–`h6` choice, the document outline) — lesson 3 of chapter 017.
+- Link styling and `text-decoration` for `<a>` — lesson 4 of chapter 017 owns the element; this lesson covers `underline` as a utility.
+- The CSS `font-feature-settings` and OpenType features at depth — recognition only.
+- Custom `@font-face` declarations — `next/font` covers the cases; rare-case fallback only.
+- Text inputs and form element typography quirks — lesson 5 of chapter 017 and Preflight (lesson 3 of chapter 019).
+- Internationalization-driven font stacks (CJK, Arabic) — out of scope; the chapter assumes Latin script.
 
 ---
 
-## Lesson 2 — The Next.js root layout owns the document shell
+## Lesson 2 — OKLCH, color-mix(), and the alpha syntax
 
-The `app/layout.tsx` Server Component renders `<html lang>` and `<body>`, the metadata API writes the `<head>`, and `'use client'` belongs on a `<Providers>` child, not the root.
+Teaches OKLCH as the token storage form, `color-mix(in oklch, ...)` for runtime mixing, the `bg-blue-500/50` alpha syntax and how it compiles to `color-mix()`, semantic tokens over primitives, `opacity` vs. per-property alpha, and `prefers-color-scheme` vs. the `.dark` class.
 
 Topics to cover:
 
-- **The senior question.** A component returns `<h1>Welcome</h1>` and the browser renders a full page — `<html>`, `<head>` (with `<title>`, `<meta charset>`), `<body>`, the React tree, bundle scripts. In Next.js 16 App Router, `app/layout.tsx` and the metadata API author each piece. The lesson installs the document-structure model and names the senior watch-outs (hydration mismatches, third-party `<script>` injection, the misplaced `'use client'`).
-- **The HTML document structure in one paragraph.** Every page has the same outer shape: `<!DOCTYPE html>` then `<html lang>` wrapping `<head>` (with `<meta charset>`, `<meta viewport>`, `<title>`, other metadata) and `<body>` (visible content).
-  - **`<!DOCTYPE html>`** — standards-mode declaration. Next.js emits it.
-  - **`<html lang="en">`** — root element with document language; always set `lang`. For i18n (Chapter 088), rendered dynamically per locale.
-  - **`<head>`** — non-rendered metadata (`<meta>`, `<title>`, `<link>`, rare `<script>`).
-  - **`<body>`** — visible content; React tree mounts here.
-- **The Next.js App Router root layout.** `app/layout.tsx` defines the outermost shell: a default-exported `RootLayout` taking `{ children }: { children: React.ReactNode }` and returning `<html lang="en"><body>{children}</body></html>`. `React.ReactNode` is the type for anything React can render — JSX, strings, numbers, arrays, `null`/`undefined`; full treatment in lesson 1 of chapter 026.
-  - **Server Component by default** (lesson 1 of chapter 034) — no `'use client'`, no hooks, renders on the server to HTML.
-  - **Owns `<html>` and `<body>`**, exclusively. Nested layouts (lesson 4 of chapter 033) return JSX that slots inside `<body>`.
-  - **The `children` prop** — Next.js injects the page (or nested layout) via the framework convention.
-  - **The `lang` attribute** belongs here; for i18n, rendered from the URL/session locale.
-- **Metadata — the `<head>` content, declaratively.** Export a `metadata` object (typed as `Metadata` from `next`, with fields like `title`, `description`, `icons`) or a `generateMetadata` async function for dynamic per-route metadata. Next.js renders `<title>`, `<meta name="description">`, `<link rel="icon">`, Open Graph and Twitter tags. lesson 9 of chapter 038 owns the full surface.
-- **The `<meta charset>` and `<meta viewport>` defaults.** Next.js emits both automatically (UTF-8; `width=device-width, initial-scale=1`). `generateViewport` (lesson 10 of chapter 038) is the senior reach when per-route variation is needed — rare. lesson 6 of chapter 025 (responsive design) cashes in.
-- **The `<body>` and the React tree.** Three patterns inside `<body>`:
-  - The `{children}` slot.
-  - Global providers wrapping `{children}` — theme (`next-themes`, lesson 6 of chapter 022), query client (TanStack Query, Chapter 080), i18n (`next-intl`, Chapter 088).
-  - Persistent UI — navbar, toaster portal target (`<div id="toast-root" />`), global error boundary. Keep the root layout lean; push feature UI into nested layouts (lesson 4 of chapter 033).
-- **Font and style integrations.**
-  - **`next/font`** — load fonts at the root layout (`import { Inter } from 'next/font/google'`), invoke with `subsets`, apply the resulting `className` to `<html>` or `<body>`. Self-hosted by Next.js, subsetted, preloaded, CSS-variable-ready. lesson 7 of chapter 038 owns the depth.
-  - **Global styles** — the root layout imports `globals.css` (Tailwind v4 entry point — Chapter 022).
-- **The `'use client'` boundary doesn't belong on the root layout.** It poisons the whole tree as a client subgraph. Client concerns wrap in a `<Providers>` Client Component imported from a separate file and rendered as a child of `<body>`.
-- **What does NOT belong in the root layout.**
-  - Per-page metadata — overridden per-route by the page's `metadata` export.
-  - Per-page UI — use nested layouts.
-  - Heavy data fetching — every navigation pays; keep close to the page that needs it.
-  - Direct `<head>` JSX — use the metadata API (handles dedup, ordering, overrides).
-  - Client-only logic — push into `<Providers>`.
-- **Hydration and the root layout.** Renders on the server to HTML; React hydrates by walking the same tree client-side and attaching handlers. Per-request randomness or time-dependent content (`Date.now()`, `crypto.randomUUID()`, server-only API calls) in the root layout produces mismatch warnings. Fix: scope to a Client Component, or `suppressHydrationWarning` on the specific element (rare; `next-themes` in lesson 6 of chapter 022 uses it on `<html>` because the theme class is set by an inline script before hydration). lesson 8 of chapter 034 owns the depth.
-- **The `lang` attribute and i18n.** Hardcoded `<html lang="en">` for monolingual SaaS; dynamic from URL/session for i18n. Chapter 088 wires the depth.
-- **The watch-outs a senior names:**
-  - No `'use client'` on the root layout — poisons the tree.
-  - No `<head>` JSX directly — use the metadata API. Rare exceptions for `<link rel="preconnect">`/`dns-prefetch` performance hints that the API doesn't fully cover (use the metadata `other` field).
-  - Don't forget `lang` — missing it is an a11y regression.
-  - No dynamic per-request content in the root layout without the SSR-safety pattern — push into a Client Component.
-  - Don't import heavy server-only modules into the root layout — every navigation pays the cost.
-  - The metadata API is the source of truth for `<head>` — manual tags risk dedup/ordering issues.
-  - `<title>` belongs in the metadata API, not inline JSX.
-  - `<html>` and `<body>` only in the root layout; nested layouts render inside `<body>`.
-  - `React.ReactNode` is the type for `children`.
+- **The senior question.** A 2024 design token written as `--brand: #4f46e5` renders the same on every screen but can't be brightened by 8% without a JS-side color library; the 2026 form is `--brand: oklch(0.62 0.22 263)` and a hover state is `color-mix(in oklch, var(--brand), white 8%)`. The lesson installs OKLCH as the color space tokens live in, `color-mix()` as the runtime mixer, the modern alpha syntax, and `prefers-color-scheme` as the dark-mode primitive `next-themes` already wires up.
+- **OKLCH — the senior color space in 2026.** Three channels: L (lightness, perceptually uniform 0–1), C (chroma, 0 to ~0.4), H (hue, 0–360). Two reasons it's the default: changing one channel doesn't accidentally drift another (a 10%-lighter blue stays blue, unlike HSL); and OKLCH encodes the P3 wide-gamut colors modern displays can show. Tailwind v4 ships its entire default palette in OKLCH; shadcn does the same. Hex still ships in legacy code; the student reads it but writes OKLCH.
+- **`color-mix()` — runtime color mixing.** `color-mix(in oklch, var(--brand), white 10%)` is the 2026 form for hover/active/disabled variants without pre-computing every step. Reach: hover states (`color-mix(in oklch, var(--color), black 8%)`), tinted backgrounds (mix a brand color with the surface token), token-driven semitransparent borders. Tailwind v4 uses `color-mix()` internally for `bg-blue-500/50`-style opacity modifiers — the student is already calling it indirectly.
+- **The Tailwind alpha syntax — `bg-blue-500/50` and the `color-mix` translation.** Every color utility takes a `/N` suffix for alpha. The compiled output is `color-mix(in oklab, var(--color-blue-500) 50%, transparent)` — opacity composes correctly even when the base color is a token. Reaches: glass-morphism backdrops, dialog backdrops (`bg-black/50`), translucent borders.
+- **The semantic-token palette — `background`, `foreground`, `card`, `muted`, `primary`, `destructive`, etc.** Cross-reference to lesson 5 of chapter 018. Components reference semantic tokens, never primitives — `bg-card text-card-foreground border-border` not `bg-white text-zinc-900`. The lesson cashes in the model installed in chapter 018 with the modern color values it stores.
+- **`opacity` vs. alpha — the two roads and when each is right.** `opacity-50` (Tailwind: `opacity-*`) makes the entire element semi-transparent including its children — the right reach for disabled buttons and pending UI states. Per-property alpha (`bg-blue-500/50`) only fades the one declaration — the right reach for a translucent overlay where text inside must stay fully opaque. Watch-out: `opacity` creates a stacking context (cross-reference to lesson 9 of chapter 020).
+- **`prefers-color-scheme` and the `dark:` variant cashed in.** `next-themes` toggles `.dark` on `<html>`; Tailwind's `dark:` variant compiles to a class-based selector wrapped in `:where()` (specificity-zero, no fights with utility order). The semantic tokens flip their values inside `.dark` — `--color-card: oklch(0.99 0 0)` light, `oklch(0.18 0 0)` dark. The student writes `bg-card text-foreground` once and both themes work. Reflex: never write `dark:bg-zinc-900` next to `bg-white`; reach for the token instead.
+- **`prefers-contrast` and `forced-colors`.** Two media-query variants the student names once: `contrast-more:` for users who set high-contrast mode in OS settings, `forced-colors:` for Windows High Contrast Mode (which replaces every color with a system palette). Most projects don't override defaults; recognition for accessibility audits.
+- **WCAG contrast — the 4.5:1 reflex.** Body text needs 4.5:1 contrast against its background; large text and UI text need 3:1. Tools: Chrome DevTools' Contrast picker, the Tailwind palette in shadcn is contrast-audited. Cross-reference to lesson 2 of chapter 027 for the discipline-level commitment.
+- **The Tailwind color surface.** Default palette in OKLCH; the `@theme` overrides for adding/removing palette steps; arbitrary values (`bg-[oklch(0.6_0.2_180)]`) for one-off design needs; `currentColor` (`bg-current`, `border-current`) as the inherit-the-text-color form (icons cross-reference to lesson 2 of chapter 019).
+- **Watch-outs:**
+  - Don't ship hex literals in new code; OKLCH is the token storage form. The exception is `transparent` and `currentColor`, which compile to themselves.
+  - `opacity` on a parent fades the children (compositing); `bg-color/50` on the parent doesn't. Pick the one that matches the design intent.
+  - `color-mix()` interpolation space matters: `in oklch` produces perceptually-even mixes; `in srgb` produces the gray middle every legacy color library shipped. The default for the project is `oklch`.
+  - Display P3 colors fall back to the closest sRGB on older monitors — write OKLCH and let the browser map.
+  - `prefers-color-scheme` reads the OS preference; the `next-themes` class on `<html>` reads the user's *site* preference. Both matter; `next-themes` resolves the precedence.
+  - `bg-transparent` is not `bg-none`; `bg-none` removes background images, not color.
 
 What this lesson does not cover:
 
-- Semantic landmarks and heading hierarchy inside `<body>` (lesson 3 of chapter 021).
-- Per-page metadata, `generateMetadata`, OG/Twitter tags, dynamic OG images (lesson 9 of chapter 038).
-- SEO file conventions — `robots.ts`, `sitemap.ts`, favicons (lesson 10 of chapter 038).
-- `next/font` at depth (lesson 7 of chapter 038).
-- The full Server / Client Component boundary treatment (Chapter 034).
-- Hydration at depth and the full hydration-mismatch surface (lesson 8 of chapter 034).
-- Nested layouts and the layout/page render boundary (lesson 4 of chapter 033).
-- `next-themes` integration (lesson 6 of chapter 022).
-- The `next-intl` integration (lesson 5 of chapter 088).
+- The cascade and how `.dark` swap reaches every descendant — lesson 1 of chapter 019 and lesson 4 of chapter 019 own it.
+- `next-themes` wiring at depth — lesson 6 of chapter 018 owns it.
+- The full Tailwind color palette and its OKLCH coordinates — reference material, not lesson material.
+- Color theory (complementary, analogous, triadic) — not in scope; the design system ships a palette.
+- SVG `fill` / `stroke` mechanics at depth — lesson 1 of chapter 027 handles icons.
+- Gradients (`bg-gradient-to-*`) — recognition only here; the chapter doesn't dedicate space.
+- Print color modes and CMYK — out of scope.
 
 ---
 
-## Lesson 3 — Landmarks and the heading outline
+## Lesson 3 — Borders, radius, and the elevation scale
 
-The six landmark elements (`<header>`, `<nav>`, `<main>`, `<aside>`, `<article>`, `<section>`, `<footer>`) plus the strict `<h1>`-through-`<h6>` hierarchy form the page outline assistive tech navigates.
+Teaches `border` / `border-*` / `divide-*`, the `rounded-*` scale, `outline` vs. `border` for focus rings, `ring-*` as the multi-layer shorthand, the `shadow-*` elevation tiers, `drop-shadow` vs. `box-shadow`, and `backdrop-filter` for glass-morphism headers.
 
 Topics to cover:
 
-- **The senior question.** A dashboard with a top nav, sidebar, main content, footer. Naive reach: four `<div>`s. Senior reach: `<header>`, `<nav>`, `<aside>`, `<main>`, `<footer>`. Landmarks form a navigable map for screen readers (JAWS `D` key, VoiceOver rotor), guide crawlers to the main content, support reader-mode, and keep the page legible without CSS.
-- **The six landmark elements.**
-  - **`<header>`** — introductory content for the page or a section. One page-level `<header>`; nested `<header>`s allowed inside `<article>`/`<section>` for their own intros.
-  - **`<nav>`** — navigation. One primary `<nav>`; secondary navs (sidebar links, footer sitemap) also `<nav>` with `aria-label` to distinguish. Reserved for *navigation* — not every list of links.
-  - **`<main>`** — the unique main content. Exactly one per page; not nested inside header/nav/aside/footer. Enables the "skip to main content" affordance.
-  - **`<aside>`** — tangentially related content (related-articles sidebar, tip callout, contextual help). Not "the app's sidebar" if that sidebar holds navigation — that's `<nav>`.
-  - **`<article>`** — self-contained content (blog post, comment, forum reply, product card). The test: would it make sense pasted elsewhere?
-  - **`<section>`** — generic thematic grouping with a heading. Senior reach pairs it with `aria-labelledby` pointing at the heading's `id`.
-  - **`<footer>`** — closing content for the page or a section. One page-level `<footer>`; nested allowed (`<article>` footers carry author/date/tags).
-- **The page outline.** The landmark tree is the structural map a screen reader user navigates. Canonical SaaS shell: `<body>` containing `<header>` (with site name link and `<nav aria-label="Primary">`), `<main>` (with `<h1>` and two `<section aria-labelledby>`s each opened by `<h2 id>`), and `<footer>` (with `<nav aria-label="Footer">` and copyright).
-- **The heading hierarchy (`<h1>` through `<h6>`).**
-  - **`<h1>`** — the page's primary heading. Exactly one per page.
-  - **`<h2>` through `<h6>`** — subsections in strictly decreasing significance. No skipped levels (`<h1>` → `<h3>` is an a11y violation).
-  - **Senior reach.** Level is determined by outline position, not visual size. Style with Tailwind utilities; pick the level by content structure.
-  - **The bug.** A `<div className="text-2xl font-bold">` styled to look like a heading produces a page with no navigable outline. Fix: use the right heading; style with utilities.
-  - **Recognition tools.** NVDA's heading list, the Chrome Accessibility extension's outline view.
-- **The `<p>` element.** The default block-level text container. Body text goes in `<p>` (not `<div>`, not raw text in `<main>`). `<br />` reserved for semantically meaningful hard line breaks; visual spacing uses CSS.
-- **The `<ul>`, `<ol>`, `<li>` list elements.**
-  - **`<ul>`** — unordered.
-  - **`<ol>`** — ordered (`start` for starting number, `reversed` to count down).
-  - **`<li>`** — direct child of `<ul>` or `<ol>` only.
-  - **Senior reach.** Any sequence of related items is a list. Visual treatment (bullets, numbers, none) is independent — Tailwind's `list-none` strips markers; the semantic list remains announced.
-  - **Watch-out.** A nav-as-flex-of-anchors without the `<ul>`/`<li>` wrap loses the "list of N items" announcement.
-- **The `<div>` and `<span>` fallbacks.** `<div>` block-level, `<span>` inline. Use only when no semantic element fits. Avoid "div soup" — every level of nesting is a decision.
-- **The `<br />` and `<hr />` elements.** `<br />` for semantically meaningful hard line breaks (addresses, poems); `<hr />` for thematic breaks. Rare in modern SaaS UI — a Tailwind border utility usually handles the visual divider.
-- **The accessibility tree.** A parallel tree to the DOM (computed roles, names, states) that screen readers consume. Chrome DevTools → Elements → Accessibility shows it for the selected element. The recognition reach for "is this `<button>` actually announced as a button?" Chapter 031 owns the a11y baseline in depth.
-- **`aria-labelledby` and `aria-label` for landmark naming.**
-  - **`aria-labelledby="id"`** — name from a referenced element's text (section labelled by its heading). Avoids text duplication.
-  - **`aria-label="text"`** — literal text as the name (`<nav aria-label="Primary">` vs. `<nav aria-label="Footer">`).
-  - **Senior reach.** `aria-labelledby` when a visible heading exists; `aria-label` otherwise. Multiple same-type landmarks each get a distinguishing name.
-- **The watch-outs a senior names:**
-  - No `<div>`s where semantic elements fit — Tailwind styles any element.
-  - Exactly one `<h1>` per page.
-  - No skipped heading levels — fix by inserting or downgrading.
-  - One `<main>` per page; no nested same-type landmarks at the same level.
-  - `<section>` needs a heading; without one, downgrade to `<div>`.
-  - Multiple `<nav>`s need `aria-label`s to disambiguate.
-  - `<article>` for self-contained content only — a dashboard card is not an article.
-  - Landmarks don't replace headings — the two systems cooperate.
-  - "Skip to main content" link as the senior-level a11y affordance — a visually hidden link to `#main`, revealed on focus. lesson 4 of chapter 031 owns focus management.
+- **The senior question.** A card with `rounded-lg border bg-card shadow-sm` reads as one elevation step above its parent; the same card with `shadow-2xl` reads as a floating modal. The lesson installs the three decoration utilities a senior actually reaches for — borders, border-radius, and box-shadow — and treats them as the elevation language of the design system.
+- **Borders — `border`, `border-*`, `divide-*`.** Tailwind's bare `border` utility is `1px solid var(--color-border)`; the token comes from `@theme`. Width modifiers (`border-2`, `border-4`); side-specific (`border-t`, `border-x`, `border-s` logical); color overrides (`border-destructive`, `border-input`); style (`border-dashed`, `border-dotted`, rare in production). The `--default-border-color` Preflight uses cross-references to lesson 3 of chapter 019.
+- **`border-radius` — the rounding scale.** `rounded`, `rounded-sm` through `rounded-full`; per-corner variants (`rounded-t-lg`, `rounded-bl-md`); logical variants (`rounded-s-lg`, `rounded-e-lg`). The 2026 reflex: a design system picks one or two radius values and reuses them; mixing `rounded-md` cards with `rounded-2xl` cards is a smell. shadcn's `--radius` token is the central knob most projects expose.
+- **`outline` vs. `border` — the focus-ring distinction.** `outline` doesn't occupy layout space, so it doesn't shift content when it appears on focus. `border` does. The canonical focus reflex is `focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring` (cross-reference to lesson 4 of chapter 021 for the pseudo-class). `ring-*` is Tailwind's outline-plus-offset shorthand and is the form most components ship.
+- **`ring-*` — the multi-layer outline shorthand.** `ring-2 ring-ring/50 ring-offset-2 ring-offset-background` produces a halo focus ring with a gap from the element. Used heavily in shadcn buttons, inputs, and selects. The advantage over a raw `outline`: composes with rounded corners, supports offset, and the offset color is themable.
+- **`box-shadow` — the elevation scale.** `shadow-sm`, `shadow`, `shadow-md`, `shadow-lg`, `shadow-xl`, `shadow-2xl`, `shadow-inner`, `shadow-none`. The senior reach is one elevation step per surface tier — base surface (no shadow), card (`shadow-sm`), hover (`shadow-md`), modal/dialog (`shadow-lg`/`shadow-xl`), tooltip (`shadow-md`). Tailwind v4 shadows use OKLCH-based colors with built-in alpha so they tint correctly in dark mode.
+- **Shadow color and the colored-glow pattern.** `shadow-blue-500/50` colors the shadow itself — reaches: highlighted active states, brand-tinted hover glows on a feature card. Watch-out: every colored shadow is a brand decision, not a default.
+- **`drop-shadow` vs. `box-shadow` — the choice.** `drop-shadow` is a filter that follows the rendered shape, including transparent regions and rounded corners on irregular SVGs. `box-shadow` follows the element's bounding box. Reach `drop-shadow` for icons and irregular shapes; `box-shadow` for everything else. `drop-shadow` creates a stacking context (cross-reference to lesson 9 of chapter 020).
+- **`backdrop-filter` and the glass-morphism reach.** `backdrop-blur-*`, `backdrop-saturate-*`, `backdrop-brightness-*` blur and tint the content *behind* a semi-transparent element. Canonical reach: sticky headers with a translucent background (`bg-background/70 backdrop-blur`) so content scrolls under and stays legible. Cost: GPU compositing on every paint — fine for one element, slow for many.
+- **Borders on dashed/dotted forms and the rare reaches.** `border-dashed` for empty-state placeholders and drag-drop drop zones; `border-double` and the rest are recognition only. The dashed-empty-state pattern is the only place dashed borders earn their weight in 2026.
+- **Watch-outs:**
+  - `border` alone defaults to `border-color: currentColor` in raw CSS; Preflight sets it to the theme's `--color-border` so the student doesn't surprise themselves (cross-reference to lesson 3 of chapter 019).
+  - `outline` on an element without `:focus-visible` is a visual mistake — the student writes the variant, never the bare `outline`.
+  - `rounded-full` on a non-square element makes a pill, not a circle — `aspect-square` plus `rounded-full` is the avatar pattern.
+  - `box-shadow` doesn't clip with `overflow: hidden`; the shadow extends beyond.
+  - `drop-shadow` is more expensive than `box-shadow` — use it when irregular shapes demand it, not by default.
+  - `backdrop-filter` has no effect if the element behind has no contrast to blur; the price is paid regardless.
+  - Multi-layer shadows (combining several `box-shadow` values) are how realistic depth is built; Tailwind ships these in the `shadow-*` scale already.
+  - `shadow-2xl` on a card is rarely the design — it reads as a modal. Match the shadow to the surface tier.
 
 What this lesson does not cover:
 
-- The full accessibility baseline (Chapter 031) — keyboard navigation, focus management, contrast, reduced motion.
-- ARIA roles, states, properties (lesson 6 of chapter 021 covers the basics; lesson 3 of chapter 031 the depth).
-- Button and link elements (lesson 4 of chapter 021).
-- Form elements (lesson 5 of chapter 021).
-- Tables (lesson 6 of chapter 021 covers tables alongside data attributes).
-- The Open Graph / Twitter metadata for sharing (lesson 9 of chapter 038).
-- The `<dialog>` element for modals — out of scope here; modals via Radix in lesson 5 of chapter 026.
+- The focus-visible pseudo-class — lesson 4 of chapter 021 owns it.
+- `filter` properties beyond `drop-shadow` and `backdrop-filter` (`blur`, `grayscale`, `sepia`, `hue-rotate`) — recognition only; the chapter doesn't dedicate space.
+- `clip-path` and `mask-image` — niche.
+- SVG-specific decoration (`stroke-width`, `stroke-dasharray`) — out of scope.
+- Material Design elevation theory — not the design system the course ships.
+- `outline-offset` interaction with `border-radius` curves — recognition only.
 
 ---
 
-## Lesson 4 — Actions, navigations, and item sequences
+## Lesson 4 — Pseudo-classes and the :has() parent selector
 
-`<button type>` for actions versus `<a href>` and `<Link>` for navigation, `target="_blank"` paired with `rel="noopener noreferrer"`, `aria-label` on icon-only buttons, and `<ul>`/`<ol>` for related parallel items.
+Teaches `:focus-visible` as the canonical focus reflex, `:focus-within` for parent-of-focused, the disabled/checked/invalid state pseudo-classes, `:has()` and the JavaScript class toggles it retired, `:not()`, the `::placeholder` / `::selection` pseudo-elements, and the iOS sticky-hover gate.
 
 Topics to cover:
 
-- **The senior question.** Three things on a page: a "Save" action, a navigation to `/dashboard`, a list of features. Naive reaches: `<div onClick>`, `<button>` for nav, a stack of `<div>`s. Senior reaches: `<button>`, `<a href>`, `<ul>`/`<ol>`. Each choice is a decision the keyboard, screen reader, autofill, right-click "Open in new tab," `Cmd+F`, and the accessibility tree all read.
-- **Buttons in one paragraph.** A control that performs an *action* (form submit, modal open, row delete, toggle). Not navigation — that's a link. Browser handles keyboard activation for free (`Tab` focuses, `Enter`/`Space` activates, focus ring renders). Default styling stripped by Tailwind Preflight (lesson 3 of chapter 023); utilities or shadcn `<Button>` (lesson 1 of chapter 031) paint the visual.
-- **`<button type>` and the form-submit default** — the load-bearing senior reflex. A `<button>` inside a `<form>` defaults to `type="submit"`. The three types: `submit` (default — submits the form), `button` (inert; runs `onClick`), `reset` (rare, anti-pattern). Senior reflex: every `<button>` declares its `type` explicitly. Recognition signal: a Cancel/Close button inside a form triggering an unintended submit.
-- **`<button>` vs. `<a>` vs. `<div role="button">` — the decision.**
-  - **`<button>`** for same-page actions (submit, modal open, delete, sort toggle).
-  - **`<a href>`** for URL navigation. Gets `Cmd+click`, right-click "copy address," `Tab+Enter`, link announcement for free.
-  - **`<div role="button">`** — the explicit anti-pattern. Requires manual keyboard activation (`onKeyDown` for `Enter`/`Space`), `tabIndex={0}`, focus-ring CSS, `aria-pressed` for toggles, cursor styling. Never; reach for `<button>` styled differently.
-- **`<a href>` — the link element.**
-  - **`href`** — required for activatability. Without it, `<a>` is inert (no focus, no activation).
-  - **`<a target="_blank">`** — opens in a new tab. Pairs with `rel="noopener noreferrer"` (security against tabnabbing, privacy against `Referer` leak). Browser defaults are improving; explicit `rel` is still senior practice.
-  - **`<a download>`** — file links; optional value renames the download.
-  - **`<a rel>`** — common values `noopener noreferrer` (for `_blank`), `nofollow` (user-generated links), `external` (mostly stylistic).
-- **Next.js `<Link>` and the navigation model.** `<Link href="/dashboard">` (from `next/link`) wraps `<a>` and adds soft client-side navigation; renders as plain `<a href>` in HTML (for SEO, `Cmd+click`, JS-off fallback). Internal links use `<Link>`; external use plain `<a target="_blank" rel="noopener noreferrer">`. lesson 9 of chapter 033 owns the depth.
-- **Tailwind buttons and links — styling, not semantics.** Visual treatment via utilities (Chapter 022) or shadcn `<Button>` (lesson 1 of chapter 031), both composing into the same `<button>` or `<a>`. A button styled as a link is still a `<button>` (it acts); a link styled as a button is still an `<a>` (it navigates).
-- **Lists in one paragraph.** `<ul>` unordered, `<ol>` ordered, `<li>` direct child of either. Any sequence of related items is a list — navs, feature grids, comment threads, audit entries.
-- **Lists and the JSX surface.**
-  - **`.map` over data, key per `<li>`** — `{items.map(item => <li key={item.id}>...</li>)}`. Pattern from lesson 1 of chapter 021.
-  - **Nesting lists** for hierarchical content (file browser, threaded comments).
-  - **`<ol>` attributes** — `start`, `reversed`, `type` (usually leave to CSS).
-- **The `list-none` reset and the link-list pattern.** Tailwind Preflight strips default list styling (lesson 3 of chapter 023). The canonical nav: `<nav aria-label="Primary">` wrapping a `<ul className="flex gap-4">` of `<li>` items each containing a `<Link>` — semantic list, custom visual.
-- **Lists vs. a flex of `<div>`s — the decision.** Related-and-parallel items (nav links, feature cards, comments) are lists. Unrelated visually-arranged items (hero + CTA, header + button) are not. The test: "would a screen reader user usefully know 'list of N items' here?"
-- **Anchor-link best practice — `<a href="#section-id">`.** Native scroll-into-view and URL hash update. Senior reach for TOCs, skip-to-main links. Target needs a unique `id`. Smooth scrolling via CSS `scroll-behavior: smooth` (Tailwind `scroll-smooth`).
-- **The `<button>` as a JSX form member.** Inside a `<form>`: `<button type="submit">` is the primary submit; `Enter` on any text input also submits. Cancel/Reset/Toggle buttons must be `type="button"` to avoid surprise submit. Chapter 048 wires the Server Action.
-- **Disabled state on buttons.** `disabled` is a boolean prop; non-activatable; browser dims by default (Tailwind/shadcn give a refined state). A11y consequence: disabled buttons may be skipped in tab order — never put critical actions behind one without surfacing why (tooltip, inline message, `aria-describedby`).
-- **`aria-label` and icon-only buttons.** Buttons whose only child is an icon (trash, copy, X) need `aria-label` for the accessible name. Common in toolbars and table rows. lesson 3 of chapter 031 owns ARIA depth.
-- **The watch-outs a senior names:**
-  - Every `<button>` declares its `type`.
-  - `<a target="_blank">` pairs with `rel="noopener noreferrer"`.
-  - Internal links use `<Link>` from `next/link`; external links use plain `<a>`.
-  - Icon-only buttons need `aria-label`.
-  - Disabled buttons aren't a substitute for explaining unavailability — surface the reason.
-  - Semantic element matches behavior, not look — a link styled as a button is still a link; a button styled as a link is still a button.
-  - `<a>` without `href` is inert; if the intent is action-on-click, it's a button.
-  - `<button onClick={() => router.push('/dashboard')}>` is a navigation in button clothing — use `<Link>`.
-  - `<div role="button">` requires manual a11y plumbing — never.
-  - Lists inside `<nav>` are the canonical shape; bare anchors lose "list of N items."
-  - `<button>` type values are lowercase (`type="button"`, not `"Button"`).
-  - `formAction`, `formMethod`, `formEncType`, `formNoValidate`, `formTarget` on `<button>` override the parent form's attributes per-submit. Rare; named for recognition.
+- **The senior question.** Styling a button on hover is `hover:bg-accent`; styling a button on keyboard focus only is `focus-visible:ring-2`; styling a `<form>` differently when any input inside is invalid was a `useState` plus class toggle in 2022, and is `has-[input:invalid]:border-destructive` in 2026. The lesson installs the pseudo-classes a senior reaches for on interactive UI, with `:focus-visible` as the canonical focus reflex and `:has()` as the parent-selector that retired a generation of JavaScript.
+- **The interaction pseudo-classes — `:hover`, `:focus`, `:focus-visible`, `:focus-within`, `:active`.** `:hover` for mouse over (no-op on touch); `:focus` for any focus (keyboard or click); `:focus-visible` for keyboard-only focus — the reflex on every button, link, and input; `:focus-within` for the parent of a focused descendant (canonical reach: form rows that highlight when the input inside takes focus); `:active` for "currently being pressed." The 2026 default: `focus-visible:` for the ring, `hover:` for the color shift, `active:` for the pressed state.
+- **The state pseudo-classes — `:disabled`, `:checked`, `:invalid`, `:required`, `:read-only`, `:placeholder-shown`.** Form-element states the student reaches for. `disabled:opacity-50 disabled:pointer-events-none` is the canonical disabled-button pattern; `aria-invalid:` and `aria-disabled:` (data/aria variants from lesson 4 of chapter 018) are the form-driven companions when state is set via attribute rather than property.
+- **The structural pseudo-classes — `:first-child`, `:last-child`, `:nth-child(N)`, `:empty`.** Rare in 2026 because `gap` plus `divide-*` replaced most uses; `:empty` is occasionally useful for empty-state styling. `:first-of-type` and `:last-of-type` are recognition only.
+- **`:has()` — the parent selector that changed CSS.** Selects an element *that contains* a matching descendant. Canonical reaches: `has-[input:invalid]:border-destructive` on a form row, `has-[:checked]:bg-accent` on a label-wrapped checkbox card, `has-[img]:p-0` on a card that has an image (vs. one that doesn't). Replaces a JavaScript class-toggle observer in every one of these cases. Baseline since late 2023; production-safe across all current browsers. Tailwind variant: `has-[<selector>]:` and `group-has-[<selector>]:` for parent-of-group reaches.
+- **`:not()` — the negation primitive.** `not-disabled:hover:bg-accent` skips the hover when the button is disabled. Tailwind variant: `not-*:`. Reach: hover states that shouldn't apply to disabled buttons, sibling reset (`:not(:first-child)` for skipping the first element in a stack — though `gap` retired the pattern).
+- **The link state pseudo-classes — `:link`, `:visited`.** `:visited` exists but is locked-down for privacy (only `color`, `background-color`, `border-color`, `outline-color`, and a few SVG properties can change). Rare in app UI; common in long-form content.
+- **The placeholder pseudo-elements — `::placeholder`, `::selection`, `::file-selector-button`.** `placeholder:text-muted-foreground` is the senior reflex on every text input (sets the placeholder color via the pseudo-element, which doesn't inherit). `::selection` for branded text-selection color; `::file-selector-button` for styling the file picker button.
+- **`group-*` and `peer-*` — Tailwind's relational variants cashed in.** Cross-reference to lesson 4 of chapter 018. `group-hover:`, `peer-checked:`, etc. interact with the same pseudo-classes; the lesson treats the variant prefixes as the Tailwind form and the underlying CSS as the model.
+- **DevTools — forcing element state.** Chrome's "Toggle element state" in the Styles panel lets the senior pin `:hover`, `:focus`, `:focus-visible`, `:active`, and `:target` without juggling mouse and keyboard. The debugging move when a hover style "doesn't look right."
+- **Watch-outs:**
+  - `:focus` without `:focus-visible` shows a focus ring on every click — annoying for mouse users. `:focus-visible` is the discipline; the bare `:focus` is the bug.
+  - `:hover` does nothing on touch devices (no hover); design hover-only affordances as enhancements, not as the only way to discover an action.
+  - `:active` fires on touch *and* hover-press; useful as the pressed-down style.
+  - `:has()` can chain (`:has(input:checked):has(label.required)`) but readability falls off; flatten into `data-*` attributes if the chain gets long.
+  - `placeholder:` styles the pseudo-element; without it, the placeholder inherits `color` and looks like real text.
+  - Disabled controls don't receive `:hover` events in most browsers — combine `disabled:` and `not-disabled:hover:` instead of relying on disabled-hover.
+  - `:has()` doesn't work inside `<select>` and a few other elements with shadow DOM; the chapter trusts the form library (Unit 6) to handle those.
 
 What this lesson does not cover:
 
-- Forms in depth — `<form>` element, `<input>` types, `<label>`, the form contract (lesson 5 of chapter 021).
-- The Constraint Validation API and `setCustomValidity` (lesson 7 of chapter 048).
-- The shadcn `<Button>` component and CVA variants (lesson 1 of chapter 031, lesson 3 of chapter 026).
-- Focus management at depth (lesson 4 of chapter 031).
-- The full ARIA treatment (lesson 3 of chapter 031).
-- Tailwind utilities for buttons and links (Chapter 022).
-- Next.js `<Link>` at depth — prefetching, the navigation model, scroll restoration (lesson 9 of chapter 033).
-- The `<dialog>` element — out of scope; Radix/shadcn handle modals.
+- The `data-*` and `aria-*` variants — lesson 4 of chapter 018 owns them; this lesson cross-references.
+- Form validation flow (`onSubmit`, `noValidate`, server validation) — Unit 6.
+- The full `::pseudo-element` set (`::before`, `::after` for content insertion, `::marker` for list bullets) — recognition only; the chapter doesn't dedicate space.
+- Container query relational state — lesson 7 of chapter 021.
+- Accessibility primitives at depth (live regions, ARIA roles) — Chapter 027.
+- Drag-and-drop pseudo-states (`:active`, drop targets) — out of scope.
+- The `:target` pseudo-class for hash-driven UI — recognition only.
 
 ---
 
-## Lesson 5 — Forms as a contract with the server
+## Lesson 5 — Motion: transitions, keyframes, and tw-animate-css
 
-`<form>`, typed `<input>`s, `<label htmlFor>`, `<fieldset>`/`<legend>`, the `name` attribute as the `FormData` key, `autoComplete` for autofill, and native constraints as UX paired with server-side Zod.
+Teaches `transition-*` for property motion (with `transform` and `opacity` as the cheap properties), `animate-*` with `@keyframes` declared in `@theme`, `tw-animate-css` as the shadcn dialog/sheet/accordion dependency, the `data-[state=open]:animate-in` choreography pattern, and `prefers-reduced-motion` with the `motion-reduce:` variant.
 
 Topics to cover:
 
-- **The senior question.** A sign-up form (email, password, confirmation checkbox, submit). Naive reach: controlled `<input>`s everywhere with `useState` and a custom submit handler. Senior reach: a `<form>` with `<label>` + `<input>`s carrying `name` attributes, a `<button type="submit">`, and server-side Zod validation reading from `FormData`. The lesson installs the form element surface as a *contract*; Chapter 048 wires the Server Action.
-- **The `<form>` element.** Container for input controls submitted together.
-  - **`action`** — URL or function (Chapter 048 wires the Server Action reference; plain HTML takes a URL string). Default: current URL.
-  - **`method`** — `"get"` (default — query string) or `"post"` (request body). Any state-mutating form: `post`.
-  - **`encType`** — default `application/x-www-form-urlencoded`; `multipart/form-data` for file uploads; `text/plain` rare.
-  - **2026 reality.** `<form action={serverAction}>` is the senior default (lesson 3 of chapter 048) — the action is a function; React handles the wiring.
-- **The `<input>` element — the typed-input surface.** The `type` attribute determines behavior, mobile keyboard, autofill suggestions. SaaS-relevant types:
-  - **`text`** — default; names, addresses, free-form.
-  - **`email`** — basic shape validation, email keyboard.
-  - **`password`** — masked input; pairs with password manager.
-  - **`number`** — numeric keyboard, `min`/`max`/`step`. Returns a *string* in `FormData`.
-  - **`tel`** — phone-pad keyboard; no format validation.
-  - **`url`** — URL-optimized keyboard.
-  - **`date`** — date picker; value is ISO `yyyy-mm-dd`. Chapter 087 owns Temporal.
-  - **`time`** — time picker; `hh:mm` or `hh:mm:ss`.
-  - **`datetime-local`** — combined picker; `yyyy-mm-ddThh:mm`.
-  - **`checkbox`** — single boolean; `checked` initial state.
-  - **`radio`** — one of N in a group sharing `name`; `value` is what `FormData` receives.
-  - **`file`** — file picker (lesson 3 of chapter 020 owns Blob/File).
-  - **`hidden`** — not displayed but submitted; carries record IDs through submit.
-  - **`submit`** — legacy submit-as-input; prefer `<button type="submit">` (more flexible content).
-- **The `name` attribute as the contract.** The key under which the input value appears in `FormData`. Missing `name` silently drops the value from submission. Naming convention: pick one (`camelCase` is the senior reach in a Server Actions + Zod codebase to align with TypeScript) and stick.
-- **The `<label>` element and form-element association.**
-  - **Two patterns.** Explicit: `<label htmlFor="email">Email</label>` + sibling `<input id="email" name="email" type="email" />`. Implicit: a `<label>` wrapping both the text and the `<input>`.
-  - **Why labels matter.** Screen-reader announcement on focus; expanded click target (mobile + motor difficulties); autofill identification.
-  - **Senior reach.** Explicit `htmlFor` — works regardless of DOM nesting; integrates cleanly with form libraries.
-  - **Placeholder is not a label.** 2010-era anti-pattern — screen readers ignore it, context disappears on focus, contrast is too low.
-- **`<fieldset>` and `<legend>` for grouping.** `<fieldset>` groups related controls; `<legend>` (its first child) names the group, announced before each input. Default border stripped by Tailwind Preflight. Canonical site: a `<fieldset>` of `<input type="radio">` buttons.
-- **The form input subset a senior reaches for daily.**
-  - **`<textarea>`** — multi-line text. `name`, `rows`, `cols`, `maxLength`. `defaultValue` (uncontrolled) or `value` + `onChange` (controlled, lesson 1 of chapter 048).
-  - **`<select>` with `<option>` children** — dropdowns. `name` on `<select>`; `value` on each `<option>`; `selected` for default; `multiple` for multi-select.
-  - **`<input type="checkbox">`** — single boolean. Explicit `value` (default `"on"`) is the senior reach.
-  - **`<input type="radio">` groups** — shared `name`; only one checked; `value` is what gets submitted.
-- **Native constraints — the Constraint Validation API (light).**
-  - **`required`** — blocks submission; native message per locale.
-  - **`type`-based validation** — `email`, `url`, `number` enforce shape.
-  - **`min` / `max`** — numeric and date ranges.
-  - **`minLength` / `maxLength`** — string bounds. Watch-out: `maxLength` doesn't apply to `type="number"` — use `min`/`max`.
-  - **`pattern`** — regex match. Rare in 2026 SaaS (Zod is more legible); named for completeness.
-  - **Senior call.** Native constraints are UX, not security — pair with server-side Zod (lesson 7 of chapter 048) always. lesson 7 of chapter 048 owns the depth.
-- **Submit without JavaScript — the progressive-enhancement frame.** With JS disabled, a `<form action method="post">` still submits via the browser default. The Server Action pattern (lesson 3 of chapter 048) preserves this; JS-disabled fallback works.
-- **The `FormData` API** (lesson 1 of chapter 019 introduced; lesson 2 of chapter 048 cashes in). The browser builds `FormData` from named inputs on submit.
-  - Values are strings — `type="number"` still yields a string; Zod's `z.coerce.number()` parses.
-  - Checkboxes contribute their `value` when checked, nothing when unchecked.
-  - Radio groups contribute the checked radio's `value` once under the shared `name`.
-  - Multi-select contributes multiple entries (`FormData.getAll`).
-  - The form's elements and `name` attributes define the `FormData` shape; the Zod schema validates it — the two are designed together.
-- **The `autoComplete` attribute — the autofill contract.** The browser and password managers read it.
-  - **Canonical SaaS values.** `email`, `username`, `current-password`, `new-password`, `given-name`, `family-name`, `name`, `street-address`, `postal-code`, `country`, `tel`, `organization`, `cc-number`, `cc-name`, `cc-exp`.
-  - **Senior reach.** Every input that maps to a known category gets the right `autoComplete`. `autoComplete="off"` on passwords is a UX regression — use the semantic value.
-- **Disabled and readonly inputs.** `disabled` — non-interactive and *not* submitted. `readOnly` — non-interactive but *is* submitted. Most "show but don't allow edit" cases are `readOnly`.
-- **The watch-outs a senior names:**
-  - Every input needs a `name` — missing it drops the value silently.
-  - Every input needs a `<label>` — explicit `htmlFor`; placeholder is not a label.
-  - `<button>` inside a `<form>` defaults to `type="submit"` (named in lesson 4 of chapter 021).
-  - Native constraints are UX, not security — server-side Zod always (lesson 7 of chapter 048).
-  - `<input type="number">` produces strings; Zod coerces.
-  - `autoComplete="off"` is a UX regression — use the semantic value.
-  - `<form>` inside `<form>` is illegal HTML — the browser drops the inner; refactor.
-  - `Enter` on any text input submits — for forms where that's wrong, the input handles its own keydown.
-  - `onSubmit` handlers need `event.preventDefault()` for custom JS handling; Server Actions handle it via the `action` prop.
-  - `defaultValue` (initial, uncontrolled) vs. `value` + `onChange` (controlled) — uncontrolled is the Server Actions default; controlled is the React Hook Form conditional (Chapter 049). lesson 2 of chapter 018 installed the distinction.
-  - File inputs are uncontrolled — `<input type="file">` can't have `value` set by React; read via `inputRef.current?.files?.[0]`.
-  - `Enter` submits a form with no visible submit button too — include one (visually hidden if needed) or capture on the input.
+- **The senior question.** A modal that opens with no animation feels janky; pulling in Framer Motion for one fade-and-scale is overkill. The 2026 form is `data-[state=open]:animate-in data-[state=closed]:animate-out fade-in-0 zoom-in-95` — utilities from `tw-animate-css` driving Radix data-state changes through pure CSS. The lesson installs the motion surface: `transition-*` for property-driven motion, `animate-*` plus custom `@keyframes` for entrance/exit choreography, the `tw-animate-css` package shadcn dialog/sheet/accordion depend on, and `prefers-reduced-motion` as the discipline-level guard.
+- **`transition-*` — the cheap motion.** `transition` (= `transition-property: all` with sensible defaults), `transition-colors`, `transition-transform`, `transition-opacity`, plus `duration-*`, `ease-*` (`linear`, `in`, `out`, `in-out`), `delay-*`. The 2026 reach: `transition-colors` on buttons, links, and any element whose color shifts on hover; `transition-transform` for scale-on-hover or translate-on-state. Limit `transition-all` to small components where every property is intentional — broad transitions paint extra work on every render.
+- **What's cheap to animate — `transform` and `opacity`.** GPU-composited on every modern browser; animate at 60fps without paint cost. Everything else (`width`, `height`, `top`, `left`, `padding`, `margin`, `background-color`, `color`) triggers layout or paint. The senior reflex: translate, scale, fade — never `top`, never `height` if avoidable.
+- **`animate-*` — the keyframe-driven motion.** Tailwind v4 keyframes live in `@theme` (`--animate-spin`, `--animate-pulse`, `--animate-ping`, `--animate-bounce` are shipped); custom keyframes go in `@theme` next to them. `animate-spin` on the loading icon, `animate-pulse` on skeleton placeholders, `animate-bounce` on the empty-state arrow. Custom animations: declare `@keyframes` and `--animate-<name>: <duration> <name>` in `@theme`, then write `animate-<name>` in JSX.
+- **`tw-animate-css` — the shadcn dependency.** New shadcn projects ship `tw-animate-css` as a dependency for the dialog, sheet, accordion, popover, and dropdown components. It provides `animate-in` / `animate-out` plus modifiers (`fade-in-0`, `fade-out-0`, `zoom-in-95`, `zoom-out-95`, `slide-in-from-top-2`, `slide-in-from-bottom`, etc.) and the duration/easing scale (`duration-200`, `ease-out`). The student installs once, then reads the surface — they don't reimplement it. Replaces the deprecated `tailwindcss-animate`.
+- **Data-attribute-driven choreography.** The 2026 pattern for component motion: Radix sets `data-state="open"` or `"closed"` on the wrapper; CSS variants (`data-[state=open]:animate-in data-[state=closed]:animate-out`) target the state and run the right entrance/exit. The motion lives in CSS, the state lives in React. The lesson shows a Dialog example: `fade-in-0 zoom-in-95` on open, `fade-out-0 zoom-out-95` on close, both via data-state variants.
+- **The accordion-down/-up keyframes.** Accordion height animations are special — `auto` height can't be animated by spec. shadcn's Accordion uses CSS custom properties Radix sets (`--radix-accordion-content-height`) plus `@keyframes accordion-down` and `accordion-up` in `@theme`. The student copies the pattern; the lesson names what each piece does. `interpolate-size: allow-keywords` (Baseline 2026) is the forward reference for the native fix when shadcn migrates.
+- **View Transitions API — the cross-route motion primitive.** Browser-level animation for state changes — `document.startViewTransition(() => setState(...))` snapshots before/after and crossfades. Next.js 16 supports it for page navigations behind a config flag. Out of the deep-dive scope here (recognition only); cashed in at a chapter that owns animated page transitions if the project demands it.
+- **`prefers-reduced-motion` — the discipline-level guard.** Users who set "Reduce motion" in OS settings see the matching media query. The senior reflex: every non-essential animation has a `motion-reduce:` variant that either disables or shortens it. shadcn's defaults handle this for the components themselves; the student writes `motion-reduce:transition-none` on bespoke animations. Cross-reference to lesson 2 of chapter 027 as the discipline-level commitment.
+- **The transform surface — `translate`, `scale`, `rotate`, `skew`.** Tailwind utilities for the four transforms (`translate-x-*`, `scale-105`, `rotate-12`, `-rotate-3`). `hover:scale-105` is the canonical hover-lift on cards; `active:scale-95` is the pressed-feedback on buttons. `transform-gpu` is the explicit form-hint; the browser usually composites these automatically.
+- **Watch-outs:**
+  - `transition` without naming the property animates *every* property change — a hover that changes background plus padding will animate the padding too (paint cost). Name the property.
+  - `transform` and `filter` create stacking contexts (cross-reference to lesson 9 of chapter 020); a scaled card with a tooltip child portals out or `isolation: isolate`s.
+  - `animate-spin` keeps running while off-screen unless paused; for performance-sensitive lists, gate with `content-visibility` or unmount.
+  - Animating `height: auto` doesn't work — measure-and-set in JS, or use the Radix custom-property pattern.
+  - Long animations feel sluggish; the senior duration band is `150ms` (snappy state changes), `200–300ms` (entrances/exits), `400ms+` (long-form choreography only).
+  - `motion-reduce:` doesn't disable *all* motion — essential UI feedback (loading spinners, focus rings) often stays; opt out of decorative motion only.
+  - View Transitions API has cross-origin and same-document constraints; verify support before assuming it covers a route.
 
 What this lesson does not cover:
 
-- The native React 19 form pattern with Server Actions (lesson 3 of chapter 048).
-- `useActionState`, `useFormStatus`, `useOptimistic` (lesson 4 of chapter 048 through lesson 6 of chapter 048).
-- Controlled vs. uncontrolled inputs at depth (lesson 1 of chapter 048).
-- The Constraint Validation API at depth — `setCustomValidity`, `ValidityState`, `:invalid` (lesson 7 of chapter 048).
-- Zod schema authoring (Chapter 046).
-- React Hook Form as the conditional past the native pattern (Chapter 049).
-- File uploads — `<input type="file">` mechanics, `Blob`/`File` primitives (lesson 3 of chapter 020).
-- The shadcn `<Form>` primitives (lesson 1 of chapter 031, lesson 2 of chapter 051).
-- Multi-step wizards (Chapter 083 conditional project).
+- React-side animation libraries (Framer Motion, React Spring) — out of scope; CSS plus `tw-animate-css` covers the SaaS surface. Brief recognition only.
+- Scroll-driven animations and `animation-timeline: scroll()` — niche; recognition only.
+- SVG animation (`<animate>`, SMIL) — out of scope.
+- View Transitions API at depth — recognition only here; the chapter that owns animated route transitions is a future Unit 4 lesson if the project demands it.
+- Lottie and JSON-driven motion — out of scope.
+- `IntersectionObserver`-driven scroll reveals — covered in Unit 6 territory if it earns its weight.
+- Page-load animations and FOUC mitigation — lesson 6 of chapter 018 owns the dark-mode FOUC; load-in motion is project-level.
 
 ---
 
-## Lesson 6 — data-*, aria-*, and the <table> decision
+## Lesson 6 — Breakpoints and the mobile-first reflex
 
-`data-*` for script hooks (delegation, tests, Tailwind state), `aria-*` for assistive-tech signals (`aria-label`, `aria-current`, `aria-expanded`, `aria-pressed`, `role="alert"`), and `<table>` with `<th scope>` and `<caption>` only when the data is genuinely tabular.
+Teaches mobile-first as the senior default, the Tailwind `sm`/`md`/`lg`/`xl`/`2xl` scale, breakpoints as content-driven not device-driven, the `prefers-*` media-feature family, `@media (hover: hover)` against the iOS sticky-hover bug, and the `hidden md:block` / `md:hidden` visibility pattern.
 
 Topics to cover:
 
-- **The senior question.** A delegated click handler that needs to know which row was clicked (`data-row-id`), an icon-only button screen readers need to announce as "Delete" (`aria-label`), a sort-state toggle whose pressed state assistive tech needs (`aria-pressed`), and an audit-log view that's genuinely tabular (`<table>`). Three attribute families and one element family — none individually a full lesson, but each is the senior reflex in its corner.
-- **`data-*` attributes — the model.**
-  - **The pattern.** Custom attributes the browser stores but doesn't render. JavaScript reads via `element.dataset.fooBar` (lesson 1 of chapter 018 introduced the API). Canonical site: delegation hooks (`event.target.closest('[data-action]')`).
-  - **Kebab-case to camelCase translation.** `data-row-id` in HTML reads as `dataset.rowId` in JS — the DOM API translates.
-  - **The 2026 consumers.** Delegation (lesson 3 of chapter 018), test selectors (Playwright in Chapter 094 — `data-testid`), analytics (`data-event-name`), Tailwind structural variants (lesson 4 of chapter 022 — `data-[state=...]`).
-  - **Senior reflexes.** `data-*` for structural hooks — not display content, not what `aria-*` is for. Always the `data-` prefix; never invented attributes.
-  - **The JSX form.** Kebab-case in JSX (`data-row-id`), camelCase in the reader (`dataset.rowId`).
-- **`aria-*` attributes — the basics.** lesson 3 of chapter 031 owns the full ARIA treatment; this lesson installs the daily-reach surface.
-  - **The first rule of ARIA** — no ARIA is better than bad ARIA. Reach for the semantic element first; ARIA fills gaps the native semantics don't cover.
-  - **`aria-label`** — accessible name for an element with no visible text. Canonical sites: icon-only buttons (lesson 4 of chapter 021), multi-instance `<nav>` regions (lesson 3 of chapter 021), inputs without an associated label (rare — prefer `<label>`).
-  - **`aria-labelledby="id"`** — name by reference to another element's text (e.g., a section labelled by its heading). Avoids duplication.
-  - **`aria-describedby="id"`** — extended description by reference (form field paired with an error message `<p id role="alert">`).
-  - **`aria-current="page"`** — current item in a set (nav link pointing at the current page).
-  - **`aria-expanded="true|false"`** — disclosure toggle (panel, accordion, dropdown). Pairs with `aria-controls="id"`.
-  - **`aria-pressed="true|false"`** — toggle button (bold/italic, favorite).
-  - **`aria-hidden="true"`** — hide from the accessibility tree (decorative icons whose meaning is conveyed by adjacent text). Never on interactive elements — creates an unreachable trap.
-  - **`role="..."`** — overrides the default role. Rarely the right reach in 2026; legitimate uses are `role="alert"` (urgent live region), `role="status"` (non-urgent), `role="dialog"` on modal containers (though `<dialog>` is the more modern choice).
-- **Live regions for dynamic content** — named once; lesson 3 of chapter 031 cashes in. `aria-live="polite"` (idle announcement — toasts, "saved"), `aria-live="assertive"` (interrupts — critical alerts), `role="alert"` (shorthand for assertive — senior reach for inline form errors).
-- **Tables — the senior decision.** When is `<table>` right?
-  - **For tabular data only** — rows and columns of related info indexed by (R, C). Canonical SaaS sites: audit logs, invoice line items, billing breakdowns, metrics dashboards.
-  - **Not for layout, card lists, or forms.** Use CSS grid, `<ul>` with grid layout, or `<form>` with `<fieldset>` respectively.
-  - **Decision test.** Could rows and columns be swapped as a meaningful transposition? Are rows heterogeneous "things" with a shared attribute structure?
-- **The `<table>` element family.** `<table>` container; `<thead>`/`<tbody>`/`<tfoot>` row groups (multiple `<tbody>`s rare; `<tfoot>` rare in dashboards, common in invoices); `<tr>` row; `<th scope="col|row">` header cell; `<td>` data cell. `<thead>` stays visible on scroll with `position: sticky` (Tailwind utility).
-- **The canonical SaaS table shape.** `<table>` with a `<thead>` row of `<th scope="col">` cells, and a `<tbody>` mapping rows where each `<tr>` keys on `row.id` (React reconciliation), carries `data-row-id` (delegation), opens with a `<th scope="row">` for the row's identifier column, and uses `<td>` for the rest. Numeric columns use `className="text-right"`.
-- **`<caption>`** — table title (above by default; `caption-side: bottom` flips it). Announced before column headers. Every standalone table has one (visible or visually hidden).
-- **`colspan` / `rowspan`** — span across columns/rows. Rare in 2026 SaaS; canonical use is a `<tfoot>` "Total" row. In JSX: `colSpan`/`rowSpan` (camelCase).
-- **`<colgroup>` / `<col>`** — column-level styling/spanning. Rarely written by hand; named for recognition.
-- **Tables and accessibility.**
-  - **`<th scope>`** is load-bearing for header-to-cell association.
-  - **Row and column counts** are announced to screen reader users navigating the table ("table, 8 columns, 50 rows").
-  - **`<caption>`** provides the table name.
-  - **Empty cells** — render an explicit em-dash (`—`) or `aria-label="No value"` for "intentionally empty."
-- **When to drop the `<table>`.** Card list / grid of items → `<ul>` with grid layout. Two-column form layout → CSS grid on `<form>`. Product comparison → could be a table; depends on whether rows-and-columns is the natural model.
-- **Responsive tables.** Wrap in `<div className="overflow-x-auto">` for horizontal scroll. For complex tables, switch to a card-per-row layout below `md` (Tailwind responsive variants — lesson 6 of chapter 025). Don't `display: block` on `<tr>`/`<td>` — breaks the accessibility-tree structure.
-- **The watch-outs a senior names:**
-  - `data-*` for structural hooks, `aria-*` for assistive-tech signals — not interchangeable.
-  - No ARIA is better than bad ARIA — semantic element first.
-  - `aria-label` on a `<button>` with visible text *overrides* the text (and risks mismatch) — only label icon-only buttons.
-  - `aria-hidden` on focusable elements creates an unreachable trap — only on decorative elements (icons next to text labels, ornamental SVGs).
-  - `role="button"` on a `<div>` is wrong — use `<button>`. Same for `role="link"`, `role="checkbox"`, `role="textbox"`.
-  - `<table>` for layout is a 1990s reflex — use CSS grid (lesson 4 of chapter 024).
-  - `<th scope>` is non-negotiable in data tables.
-  - `data-row-id` for delegation hooks; the HTML `id` attribute is for unique identifiers (anchor links, label associations).
-  - `data-testid` is fine for Playwright but the senior reach is accessible queries (`getByRole`, `getByLabelText`) first (Chapter 093).
-  - Kebab in JSX `data-*`, camelCase in `dataset` reader — translation is automatic.
-  - Mobile tables: wrap or switch to a card layout; never break semantics with `display: block`.
+- **The senior question.** A card grid that's three columns desktop, two tablet, one mobile is `grid-cols-1 md:grid-cols-2 lg:grid-cols-3`; the Tailwind responsive prefix compiles to a `@media (min-width: 768px)` block. The lesson installs the responsive design model — the media query as the primitive, Tailwind's mobile-first breakpoint scale as the form the student actually writes, and the senior reflexes (mobile-first by default, container queries when the component should respond to its parent instead of the viewport).
+- **Mobile-first as the senior default.** Write the base styles for the smallest viewport; layer larger-viewport overrides with `sm:`, `md:`, `lg:`, `xl:`, `2xl:`. The reason isn't preference: mobile devices are the larger share of traffic, browser cost is lower (fewer overrides to discard), and the cascade flows naturally (`min-width` media queries layer cleanly). Desktop-first (`max-md:`) exists for the rare case where the small-screen rules are the override.
+- **The Tailwind breakpoint scale.** `sm` 640px, `md` 768px, `lg` 1024px, `xl` 1280px, `2xl` 1536px. Customizable via `@theme` (`--breakpoint-md: 800px`). The 2026 reach: stay on the scale; the design system picks one custom point if the project demands it. The `max-*` cousins (`max-md:`) flip the direction. Ranged variants exist (`@min-md:`, `@max-lg:`) but rare in production.
+- **`@media (min-width: ...)` — the underlying primitive.** Recognition: every responsive utility compiles to `@media (min-width: <breakpoint>) { ... }`. The CSS form is what custom Tailwind utilities or third-party CSS would write.
+- **Breakpoints are content-driven, not device-driven.** Old advice was "phone, tablet, desktop"; the 2026 form is "where does the layout break." A card grid breaks at the width where two cards fit; the breakpoint is whatever width that is. Tailwind's defaults are a pragmatic starting point, not device categories.
+- **The `prefers-*` media features cashed in.** `prefers-color-scheme: dark` (handled by `dark:` and `next-themes` — lesson 6 of chapter 018); `prefers-reduced-motion: reduce` (handled by `motion-reduce:` — lesson 5 of chapter 021); `prefers-contrast: more` (rare, lesson 2 of chapter 021); `forced-colors: active` (Windows HCM, lesson 2 of chapter 021). The lesson collects them as a single family because they're all media queries.
+- **`@media (hover: hover)` and `@media (pointer: fine)` — the input-device queries.** `hover:` and `:hover` work everywhere, but a touch-only device fires `:hover` on tap and sticks until the next interaction (the iOS sticky-hover bug). The senior fix wraps hover styling in `@media (hover: hover)` — Tailwind variants `hover:` already do this in v4 by default. `pointer: fine` for mouse-only affordances (small click targets); `pointer: coarse` for touch-only.
+- **`orientation: landscape` / `portrait`.** Rare in practice — `min-width` breakpoints capture the same intent more reliably. Recognition only.
+- **`@media print`.** The print stylesheet — `print:` variant in Tailwind. Reaches: hiding navigation on print, expanding collapsed content, forcing black text on white background. Most SaaS apps don't ship a print stylesheet; recognition for invoices and reports.
+- **The responsive utilities a senior reaches for daily.** `md:flex`, `md:grid-cols-2`, `md:flex-row` (column on mobile, row on desktop), `hidden md:block` (the canonical hide-on-mobile pattern), `md:hidden` (the canonical show-on-mobile-only pattern), `md:text-lg`, `md:p-8`, `md:gap-8` (denser spacing on mobile, looser on desktop). The pattern: change the layout primitive at the breakpoint, then scale the visual values inside.
+- **Viewport vs. container queries — the decision.** Media queries answer "how big is the viewport"; container queries answer "how big is this container." A sidebar that goes from collapsed to expanded changes its component's available width without changing the viewport; container queries are the right reach. Page-level structure (mobile nav vs. desktop nav, two-column page vs. one-column) is viewport-driven. The lesson lands the decision; lesson 7 of chapter 021 cashes in container queries.
+- **The viewport meta tag.** Cross-reference to lesson 2 of chapter 017 — `<meta name="viewport" content="width=device-width, initial-scale=1">` is what makes mobile-first viewport units behave. Next.js ships it via the metadata API. The student doesn't write it; they recognize it.
+- **Watch-outs:**
+  - `md:flex` doesn't unset `flex` below the breakpoint — it's `@media (min-width: 768px) { display: flex }`. Combined with `block` base, the element is block on mobile and flex on desktop, not "unset on mobile."
+  - Responsive prefixes stack with state prefixes — `md:hover:bg-accent` is valid; order matters in Tailwind v4 (variant order = source order in the compiled CSS).
+  - The iOS sticky-hover bug is real on `:hover` without `(hover: hover)` gating — Tailwind's `hover:` handles it; raw CSS doesn't unless the developer wraps it.
+  - `prefers-color-scheme` is the OS preference; `.dark` is the site preference. The site preference wins via `next-themes`.
+  - `min-width: 640px` doesn't mean "tablet"; it means "640px and up." Don't name breakpoints for devices.
+  - `hidden md:block` and `md:hidden` are the legitimate visibility-by-breakpoint pattern; conditional rendering in React is the alternative when the off-screen content should be unmounted (a11y, performance).
 
 What this lesson does not cover:
 
-- The full ARIA treatment (lesson 3 of chapter 031) — every role, every state, the WAI-ARIA Authoring Practices.
-- Focus management at depth (lesson 4 of chapter 031) — focus trap, focus restoration on route change.
-- Live regions at depth — when to use `polite` vs. `assertive`, screen reader behavior across browsers.
-- The full table accessibility specification — `headers` attribute (manual header references), `<col>` and `<colgroup>` styling at depth.
-- TanStack Table or the data-grid component family — out of scope.
-- Sorting, filtering, virtualized tables — out of scope for this lesson.
-- The `<dialog>` element — out of scope; Radix-managed dialogs in lesson 5 of chapter 026.
+- Container queries — lesson 7 of chapter 021.
+- The viewport meta tag — lesson 2 of chapter 017.
+- The `<picture>` element and responsive images — lesson 6 of chapter 017 / Next.js `<Image>` territory.
+- Viewport unit details (`vh`, `dvh`, `svh`, `lvh`) — lesson 5 of chapter 020.
+- Mobile navigation patterns (drawer, slide-out) — lesson 8 of chapter 028 (the project chapter cashes in).
+- Server-side device detection (`User-Agent` sniffing) — out of scope; CSS handles it.
+- Adaptive vs. responsive design philosophy — out of scope; the chapter is opinionated on responsive.
 
 ---
 
-## Lesson 7 — Quizz
+## Lesson 7 — Container queries for component-level layout
 
-Top ten topics to quiz:
+Teaches `container-type: inline-size` as the senior default, `@container` plus the `@sm:` / `@md:` Tailwind variants, the `cqi` unit with `clamp()` for fluid component typography, named containers for nested structures, and the viewport-vs-container decision rule.
 
-1. JSX is property syntax — compiles to `jsx(...)` calls producing element descriptors that React renders into the DOM. The prop names follow the DOM property names, not the HTML attribute names: `className`, `htmlFor`, `tabIndex`, `readOnly`, `colSpan`. `data-*` and `aria-*` stay kebab-case in JSX.
-2. List rendering needs keys; keys must be stable, unique among siblings, tied to the data. The array index is the canonical wrong key — the bug fires when the list is filtered, sorted, or reordered. The senior default is `key={row.id}`.
-3. The `&&` short-circuit's `0` trap — `{items.length && <List />}` renders `0` when the array is empty. The senior reach is explicit boolean coercion (`{items.length > 0 && ...}` or a ternary).
-4. Void elements (`<img>`, `<input>`, `<br>`, `<hr>`, `<meta>`) must self-close in JSX (`<img />`). Fragments (`<>...</>`) group siblings without an extra wrapping element.
-5. The Next.js root layout (`app/layout.tsx`) is a Server Component that owns the `<html>` and `<body>` tags; the `metadata` export (or `generateMetadata` for dynamic) generates the `<head>` content. Don't put `'use client'` on the root layout — wrap client concerns in a `<Providers>` child.
-6. The six landmark elements — `<header>`, `<nav>`, `<main>`, `<aside>`, `<article>`, `<section>`, `<footer>` — form the page outline assistive tech navigates. Multiple `<nav>` regions need `aria-label`s to distinguish them. Headings (`<h1>` through `<h6>`) follow a strict hierarchy — exactly one `<h1>` per page, no skipped levels; the level is determined by outline position, not visual size.
-7. `<button>` is for actions, `<a href>` is for navigation. `<button>` inside a `<form>` defaults to `type="submit"` — every button declares its `type` explicitly. `<a target="_blank">` always pairs with `rel="noopener noreferrer"`. Internal Next.js navigation uses `<Link>`; external links use plain `<a>`. Icon-only buttons need `aria-label`.
-8. Form elements form a contract — `name` attributes are the keys into `FormData`, `<label htmlFor>` associates labels to inputs (placeholder is not a label), `<fieldset>` + `<legend>` group related inputs, `<button type="submit">` is the senior reflex. Native constraints (`required`, `type`, `pattern`, `minLength`) are UX, not security — always pair with server-side Zod (lesson 7 of chapter 048).
-9. `data-*` for script hooks (delegation, tests, CSS state) vs. `aria-*` for assistive-tech signals (`aria-label`, `aria-labelledby`, `aria-describedby`, `aria-current`, `aria-expanded`, `aria-pressed`, `aria-hidden`, `role="alert"`). The first rule of ARIA — no ARIA is better than bad ARIA. Reach for the semantic element first.
-10. `<table>` for tabular data only — rows and columns of related information indexed by (R, C). The semantic structure: `<table>`, `<caption>`, `<thead>` with column-header `<th scope="col">`, `<tbody>` with `<tr>` rows where the row identifier is `<th scope="row">` and other cells are `<td>`. Wrap in `overflow-x-auto` for responsive layouts; don't `display: block` the table elements (breaks the accessibility tree).
+Topics to cover:
+
+- **The senior question.** A `<ProductCard>` rendered in the sidebar (200px wide) and in the main feed (600px wide) needs different layouts — but both contexts share the same viewport, so media queries can't tell them apart. The 2026 answer is a container query: `@container (min-width: 400px) { ... }`, or in Tailwind `@container` on the wrapper and `@md:flex-row` on the children. The lesson installs container queries as the component-level form of responsive design, names the `cqi`/`cqb` container units, and lands the decision (viewport queries for page structure, container queries for components).
+- **The model — `container-type` and `@container` rules.** A parent declares itself a container (`container-type: inline-size` or `container-type: size`), and descendants query *that container's* size instead of the viewport. Tailwind v4 ships `@container` as the utility that declares `container-type: inline-size`. Descendants use `@sm:`, `@md:`, `@lg:` prefixes (the `@` distinguishes container from viewport queries). Default Tailwind container breakpoints are smaller than viewport breakpoints (`@xs` 320px, `@sm` 384px, `@md` 448px...).
+- **`container-type: inline-size` — the senior default.** Queries only the container's inline (width) axis; the container's height stays content-driven. The 99% reach. `container-type: size` queries both axes but the container must have a defined height — rare and footgun-prone. `container-type: normal` removes containment.
+- **The canonical pattern — a card that adapts to its slot.** A `<ProductCard>` with `@container` on the root and `@md:flex-row` on the inner layout produces a vertical card in narrow slots and a horizontal card in wide slots — without the parent ever knowing what layout the card chose. Cashes in component reusability across the dashboard / sidebar / feed contexts every SaaS hits.
+- **`@container` plus named containers.** `container-name: card` lets a child query a specific ancestor by name — `@container card (min-width: 400px)`. Tailwind: `@container/card` on the parent and `@md/card:flex-row` on the child. Reach: nested containers where a deep child needs to bypass a closer container.
+- **Container query units — `cqi`, `cqb`, `cqw`, `cqh`, `cqmin`, `cqmax`.** `1cqi` = 1% of the container's inline size (preferred over `cqw`); `1cqb` = 1% of block size; `cqmin` / `cqmax` for the smaller / larger of the two. Reaches: fluid typography inside a card (`font-size: clamp(1rem, chapter 009cqi, 1.5rem)`), padding that scales with container size, image heights that follow card width. The 2026 reach is `cqi` for almost everything — width drives most component sizing.
+- **`@container` and `clamp()` — fluid component typography.** A common 2026 pattern: a card title that scales from 16px in a small card to 24px in a large card, with one rule — `clamp(1rem, chapter 009cqi, 1.5rem)`. No breakpoint, no Tailwind variant, no JavaScript. Cashes in the `clamp()` primitive named in lesson 5 of chapter 020.
+- **The viewport-vs-container decision, cashed in.** Page-level layout (mobile nav vs. desktop nav, single-column vs. two-column page shell) → viewport queries via `md:`. Component-level layout (a card that adapts to its slot, a sidebar widget that collapses based on its parent) → container queries via `@md:`. Most modern SaaS UIs use both — the page is viewport-driven, the components inside are container-driven. The lesson lands this as the senior decision rule.
+- **`auto-fit` + `minmax` vs. container queries — both solve "responsive without breakpoints."** Cross-reference to lesson 4 of chapter 020. `grid-cols-[repeat(auto-fit,minmax(280px,1fr))]` makes the *container* responsive to the items; `@container` + `@md:flex-row` makes the *items* responsive to the container. Both are 2026 reflexes; the decision is whether the design wants flexible track count or per-item adaptation.
+- **Container query browser support and the Baseline status.** Baseline since late 2023; in 2026 it's universally supported with no polyfill story. The senior reaches without checking caniuse.
+- **Style queries — recognition only.** `@container style(--theme: dark)` queries a custom property rather than a size. Limited browser support in early 2026; not a senior reach yet.
+- **Watch-outs:**
+  - Container queries don't work without `container-type` set somewhere up the tree; the most common bug is forgetting `@container` on the parent.
+  - `container-type: inline-size` causes the container to establish a new layout context — flex items inside still flex, but the container's height becomes content-driven (no `height: 100%` on the parent flowing through automatically).
+  - Container query units don't work *outside* a container; `cqi` falls back to 0 if no ancestor has `container-type`.
+  - `@container` is the Tailwind utility name; the underlying property is `container-type`. The chapter uses both forms so the student recognizes either.
+  - Nested containers compose — an inner `@container` shadows an outer one for unnamed queries. Name containers when the structure has multiple.
+  - Container queries don't query the element they're applied to; they query a parent. The container is always an ancestor.
+  - Don't reach for container queries when viewport queries are simpler — the page shell rarely needs them.
+
+What this lesson does not cover:
+
+- Style queries at depth — recognition only.
+- The viewport-unit family (`vh`, `dvh`, `svh`, `lvh`) — lesson 5 of chapter 020.
+- Media queries — lesson 6 of chapter 021.
+- Component composition patterns that benefit from container queries — Chapter 022.
+- Responsive images and `<picture>` source matching — out of scope here.
+- Container queries for height-driven adaptation — niche; the chapter recommends `inline-size` and trusts the design.
+- Component design system practices (variants vs. queries) — Chapter 027 territory.
 
 ---
 
-## Total chapter time
+## Lesson 8 — Quizz
 
-Roughly 275 to 335 minutes across the six teaching lessons plus the quiz. The chapter fits across three to four evenings — JSX-as-HTML in the first sitting (50-60 minutes); the root layout in a second short sitting (35-45 minutes); landmarks and headings in a third sitting (45-55 minutes); buttons-links-lists and forms across two sittings (95-115 minutes total); data-and-ARIA-and-tables in a final sitting (50-60 minutes plus the quiz). The student finishes the chapter able to write JSX with `className`/`htmlFor`/event props/curly-brace expressions/list keys/fragments/void elements by reflex, configure the Next.js root layout with the right `<html lang>` and `metadata` export, structure a page with the six landmark elements and a clean heading hierarchy, pick `<button>` vs. `<a>` vs. `<Link>` by intent, write forms whose elements are a contract with the server-side Zod schema, place `data-*` and `aria-*` attributes at the right call sites with the right consumers in mind, and reach for `<table>` only when the data is actually tabular. Chapter 022 opens on the other side with Tailwind — the styling surface that paints the semantic elements this chapter just installed.
+Top 10 topics to quiz:
+
+- Typography reflexes — the Tailwind type scale, `leading-*` / `tracking-*` defaults, `text-balance` on headings, `text-pretty` on body, `max-w-prose` for reading width, `truncate` and `line-clamp-*` requirements (the `min-w-0` flex companion).
+- Color and the modern surface — OKLCH as the storage form, `color-mix(in oklch, ...)` for runtime mixing, the alpha syntax (`bg-blue-500/50`) compiling to `color-mix()`, semantic tokens over primitives, `opacity` vs. per-property alpha (and the stacking-context trigger), `prefers-color-scheme` vs. `.dark`.
+- Borders, radius, and shadows — `outline` vs. `border` for focus rings (`outline` doesn't shift layout), `ring-*` as the multi-layer shorthand, the `shadow-*` elevation scale and the surface tiers, `drop-shadow` vs. `box-shadow`, `backdrop-filter` for glass-morphism.
+- Pseudo-classes for interaction — `:focus-visible` as the canonical focus reflex (not `:focus`), `:focus-within` for parent-of-focused, `disabled:` plus `aria-disabled:`, the iOS sticky-hover bug and how `hover:` gates it.
+- `:has()` — the parent selector, the canonical reaches (`has-[input:invalid]:`, `has-[:checked]:`), where it retires JavaScript class toggles, and the `group-has-[...]:` form.
+- Animation — `transition-*` for property motion (cheap properties are `transform` and `opacity`), `animate-*` for keyframes, `tw-animate-css` as the shadcn dependency for dialog/sheet/accordion, the `data-[state=open]:animate-in` pattern, `prefers-reduced-motion` and `motion-reduce:` as the discipline.
+- The transform surface — `translate`, `scale`, `rotate`, `skew`, plus the stacking-context trigger on `transform` and `filter` (cross-references to lesson 9 of chapter 020).
+- Media queries and breakpoints — mobile-first as the senior default, the Tailwind `sm`/`md`/`lg`/`xl`/`2xl` scale, breakpoints are content-driven not device-driven, `hidden md:block` and `md:hidden` for visibility-by-breakpoint, the `prefers-*` family.
+- Container queries — `container-type: inline-size` as the default, `@container` plus `@sm:` / `@md:` Tailwind variants, the `cqi` unit and `clamp()` for fluid component typography, named containers for nested structures, the viewport-vs-container decision.
+- The decision lattice — viewport queries for page structure, container queries for component layout, `grid auto-fit minmax` when the design wants flexible track count, and the senior reach for each.

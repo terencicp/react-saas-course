@@ -1,143 +1,277 @@
-# Chapter 002 — Runtime and package manager
+# Chapter 002 — Functions, naming, and control flow
 
 ## Chapter framing
 
-This chapter is the first lesson where the student touches their machine. The job is to pin the runtime, the package manager, and the way TypeScript actually runs — three decisions that, made well, will not be revisited again for the rest of the course, and made poorly will produce the class of "works on my machine" bugs that eats senior time.
-
-Chapter 001 installed the reading rules. This chapter exercises them on the first concrete stack decisions:
-
-- **Pinning is the deliverable, not "installing Node."** The TOC bullet for lesson 1 of chapter 002 is "pinning Node and the broader toolchain with mise so every contributor and CI box runs identical versions." The shape of the lesson follows: mise is taught as a pinning mechanism first, a version manager second. `nvm` and `volta` get a one-line dismissal with the trigger that would flip the choice. No history.
-- **Defaults before conditionals.** Node 24 LTS is the default. The native strip-types path (stable since Node 25.2.0 / backported to 22.18 and 24.12) is the default for backend scripts and CLIs. `tsx` is the conditional power tool past a named trigger (path aliases, decorators, JSX outside a framework). `tsc → .js` is reserved for library publishing and CI type-checking. Every lesson names the trigger before the tool.
-- **pnpm wins on correctness, not speed.** The 2026 senior reason for pnpm over Bun is the strict, non-hoisted node_modules layout that surfaces phantom dependencies at install time, plus universal Node compatibility and battle-tested monorepo support. Speed differences are real but ride below the build phase in CI. Stated once here; it is not the lesson's center.
-- **The lockfile is a contract, not a build artifact.** It belongs in version control and never in `.gitignore`. The chapter teaches what the lockfile is, what it prevents, and the failure shape when a teammate runs `npm install` against a pnpm repo.
-- **Corepack is on its way out.** Node 25 dropped Corepack from distributions. pnpm 10 ships `manage-package-manager-versions` enabled by default and reads the `packageManager` (or `devEngines.packageManager`) field directly. The chapter teaches the post-Corepack flow: install pnpm once globally via mise, pin the version in `package.json`, and let pnpm self-manage from there. Corepack is named once as the historical alternative students will see in older READMEs.
-- **The student finishes the chapter with a `.mise.toml`, a `package.json` with `packageManager` pinned, a committed `pnpm-lock.yaml`, and the ability to run a `.ts` file with `node hello.ts`.** That is the runnable state Chapter 003 (editor) and Chapter 004 (the first Next.js scaffold) build on.
+Chapter 001 installed the value model. This chapter teaches the **shape of the code that operates on those values** — how functions are declared, how signatures stay readable past a couple of parameters, how names communicate intent, how control flow stays flat, how nullish operators replace defensive branching, how destructuring becomes the API call-shape, and how closures capture lexically by reference. These are the daily-write surfaces of a 2026 SaaS codebase. The student will reach for every one of them on the first React component, the first Server Action, and the first Drizzle query in later units, and the course never re-teaches the form.
 
 Threads that must run through every lesson:
 
-- **The senior question is always "what does this prevent."** Every tool earns its weight against a concrete failure mode a returning dev has seen at least once (the wrong Node on CI, the missing dep that worked because someone else's package hoisted it, the production deploy that failed because `tsx` was a dev-only dependency).
-- **Cross-platform from the first command.** macOS and Linux share the same install path; Windows users are pointed at WSL2 once in lesson 1 of chapter 002 and the course assumes WSL2 from there. No PowerShell variants in code blocks.
-- **No editor yet.** The student has a terminal and `cat`/their existing editor. VS Code arrives in Chapter 003. Snippets are short enough to type or paste blind.
-- **Verify steps are runnable, not visual.** Every setup lesson ends with a command that prints a version or runs a file. The student sees output, not a screenshot.
+- **Decisions before syntax.** Each lesson opens with the production failure mode the form prevents — a mutated callback that fires after a route change, a six-positional-argument call site no reviewer can read, a `||` that swallowed `0`, a destructure that forwarded a stale `id`. The syntax follows the failure.
+- **One language, TypeScript-flavored.** Every example is `.ts` with inference-led typing. The JavaScript primitive is named at the call site; the type-system depth (predicates, narrowing) is referenced but parked until Chapter 004 and chapter 005.
+- **Senior reflexes, not surveys.** The course never enumerates every loop form or every operator. Each lesson commits to the default and names the one or two alternatives with the trigger that flips the choice.
+- **Forward links land softly.** Closures foreshadow `useEffect` cleanups and Server Action capture (Unit chapter 024 and lesson 4 of chapter 030). Destructuring foreshadows React props (Unit chapter 022) and Server Action `FormData`. The options-object pattern foreshadows the wrapper idioms in lesson 7 of chapter 005. One sentence each.
+- **Biome is doing half the work.** Rules from lesson 5 of chapter 024 — `useConst`, `noDoubleEquals`, `useArrowFunction`, `noUselessElse`, `useExhaustiveDependencies` — turn many of these reflexes into build-time checks. Each lesson names the rule that enforces it where one exists, so the student knows the linter is the safety net, not vibes.
 
-This chapter ships terminal commands and small `.toml` / `.json` / `.ts` snippets. No application code. No frameworks. The Next.js scaffold lands in Chapter 004.
-
----
-
-## Lesson 1 — Pinning the toolchain with mise
-
-Install mise, pin Node 24 LTS in a `.mise.toml`, and make the runtime a property of the repo rather than the machine.
-
-Topics to cover:
-
-- The senior question: what does pinning the runtime prevent. Two failure modes named concretely — the CI box that runs a different Node minor than the developer's laptop and quietly tree-shakes a feature out, and the new contributor whose system Node is two majors behind and breaks half the dev scripts on `pnpm install`. Pinning makes the runtime a property of the repo, not the machine.
-- mise as the default in 2026, with the trigger framing. mise is Rust-built, polyglot (Node, Python, Ruby, Go, whatever the project needs later — Trigger.dev's local CLI, for one), reads `.tool-versions` and `.nvmrc` for migration, and ships environment-variable and task-runner features the course will use again. nvm gets one line: shell-script architecture, Node-only, slower; the trigger to flip back is "team already standardized on nvm and migration cost is not worth it." Volta gets a sentence: still maintained, narrower scope, fine if it's already in place.
-- Installing mise on macOS and Linux (Homebrew or the install script); the shell activation step (`mise activate zsh` / `bash` in the rc file) named explicitly as the line that often gets skipped and produces "command not found" half an hour later. Windows: install WSL2 first, then follow the Linux path. One line, one link, no PowerShell guide.
-- Choosing the Node version. Node 24 is the current LTS in May 2026 with maintenance through late 2027; the course pins Node 24. Why LTS over Current: production SaaS doesn't ride the bleeding edge unless a feature is load-bearing. Native TypeScript stripping (lesson 4 of chapter 002) is available on Node 24.12 forward, so the LTS isn't the cost it used to be.
-- Writing the first `.mise.toml` at the repo root: `[tools] node = "24"`. The `mise use --pin node@24` command as the shortcut that writes the file for you and pins the full version string. The `mise install` step that fetches the pinned version into the user's mise store. `mise current` to verify.
-- The directory-scoped behavior: cd into the project, mise swaps the active Node version automatically. cd out, it swaps back. The "trust" prompt mise emits the first time it sees a new `.mise.toml` (and why) — named so the student isn't surprised.
-- Forward link: pnpm gets installed in lesson 2 of chapter 002 and pinned through mise the same way, with one more wrinkle the next lesson handles (`packageManager` in `package.json`).
-
-What this lesson does not cover:
-
-- Installing pnpm or any other tool through mise — that arrives in lesson 2 of chapter 002 where it earns its weight.
-- mise's task runner, env-var management, or hooks beyond `[tools]` — those land at the call sites later in the course (Trigger.dev local, env validation in lesson 5 of chapter 004).
-- nvm's `.nvmrc` workflows, Volta's `volta pin` workflow, asdf migration — the lesson names them as alternatives and moves on.
-
-Pedagogical approach:
-
-Setup/wiring archetype with a Decision opening. The first two paragraphs are the decision — why pin at all, why mise — because the student needs to know they're not being asked to install another tool for the sake of it. Then a `Steps` block walks the install on macOS/Linux (with the WSL2 line for Windows users branched into an Aside), the shell activation, the `mise use --pin node@24` command, and the `node --version` verify. The `.mise.toml` produced is shown as a labeled code block — three lines, no commentary, the smallest possible file. Close with one short Tokens or PredictOutput exercise on a `.mise.toml` snippet ("which line pins which tool") to confirm the format landed. The lesson is short on purpose: pinning is one decision and one file.
-
-Estimated student time: 20 to 25 minutes.
+The student finishes the chapter able to write a function any reviewer in 2026 would accept the first time — clear signature, intent-revealing name, flat control flow, no falsy defaults, destructured parameters, closures used deliberately — and to recognize the bug class each form prevents. Containers (objects, arrays, maps) arrive in chapter 003; the type-system depth that backs these forms lands in chapter 004 and chapter 005.
 
 ---
 
-## Lesson 2 — pnpm and the post-Corepack package.json
+## Lesson 1 — Arrow by default, declaration on demand
 
-Install pnpm through mise, write the minimum viable `package.json` with `packageManager` and `.npmrc`, and learn the four daily pnpm commands.
+Teaches the three function forms, the senior rule that arrow expressions bound to `const` are the 2026 default, and the narrow triggers (hoisting, named recursion, type-guard signatures) that earn a `function` declaration.
 
 Topics to cover:
 
-- pnpm as the package manager default in 2026, with the senior reason named before the install command: strict non-hoisted `node_modules` (phantom-dependency bugs surface at install time, not in production), monorepo-first design, mature ecosystem, full Node compat. Bun gets one line as the conditional alternative — faster on cold installs, ~95% Node-compat means one package in twenty surprises, no built-in audit, ready for some teams in 2026 but not the default the course teaches against. The trigger that would flip the choice: a greenfield project where install time genuinely dominates CI and the team has the bandwidth to handle compat edges.
-- Installing pnpm through mise (`mise use --pin pnpm@10`) rather than globally via Homebrew or the standalone installer — keeps the package manager version pinned per-repo for free and avoids the global-version drift that bites teams.
-- The post-Corepack reality. Corepack is removed from Node 25+ distributions and the ecosystem is moving off it. pnpm 10 ships `manage-package-manager-versions` enabled by default, so once any pnpm is installed, the `packageManager` field in `package.json` is enough to lock the version per-repo — pnpm itself swaps in the right binary. The lesson writes the `packageManager: "pnpm@10.x.y"` field by hand (or by running `pnpm use ...`) and explains the field is read by pnpm on every invocation. Corepack named once as the historical mechanism the student may see in older READMEs; not used here.
-- The minimum viable `package.json` — `name`, `private: true` (because this is an app, not a publishable library, and the field prevents an accidental `pnpm publish`), `type: "module"` (ESM-first in 2026), `packageManager`, and an empty `scripts` block. Each field gets one line on what it does.
-- The four pnpm commands a SaaS engineer runs daily: `pnpm install` (and what it actually does — resolves the dependency graph, writes the lockfile, populates `node_modules` from the global content-addressed store via symlinks), `pnpm add <pkg>` / `pnpm add -D <pkg>` (with the dev-dependency distinction at production-build time named explicitly), `pnpm remove`, and `pnpm run <script>` (with the `pnpm <script>` shorthand and what `pnpm` does when the script name collides with a built-in).
-- npm scripts as the universal task runner. The chapter doesn't introduce its own scripts yet — the Next.js scaffold in lesson 1 of chapter 004 will — but the shape is shown: one tiny `"hello": "node hello.ts"` example tied forward to lesson lesson 4 of chapter 002.
-- A note on `.npmrc` at the repo root for two settings the course will rely on: `auto-install-peers=true` (modern default, but explicit avoids the surprise on older pnpm versions) and `engine-strict=true` (the `engines` field in `package.json` becomes a hard error, not a warning — pairs with the runtime pin from lesson 1 of chapter 002). `shamefully-hoist=false` left as the default and named, so the student knows what they're getting.
+- The senior question. Three function forms exist in 2026 TypeScript — arrow expressions, `function` declarations, and `function` expressions. The team picks one default and one trigger that flips it; rotating between forms randomly is the smell. The lesson installs the default and the triggers, not the full mechanics of `this` and prototypes (which lesson 2 of chapter 009 will revisit at the narrow surface where classes still matter).
+- The default: `const name = (args) => body` bound to `const`. Why this wins as a default — concise at the call site, no `this` rebinding surprise inside callbacks (the historical 2018-era arrow-vs-`function` debate that returning devs remember), reads like data when assigned to a variable, and pairs with `const`-by-default from lesson 6 of chapter 001. Biome's `useArrowFunction` rule auto-fixes the obvious cases.
+- Implicit return vs. block body. The single-expression form (`(x) => x * 2`) for one-liners; the block form (`(x) => { ... return ...; }`) the moment a statement is needed. The watch-out: the `({ key: value })` object-return form requires the parens around the literal — without them the braces parse as a block. One short snippet of the mistake and the fix.
+- The three triggers that earn a `function` declaration.
+  - **Hoisting.** Top-of-file helper used by code declared above it. `function` declarations hoist their full body; arrow `const`s are in the Temporal Dead Zone until the line they're declared on. Rare in 2026 (most code is import-first and module-scoped), but real for in-module recursion helpers and a small set of organizational layouts.
+  - **Named recursion.** A recursive helper that wants to refer to itself by name without aliasing through the outer `const`. `function walk(node) { ... walk(child) ... }` is the cleaner form than an arrow that has to capture its own binding.
+  - **TypeScript type-guard signatures and assertion functions.** `function isUser(x: unknown): x is User { ... }` and `function assertUser(x: unknown): asserts x is User { ... }` (where `unknown`, the predicate `x is T`, and the assertion `asserts x is T` are introduced in lesson 1 of chapter 004 / lesson 6 of chapter 004 / lesson 3 of chapter 005 — named here only so the student recognizes the shape that earns a `function` declaration). Both forms require the `function` keyword today — the predicate and assertion syntax does not parse against arrow expressions. The course's narrowing chapter (lesson 6 of chapter 004) and exhaustiveness chapter (lesson 3 of chapter 005) lean on these.
+- Method shorthand inside object literals (`{ greet() { ... } }`) — named in one paragraph as the third form that earns its place inside config objects, Drizzle relation definitions, and route handler exports. Not a separate trigger; a syntactic shortcut when the function lives inside an object literal.
+- One paragraph on `function` expressions (the `const fn = function name() { ... }` form). Useful only when the expression form needs an internal name for recursion or debugging; almost always replaced by either an arrow or a declaration. Named once so the student recognizes it.
+- The `this` rule, stated and dropped. Arrow functions inherit `this` from the enclosing lexical scope; `function` forms get their own `this` based on the call site. Inside the React + Server Components stack the course teaches, the student writes essentially no `this` — components are functions, Drizzle calls are functions, server actions are functions. The rule is named so the student isn't surprised when they see it in third-party class-based code (some SDKs, the rare `Error` subclass authored in lesson 2 of chapter 009).
+- Forward links. Components in Unit 3 are arrow expressions bound to `const`. Server Actions in Unit chapter 030 are async arrow expressions exported by name. Type predicates and assertion functions appear in lesson 6 of chapter 004 and lesson 3 of chapter 005. One sentence total.
 
 What this lesson does not cover:
 
-- The lockfile in depth — that's the next lesson.
-- Monorepo `workspaces` configuration — not needed until much later; the course doesn't go monorepo by default.
-- pnpm catalogs, `dlx`, `exec`, `licenses`, `audit` — surveyed at the call sites where they earn their weight (security baseline in chapter 085).
-- Bun-specific syntax or installation. The comparison is one line; the lesson commits to pnpm.
+- Generator functions (`function*`) and `yield`. The course writes them once at most, in the iteration-helpers lesson lesson 5 of chapter 003, if at all; mentioned in one line as the rare reach for custom iterables.
+- `this`, `bind`, `call`, `apply` in depth. Not relevant to functional 2026 SaaS code; named in one paragraph for recognition.
+- `arguments` and `caller`/`callee`. Replaced by rest parameters (taught in lesson 2 of chapter 002); named in one sentence as the legacy form to recognize in old code.
+- IIFE patterns. Replaced by modules; not written in modern code.
+- Decorators. Stage 3 and Next.js-irrelevant for the SaaS surface this course teaches.
 
 Pedagogical approach:
 
-Setup/wiring with one Decision beat up front. Open with the pnpm-vs-Bun decision in three sentences — the failure pnpm prevents (phantom deps), the conditional that flips it (greenfield with CI install time dominating), and the verdict for this course. Then a `Steps` block walks `mise use --pin pnpm@10`, the `pnpm init` (or hand-written `package.json`), the `packageManager` line, and the `.npmrc`. Show the resulting two files as labeled code blocks side by side using `Tabs`. Demonstrate one round of `pnpm add zod` / `pnpm remove zod` purely to show the lockfile updating and the `node_modules` symlinks appearing — students are watching the mechanism, not learning Zod. Close with a Buckets exercise sorting six commands into "install / add / remove / run / not pnpm" to confirm the command surface landed. The Bun line should not become a sidebar; one sentence, then on with the lesson.
+Decision archetype. Open with one short snippet of each form (arrow `const`, declaration, method shorthand) and the senior framing in two sentences: arrow `const` is the default, declaration earns its place at three triggers. Walk the implicit-return and object-return-parens gotcha in a tight code beat. The three triggers each get a single short `react-coding`-style or `type-coding` snippet — type guards land especially well with a `type-coding` block where the student sees the predicate signature only resolve under `function`. Close with a `Buckets` exercise sorting eight function situations (a click callback, a `.map` projection, a recursive tree walker, a `x is Foo` predicate, a method on a config object, a React component, a top-of-file helper used above its declaration, a Server Action) into `arrow const` or `function declaration`. The sort is the senior-reflex install.
 
 Estimated student time: 25 to 30 minutes.
 
 ---
 
-## Lesson 3 — The lockfile as a contract
+## Lesson 2 — Signatures that stay readable past two parameters
 
-Commit `pnpm-lock.yaml` as the deterministic resolution record, enforce `--frozen-lockfile` in CI, and guard against mixed package managers with `only-allow pnpm`.
+Teaches the two-positional-parameter rule and the options-object pattern, parameter defaults firing only on `undefined`, rest parameters and call-site spread, and the TypeScript ordering of required vs. optional parameters.
 
 Topics to cover:
 
-- What `pnpm-lock.yaml` is. The resolved, fully-pinned graph of every transitive dependency at the exact version, integrity hash, and resolution path. Distinct from `package.json`, which only declares the top-level intent and the version ranges; the lockfile records the actual decision.
-- The senior question: what does the lockfile prevent. Concrete failure shapes — a teammate running `pnpm install` six months from now and getting a patched-but-broken sub-dependency that the original install didn't see; a CI build that resolves a different graph than the dev machine because the version range allowed it; a supply-chain incident where the integrity hash is the only thing flagging that an upstream artifact was tampered with. The lockfile is the artifact that makes "works on my machine" actionable.
-- The commit rule, stated as a hard default with no hedging: `pnpm-lock.yaml` belongs in version control. It is never in `.gitignore`. The course's `.gitignore` will be shown in lesson 1 of chapter 004; the lockfile is not in it. The library-publishing exception (lockfile sometimes excluded from the published tarball but still committed to the repo) named in one line, then dropped — this course ships apps, not libraries.
-- What happens on `pnpm install` when the lockfile is present and valid: pnpm uses it as the resolution source of truth and the install is deterministic. When `package.json` and the lockfile disagree (a teammate edited a version range without re-installing), pnpm fails the install in CI with `--frozen-lockfile` — the flag the course's CI will use in Unit 21. Named here so the student recognizes it later.
-- Merge conflicts in the lockfile. The senior move: never hand-edit. Resolve the `package.json` conflict, then run `pnpm install`, which re-resolves and rewrites the lockfile. Most teams configure git to mark the file as `merge=ours` or `linguist-generated` so reviewers don't try to read the diff.
-- The mixed-package-manager failure mode. A teammate who runs `npm install` against a pnpm repo generates a `package-lock.json`, breaks the workspace symlinks, and produces a second source of truth. The `preinstall` script `npx only-allow pnpm` as the structural enforcement that makes this hard to do accidentally. Shown as a one-line addition to `package.json`.
-- The `engines` field pairing with `engine-strict=true` from the previous lesson — pinning Node and pnpm versions inside the same file the lockfile shares a directory with, so all three (runtime, package manager, dependency graph) live in one commit.
+- The senior question. A function with five positional booleans (`createUser('alex', 'a@x.com', true, false, true)`) is unreadable at the call site, unsafe to reorder, and impossible to extend without breaking every caller. The bug class isn't syntax — it's API design at the function level. The lesson teaches the two-rule shape that prevents it.
+- The two-positional-parameter rule. Two is the threshold past which positional arguments stop reading clearly. Past two, switch to an options object. The exception named once: arity-meaningful functions (e.g. a comparator `(a, b) => number`, a reducer `(acc, x) => acc`) keep their positional shape because the positions are semantic. The rule is a tool, not dogma.
+- The options-object pattern. `(options: { name: string; email: string; admin?: boolean })` (inline object-type literals and the `?` optional modifier are covered at depth in lesson 2 of chapter 004; here the student reads the shape) is the shape Server Actions, Drizzle query builders, React component props, and the entire 2026 senior surface use. Two payoffs: call sites self-document (`createUser({ name, email, admin: true })`), and adding a parameter never breaks existing callers because object fields are unordered. The companion: destructure at the signature (covered in lesson 6 of chapter 002) — `({ name, email, admin = false })` — so the body reads like the call site.
+- Parameter defaults. The exact rule: defaults fire only when the argument is `undefined`. Passing `null` does not trigger the default. Passing `0` or `''` or `false` does not trigger the default (this is the right behavior, but the returning student often expects falsy-coercion semantics from older codebases). One short snippet showing the four cases.
+- The TypeScript ordering rule. Required parameters before optional. `function fetch(url: string, options?: Options)` is legal; `function fetch(options?: Options, url: string)` is not. The fix is the options object — when everything is on one parameter, the field-level `?` ordering doesn't exist as a constraint. One sentence on the conditional escape hatch: TypeScript 5.0+ accepts an optional positional before a required one if the optional has a default value, but the course doesn't reach for it.
+- Rest parameters at the signature and spread at the call site. `(...ids: string[])` collects trailing arguments into an array; `fn(...ids)` spreads the array back into positional arguments at the call site. The mental model: rest binds positions to an array on receive; spread unpacks an array to positions on send. The most common 2026 use is forwarding arguments to a wrapped function (`(...args) => baseFn(...args)`), and the typed form covered in lesson 7 of chapter 005's generics chapter is what makes that wrapper preserve the original signature.
+- Default values inside the options-object pattern. The composition is `({ pageSize = 20, sort = 'asc' } = {})` — defaults at the field level for individual fields, and the trailing `= {}` so the function is callable with no argument at all. Show this once because every paginated list function in the course will use this exact shape.
+- The "too many params" smell as a refactor signal. If a function reaches four or five positional parameters, the senior reads that as "this function does too many things" before "this function needs an options object" — sometimes the right answer is to split. Named in one sentence as the deeper refactor heuristic; the lesson's primary teach is the options-object pattern.
+- Forward links. Server Actions take a single options-shaped argument (Unit chapter 030). Drizzle's query-builder accepts options at every chain step (Unit 5). React component props are an options object spelled with JSX (Unit chapter 022). One sentence total.
 
 What this lesson does not cover:
 
-- The exact YAML schema of `pnpm-lock.yaml` — students don't need to read it by hand and shouldn't.
-- npm or Yarn lockfile differences — one line on "all three exist, all three serve the same purpose, the course commits to pnpm's."
-- Dependency-update tooling (Renovate, Dependabot) — that's a Unit 21 / 22 concern.
+- Function overloads (multiple call signatures for one implementation). Niche; the course names them once in lesson 7 of chapter 005 if at all, where generics replace most overload uses.
+- `arguments` legacy object — superseded by rest parameters.
+- Currying and partial application as patterns. Not in the 2026 SaaS senior daily reach; named in one line if at all.
+- The `this` parameter declaration in TypeScript (`function foo(this: Element)`). Class-adjacent, not part of the functional surface this chapter installs.
 
 Pedagogical approach:
 
-Pattern archetype. The lesson's center is the failure mode the lockfile prevents, and the structural enforcement (commit it; `only-allow pnpm`; `--frozen-lockfile` in CI) that makes the failure hard to produce. Open with one concrete scenario in prose — two engineers, six months apart, same `package.json`, different `node_modules` — and let the student feel the bug before naming it. Then the commit rule as a single sentence in bold. Show the `package.json` evolved across the chapter so far (Tabs comparing lesson 2 of chapter 002's version with the `engines` field and `preinstall` script added) — students see the file accreting decisions, not being rewritten. One quick Matching exercise pairing four failure modes ("teammate edits version range without installing," "CI uses different package manager," "merge conflict in the lockfile," "supply-chain tampering") with the four mitigations the lesson named. No sandbox here; the lesson is about a rule, not a thing to play with.
+Pattern archetype. Open with the unreadable five-positional-arg call site in one snippet and its options-object replacement adjacent. State the two-param rule plainly. Walk the parameter-default fires-only-on-`undefined` semantics in a `predict-output` exercise — four cases (`undefined`, `null`, `0`, `''`) with the expected default-vs-passed-value behavior shown in adjacent output blocks. Show the rest/spread duality in one `type-coding` block where the student types a wrapper that forwards `...args` and watches the inferred signature. Close with a `code-review` exercise: present a five-positional-arg function and ask the student to refactor to the options-object shape, with the test passing on the refactored form. The refactor is the lesson's confirmation.
 
-Estimated student time: 20 to 25 minutes.
+Estimated student time: 25 to 30 minutes.
 
 ---
 
-## Lesson 4 — Three ways to run a .ts file
+## Lesson 3 — Name for intent, not implementation
 
-Partition `.ts` execution into native strip-types as the default, `tsx` past a named trigger (path aliases, JSX, decorators), and `tsc` reserved for library publishing or `--noEmit` type-checking.
+Teaches Architectural Principle #4 across the four naming surfaces (variables, functions, parameters, types), the boolean-prefix convention, and the three bad-name classes (implementation-leaking, vague abstractions, negated booleans).
 
 Topics to cover:
 
-- The senior question: how does `.ts` source actually execute. Three paths in 2026, each with a trigger that selects it. The lesson's job is to name the default and the two triggers, not survey every flag of every tool.
-- The default: native type stripping in Node. Stable since Node 25.2.0, backported to Node 24.12 and Node 22.18, no flag needed — `node hello.ts` Just Works. What it does mechanically: parses the file with OXC, removes type annotations, executes the resulting JavaScript. What it does not do: type-check (still `tsc --noEmit` for that), transpile (no JSX, no decorators, no enum lowering, no downlevel), and crucially, does not read `tsconfig.json` — so path aliases like `@/lib/...` will not resolve. Named in one line: native stripping is for the .ts files that don't need a tsconfig.
-- The trigger that flips to `tsx`: any of path aliases from tsconfig, JSX outside a framework, decorators, enums, or downlevel-target needs. `tsx` reads `tsconfig.json`, handles path resolution, and stays a dev-dependency-only tool. Install (`pnpm add -D tsx`), invocation (`pnpm tsx script.ts`), and the watch mode (`pnpm tsx watch script.ts`) for dev scripts. The senior watch-out: `tsx` is a dev tool, not a production runtime — never ship a service that `tsx`s itself in production.
-- The trigger that flips to `tsc`: shipping a library to npm, or CI type-checking the codebase. `tsc --noEmit` is the dedicated type-checker the course's CI will run on every PR; the actual `.js` output of `tsc` is what publishable packages ship. The course is an app, not a library — `tsc → .js` is mentioned and parked.
-- One worked example end-to-end. Create `hello.ts` with a typed function. Run `node hello.ts` — works, output appears. Add a path alias and an import that uses it — `node` fails with a resolution error. Switch to `pnpm tsx hello.ts` — works. Run `pnpm tsc --noEmit` — works (type check passes). The student watches the three paths cleanly partitioned.
-- Forward link: Next.js owns the .ts compilation pipeline for application code (Chapter 004 onward). Native strip-types and `tsx` are for the scripts the SaaS engineer writes around the app — seed scripts, migration runners, one-off CLIs, Drizzle Kit invocations. The trigger for each is named at the call site later.
-- One sentence on `ts-node`: legacy, deprioritized, replaced by `tsx` for dev and by native Node for the basics. Named so the student recognizes it in older docs and doesn't reach for it.
+- The senior question. Three real bugs that start at the name. A variable `data` that nobody knows the shape of without reading three files of context. A function `processOrder` that the next reader has to open and read end-to-end to learn what "process" means in this codebase. A boolean `notDisabled` that a future reader misreads when they negate it with `!notDisabled` six months later. Names are a documentation surface; getting them wrong is a coordination cost paid by every future reader.
+- The principle, stated once. **A name says what the value is or what the function does, not how it's computed.** This is Architectural Principle #4 in the course's running list. The principle is asymmetric: a vague name that fits the value (`user`, `total`, `isAdmin`) is acceptable; an implementation-leaking name that pins a future reader to today's implementation (`userArray`, `totalReducer`, `adminCheckResult`) is the smell.
+- The four naming surfaces and the senior reach on each.
+  - **Variables.** Nouns. Concrete over abstract. `pendingInvoices` over `data`; `activeUser` over `obj`. Length proportional to scope — a one-line callback parameter can be `x`; a module-level constant cannot.
+  - **Functions.** Verbs or verb phrases. `loadInvoice`, `formatCurrency`, `parseExpiration`. The verb signals the kind of operation (`load`/`fetch` for I/O, `parse`/`validate` for transformation, `format`/`render` for output). The course does not standardize a verb glossary, but the team's codebase should; consistency is the rule.
+  - **Parameters.** Same rules as variables but with one tighter constraint — parameter names appear in the function's public surface (TypeScript shows them on hover, in errors, in IDE tooltips). `createUser(name, email)` reads from the call site; `createUser(a, b)` does not.
+  - **Types and type members.** PascalCase nouns for the type, camelCase for fields. `Invoice` over `InvoiceType` (the `Type` suffix is the noise the TypeScript world dropped years ago); `Status` and `state` over `StatusEnum` and `statusValue`. The course never writes `IInvoice`-style Hungarian prefixes.
+- The boolean-prefix convention. Boolean values and predicates get a verbal prefix that makes the truth condition unambiguous: `is*` (state), `has*` (membership/possession), `can*` (permission), `should*` (conditional intent), `will*` (future state). `isAdmin`, `hasUnpaidInvoices`, `canEdit`, `shouldRetry`. The rule is a recognition pattern — when the reader sees `is`, they know the value is a boolean before they read its type annotation.
+- The three bad-name classes.
+  - **Implementation-leaking.** `userArray`, `customerMap`, `loadingFlag`. The container or representation appears in the name, which means renaming the type forces renaming the variable. The fix: name what's in the container, not the container. `customers` (a plural noun), not `customerArray`.
+  - **Vague abstractions.** `data`, `info`, `result`, `manager`, `helper`, `util`. Names that could attach to anything attach to nothing. The fix: replace with the concrete thing — `data` → `weeklyMetrics`, `result` → `validatedInput`, `manager` → split the file because no class earns the name.
+  - **Negated booleans.** `notDisabled`, `isNotLoading`, `noErrors`. Negation in the name compounds with negation at the use site (`!notDisabled` is a double-negative that reads as "enabled" but doesn't say so). The fix: name the positive condition. `isEnabled`, `isLoading`, `hasErrors`.
+- Abbreviations and the senior call. The course's discipline: don't abbreviate unless the abbreviation is more common than the spelled-out form in the domain (`url`, `id`, `db`, `api`, `http`, `jwt`, `ms` for milliseconds). Never invent abbreviations (`usr`, `prfl`, `qty`). The reader-cost of disambiguating an unfamiliar abbreviation is higher than the writer-cost of typing the full word, especially in 2026 where every editor autocompletes.
+- One paragraph on consistency over correctness. Two acceptable names — `fetchUser` and `loadUser` — both communicate intent. The rule: pick one across the codebase and stick to it. Drift between synonyms in the same repo is the smell, not the choice itself.
+- Forward links. Type names in chapter 004. Component and hook naming in Unit 3 (`use*` prefix as a structural enforcement React understands). Server Action names in chapter 030. Drizzle table and column names in Unit 5. One sentence each.
 
 What this lesson does not cover:
 
-- Authoring `tsconfig.json` — that's lesson 3 of chapter 004.
-- The `--experimental-transform-types` flag (still experimental, lowers TypeScript-only syntax like enums) — one line and a "reach for it when…" forward pointer; not the default.
-- Bundlers (esbuild, swc, Turbopack) — Next.js handles application bundling end-to-end starting in chapter 004.
-- Publishing a library to npm — out of scope for the course.
+- Hungarian notation. Named once as the historical practice this principle replaces.
+- Specific verb glossaries (`get` vs. `fetch` vs. `load`). The course doesn't legislate one; the team's codebase does.
+- File naming conventions and folder structure. Lives in Unit 21 (project documentation) and is enforced by Next.js's routing conventions for the app surface.
+- Linguistic discussions of plurality, gender, casing across languages. The course writes English-only identifiers.
 
 Pedagogical approach:
 
-Decision archetype with a small worked-example beat. Open with the three-paths framing: native default, `tsx` past a trigger, `tsc` for library publishing or CI type-check. A small `Figure` with a three-branch decision tree (Mermaid flowchart — "does it need path aliases / JSX / decorators? → tsx. Library? → tsc. Otherwise? → node directly") makes the partition visual. Then the worked example as a `Steps` block: write the file, run `node hello.ts`, add the alias, watch it fail, switch to `tsx`, watch it pass, run `tsc --noEmit`. Each step is one command and one labeled output block — students see the cause and effect. Close with a Matching or Dropdowns exercise: given five `.ts` script scenarios ("seed script, no aliases," "library publish," "one-off CLI with `@/lib` import," "CI type-check," "running JSX from a standalone script"), the student picks the right execution path for each. The lesson is the partition, not the syntax.
+Concept archetype with a heavy exercise close. The lesson's center is recognition — the student should leave able to spot a bad name in a code review reflex, not just rewrite one. Open with three short before/after snippets from the bad-name classes (one each of leaking, vague, negated). State the principle in one sentence. Walk the four surfaces with one example each, then the boolean-prefix convention in a tight list. The three bad-name classes get their own beat with a `code-review` exercise on a small file containing five named values, three of which violate one of the classes — the student spots and renames. Close with a `matching` exercise pairing five abbreviations (`url`, `usr`, `qty`, `id`, `prfl`) to "acceptable" or "not acceptable" with the rule named. No sandbox — naming is a discipline, not a thing to play with.
+
+Estimated student time: 25 to 30 minutes.
+
+---
+
+## Lesson 4 — Guard clauses, ternaries, and exhaustive switch
+
+Teaches flat control flow through early-return guards, expression-level ternaries, `switch` with `noFallthroughCasesInSwitch` and `assertNever`, the lookup-map alternative, and the loop forms a 2026 senior reaches for.
+
+Topics to cover:
+
+- The senior question. The two-paragraph function with five nested `if/else` branches is the daily failure mode. Every level of nesting compounds the reader's cognitive load (which condition is currently true, which else branch am I in, what does the function return on this path), and the bug shape is the missed branch that fails silently. The lesson teaches three structural forms that keep control flow flat — guard clauses, expression ternaries, and exhaustive `switch` — plus the loop reflex that prefers `for...of` over `for (let i = 0; ...)`.
+- Guard clauses, the senior default for early exits. The shape: check the invalid/edge case first, return immediately, then the happy path runs unindented. `if (!user) return null;` over `if (user) { ... happy path ... }`. The payoff: one return path per condition, the function reads top-to-bottom, the happy path lives at the outer indentation level. Show one before/after of a four-level nested function flattened to four guards plus a body.
+- The "no `else` after `return`" rule. Biome's `noUselessElse` rule enforces it. Once a branch returns, the `else` block is dead weight — drop it, dedent the rest. Named because it's the most common code-review nudge a senior writes on junior PRs.
+- Ternaries at the expression level. The rule: use a ternary when the result is a value being assigned, returned, or passed as an argument. Don't use a ternary for side effects (`condition ? doA() : doB()` reads worse than the equivalent `if`). One paragraph on nested ternaries — acceptable when they form a small decision tree (`status === 'paid' ? 'green' : status === 'pending' ? 'yellow' : 'red'`), unacceptable when they hide a complex branch.
+- `switch` for discriminated-value branching. The right reach when the branch count is fixed and the dispatch value is a literal (a discriminant field on a union, an event type, a status enum). Two pieces of structural enforcement the course leans on:
+  - **`noFallthroughCasesInSwitch`** in `tsconfig.json` (already enabled in lesson 4 of chapter 024) — makes a missing `break` a compile error. The classic C-style fallthrough bug becomes structurally impossible.
+  - **`assertNever`** in the default case — the function `function assertNever(x: never): never { throw new Error('unhandled: ' + JSON.stringify(x)); }` placed in `default:` makes a missing case a *compile* error, not a runtime one (the `never` bottom type that powers the compile-error claim is taught in lesson 1 of chapter 004; here it's named for shape recognition). When the union grows a new variant, every `switch` that doesn't handle it fails to compile. This is the discriminated-union exhaustiveness pattern the course's state-machine chapter (lesson 3 of chapter 005) lands fully; this lesson plants the `switch`-shaped use.
+- The lookup-map alternative. When `switch` is dispatching to expression-level results, an object literal often reads better — `const color = { paid: 'green', pending: 'yellow', failed: 'red' }[status]`. The trigger: the cases are uniform value-to-value mappings with no logic per case. The watch-out: under `noUncheckedIndexedAccess` (already on per lesson 4 of chapter 024), the lookup returns `T | undefined` and the student has to handle the miss with `??` or a narrowed type. Named in one paragraph.
+- Loops in 2026. The four forms ordered by reach.
+  - **`.map` / `.filter` / `.reduce` array methods** for transformation pipelines. The default for any list-to-list operation. Covered in depth in lesson 3 of chapter 003.
+  - **`for...of`** for side-effecting iteration (writes, async work, breaks). The senior reach when the operation can't or shouldn't be a `.map`. Use `.entries()` when the index is needed; use `for (const [key, value] of Object.entries(obj))` for objects.
+  - **`for (let i = 0; i < n; i++)`** the C-style loop. The narrow trigger: numeric ranges where the index is the data (matrix indexing, custom step sizes, reverse iteration without `.toReversed`). Rare in 2026 SaaS code.
+  - **`for...in`** named once as the legacy form that iterates *enumerable string keys including inherited ones*. Almost always wrong; use `Object.keys` or `Object.entries`. The course never writes `for...in`.
+- The `break` and `continue` reflex inside `for...of`. Allowed and clean for early termination. `Array.prototype.some` / `Array.prototype.every` are the array-method equivalents when the loop is searching; the trigger to drop into `for...of` is when the body has multiple statements or async work.
+- Forward link. Discriminated-union exhaustiveness gets the full type-system treatment in lesson 3 of chapter 005 (`assertNever`, `satisfies never`, type predicates, assertion functions). This lesson installs the runtime + `switch` shape; the type-level safety net is named, not derived.
+
+What this lesson does not cover:
+
+- Pattern matching (TC39 proposal). Stage 1 in May 2026; not in the stack.
+- `do { ... } while (...)` and `while (...)` loops. Rare enough to not earn a line; the student recognizes them.
+- Labeled statements (`outer: for (...) { break outer; }`). Niche; named in one line if at all.
+- `try`/`catch` as control flow — covered in Chapter 008.
+
+Pedagogical approach:
+
+Pattern archetype. The lesson's center is the failure mode (nested-if soup) and the structural forms that prevent it. Open with one before/after of a deeply nested function flattened to guard clauses. State the "early return, no else after return" rule. Walk ternaries with a tight prose-plus-code beat. Show `switch` with `noFallthroughCasesInSwitch` and `assertNever` in one full snippet — the *whole point* lands when the student watches a missing variant become a red squiggle. Use a `predict-output` exercise on three `switch` examples (one with fallthrough caught by the flag, one with `assertNever` catching a missing case, one correct). The lookup-map alternative gets one short snippet and a one-line trigger. The loop section is a tight prose list with one `script-coding` block where the student rewrites a `for...in` mistake to `Object.entries` + `for...of`. Close with a `code-review` exercise: a 12-line function with two nested-if levels and a `for...in`, refactored to guard clauses plus `for...of` plus a `switch`. The refactor is the lesson's confirmation.
+
+Estimated student time: 35 to 40 minutes.
+
+---
+
+## Lesson 5 — The null-safe operator trio
+
+Teaches `?.` for nullable access at each chain link, `??` over `||` for defaults (with the `0` / `''` / `false` trap), and `??=` for lazy initialization, plus the operator-precedence rules that force parentheses.
+
+Topics to cover:
+
+- The senior question. Two bugs from the same root. First, a defensive chain `if (user && user.profile && user.profile.address) { ... }` that the team writes once per page until someone reaches for optional chaining. Second, a `const pageSize = input.pageSize || 20` that silently overrides a deliberately-set `0`. Both are nullish-vs-falsy bugs and both get fixed by reaching for the right operator out of a trio of three.
+- `?.` for safe property and call access. The full surface: `user?.profile?.address?.city` short-circuits to `undefined` at the first nullish link. `user?.greet()` calls only if `user` is not nullish; `arr?.[0]` indexes only if `arr` is not nullish. The rule: each `?.` checks the value before it for null/undefined; placing it once at the start is not enough — `a?.b.c` still throws if `b` is nullish. The senior reflex: question-dot at every link that could be missing.
+- The watch-out on overuse. `?.` sprinkled across a chain that should never have a missing link silently swallows the bug. If `user.profile` is required by the type, writing `user.profile?.address` invites a bug where `profile` becomes nullable later and the chain quietly returns `undefined` instead of failing fast. The rule: use `?.` where the type acknowledges the nullable; let TypeScript fail at the call site otherwise. Forward link to lesson 6 of chapter 004 narrowing.
+- `??` over `||` for defaults. The exact distinction: `||` returns the right operand for any *falsy* left (`0`, `''`, `false`, `null`, `undefined`, `NaN`); `??` returns the right operand only for *nullish* (`null` or `undefined`). The senior rule, stated once: **for "use a default when the value is missing," reach for `??`. `||` is for "use the right value when the left is truthy" — different semantics, narrower reach.**
+- The three concrete `||`-vs-`??` traps. `pageSize || 20` swaps `0` for `20`. `name || 'Anonymous'` swaps the empty string for `'Anonymous'`. `enabled || true` swaps `false` for `true`. Each is a real bug the student will ship once if they reach for `||` by reflex. The fix in all three is `??`.
+- `??=` for lazy initialization. The shape: `cache[key] ??= computeExpensiveValue(key)` assigns to `cache[key]` only if it's currently nullish. The payoff: one line, one read, one conditional write — the cache-or-compute pattern in three characters. The companion forms `||=` and `&&=` named in one sentence each; the course writes `??=` by reflex because nullish-not-falsy is almost always what the caller wants.
+- The operator-precedence rule that forces parentheses. JavaScript intentionally rejects `??` mixed with `||` or `&&` without parens — `a || b ?? c` is a syntax error. The reason the language did this: the precedence was ambiguous enough to ship bugs, and the spec authors picked "require explicit grouping" over "pick one and let half the readers get it wrong." The fix is one set of parens; the lesson states the rule once and moves on.
+- The `??` and Zod default interaction. Forward note in one sentence: Zod schemas with `.default(value)` apply the default during parse, before the value reaches the application. Most "default to 20 if missing" decisions should live at the schema boundary (Unit 6), not at the call site. `??` at the call site is the right reach for values that aren't passing through a schema — local state, derived values, lazy initialization.
+- Forward links. Zod `.default()` in Unit 6. React state initialization with `?? initialValue` in chapter 023. The `useState((init) => ...)` lazy form pairs with the `??=` mental model. One sentence each.
+
+What this lesson does not cover:
+
+- The full operator-precedence table. The student does not memorize it; they reach for parens when in doubt.
+- The TC39 short-circuit-with-side-effects subtleties. Not relevant to the senior surface.
+- The `void` operator. Named in one line as the legacy form to recognize; not used.
+- Truthiness as a broader concept — already named in lesson 2 of chapter 001 where `==` was forbidden.
+
+Pedagogical approach:
+
+Mechanics archetype with a strong Decision beat. Open with the two bugs (defensive chain and `pageSize || 20` swap) in adjacent snippets. State the trio: `?.` for nullable access, `??` for nullish-default, `??=` for lazy init. Walk each with one short snippet and one watch-out. The `||`-vs-`??` distinction lands as a `predict-output` exercise with six left-side inputs (`0`, `''`, `false`, `null`, `undefined`, `'value'`) crossed against both operators — the table makes the semantic difference unavoidable. Close with one `script-coding` block where the student writes a `getConfig(input)` function that uses `??` for three defaults and `?.` for an optional nested access, with tests catching the `0`-vs-undefined case. Offer a `SandboxCallout` for the operator-precedence rule — the student types `a || b ?? c` and watches the parser reject it.
+
+Estimated student time: 25 to 30 minutes.
+
+---
+
+## Lesson 6 — Destructuring as the API call-shape
+
+Teaches object and array destructuring with rename, defaults, and rest, the signature-level destructure that React and server actions consume, and the destructure-then-rebuild pattern that prevents accidental field forwarding.
+
+Topics to cover:
+
+- The senior question. Two bugs from one root. First: a function takes an `options` object and forwards `options` wholesale to a downstream call (`callDownstream(options)`), and a new field added upstream silently leaks to a third-party API. Second: a React component prop destructure misses a field on rename, and the renamed variable shadows an outer binding the developer didn't realize they were using. Destructuring is the call-site shape; the lesson teaches the form *and* the failure modes the form prevents.
+- Object destructuring, the daily reach. The shape: `const { name, email } = user`. The four extensions:
+  - **Rename.** `const { name: customerName } = user` — pulls `user.name` into the local binding `customerName`. The trigger: the local context wants a different name than the field's name, often because the wider scope already has a `name`.
+  - **Default.** `const { pageSize = 20 } = options` — fires only when the field is `undefined` (the same semantics as parameter defaults from lesson 2 of chapter 002, since signature destructure is parameter default at the field level).
+  - **Combined rename and default.** `const { pageSize: limit = 20 } = options` — the senior form when the local binding wants a different name *and* a default. The order matters and reads in two passes: rename first, then default on the renamed binding.
+  - **Rest.** `const { id, ...rest } = user` — pulls `id` out into its own binding, collects every other field into `rest`. The senior reach for the destructure-then-rebuild pattern (below).
+- Array destructuring. `const [first, second] = arr`. The two daily reaches: positional unpacking (a `useState` tuple in React, an `Object.entries` pair), and skipping with the hole form (`const [, second] = arr`). The companion: `const [head, ...tail] = arr` for the head-and-rest split. Less common than object destructuring in SaaS code (most data is shaped, not positional), but load-bearing for `useState` and `useReducer` returns.
+- Signature-level destructure. The form most 2026 functions write: `function createUser({ name, email, admin = false }: { name: string; email: string; admin?: boolean })` (the inline object-type literal syntax, including the `?` optional modifier, is covered in lesson 2 of chapter 004; here the student reads the canonical shape). The payoff: the function's body reads the same names as the call site uses, the defaults live at the signature, and the type annotation reads adjacent. This is the shape Server Actions consume (`async function createInvoice({ customerId, amountCents }: CreateInvoiceInput)`), the shape React components consume (`function InvoiceRow({ invoice, onDelete }: InvoiceRowProps)`), and the shape every options-object function from lesson 2 of chapter 002 writes. Show it once as the canonical form.
+- The destructure-then-rebuild pattern. The "no accidental forwarding" reflex. When passing data to a downstream call, destructure exactly the fields needed and rebuild the object literal that goes downstream — never forward the original object wholesale. Example: a function receives `{ name, email, password, ...rest }` from a form submission and passes `{ name, email }` to the database (not `{ name, email, password }`, not the full object). The pattern is structural — a new field added upstream cannot reach the downstream call without the developer choosing to destructure it. Forward link to Server Actions and SQL injection: the same principle applies to which fields are passed to Drizzle's `insert()`.
+- The watch-out on nested destructure. `const { profile: { address: { city } } } = user` throws if `profile` or `address` is nullish. The fix isn't more nesting; it's `const city = user.profile?.address?.city` or destructuring with intermediate defaults. The course writes shallow destructures by default and reaches for optional chaining for nullable paths.
+- One sentence on the "destructure inside the body vs. signature" call. Both are legal. Signature destructure is the senior default for API-shaped functions. Body destructure (`const { x, y } = options;` on the first line) is the right reach when the same options object is used multiple times in the body and the parameter name itself needs to stay (`options`) for forwarding or logging.
+- Forward links. React props in chapter 022. Server Action input parsing in lesson 4 of chapter 030. The `useState` array destructure in lesson 1 of chapter 023. One sentence each.
+
+What this lesson does not cover:
+
+- Destructuring inside complex assignment patterns (`({ a, b } = obj)`). The parens-required form is named in one line; rare in modern code.
+- Property descriptors and the destructure interaction. Not relevant.
+- Symbol-keyed destructuring. Niche.
+
+Pedagogical approach:
+
+Mechanics archetype with a Pattern close. Open with the two bugs (wholesale forward, missed rename shadow) in short snippets. Walk the four extensions (rename, default, combined, rest) as four small adjacent code blocks with the same input object — the variation across the blocks is the lesson. Show the signature-level destructure in one full snippet labeled as the canonical Server Action / React prop shape. Walk the destructure-then-rebuild pattern with a before/after: a `createUser` that forwards wholesale (and leaks `password` to the audit log) versus one that destructures exactly the fields the audit log needs. The before/after lands the structural-enforcement point. Close with a `script-coding` block where the student writes `function summarize({ user, invoices })` taking a signature destructure, with rename and default applied, and tests confirming the behavior. Then one `Buckets` exercise sorting six destructure forms into "valid," "syntactically wrong," "throws at runtime if input field is nullish."
+
+Estimated student time: 25 to 30 minutes.
+
+---
+
+## Lesson 7 — Closures: lexical capture by reference
+
+Teaches closures as lexical capture by reference (not by value), the stale-closure trap in async code, and the three production sites the model later explains: Server Actions, `useEffect` cleanups, and route-handler factories.
+
+Topics to cover:
+
+- The senior question. The student will ship the stale-closure bug at least once. The shape: a `setTimeout` callback fires with a `count` value from when the timer was set, not when it fired. A React `useEffect` cleanup runs with the props from the *previous* render. A Server Action references a `user` binding that the route handler captured at module load. All three are the same bug — a function captured a binding lexically, and the binding's value changed before the function ran. The lesson installs the mental model that makes those bugs predictable and the fix obvious.
+- The mechanics, stated once. A closure is a function paired with the lexical environment where it was defined. When the function runs, it sees the bindings (not the values) that were in scope at definition. The key word is **bindings** — the closure holds a reference to the variable, not a snapshot of its value. When the variable changes, the closure sees the new value. This is the same binding-vs-box distinction from lesson 1 of chapter 001, applied to scope chains.
+- The three components of the model.
+  - **Lexical.** Determined at write time, not at call time. The closure's captured scope is the scope it was *written in*, not the scope it's called from.
+  - **By reference, not by value.** The closure holds a reference to the binding. Reassigning the binding in the outer scope is visible to the closure on its next call. (`const` prevents the reassignment of the binding itself; mutation of the value the binding points to is still visible, which is the same rule as lesson 6 of chapter 001.)
+  - **The full environment, not just one variable.** A closure captures the whole enclosing scope's bindings, which means even bindings the function doesn't visibly use can keep memory alive — the GC won't reclaim them until the closure is dropped. This is the closures-and-memory-leak shape, named once.
+- The stale-closure trap in async code. One worked example: a function takes a list of items and sets a timeout per item. The naive version with `var i` (or a shared mutable counter) prints the same final value for every timeout. The fix is the `let`/`const` block-scope-per-iteration of `for...of` (which the language gives for free) — or, in older patterns, an IIFE per iteration. Show the bug, show the fix, name the rule: each callback wants its own captured binding.
+- The three 2026 production sites the model explains. Each is one paragraph, foreshadowing later units.
+  - **`useEffect` cleanups.** The cleanup function runs with the props and state from the render that *created* the effect, not the next one. When state changes between effect-create and cleanup-fire, the cleanup sees the old value. The senior reflex: reach for `useRef` for values the cleanup needs to read mutably, or include the value in the dependency array so the effect re-runs with fresh capture. Full treatment in chapter 024.
+  - **Server Action closures over request-time data.** A Server Action defined at module scope can't capture per-request state (no `user` from this request, no `cookies()` from this call) because the binding is captured at module load. The senior reflex: read request-time data *inside* the action, not before. Full treatment in lesson 4 of chapter 030.
+  - **Route-handler factories.** Higher-order functions that return route handlers — `const withAuth = (handler) => (req) => { ... handler(req) }` — close over the `handler` parameter and any factory-time config. The pattern is the foundation for the wrapper idioms in lesson 7 of chapter 005 (`safeAction`, `requireRole`). Full treatment in Unit chapter 032 and the wrappers chapter.
+- One paragraph on closures as a deliberate design tool. Closures are *the* mechanism for hiding state behind a function boundary (a counter that returns a value and increments internally), composing higher-order functions (`pipe`, `compose`, `memoize`), and building partially-applied helpers. The course's reaches are functional, not OOP — most "private state" in 2026 SaaS code lives in a module's lexical scope, not in a class field, and that works because closures make it work.
+- The cleanup discipline. Closures keep their environment alive — when the closure is dropped (no more references), the GC reclaims. The two sites this matters: long-lived event listeners and timers that capture large objects (covered fully with `AbortController` in lesson 4 of chapter 007 and lesson 3 of chapter 014), and React effects that don't run their cleanup (covered in chapter 024). The student doesn't need to memorize GC mechanics; they need to know that a forgotten closure is a forgotten memory leak.
+- Forward links. `useEffect` and cleanup in lesson 2 of chapter 024. Server Action capture in lesson 4 of chapter 030. The `AbortController` cleanup idiom in lesson 4 of chapter 007. Higher-order wrappers in lesson 7 of chapter 005. One sentence each.
+
+What this lesson does not cover:
+
+- The execution-context internals (lexical environment record, scope chain at the spec level). Not the right mental model for the student; the binding-with-reference framing is enough.
+- The interaction of closures with `this` in classes. Class-adjacent and outside the functional surface.
+- Closure-based encapsulation patterns from pre-module JS (the revealing module pattern). Superseded by ES modules.
+- Performance-tuning around closure allocation. Microoptimization; not on the senior path.
+
+Pedagogical approach:
+
+Concept archetype. The lesson is a model — the diagram and the trap come first, the production sites land second. Open with the stale-closure-in-setTimeout snippet and its output, then the model in three sentences (lexical, by reference, full environment). Use a hand-authored SVG or Mermaid diagram showing one function definition with arrows to two outer bindings, then a call-site arrow into the function, with a callout on the binding-not-value point. Walk the stale-closure trap with a `script-coding` block where the student rewrites a `var`-based loop to `let`-based and watches the output change. The three production sites get one paragraph each — short, forward-linked, not deeply worked. Close with a `predict-output` exercise on four small closure scenarios (a counter factory, a delayed-fire timer set inside a loop, a Server-Action-shaped function that tries to capture per-request data at module scope, a `useEffect`-shaped function that references stale state). The predictions confirm the model installed.
 
 Estimated student time: 30 to 35 minutes.
 
 ---
 
+## Lesson 8 — Quizz
+
+Top 10 topics to quiz:
+
+1. Arrow `const` as the 2026 default and the three triggers that earn a `function` declaration (hoisting, named recursion, type-guard / assertion signatures).
+2. The two-positional-parameter rule and the options-object pattern with field-level defaults.
+3. Parameter defaults fire only on `undefined` — not on `null`, `0`, `''`, or `false`.
+4. Rest parameters at the signature vs. spread at the call site.
+5. The four naming surfaces (variable, function, parameter, type) and the boolean-prefix convention (`is*`, `has*`, `can*`, `should*`).
+6. The three bad-name classes (implementation-leaking, vague abstractions, negated booleans).
+7. Guard clauses plus "no else after return" as the senior flat-control-flow form.
+8. `switch` with `noFallthroughCasesInSwitch` and `assertNever` as the compile-time exhaustiveness pattern.
+9. `??` over `||` and the `0` / `''` / `false` trap; `?.` at every nullable link; `??=` for lazy initialization.
+10. Closures as lexical capture by reference, the stale-closure trap, and the three production sites (Server Actions, `useEffect` cleanups, route-handler factories).
+
+---
+
 ## Total chapter time
 
-Roughly 100 to 115 minutes across the four lessons. The chapter is sized to a single long evening or two short ones. At the end the student has a `.mise.toml`, a `package.json` with `packageManager` and `engines` pinned, a `.npmrc`, a committed `pnpm-lock.yaml`, an `only-allow pnpm` preinstall guard, and the ability to run `node hello.ts` and `pnpm tsx hello.ts` on demand. Chapter 003 (editor) lands on this floor without re-explaining any of it.
+Roughly 190 to 225 minutes across the seven content lessons plus the quiz. The chapter splits naturally across two evenings — lesson 1 of chapter 002 + lesson 2 of chapter 002 + lesson 3 of chapter 002 (the function-shape spine) as one sitting, lesson 4 of chapter 002 + lesson 5 of chapter 002 + lesson 6 of chapter 002 + lesson 7 of chapter 002 (the operator and capture surface) as the second. The quiz is the closing 15 to 20 minutes. At the end the student writes functions any 2026 reviewer would accept the first time — arrow `const` by default, options-object past two params, intent-revealing names, flat control flow, `??` over `||`, signature-level destructure, closures used deliberately — and recognizes the bug class each form prevents.

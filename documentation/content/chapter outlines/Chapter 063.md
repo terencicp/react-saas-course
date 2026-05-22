@@ -1,434 +1,204 @@
-# Chapter 063 — Project: org, RBAC, and invitations end-to-end
+# Chapter 063 — Webhook ingestion
 
 ## Chapter framing
 
-Chapter 063 cashes in everything Unit 10 installed. The student arrives from chapter 059 with a working email+password auth flow against Better Auth and a `user` / `session` / `account` / `verification` schema, and from chapter 054 with a `sendEmail` wrapper, a verified domain, the `email_suppressions` read, and the React Email scaffolding. Chapter 060 taught the organization data model and the `tenantDb(orgId)` helper. Chapter 061 taught the three-role RBAC default, the `authedAction(role, schema, fn)` wrapper, the member-management invariants, and the append-only `audit_logs` table. Chapter 062 taught the invitation handshake — signed accept link, four arrival shapes, the management surface. This project compresses all of it into one runnable build: install the organization plugin, add the active-org slot to the session, lay down `audit_logs` and the `invitations` extensions, build the `tenantDb` + `authedAction` pair, ship the role-change action with audit writes, ship the invite send + accept flow with audit writes, and verify against an inspector that surfaces members, role-change buttons (visible to every role on purpose so server-side refusal is observable), pending invitations, and a live audit-log tail.
+Chapter 063 lands the production webhook seam — the async edge where a third party (Stripe, Resend, anyone) calls into the app and where careless code becomes expensive in production. The student arrives with route handlers from Chapter 046, Drizzle transactions and `ON CONFLICT` from Chapter 038, Web Crypto and HMAC primitives from lesson 1 of chapter 016, Server Action idempotency hints from Chapter 043, and the `email_suppressions` discipline from lesson 4 of chapter 048. This chapter completes the loop: every untrusted POST goes through a signature check, every event lands at most once even under retries and out-of-order delivery, and the same unique-on-key constraint pattern that protects webhooks is named as the unifying idempotency discipline across Server Actions, retried jobs, and public route handlers.
 
-Threads that run through every lesson. The organization plugin owns the canonical table names (`organization`, `member`, `invitation`); the student adds `tokenHash` and `acceptedAt` to `invitation` via `additionalFields` and adds `activeOrganizationId` to `session`. Every read on a tenant-owned table goes through `tenantDb(orgId)` — hand-typed `.from(...)` against tenant tables is a code-review red flag. Every privileged Server Action ships as `authedAction(role, schema, fn)` — the wrapper is the only call shape that compiles for a privileged write. The `audit_logs` table is append-only by application discipline plus an RLS deny policy on UPDATE / DELETE (the only RLS-protected table in this project — application-layer scoping holds elsewhere per the lesson 3 of chapter 060 senior call). Every privileged mutation writes the audit row in the same transaction as the work, through `logAudit(tx, event)` whose signature forces a `tx` argument so off-transaction calls don't typecheck. The accept-invite URL carries a 32-byte random token plus an HMAC signature; the database stores only `sha256(token)`. The email send happens *after* the DB transaction commits; deferred-resend is the recovery affordance, not a background queue. The chapter ships 1 brief + 1 starter walkthrough + 5 build lessons + 1 verify lesson; each build ends on a runnable state.
-
-### Dependency carry-in
-
-- **From chapter 059 (auth flow):** `src/lib/auth.ts` with the `betterAuth(...)` instance including `nextCookies()` and `emailAndPassword` with `requireEmailVerification`; `src/lib/auth-client.ts` exporting `authClient`; the catch-all handler at `src/app/api/auth/[...all]/route.ts`; `src/lib/auth-helpers.ts` with `getCurrentUser()` and `requireUser()`; `proxy.ts` with the cookie-presence gate and `?next=` round-trip; the `(auth)` and `(protected)` route groups; the Drizzle-managed `user` / `session` / `account` / `verification` tables in `src/db/schema/auth.ts`; the `WelcomeVerification.tsx` React Email template under `src/emails/`.
-- **From chapter 054 (email send):** `src/lib/email.ts` exposing `sendEmail({ to, subject, react, idempotencyKey, replyTo?, bypassSuppression? })` (with `idempotencyKey` required per the chapter 054 convention); the `email_suppressions` read inside that wrapper; `RESEND_API_KEY` + `EMAIL_FROM` env entries; the verified domain; the `WelcomeEmail.tsx` template as the React Email pattern reference.
-- **From 6.x (Drizzle):** `src/db/client.ts`, the migration pipeline (`pnpm db:generate`, `pnpm db:migrate`, `pnpm db:seed`), `drizzle.config.ts` pointing at `src/db/schema/*`, Drizzle's relational query API + `drizzle-zod`.
-- **From chapter 047 / chapter 048:** `<form action={serverAction}>`, `useActionState`, the canonical `Result<T>` discriminant shape, Zod parse at the action boundary, the `redirect()` after success.
-- **From lesson 1 of chapter 020:** Web Crypto primitives — `crypto.randomUUID`, `crypto.getRandomValues`, `crypto.subtle` for SHA-256 and HMAC; the constant-time compare reflex (via `crypto.subtle.verify`).
-- **From chapter 037 / chapter 038:** `'use server'` / `'use client'` boundary, Server Components reading `searchParams` async.
-- **Forward into chapter 066:** the `tenantDb(orgId)` and `authedAction(role, schema, fn)` shapes shipped here are the exact ones chapter 066 layers `active()` / `archived()` lifecycle methods onto.
-
-### Starter file tree (stubs marked with TODO)
-
-```
-.env.example                                # provided: previous entries + INVITATION_SIGNING_SECRET, APP_URL
-docker-compose.yml                          # provided: postgres:18
-drizzle.config.ts                           # provided
-package.json                                # provided: db:generate, db:migrate, db:seed, auth:generate, dev, build, test
-proxy.ts                                    # provided from chapter 059
-src/
-  lib/
-    auth.ts                                 # provided: chapter 059 instance; TODO student: add organization() plugin with additionalFields + databaseHooks.session.create
-    auth-client.ts                          # provided: chapter 059 client; TODO student: register organizationClient() plugin
-    auth-helpers.ts                         # provided: requireUser/getCurrentUser; TODO student: extend to requireOrgUser returning { user, orgId, role }
-    auth/
-      roles.ts                              # TODO student: ROLE_RANK, roleAtLeast, Role type
-    email.ts                                # provided from chapter 054
-    env.ts                                  # provided: Zod-validated env
-    tenant-db.ts                            # TODO student: tenantDb(orgId) wrapping Drizzle relational query API + writes
-    authed-action.ts                        # TODO student: authedAction(role, schema, fn) wrapper
-    audit-log.ts                            # TODO student: logAudit(tx, event)
-    invitations/
-      url.ts                                # TODO student: signedInviteUrl(invitationId, rawToken) + verifyInviteSignature
-      send.ts                               # TODO student: sendInvitationAction
-      accept.ts                             # TODO student: acceptInvitationAction
-      manage.ts                             # TODO student: changeMemberRoleAction (and stubs for resend/revoke if time)
-  db/
-    client.ts                               # provided
-    schema/
-      auth.ts                               # provided chapter 059; regenerated by auth:generate after adding organization plugin — student commits the diff
-      audit.ts                              # TODO student: auditLogs table + RLS policies (deny UPDATE/DELETE)
-  emails/
-    InviteEmail.tsx                         # TODO student: React Email template (orgName, inviterName, role, acceptUrl, expiresAt)
-  app/
-    (protected)/
-      dashboard/
-        page.tsx                            # provided chapter 059
-        org-switcher.tsx                    # provided: client component calling authClient.organization.setActive
-      inspector/
-        page.tsx                            # provided: members list, invite form, role-change buttons (visible to ALL roles by design), pending-invites list, audit-log tail
-        actions.ts                          # provided: reset-and-reseed action, "switch acting user" action for RBAC verification
-    (auth)/
-      accept-invite/
-        page.tsx                            # TODO student: Server Component that reads searchParams (id, token, sig), verifies, branches on session+email, renders the Accept button form
-    onboarding/
-      create-org/
-        page.tsx                            # provided: shell calling authClient.organization.create
-scripts/
-  seed.ts                                   # provided: 2 orgs, 4 users with mixed roles (one owner, one admin, one member per org plus a shared user), 1 pending invite seeded
-```
-
-### Reference solution signatures lessons display
-
-- **Roles** (`src/lib/auth/roles.ts`):
-  - `type Role = 'owner' | 'admin' | 'member'`
-  - `const ROLE_RANK = { member: 0, admin: 1, owner: 2 } as const`
-  - `roleAtLeast(role: Role, required: Role): boolean`
-- **Auth instance addition** (`src/lib/auth.ts`):
-  - Adds `organization({ teams: { enabled: false }, invitationExpiresIn: 60 * 60 * 24 * 7, schema: { invitation: { additionalFields: { tokenHash: { type: 'string', required: true }, acceptedAt: { type: 'date', required: false } } } } })` to `plugins`.
-  - Adds `databaseHooks: { session: { create: { before: async (session) => ({ data: { ...session, activeOrganizationId: await pickInitialActiveOrg(session.userId) } }) } } }`.
-- **Auth client** (`src/lib/auth-client.ts`): `createAuthClient({ baseURL, plugins: [organizationClient()] })`.
-- **`requireOrgUser`** (`src/lib/auth-helpers.ts`): `async () => { const session = await auth.api.getSession({ headers: await headers() }); if (!session) redirect('/sign-in'); const orgId = session.activeOrganizationId; if (!orgId) redirect('/onboarding/create-org'); const membership = await db.query.member.findFirst({ where: and(eq(member.userId, session.user.id), eq(member.organizationId, orgId)) }); if (!membership) redirect('/onboarding/create-org'); return { user: session.user, orgId, role: membership.role as Role }; }`.
-- **`tenantDb`** (`src/lib/tenant-db.ts`):
-  - `tenantDb(orgId: string)` returns a typed facade over Drizzle: `.query.<table>.findMany / findFirst` with `where` composed via `and(eq(<table>.organizationId, orgId), userWhere)`; `.insert(<table>).values(...)` injects `organizationId`; `.update(<table>).set(...).where(...)` composes the org predicate; `.transaction(fn)` returns a `tx` with the same scoping; an explicit unwrapped `.raw` escape hatch (typed `unsafe`) for the rare cross-tenant read.
-- **`authedAction`** (`src/lib/authed-action.ts`):
-  - `authedAction<TSchema extends z.ZodTypeAny, TOut>(role: Role, schema: TSchema, fn: (input: z.infer<TSchema>, ctx: AuthedCtx) => Promise<Result<TOut>>): (prev: unknown, formData: FormData) => Promise<Result<TOut>>`.
-  - `AuthedCtx = { user: User; orgId: string; role: Role; db: ReturnType<typeof tenantDb>; ip: string | null; userAgent: string | null }`.
-  - Four steps: `requireOrgUser()` → `roleAtLeast(ctx.role, role)` → `schema.safeParse(Object.fromEntries(formData))` → `fn(parsed.data, ctx)`. Failure shapes: `Result.error({ code: 'forbidden', userMessage })`, `Result.error({ code: 'validation', userMessage, fieldErrors })`.
-- **`logAudit`** (`src/lib/audit-log.ts`):
-  - `logAudit(tx: DrizzleTx, event: { action: string; subjectType: string; subjectId: string; actorUserId: string | null; orgId: string; payload: Record<string, unknown>; ip?: string | null; userAgent?: string | null }): Promise<void>` — single insert into `auditLogs`; `tx` is required by the signature (no overload that takes `db`).
-- **`auditLogs` table** (`src/db/schema/audit.ts`):
-  - Columns: `id uuid pk`, `organizationId uuid not null fk`, `actorUserId uuid null fk`, `actorIp inet null`, `actorUserAgent text null`, `action text not null`, `subjectType text not null`, `subjectId text not null`, `payload jsonb not null default '{}'`, `createdAt timestamptz not null default now()`.
-  - Indexes: `(organizationId, createdAt desc)`, `(organizationId, actorUserId, createdAt desc)`.
-  - RLS: `enableRLS()` + `pgPolicy('audit_logs_no_update', { for: 'update', using: sql\`false\` })` + same for `delete`; the per-org `select` policy reads `current_setting('app.org_id')::uuid` (the lesson 4 of chapter 060 shape).
-- **`changeMemberRoleAction`** (`src/lib/invitations/manage.ts`):
-  - `authedAction('admin', z.strictObject({ memberId: z.string().uuid(), newRole: z.enum(['admin', 'member']) }), async ({ memberId, newRole }, ctx) => { ... })` — refuses owner targets and last-owner demotion; writes the role change + `'member.role-changed'` audit row in one `tenantDb` transaction.
-- **`sendInvitationAction`** (`src/lib/invitations/send.ts`):
-  - `authedAction('admin', z.strictObject({ email: z.string().email().toLowerCase(), role: z.enum(['admin', 'member']) }), async ({ email, role }, ctx) => { ... })`. Eight steps: existing-member check → collision check → 32-byte token via `crypto.getRandomValues` → `sha256` hash → DB insert (transaction with `logAudit('invitation.sent')`) → commit → `signedInviteUrl(...)` → `sendEmail({ to: email, react: <InviteEmail .../> })` → `Result.ok({ invitationId })` (or `Result.error('email-send-failed', { invitationId })` if Resend rejects). Catches the partial-unique-index error and translates to `Result.error('already-invited', { existingInvitationId })`.
-- **`signedInviteUrl`** (`src/lib/invitations/url.ts`):
-  - `signedInviteUrl(invitationId: string, rawToken: string): Promise<string>` — base URL `${env.APP_URL}/accept-invite`, query string `id=${invitationId}&token=${rawToken}&sig=${hmacBase64Url(env.INVITATION_SIGNING_SECRET, invitationId + '.' + rawToken)}`.
-  - `verifyInviteSignature(invitationId: string, rawToken: string, sig: string): Promise<boolean>` — constant-time via `crypto.subtle.verify`.
-- **`acceptInvitationAction`** (`src/lib/invitations/accept.ts`):
-  - Not wrapped in `authedAction` (authz is the invitation, not a role). Re-verifies signature, looks up by `tokenHash`, checks expiry + status, compares `session.user.email` to `invitation.email` (case-insensitive), opens a transaction that calls `auth.api.acceptInvitation({ body: { invitationId }, headers })` (Better Auth handles the `member` insert + `invitation.status='accepted'` update), then `auth.api.setActiveOrganization({ headers, body: { organizationId: invitation.organizationId } })`, then `logAudit(tx, { action: 'invitation.accepted', actorUserId: ctx.user.id, ... })`. Sets `emailVerified: true` if the user signed up through the invite link (named carve-out from lesson 3 of chapter 062). Redirects to `/dashboard`.
-- **Env entries** (`.env.example`, new):
-  - `INVITATION_SIGNING_SECRET=` (32 bytes base64, generate via `openssl rand -base64 32`)
-  - `APP_URL=http://localhost:3000` (carry-in if missing)
-
-### Inspector page spec
-
-A single Server Component at `/inspector` is the verification surface. Provided in full; the student writes only the actions and helpers it exercises.
-
-- **Acting-user switcher header.** A dropdown listing the four seeded users; selecting one writes a dev-only cookie that swaps the acting session (a tiny `switchUserAction` provided in `actions.ts`, gated by `NODE_ENV !== 'production'`). Used to verify RBAC by toggling between the owner/admin/member identities without manual sign-out/sign-in.
-- **Active-org banner.** Renders `ctx.orgId`, `ctx.role`, and the org name. An adjacent org switcher (`<OrgSwitcher />` reused from the dashboard) updates the active org and `router.refresh()`es.
-- **Members panel.** A table of members for the current active org: name, email, role, joined-at, and a role-change `<Select>` that posts to `changeMemberRoleAction`. The select is rendered for *every* row regardless of acting role on purpose — the verify lesson confirms the server-side refusal for the member acting role. A "Remove member" button shows next to the select with the same defense-in-depth posture.
-- **Invite panel.** Email input + role dropdown (`admin` or `member` only — `owner` is not a value) calling `sendInvitationAction`. Below: a "Pending invitations" list with email, role, expiry countdown, and "Copy accept URL" (dev-only) plus "Revoke" affordances. The "Copy accept URL" short-circuits opening the local mailbox.
-- **Audit-log tail.** The last 20 `auditLogs` rows for the current org, server-rendered, streaming on `router.refresh()` after each action. Each row shows actor, action, subject, payload, createdAt.
-- **Raw helpers panel.** Read-only display of `tenantDb(orgId).query.member.findMany({})` and a row count of `auditLogs` for the current org — sanity check that the helper is filtering correctly.
-
-### Verify recipe mapped to "Done when"
-
-| Done-when clause | Verify step |
-| --- | --- |
-| Two seeded users belong to the same org with different roles | `pnpm db:seed`; inspector members panel shows owner, admin, member for Org A; the acting-user switcher offers all four seeded users |
-| `authedAction` with `requireRole('admin')` rejects the member with a typed error | Switch acting user to the member; click "Change role" on a row; toast renders `forbidden` with the user-message; the `member.role` row is unchanged; no audit row is added |
-| `authedAction` with `requireRole('admin')` accepts the admin | Switch acting user to the admin; change a member's role; the row updates; an `'member.role-changed'` audit row appears in the tail; the audit row's `actorUserId` matches the admin's id |
-| An invite email arrives | As admin, submit the invite form with the student's real email + role `member`; inbox receives the React Email template with the orgName, inviterName, role, and an accept-URL button; `invitation` row exists with `status='pending'`; `tokenHash` is a 64-character hex string; the raw token does not appear in any DB column |
-| Accepting the invite adds the new member with the right role | Sign out; open the email's accept URL in an incognito window; the accept page renders the Accept button; signing up via the prefilled form and accepting writes a `member` row with the invited role; `invitation.status` flips to `'accepted'`; `invitation.acceptedAt` is set; `session.activeOrganizationId` is the invited org |
-| An audit-log entry is written for every role change | After every role change, the audit-log tail shows the `'member.role-changed'` row with `payload: { previousRole, newRole, memberId }`; the audit row was written in the same transaction as the role update (verify by force-failing the update with a bad input via the inspector — neither the row update nor the audit row land) |
-| The audit-log table refuses UPDATE / DELETE from the app role | Open `psql` as the app role (provided in the starter's docker-compose env); attempt `UPDATE audit_logs SET action = 'x'` and `DELETE FROM audit_logs WHERE id = ...`; both return `permission denied` errors; the RLS policies are the structural defense |
-| Tenant isolation holds on `audit_logs` | As Org A admin, hand-construct a query `SELECT * FROM audit_logs WHERE organization_id = '<org-B-uuid>'` through a server function that uses the unwrapped `db` without `withTenant`; the policy refuses the read (returns 0 rows because `current_setting('app.org_id')` doesn't match) |
-| Inspector renders role-change buttons for every role | As member acting user, the role-change `<Select>` is still rendered (no client-side hide) — the server-side refusal is what's load-bearing |
-
-### Concepts demonstrated → owning lesson
-
-- Organizations as the tenancy model; `activeOrganizationId` on the session; create / switch / list flows — lesson 1 of chapter 060.
-- `tenantDb(orgId)` wrapping Drizzle so missing the org filter doesn't compile; the named carve-out from Principle #5 — lesson 2 of chapter 060.
-- The threshold where RLS earns its weight (highest-stakes data, many code paths) — lesson 3 of chapter 060.
-- Postgres RLS through Drizzle (`pgPolicy`, deny-UPDATE/DELETE policies, the `withTenant(orgId, fn)` transaction pattern) — lesson 4 of chapter 060.
-- Three-role RBAC (`owner` / `admin` / `member`); `roleAtLeast`; `requireOrgUser` returning `{ user, orgId, role }` — lesson 1 of chapter 061.
-- The `authedAction(role, schema, fn)` wrapper at the Server Action boundary; four wrapper steps; the `ctx` payload; the canonical `Result` return — lesson 2 of chapter 061.
-- Member management — role-change, remove, leave-org, ownership transfer; single-owner invariant in the helper — lesson 4 of chapter 061.
-- `audit_logs` table — append-only by contract, by RLS deny policy, by application discipline; `logAudit(tx, event)` forcing a transaction — lesson 5 of chapter 061.
-- The invitation table extensions (`tokenHash`, `acceptedAt`); the pending-state machine; seven-day expiry as a security primitive; the partial unique index on `(orgId, lower(email)) WHERE status='pending'` — lesson 1 of chapter 062.
-- The signed accept URL (32-byte token + HMAC); SHA-256 at rest; send-after-commit transaction boundary; `'invitation.sent'` audit event — lesson 2 of chapter 062.
-- Four accept arrival shapes; the verify order (signature → row → hash → expiry → status); explicit Accept-button consent gate; auto-`emailVerified` for invite-sourced signups; active-org switch on accept — lesson 3 of chapter 062.
-- Catching the partial-unique-index error and translating to `'already-invited'` — lesson 4 of chapter 062.
-- Email-mismatch refusal, double-click race against `status='pending'` filter, orphan-invite senior call — lesson 5 of chapter 062.
-- Zod 4 `z.strictObject`, `z.infer` at the action boundary — chapter 046.
-- Web Crypto random + SHA-256 + HMAC verify with constant-time compare — lesson 1 of chapter 020.
-- React Email template authoring through the Unit 8 send pipeline — chapter 053.
+Threads that run through every lesson: the route handler is the trust boundary — verify before parse, return 400 on signature failure with no body work, log nothing user-controlled before verification; the raw body is sacred — `await request.text()` once, HMAC the exact bytes, never re-stringify JSON; the dedup INSERT and the business work live in one transaction so a crash mid-handler can never leave partial state and a replay never mutates twice; the webhook is the single writer for the entities it owns (subscription status, suppression list), and the rest of the app reads-and-polls; out-of-order delivery is the default assumption, not a corner case — `event.created` plus a `last_event_at` predicate in the UPDATE WHERE makes "newer wins" structural; idempotency is a single discipline expressed through unique-on-key DB constraints, applied identically to webhooks (`event.id`), Server Actions (client-supplied UUID), retried jobs (stable run ID), and public route handlers (RFC `Idempotency-Key` header). The chapter ships five teaching lessons plus a quiz, ordered by dependency: verify at the boundary, dedup-and-transact, handle out-of-order and the redirect race, generalize idempotency, apply to Resend, then quiz.
 
 ---
 
-## Lesson 1 — Brief and finished screenshot
+## Lesson 1 — Verify before parse
 
-Framing of the multi-tenant SaaS build, the inspector verification surface, the "Done when" list, the explicit scope cuts, and the starter `degit`.
+Teaches the route handler trust boundary for Stripe webhooks — raw body via `request.text()`, HMAC-SHA-256 over `${t}.${rawBody}`, constant-time compare, the 5-minute timestamp tolerance, the `stripe.webhooks.constructEvent` SDK helper, and returning 400 with RFC 9457 problem+json on failure before any business logic runs.
 
-Goals:
+Stripe Node SDK primer (singleton wiring): install with `pnpm add stripe`; create `src/lib/stripe.ts` exporting a singleton `export const stripe = new Stripe(env.STRIPE_SECRET_KEY)` so every call site reuses the same client; add `STRIPE_SECRET_KEY` to `env.ts` alongside `STRIPE_WEBHOOK_SECRET`. The `stripe.webhooks.constructEvent` example below uses this singleton; the deeper SDK surface is owned by lesson 1 of chapter 064.
 
-- Frame the build: the existing chapter 059 single-user dashboard becomes a multi-tenant SaaS with three roles, an audit trail, and an invitation handshake. Show one screenshot of the finished inspector page — members panel, role-change buttons, invite form, pending list, audit-log tail.
-- Name the "Done when" verifications in one paragraph (seeded users with mixed roles, member rejected by `authedAction('admin')`, admin accepted, invite arrives at the student's real inbox, accept across email sessions adds the member with the right role, audit row written for every role change, `audit_logs` refuses UPDATE/DELETE from the app role).
-- Name the scope cuts: no leave-org or ownership-transfer actions in this project (lesson 4 of chapter 061 owns the full set; the role-change action is the load-bearing one here); no fine-grained permissions; no SCIM / IdP provisioning; no bulk invitations; no team layer inside an org; no rate-limiting on invite send (Chapter 078); no seat-counting / entitlement gate (Chapter 068); RLS is wired *only* on `audit_logs` per the lesson 3 of chapter 060 senior call — application-layer scoping holds everywhere else.
-- Set the senior payoff: multi-tenancy, RBAC, and the invitation handshake converge into one seam — the patterns shipped here (`tenantDb`, `authedAction`, `logAudit`, signed accept URL) carry into every privileged action the student writes for the rest of the course. The chapter 066 project layers lifecycle methods directly onto the `tenantDb` shape installed here.
-- Show the end UX: a short animated capture of the invite flow (admin invites → email arrives → invitee clicks → accept screen → dashboard) and the role-refusal toast.
-- Link the starter via `degit`.
+Topics to cover:
 
-Senior calls and watch-outs:
+- **The senior question.** A public POST endpoint at `/api/webhooks/stripe` accepts unauthenticated traffic. Anyone on the internet can call it. What's the trust contract that lets the rest of the handler treat the payload as Stripe-sent, and what happens at the boundary before any business logic runs? The lesson lands signature verification as the first and only thing the route handler does before deciding whether to process.
+- **The threat model — what a forged webhook would do.** Without verification, an attacker posts a `checkout.session.completed` JSON to the endpoint and gets a free entitlement. The signature scheme makes the call only-Stripe-can-have-sent — HMAC-SHA-256 over `${timestamp}.${rawBody}` keyed by the webhook secret. The senior anchor: the secret is the trust root; treat it like a session secret.
+- **The Stripe signature scheme — `t=...,v1=...` in the `stripe-signature` header.** Parsed into a timestamp `t` and one or more `v1` digests. The signed payload is the literal string `${t}.${rawBody}`. Verifying means computing the HMAC and constant-time-comparing against `v1`. Closes the Web Crypto thread from lesson 1 of chapter 016 — `crypto.subtle.importKey` plus `sign` plus `timingSafeEqual` (or the constant-time-compare helper).
+- **The raw body rule — `await request.text()` once.** Next.js 16 App Router gives the raw body via `request.text()`. JSON-parsing before verification is a verification bug — any reserialization changes whitespace or key order and the HMAC no longer matches. The senior pattern: `const body = await request.text()`, verify, then `JSON.parse(body)` only after the signature passes. Names the failure mode (`request.json()` silently re-stringifies on some setups), the fix (read text, parse later).
+- **The Stripe SDK shortcut — `stripe.webhooks.constructEvent`.** The Stripe Node SDK exposes `stripe.webhooks.constructEvent(body, signature, secret)` which encapsulates the timestamp parse, HMAC compute, constant-time compare, and tolerance check. The course uses the SDK helper for Stripe and the Svix SDK helper for Resend (lesson 5 of chapter 063), and the hand-rolled HMAC version once (this lesson) so the student understands what's inside the box.
+- **Timestamp tolerance — the replay window.** The signed payload includes a Unix timestamp; the handler rejects any signature with `|now - t| > 300s` (Stripe's default). Without the tolerance check, a captured signature is replayable forever. The lesson names 5 minutes as the canonical window and the trade-off: tighter is safer but breaks under clock skew, looser is permissive but enlarges the replay window.
+- **Constant-time comparison — why `===` is a bug.** A naive `===` comparison short-circuits on the first mismatched byte, leaking timing information. `crypto.timingSafeEqual` (Node) or a constant-time `subtle`-based compare iterates over the full buffer. Restates the discipline from lesson 1 of chapter 016 and lands it in production code.
+- **The route handler shape — verify first, return early.** A worked `POST` handler for `/api/webhooks/stripe`: read raw body, read `stripe-signature` header, call `constructEvent`, catch the verification error, return `400` with RFC 9457 problem+json on failure (titled "invalid_signature", no body echo, no detail leakage). On success, continue to dedup (lesson 2 of chapter 063). The shape is the chapter's canonical handler skeleton.
+- **The 400-versus-401 question.** Signature failure is a "bad request" (malformed proof), not "unauthorized" (no proof at all). The course uses `400` for signature failures uniformly because the third party retries on 5xx and treats 4xx as terminal — a 401 invites retry storms from misconfigured senders, a 400 cleanly signals "stop sending this." Names the rule.
+- **RFC 9457 problem+json for the error body.** The course's error contract from Chapter 046 applies here: `Content-Type: application/problem+json`, `{ type, title, status, instance }`. Restates briefly; doesn't re-teach.
+- **The `runtime: 'nodejs'` reach for crypto.** Next.js 16 route handlers default to Node runtime in App Router, but the senior anchor names this explicitly because the Edge runtime's Web Crypto is fine for HMAC verify and either choice is defensible; the course picks Node for the Stripe SDK availability. The lesson states the choice and the consequence.
+- **What `request.headers.get('stripe-signature')` returns and when it's null.** The header is required; null means the request didn't come from Stripe (or a misconfiguration). Treat null as a verification failure — same 400, same problem+json. No "let me give them the benefit of the doubt" branch.
+- **The local development loop — `stripe listen` and `stripe trigger`.** `stripe listen --forward-to localhost:3000/api/webhooks/stripe` opens a tunnel and prints the webhook signing secret to use locally. `stripe trigger checkout.session.completed` sends a synthetic event. The lesson names this as the daily iteration loop and ties it to the `STRIPE_WEBHOOK_SECRET` env entry — the local secret is different from the dashboard-configured production secret.
+- **The webhook-secret-rotation question.** Stripe lets you have multiple signing secrets active during a rotation. The handler can try the new secret first, fall back to the old. The SDK's `constructEvent` doesn't natively multi-secret; the senior pattern is to maintain two env entries during a rotation window and `try { new } catch { old }`. Names the pattern; doesn't drill.
+- **Watch-outs:** `request.json()` before `request.text()` consumes the body stream and the second read returns empty — read once as text, parse later; logging the body before verification surfaces attacker-controlled strings in your logs — verify first; `===` on the signature is a timing leak; missing the timestamp tolerance check makes captured signatures replayable forever; using the test-mode secret in production silently fails every event with a 400 — verify the secret matches the mode; trusting `request.ip` or the source IP for verification is a smell — the HMAC is the proof, IP allowlists are theater behind a CDN; double-stringifying JSON between body parse and HMAC sign is the canonical "but it works locally" bug — the raw bytes are the source of truth.
 
-- The inspector deliberately renders the role-change `<Select>` for every row regardless of the acting role. This is *defense-in-depth verification*, not a missed UX hide — the server-side refusal is what's load-bearing.
-- The verified domain from chapter 054 is a hard prerequisite for the accept-the-invite verify step. Resend's sandbox sender will not work for this flow.
-- `INVITATION_SIGNING_SECRET` is a new env entry, distinct from `BETTER_AUTH_SECRET` (different rotation cadence, different blast radius).
+What this lesson does not cover:
 
-Codebase state at entry: empty repo.
+- The dedup transaction and `processed_events` table — lesson 2 of chapter 063.
+- Out-of-order event handling — lesson 3 of chapter 063.
+- The full Stripe billing flow and event types — Chapter 064.
+- Web Crypto fundamentals (HMAC, `subtle.sign`, constant-time compare) — lesson 1 of chapter 016.
+- Route handler shape and error contracts — Chapter 046.
+- The `email_suppressions` schema — lesson 4 of chapter 048.
 
-Codebase state at exit: starter cloned; `docker compose up -d` running Postgres; `pnpm install` clean; `.env.local` filled with `RESEND_API_KEY`, `EMAIL_FROM`, the chapter 059 carry-in secrets, and a newly generated `INVITATION_SIGNING_SECRET`; `pnpm db:migrate && pnpm db:seed` populated with the chapter 059 schema; `pnpm dev` shows the chapter 059 sign-up / sign-in flow working. No org schema yet, no inspector yet.
-
-Estimated student time: 15 to 20 minutes.
-
----
-
-## Lesson 2 — Tour the starter and the broken inspector
-
-Tour of the provided files, the stubbed modules, the seed script, the Better Auth CLI flow, and the inspector page that throws until `requireOrgUser` exists.
-
-Goals:
-
-- Walk the file tree, marking provided vs. stubbed. Linger on six files: `src/lib/auth.ts` (the chapter 059 instance — where the `organization()` plugin will land in lesson 3 of chapter 063), `src/lib/auth-helpers.ts` (`requireUser` exists; `requireOrgUser` does not), the new empty modules in `src/lib/` (`auth/roles.ts`, `tenant-db.ts`, `authed-action.ts`, `audit-log.ts`), `src/db/schema/audit.ts` (stub for the `auditLogs` table), `src/app/(protected)/inspector/page.tsx` (the verification surface, provided in full).
-- Read the inspector's source: confirm it expects `requireOrgUser` to exist (currently throws "not implemented"), expects `tenantDb` to exist for the members read, expects `authedAction` to wrap the role-change handler, and expects `logAudit` to write the audit tail. Each missing piece corresponds to a later lesson.
-- Read the seed script: two orgs (`Acme` and `Beta`), four users (Alice the owner of both, Bob the admin of Acme, Carol the member of Acme, Dave the admin of Beta), one pending invitation seeded for verifying the management surface. Confirm the seed runs idempotently (`pnpm db:seed` twice doesn't duplicate rows).
-- Read the Better Auth CLI flow: `pnpm auth:generate` will regenerate `src/db/schema/auth.ts` after the organization plugin is added — the student commits the diff. Verify the current `auth.ts` schema (just the chapter 059 four tables) by opening Drizzle Studio.
-- Read chapter 059 carry-in: `src/lib/email.ts`, the `WelcomeVerification.tsx` template, `proxy.ts`, the `(auth)` and `(protected)` route groups. These are load-bearing; the student should remember the call shape.
-- Confirm the new env entry: open `.env.local`, generate and paste `INVITATION_SIGNING_SECRET` via `openssl rand -base64 32`. Verify `src/lib/env.ts` has the entry typed.
-- Run the app: confirm sign-up / sign-in / sign-out / `/dashboard` still work from chapter 059. Visit `/inspector`: the page throws because `requireOrgUser` isn't implemented — the expected starting state.
-
-Senior calls and watch-outs:
-
-- The Better Auth CLI is the canonical way to add plugin-owned columns. Hand-editing `auth.ts` after `auth:generate` is review-loud — re-run the CLI when the plugin config changes.
-- The inspector's "switch acting user" cookie is dev-only (`NODE_ENV !== 'production'`). The same affordance in production would be a privilege-escalation vector.
-- The seed includes a pre-pending invite for Bob (already accepted by him in the seed — used to verify the post-accept audit row). One additional pending invite to `pending@example.com` is seeded to test the management surface without sending an email.
-
-Codebase state at entry: starter cloned, Postgres running, schema migrated, seed loaded, env filled.
-
-Codebase state at exit: student has read every provided file, run the app, confirmed `/inspector` throws as expected. No code written.
-
-Estimated student time: 20 to 30 minutes.
+Estimated student time: 50 to 60 minutes. The chapter's trust boundary — every later lesson assumes verification has run.
 
 ---
 
-## Lesson 3 — Install the organization plugin and requireOrgUser
+## Lesson 2 — Claim once, mutate once
 
-Adding the `organization()` plugin with custom invitation fields, the `session.create` hook that seeds `activeOrganizationId`, regenerating the auth schema, and shipping `roleAtLeast` plus `requireOrgUser`.
+Teaches the `processed_events(provider, eventId)` ledger with `INSERT ... ON CONFLICT DO NOTHING RETURNING` as atomic check-and-claim, wrapping the dedup insert and the business mutation in one transaction, returning 200 (not 4xx) on lost-claim, and the 30-second Stripe timing budget that pushes side-effects to background jobs.
 
-Goals:
+Topics to cover:
 
-- Add `organization()` to the `betterAuth({ plugins })` array in `src/lib/auth.ts` with `teams: { enabled: false }`, `invitationExpiresIn: 60 * 60 * 24 * 7` (seven days, named as a constant), and the `schema.invitation.additionalFields` for `tokenHash` and `acceptedAt`. Register `organizationClient()` in `auth-client.ts`.
-- Add `databaseHooks.session.create.before` that sets `activeOrganizationId` to the user's most-recent active org (or first membership) on session creation. Write a small `pickInitialActiveOrg(userId)` helper in `auth.ts`.
-- Run `pnpm auth:generate` and commit the regenerated `src/db/schema/auth.ts` — the new `organization`, `member`, `invitation` tables and the `session.activeOrganizationId` column drop in. Run `pnpm db:generate && pnpm db:migrate`. Verify with Drizzle Studio.
-- Fill `src/lib/auth/roles.ts`: the `Role` union, `ROLE_RANK`, and `roleAtLeast`. Export `type Role`.
-- Extend `src/lib/auth-helpers.ts`: add `requireOrgUser()` returning `{ user, orgId, role }`. The function reads `session.activeOrganizationId`; if null, redirects to `/onboarding/create-org`; reads the `member` row for `(userId, orgId)` to confirm membership and pull role; if missing, redirects to `/onboarding/create-org`; returns the typed shape. Cast `member.role` as `Role` at the boundary.
-- Verify in the inspector: `/inspector` no longer throws — the page renders the active-org banner with Alice's role. Switch acting users via the dev cookie helper; the banner re-renders with the new identity. Switch orgs via the org switcher; `revalidatePath('/', 'layout')` fires; the banner shows the new org.
-- Run the seed script's `create-org` path: from a fresh signup with no orgs, `/onboarding/create-org` renders; submitting creates the org and redirects to `/dashboard` with the new active org. (This path is exercised by the existing chapter 059 + organization plugin call shape; the student verifies, doesn't re-implement.)
+- **The senior question.** Stripe retries any webhook that doesn't get a 2xx within the timeout, and at-least-once delivery is the documented contract. The same event will arrive more than once. How does the handler process the event exactly once even under concurrent retries, network partitions, and crashes between the dedup check and the business work? The lesson lands the dedup-and-transact pattern as the structural answer.
+- **The `processed_events` table — the dedup ledger.** Schema: `provider text not null`, `eventId text not null`, `eventType text not null`, `receivedAt timestamptz default now()`, with `unique(provider, eventId)` as the composite constraint. One row per (Stripe, Resend, future-provider) event ever seen. The composite key lets a single table serve all providers without ID-space collisions. The senior anchor: the table is append-only — no updates, no deletes outside a retention sweep.
+- **`INSERT ... ON CONFLICT DO NOTHING` as both check and claim.** The naive shape — `select` from `processed_events`, decide, `insert` — has a race window where two concurrent retries both find the row missing, both proceed, both succeed. The atomic shape — `insert into processed_events (...) values (...) on conflict (provider, "eventId") do nothing returning id` — combines check and claim into one statement. The `RETURNING` row tells you whether you won the claim (one row) or lost it (zero rows). Closes the loop with the upsert mechanics from lesson 5 of chapter 038.
+- **Why the simple `select-then-insert` is broken.** The race window is real even on a single Postgres connection because Stripe retries can be concurrent on different workers. The lesson shows the broken shape, names the failure mode (double-processing, double-charging in the worst case), and the fix (atomic claim) as the structural answer. Wrong-then-right per the pedagogical conventions.
+- **The outer transaction — dedup INSERT and business work together.** `await db.transaction(async (tx) => { const claimed = await tx.insert(processedEvents)...returning(); if (!claimed.length) return; await applyBusinessLogic(tx, event); })`. The transaction guarantees: either both the dedup row and the business mutations commit, or neither does. A crash between the dedup INSERT and the UPDATE rolls both back; the retry re-claims and re-processes cleanly.
+- **Why a single transaction beats "claim, then process" outside.** If the claim INSERT commits but the business work fails after, the event ID is marked processed but the subscription never updated. The retry sees "already processed" and skips, leaving the data wrong. The wrap-everything-in-one-transaction shape makes this impossible — same commit boundary for the receipt and the consequence.
+- **Transaction isolation — `read committed` is enough.** The dedup pattern doesn't need `serializable` or `repeatable read` because the uniqueness constraint does the heavy lifting. Two concurrent transactions both attempt the INSERT; one wins, the other gets a constraint violation and rolls back. The senior anchor: lean on constraints, not isolation levels. Restates from lesson 4 of chapter 039 briefly.
+- **The "lost the claim" branch — return 200, not 4xx.** If the INSERT returns zero rows, the event was already processed. Return 200 immediately. Returning a 4xx tells Stripe to stop retrying (correct) but a 5xx tells it to retry (incorrect — there's nothing to do). The senior anchor: the dedup short-circuit is a success path, not an error.
+- **Handler timing budget — Stripe's 30-second window.** Stripe waits up to 30 seconds for a 2xx before treating the request as failed. Heavy business work risks timeouts and unwanted retries. The senior reach: do the minimum mutation synchronously; queue everything else (sending an email, computing analytics) to the background job system (Chapter 066). Names the threshold and the pattern.
+- **`processed_events` retention.** Rows accumulate forever without bound. A background cleanup deletes rows older than 30 to 90 days (longer than any provider's retry window). The senior reach: a scheduled job, not a foreground delete; the retention policy is documented in the schema comment. Names the discipline; doesn't drill.
+- **The `eventType` column — why store it.** Not load-bearing for dedup (the unique constraint is on `(provider, eventId)`). Stored for observability — the analyst can answer "how many `checkout.session.completed` did we process last week" without an external system. Costs nothing; pays off the first time you need it.
+- **What the handler returns to Stripe.** `200 OK` on dedup-hit (already processed), `200 OK` on processed-now, `400` on signature failure (lesson 1 of chapter 063), `5xx` only on genuine server error (DB down, code crash) so Stripe retries. The lesson maps the full status code surface and pins the rule: never 5xx as a "soft retry" signal — that's the dedup ledger's job.
+- **Logging the event ID — observability hooks.** Every code path logs the event ID and the disposition (claimed/duplicate/error) with the structured logger from Chapter 092. The senior anchor: webhook handlers are debug-hostile by default — the log is what you have when production misbehaves at 2am. Names the rule.
+- **Worked example — the full handler scaffold.** Verify (from lesson 1 of chapter 063) → parse the event → open a transaction → claim via `ON CONFLICT DO NOTHING RETURNING` → if not claimed, return 200 → switch on `event.type` → call the typed handler (`onCheckoutCompleted(tx, event)`) → commit → return 200. The reference shape for the rest of the chapter and for the project (chapter 065).
+- **Watch-outs:** the `processed_events` insert outside the transaction is a partial-state bug — keep them together; using `ON CONFLICT (eventId)` without `provider` collides Stripe and Resend IDs that happen to overlap — composite key; treating a "lost the claim" as a 4xx makes Stripe retry forever — 200; doing the SDK call (Resend send, Stripe API call) inside the transaction holds DB connections across network IO — split: do DB-only work inside the transaction, queue side-effects to background jobs; long-running event handlers exceeding 30 seconds get retried and double-processed if the second one also takes too long — split work; using `serializable` isolation under heavy webhook load produces serialization failures and retries — `read committed` plus unique constraints is enough; `processed_events` without retention sweep becomes the largest table in the database over time — schedule the cleanup.
 
-Senior calls and watch-outs:
+What this lesson does not cover:
 
-- `databaseHooks.session.create.before` is the *one* place that sets the initial active org. Don't sprinkle the setter across sign-in / sign-up / OAuth callbacks — every entry point that mints a session must cover, and the hook is the structural way.
-- `requireOrgUser` reads the role from the database, not from the session cookie cache. The cookie cache can carry a stale role for up to the `freshAge` window (lesson 3 of chapter 056); reading the membership row inside the helper is the senior reflex for role-change correctness within seconds. The cookie-cached `activeOrganizationId` is fine because `setActive` rewrites the cookie immediately.
-- Never trust `activeOrganizationId` from a query string or route param. The only acceptable source is the server-validated session.
+- Out-of-order event ordering and the `last_event_at` predicate — lesson 3 of chapter 063.
+- Server Action idempotency and the public-route `Idempotency-Key` header — lesson 4 of chapter 063.
+- Background jobs for offloaded post-webhook work — Chapter 066.
+- The `ON CONFLICT` and `RETURNING` mechanics — lesson 5 of chapter 038.
+- Transactions and isolation level mechanics — lesson 4 of chapter 039.
+- Specific Stripe event types and what `applyBusinessLogic` does — Chapter 064 and the project.
 
-Codebase state at entry: chapter 059 auth flow working, no org tables, `requireOrgUser` not implemented.
-
-Codebase state at exit: `organization` / `member` / `invitation` tables migrated; `session.activeOrganizationId` column live; the four seeded users have memberships and a default active org; `requireOrgUser` returns the typed shape; the inspector renders the active-org banner and the acting-user switcher works; the org switcher refreshes the layout. The members panel, role-change buttons, and audit tail still throw because `tenantDb`, `authedAction`, and `logAudit` don't exist yet.
-
-Estimated student time: 35 to 45 minutes.
-
----
-
-## Lesson 4 — audit_logs with RLS deny-write policies
-
-Defining the `auditLogs` table and its indexes, declaring tenant SELECT / INSERT and deny UPDATE / DELETE `pgPolicy` rules, and shipping `withTenant` plus the transaction-required `logAudit(tx, event)` signature.
-
-Goals:
-
-- Fill `src/db/schema/audit.ts` with the `auditLogs` table — the full column set, the two composite indexes (`(organizationId, createdAt desc)` and `(organizationId, actorUserId, createdAt desc)`), the `inet` type for `actorIp`, the `jsonb` type for `payload`.
-- Enable RLS on the table: `pgTable(...).enableRLS()`. Declare three policies via `pgPolicy`:
-  - `audit_logs_tenant_select` — `FOR SELECT TO authenticated USING (organization_id = current_setting('app.org_id', true)::uuid)`.
-  - `audit_logs_tenant_insert` — `FOR INSERT TO authenticated WITH CHECK (organization_id = current_setting('app.org_id', true)::uuid)`.
-  - `audit_logs_no_update` — `FOR UPDATE TO authenticated USING (false)`.
-  - `audit_logs_no_delete` — `FOR DELETE TO authenticated USING (false)`.
-- Generate and run the migration. Verify in `psql`: as the app role, `INSERT INTO audit_logs (...)` succeeds inside a `BEGIN; SET LOCAL app.org_id = '<org-uuid>'; ...; COMMIT;` block; the same insert outside a transaction (with the variable unset) fails. `UPDATE audit_logs SET action = 'x'` and `DELETE FROM audit_logs` both return `permission denied`.
-- Fill `src/lib/audit-log.ts` with `logAudit(tx, event)`. The function signature accepts a Drizzle transaction handle and an event payload; the body inserts one row. The type signature makes the `tx` argument *required* — there is no overload that accepts the raw `db`. This is the discipline from lesson 5 of chapter 061: auditing happens inside a transaction, never as a fire-and-forget call.
-- Fill `src/lib/tenant-db.ts`'s `withTenant(orgId, async (tx) => ...)` shape: opens `db.transaction(async (tx) => { await tx.execute(sql\`SET LOCAL app.org_id = ${orgId}::uuid\`); return await fn(tx); })`. Every audit write goes through this so the RLS session variable is set; reads on `audit_logs` go through this too.
-- Verify in the inspector: nothing has changed yet (no actions write audit rows) — but the inspector's "Raw helpers panel" now shows `auditLogs` row count as 0 for the current org. The verify step is the `psql` walk-through above.
-
-Senior calls and watch-outs:
-
-- `SET LOCAL` is bound to the transaction — it auto-clears on commit/rollback. With pooled connections (the default), `SET` (no `LOCAL`) would persist across requests on the same connection and silently leak `app.org_id` across tenants. Use `SET LOCAL`, always inside a transaction, never `SET` at session level.
-- The deny-UPDATE / deny-DELETE policies are *structural*. The application discipline (never write code that issues UPDATE or DELETE on `audit_logs`) plus the DB grants plus the policies are three layers; the policies are the load-bearing one because they don't depend on developer attention.
-- The owner role bypasses RLS (Postgres default). Migrations and the retention job run as the owner role; the application request handler runs as `authenticated`. The retention job is a year-2 reach, named here, not built.
-- The cast `current_setting('app.org_id', true)::uuid` uses the `true` arg so a missing setting returns NULL (not an error) — the policy then naturally returns false, which is the safe behavior. Without `true`, the missing-setting path throws and surfaces as a 500 instead of a refusal.
-
-Codebase state at entry: org tables migrated, `requireOrgUser` working, no audit table.
-
-Codebase state at exit: `auditLogs` table live with RLS policies; `logAudit(tx, event)` ready to be called; `withTenant(orgId, fn)` opens the RLS-scoped transaction. The verify step (manual `psql` UPDATE/DELETE refusal) passes. No actions write to the table yet.
-
-Estimated student time: 40 to 50 minutes.
+Estimated student time: 50 to 60 minutes. The structural backbone of every webhook handler in the course.
 
 ---
 
-## Lesson 5 — tenantDb, authedAction, and the role-change action
+## Lesson 3 — Newer wins, single writer
 
-Building the typed `tenantDb(orgId)` facade, the four-step `authedAction(role, schema, fn)` wrapper, and the `changeMemberRoleAction` that refuses owner targets, refuses last-owner demotion, and audits in-transaction.
+Teaches the `event.created` plus `last_event_at` predicate inside the UPDATE WHERE for out-of-order delivery, UPDATE-RETURNING to detect stale no-ops, the "webhook is the only writer" rule, and the success-page read-and-poll via `router.refresh()` that closes the redirect-versus-webhook race without double-writing entitlements.
 
-Goals:
+Topics to cover:
 
-- Fill the typed `tenantDb(orgId)` facade in `src/lib/tenant-db.ts`. The shape:
-  - `.query.<table>` for the tenant-owned tables (`member`, `invitation`, `auditLogs`, plus any feature tables) — each `findMany` / `findFirst` composes the caller's `where` via `and(eq(<table>.organizationId, orgId), userWhere)`.
-  - `.insert(<table>).values({...})` injects `organizationId` and throws if the caller passed a mismatched value.
-  - `.update(<table>).set(...).where(...)` and `.delete(<table>).where(...)` always `and`-in the org predicate.
-  - `.transaction(fn)` opens `withTenant(orgId, fn)` so the RLS session variable is set for the duration.
-  - A `TENANT_TABLES` type-level set drives which tables are accessible through the facade; reaching for `tenantDb(orgId).query.user` is a type error (the `user` table is global).
-- Fill `src/lib/authed-action.ts` with the `authedAction(role, schema, fn)` factory. Four steps: `requireOrgUser()` → `roleAtLeast(ctx.role, required)` → `schema.safeParse(Object.fromEntries(formData))` → `fn(parsed.data, ctx)`. The `ctx` payload assembles `{ user, orgId, role, db: tenantDb(orgId), ip, userAgent }`; `ip` and `userAgent` are read from `headers()` inside the wrapper. Failure shapes return the canonical `Result.error` discriminants — no throws for forbidden / invalid-input.
-- Fill `changeMemberRoleAction` in `src/lib/invitations/manage.ts`. Schema: `z.strictObject({ memberId: z.string().uuid(), newRole: z.enum(['admin', 'member']) })`. Body inside a `ctx.db.transaction(async (tx) => ...)`:
-  - Read the target member through `tx.query.member.findFirst({ where: eq(member.id, memberId) })` — `tenantDb` scopes the read to the active org.
-  - Refuse with `'not-a-member'` if not found, `'cannot-change-owner-role'` if the target is owner, `'last-owner'` if the new role would leave zero owners (count check inside the transaction).
-  - `tx.update(member).set({ role: newRole }).where(eq(member.id, memberId))`.
-  - `logAudit(tx, { action: 'member.role-changed', subjectType: 'member', subjectId: memberId, actorUserId: ctx.user.id, orgId: ctx.orgId, payload: { previousRole: target.role, newRole }, ip: ctx.ip, userAgent: ctx.userAgent })`.
-  - Call `revalidatePath('/inspector')`.
-  - Return `Result.ok({ memberId, newRole })`.
-- Verify in the inspector: switch acting user to the admin (Bob); click the role-change `<Select>` on Carol's row, change to `admin`; the row updates, the audit tail shows the `'member.role-changed'` row with the correct payload and actor. Switch acting user to the member (Carol); try changing Bob's role; toast surfaces `forbidden`; no DB change, no audit row. Switch back to the admin; try demoting the owner (Alice); toast surfaces `cannot-change-owner-role`. Try changing Alice's own role; the last-owner check fires (`'last-owner'`).
-- Inspect the "Raw helpers panel": `auditLogs` row count for the current org increments only on successful role changes, never on rejected attempts.
+- **The senior question.** Two webhooks arrive: `customer.subscription.updated` at status `active`, then a moment later `customer.subscription.updated` at status `past_due`. Network reorders them and `past_due` lands first, then `active`. The naive handler applies both in arrival order and ends up at `active` — wrong. Separately, the user gets redirected from Stripe Checkout to `/success` before the `checkout.session.completed` webhook lands; the success page renders before the entitlement exists. The lesson lands both ordering problems and the structural fixes.
+- **Stripe's ordering contract — there is none.** Events are emitted in roughly the order they happen, but delivery is at-least-once and unordered. The Stripe docs name this explicitly. The senior anchor: assume out-of-order is the default, not an edge case, and design for it.
+- **The `event.created` timestamp — what Stripe ships with every event.** Every event carries `created` (Unix seconds). Two events for the same subscription have monotonically increasing `created` values — they were emitted in order, even if they arrive out of order. The handler uses `created` as the ordering predicate.
+- **The `last_event_at` column on the mutated entity.** Add a `lastEventAt timestamptz` column to entities the webhook mutates (`organizations`, `plan_entitlements`, whatever the subscription state lives on). The UPDATE statement carries `where ... and (last_event_at is null or last_event_at < ${event.created})`. Stale events (older `created` than the row's `lastEventAt`) update zero rows and are silently no-op. Newer events update and set `lastEventAt = event.created` in the same statement.
+- **Why this is structural, not procedural.** A naive "if newer, update" branch in application code has the same race window as the naive dedup check — two concurrent handlers both read `lastEventAt`, both find theirs newer, both update, the older one wins. The WHERE-clause predicate inside the UPDATE is atomic; the database evaluates the condition under row-lock, no race. Same shape as the dedup atomicity argument from lesson 2 of chapter 063 applied to ordering.
+- **The UPDATE-RETURNING pattern to detect no-op.** `update ... set ... where ... returning id` returns zero rows when the predicate didn't match. The handler logs the no-op (observability) and returns 200 — the event was a stale ordering, not an error.
+- **Pairing with dedup — both predicates in the same transaction.** The full handler shape: claim via `processed_events` INSERT (idempotency), then mutate with the `lastEventAt` predicate (ordering). Both inside the outer transaction. The two are orthogonal: dedup protects against the same event arriving twice, ordering protects against different events arriving in the wrong order.
+- **The redirect-versus-webhook race — what it is.** Stripe Checkout completes; the user gets redirected to `${app}/success?session_id=...`; the success page renders; meanwhile, the `checkout.session.completed` webhook is in flight and hasn't arrived. The page reads `plan_entitlements` and sees the old value. The user sees "you're on the free plan" after paying.
+- **The wrong fix — "let the success page write the entitlement."** Tempting because it removes the race. Wrong because it creates two writers (success page + webhook) for the same row, and the race comes back as a write-write conflict, with subtler bugs. The senior anchor: the webhook is the only writer for entitlement state. Restates a principle.
+- **The right fix — read-and-poll on the success page.** The success page is a Server Component that reads the entitlement; if the entitlement isn't yet updated, render a "finalizing" state and trigger `router.refresh()` via a Client Component that polls every 500ms with a 30-second budget. After 30 seconds, surface "this is taking longer than expected — check your email." The webhook lands, the row updates, the next poll sees the new state.
+- **An alternative — Stripe's `retrieve` API call as a fast path.** If the redirect happens before the webhook, the success page can call `stripe.checkout.sessions.retrieve(sessionId)` to confirm payment, then write the entitlement directly. This violates the single-writer principle but is sometimes shipped. The course names it as the conditional reach for product reasons (user perception of speed) but defaults to read-and-poll because correctness beats perceived latency.
+- **`router.refresh()` as the polling primitive.** A Client Component on the success page uses a `setInterval` to call `router.refresh()`, which re-runs the Server Component fetch. Cheaper than full client-side fetching, integrates with the cache layer from Chapter 032. Names the API; restates briefly.
+- **Stale-event observability — what to log and what to alert on.** A handler that drops 1-in-10000 events as stale is normal; 1-in-10 means an upstream ordering issue or a clock-skew problem. Log every stale event with `event.id`, `event.type`, `event.created`, `row.lastEventAt`. Alert on the rate, not the absolute count.
+- **What about events without a clear "entity to order against"?** A `payment_intent.payment_failed` doesn't update a long-lived entity — it appends to a payment-attempts log. No ordering predicate needed; dedup alone is the discipline. Names the asymmetry: ordering matters for *state*, not for *facts*.
+- **Worked example — the `customer.subscription.updated` handler.** Pulled apart line by line: dedup claim, then `update plan_entitlements set status = ${new}, last_event_at = ${event.created} where org_id = ${id} and (last_event_at is null or last_event_at < ${event.created})` (schema sketch: `plan_entitlements(org_id, status, last_event_at)`; the table is wired in lesson 4 of chapter 064 — the example here demonstrates the conflict-resolution shape). The same statement does both the ordering check and the write atomically. The handler returns 200 on no-op-due-to-stale and logs the disposition.
+- **Watch-outs:** comparing `event.created` against `now()` instead of the row's last event time is a clock-skew bug — compare row-against-event, not event-against-clock; storing `lastEventAt` as a separate UPDATE after the entity write opens the same race the predicate is meant to close — one statement; reading the entitlement on the success page without polling locks the user into the stale state until the next navigation — poll or render a finalizing state; writing the entitlement from the success page in addition to the webhook duplicates the writer and produces lost-update bugs; dropping events as stale silently with no log makes upstream issues invisible — log every no-op; for entities like `payment_intent` that are facts, not state, the ordering predicate doesn't apply and adding it is over-engineering; thirty seconds is the standard polling budget — longer is bad UX, shorter risks giving up before the webhook lands on a slow day.
 
-Senior calls and watch-outs:
+What this lesson does not cover:
 
-- The wrapper is the *only* call shape for privileged actions. If a Server Action exports without `authedAction`, the review catches it because the import shape is wrong. Don't add `requireOrgUser` + role check inside an action body and call it equivalent — review-fragile.
-- `ctx.db` is already `tenantDb(orgId)`. The action body never reaches for the unwrapped `db` import — that's the cross-tenant escape hatch, used only in admin scripts that live in `scripts/`.
-- The audit write happens inside the *same* transaction as the role update. If the audit insert fails, the role update rolls back. The alternative ("fire and forget the audit log") leaves the system in a state where the role changed but no record exists — exactly the wrong direction for a compliance table.
-- The wrapper's role check returns `Result.error('forbidden')` instead of throwing. The form's `useActionState` reducer renders the toast/banner; the user stays on the page. A throw would 500 the action and lose the typed error contract.
-- `forbidden` and `invalid-input` are *user-safe* messages. The detail (which role was required, what the parsed errors were) is logged at the wrapper seam for operator-side observability, not surfaced to the user. The user/operator split is the chapter 084 discipline foreshadowed.
+- The `processed_events` schema and the dedup INSERT — lesson 2 of chapter 063.
+- The `plan_entitlements` derived view and the full Stripe state model — Chapter 064.
+- `router.refresh` and cache invalidation mechanics — Chapter 032.
+- Background polling alternatives (websockets, server-sent events, real-time) — out of scope for this chapter.
+- Server Action idempotency and public route handlers — lesson 4 of chapter 063.
+- Observability and structured logging — Chapter 092.
 
-Codebase state at entry: org tables + audit table live, no helpers, no actions.
-
-Codebase state at exit: `tenantDb`, `authedAction`, `logAudit` all live; `changeMemberRoleAction` works end-to-end; the inspector's role-change buttons reject the member and accept the admin; audit rows land on success. The invite flow still doesn't exist — `/accept-invite` 404s, the invite form throws.
-
-Estimated student time: 55 to 70 minutes.
+Estimated student time: 45 to 55 minutes. The "money seam" lesson — the bugs taught here are the ones that show up in incident postmortems.
 
 ---
 
-## Lesson 6 — Send an invitation with a signed accept URL
+## Lesson 4 — One pattern, four surfaces
 
-Generating the 32-byte token, hashing at rest, HMAC-signing the URL, writing the row plus the `invitation.sent` audit event in one transaction, sending the React Email after commit, and translating the partial-unique-index collision into `already-invited`.
+Promotes the unique-on-key constraint plus atomic insert into a portable idempotency discipline applied identically to webhooks (`event.id`), Server Actions (Client-Component `crypto.randomUUID()` form key), retried background jobs (stable `runId`), and public route handlers (the RFC `Idempotency-Key` header with scoped-per-client response caching).
 
-Goals:
+Topics to cover:
 
-- Fill `src/lib/invitations/url.ts` with `signedInviteUrl` and `verifyInviteSignature`. Use `crypto.subtle.importKey('raw', secret, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify'])` once at module load; `sign` for the URL builder, `verify` for the accept path's constant-time check. Base64url-encode the signature; the URL shape is `${env.APP_URL}/accept-invite?id=...&token=...&sig=...`.
-- Fill `src/emails/InviteEmail.tsx` as a React Email component: heading "You're invited to {orgName}", body ("{inviterName} invited you as {role}. This invitation expires {relativeTime(expiresAt)}."), a primary CTA button with `acceptUrl`. Mirror the structure of `WelcomeVerification.tsx` from chapter 059.
-- Fill `sendInvitationAction` in `src/lib/invitations/send.ts`:
-  - `authedAction('admin', sendInvitationSchema, async ({ email, role }, ctx) => ...)`.
-  - Inside `ctx.db.transaction(async (tx) => ...)`:
-    - Check existing membership: read the `user` row by `lower(email)` then check `member.findFirst({ where: and(eq(member.userId, user.id), eq(member.organizationId, ctx.orgId)) })`. Return `Result.error('already-member')` if found.
-    - Generate the token: `const rawBytes = crypto.getRandomValues(new Uint8Array(32)); const rawToken = Buffer.from(rawBytes).toString('base64url'); const tokenHash = await sha256Hex(rawToken)`.
-    - Call `auth.api.createInvitation({ body: { email, role, organizationId: ctx.orgId }, headers: await headers() })` inside the transaction — Better Auth's plugin call writes the `invitation` row with the right shape. Then `tx.update(invitation).set({ tokenHash }).where(eq(invitation.id, result.id))` to attach the hash (the plugin doesn't know about the custom field; the student writes the additional-field column after the plugin insert).
-    - `logAudit(tx, { action: 'invitation.sent', subjectType: 'invitation', subjectId: invitationId, actorUserId: ctx.user.id, orgId: ctx.orgId, payload: { email, role } })`.
-  - After the transaction commits: build the URL via `signedInviteUrl(invitationId, rawToken)`, call `sendEmail({ to: email, subject: \`You're invited to \${orgName}\`, react: <InviteEmail orgName inviterName role acceptUrl expiresAt />, idempotencyKey: \`invitation.sent:\${invitationId}\` })`. If the send rejects, return `Result.error('email-send-failed', { invitationId })` — the row exists, the resend affordance is the recovery.
-  - Catch the partial-unique-index error (`23505` on `(organizationId, lower(email)) WHERE status='pending'`) and translate to `Result.error('already-invited', { existingInvitationId })` — re-query inside the catch to get the existing id.
-  - On success: `revalidatePath('/inspector')`, return `Result.ok({ invitationId })`.
-- Verify in the inspector: as admin, submit the invite form with the student's real email + role `member`; toast shows `Result.ok({ invitationId })`; pending-invites list updates; audit tail shows `'invitation.sent'`. Check the inbox: the React Email arrives with the CTA button pointing at `/accept-invite?id=...&token=...&sig=...`. Click the link — the accept page 404s (next lesson). In Postgres: `tokenHash` is a 64-character hex string, the raw token is nowhere in the DB. Try inviting the same email again: `Result.error('already-invited')` from the partial-unique-index catch.
+- **The senior question.** The webhook handler protects against duplicate delivery with a unique constraint and atomic claim. The same shape applies to other "could happen twice" surfaces: a Server Action submitted twice from a double-click, a background job retried by the runtime, a public API POST replayed by a flaky client. Is there one discipline that unifies all of these, or four ad-hoc patterns? The lesson lands the single discipline: unique-on-key DB constraint plus atomic insert as the universal idempotency primitive.
+- **The pattern, stated once.** For any operation where "exactly once" matters, choose a key that identifies "this attempt", store it under a unique constraint, do the work in the same transaction as the insert. On replay, the unique violation (or `ON CONFLICT DO NOTHING` returning zero rows) tells you the work already happened; return the prior result if you cached it, return success otherwise. Names the pattern as the chapter's unifying mental model.
+- **Webhooks — `processed_events(provider, eventId)`.** Restates from lesson 2 of chapter 063 as the canonical instance. The key comes from the sender (Stripe's `event.id`); the table is the ledger; the constraint is the structural guarantee.
+- **Server Actions — the form-supplied UUID.** Closes the thread from Chapter 043. A form action that creates a row generates a UUID client-side (or hidden-input-injected on first render) and the action inserts the row with that UUID as the primary key (or a separate `idempotencyKey` column with a unique constraint). A double-submit either succeeds the first and conflicts the second cleanly. The senior anchor: `crypto.randomUUID()` in the Client Component, hidden input, action reads it from the form.
+- **Why the client-supplied UUID beats server-generated.** Server-generated UUIDs on each invocation defeat the point — every submit is a fresh key. The key has to be stable across the submit and its replay. The Client Component generates once per form-render; React 19 form state preserves it through pending and re-submission.
+- **Retried background jobs — the stable run ID.** Foreshadows Chapter 066. The job runtime (Trigger.dev) gives every retry of a job the same `runId`. The job body inserts results keyed by that ID; a retry conflicts cleanly. Same pattern, different key source. Names the parallel and points forward.
+- **Public route handlers — the `Idempotency-Key` HTTP header.** A public POST endpoint (`/api/invoices` consumed by external integrations) accepts an `Idempotency-Key` header (RFC draft, widely adopted — Stripe and others do this). The handler stores `(client_id, idempotencyKey, response_body, status)` keyed unique on `(client_id, idempotencyKey)`. A replay with the same key returns the cached prior response, byte-identical. Cache horizon: 24 hours is the common contract.
+- **What the cached response includes.** The full HTTP status and body. A second call with the same key gets the same status and body, even if the underlying state has since changed. The senior anchor: idempotency caches the *response*, not the *state* — the response is the contract the client trusts.
+- **Key generation — UUID is the default, but any opaque string works.** The RFC recommends UUID; in practice any opaque string the client can re-send is fine. The course defaults to `crypto.randomUUID()` for both server-action and route-handler keys.
+- **The key-collision threat — why scoping matters.** Two different clients submitting the same `Idempotency-Key` value would step on each other if the table keyed only on the key. The constraint is `(clientId, idempotencyKey)`; for webhooks it's `(provider, eventId)`; for Server Actions, the `userId` or `orgId` scopes it. Names the pattern: idempotency keys are scoped to whoever's claiming them.
+- **The `Idempotency-Key` route handler shape.** Pseudo-code-ish: read the header (return 400 if missing on an endpoint that requires it), open a transaction, attempt `insert into idempotency_keys ... on conflict do nothing returning *`, if claimed, do the work and update the row with the response; if not claimed, read the row and return the cached response. The same dedup-and-transact shape from lesson 2 of chapter 063 with a response cache attached.
+- **What endpoints require it — the policy question.** Not every POST does. Idempotency keys earn their weight on operations that have external side effects (payments, sends, creates) and not on operations that are naturally idempotent (PUT replacing a value, DELETE). The senior anchor: require it on writes that "would be bad to do twice" and document the requirement in the API contract.
+- **`Idempotency-Key` versus webhook signatures — the orthogonality.** Signatures answer "is this from a trusted sender" (lesson 1 of chapter 063); idempotency keys answer "is this the same attempt as before". A webhook has both: the signature proves provenance, the event ID is the idempotency key. A public route handler has both: auth proves identity, the header is the key.
+- **The 90% test — pick the smallest version.** A new Server Action that creates a row: does it need full idempotency? Often a unique constraint on the natural key (the `slug`, the `email`, the `(orgId, name)` pair) does the same job without an explicit `idempotencyKey` column. The lesson names the cost-of-discipline question: an explicit `idempotencyKey` column is overhead the row pays forever; rely on natural uniqueness when it's there, add the column when it isn't.
+- **The webhook-to-action-to-job mental model — one diagram.** A Mermaid sequence-style or three-column compare diagram: same shape, different key source, different replay trigger. Webhook: provider sends, key is `event.id`. Action: user submits, key is the form UUID. Job: runtime retries, key is the run ID. Public API: client retries, key is the header. One pattern, four surfaces.
+- **Watch-outs:** generating the idempotency key server-side per request defeats the point — generate at the source that owns the "attempt" definition; not scoping the key by tenant/user lets keys collide across customers — composite constraint; caching the response body means storing user-visible data in the idempotency table — apply the same retention as `processed_events` and the same redaction rules from observability; reusing an idempotency key across semantically different operations confuses the cache — keys are per-operation; ignoring the `Idempotency-Key` header on an endpoint that accepts it makes the contract a lie — implement or remove; not bounding the cache window means stale responses persist forever — 24 hours is the common contract, name and document it; treating a missing header as success (instead of 400) lets non-idempotent clients silently double-charge — require the header on the endpoints that require it.
 
-Senior calls and watch-outs:
+What this lesson does not cover:
 
-- The email send sits *outside* the transaction. If Resend is down, the row exists and the inspector surfaces a resend affordance — orphan-email-on-rollback is the worse failure mode.
-- The raw token never lands in the database, never appears in server logs (the logger redacts `token` and `sig` query params globally — Sentry breadcrumb redaction is the discipline). The hash is the only DB-resident form.
-- The HMAC secret (`INVITATION_SIGNING_SECRET`) is distinct from `BETTER_AUTH_SECRET`. Reusing one secret across two cryptographic uses tangles rotation.
-- `email.toLowerCase()` is part of the Zod schema, not a runtime call inside the action body. The partial-unique-index keys on `lower(email)`; the action input must match or the dedup silently fails.
-- `auth.api.createInvitation` is the canonical plugin call shape. Don't hand-write the `INSERT` against the `invitation` table — the plugin owns the columns it generates; the student only writes the additional-field columns (`tokenHash`, `acceptedAt`) via a follow-up `tx.update`.
-- Surfacing the invite URL in the inspector UI is dev-only (`NODE_ENV !== 'production'`). In production, the URL is a credential the inviter shouldn't possess after send.
+- Webhook-specific dedup (already covered) — lesson 2 of chapter 063.
+- The full Server Action mechanics — Chapter 043.
+- Background job retries and `runId` mechanics — Chapter 066.
+- API contract design and route handler error contracts — Chapter 046.
+- The full RFC draft for `Idempotency-Key` — referenced, not drilled.
+- Distributed-system theory of idempotency beyond the SaaS surface — out of scope.
 
-Codebase state at entry: helpers + role-change action live; no invite flow.
-
-Codebase state at exit: invite send works end-to-end (DB row, email arrives, audit row). The accept page does not exist — clicking the URL 404s. The full send path is exercised but the human can't yet accept.
-
-Estimated student time: 50 to 65 minutes.
-
----
-
-## Lesson 7 — Accept the invitation across four arrival shapes
-
-Server-Component accept page that verifies signature → row → hash → expiry → status and branches on session and email, plus the `acceptInvitationAction` that joins, switches active org, auto-verifies email, and audits inside one transaction.
-
-Goals:
-
-- Build the accept page at `src/app/(auth)/accept-invite/page.tsx` as a Server Component. Read `searchParams` (`id`, `token`, `sig`). The verify order:
-  1. `verifyInviteSignature(id, token, sig)` — bad → render the generic refusal screen.
-  2. `db.query.invitation.findFirst({ where: eq(invitation.id, id) })` — missing → same generic refusal.
-  3. `sha256Hex(token) === invitation.tokenHash` (constant-time-compatible because both are server-computed hex strings of fixed length) — mismatch → same refusal.
-  4. `invitation.expiresAt > now()` — expired → "this invite expired, ask for a new one" screen.
-  5. `invitation.status === 'pending'` — accepted → friendly "you're already a member" screen with a link to the org dashboard.
-- On a valid pending invite, branch on session:
-  - **(A) Signed in, same email** → render the Accept button (a `<form action={acceptInvitationAction}>` with hidden `id` and `token`) plus the org name, inviter name, and role.
-  - **(B) Signed in, different email** → render the email-mismatch refusal: "This invitation was sent to {invitation.email}. Sign out and sign in with that email to accept."
-  - **(C) Signed out, account exists on the invited email** → render a sign-in form prefilled with the email, redirecting back to `/accept-invite?...` on success.
-  - **(D) Signed out, no account** → render a sign-up form prefilled with the email, redirecting back to `/accept-invite?...` on success.
-- Fill `acceptInvitationAction` in `src/lib/invitations/accept.ts`:
-  - Not wrapped in `authedAction` — the invitation itself is the authz.
-  - Schema: `z.strictObject({ id: z.string().uuid(), token: z.string() })`.
-  - Re-verify the invitation (signature is not part of the action input; the action re-fetches and re-hashes — the page's verification doesn't carry across requests).
-  - Read the session; refuse if signed out or if `session.user.email.toLowerCase() !== invitation.email.toLowerCase()`.
-  - Inside `db.transaction(async (tx) => ...)` (opened through `withTenant(invitation.organizationId, ...)` so the RLS variable is set):
-    - Call `auth.api.acceptInvitation({ body: { invitationId: id }, headers: await headers() })` — Better Auth's plugin call inserts the `member` row and flips `invitation.status='accepted'`. Then `tx.update(invitation).set({ acceptedAt: sql\`now()\` }).where(eq(invitation.id, id))` to set the additional field.
-    - Call `auth.api.setActiveOrganization({ headers: await headers(), body: { organizationId: invitation.organizationId } })` so the post-redirect lands in the joined org.
-    - If the session user just signed up through this invite flow (detected via `user.emailVerified === false` plus a recent `createdAt`), set `emailVerified = true` on the `user` row — the invite click is the verification.
-    - `logAudit(tx, { action: 'invitation.accepted', subjectType: 'invitation', subjectId: id, actorUserId: ctx.user.id, orgId: invitation.organizationId, payload: { role: invitation.role, memberId } })`.
-  - `redirect('/dashboard')` after commit.
-- Verify in the inspector: from the previous lesson's invite, open the URL in a private window — branch (D) renders. Sign up with the prefilled email; auto-redirect to `/accept-invite?...`; branch (A) renders. Click Accept; redirected to `/dashboard` with the invited org active. Switch acting user to the new identity in the inspector: the member row exists with the right role; audit tail shows `'invitation.accepted'`; `user.emailVerified` is `true` even though no separate verification was sent.
-- Negative tests:
-  - Mangle the `sig` query param (flip one character) → generic refusal; no DB lookup happens.
-  - Force expire via the inspector's debug control (sets `expiresAt = now() - 1 hour`) → expired screen.
-  - Re-click an already-accepted URL → friendly "already a member" screen.
-  - Sign in as Carol (whose email differs) and visit the URL → branch (B) email-mismatch refusal.
-  - Open the accept URL in two tabs and click Accept simultaneously → one wins, the other gets the "already a member" branch (Better Auth's accept call filters on `status='pending'`).
-
-Senior calls and watch-outs:
-
-- The verify order is signature → row → hash → expiry → status. The first three failures render the *same* generic refusal — never differentiate "missing" from "tampered" from "hash-mismatch" publicly; the recovery path is identical (ask for a new invite).
-- The accept Server Action re-verifies; the page's pre-check is for the UI branch, not for authz. Form submissions are separate requests; the action does its own check.
-- The active-org switch happens inside the transaction — the post-redirect lands in the joined org, not the user's previous active org. Without this, the redirect lands in the wrong context.
-- The auto-`emailVerified` carve-out is the lesson 3 of chapter 062 senior reflex: receiving the click on the invited email is itself the verification. Without it, the user hits a "verify your email" loop after just confirming the email through the invite.
-- Better Auth's `acceptInvitation` requires an authenticated session — the signed-out arrival shape (D) must complete sign-up first, which seeds the session, then the accept call runs. The page's branch routing structurally enforces this.
-- Auto-accepting on GET (the page render itself writing the `member` row) would let URL-scanning crawlers and corporate URL-rewriters consume the invite silently. The explicit Accept button is the consent gate.
-- Email comparison is case-insensitive on both sides — lower the invitation's email at write time (Zod schema in the send action), lower the session email at compare time.
-
-Codebase state at entry: invite send works; accept page does not exist.
-
-Codebase state at exit: full invite handshake works end-to-end across all four arrival shapes; `member` row, active-org switch, and audit row all written inside one transaction; tamper / expiry / status / email-mismatch / double-click race all behave per spec.
-
-Estimated student time: 55 to 70 minutes.
+Estimated student time: 45 to 55 minutes. The lesson that promotes the webhook pattern into a portable senior discipline.
 
 ---
 
-## Lesson 8 — Verify RBAC, append-only, and cross-tenant probes
+## Lesson 5 — Resend bounces and complaints
 
-Clause-by-clause rehearsal of the "Done when" list — RBAC refusals, `psql` UPDATE / DELETE refusals on `audit_logs`, cross-tenant probes through both `tenantDb` and the unwrapped client, and the full invite handshake on a real inbox.
+Ships the second instance of the pattern — Svix signature verification (`svix-id` / `svix-timestamp` / `svix-signature`), the `email.bounced` and `email.complained` handlers writing to `email_suppressions` with `ON CONFLICT DO NOTHING`, and the audited `bypassSuppression` carve-out for password-reset and other critical transactional sends.
 
-Goals:
+Topics to cover:
 
-- Walk every "Done when" clause systematically against the table in the framing. The per-lesson verifications in lesson 5 of chapter 063–lesson 7 of chapter 063 exercised the individual flows; this lesson runs them as one rehearsal and probes the cross-cutting structural defenses.
-- RBAC end-to-end: as the member acting user (Carol), every role-change attempt returns `forbidden` with no DB change and no audit row. As the admin (Bob), role changes succeed; the audit tail shows `'member.role-changed'` with actor + subject + payload `{ previousRole, newRole }` for every change. As the owner (Alice), demoting herself to `member` returns `last-owner` (no DB change). Confirm the owner-count query in the action body reads through `tenantDb`, not the raw client.
-- `audit_logs` append-only enforcement at the DB layer: open `psql` as the app role (credentials in `.env.example`). Inside `BEGIN; SET LOCAL app.org_id = '<acme-uuid>';` block, `SELECT count(*) FROM audit_logs` returns the expected count. `UPDATE audit_logs SET action = 'tampered' WHERE id = ...` returns `permission denied`. `DELETE FROM audit_logs WHERE id = ...` returns `permission denied`. Outside any transaction (with `app.org_id` unset), `SELECT * FROM audit_logs LIMIT 1` returns 0 rows — the policy's `current_setting('app.org_id', true)::uuid` evaluates NULL, refusing.
-- Cross-tenant probe on `audit_logs`: from a server function that uses the unwrapped `db` import inside `withTenant(acmeOrgId, ...)`, attempt `db.query.auditLogs.findMany({ where: eq(auditLogs.organizationId, betaOrgId) })`. Returns 0 rows — RLS is the structural defense. Repeat with no `withTenant` wrap; same result for a different reason (unset session variable). Both paths fail closed.
-- Cross-tenant probe on tenant-owned tables (no RLS, application-layer only): from a server function, attempt `tenantDb(acmeOrgId).query.member.findMany({})` — returns only Acme members. The same call with the unwrapped `db` import and a hand-typed `where: eq(member.organizationId, betaOrgId)` returns Beta's members — proving that `tenantDb` is the *only* structural defense on non-RLS tables and the unwrapped import is the cross-tenant escape hatch reserved for `scripts/`.
-- Full invite handshake on a real inbox: as Acme admin, invite the student's real email + role `member`. Verify the inbox arrival, the `tokenHash` shape in Postgres, the absence of the raw token anywhere in the DB. Click the URL in a private window; complete sign-up via the prefilled form; click Accept; land on `/dashboard` with Acme active. The new member appears in the inspector; `user.emailVerified` is true; the audit tail shows `'invitation.sent'` (by the admin) followed by `'invitation.accepted'` (by the new user).
-- Re-invite collision: as admin, attempt to invite the same email a second time. `Result.error('already-invited', { existingInvitationId })` from the partial-unique-index catch.
-- Tenant isolation in the running app: switch active org to Beta via the org switcher. The members panel shows Beta's members only; the audit tail shows Beta's events only; the pending-invites list shows Beta's invites only. No cross-tenant bleed.
-- Inspector defense-in-depth verification: as Carol (member), the role-change `<Select>` is still rendered on every row. Clicking it surfaces the `forbidden` refusal. This proves the server-side refusal is load-bearing, not the UI hide.
-- Name the senior calls one more time:
-  - The `tenantDb` + `authedAction` pair makes the two highest-frequency multi-tenancy bug classes (missing org filter, missing role check) structurally impossible at the call sites that compile.
-  - The audit log is *in the transaction*, not after it. An audit row exists if and only if the work landed.
-  - RLS earns its weight on `audit_logs` — high-stakes data, multiple writers (every privileged action), regulatory tail. The default elsewhere is application-layer scoping via `tenantDb`.
-  - The accept URL's signature is fast pre-DB rejection of tampered links; the 32-byte token is the primary authentication; the SHA-256 hash at rest is what makes a DB read alone insufficient to forge invites.
-  - The email send sits *after* the transaction commit. The row is the source of truth; resend is cheap.
-- Forward references:
-  - chapter 066 layers `active()` / `archived()` / `includingDeleted()` lifecycle methods onto the exact `tenantDb` shape installed here.
-  - chapter 067 reuses the audit-log discipline for the `processed_events` webhook ingestion table.
-  - chapter 075 dispatches notifications on `invitation.sent` / `member.role-changed` via the centralized dispatcher.
-  - chapter 078 wraps `sendInvitationAction` with the Upstash rate limit (20 invites per admin per hour as the foreshadowed default).
-  - chapter 085 hardens the broader audit + retention story (90-day cleanup for canceled/expired invites, the audit-export-for-legal flow).
+- **The senior question.** Resend webhooks announce `email.bounced` and `email.complained` events. These are the inbound side of the deliverability discipline from lesson 4 of chapter 048 — every bounced or complained address gets added to `email_suppressions` and the application never sends to it again. The handler is the same shape as Stripe's: verify, dedup-and-transact, mutate. What changes is the signature scheme (Svix instead of Stripe) and the business work (insert into suppressions). The lesson lands the second instance of the pattern and pins the shape as portable.
+- **Resend's webhook signature scheme — Svix, not Stripe.** Resend uses Svix (the webhooks-as-a-service standard) for signing. Headers: `svix-id`, `svix-timestamp`, `svix-signature` (the signed payload is `${svix-id}.${svix-timestamp}.${rawBody}` HMACed with the secret, base64-encoded `v1,<digest>`). The Svix SDK (`svix` npm package) exposes `Webhook.verify(body, headers)` with the same boundary contract as Stripe's `constructEvent`. Same discipline; different SDK.
+- **The secret format — `whsec_...` and what to strip.** Svix secrets are stored as `whsec_<base64>`. The SDK handles the prefix; hand-rolling HMAC requires stripping it and base64-decoding the remainder as the HMAC key. The lesson uses the SDK uniformly and names the format as the env-entry shape.
+- **The route handler shape — `app/api/webhooks/resend/route.ts`.** Same canonical skeleton as Stripe: read raw body, read Svix headers, `wh.verify(body, headers)` → parsed event or thrown verification error, return 400 on failure with problem+json, dedup-claim with `processed_events(provider: 'resend', eventId: event.data.email_id /* or similar */)`, switch on event type, apply business work, return 200. The lesson highlights the few diff lines from the Stripe handler — provider string, signature SDK, event-type switch — to land that the rest is identical.
+- **The event-type surface — what Resend ships.** The course handles two events: `email.bounced` and `email.complained`. Other Resend events (`email.delivered`, `email.opened`, `email.clicked`) are reachable for analytics but not load-bearing for the suppression discipline. The senior reach: subscribe only to the events the application acts on — every subscribed event is a maintenance cost.
+- **`email.bounced` — what to do.** A bounce can be permanent (hard) or transient (soft). The Resend payload carries the bounce type. Hard bounces add the recipient to `email_suppressions` with `reason: 'bounce'`, `permanent: true`. Soft bounces are logged and a counter incremented; after N soft bounces in a window, escalate to suppression. The course's default: suppress on hard, log soft, name the escalation as a per-product call.
+- **`email.complained` — what to do.** A complaint (the recipient clicked "report spam") adds to `email_suppressions` with `reason: 'complaint'`, `permanent: true`. Complaints are always treated as permanent — re-sending to a complaining recipient damages sender reputation across all customers. The senior anchor: complaints are catastrophic, not informational.
+- **The suppression INSERT — `ON CONFLICT DO NOTHING` again.** The pattern recurs: `insert into email_suppressions (email, reason, suppressed_at) values (...) on conflict (email) do nothing`. Same atomic claim, same idempotency story. A bounce of an already-suppressed address is a silent no-op.
+- **The full transaction shape.** `db.transaction(async (tx) => { claim in processed_events; if not claimed return; insert into email_suppressions on conflict do nothing; })`. Dedup at the event level, idempotent at the suppression level. Both protections compose.
+- **The `bypassSuppression` carve-out.** Some transactional flows must send even to suppressed addresses — the password-reset email to an account that has bounced is the canonical case (the user needs the reset to recover the account; suppressing it locks them out). The `sendEmail` helper from Unit 7 accepts a `bypassSuppression: true` flag, used sparingly and audited. The senior anchor: the carve-out is a named, documented exception, not a per-call ergonomic — three or four call sites in the codebase, each justified in a comment.
+- **The send-time suppression check — where it lives.** Restates from lesson 4 of chapter 048 briefly: `sendEmail(to, ...)` queries `email_suppressions` before calling Resend; returns `{ ok: false, reason: 'suppressed' }` without sending unless `bypassSuppression` is set. The webhook handler populates the table; the send helper reads it. Closes the loop with Unit 7.
+- **What about un-suppression?** A user contacts support saying "I unsubscribed but I want emails again." Manual un-suppression is a support flow — delete the row from `email_suppressions` or set an `unsuppressed_at` timestamp. The course doesn't ship a self-serve un-suppression because the legal and deliverability calculus is product-specific. Names the surface; doesn't drill.
+- **Stripe and Resend in one handler vs. two — the design call.** One unified handler at `/api/webhooks` with provider-detection logic, or two at `/api/webhooks/stripe` and `/api/webhooks/resend`. The course picks two — separate routes, separate verification config, separate observability. The unification is in the shared helpers (`claimEvent`, `processedEventsTable`), not in the route file.
+- **The portability test.** Adding a third webhook provider (Trigger.dev callbacks, a future integration) means: a new route file, a new signature-verification SDK call, the same `processed_events(provider, eventId)` claim, the same outer transaction, a new event-type switch. The lesson names this as the proof the pattern scales.
+- **Worked example — the Resend handler end to end.** The full route file, including the Svix verify, the dedup claim, the bounce/complaint handlers, the `email_suppressions` insert, the 200/400 returns. Twenty-five to thirty lines; reuses the helpers introduced in lesson 2 of chapter 063.
+- **Watch-outs:** the Svix headers are case-sensitive in some adapters — read via `request.headers.get('svix-id')` (Node lowercases them); subscribing to every Resend event "because it might be useful" wastes handler invocations and grows the dedup ledger — subscribe to what you act on; treating soft bounces as permanent suppression alienates users with transient inbox issues — distinguish at the handler; bypassing suppression for marketing email is a deliverability bomb — the carve-out is transactional-only and audited; deleting from `email_suppressions` to "fix" a stuck recipient without addressing root cause (the address really does bounce) triggers cascading suppression on the next send — verify before un-suppressing; the suppression check at send time is the structural guard — the webhook populates the table but the send must always read it, no shortcuts.
 
-Senior calls and watch-outs:
+What this lesson does not cover:
 
-- The verify lesson is the rehearsal of failure modes — running each one and naming what would break without the disciplines just installed.
-- If a verification fails, the lesson points at the owning build lesson, not at "debug it yourself."
-- The accept flow's verify across email sessions needs the student's verified domain from chapter 054 — the sandbox sender will not deliver to the personal inbox.
+- Resend setup, DKIM/SPF/DMARC, and sender identity — Chapter 048.
+- React Email composition — Chapter 049.
+- The `email_suppressions` schema (already shipped in lesson 4 of chapter 048) — restated briefly; not re-taught.
+- Signature verification fundamentals — lesson 1 of chapter 063.
+- Dedup mechanics — lesson 2 of chapter 063.
+- Background job orchestration for retries — Chapter 066.
 
-Codebase state at entry: full multi-tenant surface with role-change and invite flows working.
+Estimated student time: 35 to 45 minutes. The application lesson — proves the pattern is portable and ships the second instance students will reach for.
 
-Codebase state at exit: same surface, verified clause-by-clause. The student can articulate every decision (`tenantDb` vs. raw `db`, `authedAction` vs. inline check, audit-in-transaction vs. after, RLS on `audit_logs` only vs. everywhere, signed URL plus hashed token vs. either alone) and name which forward unit will lean on it.
+---
 
-Estimated student time: 25 to 35 minutes.
+## Lesson 6 — Quizz
+
+Top 10 topics to quiz:
+
+- Signature verification at the route handler boundary — raw body via `request.text()`, HMAC over `${t}.${rawBody}`, constant-time comparison, timestamp tolerance, 400 with RFC 9457 on failure; verify before parse before log.
+- The `processed_events(provider, eventId)` composite unique key and why a single-provider key collides; `INSERT ... ON CONFLICT DO NOTHING RETURNING` as atomic check-and-claim that closes the `select-then-insert` race.
+- The outer transaction wrapping the dedup INSERT and the business work — partial-state impossibility, the lost-claim path returning 200 not 4xx, why 5xx is for genuine errors only.
+- Out-of-order delivery as the default assumption — `event.created` plus a `last_event_at` predicate in the UPDATE WHERE; UPDATE-RETURNING to detect no-op-due-to-stale; ordering protection vs. dedup protection as orthogonal.
+- The redirect-versus-webhook race and the "webhook is the only writer" rule; success-page read-and-poll via `router.refresh()` as the structural fix; why double-writing from the success page is wrong.
+- Idempotency as a unifying discipline — unique-on-key constraint plus atomic insert, applied identically to webhooks (`event.id`), Server Actions (client-supplied UUID), retried jobs (stable run ID), and public route handlers (`Idempotency-Key` header).
+- The `Idempotency-Key` HTTP header contract — scoped per client, 24-hour cache horizon, caches the response not the state, returns the cached body on replay.
+- Server Action idempotency keys generated at the source (Client Component `crypto.randomUUID()` once per form render) and not at the server per invocation; natural-uniqueness shortcut when a domain unique already exists.
+- The Resend webhook shape — Svix signature verification, the `email.bounced` and `email.complained` events, the `email_suppressions` ON CONFLICT insert, the `bypassSuppression` carve-out for password reset and other critical transactional flows.
+- The Stripe handler timing budget (30 seconds), the split-work pattern (DB-only inside the transaction, side effects to background jobs), and 200-on-dedup-hit as the success path, never as an error code.
