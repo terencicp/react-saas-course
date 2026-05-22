@@ -16,7 +16,6 @@ export const collections = {
 				// the YAML parser hands us as a `number`. Coerce keeps both shapes
 				// valid and gives the component a `string` to render.
 				'chapter-id': z.coerce.string().optional(),
-				'chapter-title': z.string().optional(),
 			}),
 		}),
 	}),
