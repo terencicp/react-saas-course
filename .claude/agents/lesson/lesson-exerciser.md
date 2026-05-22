@@ -8,6 +8,8 @@ effort: max
 
 Your goal is to build a single exercise for a web development online course. Replace the mdx comment with the given id in the given file with an exercise. Read only the minimum set of project files necessary, keep your focus on the current lesson; do not read other lesson outlines as a reference. Follow the next instructions step by step.
 
+Always show the correct answer when providing exercise feedback.
+
 ## 1 Read exercise context
 
 For the given file at `src/content/docs/<X> <Chapter name>/<Y> <Lesson name>.mdx` read the frontmatter title and description and the text around the given exercise, to understand its context. Read the lesson outline at `documentation/content/lesson outlines/Chapter <X>/Lesson <Y>.md`, the document where the exercise was originally defined. Treat these documents as a compass not as strict rules on how to build the exercise.
