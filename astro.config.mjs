@@ -109,6 +109,23 @@ export default defineConfig({
         },
         head: [
             {
+                // Default starlight-fullview-mode's right sidebar to *collapsed*
+                // on laptop-width viewports (< 100rem ≈ 1600px). The plugin
+                // reads sessionStorage.rightSideBarCollapsed on DOMContentLoaded;
+                // seeding it here (before the plugin runs) overrides its
+                // expanded-by-default. Only seed when the user hasn't toggled
+                // yet this session, so a manual click still sticks.
+                tag: 'script',
+                content: `(function () {
+try {
+    if (sessionStorage.getItem('rightSideBarCollapsed') !== null) return;
+    if (window.matchMedia('(max-width: 99.999rem)').matches) {
+        sessionStorage.setItem('rightSideBarCollapsed', 'true');
+    }
+} catch (e) {}
+})();`,
+            },
+            {
                 tag: 'script',
                 content: `(function () {
 var path = location.pathname;
