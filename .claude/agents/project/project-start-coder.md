@@ -16,7 +16,7 @@ Read `Project goals`, `Student position` and `Starter derivation` section of the
 
 ## 2 Derive the starter
 
-Copy `projects/Chapter <X>/solution/` to `projects/Chapter <X>/start/` using `rsync`, excluding `node_modules`, `.next`, `dist`, `build`, `.env*`, and `.DS_Store`. Then apply the `Starter derivation` instructions step by step — overwrite, stub, or delete each file the plan names with the exact body or directive it specifies. Don't invent stub content; if a file isn't named in `Starter derivation`, leave it at the solution state.
+Apply the `Starter derivation` instructions step by step (copy files using `rsync` if necessary).
 
 # 3 README
 

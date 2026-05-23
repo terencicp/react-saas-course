@@ -20,7 +20,7 @@ The codebase you will design is part of the project, meant to help the student p
 
 Read the chapter outline at `documentation/content/chapter outlines/Chapter <X>.md`, the main document to guide your decisions, but use it as a reference not as a strict set of rules. This document was designed mostly as a pedagogical guide, your mission is to translate it into a concrete plan used to build the codebase. Consider the chapter outline a preliminary brainstorm, you own the responsibility for the project's pedagogical success. Keep in mind that one lesson in each chapter outline can correspond to one or more coding slices, first and last lessons are just brief and final verification, they cover no code.
 
-Find your given chapter in `documentation/content/overview/Project dependencies.md` and read the `projects/Chapter <prior-X>/Codebase summary.md` of its direct ancestors in the graph. If this is the first project, there is no starter.
+Find your given chapter in `documentation/content/overview/Project dependencies.md` and read the `projects/Chapter <prior-X>/Codebase summary.md` of its direct ancestors in the graph.
 
 ## 4 Understand the project's goals
 
@@ -30,7 +30,7 @@ Consider that the goal of the project is not to build a realistic app, but to qu
 
 ## 5 Brainstorm
 
-Consider the following before writing the plan: What will be the initial state of the starter project? Are the slices defined in each lesson of the chapter outline atomic enough for coding agents or should the lessons be divided into smaller slices? What are the slices? What will each include and exclude? What will be the final state of the codebase (solution)? Which files will it contain?
+Consider the following before writing the plan: What will be the initial state of the start project? Are the slices defined in each lesson of the chapter outline atomic enough for coding agents or should the lessons be divided into smaller slices? What are the slices? What will each include and exclude? What will be the final state of the codebase (solution)? Which files will it contain?
 
 Define the best practices and patterns and what to avoid in relation to what this project slices cover. Consider how to define each slice so slice coders keep code concise and clean, and avoid over-engineering.
 
@@ -42,9 +42,9 @@ Write `documentation/content/project plans/Chapter <X>.md` with the following h2
 - **Student position**: Describe where the student is in the course, what has learned, but most importantly what it does not know yet. Coder agents will not read the course curriculum, so they must know which concepts the student is not familiar with, to avoid using them in the project.
 - **Scaffolding recipie**: Either forking a prior solution codebase, or merging multiple ones, or scaffold a fresh project. Include dependencies to add (with versions), files to add or remove, etc. `package.json` must define: `"verify": "biome ci . && tsc --noEmit && next build"`.
 - **Slices**: Contains an h3 section for each numbered slice, "Slice S1". Intended as instructions for the agent that will code this slice. Clearly defines the scope of each slice, what it contains and what it excludes. Defines the contracts it creates or modifies. Make sure each slice closes on a runnable state.
+- **Start derivation**: Instructions on how to derive the start codebase from the final code after all slices are done.
 - **Locked decisions**: Cross-cutting calls every slice must honor, anything that would cause drift if each slice coder decided on its own.
 - **File tree**: Complete tree after the last slice. Indicates which slice creates the file and which modifies it: "page.tsx [created by: S1, edited by: S3]"
-- **Starter derivation**: Instructions on how to derive the starter codebase from the final code after all slices are done.
 - **Verification**: Minimal programmatic set of checks for the reviewer to execute. Each check states scope (`solution/`, `start/`, or both), the action, and the expected outcome.
 
 ## 7 Code conventions review
