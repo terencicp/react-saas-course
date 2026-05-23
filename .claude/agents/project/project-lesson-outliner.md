@@ -24,7 +24,7 @@ Read the sections of the plan relevant to the lesson shape: for a middle lesson,
 
 ## 3 Project context
 
-Read `projects/Chapter <X>/codebase summary.md` to navigate the codebase. Read `documentation/components/INDEX.md` and `documentation/diagrams/INDEX.md` so any reference (`LinkCard`, `FileTree`, an occasional diagram) names a real component.
+Read `documentation/content/project code outlines/Chapter <X>.md` to navigate the codebase. Read `documentation/components/INDEX.md` and `documentation/diagrams/INDEX.md` so any reference (`LinkCard`, `FileTree`, an occasional diagram) names a real component.
 
 ## 4 Brainstorm
 

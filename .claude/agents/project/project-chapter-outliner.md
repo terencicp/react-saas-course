@@ -12,7 +12,7 @@ Rewrite the chapter outline so it matches the actual project code. The original 
 
 Read `AGENTS.md`, `documentation/content/overview/Units.md`  and `documentation/pedagogical approach/Pedagogical guidelines.md` to understand the course context.
 
-Read the chapter outline to update at `documentation/content/chapter outlines/Chapter <X>.md`. Read `projects/Chapter <X>/Codebase summary.md`, which describes the actual codebase in `solution/` and the differences in `start/` (starting code).
+Read the chapter outline to update at `documentation/content/chapter outlines/Chapter <X>.md`. Read `documentation/content/project code outlines/Chapter <X>.md`, which describes the actual codebase in `solution/` and the differences in `start/` (starting code).
 
 ## 2 Rewrite chapter framing
 

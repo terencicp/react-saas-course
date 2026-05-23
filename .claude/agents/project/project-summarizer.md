@@ -13,7 +13,7 @@ Walk `projects/Chapter <X>/solution/`. Read every source file, skipping `node_mo
 
 ## 2 Write the summary
 
-Write `projects/Chapter <X>/Codebase summary.md`. h1: "Chapter <X> — Codebase Summary". with 4 sections:
+Write `documentation/content/project code outlines/Chapter <X>.md`. h1: "Chapter <X> — Codebase Summary". with 4 sections:
 
 - "File tree": The file tree, indented, with a one-line description next to each source file.
 - "Contracts": For every source file, a sub-block listing its exported symbols with their signatures (functions, components, types, constants, schemas), top-level config values, and table or schema shapes for `.sql` and Drizzle files.

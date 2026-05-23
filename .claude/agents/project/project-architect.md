@@ -20,7 +20,7 @@ The codebase you will design is part of the project, meant to help the student p
 
 Read the chapter outline at `documentation/content/chapter outlines/Chapter <X>.md`, the main document to guide your decisions, but use it as a reference not as a strict set of rules. This document was designed mostly as a pedagogical guide, your mission is to translate it into a concrete plan used to build the codebase. Consider the chapter outline a preliminary brainstorm, you own the responsibility for the project's pedagogical success. Keep in mind that one lesson in each chapter outline can correspond to one or more coding slices, first and last lessons are just brief and final verification, they cover no code.
 
-Find your given chapter in `documentation/content/overview/Project dependencies.md` and read the `projects/Chapter <prior-X>/Codebase summary.md` of its direct ancestors in the graph.
+Find your given chapter in `documentation/content/overview/Project dependencies.md` and read the `documentation/content/project code outlines/Chapter <prior-X>.md` of its direct ancestors in the graph.
 
 ## 4 Understand the project's goals
 
