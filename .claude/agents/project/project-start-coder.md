@@ -16,7 +16,7 @@ Read `Project goals`, `Student position` and `Start derivation` section of the p
 
 ## 2 Derive the starting code
 
-Apply the `Start derivation` instructions step by step (copy files using `rsync` if necessary).
+Apply the `Start derivation` instructions step by step (copy files using `rsync` if necessary). Stub bodies in the plan carry `// TODO(L<n>) — <task>` markers (or the file's native comment syntax) — transcribe them verbatim; if the plan omits a marker on a stubbed file, surface it as feedback rather than silently adding one.
 
 ## 3 README
 
