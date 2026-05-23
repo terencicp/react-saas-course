@@ -13,7 +13,7 @@ Walk `projects/Chapter <X>/solution/` and `projects/Chapter <X>/start/`. Read ev
 
 ## 2 Write the summary
 
-Write `projects/Chapter <X>/codebase summary.md` with two top-level sections, `## Solution` and `## Start`. Each section contains:
+Write `projects/Chapter <X>/Codebase summary.md` with two top-level sections, `## Solution` and `## Start`. Each section contains:
 
 - The file tree, indented, with a one-line description next to each source file.
 - For every source file, a sub-block listing its exported symbols with their signatures (functions, components, types, constants, schemas), top-level config values, and table or schema shapes for `.sql` and Drizzle files.

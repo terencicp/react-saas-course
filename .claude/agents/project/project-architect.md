@@ -20,7 +20,7 @@ The codebase you will design is part of the project, meant to help the student p
 
 Read the chapter outline at `documentation/content/chapter outlines/Chapter <X>.md`, the main document to guide your decisions, but use it as a reference not as a strict set of rules. This document was designed mostly as a pedagogical guide, your mission is to translate it into a concrete plan used to build the codebase. Consider the chapter outline a preliminary brainstorm, you own the responsibility for the project's pedagogical success. Keep in mind that one lesson in each chapter outline can correspond to one or more coding slices, first and last lessons are just brief and final verification, they cover no code.
 
-Find your given chapter in `documentation/content/overview/Project dependencies.md` and read the `projects/Chapter <prior-X>/AGENTS.md` of its direct ancestors in the graph. If this is the first project, there is no starter, the student needs to be walked through
+Find your given chapter in `documentation/content/overview/Project dependencies.md` and read the `projects/Chapter <prior-X>/Codebase summary.md` of its direct ancestors in the graph. If this is the first project, there is no starter.
 
 ## 4 Understand the project's goals
 
@@ -49,7 +49,9 @@ Write `documentation/content/project plans/Chapter <X>.md` with the following h2
 
 ## 7 Code conventions review
 
-After writing the plan file, read the section headers of `documentation/code standards/Code conventions.md`; read sections related to the surface slices touch. If the project plan you wrote disagrees with the conventions file, read the relevant lesson of the previous chapters (up to the previous project) where the syntax was introduced. Always use the syntax taught in the lesson if it disagrees with the conventions. Make the necessary changes to the project plan, add relevant code conventions to **Locked decisions**.
+After writing the plan file, read `documentation/code standards/Toolchain constraints.md` in full. For every config knob your plan locks (tsconfig, biome.json, next.config.ts, pinned versions), if it appears in the constraints doc, follow the resolution there and record the constraint in **Locked decisions**.
+
+Then read the section headers of `documentation/code standards/Code conventions.md`; read sections related to the surface slices touch. If the project plan you wrote disagrees with the conventions file, read the relevant lesson of the previous chapters (up to the previous project) where the syntax was introduced. Always use the syntax taught in the lesson if it disagrees with the conventions. Make the necessary changes to the project plan, add relevant code conventions to **Locked decisions**.
 
 ## 8 Fact-checking
 
