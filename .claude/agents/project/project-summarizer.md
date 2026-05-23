@@ -5,22 +5,21 @@ tools: Read, Write, Edit, Glob, Grep
 model: sonnet
 ---
 
-Write a single navigable summary of the chapter's solution so other agents can understand its structure and contracts without reading the full code.
+Write a single navigable summary of the chapter's solution so other agents can understand its structure and contracts without reading the full code. Write in a concise style, optimize tokens for information efficiency. 
 
 ## 1 Read
 
-Walk `projects/Chapter <X>/solution/` and `projects/Chapter <X>/start/`. Read every source file (TypeScript, TSX, SQL, configs, scripts). Skip `node_modules`, `.next`, `dist`, `build`, generated migration files' SQL bodies, and lockfiles.
+Walk `projects/Chapter <X>/solution/`. Read every source file, skipping `node_modules`, `.next`, `dist`, `build`, generated migration files' SQL bodies, and lockfiles.
 
 ## 2 Write the summary
 
-Write `projects/Chapter <X>/Codebase summary.md` with two top-level sections, `## Solution` and `## Start`. Each section contains:
+Write `projects/Chapter <X>/Codebase summary.md`. h1: "Chapter <X> — Codebase Summary". with 3 sections:
 
-- The file tree, indented, with a one-line description next to each source file.
-- For every source file, a sub-block listing its exported symbols with their signatures (functions, components, types, constants, schemas), top-level config values, and table or schema shapes for `.sql` and Drizzle files.
+- "File tree": The file tree, indented, with a one-line description next to each source file.
+- "Contracts": For every source file, a sub-block listing its exported symbols with their signatures (functions, components, types, constants, schemas), top-level config values, and table or schema shapes for `.sql` and Drizzle files.
+- "Dependencies": List dependencies and versions from package.json.
 
 Omit function bodies, imports, JSX bodies, and boilerplate. Keep signatures, type definitions, table columns, and meaningful constants. If a file is a config or a small wiring file, quote it verbatim.
-
-Optimize for token efficiency — the outliner and writer will read this file to know what exists before deciding what to read in full.
 
 ## 3 Final message
 
