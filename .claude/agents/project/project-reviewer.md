@@ -29,6 +29,10 @@ Walk `projects/Chapter <X>/solution/` against the plan.
 
 Walk `projects/Chapter <X>/start/` against the plan's `Start derivation`.
 
-## 5 Final message
+## 5 Pedagogic review
+
+Read the chapter outline at `documentation/content/chapter outlines/Chapter <X>.md`. Compare it against the codebases to make sure the lessons it describes are still viable and the code preserves the original pedagogic purpose. Consider the chapter outline a draft subject to change, flag only severe discrepancies.
+
+## 6 Final message
 
 Respond with "Solution and start match the plan" or a single list of issues ranked by severity, one line per issue: file path, which side (solution or start), and a one-sentence summary. If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
