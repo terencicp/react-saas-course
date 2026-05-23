@@ -28,7 +28,7 @@ Read the documentation and the source code of the component that most closely re
 
 ### 3.2 Brainstorm the custom exercise
 
-Does the exercise have a single clear objective? Does it have a verifiable success condition? Is it solvable but not obvious? Does it provide feedback to the user? Can it be easily guessed or solved by accident? Is it quick, so it does not slow down the lesson's flow?
+Does the exercise have a single clear objective? Does it have a verifiable success condition? Is it solvable but not obvious? Does it provide feedback to the user? Can it be easily guessed or solved by accident? Is it quick, so it does not slow down the lesson's flow? Consider the original exercise definition a draft; you can make any changes if it helps the student practice the concepts better. Keep it simple.
 
 ### 3.3 Plan the custom exercise
 
