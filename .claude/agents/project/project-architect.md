@@ -59,6 +59,10 @@ Do some quick online research to verify any claims you made you are unsure about
 
 If your research surfaces any severe discrepancies between your initial lesson outline and the current best practices, update the file accordingly. The goal of this step is to avoid teaching the student outdated patterns or deprecated technologies.
 
-## 9 Final message
+## 9 Review
+
+Re-read the plan checking it's coherent and free of errors. Make and necessary changes.
+
+## 10 Final message
 
 Return the path of the newly created plan and the ordered list of slice ids. If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
