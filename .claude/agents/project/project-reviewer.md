@@ -14,7 +14,7 @@ Read the plan at `documentation/content/project plans/Chapter <X>.md` in full.
 
 ## 2 Verification
 
-Execute every check in the plan's `Verification` section in order. Record each as pass or fail; on fail, capture a one-line excerpt of the output or observed-vs-expected. Include failures in the final issue list.
+First run `pnpm verify` in both `projects/Chapter <X>/solution/` and `projects/Chapter <X>/start/`; record pass/fail. Then execute every check in the plan's `Verification` section in order. Record each as pass or fail; on fail, capture a one-line excerpt of the output or observed-vs-expected. Include failures in the final issue list.
 
 ## 3 Review the solution
 

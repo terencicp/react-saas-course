@@ -22,15 +22,7 @@ Then apply the recipe's deltas in this order: add dependencies (`pnpm add <pkg>@
 
 ## 3 Verify
 
-From inside `projects/Chapter <X>/solution/`, run:
-
-```
-pnpm install
-pnpm build
-pnpm lint
-```
-
-If `package.json` defines `typecheck` or `test` scripts, run those too. All must pass on the bare scaffold — slices haven't run yet, so this is just the framework + dependencies + boilerplate booting cleanly.
+From inside `projects/Chapter <X>/solution/`, run `pnpm install && pnpm verify`, which should pass; fix any errors if it doesn't.
 
 ## 4 Final message
 

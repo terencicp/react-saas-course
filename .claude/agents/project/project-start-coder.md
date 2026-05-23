@@ -20,7 +20,7 @@ Copy `projects/Chapter <X>/solution/` to `projects/Chapter <X>/start/` using `rs
 
 # 3 README
 
-Write a minimal `README.md` at the starter root. Read `documentation/content/overview/Project dependencies.md` to know the project's dependencies:
+Write a minimal `README.md` at the starter root. Read `documentation/content/overview/Project dependencies.md` to know the project's dependencies. Example:
 
 """
 This is the starting code repo for the chapter <X> project of the React SaaS course.
@@ -30,15 +30,7 @@ This repo builds on the previous projects: <chapter ids>.
 
 ## 4 Verify
 
-From inside `projects/Chapter <X>/start/`, run:
-
-```
-pnpm install
-pnpm build
-pnpm lint
-```
-
-All must pass. Runtime gaps are intentional — pages may render "not implemented", actions may throw at runtime — but the build must succeed.
+From inside `projects/Chapter <X>/start/`, run `pnpm install && pnpm verify`. Must pass. Runtime gaps are intentional — pages may render "not implemented", actions may throw at runtime — but the build must succeed.
 
 ## 4 Final message
 

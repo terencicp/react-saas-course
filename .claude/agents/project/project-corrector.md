@@ -24,7 +24,7 @@ For divergences, edit the file to match the plan — the slice's scope and contr
 
 ## 3 Verify
 
-From inside `projects/Chapter <X>/solution/`, run `pnpm lint && pnpm build`. From inside `projects/Chapter <X>/start/`, run `pnpm lint && pnpm build`. Both must pass.
+From inside `projects/Chapter <X>/solution/`, run `pnpm verify`. From inside `projects/Chapter <X>/start/`, run `pnpm verify`. Both must pass.
 
 ## 4 Final message
 

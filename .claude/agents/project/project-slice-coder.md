@@ -22,14 +22,7 @@ Write or edit only the files the slice's scope and contracts name. Stay inside t
 
 ## 3 Verify
 
-From inside `projects/Chapter <X>/solution/`, run:
-
-```
-pnpm lint
-pnpm build
-```
-
-Then exercise the slice's named runnable state — the `pnpm` command, UI interaction, or DB query the slice closes on. Reproduce it; report what you observed.
+From inside `projects/Chapter <X>/solution/`, run `pnpm verify`. Then exercise the slice's named runnable state — the `pnpm` command, UI interaction, or DB query the slice closes on. Reproduce it; report what you observed.
 
 ## 4 Final message
 
