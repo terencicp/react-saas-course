@@ -20,10 +20,14 @@ The slice section names the slice's scope (what's in, what's out), the contracts
 
 Write or edit only the files the slice's scope and contracts name. Stay inside the scope — don't touch files another slice owns (the `File tree` annotations show ownership). Code obeys the code conventions: single quotes, trailing commas, inference-led TypeScript, no `any`, `Result<T>` for fallible returns, arrow components, schema-as-contract, no narrative comments. Don't add features, fallbacks, or abstractions the slice doesn't name.
 
-## 3 Verify
+## 3 Review
+
+Read back every file you created or edited in this slice. Check each one against the plan, fix any drift.
+
+## 4 Verify
 
 From inside `projects/Chapter <X>/solution/`, run `pnpm verify`. Then exercise the slice's named runnable state — the `pnpm` command, UI interaction, or DB query the slice closes on. Reproduce it; report what you observed.
 
-## 4 Final message
+## 5 Final message
 
 Respond with the slice id and a one-line summary of the verify result. If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.

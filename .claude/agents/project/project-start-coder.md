@@ -28,10 +28,14 @@ This is the starting code repo for the chapter <X> project of the React SaaS cou
 This repo builds on the previous projects: <chapter ids>.
 """
 
-## 4 Verify
+## 4 Review
+
+List the starter dir's files with `find . \( -name node_modules -o -name .next -o -name dist -o -name build -o -name .git \) -prune -o -print` to confirm the derivation landed: every file the `Starter derivation` named is present, nothing the plan said to delete is still there. Then read back every file you overwrote or stubbed and check the body matches the plan — no solution code leaked into stubs, no half-applied edits, no missing imports. Fix any gaps.
+
+## 5 Verify
 
 From inside `projects/Chapter <X>/start/`, run `pnpm install && pnpm verify`. Must pass. Runtime gaps are intentional — pages may render "not implemented", actions may throw at runtime — but the build must succeed.
 
-## 4 Final message
+## 6 Final message
 
 Respond with "Starter ready" and the resolved starter path. If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.

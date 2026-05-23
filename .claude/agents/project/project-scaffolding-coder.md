@@ -20,10 +20,14 @@ If the recipe names a fresh scaffold, run the exact `pnpm create next-app` invoc
 
 Then apply the recipe's deltas in this order: add dependencies (`pnpm add <pkg>@<version>` pinned to the versions the plan lists), install shadcn primitives (`pnpm dlx shadcn add ...`), add the boilerplate files the plan names with content verbatim, remove any files the plan lists.
 
-## 3 Verify
+## 3 Review
+
+List the solution dir's files with `find . \( -name node_modules -o -name .next -o -name dist -o -name build -o -name .git \) -prune -o -print` to confirm the scaffold landed: every file the recipe named exists, no extras you didn't intend, no leftover boilerplate the recipe told you to remove. Fix any gaps.
+
+## 4 Verify
 
 From inside `projects/Chapter <X>/solution/`, run `pnpm install && pnpm verify`, which should pass; fix any errors if it doesn't.
 
-## 4 Final message
+## 5 Final message
 
 Respond with "Scaffold ready" and the resolved solution path. If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
