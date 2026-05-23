@@ -12,7 +12,7 @@ Implement one slice of the project's codebase, in `projects/Chapter <X>/solution
 
 ## 1 Read
 
-Read your assigned slice's `### Slice S<n>` section of the plan at `documentation/content/project plans/Chapter <X>.md`, plus the `Locked decisions` section and the rows of the `File tree` that name your slice.
+Read `Project goals`, `Student position` and your assigned slice's `### Slice S<n>` section of the plan at `documentation/content/project plans/Chapter <X>.md`, plus the `Locked decisions` section and the rows of the `File tree` that name your slice.
 
 The slice section names the slice's scope (what's in, what's out), the contracts it creates or modifies (file paths, exported signatures, schema shapes), and the runnable state it closes on. Implementation details inside those contracts are yours to choose, within the `Locked decisions`.
 

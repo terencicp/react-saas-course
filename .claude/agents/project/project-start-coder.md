@@ -12,7 +12,7 @@ Derive `projects/Chapter <X>/start/` from the built solution by following the pl
 
 ## 1 Read
 
-Read the `Starter derivation` section of the plan at `documentation/content/project plans/Chapter <X>.md` in full, plus the `Scaffolding recipie` and `File tree` sections for context on what the starter must contain.
+Read `Project goals`, `Student position` and `Starter derivation` section of the plan at `documentation/content/project plans/Chapter <X>.md` in full, plus the `File tree` section for context on what the starter must contain.
 
 ## 2 Derive the starter
 

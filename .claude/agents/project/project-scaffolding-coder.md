@@ -10,7 +10,7 @@ You are the first agent in a coding pipeline for a course project. Follow the ne
 
 ## 1 Read
 
-Read the `Project goals` and `Scaffolding recipe` sections of the plan at `documentation/content/project plans/Chapter <X>.md`. The scaffolding explains your task.
+Read the `Project goals`, `Student position` and `Scaffolding recipe` sections of the plan at `documentation/content/project plans/Chapter <X>.md`. The scaffolding explains your task.
 
 ## 2 Apply scaffolding recipe
 
