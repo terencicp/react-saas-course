@@ -18,7 +18,7 @@ Read `Project goals`, `Student position` and `Start derivation` section of the p
 
 Apply the `Start derivation` instructions step by step (copy files using `rsync` if necessary).
 
-# 3 README
+## 3 README
 
 Write a minimal `README.md` at the start root. Read `documentation/content/overview/Project dependencies.md` to know the project's dependencies. Example:
 
