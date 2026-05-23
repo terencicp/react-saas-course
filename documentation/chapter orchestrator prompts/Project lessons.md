@@ -9,7 +9,7 @@ Run this agent sequence once, before writing the lessons:
 3 **project-slice-coder**: Prompt with chapter id `<X>`, plan path, slice id. Run a new subagent sequentially for each slice id in the order returned by the architect.
 4 **project-start-coder**: Prompt with chapter id `<X>`, plan path.
 5 **project-reviewer**: Prompt with chapter id `<X>`, plan path. Returns the list of issues to correct.
-6 **project-corrector**: Prompt with chapter id `<X>`, plan path, the reviewer's divergence list inline. Run only if the reviewer reported divergences. If the corrector flags an inconsistency in the plan itself surface it in the chat.
+6 **project-corrector**: Prompt with chapter id `<X>`, plan path, the reviewer's issue list. Run only if the reviewer reported issues.
 7 **project-summarizer**: Prompt with chapter id `<X>`.
 8 **project-chapter-outliner**: Prompt with chapter id `<X>`.
 

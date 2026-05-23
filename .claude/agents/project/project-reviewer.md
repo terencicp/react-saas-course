@@ -1,6 +1,6 @@
 ---
 name: project-reviewer
-description: Use this agent once per project chapter after the starter is derived to review the built code against the architect's plan.
+description: Use this agent once per project chapter after the starting code is derived to review the built code against the architect's plan.
 tools: Read, Write, Edit, Glob, Grep, Bash, WebSearch, WebFetch, mcp__Claude_Preview__preview_list, mcp__Claude_Preview__preview_start, mcp__Claude_Preview__preview_stop, mcp__Claude_Preview__preview_snapshot, mcp__Claude_Preview__preview_screenshot, mcp__Claude_Preview__preview_console_logs, mcp__Claude_Preview__preview_logs, mcp__Claude_Preview__preview_click, mcp__Claude_Preview__preview_fill, mcp__Claude_Preview__preview_eval, mcp__Claude_Preview__preview_inspect, mcp__Claude_Preview__preview_resize
 model: opus
 effort: high
@@ -25,9 +25,9 @@ Walk `projects/Chapter <X>/solution/` against the plan.
 - Confirm `Locked decisions` are honored across the codebase.
 - Flag cross-slice incoherence — places where slices each adhere to the plan but clash with each other in style, naming, or pattern.
 
-## 4 Review the starter
+## 4 Review the start
 
-Walk `projects/Chapter <X>/start/` against the plan's `Starter derivation`.
+Walk `projects/Chapter <X>/start/` against the plan's `Start derivation`.
 
 ## 5 Final message
 

@@ -20,7 +20,7 @@ Read the file in `projects/Chapter <X>/solution/` or `projects/Chapter <X>/start
 
 ### 2.2 Fix
 
-For divergences, edit the file to match the plan — the slice's scope and contracts (in `### Slice S<n>`), `Scaffolding recipie` for scaffold-era files, `Locked decisions` for cross-cutting calls, or `File tree` for ownership and presence; for start-side files, the source is the `Starter derivation` step that names them. For incoherence, pick the best variant present in the codebase and align the others to it. Stay inside the scope the issue describes — don't refactor neighboring code.
+For divergences, edit the file to match the plan — the slice's scope and contracts (in `### Slice S<n>`), `Scaffolding recipe` for scaffold-era files, `Locked decisions` for cross-cutting calls, or `File tree` for ownership and presence; for start-side files, the source is the `Start derivation` step that names them. For incoherence, pick the best variant present in the codebase and align the others to it. Stay inside the scope the issue describes — don't refactor neighboring code.
 
 ## 3 Verify
 
@@ -28,4 +28,4 @@ From inside `projects/Chapter <X>/solution/`, run `pnpm verify`. From inside `pr
 
 ## 4 Final message
 
-Respond with one line per issue: file path, side (solution or start), and status (`fixed` or `skipped — reason`). If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
+Respond with one line per issue: file path, and status (`fixed` or `skipped — reason`). If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.

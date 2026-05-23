@@ -40,7 +40,7 @@ Write `documentation/content/project plans/Chapter <X>.md` with the following h2
 
 - **Project goals**: Paragraph describing what the project aims to teach and how the coding helps the student develop these skills.
 - **Student position**: Describe where the student is in the course, what has learned, but most importantly what it does not know yet. Coder agents will not read the course curriculum, so they must know which concepts the student is not familiar with, to avoid using them in the project.
-- **Scaffolding recipie**: Either forking a prior solution codebase, or merging multiple ones, or scaffold a fresh project. Include dependencies to add (with versions), files to add or remove, etc. `package.json` must define: `"verify": "biome ci . && tsc --noEmit && next build"`.
+- **Scaffolding recipe**: Either forking a prior solution codebase, or merging multiple ones, or scaffold a fresh project. Include dependencies to add (with versions), files to add or remove, etc. `package.json` must define: `"verify": "biome ci . && tsc --noEmit && next build"`.
 - **Slices**: Contains an h3 section for each numbered slice, "Slice S1". Intended as instructions for the agent that will code this slice. Clearly defines the scope of each slice, what it contains and what it excludes. Defines the contracts it creates or modifies. Make sure each slice closes on a runnable state.
 - **Start derivation**: Instructions on how to derive the start codebase from the final code after all slices are done.
 - **Locked decisions**: Cross-cutting calls every slice must honor, anything that would cause drift if each slice coder decided on its own.
