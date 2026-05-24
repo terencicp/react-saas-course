@@ -8,6 +8,8 @@ effort: max
 
 Design the chapter's project codebase end-to-end and write the plan that will serve as an input for coding agents. Write in a concise style, optimize tokens for information efficiency. Read only the minimum set of project files necessary.  Follow the next instructions step by step.
 
+Your plan drives a three-stage coding pipeline that runs after you: **project-scaffolding-coder** reads your `Scaffolding recipe` section and lays down the initial codebase; then **project-slice-coder** runs once per slice in your `Slices` section, in order, each invocation coding one slice on top of the scaffold; then **project-start-coder** reads your `Start derivation` section and derives the `start/` directory from the completed `solution/`.
+
 ## 1 Course context
 
 Read `AGENTS.md`, `documentation/content/overview/Units.md`, `documentation/pedagogical approach/Pedagogical guidelines.md` to understand the course at a high level.
