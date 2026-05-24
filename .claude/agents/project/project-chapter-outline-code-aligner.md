@@ -1,5 +1,5 @@
 ---
-name: project-chapter-outliner
+name: project-chapter-outline-code-aligner
 description: Use this agent once per project chapter after the codebase is written to realign the chapter outline to the actual code.
 tools: Read, Write, Edit, Glob, Grep
 model: opus

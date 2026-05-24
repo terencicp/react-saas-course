@@ -13,7 +13,7 @@ Run this agent sequence once, before writing the lessons:
 7 **project-reviewer**: Prompt with chapter id `<X>`, plan path. Returns the list of issues to correct.
 8 **project-corrector**: Prompt with chapter id `<X>`, plan path, the reviewer's issue list. Run only if the reviewer reported issues.
 9 **project-summarizer**: Prompt with chapter id `<X>`.
-10 **project-chapter-outliner**: Prompt with chapter id `<X>`.
+10 **project-chapter-outline-code-aligner**: Prompt with chapter id `<X>`.
 
 ## Lessons
 
