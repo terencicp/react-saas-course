@@ -164,7 +164,7 @@ import { FieldError } from './field-error'; // 3. relative imports (same folder 
 - `children: ReactNode`. Not `JSX.Element`, not `ReactElement` (those rule out strings, numbers, fragments).
 - Default-destructure props at the parameter site: `({ size = 'md', className, ...rest }: ButtonProps)`.
 - Class composition through `cn()` with `className` **last** so caller overrides win.
-- Polymorphism through shadcn's `asChild` + `@radix-ui/react-slot`, paired with `class-variance-authority` (`cva`) for variants. Never invent a custom `as` prop.
+- Polymorphism through shadcn's `asChild` + `@radix-ui/react-slot`, paired with `class-variance-authority` (`cva`) for variants. Never invent a custom `as` prop. Carve-out: primitives that don't expose `asChild` (notably `Card` — its container is a plain `<div>`) can't be retargeted; inline the container's classes onto the chosen semantic element and nest the sub-parts inside, rather than double-wrapping.
 - Lists need a stable `key` tied to data identity. Never the array index for reorderable lists.
 - Conditional render with `condition && <Node />` is allowed only when `condition` is a proper boolean. Use `Boolean(value) && <Node />` or `value != null && <Node />` for nullable values. Never `0 && <Node />`.
 - Server Components compose Client Components by importing them. Client Components compose Server Components only via `children` (or other ReactNode props).
