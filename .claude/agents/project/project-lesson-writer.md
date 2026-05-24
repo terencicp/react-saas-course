@@ -6,23 +6,23 @@ model: opus
 effort: xhigh
 ---
 
-Write the given project lesson MDX from the lesson outline, the project plan, and the working codebase. Read only the minimum set of project files necessary; keep your focus on the current lesson; do not read other lessons as a reference. Follow the next instructions step by step.
+Write the given project lesson MDX from the lesson outline and the working codebase. Read only the minimum set of project files necessary; keep your focus on the current lesson; do not read other lessons as a reference. Follow the next instructions step by step.
 
 ## 1 Understand the course context
 
-Read `AGENTS.md`, only the initial `Chapter framing` section of the chapter outline `documentation/content/chapter outlines/Chapter <X>.md`, and `documentation/content/overview/Units.md` for the unit arc. Read `documentation/pedagogical approach/Pedagogical guidelines.md` — treat it as a compass not as strict rules to follow.
+Read `AGENTS.md` and only the initial `Chapter framing` section of the chapter outline `documentation/content/chapter outlines/Chapter <X>.md` (realigned against the built codebase — authoritative). Read `documentation/pedagogical approach/Pedagogical guidelines.md` — treat it as a compass not as strict rules to follow.
 
 ## 2 Read the lesson outline
 
-Read the outline at `documentation/content/lesson outlines/Chapter <X>/Lesson <Y>.md`. The outline is your contract: section plan, code samples plan, codebase state, senior calls, acceptance criteria, scope. Your job is to translate that plan into MDX prose without inventing scope.
+Read the outline at the provided path. The outline is your contract: section plan, code samples plan, codebase state, senior calls, acceptance criteria, scope. Your job is to translate it into MDX prose without inventing scope.
 
 ## 3 Read the codebase
 
-Read `documentation/content/project code outlines/Chapter <X>.md` to navigate. Then read the specific files the lesson references in full — from `projects/Chapter <X>/solution/` for middle and last lessons, from `projects/Chapter <X>/start/` for the first lesson. Code blocks in the MDX are verbatim from these files. Read the relevant `### Slice S<n>` sections of the plan at `documentation/content/project plans/Chapter <X>.md` for slice scope and runnable state, plus the `Locked decisions` rows the lesson surfaces, plus the `Verification` section for any criteria the lesson closes on.
+Read `documentation/content/project code outlines/Chapter <X>.md` to navigate. Then read the specific files the lesson references in full — from `projects/Chapter <X>/solution/` for middle and last lessons, from `projects/Chapter <X>/start/` for the first lesson. Code blocks in the MDX are verbatim from these files.
 
 ## 4 Brainstorm
 
-For each section in the outline brainstorm how to translate the plan into concrete prose that will be effective at conveying the senior decisions and shipping the slice.
+For each section in the outline brainstorm how to translate it into concrete prose that will be effective at conveying the senior decisions and shipping the surface.
 
 ## 5 Write the first version
 
@@ -36,7 +36,7 @@ Do not use the word "senior" — use synonyms like "experienced engineer".
 
 ### 5.2 Code blocks
 
-Code blocks come verbatim from the relevant files in `solution/` or `start/` — match character-for-character. For middle lessons, default to the full revised file with `// new` and `// changed` annotations on the lines the slice touches; use before/after only when the failure mode the slice fixes is itself what the lesson is teaching. For the first lesson's starter tour, show the file as it appears in `start/` (TODO stubs intact). For the last lesson, show reminder snippets — function signatures and key wiring lines.
+Code blocks come verbatim from the relevant files in `solution/` or `start/` — match character-for-character. For middle lessons, default to the full revised file with `// new` and `// changed` annotations on the lines this lesson touches; use before/after only when the failure mode the change fixes is itself what the lesson is teaching. For the first lesson's starter tour, show the file as it appears in `start/` (TODO stubs intact). For the last lesson, show reminder snippets — function signatures and key wiring lines.
 
 Default to the smallest snippet that makes the point: omit unrelated imports when obvious, elide structural skeleton that isn't load-bearing. The only narrative comments allowed in lesson code blocks are the §4 display annotations `// new`, `// changed`, `// removed`, and the starter TODO comments copied verbatim.
 
@@ -56,7 +56,7 @@ For Aside use shorthand: `:::note|tip|caution|danger :::`.
 
 ### 5.4 Verify lines
 
-For each slice the lesson walks, end the section by exercising the runnable state the slice closes on — the `pnpm` command, UI interaction, or DB query. The student types it; the lesson tells them what they should see. For the last lesson, walk each `Verification` criterion the outline names.
+For each surface the lesson walks, end the section by exercising the runnable state it closes on — the `pnpm` command, UI interaction, or DB query named in the outline. The student types it; the lesson tells them what they should see. For the last lesson, walk each `Verify recipe` clause the outline names.
 
 ### 5.5 Closing
 

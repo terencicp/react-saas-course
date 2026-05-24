@@ -17,8 +17,8 @@ Run this agent sequence once, before writing the lessons:
 
 Run this agent sequence for each lesson:
 
-1 **project-lesson-outliner**: Prompt with chapter id `<X>`, lesson number `<Y>`, lesson title, plan path, continuity notes path. Returns the lesson outline path and the updated lesson title that should be used from now on.
-2 **project-lesson-writer**: Prompt with chapter id `<X>`, lesson number `<Y>`, lesson title, lesson outline path, plan path, chapter folder path. Returns the lesson MDX path.
+1 **project-lesson-outliner**: Prompt with chapter id `<X>`, lesson number `<Y>`, lesson title, continuity notes path. Returns the lesson outline path and the updated lesson title that should be used from now on.
+2 **project-lesson-writer**: Prompt with chapter id `<X>`, lesson number `<Y>`, lesson title, lesson outline path, chapter folder path. Returns the lesson MDX path.
 3 **project-lesson-formatter**: Prompt with lesson MDX path, lesson outline path.
-4 **lesson-reviewer**: Prompt with chapter id `<X>`, lesson outline path, lesson MDX path, the continuity notes paths for this chapter and the two preceding chapters. Returns the list of issues.
-5 **lesson-corrector**: Prompt with chapter id `<X>`, lesson outline path, lesson MDX path, the reviewer's issue list inline. Its goal is to fix the current lesson only, if there's an issue with a previous lesson surface it in the chat, do not share them with the corrector.
+4 **project-lesson-reviewer**: Prompt with chapter id `<X>`, lesson outline path, lesson MDX path, the continuity notes paths for this chapter and the two preceding chapters. Returns the list of issues.
+5 **project-lesson-corrector**: Prompt with chapter id `<X>`, lesson outline path, lesson MDX path, the reviewer's issue list inline. Run only if the reviewer reported issues. Its goal is to fix the current lesson only; if there's an issue with a previous lesson surface it in the chat, do not share it with the corrector.
