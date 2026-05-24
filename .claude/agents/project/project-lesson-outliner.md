@@ -6,27 +6,25 @@ model: opus
 effort: xhigh
 ---
 
-Write the given project lesson's outline that will be used as a guide for the subagents that follow. Read only the minimum set of project files necessary, keep your focus on the current lesson; do not take other lesson outlines as a reference, they are unvetted. Write in a concise style, optimize tokens for information efficiency. Follow the next instructions step by step.
+Write the given project lesson's outline that will be used as a guide for the subagents that will write the content. Read only the minimum set of project files necessary, keep your focus on the current lesson; do not take other lesson outlines as a reference, they are unvetted. Write in a concise style, optimize tokens for information efficiency. Follow the next instructions step by step.
 
-## 1 Understand the course context
+## 1 Course context
 
-Read `AGENTS.md`, the `Chapter framing` section and the corresponding lesson section of the chapter outline `documentation/content/chapter outlines/Chapter <X>.md` — this outline has been realigned against the built codebase, treat it as authoritative for what each lesson covers. Read the chapter's continuity notes — this lesson must stay coherent with the previous lessons. You can optionally read `documentation/content/overview/Units.md` and the corresponding chapter section of `documentation/content/overview/Table of contents.md` if you need broader context.
+Read `AGENTS.md` and `documentation/content/overview/Units.md` to understand the project at a high-level. Read §1, §2, §3 of `documentation/pedagogical approach/Pedagogical guidelines.md`. Treat them as a compass not a strict set of rules to follow.
 
-## 2 Lesson shape
+## 2 Project context
 
-A project lesson falls into one of three natural shapes; the chapter outline tells you which:
+Read the `Chapter framing` section and the corresponding lesson section of the chapter outline `documentation/content/chapter outlines/Chapter <X>.md`. Read `documentation/content/project code outlines/Chapter <X>.md` a summary of the actual codebase in `projects/Chapter <X>/solution` and `projects/Chapter <X>/start`.
 
-- The first lesson: no code — frames the project, names the verifications it will close on, and tours the starter the student fetches via `degit`. Source: `Chapter framing` (Starter file tree, Verify recipe).
-- A middle lesson: walks the student through the codebase changes named in this lesson's `Codebase state at entry/exit`, one section per surface, with senior decisions and a verify step. Source: the lesson section plus the touched files in `projects/Chapter <X>/solution/`.
-- The last lesson: no new code — walks the `Verify recipe` clause by clause and forward-references later units. Source: `Chapter framing`'s `Verify recipe` and `Reference-solution signatures`.
+## 3 Component context
 
-## 3 Project context
-
-Read `documentation/content/project code outlines/Chapter <X>.md` — the navigable summary of `solution/` plus the `start/` diff — so any file reference points at something that exists. Read `documentation/components/INDEX.md` so any reference (`LinkCard`, `FileTree`, etc.) names a real component. Only read `documentation/diagrams/INDEX.md` if the lesson genuinely needs a diagram (rare in project lessons).
+Read `documentation/components/INDEX.md` so any reference names a real component. Read `documentation/diagrams/INDEX.md` only if the lesson needs a diagram.
 
 ## 4 Brainstorm
 
-Read §3, §4 and §6 of `documentation/pedagogical approach/Pedagogical guidelines.md`. Treat them as a compass not a strict set of rules to follow. Project lessons walk a working codebase — the student types along, runs the verify, and ships a slice. Diagrams are rare and exercises are not used (the project is the exercise). Think about the senior decisions the lesson surfaces, the failure modes it pre-empts, and how the student knows the slice is done.
+Consider that the first lesson in a project should just be a brief introduction to motivate the student with instructions on how to set up the project before coding (creating the project or using `degit`, etc). The last lesson should have verification steps the student can use to confirm the did what was expected correctly and a wrap up summarizing what we learned. The lesson in between walk the student through building each part of the codebase step by step, without giving everything away, but giving all instructions necessary to prevent mistakes; it might be a good idea to briefly reiterate some important concepts learned on previous lessons here but with a more applied point of view.
+
+Project lessons walk a working codebase — the student types along, runs the verify, and ships a slice. Diagrams are rare and exercises are not used (the project is the exercise). Think about the senior decisions the lesson surfaces, the failure modes it pre-empts, and how the student knows the slice is done.
 
 ## 5 Lesson outline file
 
@@ -42,28 +40,22 @@ One paragraph naming what the student walks away with — the senior decision in
 
 ### 5.3 Codebase state
 
-- **Entry** — one line from the chapter outline's "Codebase state at entry" for this lesson.
-- **Exit** — one line from the chapter outline's "Codebase state at exit" for this lesson.
+If the lesson is not the first or last:
+
+- **Entry** — detailed version of the "Codebase state at entry" for this lesson.
+- **Exit** — detailed version of the "Codebase state at exit" for this lesson.
 
 ### 5.4 Lesson sections
 
-The h2 and h3 headers of the lesson and what each contains. Most middle lessons follow one section per surface built (route, component, contract): senior decision paragraph, code block(s) with `// new` / `// changed` annotations, runnable-state demonstration. The first lesson tours the starter file by file with file-tree snippets. The last lesson walks each `Verify recipe` clause one by one, naming the failure mode each protects against.
+The h2 and h3 headers of the lesson and what each contains. Most middle lessons follow one section per surface built. The first lesson tours the starter file by file with file-tree snippets. The last lesson walks each `Verify recipe` clause one by one, naming the failure mode each protects against.
 
-Describe how code samples should be handled: Code for simple blocks, AnnotatedCode when the student focus needs to be directed to multiple parts of the file, CodeVariants for before/after comparisons, CodeTooltips for inferred types, FileTree for starter tours.
+Describe how code samples should be handled: Code for simple blocks, AnnotatedCode when the student focus needs to be directed to multiple parts of the file, CodeVariants for before/after comparisons, CodeTooltips for inferred types, FileTree for starter tours. Don't worry about component implementations, your job is just describing the content, another agent will turn it into actual components.
 
-If a diagram genuinely clarifies a flow that prose can't carry, brief it in the relevant section. Otherwise skip — prose plus a code block carries most of the load in a project lesson.
-
-### 5.5 Senior calls and watch-outs
-
-Harvest the chapter outline's "Senior calls and watch-outs" bullets for this lesson, one line each. These are the calls the writer surfaces in prose.
-
-### 5.6 Acceptance criteria for this lesson
-
-For middle lessons, the subset of the chapter's `Verify recipe` clauses the student satisfies once the surfaces walked in this lesson are shipped. For the last lesson, the full `Verify recipe`. For the first lesson, none.
+If a diagram genuinely clarifies a flow that prose can't carry, brief it in the relevant section.
 
 ### 5.7 Scope
 
-What this lesson does not cover, with a one-line reference to the lesson or unit that does. This keeps the writer from re-teaching a concept owned by an earlier teaching lesson or pulling in scope that belongs in a later lesson.
+What this lesson does not cover, with a one-line reference to the lesson or unit that does. This keeps the writer from pulling in scope that belongs in a later lesson.
 
 ## 6 Final message
 

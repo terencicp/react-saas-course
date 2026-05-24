@@ -10,7 +10,11 @@ Write the given project lesson MDX from the lesson outline and the working codeb
 
 ## 1 Understand the course context
 
-Read `AGENTS.md` and only the initial `Chapter framing` section of the chapter outline `documentation/content/chapter outlines/Chapter <X>.md` (realigned against the built codebase — authoritative). Read `documentation/pedagogical approach/Pedagogical guidelines.md` — treat it as a compass not as strict rules to follow.
+Read `AGENTS.md` and `documentation/content/overview/Units.md` to understand the project at a high-level. Read §1, §2, §3 of `documentation/pedagogical approach/Pedagogical guidelines.md`. Treat them as a compass not a strict set of rules to follow.
+
+## 2 Project context
+
+Read only the initial `Chapter framing` section of the chapter outline `documentation/content/chapter outlines/Chapter <X>.md`. Read `documentation/content/project code outlines/Chapter <X>.md` a summary of the actual codebase in `projects/Chapter <X>/solution` and `projects/Chapter <X>/start`.
 
 ## 2 Read the lesson outline
 
@@ -36,9 +40,7 @@ Do not use the word "senior" — use synonyms like "experienced engineer".
 
 ### 5.2 Code blocks
 
-Code blocks come verbatim from the relevant files in `solution/` or `start/` — match character-for-character. For middle lessons, default to the full revised file with `// new` and `// changed` annotations on the lines this lesson touches; use before/after only when the failure mode the change fixes is itself what the lesson is teaching. For the first lesson's starter tour, show the file as it appears in `start/` (TODO stubs intact). For the last lesson, show reminder snippets — function signatures and key wiring lines.
-
-Default to the smallest snippet that makes the point: omit unrelated imports when obvious, elide structural skeleton that isn't load-bearing. The only narrative comments allowed in lesson code blocks are the §4 display annotations `// new`, `// changed`, `// removed`, and the starter TODO comments copied verbatim.
+Code comes verbatim from the relevant files in `solution/` or `start/`.
 
 ### 5.3 Component content description
 
@@ -50,45 +52,32 @@ File tree of the starter as the student fetches it.
 {/* TODO END */}
 ```
 
-Read `documentation/components/INDEX.md` to know which pre-built components are available; do not read each component's documentation in depth. Project lessons lean on `Code` blocks, `FileTree` for starter tours, `CodeVariants` for before/after, and `LinkCard` for external resources at the end. Diagrams and inline videos are rare.
+Read `documentation/components/INDEX.md` to know which pre-built components are available; do not read each component's documentation in depth. Project lessons lean on `Code` blocks, `FileTree` for starter tours, `CodeVariants` for before/after, and `LinkCard` for external resources at the end.
 
 For Aside use shorthand: `:::note|tip|caution|danger :::`.
 
-### 5.4 Verify lines
-
-For each surface the lesson walks, end the section by exercising the runnable state it closes on — the `pnpm` command, UI interaction, or DB query named in the outline. The student types it; the lesson tells them what they should see. For the last lesson, walk each `Verify recipe` clause the outline names.
-
-### 5.5 Closing
+### 5.4 Closing
 
 For middle lessons end with a one-paragraph closing tied to the outline's acceptance criteria — what the student can now satisfy. For the first lesson, end with the setup steps (`pnpm dlx degit ...`, env vars, the command that boots the starter). For the last lesson, end with the chapter outline's senior recap and forward-references verbatim if it includes one.
 
-### 5.6 Resources
 
-If the outline names end-of-lesson resources, add a couple of `LinkCard` components after the closing — docs, references, related teaching lessons. Keep it to two or three.
-
-### 5.7 Frontmatter
+### 5.5 Frontmatter
 
 ```yaml
 ---
 title: <lesson title>
 description: <one sentence summary>
 chapter-id: <X>
-chapter-title: <chapter title>
-status: draft
 sidebar:
   order: <Y>
   label: <short title>
 ---
 ```
 
-## 6 Code review
+## 6 Final review
 
-Read the index and the sections relevant to the lesson in `documentation/code standards/Code conventions.md`. If the code in the lesson does not match the conventions used in the working solution, the working solution is authoritative — fix the lesson to match it, do not paraphrase.
+Re-read the file for correctness and cohesion.
 
-## 7 Final review
-
-Re-read the file for correctness and cohesion. Cross-check every code block against the file it came from to confirm character-for-character match (modulo legitimate trimming with `// ...`).
-
-## 8 Final message
+## 7 Final message
 
 Return the path of the newly created lesson file. If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.

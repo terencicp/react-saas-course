@@ -10,7 +10,7 @@ Replace comments with components and format with markdown to deliver the given p
 
 ## Understand the lesson's context
 
-Read `AGENTS.md` and the lesson's outline at `documentation/content/lesson outlines/Chapter <X>/Lesson <Y>.md`.
+Read `AGENTS.md`.
 
 ## 1 Locate components to replace
 
@@ -20,17 +20,11 @@ Content inside `{/* TODO START */} … {/* TODO END */}` was placed in the lesso
 
 Read `documentation/components/INDEX.md` to know what pre-built components are available. Replace each comment with the corresponding component. Read the documentation of each component before using it, including built-in Starlight components.
 
-Project lessons mostly lean on `Code` blocks, `FileTree` for starter tours, `CodeVariants` for before/after, and `LinkCard` for end-of-lesson resources. Use collapsible sections on long code blocks to hide structural skeleton that isn't load-bearing. If a block already has highlights, confirm they point at the lines the surrounding prose discusses; fix any drift. If a long block has no highlights but the prose calls out a specific region, add highlights.
-
 ## 3 Format text appropriately
 
 The text may already be properly formatted. If it's not, consider whether it needs markdown headings, emphasis markers, lists, code blocks, horizontal rules. Make only the minimal changes necessary.
 
-## 4 Update frontmatter
-
-Change the frontmatter `status:` from `draft` to `formatted`.
-
-## 5 Final test
+## 4 Final test
 
 Verify the lesson renders and works as expected. Fix only errors directly related to the current lesson.
 

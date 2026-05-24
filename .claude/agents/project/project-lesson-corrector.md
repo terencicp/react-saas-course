@@ -17,7 +17,7 @@ Fix the reviewer's issues in the given project lesson MDX, in order. The chapter
 - The lesson MDX at the path provided
 - `documentation/content/project code outlines/Chapter <X>.md` to navigate the codebase
 
-Treat the pedagogic doc as a compass.
+Treat the pedagogic doc as a compass, not as strict rules.
 
 ## 2 For each issue
 
@@ -27,11 +27,11 @@ Read the touched region of the lesson and any related file needed to fully under
 
 ### 2.2 Plan
 
-Write a brief plan for the fix. Be surgical — make the smallest set of changes necessary. Note any neighboring lesson regions that must move to keep coherence.
+Write a brief plan for the fix. Be surgical — make the smallest set of changes necessary. Note any neighboring lesson regions that must change to keep coherence.
 
 ### 2.3 Fix
 
-Apply the change. For `code-fidelity`, the code block must match the working file character-for-character (modulo legitimate trimming with `// ...`); do not paraphrase the code to fit the prose — fix the prose. For `outline-drift`, align the lesson to the chapter outline (scope, senior calls, codebase state) or to the lesson outline (section shape, acceptance criteria). Re-read the touched region to confirm the change landed.
+Apply the change.
 
 ## 3 Review
 
