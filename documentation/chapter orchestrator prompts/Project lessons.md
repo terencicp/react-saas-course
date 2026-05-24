@@ -4,17 +4,16 @@
 
 Run this agent sequence once, before writing the lessons:
 
-TODO: Add project-chapter-outline-lessons-aligner to align with actual written lessons
-
-1 **project-architect**: Prompt with chapter id `<X>`. Returns the plan path and the ordered list of slice ids.
-2 **project-plan-verifier**: Prompt with chapter id `<X>`, plan path.
-3 **project-scaffolding-coder**: Prompt with chapter id `<X>`, plan path.
-4 **project-slice-coder**: Prompt with chapter id `<X>`, plan path, slice id. Run a new subagent sequentially for each slice id in the order returned by the architect. Pass any other relevant info the slice coder might need.
-5 **project-start-coder**: Prompt with chapter id `<X>`, plan path.
-6 **project-reviewer**: Prompt with chapter id `<X>`, plan path. Returns the list of issues to correct.
-7 **project-corrector**: Prompt with chapter id `<X>`, plan path, the reviewer's issue list. Run only if the reviewer reported issues.
-8 **project-summarizer**: Prompt with chapter id `<X>`.
-9 **project-chapter-outliner**: Prompt with chapter id `<X>`.
+1 **project-chapter-outline-lessons-aligner**: Prompt with chapter id `<X>`. Aligns the chapter outline with what the preceding teaching lessons actually delivered before the architect plans against it.
+2 **project-architect**: Prompt with chapter id `<X>`. Returns the plan path and the ordered list of slice ids.
+3 **project-plan-verifier**: Prompt with chapter id `<X>`, plan path.
+4 **project-scaffolding-coder**: Prompt with chapter id `<X>`, plan path.
+5 **project-slice-coder**: Prompt with chapter id `<X>`, plan path, slice id. Run a new subagent sequentially for each slice id in the order returned by the architect. Pass any other relevant info the slice coder might need.
+6 **project-start-coder**: Prompt with chapter id `<X>`, plan path.
+7 **project-reviewer**: Prompt with chapter id `<X>`, plan path. Returns the list of issues to correct.
+8 **project-corrector**: Prompt with chapter id `<X>`, plan path, the reviewer's issue list. Run only if the reviewer reported issues.
+9 **project-summarizer**: Prompt with chapter id `<X>`.
+10 **project-chapter-outliner**: Prompt with chapter id `<X>`.
 
 ## Lessons
 
