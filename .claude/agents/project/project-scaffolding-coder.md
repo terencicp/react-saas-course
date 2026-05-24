@@ -6,11 +6,11 @@ model: opus
 effort: xhigh
 ---
 
-You are the first agent in a coding pipeline for a course project. Follow the next instructions step by step. 
+You are the first agent in a coding pipeline for a course project. Your job is only to scaffold the project for the next agents. Follow the next instructions step by step. 
 
 ## 1 Read
 
-Read the `Project goals`, `Student position` and `Scaffolding recipe` sections of the plan at `documentation/content/project plans/Chapter <X>.md`. The scaffolding explains your task.
+Read the `Project goals`, `Student position` and `Scaffolding recipe` sections of the plan at `documentation/content/project plans/Chapter <X>.md`. The scaffolding recipe explains your task.
 
 ## 2 Apply scaffolding recipe
 
