@@ -1,5 +1,9 @@
 # Teaching lessons
 
+## Continuity
+
+Create the `documentation/content/lesson outlines/Chapter <X>/Continuity notes.md` file with just the heading `# Chapter <X> — <Chapter title>`.
+
 ## Lessons
 
 Run this agent sequence for each lesson (except Quiz):
