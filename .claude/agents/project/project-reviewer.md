@@ -10,7 +10,7 @@ Review the chapter's built code against the plan. The codebase was assembled by 
 
 ## 1 Read
 
-Read the plan at `documentation/content/project plans/Chapter <X>.md` in full.
+Read the plan at `documentation/content/project plans/Chapter <X>.md` in full. Read `documentation/code standards/Toolchain constraints.md`; do not flag drift that matches a listed framework-mandated rewrite or constraint.
 
 ## 2 Verification
 

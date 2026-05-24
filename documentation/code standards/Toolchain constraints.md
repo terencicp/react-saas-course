@@ -25,6 +25,7 @@ Configuration knobs the toolchain forces, breaks, or mishandles. Plans locking t
 - **Primitive formatting** — `pnpm dlx shadcn add` writes primitives with double quotes and `import * as React` (not `import type`), triggering Biome warnings on first lint. Accept on first commit; let `pnpm check --write` normalize.
 - **Radix umbrella package** — recent shadcn installs depend on `radix-ui` (umbrella) rather than per-primitive `@radix-ui/react-*`. Pin `radix-ui@^1.4.3` instead of enumerating per-primitive deps.
 - **`Card` has no `asChild` slot** — shadcn's `Card` renders a `<div>` with no `asChild` prop, so it can't be retargeted to `<article>` or other semantic roots. Plans needing a semantic root (e.g. `FeatureCard` typed as `ComponentProps<'article'>`) must inline `Card`'s container classes onto the chosen element and nest `CardHeader` / `CardTitle` / `CardDescription` inside, rather than wrapping `Card`. Compose-by-hand, don't double-wrap.
+- **Radix primitives ship `'use client'`** — `dialog`, `sheet`, `separator`, and other Radix-wrapping primitives carry the directive. Any verification check counting `'use client'` files must include the installed `components/ui/*` set, not just authored islands.
 
 ## Postgres 18 (Docker)
 
@@ -33,3 +34,11 @@ Configuration knobs the toolchain forces, breaks, or mishandles. Plans locking t
   volumes:
     - pgdata:/var/lib/postgresql
   ```
+- **`@neondatabase/serverless` cannot reach vanilla Postgres** — the Neon driver speaks HTTP/WebSocket only, not Postgres wire protocol; against local Docker it errors before connect. For local Docker chapters, use `pg` + `drizzle-orm/node-postgres` (and `serverExternalPackages: ['pg']` in `next.config.ts`). Neon driver is correct only when targeting Neon (or a `wsproxy` sidecar).
+
+## Drizzle 1.0 (rc)
+
+- **No runtime `casing` option** — `casing: 'snake_case'` on `drizzle({...})` and on top-level `Config` was removed; pass explicit snake_case column names in `pgTable` (`uuid('organization_id')`, `timestamp('created_at', { withTimezone: true })`) or use `pgTableCreator` with a casing fn.
+- **Migration directory layout** — `drizzle-kit generate` emits `drizzle/<timestamp>_<name>/{migration.sql, snapshot.json}`; the historic `drizzle/<NNNN>_<name>.sql` + `drizzle/meta/` shape is gone. Renaming the timestamp prefix breaks the journal lookup. Plans must lock the per-migration-directory shape.
+- **`drizzle-seed` `with` keys are table names, not relation aliases** — refining a parent with children uses the schema's table binding (`with: { invoiceLines: [...] }`), not the relation alias (`lines:`). Junction tables hand-populated post-seed need `{ count: 0 }` in the refine to suppress the default fill.
+- **Relations v2 requires 1.0.0+** — `defineRelations(schema, (r) => ...)`, object-filter `where`, and `r.one.<table>({ from, to, alias })` only exist on the 1.0 line. Plans using this API must pin `drizzle-orm@^1.0.0-rc.x` and `drizzle-kit@^1.0.0-rc.x` together (mismatched majors fail at kit-read time). `r.one` relations default to `optional: true`; mark `optional: false` on relations backed by NOT NULL FKs so query result types stay non-nullable.
