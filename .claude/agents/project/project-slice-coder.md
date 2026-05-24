@@ -26,7 +26,7 @@ Read back every file you created or edited in this slice. Check each one against
 
 ## 4 Verify
 
-From inside `projects/Chapter <X>/solution/`, run `pnpm verify`. Then exercise the slice's named runnable state — the `pnpm` command, UI interaction, or DB query the slice closes on. Reproduce it; report what you observed.
+From inside `projects/Chapter <X>/solution/`, run `pnpm exec biome ci . && pnpm exec tsc --noEmit`.
 
 ## 5 Final message
 
