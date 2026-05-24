@@ -4,6 +4,8 @@
 
 Run this agent sequence once, before writing the lessons:
 
+TODO: Add project-chapter-outline-lessons-aligner to align with actual written lessons
+
 1 **project-architect**: Prompt with chapter id `<X>`. Returns the plan path and the ordered list of slice ids.
 2 **project-plan-verifier**: Prompt with chapter id `<X>`, plan path.
 3 **project-scaffolding-coder**: Prompt with chapter id `<X>`, plan path.
