@@ -47,7 +47,7 @@ Write `documentation/content/project plans/Chapter <X>.md` with the following h2
 - **Start derivation**: Instructions on how to derive the start codebase from the final code after all slices are done. Each stubbed file's body must include a `// TODO(L<n>) — <task>` marker (or the file's native comment syntax) naming the lesson that owns completion, so `rg TODO start/` enumerates student work.
 - **Locked decisions**: Cross-cutting calls every slice must honor, anything that would cause drift if each slice coder decided on its own.
 - **File tree**: Complete tree after the last slice. Indicates which slice creates the file and which modifies it: "page.tsx [created by: S1, edited by: S3]"
-- **Verification**: Minimal programmatic set of checks for the reviewer to execute. Each check states scope (`solution/`, `start/`, or both), the action, and the expected outcome. For each load-bearing teaching feature, include a one-line grep that fails when the feature ships inert — i.e. compiles and renders but does nothing. Example: `grep -q "EXPLAIN" solution/src/app/inspector/page.tsx` fails if the page never runs an EXPLAIN query, even though `<PlanPanel plan={null} />` builds fine.
+- **Verification**: Minimal programmatic set of checks for the reviewer agent to execute. Each check states scope (`solution/`, `start/`, or both), the action, and the expected outcome. For each load-bearing teaching feature, include a one-line grep that fails when the feature ships inert — i.e. compiles and renders but does nothing. Example: `grep -q "EXPLAIN" solution/src/app/inspector/page.tsx` fails if the page never runs an EXPLAIN query, even though `<PlanPanel plan={null} />` builds fine.
 
 ## 7 Code conventions review
 
