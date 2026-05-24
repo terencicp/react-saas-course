@@ -16,6 +16,7 @@ react-dom@19.2.6
 next@16.2.6
 @next/bundle-analyzer@16.2.6
 tailwindcss@4.3.0
+@tailwindcss/postcss@4.3.0
 shadcn@4.8.0
 radix-ui@1.4.3
 @radix-ui/react-slot@1.2.4
@@ -29,6 +30,7 @@ eslint-plugin-react-hooks@7.1.1
 drizzle-orm@0.45.2
 drizzle-kit@0.31.10
 drizzle-zod@0.8.3
+postgres@3.4.9
 @t3-oss/env-nextjs@0.13.11
 uuidv7@1.2.1
 zod@4.4.3
@@ -66,7 +68,8 @@ ai@6.0.191
 dompurify@3.4.5
 
 ## Constraints
-- Keep version-locked: `next` == `@next/bundle-analyzer`; `vitest` == `@vitest/coverage-v8`.
+- Keep version-locked: `next` == `@next/bundle-analyzer`; `vitest` == `@vitest/coverage-v8`; `tailwindcss` == `@tailwindcss/postcss`.
 - `better-auth` orgs/RBAC plugin ships in-package; no separate install.
 - R2 uses `@aws-sdk/client-s3` (S3-compatible).
-- `babel-plugin-react-compiler`, `eslint-plugin-react-hooks`, `@types/*`, `@testing-library/*`, `vite-tsconfig-paths`, `@vitest/coverage-v8` are devDependencies.
+- Drizzle uses `postgres` (postgres-js) as the driver, imported via `drizzle-orm/postgres-js`.
+- `babel-plugin-react-compiler`, `eslint-plugin-react-hooks`, `@types/*`, `@testing-library/*`, `vite-tsconfig-paths`, `@vitest/coverage-v8`, `@tailwindcss/postcss` are devDependencies.
