@@ -27,9 +27,8 @@ next-themes@0.4.6
 @biomejs/biome@2.4.15
 babel-plugin-react-compiler@1.0.0
 eslint-plugin-react-hooks@7.1.1
-drizzle-orm@0.45.2
-drizzle-kit@0.31.10
-drizzle-zod@0.8.3
+drizzle-orm@1.0.0-rc.3
+drizzle-kit@1.0.0-rc.3
 postgres@3.4.9
 @t3-oss/env-nextjs@0.13.11
 uuidv7@1.2.1
@@ -68,8 +67,9 @@ ai@6.0.191
 dompurify@3.4.5
 
 ## Constraints
-- Keep version-locked: `next` == `@next/bundle-analyzer`; `vitest` == `@vitest/coverage-v8`; `tailwindcss` == `@tailwindcss/postcss`.
+- Keep version-locked: `next` == `@next/bundle-analyzer`; `vitest` == `@vitest/coverage-v8`; `tailwindcss` == `@tailwindcss/postcss`; `drizzle-orm` == `drizzle-kit` (both on the same `1.0.0-rc.x` tag; mismatched majors fail at kit-read time).
 - `better-auth` orgs/RBAC plugin ships in-package; no separate install.
 - R2 uses `@aws-sdk/client-s3` (S3-compatible).
 - Drizzle uses `postgres` (postgres-js) as the driver, imported via `drizzle-orm/postgres-js`.
+- Zod helpers (`createSelectSchema`, `createInsertSchema`, `createUpdateSchema`, `createSchemaFactory`) come from the `drizzle-orm/zod` subpath in v1; no separate `drizzle-zod` install.
 - `babel-plugin-react-compiler`, `eslint-plugin-react-hooks`, `@types/*`, `@testing-library/*`, `vite-tsconfig-paths`, `@vitest/coverage-v8`, `@tailwindcss/postcss` are devDependencies.

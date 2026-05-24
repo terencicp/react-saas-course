@@ -38,8 +38,6 @@ Configuration knobs the toolchain forces, breaks, or mishandles. Plans locking t
 
 ## Drizzle 1.0 (rc)
 
-> **Version mismatch flag**: [Library versions.md](Library%20versions.md) pins `drizzle-orm@0.45.2` and `drizzle-kit@0.31.10`. The claims below describe the 1.0-rc API line (`defineRelations`, removed runtime `casing`, etc.) and don't apply to 0.45. Either bump the pin to `^1.0.0-rc.x` for both packages or rewrite this section against 0.45.
-
 - **No runtime `casing` option** — `casing: 'snake_case'` on `drizzle({...})` and on top-level `Config` was removed; pass explicit snake_case column names in `pgTable` (`uuid('organization_id')`, `timestamp('created_at', { withTimezone: true })`) or use `pgTableCreator` with a casing fn.
 - **Migration directory layout** — `drizzle-kit generate` emits `drizzle/<timestamp>_<name>/{migration.sql, snapshot.json}`; the historic `drizzle/<NNNN>_<name>.sql` + `drizzle/meta/` shape is gone. Renaming the timestamp prefix breaks the journal lookup. Plans must lock the per-migration-directory shape.
 - **`drizzle-seed` `with` keys are table names, not relation aliases** — refining a parent with children uses the schema's table binding (`with: { invoiceLines: [...] }`), not the relation alias (`lines:`). Junction tables hand-populated post-seed need `{ count: 0 }` in the refine to suppress the default fill.
