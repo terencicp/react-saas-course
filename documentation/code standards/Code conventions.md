@@ -258,24 +258,24 @@ When a Zod schema defines an input shape, every consumer reads from it. Form `na
 - Derive variants from one source: `.extend`, `.pick`, `.omit`, `.partial`. Never copy a schema and edit.
 - `z.infer<typeof s>` for the parsed output type. `z.input<typeof s>` when transforms make input ≠ output.
 - One schema per intent. The `createInvoiceSchema` and `updateInvoiceSchema` are derived from a base, not hand-written twice.
-- `createSelectSchema`, `createInsertSchema`, and `createUpdateSchema` from `drizzle-orm/zod` are the canonical way to derive validators from a Drizzle table. Per-column override map adds refinements (`email`, `url`, length caps) on top of the inferred shape. Hand-writing a parallel Zod schema for a table is a smell. (In v1 these ship in the `drizzle-orm/zod` subpath — no separate `drizzle-zod` install.)
+- `createSelectSchema`, `createInsertSchema`, and `createUpdateSchema` from `drizzle-zod` are the canonical way to derive validators from a Drizzle table. Per-column override map adds refinements (`email`, `url`, length caps) on top of the inferred shape. Hand-writing a parallel Zod schema for a table is a smell. (Drizzle 1.0 moves these into the `drizzle-orm/zod` subpath and drops the separate `drizzle-zod` install.)
 - `.describe()` strings on tool input schemas (Unit 23+) — the LLM reads them.
 
 ## Data layer (Drizzle)
 
 `db/schema.ts` is the source of truth (Architectural Principle #2). Row types, insert types, Zod validators, form `name` attributes, and RLS column names all derive from it.
 
-- Snake-case mapping is set **in the schema**, not on the client. Drizzle 1.0 removed the runtime `casing` option on `drizzle({...})` and on the kit `Config`. Define tables through a `pgTableCreator` with a snake-case fn (`export const pgTable = pgTableCreator((name) => toSnakeCase(name))`) so TS code reads `createdAt` and SQL is `created_at` from one declaration. Explicit snake-case column names (`uuid('organization_id')`) are the per-column escape hatch.
+- Snake-case mapping is set **on the client**, not in every table. `drizzle({ client, casing: 'snake_case', schema })` — TS code reads `createdAt` and SQL is `created_at` from one declaration. Explicit snake-case column names (`uuid('organization_id')`) are the per-column escape hatch. (When the project moves to Drizzle 1.0 the runtime option is removed; this flips to `pgTableCreator((name) => toSnakeCase(name), 'snake_case')`. The second argument is mandatory for column casing — the first only transforms table names.)
 - Row types come from `typeof <table>.$inferSelect`. Insert types from `$inferInsert`. Never hand-write a row interface.
 - Primary keys: UUIDv7 for user-facing entities (`id: uuid('id').primaryKey().$defaultFn(() => uuidv7())`). The course standardizes on v7 for index-locality on time-ordered inserts — teams without that pressure may prefer Postgres-native `gen_random_uuid()` (v4). `bigint generatedAlwaysAsIdentity` for high-volume internals. Natural keys only for immutable external identifiers.
 - Foreign keys: explicit `onDelete`. `cascade` for owned children (invoice lines under an invoice), `restrict` for cross-aggregate references that must block deletion, `set null` for optional pointers, `set default` rarely.
 - Tenant filters live in the `where` clause via the `tenantDb(orgId)` factory (Unit 10+). Bare `db.select(...).from(invoices)` is forbidden once `tenantDb` exists; the linter pattern is the unqualified `db.<table>` import.
 - Unique constraints carry tenancy: `unique on (org_id, slug)`, not just `slug`. Use partial uniques for soft-delete lifecycle (`where deleted_at is null`).
-- Relations declared in `db/relations.ts` via `defineRelations` (Relations v2). `db.query.<table>.findMany({ with: { ... } })` is the N+1-safe traversal.
+- Relations declared in `db/relations.ts` via the per-table `relations(<table>, ({ many, one }) => ({ ... }))` helper (Relations v1). `db.query.<table>.findMany({ with: { ... } })` is the N+1-safe traversal. (Drizzle 1.0 replaces this with the single-call `defineRelations(schema, (r) => ({ ... }))` shape.)
 - Transactions: `db.transaction(async (tx) => …)`. Thread `tx` through any helper called inside the block. Never `await` an external service (email, Stripe, R2) inside a transaction — pool starvation.
 - No raw SQL except for fixed-string identifier interpolation via `sql.raw`. The `sql\`\`` tagged template (with implicit parameterization) for query fragments.
 - Migrations: `drizzle-kit generate` → review → `migrate`. Never `push` in production. Expand-migrate-contract for any breaking change (Unit 21+).
-- **Migration directory naming.** Drizzle 1.0 generates `drizzle/<timestamp>_<random>/{migration.sql, snapshot.json}` (per-migration directory, no top-level `meta/`). Rename only the `<random>` suffix to `<verb>_<noun>` before commit — `drizzle/20260524T1830_add_org_members_unique/`, `drizzle/20260524T1845_backfill_invoice_customer_fk/`. Never touch the timestamp prefix; it's the journal key. Review every generated `migration.sql`; never let an unread file ship.
+- **Migration file naming.** Drizzle 0.45 + drizzle-kit 0.31 generate `drizzle/<timestamp>_<name>.sql` plus `drizzle/meta/_journal.json` and `drizzle/meta/<id>_snapshot.json` — flat layout with a top-level `meta/` directory. Pass `--name <verb>_<noun>` to `drizzle-kit generate` so the migration name is intentional from the start, never random. Never touch the timestamp prefix; it's the journal key. Review every generated `migration.sql`; never let an unread file ship. (Drizzle 1.0 switches to per-migration directories: `drizzle/<timestamp>_<name>/{migration.sql, snapshot.json}`, no top-level `meta/`.)
 - **Index naming.** Always pass an explicit `name` to `index()` and `uniqueIndex()`. Convention: `idx_<table>_<col1>[_<col2>...]` for B-tree, `idx_<table>_<col>_gin` for GIN, `idx_<table>_<col>_partial` for partial. Uniques: `<table>_<col>[_<col2>]_unique`. Why: Drizzle's auto-generated names rotate on schema reorderings and make diffs noisy.
 - **Composite indexes for tenant-scoped lookups** lead with the tenant column: `index('idx_invoices_org_status').on(t.orgId, t.status, t.createdAt.desc())`. The leading column is always `orgId` for any table in the tenant-data tier.
 - **`db/queries/`** is the home for tenant-scoped read helpers. One file per entity (`db/queries/invoices.ts`, `db/queries/customers.ts`). Each file exports verb-led functions (`listInvoices`, `getInvoice`, `requireInvoice`) that close over `tenantDb(orgId)` or take `tx` as the first argument. No business logic — these compose into actions and route handlers.
@@ -287,7 +287,7 @@ When a Zod schema defines an input shape, every consumer reads from it. Form `na
 The `auth` instance is the single seam for every authentication and session decision. Imported by exactly the files the rules below name; no parallel `getSession` calls anywhere.
 
 - **File shape:**
-  - `lib/auth.ts` — server `auth` instance. Starts with `import 'server-only';`. Composes the Drizzle adapter, `nextCookies()`, the organization plugin (Unit 10+), and any other plugins.
+  - `lib/auth.ts` — server `auth` instance. Starts with `import 'server-only';`. Composes the Drizzle adapter, `nextCookies()`, the organization plugin (Unit 10+), and any other plugins. Also exports `SESSION_COOKIE_PREFIX` (`SCREAMING_SNAKE_CASE`) so the proxy and any other cookie reader can match the configured `advanced.cookiePrefix` without restating the literal.
   - `lib/auth-client.ts` — browser `authClient` with the matching plugin set. No Node-only code.
   - `app/api/auth/[...all]/route.ts` — catch-all mount. Two-line body, the canonical Better Auth shape.
 - **The session-read ladder.** Three helpers in `lib/auth.ts`, all React-`cache`d per request so `getSession` runs once:
@@ -302,7 +302,7 @@ The `auth` instance is the single seam for every authentication and session deci
 - **`freshAge` elevation.** For high-stakes mutations — change password, enable 2FA, delete account, transfer ownership — the action checks `session.freshAge` and returns `Result.err({ code: 'requires-re-authentication' })` when the session is too old. The UI re-prompts for the password, refreshes the session, and re-fires the action.
 - **Enumeration discipline.** Sign-up and sign-in errors are opaque by default. Same `Result.err({ code: 'invalid-credentials' })` for "user doesn't exist" and "password wrong." Holds across every entry point (password, magic link, password reset, OAuth callback).
 - **Sign-in / sign-up Server Actions** wrap `auth.api.signInEmail` / `signUpEmail` and translate their thrown errors into `Result` codes (`invalid-credentials`, `email-not-verified`, `too-many-attempts`, `requires-second-factor`). Never expose Better Auth error messages directly to the UI.
-- **The proxy gate** is cookie-presence only via `getSessionCookie(req)`. Real session validation is the layout's `requireUser()` call. The proxy's job is to bounce signed-out users to `/sign-in` cheaply, not to authorize.
+- **The proxy gate** is cookie-presence only via `getSessionCookie(req, { cookiePrefix: SESSION_COOKIE_PREFIX })`. `getSessionCookie` defaults to `'better-auth.'` and silently misses any cookie set under a different prefix — pass the exported constant from `lib/auth.ts` so the two never drift. Real session validation is the layout's `requireUser()` call. The proxy's job is to bounce signed-out users to `/sign-in` cheaply, not to authorize.
 
 ## Caching and invalidation
 
@@ -550,6 +550,7 @@ Add unit-specific sections only when the unit lands and the convention has been 
 
 Open candidates, gated until the unit lands:
 
+- **Drizzle 1.0 migration** — gated on Better Auth 1.8+ shipping with `drizzle-orm@^1.0` support ([better-auth#6766](https://github.com/better-auth/better-auth/issues/6766), [PR #9489](https://github.com/better-auth/better-auth/pull/9489)). When that lands, four § Data layer bullets flip back to their 1.0 form (runtime `casing` is removed → `pgTableCreator(_, 'snake_case')`; `relations()` → `defineRelations`; flat migration files → per-migration directories; `drizzle-zod` is uninstalled and helpers move to `drizzle-orm/zod`). The forward-looking parentheticals in those four bullets become the primary wording; the 0.45 wording moves into a legacy parenthetical.
 - **Resend conventions** — once Unit 8 ships. Add: the `lib/email.ts` wrapper shape, the suppression-list read, the per-send `Idempotency-Key` convention, the transactional-vs-marketing subdomain rule.
 - **Stripe / billing conventions** — once Unit 12 ships. Add: the three-method `lib/billing/` interface (`upgrade`, `openPortal`, `requirePlan`), the `plan_entitlements` projection shape, the webhook-is-the-only-writer rule.
 - **R2 / object storage conventions** — once Chapter 072 ships. Add: the `lib/r2.ts` singleton shape, the `buildObjectKey` tenancy convention, the presigned PUT / HEAD / insert two-step write.
