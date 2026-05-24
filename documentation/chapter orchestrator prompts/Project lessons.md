@@ -5,13 +5,14 @@
 Run this agent sequence once, before writing the lessons:
 
 1 **project-architect**: Prompt with chapter id `<X>`. Returns the plan path and the ordered list of slice ids.
-2 **project-scaffolding-coder**: Prompt with chapter id `<X>`, plan path.
-3 **project-slice-coder**: Prompt with chapter id `<X>`, plan path, slice id. Run a new subagent sequentially for each slice id in the order returned by the architect.
-4 **project-start-coder**: Prompt with chapter id `<X>`, plan path.
-5 **project-reviewer**: Prompt with chapter id `<X>`, plan path. Returns the list of issues to correct.
-6 **project-corrector**: Prompt with chapter id `<X>`, plan path, the reviewer's issue list. Run only if the reviewer reported issues.
-7 **project-summarizer**: Prompt with chapter id `<X>`.
-8 **project-chapter-outliner**: Prompt with chapter id `<X>`.
+2 **project-plan-verifier**: Prompt with chapter id `<X>`, plan path.
+3 **project-scaffolding-coder**: Prompt with chapter id `<X>`, plan path.
+4 **project-slice-coder**: Prompt with chapter id `<X>`, plan path, slice id. Run a new subagent sequentially for each slice id in the order returned by the architect.
+5 **project-start-coder**: Prompt with chapter id `<X>`, plan path.
+6 **project-reviewer**: Prompt with chapter id `<X>`, plan path. Returns the list of issues to correct.
+7 **project-corrector**: Prompt with chapter id `<X>`, plan path, the reviewer's issue list. Run only if the reviewer reported issues.
+8 **project-summarizer**: Prompt with chapter id `<X>`.
+9 **project-chapter-outliner**: Prompt with chapter id `<X>`.
 
 ## Lessons
 
