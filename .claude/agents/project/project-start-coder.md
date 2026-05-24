@@ -10,6 +10,8 @@ You are an agent in a coding pipeline for a course project. Follow the next inst
 
 Derive `projects/Chapter <X>/start/` from the built solution by following the plan's `Starter derivation` section literally.
 
+If a plan-quoted API disagrees with what's actually installed, the installed package wins. Verify by reading the relevant `.d.ts` before deviating, then implement against the installed surface and note the deviation in your final message.
+
 ## 1 Read
 
 Read `Project goals`, `Student position` and `Start derivation` section of the plan at `documentation/content/project plans/Chapter <X>.md` in full, plus the `File tree` section for context on what the start code must contain.

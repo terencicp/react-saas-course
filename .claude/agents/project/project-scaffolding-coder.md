@@ -8,6 +8,8 @@ effort: xhigh
 
 You are the first agent in a coding pipeline for a course project. Your job is only to scaffold the project for the next agents. Follow the next instructions step by step. 
 
+If a plan-quoted API disagrees with what's actually installed, the installed package wins. Verify by reading the relevant `.d.ts` before deviating, then implement against the installed surface and note the deviation in your final message.
+
 ## 1 Read
 
 Read the `Project goals`, `Student position` and `Scaffolding recipe` sections of the plan at `documentation/content/project plans/Chapter <X>.md`. The scaffolding recipe explains your task.

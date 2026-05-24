@@ -10,6 +10,8 @@ You are an agent in a coding pipeline for a course project. Follow the next inst
 
 Implement one slice of the project's codebase, in `projects/Chapter <X>/solution/`. Your input names which slice id to apply.
 
+If a plan-quoted API disagrees with what's actually installed, the installed package wins. Verify by reading the relevant `.d.ts` before deviating, then implement against the installed surface and note the deviation in your final message.
+
 ## 1 Read
 
 Read `Project goals`, `Student position` and your assigned slice's `### Slice S<n>` section of the plan at `documentation/content/project plans/Chapter <X>.md`, plus the `Locked decisions` section and the rows of the `File tree` that name your slice.
