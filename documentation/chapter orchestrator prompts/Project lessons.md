@@ -11,7 +11,7 @@ Run this agent sequence once, before writing the lessons:
 5 **project-slice-coder**: Prompt with chapter id `<X>`, plan path, slice id. Run a new subagent sequentially for each slice id in the order returned by the architect. Pass any other relevant info the slice coder might need.
 6 **project-start-coder**: Prompt with chapter id `<X>`, plan path.
 7 **project-reviewer**: Prompt with chapter id `<X>`, plan path. Returns the list of issues to correct.
-8 **project-corrector**: Prompt with chapter id `<X>`, plan path, the reviewer's issue list. Run only if the reviewer reported issues.
+8 **project-corrector**: Prompt with chapter id `<X>`, plan path, the reviewer's issues that require fixes. Run only if the reviewer reported issues.
 9 **project-summarizer**: Prompt with chapter id `<X>`.
 10 **project-chapter-outline-code-aligner**: Prompt with chapter id `<X>`.
 
@@ -21,6 +21,7 @@ Run this agent sequence for each lesson:
 
 1 **project-lesson-outliner**: Prompt with chapter id `<X>`, lesson number `<Y>`, lesson title, continuity notes path. Returns the lesson outline path and the updated lesson title that should be used from now on.
 2 **project-lesson-writer**: Prompt with chapter id `<X>`, lesson number `<Y>`, lesson title, lesson outline path, chapter folder path. Returns the lesson MDX path.
-3 **project-lesson-formatter**: Prompt with lesson MDX path, lesson outline path.
-4 **project-lesson-reviewer**: Prompt with chapter id `<X>`, lesson outline path, lesson MDX path, the continuity notes paths for this chapter and the two preceding chapters. Returns the list of issues.
-5 **project-lesson-corrector**: Prompt with chapter id `<X>`, lesson outline path, lesson MDX path, the reviewer's issue list inline. Run only if the reviewer reported issues. Its goal is to fix the current lesson only; if there's an issue with a previous lesson surface it in the chat, do not share it with the corrector.
+3 **lesson-diagramer**: Only if the project-lesson-writer reports any diagrams; run a new subagent sequentially for each diagram. Prompt with chapter id `<X>`, lesson number `<Y>`, diagram reference, lesson MDX path, lesson outline path. 
+4 **project-lesson-formatter**: Prompt with lesson MDX path, lesson outline path.
+5 **project-lesson-reviewer**: Prompt with chapter id `<X>`, lesson outline path, lesson MDX path, the continuity notes paths for this chapter and the two preceding chapters. Returns the list of issues.
+6 **project-lesson-corrector**: Prompt with chapter id `<X>`, lesson outline path, lesson MDX path, the reviewer's issues that require fixes. Run only if the reviewer reported issues. Its goal is to fix the current lesson only; if there's an issue with a previous lesson surface it in the chat, do not share it with the corrector.

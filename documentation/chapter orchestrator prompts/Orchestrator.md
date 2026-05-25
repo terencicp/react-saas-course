@@ -6,7 +6,7 @@ Orchestrate a series of subagents that will build the chapter's content sequenti
 
 ## Create folders and files
 
-Folder and file names: Strip # and `, replace / with -, no markup.
+Folder and file names: Strip # and `, replace / with -, replace : with - making sure to leave a space around - and capitalizing the first letter after -, no markup.
 
 - `documentation/content/lesson outlines/Chapter <X>`
 - `src/content/docs/<X> <Chapter name>`.
