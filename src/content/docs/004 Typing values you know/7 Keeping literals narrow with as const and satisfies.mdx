@@ -1,0 +1,363 @@
+---
+title: Keeping literals narrow with `as const` and `satisfies`
+description: The value-site freeze that preserves literal types and the contract check that validates without widening — the typed-config idiom every later chapter leans on.
+chapter-id: 4
+sidebar:
+  order: 7
+  label: '`as const` and `satisfies`'
+---
+
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import TypeCoding from '../../../components/live-coding/TypeCoding/TypeCoding.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+You've reached for literal unions every time a field had a finite set of values. The compiler caught typos, autocomplete read your domain, and every status, role, and HTTP method narrowed to exactly what you wrote. There's one place that pattern silently breaks, and it's the shape you reach for the most: a module-level constant whose keys *and* values both carry meaning.
+
+```ts
+const ROUTES = {
+  home: '/',
+  about: '/about',
+  pricing: '/pricing',
+};
+//    ^? { home: string; about: string; pricing: string }
+```
+
+Read what TypeScript inferred. You wrote three string literals — `'/'`, `'/about'`, `'/pricing'` — and the inferred type is `string` for every value. Autocomplete on `ROUTES.home` still works. `keyof typeof ROUTES` still gives you `'home' | 'about' | 'pricing'`, every key literal-typed. But `(typeof ROUTES)[keyof typeof ROUTES]` — the union of every value the object holds — is `string`, not `'/' | '/about' | '/pricing'`. The literal types you wrote are *gone* the moment they land in an object property. Any downstream type derivation that depends on those literal paths silently widens.
+
+This is the bug the lesson on primitives and literal unions named and parked: object properties widen by default, because they're reassignable. Two operators reverse that decision. <Term definition="A value-site freeze that opts every nested literal out of widening and applies readonly to every property.">`as const`</Term> tells TypeScript to freeze the value's inferred type at its narrowest. <Term definition="An operator that validates a value against a type without applying the type as the value's annotation.">`satisfies`</Term> validates a value against a contract without widening it. Together — `as const satisfies T` — they're the reach an experienced engineer makes for any <Term definition="A module-level constant whose keys and values both carry type information consumed by the rest of the module.">typed config</Term>: a routes map, a permissions table, a feature-flag registry, a Drizzle schema, a Next.js route segment config.
+
+This lesson installs both operators, names what each one does on its own, and shows the combined idiom your codebase will use the most. The shape repeats — Drizzle schemas (Unit 5), Next.js route configs (Unit 4), permission tables (Unit 9) — and every later chapter assumes you read this one.
+
+## Why TypeScript widens
+
+Before the new syntax, install the mental model. TypeScript widens literal types **in positions where the value could be reassigned**. Three sites the widening fires:
+
+- **Object properties.** `{ status: 'draft' }` infers `{ status: string }` because `obj.status` is mutable — the compiler can't promise the literal will still be there one line later.
+- **Array element types.** `[1, 2, 3]` infers `number[]`, not the tuple `[1, 2, 3]` — index writes are part of the array surface.
+- **`let` bindings.** `let x = 'draft'` infers `string`. `const x = 'draft'` does not — the binding can't be reassigned, so the inferred literal survives.
+
+The pattern across all three: where the value can change, the type widens to admit the values it might change to. <Term definition="Inferred literal broadened to base primitive in reassignable positions.">Widening</Term> is the compiler being honest about the future.
+
+The load-bearing rule:
+
+> **The widening is reversible. `as const` opts every nested literal out of widening; `satisfies` checks against a contract without re-applying it.**
+
+The next two sections install each operator. The third combines them.
+
+## `as const`: the value-site freeze
+
+The first new tool. The job in one sentence:
+
+> **`as const` tells TypeScript to freeze every nested literal at its narrowest type and make every property `readonly`.**
+
+The freeze fires on three shapes — primitives, object properties, and arrays. Each unlocks a different downstream pattern, so walk them separately.
+
+<CodeVariants>
+  <CodeVariant label="String literals stay literal">
+    <div data-mark-color="green">
+
+    ```ts
+    const ROUTES = {
+      home: '/',
+      about: '/about',
+      pricing: '/pricing',
+    } as const;
+    //    ^? { readonly home: '/'; readonly about: '/about'; readonly pricing: '/pricing' }
+    ```
+
+    </div>
+    **The opening bug, fixed.** The same `ROUTES` declaration from the introduction with `as const` appended. Every value is now the literal path you wrote, not the wider `string`. The same rule applies to number and boolean literals — `{ retries: 3, debug: true } as const` infers `{ readonly retries: 3; readonly debug: true }`, not `{ retries: number; debug: boolean }`. This is what `keyof typeof` and `typeof X[keyof typeof X]` derivations need to stay narrow.
+  </CodeVariant>
+
+  <CodeVariant label="Properties become `readonly`">
+    <div data-mark-color="green">
+
+    ```ts
+    const ADMIN_ROLE = {
+      name: 'admin',
+      tier: 'pro',
+    } as const;
+    //    ^? { readonly name: 'admin'; readonly tier: 'pro' }
+    ```
+
+    </div>
+    **The field-modifier shorthand.** The lesson on object shapes installed `readonly name: string` as a per-field modifier. `as const` is the bulk form: every property becomes `readonly` without you typing the keyword on each one. The binding is locked; nested objects still mutate, the same caveat the field-level rule named. For shallow configs — the common case — `as const` is the full lock.
+  </CodeVariant>
+
+  <CodeVariant label="Arrays become `readonly` tuples">
+    <div data-mark-color="green">
+
+    ```ts
+    const VERSIONS = [1, 2, 3] as const;
+    //    ^? readonly [1, 2, 3]
+    ```
+
+    </div>
+    **Tuple-of-literals, not array-of-numbers.** The lesson on tuples named this form in passing; here it earns its full explanation. Without `as const`, `[1, 2, 3]` infers `number[]` — the length is unknown, every element is a `number`. With `as const`, the position is fixed at three, each slot is the literal you wrote, and `.push` is gone. This is the inline tuple form you'll meet most often in the wild.
+  </CodeVariant>
+</CodeVariants>
+
+One naming watch-out before the next section. The keyword `as` appears in two operators that mean different things. `as Type` — the type assertion from the previous lesson — is a conditional escape hatch that silences the compiler at the developer's risk. `as const` is a *value-site freeze*: it tells the compiler "infer this as narrowly as possible," and the result is sound — the type the compiler arrives at is a faithful description of the literal value you wrote. Same keyword, different semantics. This lesson is about the freeze form only.
+
+<VideoCallout videoId="6M9aZzm-kEc" videoTitle="as const: the most underrated TypeScript feature">
+  Matt Pocock walks the routes-map widening bug, the `as const` fix, and the `(typeof X)[keyof typeof X]` derivation in under six minutes — the same arc this section just installed, with `Object.freeze` contrasted as the runtime cousin.
+</VideoCallout>
+
+## The three sites `as const` earns its weight
+
+The freeze sounds general, but its triggers in production code are specific. Three patterns cover most of what you'll write.
+
+**Typed config maps.** A routes table, a feature-flag registry, a permission lookup. The values are literal — paths, role names, permission strings — and downstream code derives types from them.
+
+```ts
+const ROUTES = {
+  home: '/',
+  about: '/about',
+} as const;
+
+type Path = (typeof ROUTES)[keyof typeof ROUTES];
+//   ^? '/' | '/about'
+```
+
+Without `as const`, `Path` is `string`. The derivation reads "every value of `ROUTES`," and every value widened to `string` the moment it landed in the object. The freeze keeps the literals literal so the derivation reads what you wrote.
+
+**Inline tuple literals.** Any positional record built at the call site that the caller will destructure-and-rename. Custom hooks, `Object.entries` rows, coordinate pairs.
+
+```ts
+const useToggle = () => {
+  const [on, setOn] = useState(false);
+  const toggle = () => setOn((value) => !value);
+  return [on, toggle] as const;
+};
+```
+
+The hook returns `readonly [boolean, () => void]`. Without `as const`, the inferred return is `(boolean | (() => void))[]` — a union-typed array, which is useless for the `[on, toggle]` destructure at the call site. The freeze is what makes the position carry meaning.
+
+**Discriminant values.** The lesson on composing types installed the discriminated-union shape — a literal-typed `status` field on every variant. Build a variant inline without `as const` and the discriminant widens away.
+
+```ts
+const result = { status: 'loading' } as const;
+//    ^? { readonly status: 'loading' }
+```
+
+Without `as const`, the inferred type is `{ status: string }`. The variant still compiles into a `FetchResult<T>` union, but the next `switch (r.status)` reads against a `string` and can't narrow to the loading branch. The discriminated union breaks silently — the kind of bug that ships and surfaces a week later when someone wonders why the loading state never renders. `as const` is the line that prevents it.
+
+These are the three places the freeze pays for itself. Anywhere else, inference handles the case without help.
+
+## `satisfies`: contract check that preserves the narrow
+
+The second new tool. Open with the bug it fixes.
+
+You've installed `as const`. The literals survive. Now you want a *contract*: a typo in any value of `ROUTES` — say `home: '#'` — should error at the literal site, before the file ships. The instinct from every previous lesson is to annotate:
+
+<CodeVariants>
+  <CodeVariant label="Annotation widens">
+    <div data-mark-color="red">
+
+    ```ts
+    const ROUTES: Record<string, string> = {
+      home: '/',
+      about: '/about',
+    } as const;
+    //    ^? { readonly home: string; readonly about: string }
+    ```
+
+    </div>
+    **The annotation overrides the inference.** A type annotation tells the compiler "this value has type `T`" — and that's the type it commits to, regardless of the value's inferred shape. The `Record<string, string>` does catch a typo on the *key* surface (the type system knows the value must be a string), but it pays for the catch by widening every value back to `string`. The literal paths `as const` worked to preserve are gone. The annotation won the fight against your inference.
+  </CodeVariant>
+
+  <CodeVariant label="`satisfies` validates without widening">
+    <div data-mark-color="green">
+
+    ```ts
+    const ROUTES = {
+      home: '/',
+      about: '/about',
+    } as const satisfies Record<string, string>;
+    //    ^? { readonly home: '/'; readonly about: '/about' }
+    ```
+
+    </div>
+    **The contract checks; the literals survive.** `satisfies` validates that the value is assignable to `Record<string, string>` — the same compile-time check the annotation ran — without re-typing the value as `Record<string, string>`. The inferred type is still the literal-rich shape `as const` produced. You get the contract *and* the narrow.
+  </CodeVariant>
+</CodeVariants>
+
+The job of `satisfies` in one sentence:
+
+> **`satisfies T` validates that a value is assignable to `T` without applying `T` as the value's type.**
+
+Two triggers earn the reach:
+
+**You want to keep the narrow type but check it against a contract.** The canonical case above. The contract is the *shape rule* — every key maps to a string, every value sits inside an enum, every entry is a valid path. The narrow type is what downstream derivations need. `satisfies` keeps both.
+
+**You want structural errors at the write site, not the read site.** A typo in a key, a missing required field, a value whose shape doesn't fit — `satisfies` errors at the line you defined the constant, where the fix is immediate. Without it, the error surfaces wherever the typed-config is consumed — sometimes three files away, sometimes never (the consumer happens to read a key that *is* present). `satisfies` is how you move the error to the source.
+
+:::tip
+A useful way to read the operator at a glance: an annotation says "this value **is** `T`." `satisfies` says "this value **fits** `T`." The first overwrites the inference; the second only checks against it.
+:::
+
+## The combined idiom: `as const satisfies T`
+
+The two operators on their own are useful. Together they're the default for any typed config.
+
+> **Lock the literal types with `as const`, then validate against a contract with `satisfies T`.** The order matters — `satisfies` reads the post-`as const` inferred type.
+
+Walk a full worked example. A permissions table, keyed by `Role` literal union, with arrays of `Permission` literals as values.
+
+<AnnotatedCode lang="ts" code={`
+type Role = 'admin' | 'member' | 'viewer';
+type Permission = 'read' | 'write' | 'invite';
+
+const PERMISSIONS = {
+  admin: ['read', 'write', 'invite'],
+  member: ['read', 'write'],
+  viewer: ['read'],
+} as const satisfies Record<Role, readonly Permission[]>;
+
+type RoleName = keyof typeof PERMISSIONS;
+//   ^? 'admin' | 'member' | 'viewer'
+
+type AdminPerms = (typeof PERMISSIONS)['admin'];
+//   ^? readonly ['read', 'write', 'invite']
+
+type GrantedPermission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS][number];
+//   ^? 'read' | 'write' | 'invite'
+
+// @ts-expect-error — Property 'viewer' is missing in type
+const PERMISSIONS_INCOMPLETE = {
+  admin: ['read', 'write', 'invite'],
+  member: ['read', 'write'],
+} as const satisfies Record<Role, readonly Permission[]>;
+`}>
+  <AnnotatedStep meta={`"as const satisfies Record<Role, readonly Permission[]>"`} color="green">
+    **The idiom on one line.** `as const` freezes every nested literal — keys, role names, permission strings, array positions — so the inferred type is the literal-rich shape. `satisfies Record<Role, readonly Permission[]>` runs three checks against that frozen shape: every key must be a member of `Role` (completeness, from the dynamic-keys lesson), every value must be a `readonly` array, and every element of every array must be a `Permission`. Two operators, three checks, zero loss of literal information.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"type RoleName = keyof typeof PERMISSIONS"`} color="blue">
+    **`keyof typeof` reads the literal keys.** Object keys are literal-typed by default — even without `as const`, this derivation would still read `'admin' | 'member' | 'viewer'`. Worth seeing once so the next two derivations stand out as the ones the freeze unlocks. `keyof typeof X` is the operator pair that lifts the runtime value's keys into a type — the next chapter installs it as a first-class tool.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"type AdminPerms = (typeof PERMISSIONS)['admin']"`} color="orange">
+    **The value at a key is the literal tuple.** Reading the `admin` slot returns `readonly ['read', 'write', 'invite']` — the exact set of permissions assigned to admin, in the exact order written, not the wider `readonly Permission[]` from the contract. The contract is a *ceiling* — the value is allowed to be anywhere inside it; the freeze tells you exactly where. This is the gap between "what's possible" (the contract) and "what's there" (the literal value) — and `as const satisfies` keeps both.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"type GrantedPermission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS][number]"`} color="violet">
+    **Every permission ever assigned, derived from the config.** Chain three steps: every value (`[keyof typeof PERMISSIONS]`), every array element (`[number]`), unioned together. The result is `'read' | 'write' | 'invite'` — every permission that appears anywhere in the table. Drop one from the config and the union shrinks; add one and it grows. The type follows the data without you maintaining a second list.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"// @ts-expect-error — Property 'viewer' is missing in type" {19-23}`} color="red">
+    **The completeness check fires at the literal site.** Drop `viewer` from the second declaration and `satisfies Record<Role, ...>` errors immediately — the same completeness check from the dynamic-keys lesson, now wired into the typed-config idiom. Add a new role to the `Role` union and every `PERMISSIONS` table in the codebase fails to compile until the entry is filled. Treat that error as a refactor feature, not a chore — it's the type system reminding you the data hasn't caught up to the domain.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Five payoffs from one declaration. Every later chapter — Drizzle schemas, Next.js route segment configs, feature-flag registries, RBAC permission tables — leans on a version of this shape. When you see `as const satisfies T` in a codebase, you're reading the default form for typed configs.
+
+<VideoCallout videoId="9F-6mUXuylw" videoTitle="The Satisfies Operator in TypeScript">
+  Matt Pocock walks the annotation-vs-`satisfies` contrast in seven minutes — the same widening-vs-no-widening case this section landed, with two extra examples that reinforce the mental model.
+</VideoCallout>
+
+## The three forms, one contrast
+
+You now have three operators that overlap in what they do. The contrast table fits the choice in muscle memory:
+
+| Form | Applies `T` to the value? | Catches contract violations? | Preserves literal types? |
+| --- | --- | --- | --- |
+| Annotation `: T` | Yes | Yes | No (widens) |
+| `as const` | — (no contract) | No (no contract) | Yes |
+| `satisfies T` | No | Yes | Yes |
+
+Three rows, three jobs. The choice follows from the row that matches what you need:
+
+- **Annotation** when the *type itself* is the contract — exported function parameters, public type aliases, anything where the consumer reads the signature first. The next lesson on annotation-at-boundaries owns this call.
+- **`as const` alone** when there's no contract to validate against — an inline tuple, a hook return, a discriminant value built at the call site. The freeze does its work; nothing else is needed.
+- **`satisfies T`** (usually with `as const`) for typed-config patterns where both the literal types and the contract matter. The idiom this lesson installs.
+
+Once the three jobs are distinct, the choice is mechanical.
+
+## Practice: type a feature-flag map
+
+You've seen the annotation-widens bug, the `as const` freeze, the `satisfies` contract check, and the combined idiom on a permissions table. The exercise below puts the idiom on a second shape so the muscle memory generalizes.
+
+A typed feature-flag map. Keys are flag names from a `Flag` literal union; values are deployment stages from a `Stage` literal union. The contract is `Record<Flag, Stage>` — every flag must be present, every value must be a stage. The narrow type — the *specific* stage each flag is in right now — must survive so downstream code can branch on the exact value.
+
+<TypeCoding
+  instructions="Define `FEATURE_FLAGS` so the keys exhaust the `Flag` union and each value's literal stage survives. Don't annotate the constant. Reach for `as const satisfies Record<Flag, Stage>`. The two ^? queries must resolve to the indicated types, and the @ts-expect-error directive must fire."
+  starter={`type Flag = 'beta-checkout' | 'new-dashboard' | 'invite-flow';
+type Stage = 'off' | 'internal' | 'beta' | 'ga';
+
+// TODO: declare FEATURE_FLAGS so:
+//   - every Flag is present (the @ts-expect-error block below must fire)
+//   - each value keeps its literal Stage (the ^? on 'beta-checkout' must read the exact stage)
+const FEATURE_FLAGS = {
+  'beta-checkout': 'beta',
+  'new-dashboard': 'internal',
+  'invite-flow': 'ga',
+};
+
+type FlagName = keyof typeof FEATURE_FLAGS;
+//   ^?
+
+type BetaCheckoutStage = (typeof FEATURE_FLAGS)['beta-checkout'];
+//   ^?
+
+const FEATURE_FLAGS_INCOMPLETE = {
+  'beta-checkout': 'beta',
+  'new-dashboard': 'internal',
+  // @ts-expect-error — Property 'invite-flow' is missing
+} as const satisfies Record<Flag, Stage>;
+`}
+  expectedQueries={[
+    { line: 14, contains: '"beta-checkout" | "new-dashboard" | "invite-flow"' },
+    { line: 17, contains: '"beta"' },
+  ]}
+/>
+
+## Pick the right combination
+
+A closing decision to lock the form-vs-need matching. Four scenarios; one calls for the combined idiom this lesson installed.
+
+<MultipleChoice>
+  Which of these scenarios calls for `as const satisfies T`?
+
+  <McqChoice>The signature of an exported function — `(input: { email: string }) => void`.</McqChoice>
+  <McqChoice>A local variable holding the result of a `reduce` over a list of numbers.</McqChoice>
+  <McqChoice correct>A module-level routes map whose keys must cover every `RouteName` and whose values must remain literal paths so `type Path = (typeof ROUTES)[keyof typeof ROUTES]` narrows.</McqChoice>
+  <McqChoice>An array of three coordinate numbers (`[10, 20, 30]`) that needs to be a fixed-length tuple.</McqChoice>
+
+  <McqWhy>The routes-map case is the canonical typed-config trigger — both halves of the idiom earn their weight (literal paths from `as const`, completeness from `satisfies Record<RouteName, string>`). The function signature is a public-API boundary that takes an annotation. The `reduce` result is a local intermediate value — inference handles it. The coordinate tuple needs `as const` on its own; there's no contract to validate against.</McqWhy>
+</MultipleChoice>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="TypeScript Handbook — `const` Assertions"
+    href="https://www.typescriptlang.org/docs/handbook/release-notes/typescript-3-4.html#const-assertions"
+    icon="simple-icons:typescript"
+    iconColor="#3178C6"
+    description="The official reference for `as const` — the three behaviors (literals stay literal, properties become `readonly`, arrays become `readonly` tuples) named in the release notes that introduced the operator."
+  />
+  <ExternalResource
+    title="TypeScript Handbook — The `satisfies` Operator"
+    href="https://www.typescriptlang.org/docs/handbook/release-notes/typescript-4-9.html#the-satisfies-operator"
+    icon="simple-icons:typescript"
+    iconColor="#3178C6"
+    description="The first-party introduction of `satisfies` from the TypeScript 4.9 release notes — walks the annotation-widens bug and the `satisfies` fix on a small typed-config example."
+  />
+  <ExternalResource
+    title="Total TypeScript — 5 Ways to Use `satisfies`"
+    href="https://www.totaltypescript.com/how-to-use-satisfies-operator"
+    icon="lucide:shield-check"
+    iconColor="#10B981"
+    description="Matt Pocock walks five concrete `satisfies` patterns — route objects, tuples, request bodies — including the `as const satisfies` combination this lesson installs, showing the shape repeats across domains."
+  />
+</CardGrid>

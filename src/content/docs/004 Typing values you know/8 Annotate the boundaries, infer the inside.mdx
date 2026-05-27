@@ -1,0 +1,301 @@
+---
+title: Annotate the boundaries, infer the inside
+description: The rule for where TypeScript annotations earn their weight, and the per-import discipline `verbatimModuleSyntax` enforces.
+chapter-id: 4
+sidebar:
+  order: 8
+  label: Annotate at the boundaries
+---
+
+import PerimeterDiagram from '../../../components/lessons/004/8/PerimeterDiagram.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+Two snippets you'll see in the wild.
+
+```ts title="over-annotated.ts"
+const sum: number = items.reduce((acc: number, item: Item): number => acc + item.price, 0);
+const isPaid: boolean = invoice.status === 'paid';
+```
+
+```ts title="under-annotated.ts"
+// implicit-any failure — the parameter has no annotation
+function processInvoice(invoice) {
+  return invoice.total * 1.1;
+}
+```
+
+Both files are wrong, for opposite reasons.
+
+The first is restating what the compiler already knows. TypeScript reads `items.reduce(...)` and types `sum` as `number` on its own; `acc` is already a `number` because the seed is `0`; the comparison `invoice.status === 'paid'` is already a `boolean`. The annotations add noise the editor would have shown anyway, and they will rot the moment the reducer's shape changes — the compiler stops telling you the truth and starts agreeing with whatever you wrote.
+
+The second is the <Term definition="The error TypeScript fires under noImplicitAny when a parameter has no annotation and no contextual inference, defaulting to the unsafe top type.">implicit any</Term> failure. Under the strict tsconfig the course uses, this won't compile at all — `noImplicitAny` rejects the untyped parameter. In a sloppier config, it would compile, and every property access on `invoice` would slip past the type checker entirely. The parameter is the one place TypeScript cannot read the value, because the value hasn't arrived yet. Without an annotation, the contract is missing.
+
+Both files are vocabulary failures. The first uses annotations where they don't earn their weight. The second skips them where they're load-bearing. The rule that resolves both:
+
+**Annotate at the boundaries; infer everywhere else.**
+
+Boundaries are function parameters and exported APIs — the places another part of the codebase reads your signature without opening the body. Inside the function, the value is its own type and inference does the work. This lesson installs that rule across the cases you write daily, then turns to a smaller second beat: the per-import discipline that `verbatimModuleSyntax` enforces, where every type-only import is marked `import type` so the compiler erases it cleanly.
+
+This is the chapter's posture lesson. Every code sample in the rest of the course follows this rule without comment.
+
+## Where annotations earn their weight
+
+A type annotation is a contract with someone who won't read your code. That's the test. If a future caller reads the signature without opening the body, the signature needs a type. If the value is local and the body is the documentation, the annotation is noise.
+
+Three sites earn the annotation.
+
+### Function parameters
+
+Always. The function signature is the contract with the caller, and TypeScript cannot infer parameter types from inside the function because the function might be called from anywhere. Without an annotation, TypeScript falls back to `any` (or fires the implicit-any error in strict mode), and every property access on the parameter slips through the type system.
+
+```ts title="process-invoice.ts"
+const processInvoice = (invoice: Invoice) => {
+  return invoice.total * 1.1;
+};
+```
+
+The annotation on `invoice` is the only thing that makes this function safe to call. The return type is inferred — `number`, because `invoice.total * 1.1` is a number — and that inference will track if the calculation changes. The parameter cannot do the same. It's the edge of the function, and the edge is where you draw the contract.
+
+### Exported APIs
+
+Functions, type aliases, constants exported from a module. The consumer reads the signature in editor tooltips, in `.d.ts` files, in generated API docs — without opening the implementation. Even when inference would produce the right type, the annotation is the documentation surface for the export, and locking the return type means a change inside the body won't silently change the public contract.
+
+```ts title="invoice-actions.ts" "Promise<Result<Invoice>>"
+export const createInvoice = async (
+  input: CreateInvoiceInput,
+): Promise<Result<Invoice>> => {
+  const parsed = createInvoiceSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: parsed.error };
+
+  const invoice = await db.insert(invoices).values(parsed.data).returning();
+  return { ok: true, value: invoice[0] };
+};
+```
+
+The `Promise<Result<Invoice>>` return type is the contract. A caller reads it and knows what to destructure — the discriminated union from the unions and intersections lesson, narrowed to a known invoice on success. If a future edit changes the body to return a different shape, the annotation flags the breakage at the export, not at the seven call sites that depend on it.
+
+### Return types where inference produces an unintended type
+
+Rare, but worth naming. You reach for an explicit return type when the function's intent is to satisfy a wider interface (a callback that should return `void` even though the body happens to return a value), when the inferred return is a complex conditional the consumer shouldn't depend on, or when a recursive function would otherwise infer `any`.
+
+```ts title="find-invoice.ts" "Result<Invoice>"
+const findInvoice = (id: string): Result<Invoice> => {
+  const row = invoices.find((invoice) => invoice.id === id);
+  if (!row) return { ok: false, error: new Error(`Invoice ${id} not found`) };
+  return { ok: true, value: row };
+};
+```
+
+Without the annotation, TypeScript would infer a union of the two branch shapes — technically correct, but the caller's narrowing relies on `Result<T>` being the contract. The explicit type locks the discriminated union shape so the call site can branch on `result.ok` and trust the narrowing.
+
+<VideoCallout videoId="nwSe95uFN8E" videoTitle="Should you use return types?">
+  Matt Pocock walks the same three triggers in under five minutes — multiple branches, library code, and the niche performance escape hatch where an explicit return type earns its weight.
+</VideoCallout>
+
+## Where inference wins
+
+The mirror. Let the compiler read the value when it can, and stay out of its way. Inference is concision plus refactoring resilience — when the value changes, the inferred type changes with it; an annotation has to be updated by hand and goes stale silently.
+
+Three sites where inference wins.
+
+### Local variables
+
+Inside a function, you're writing values the compiler can see in full. Annotating them is restating what the editor already shows on hover.
+
+```ts title="totals.ts"
+const total = items.reduce((acc, item) => acc + item.price, 0);
+const isPaid = invoice.status === 'paid';
+```
+
+`total` is `number` because the seed is `0` and the reducer returns a number. `isPaid` is `boolean` because `===` returns a boolean. Adding `: number` or `: boolean` here is noise — worse, it freezes the type at the declaration so the compiler can't warn you if the reducer's return type later becomes `bigint`. The exception that proves the rule: when narrowing is the point and you want to lock the type to a literal union, but at that point you're already in `as const` and `satisfies` territory from the previous lesson.
+
+### Inline callbacks
+
+When you pass an inline function into a method like `.map`, `.filter`, or `.reduce`, the parameter type flows from the array's element type via <Term definition="TypeScript inferring a parameter's type from the surrounding call site rather than from the function body.">contextual inference</Term>. The callback inherits its parameter types from the call site that hosts it.
+
+```ts title="list-prices.ts"
+const prices = invoices.map((invoice) => invoice.total);
+const unpaid = invoices.filter((invoice) => invoice.status !== 'paid');
+```
+
+`invoice` is typed as the element type of `invoices` without you writing a word. Annotating the callback parameter — `(invoice: Invoice) => invoice.total` — works, but it forces the same type the compiler was about to derive, and if the array's element type later widens or narrows, your manual annotation goes out of sync with the value. This is the most common annotation noise in early-career TypeScript code: every `.map`, `.filter`, `.reduce` callback over-typed because the writer didn't realize the context already provided the type.
+
+### Return types of internal functions
+
+When a function isn't exported and the body is small, the inferred return type is correct and stays in sync as the body changes. The reflex is to annotate the return type only when the function is exported, when inference would be wrong, or when the function's signature is itself the lesson.
+
+```ts title="format-price.ts"
+const formatPrice = (cents: number) => (cents / 100).toFixed(2);
+```
+
+The parameter has its annotation — that's the boundary. The return type infers as `string` because `.toFixed()` returns a string, and that's exactly what every caller in the module needs. If the formatting logic changes, the inferred type changes with it. Writing `: string` would not add information; it would only freeze a detail that should be free to evolve.
+
+---
+
+Annotations are documentation and structural enforcement; inference is concision and refactoring resilience. The boundary rule gives you both — contracts at the seams, freedom inside. This is the rule the course's code conventions state in one line: annotate parameters and return types of exported functions; let inference handle locals, intermediate values, and internal-helper returns.
+
+One forward note, then move on. TypeScript 6.0 (March 2026) marked the <Term definition="Opt-in TypeScript flag, stable as of TS 6.0, that requires exported APIs to declare their types explicitly so downstream tools can build .d.ts files without running the type checker on the implementation.">`isolatedDeclarations`</Term> flag stable; it remains opt-in, not a default, and it's the trajectory monorepos and library publishers enable so downstream tools can emit `.d.ts` files in parallel without invoking the full type checker. The boundary rule you're installing here lines up with where the language is heading.
+
+## The shape of a well-typed module
+
+The mental model is spatial. Imagine a function or module as a rectangle. The perimeter is where other code touches it — the parameters that flow in, the exports that flow out. The interior is where you work with values you already know. Types live at the perimeter; inference fills the interior.
+
+<PerimeterDiagram />
+
+When you keep the perimeter typed and the inside inferred, three good things follow at once. Refactoring is cheap, because the body changes and the contract doesn't. The public surface documents itself in tooltips and generated `.d.ts` output, because the consumer reads the annotation directly. And the codebase reads consistently across files, because every module looks the same from the outside: a typed edge, an unannotated middle. This is the asymmetric posture every well-maintained TypeScript codebase converges on.
+
+## `import type` and the strict tsconfig
+
+The annotation rule covers the declaration side of the boundary — where types live in your own code. There's a second surface: the import side, where types arrive from other modules. Both are the same posture applied to different spots — type information at the seams, runtime values everywhere else. The annotation rule says "mark the contracts you publish." The import rule says "mark the names you only consume as types."
+
+With <Term definition="TypeScript flag that emits each import statement exactly as written and requires import type for type-only imports, removing the compiler's old type-elision heuristic.">`verbatimModuleSyntax`</Term> on — which it is, in the strict tsconfig the course's projects use — every import that's used only as a type must use `import type`.
+
+Under the flag, the compiler emits imports and exports exactly as written. There's no behind-the-scenes guessing about which imports were "really" type-only and could be stripped. `import type` declarations are erased entirely — the compiler emits nothing, the bundler never sees them, the runtime never executes them. Bare `import { ... }` declarations are preserved verbatim in the emitted JavaScript. You, the developer, decide which mode each import is in, and the syntax makes it visible.
+
+<CodeVariants>
+  <CodeVariant label="Wrong: value import for a type-only use">
+    <div data-mark-color="red">
+
+    ```ts title="greet.ts" {1}
+    import { User } from './user';
+
+    const greet = (user: User) => `Hello, ${user.name}`;
+    ```
+
+    </div>
+    Under `verbatimModuleSyntax: true`, this is a compile error. The `User` name is only used in a type position, but the import is a value import — the compiler refuses to emit a runtime import for a name that never reaches runtime.
+  </CodeVariant>
+
+  <CodeVariant label="Right: type-only import">
+    <div data-mark-color="green">
+
+    ```ts title="greet.ts" {1}
+    import type { User } from './user';
+
+    const greet = (user: User) => `Hello, ${user.name}`;
+    ```
+
+    </div>
+    The `import type` is erased by the compiler. The bundler never sees it. No runtime cost, no bundle weight, no module-graph edge at runtime — the name exists only at the type level.
+  </CodeVariant>
+</CodeVariants>
+
+When a module exports both types and values and you need both, you don't write two imports. The per-name `type` modifier lets you mix them in one statement.
+
+```ts title="create-invoice-form.ts" del="type CreateInvoiceInput" ins="createInvoice"
+import { type CreateInvoiceInput, createInvoice } from './invoice-actions';
+```
+
+The red-marked name is the type-only import the compiler erases from the emitted JavaScript; the green-marked name is the value the runtime keeps. Both forms — bare `import type` for purely typed imports, and per-name `type` markers for mixed imports — are part of the everyday vocabulary. Learn to read them at a glance; the rest of the course writes them without comment.
+
+## Why the strict tsconfig forces the discipline
+
+So far, `import type` looks like syntax with extra steps. The reason the strict tsconfig requires it is that the old behavior — the compiler quietly stripping imports it thought were type-only — produced two specific failure modes that bit production teams hard enough that the language flag exists to prevent them. Once you see them, the discipline stops feeling like ceremony.
+
+### Side-effect modules silently tree-shaken
+
+Some modules do real work at load time. They register handlers, configure a singleton, run an initialization step that downstream code relies on. The classic case: a `lib/auth.ts` that wires Better Auth on import, a `db/relations.ts` that declares Drizzle relations, a feature-flag module that registers itself with a global registry. Importing these modules — even for nothing more than their type exports — is what makes them run.
+
+Under the pre-`verbatimModuleSyntax` behavior, TypeScript would inspect each import and, if it could prove the imported name was used only at the type level, silently strip the whole import statement before emit. The bundler then never saw the module. The side effects never fired. Your `Better Auth` client called into an unconfigured singleton; your Drizzle relations were never registered; the bug only surfaced at runtime, far from the import that caused it.
+
+```ts title="queries.ts" {1}
+import type { Relations } from './relations';
+
+const fetchInvoiceWithLines = async (id: string) => {
+  return db.query.invoices.findFirst({ where: eq(invoices.id, id), with: { lines: true } });
+};
+```
+
+The `import type { Relations }` line is erased before the bundler runs. The `relations.ts` module's top-level relation declarations never execute. The `with: { lines: true }` query at runtime can't find the relation it depends on, and you get a confusing runtime error that points at the query, not at the missing import. The fix is to add a value import alongside the type one — or to add a bare `import './relations'` that exists only for the side effect.
+
+`verbatimModuleSyntax` removes the guess. Every bare import preserves the module-graph edge, and every `import type` declaration is the developer being explicit about intent: "this name never reaches runtime, but I'm not asking for the module's side effects either." When you genuinely need the side effect, you write the value import or the bare side-effect import; the discipline keeps the choice visible.
+
+### Circular type-imports that masquerade as value-imports
+
+Two modules reference each other's types. `User` carries an `Invoice[]` field; `Invoice` carries a `User` author field. At the type level, this is a sound mutual reference — the type checker walks the cycle without complaint, because types have no execution order.
+
+At the value level, the same cycle can deadlock module initialization. Module A's top-level code runs before module B's exports are defined, and any value reference into B reads `undefined`. You get a runtime crash with a confusing stack trace; module-graph cycles are one of the harder bugs to localize because the failure happens during initialization, before your code starts running.
+
+```ts title="user.ts and invoice.ts"
+// user.ts
+import { Invoice } from './invoice';
+
+export type User = {
+  id: string;
+  invoices: Invoice[];
+};
+
+// invoice.ts
+import { User } from './user';
+
+export type Invoice = {
+  id: string;
+  author: User;
+};
+```
+
+Written as value imports — `import { Invoice }`, `import { User }` — the two files compile to a runtime cycle even though the names are used only in type positions. Switch both sides to `import type`, and the cycle vanishes from the emitted JavaScript: the import statements are erased, the bundler sees two independent files, and the type-level mutual reference stays where it belongs.
+
+The full module-graph mechanics — live bindings, depth-first evaluation, dynamic `import()`, the `"use client"` boundary — live in chapter 006. This lesson installs the per-import-line discipline that keeps the module graph honest.
+
+## Practice: annotate, infer, or `import type`
+
+Time to install the muscle memory. The exercise below shows ten declaration sites — function parameters, locals, exports, imports — and asks you to sort each into the right bucket. By the end of it, "annotate, infer, or `import type`" should be a millisecond decision for every line you write.
+
+<Buckets twoCol instructions="Sort each declaration site into where the type information should live — written at the boundary, left to inference, or marked as type-only on the import line.">
+  <Bucket name="annotate" label="Annotate" description="The declaration site is the contract." />
+  <Bucket name="infer" label="Infer" description="Let the compiler read the value." />
+  <Bucket name="type-import" label="Type import" description="The name never reaches runtime." />
+
+  <Item bucket="annotate">The `id` parameter on `export const getInvoice = (id) => { ... }`</Item>
+  <Item bucket="annotate">The `cents` parameter on the internal helper `const formatPrice = (cents) => ...`</Item>
+  <Item bucket="infer">The type of `const total = items.reduce((acc, item) => acc + item.price, 0)`</Item>
+  <Item bucket="infer">The `item` parameter on `items.map((item) => item.price)`</Item>
+  <Item bucket="annotate">The shape of `export type Invoice = { id: string; total: number }`</Item>
+  <Item bucket="infer">The return type of the internal helper `const computeTax = (cents: number) => cents * 0.21`</Item>
+  <Item bucket="annotate">The return type on `export const createInvoice = async (input: CreateInvoiceInput): Promise<Result<Invoice>> => { ... }`</Item>
+  <Item bucket="annotate">The `satisfies Record<RouteName, string>` clause on `export const ROUTES = { home: '/', signIn: '/sign-in' } as const`</Item>
+  <Item bucket="type-import">`import { User } from './user'` where `User` is only used as `(user: User) => ...`</Item>
+  <Item bucket="type-import">`import { type CreateInvoiceInput, createInvoice } from './invoice-actions'`</Item>
+</Buckets>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="TypeScript Handbook — `verbatimModuleSyntax`"
+    href="https://www.typescriptlang.org/tsconfig/verbatimModuleSyntax.html"
+    icon="simple-icons:typescript"
+    iconColor="#3178C6"
+    description="The official reference for the flag — the 'what you see is what you get' emit rule, with side-by-side examples of how each import shape is rewritten."
+  />
+  <ExternalResource
+    title="TypeScript Handbook — `isolatedDeclarations`"
+    href="https://www.typescriptlang.org/tsconfig/isolatedDeclarations.html"
+    icon="simple-icons:typescript"
+    iconColor="#3178C6"
+    description="The opt-in flag the lesson names in one sentence — relevant for monorepos and libraries that need parallel `.d.ts` emit without invoking the full type checker."
+  />
+  <ExternalResource
+    title="typescript-eslint — Consistent Type Imports and Exports"
+    href="https://typescript-eslint.io/blog/consistent-type-imports-and-exports-why-and-how/"
+    icon="simple-icons:eslint"
+    iconColor="#4B32C3"
+    description="Josh Goldberg on the side-effect failure modes the lesson covers, plus the two lint rules (`consistent-type-imports`, `consistent-type-exports`) that auto-fix existing codebases to the discipline."
+  />
+  <ExternalResource
+    title="Total TypeScript — Annotations and Assertions"
+    href="https://www.totaltypescript.com/books/total-typescript-essentials/annotations-and-assertions"
+    icon="lucide:book-open"
+    iconColor="#10B981"
+    description="The chapter from Matt Pocock's free Essentials book that frames the same annotate-vs-infer trade-off — variable-wins, value-wins, and `satisfies` as the third option — in long form."
+  />
+</CardGrid>

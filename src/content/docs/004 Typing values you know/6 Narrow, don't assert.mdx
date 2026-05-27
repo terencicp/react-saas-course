@@ -1,0 +1,466 @@
+---
+title: Narrow, don't assert
+description: Control-flow narrowing as the default for reading union-typed values, and the three legitimate triggers that earn a type assertion.
+chapter-id: 4
+sidebar:
+  order: 6
+  label: Narrowing and assertions
+---
+
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import TypeCoding from '../../../components/live-coding/TypeCoding/TypeCoding.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+The previous lesson left you with a working knowledge of unions, and a small landmine: reading a field on a `User | Guest` only works if the field exists on both. Reach for the field that's only on `User` and the compiler stops you. The fix you saw at the end was a runtime check — `'email' in value`. This lesson names the full set of those checks and the rule that ties them together. It also names the three places where the right reach is *not* a check, but a type assertion — and shows you why every other use of `as` is a bug waiting six months for its turn.
+
+Start with the bug.
+
+<div data-mark-color="red">
+
+```ts "value as User"
+const getEmail = (value: User | Guest): string => {
+  return (value as User).email;
+};
+```
+
+</div>
+
+The `as User` tells the compiler "trust me, this is a `User`." Compilation succeeds. The function ships. Six months later a `Guest` flows through, `value.email` evaluates to `undefined`, and the next line — `email.toLowerCase()`, or a log line, or a database write — crashes. The compiler never knew anything was wrong because the assertion silenced it.
+
+The trap is mechanical: a <Term definition="A compile-time-only operation that tells the type checker to treat a value as a different type. It has no runtime effect — the value is unchanged. The check the type system would have made is silenced; the developer takes responsibility for the claim.">type assertion</Term> has no runtime effect. The parsed value is exactly what it was before the `as`. The compiler stops checking; the runtime keeps doing what it always did. Asserting past a union is the developer borrowing trust the type system would have refused.
+
+The reflex you want to install is the inverse: write a runtime check the language can read, and let the compiler propagate the resulting type into the block. Every form last lesson hinted at — `typeof`, `in`, `===` on a discriminant — is one of those checks. This lesson names the full surface, names the three sites where an assertion is still the right call, and leaves you with a rule short enough to remember at a code review.
+
+## How TypeScript tracks runtime checks
+
+TypeScript reads your function body the way you read it: top to bottom, branch by branch. When it encounters a runtime check on a value, it refines that value's type along each path. Inside `if (typeof x === 'number')`, the compiler knows `x` is `number` for the consequent and "not number" for the alternative. The check exists at runtime; the type refinement exists at compile time; the language is the bridge between them.
+
+That bridge has a name: <Term definition="The TypeScript feature where the compiler tracks how runtime checks on a value refine its type along each branch of control flow. A check like typeof x === 'number' narrows x to number inside the if and to the remaining union members in the else.">control-flow narrowing</Term>. It is the load-bearing intuition for everything else in this lesson. Hold one mental frame and the rest follows:
+
+> **Narrow with a runtime check the language tracks. Never assert past a union without one of three named triggers.**
+
+The two halves of that sentence map to the two halves of the lesson. A narrowing check is sound — the compiler reads code that runs at runtime and propagates a witnessed fact. An assertion has no runtime witness — the compiler trusts the developer. The first is the default. The second is a conditional escape hatch.
+
+## The narrowing surface
+
+TypeScript supports six core narrowing forms. The list is finite, and once you've internalized it, the question at every union read becomes "which of these earns this case?" — never "should I just cast?"
+
+Each form below comes with the trigger that earns it and the type that survives the check.
+
+<CodeVariants>
+  <CodeVariant label="typeof">
+    <div data-mark-color="green">
+
+    ```ts "typeof amount === 'number'"
+    const formatAmount = (amount: string | number): string => {
+      if (typeof amount === 'number') {
+        return amount.toFixed(2);
+      }
+      return amount.trim();
+    };
+    ```
+
+    </div>
+    **`typeof` for mixed primitives.** Use `typeof` when the union mixes primitive types. The seven `typeof` results from the JavaScript value model give you the surface. Inside the consequent, the value narrows to the matched primitive type; the else branch carries the remaining union members.
+  </CodeVariant>
+
+  <CodeVariant label="Equality on a literal">
+    <div data-mark-color="green">
+
+    ```ts "status === 'draft'"
+    type Status = 'draft' | 'sent' | 'paid';
+
+    const canEdit = (status: Status): boolean => {
+      if (status === 'draft') {
+        return true;
+      }
+      return false;
+    };
+    ```
+
+    </div>
+    **Equality on a literal union.** Use `===` against a literal value when the union is a finite set of literals. Inside the consequent, the value narrows to the single literal you tested against. This is the same mechanism that powers the discriminated-union switch a few tabs down — a discriminant is just a literal-typed field on every variant of a union.
+  </CodeVariant>
+
+  <CodeVariant label="in">
+    <div data-mark-color="green">
+
+    ```ts "'email' in value"
+    const getEmail = (value: User | Guest): string => {
+      if ('email' in value) {
+        return value.email;
+      }
+      return 'no-reply@example.com';
+    };
+    ```
+
+    </div>
+    **`in` for shape unions.** Use `in` when the union is a set of object shapes with no common discriminant field, and one branch carries a field the others don't. This is the form the previous lesson reached for in the `User | Guest` example — the trigger is named here. Inside the consequent, the value narrows to the variant that owns the named field.
+  </CodeVariant>
+
+  <CodeVariant label="instanceof">
+    <div data-mark-color="green">
+
+    ```ts "error instanceof ValidationError"
+    try {
+      await saveInvoice(input);
+    } catch (error) {
+      if (error instanceof ValidationError) {
+        return showFieldErrors(error.fields);
+      }
+      throw error;
+    }
+    ```
+
+    </div>
+    **`instanceof` for class branches.** Use `instanceof` when the union includes class instances and you want to branch on which class produced the value. The canonical case is a `catch` block — clause bindings are `unknown` by default, and `instanceof Error` is the first narrow on the way to a typed handler. The check reads the prototype chain at runtime; the compiler reads the class as the narrowed type.
+
+    A short carve-out: `instanceof` is unreliable across realm boundaries (an iframe, a worker, a separate JS context, since each realm has its own `Error` constructor). The full story lives in the chapter on errors.
+  </CodeVariant>
+
+  <CodeVariant label="Array.isArray">
+    <div data-mark-color="green">
+
+    ```ts "Array.isArray(input)"
+    const normalize = (input: string | string[]): string[] => {
+      if (Array.isArray(input)) {
+        return input;
+      }
+      return [input];
+    };
+    ```
+
+    </div>
+    **`Array.isArray` for `T | T[]` unions.** Use `Array.isArray` when the union is a single value or a list of that value. The reason it gets its own form: `typeof` reports both an array and a plain object as `'object'`, so the primitive check can't separate them. `Array.isArray` is the dedicated reach.
+  </CodeVariant>
+
+  <CodeVariant label="switch on a discriminant">
+    <div data-mark-color="green">
+
+    ```ts "r.status" "case 'loading':" "case 'success':" "case 'error':"
+    type FetchResult<T> =
+      | { status: 'loading' }
+      | { status: 'success'; data: T }
+      | { status: 'error'; error: Error };
+
+    const render = <T>(r: FetchResult<T>): string => {
+      switch (r.status) {
+        case 'loading':
+          return 'Loading...';
+        case 'success':
+          return JSON.stringify(r.data);
+        case 'error':
+          return r.error.message;
+      }
+    };
+    ```
+
+    </div>
+    **`switch` on a discriminant.** When a union of shapes shares a literal-typed field — last lesson's `FetchResult<T>` shape — a `switch` on that field lets every case carry the full narrowed type. The `status` field is the <Term definition="A literal-typed field that appears on every variant of a union, with a different literal value per variant. Narrowing on the discriminant separates the variants at compile time.">discriminant</Term>; inside each `case` block the value narrows to the variant that owns that literal.
+
+    The `default` branch is where the exhaustiveness check lives — the pattern that catches a forgotten variant when the union grows. That pattern is named `assertNever` and lives in the next chapter; for now, the lesson stops at "every case narrows correctly."
+  </CodeVariant>
+</CodeVariants>
+
+There's a seventh form you'll meet often enough to recognize: the **custom type predicate**. When a check is too complex to inline at every use site, or when the same check needs to be reused across modules, you can package it as a function whose return type tells the compiler "I have witnessed this fact."
+
+<div data-mark-color="blue">
+
+```ts "value is User"
+function isUser(value: unknown): value is User {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'email' in value &&
+    typeof value.email === 'string'
+  );
+}
+```
+
+</div>
+
+The `value is User` return type is a <Term definition="A function whose return type is `value is T`. When the function returns true, TypeScript narrows the argument to T at the call site. The predicate is only as honest as its body — the compiler trusts the signature.">type predicate</Term>. When `isUser(x)` returns `true`, the compiler narrows `x` to `User` at the call site. The watch-out is mechanical: the predicate is **only as honest as its body**. If your `isUser` returns `true` on a value that isn't actually a `User`, the type system has no defence — you've handed it a lie wearing a signature. The next chapter covers the depth (including the assertion-function form, `asserts value is T`); this lesson plants the shape so you recognize it when you read it.
+
+:::note
+Type predicates are written with `function`, not arrow form. The `value is T` signature only lives on the `function` form, and it's the one carve-out in the project's "arrows by default" rule.
+:::
+
+<VideoCallout videoId="WAlJfSFngxw" videoTitle="Type Narrowing in TypeScript by Andrew Burgess">
+  Andrew Burgess walks the narrowing surface end-to-end — `typeof`, `in`, custom predicates, and a discriminated-union switch with exhaustiveness — in about twelve minutes.
+</VideoCallout>
+
+## The narrowing scope rule
+
+A narrow is not a property of the value. It's a property of the **block** where the check fired. Read that rule twice — it's the difference between a working refactor and a closure bug that crashes on a Tuesday morning.
+
+> **A narrow holds inside the block where the check fired and is invalidated by any assignment that could change the type.**
+
+The most common place this bites: a narrow inside an `if`, captured by a callback, where the variable could be reassigned between the check and the callback firing.
+
+<div data-mark-color="green">
+
+```ts {3}
+const handle = (value: User | Guest) => {
+  if ('email' in value) {
+    const user = value;
+    queueMicrotask(() => sendEmail(user.email));
+  }
+};
+```
+
+</div>
+
+The reflex is the one move on the line after the check: `const user = value`. The `const` binding captures the narrow at the moment it's true, and from then on the type system is reading `user`, not `value`. Reassignments to `value` later in the same block can't reach back through the alias.
+
+:::note
+Under strict TypeScript settings, the compiler also widens a narrow when a function call sits between the check and the read — it can't prove the function didn't reassign the variable through a closure. The fix is the same one-line `const` capture. Reach for the alias whenever the narrowed value crosses into a callback, a deferred call, or any code the compiler can't see through.
+:::
+
+## The three legitimate triggers for `as`
+
+The other half of the lesson. The posture is not "use `as` sparingly." It's the inverse: `as` has three named triggers. Anything outside those three is a refactor signal. Walking through them once gives you the checklist you'll want at code review.
+
+Read the file below. Three separate occurrences, three different triggers — each one is acceptable for a specific reason. The annotated walkthrough names what those reasons are.
+
+<AnnotatedCode lang="ts" code={`
+  import { z } from 'zod';
+
+  const userSchema = z.object({
+    id: z.string(),
+    email: z.string().email(),
+  });
+
+  type User = z.infer<typeof userSchema>;
+
+  const parseUser = (raw: unknown): User => {
+    return userSchema.parse(raw);
+  };
+
+  const cache = new Map<string, User>();
+
+  const remember = (user: User): User => {
+    cache.set(user.id, user);
+    return cache.get(user.id) as User;
+  };
+
+  const wireUpSubmit = () => {
+    const submit = document.querySelector('button[type="submit"]') as HTMLButtonElement;
+    submit.addEventListener('click', () => parseUser({}));
+  };
+`}>
+  <AnnotatedStep meta={`"userSchema.parse(raw)"`} color="green">
+    **Boundary parse-then-trust.** A Zod schema (or any validator) reads an `unknown` at the boundary, runs the structural check at runtime, and returns a typed value. The assertion is **inside the parser's return type** — the user code does not write `as`. Name this trigger explicitly so when the chapter on Zod lands, the mental model is already installed: a typed value at a boundary comes from a parse, not from a cast. This is the only one of the three triggers where you write no `as` at all.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"cache.get(user.id) as User"`} color="orange">
+    **TypeScript can't see what you can prove.** The line before set `user.id` as a `User` in the cache. The line after reads the same key back. You know — and the runtime knows — that the key is present and the value is a `User`. TypeScript can't track the flow through a `Map`: `cache.get(key)` returns `User | undefined` because the API has to be honest about misses in general. The assertion encodes a proof the developer can make and the type system can't. The question to ask at code review: "would a refactor remove the need?" Often yes — return the value you just set, skip the round-trip. When it survives that question, the assertion is acceptable.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"as HTMLButtonElement"`} color="violet">
+    **The DOM and third-party type gaps.** `document.querySelector('button[type="submit"]')` returns `Element | null` because the DOM API can't read your selector and infer the matching tag. The call site can: the selector says "button," and you wrote the markup. For a tightly-scoped one-shot like this, the assertion is acceptable. If the value flows further than the next few lines — across a component boundary, into a hook, into shared state — the honest alternative is `instanceof HTMLButtonElement`, which is a real runtime check the compiler can read.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Two more rules belong here. They're short, and you'll want them next to the three triggers.
+
+**`as unknown as T` is a smell.** Stacking two assertions through `unknown` always means the type system is being silenced. Sometimes the silence is the right call — a test fixture that needs to mimic a private type, a third-party boundary with no honest signatures. Usually it's a refactor signal. The form is loud on purpose; let it be loud.
+
+**Type assertions don't validate at runtime.** This is the opening bug repeated as a rule, because the rule is what stays with you. `value as User` compiles. The runtime value is unchanged. The next line that touches a `User`-only field on a `Guest` crashes. When the data isn't honoring the type, the fix is to narrow, not to assert.
+
+## `!` is `as` with a narrower trigger
+
+The non-null assertion operator, `!`, is the same posture as `as` with a tighter scope. It tells the compiler "this value is not `null` or `undefined`" without writing a runtime check.
+
+The most common legitimate use:
+
+<div data-mark-color="orange">
+
+```ts "!"
+const ids = ['a', 'b', 'c'];
+const target = ids.find((id) => id === 'b')!;
+```
+
+</div>
+
+The caller has just proved the element exists via a check the type system can't track (`find` returns `T | undefined`, but you wrote the predicate and you wrote the array). The `!` saves a line.
+
+The honest alternative is explicit:
+
+<div data-mark-color="green">
+
+```ts "?? throwError('missing id b')"
+const target = ids.find((id) => id === 'b') ?? throwError('missing id b');
+```
+
+</div>
+
+The trade-off reads cleanly. The `!` is shorter; the `?? throwError(...)` is honest, and gives the production error a name a log scanner can grep. Reach for `!` when the call site is a one-shot script, a test fixture, or a local proof the line of code carries on its own. Reach for `?? throwError(...)` when the failure is observable in production.
+
+The same posture applies to the rule from the dynamic-keys lesson. Under `noUncheckedIndexedAccess`, `arr[0]` is `T | undefined` even on a non-empty array, because the compiler can't read your length. The `!` shortcut is acceptable in the same three triggers as `as`; outside them, narrow with `if (arr.length > 0)` and capture, or accept the `| undefined` and handle the miss explicitly.
+
+## Narrowing across `null` and `undefined`
+
+A small section to wire up the nullable case. From the object shapes lesson, you have `?` (the field may be absent) versus `| undefined` (the field is present with the value `undefined`). The narrowing forms for nullable unions follow the same surface, with one gotcha worth landing twice.
+
+<CodeVariants>
+  <CodeVariant label="Truthy check">
+    <div data-mark-color="green">
+
+    ```ts "if (user)"
+    const greet = (user: User | null): string => {
+      if (user) {
+        return `Hello, ${user.name}`;
+      }
+      return 'Hello, guest';
+    };
+    ```
+
+    </div>
+    **Truthy check.** A bare `if (user)` is the easiest form, and it works correctly when the type is `User | null` — the object is truthy, `null` is falsy. The gotcha lives in the broader case: a <Term definition="An if (x) check that branches on whether the value is truthy. The falsy values in JavaScript are false, 0, '', null, undefined, NaN, and 0n — a truthy check excludes all of them, not just null/undefined.">truthy check</Term> on `string | number | null | undefined` also excludes `0`, `''`, and `false`. For that case, use `!= null` (one of the rare legitimate uses of double-equals — `null == undefined` is `true`, so the comparison catches both) or the explicit `!== null && !== undefined`.
+  </CodeVariant>
+
+  <CodeVariant label="Nullish coalescing">
+    <div data-mark-color="green">
+
+    ```ts "?? 'guest'"
+    const name = user?.name ?? 'guest';
+    ```
+
+    </div>
+    **`??` — default and continue.** Not a narrow per se, but the right reach when the goal is to provide a default and continue past the nullable in one expression. `??` triggers on `null` and `undefined` only — never on `0`, `''`, or `false`. Reach for `??` when the read value flows directly into a use; reach for the explicit check when the branches need to diverge.
+  </CodeVariant>
+
+  <CodeVariant label="Optional chaining gotcha">
+    <div data-mark-color="green">
+
+    ```ts "if (!user) return null" "user.name" "user.email"
+    const greetAndEmail = (user: User | null): string | null => {
+      if (!user) return null;
+      return `${user.name} <${user.email}>`;
+    };
+    ```
+
+    </div>
+    **`?.` — short-circuit, not a narrow.** Optional chaining short-circuits at runtime: if `user` is `null`, `user?.email` is `undefined` without ever reading `.email`. What it doesn't do is narrow `user` for subsequent reads — the type of `user` outside the expression is unchanged. The reflex when several reads follow: narrow once at the top of the block with an early return, then read directly.
+  </CodeVariant>
+</CodeVariants>
+
+## Practice: rewrite an assertion-heavy function
+
+You've seen the six narrowing forms, the scope rule, the three assertion triggers, and the nullable surface. The next step is muscle memory. The function below is the kind of code that compiles and ships and bites — two `as` assertions, two distinct paths to remove them.
+
+Refactor the function to use narrowing on both reads. The two `@ts-expect-error` directives at the bottom of the file must trigger (proving the no-narrow access still fails); the two `^?` queries inside the narrowed blocks must resolve to the expected narrowed types.
+
+<TypeCoding
+  instructions="Refactor describe so neither `as` survives. In the probes below, replace each `false` with the runtime check that narrows the value before the read — the ^? queries must resolve to the narrowed types, and the two @ts-expect-error directives must keep firing (proving the unguarded access still fails)."
+  starter={`type User = {
+  kind: 'user';
+  id: string;
+  email: string;
+};
+
+type Guest = {
+  kind: 'guest';
+  id: string;
+};
+
+type Role = 'admin' | 'member';
+
+const roleLabels: Record<Role, string> = {
+  admin: 'Administrator',
+  member: 'Member',
+};
+
+// Refactor: replace both \`as\` assertions with narrowing.
+const describe = (value: User | Guest, roleKey: string): string => {
+  const email = (value as User).email; // smell: asserts past a union
+  const role = roleLabels[roleKey as Role]; // smell: asserts a wider type into a narrower one
+  return \`\${email} (\${role})\`;
+};
+
+// Pin the narrowing patterns. Replace each \`false\` with a runtime check;
+// the ^? queries must resolve to the narrowed types.
+
+declare const v: User | Guest;
+if (false /* narrow v so v.email is allowed */) {
+  const probe = { email: v.email };
+  //    ^?
+}
+
+declare const k: string;
+if (false /* narrow k so roleLabels[k] is allowed */) {
+  const narrowedKey = k;
+  //    ^?
+  const label = roleLabels[k];
+}
+
+// These must continue to fail to type-check:
+
+declare const value2: User | Guest;
+// @ts-expect-error — reading .email without narrowing must fail
+value2.email;
+
+declare const key2: string;
+// @ts-expect-error — indexing roleLabels with a wider string must fail
+roleLabels[key2];
+`}
+  expectedQueries={[
+    { line: 32, contains: 'email: string' },
+    { line: 38, contains: 'narrowedKey: "admin" | "member"' },
+  ]}
+/>
+
+## Sort each scenario: narrow or assert?
+
+A closing sort to lock the posture. Every union read in your code either has a narrowing form available, or sits at one of the three named assertion triggers. The exercise below names eight scenarios; drop each one into the bucket that fits.
+
+<Buckets twoCol instructions="For each union read below, decide whether a narrowing check is available or whether the read sits at one of the three legitimate assertion triggers.">
+  <Bucket name="narrow" label="Narrow with a runtime check" description="The language gives you a check it can track" />
+  <Bucket name="assert" label="Assertion is acceptable here" description="Boundary parse, proof gap, or DOM seam" />
+
+  <Item bucket="narrow">A parameter typed `string | number` that needs to format as currency for numbers</Item>
+  <Item bucket="narrow">A `User | Guest` value where only `User` has an `email` field</Item>
+  <Item bucket="narrow">A `FetchResult<T>` discriminated on `status`</Item>
+  <Item bucket="assert">A `parsed = userSchema.parse(payload)` where `payload` was `unknown`</Item>
+  <Item bucket="assert">A `document.querySelector('button[type="submit"]')` call in a tightly-scoped one-shot</Item>
+  <Item bucket="narrow">An `error` value inside a `catch (error)` block</Item>
+  <Item bucket="assert">A `map.get(id)` immediately after `map.set(id, user)`</Item>
+  <Item bucket="narrow">A `User | null` returned from a database lookup before reading `.email`</Item>
+</Buckets>
+
+The rule the lesson leaves you with, one line for code review: **narrow with the language; reach for `as` only at the boundary, the proof gap, or the DOM seam.**
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="TypeScript Handbook — Narrowing"
+    href="https://www.typescriptlang.org/docs/handbook/2/narrowing.html"
+    icon="simple-icons:typescript"
+    iconColor="#3178C6"
+    description="The official walkthrough of every narrowing form — typeof, truthiness, equality, in, instanceof, predicates, and exhaustiveness with never."
+  />
+  <ExternalResource
+    title="Total TypeScript — Type Assertions"
+    href="https://www.totaltypescript.com/concepts/type-assertions"
+    icon="lucide:shield-alert"
+    iconColor="#E11D48"
+    description="Matt Pocock on what `as` can and can't reach, the `as unknown as T` double-cast smell, and why the assertion is a claim the type system can't check."
+  />
+  <ExternalResource
+    title="MDN — instanceof"
+    href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/instanceof"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The runtime mechanics of `instanceof` — prototype-chain check, plus the cross-realm pitfall (iframe, worker) named in the lesson."
+  />
+</CardGrid>
