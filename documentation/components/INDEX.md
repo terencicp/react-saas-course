@@ -16,6 +16,7 @@ API reference for the pre-built Astro components used in lessons, grouped by cat
 | `Icon` | Built-in icons, standalone or accepted by `Card`, `Aside`, `TabItem`. | [icons.md](./starlight/icons.md) |
 | `Steps` | Numbered procedure the reader follows in order. | [steps.md](./starlight/steps.md) |
 | `Tabs`, `TabItem` | Alternatives the reader chooses between. For tabbed *code* comparisons, prefer `CodeVariants` instead. | [tabs.md](./starlight/tabs.md) |
+| `<details>` | Collapsible disclosure — clickable `<summary>` line expands to reveal hidden content. Native HTML. Use for reveal-on-demand reference solutions or optional deep-dives. | [details.md](./starlight/details.md) |
 
 ---
 
