@@ -1,0 +1,558 @@
+---
+title: "Flat control flow: guards, ternaries, and exhaustive switch"
+description: Three structural forms that keep function bodies flat — guard clauses for early exits, expression-level ternaries for value selection, exhaustive switch for discriminated dispatch — plus the loop reach a 2026 senior makes.
+chapter-id: 2
+sidebar:
+  order: 4
+  label: Flat control flow
+---
+
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import ScriptCoding from '../../../components/live-coding/ScriptCoding/ScriptCoding.astro';
+import CodeReview from '../../../components/exercises/code-review/CodeReview.astro';
+import ReviewFile from '../../../components/exercises/code-review/ReviewFile.astro';
+import ReviewIssue from '../../../components/exercises/code-review/ReviewIssue.astro';
+import ReviewWhy from '../../../components/exercises/code-review/ReviewWhy.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+Open any legacy codebase and you'll find them: functions whose bodies are four levels of `if`/`else` deep, with the happy path buried at the bottom. The reviewer has to track which `else` belongs to which `if` to know what fires on which path; the debugger has to step through with breakpoints to trace the actual route through the tree. The bug class isn't "the wrong condition" — it's the missed branch that fails silently, the implicit `undefined` return at the bottom of a tree that nobody noticed was reachable. A new variant slips into a type six months later, no branch handles it, no compile error fires, and production starts returning `undefined` from a function that's supposed to return a string.
+
+The fix isn't a single trick. It's three structural forms you reach for by category, plus one default for loops. **Guard clauses** for early exits — check the invalid case first, return immediately, run the happy path unindented. **Expression-level ternaries** for value selection — when the branch is choosing *what value* to assign, return, or pass, not *what to do*. **Exhaustive `switch`** for discriminated dispatch — when the branch count is fixed on a literal field and the compiler should catch a missing case. Every function the rest of this course writes uses these three shapes — inside the `const fn = (args) => …` form from "Arrow by default, declaration on demand," and with the intent-named variables from the previous lesson "Name for intent, not implementation."
+
+What's ahead: four sections — guard clauses with the "no `else` after `return`" rule, ternaries with the side-effect carve-out, `switch` with `noFallthroughCasesInSwitch` and `assertNever` plus the lookup-map alternative, and loops in 2026. Then a closing PR review where you flag every structural smell from this lesson on one short function.
+
+## Guard clauses flatten the happy path
+
+The first form and the lesson's most-used reflex. Compare the two shapes side by side — same function, same four checks, same five return paths, only the structure changes.
+
+<CodeVariants>
+  <CodeVariant label="Nested ifs">
+    <div data-mark-color="orange">
+
+    ```ts
+    const chargeCustomer = (input: ChargeInput) => {
+      if (input.user) {
+        if (input.user.canCharge) {
+          if (input.amountCents > 0) {
+            if (!input.user.isFrozen) {
+              return processCharge(input);
+            } else {
+              return { ok: false, reason: 'frozen' };
+            }
+          } else {
+            return { ok: false, reason: 'amount' };
+          }
+        } else {
+          return { ok: false, reason: 'permission' };
+        }
+      } else {
+        return { ok: false, reason: 'unauthenticated' };
+      }
+    };
+    ```
+
+    </div>
+    **Four nesting levels, the happy path buried at indentation four.** The reader has to track which `else` belongs to which `if` to know what fires on which path. And there's a hidden footgun: drop a `return` inside any branch and the implicit `undefined` leaks through one of the paths without a compile error. Every level you add doubles the surface area where that bug can hide.
+  </CodeVariant>
+
+  <CodeVariant label="Guard clauses">
+    <div data-mark-color="green">
+
+    ```ts
+    const chargeCustomer = (input: ChargeInput) => {
+      if (!input.user) return { ok: false, reason: 'unauthenticated' };
+      if (!input.user.canCharge) return { ok: false, reason: 'permission' };
+      if (input.amountCents <= 0) return { ok: false, reason: 'amount' };
+      if (input.user.isFrozen) return { ok: false, reason: 'frozen' };
+      return processCharge(input);
+    };
+    ```
+
+    </div>
+    **Each invalid case checks-and-returns at the top.** The happy path lives unindented at the bottom. The function reads top-to-bottom; the reader doesn't track nesting because there is none. Every `if` is followed immediately by a `return` — there's nowhere for an implicit `undefined` to hide.
+  </CodeVariant>
+</CodeVariants>
+
+The shape is a polarity flip. The nested version reads "if everything is good, do the work, else handle errors"; the guard version reads "if anything is wrong, exit; then do the work." A <Term definition="A check at the top of a function that exits early when an invalid or edge case is detected, so the rest of the function can assume the happy path.">**guard clause**</Term> is just that: a check at the top, an immediate return, no `else`. One return path per condition, one happy path at the outer indentation level.
+
+Why this reads better, in three beats. First, every early return at the leftmost indent is a "this path is handled" signal — your eye scans down the left margin and reads the function's contract before reading any body. Second, the happy path is always last and always unindented; you know where to find it. Third, adding a new precondition doesn't grow the nesting; it adds one more guard at the top.
+
+### Drop the dead `else`
+
+Once a branch returns (or throws), the `else` block is dead weight. The code after the `if` only runs when the `if` didn't return, so there's nothing for the `else` to disambiguate. Drop it and dedent the rest.
+
+```ts
+const greet = (user: User | null) => {
+  if (!user) {
+    return 'hi, stranger';
+  } else {
+    return `hi, ${user.name}`;
+  }
+};
+```
+
+The `else` here adds nothing — if the `if` returned, the second branch is unreachable; if it didn't, the second branch is the only path left. The form below says the same thing with one fewer level of structure.
+
+```ts
+const greet = (user: User | null) => {
+  if (!user) return 'hi, stranger';
+  return `hi, ${user.name}`;
+};
+```
+
+Biome catches this for you. The `noUselessElse` rule flags every `else` block that follows an `if` whose body terminates with `return`, `throw`, `continue`, or `break`, and its autofix dedents the trailing block in one keystroke. You don't have to remember the rule mid-flow; the linter will refuse to land the dead `else`.
+
+The deeper reflex this section installs: **indentation deeper than two levels in a 2026 SaaS function is a smell.** When the next reviewer opens a file and sees nesting depth three or four in a function body, they refactor into guards before reading further. The structural shape is the bug the reviewer is fixing — the conditions themselves might be correct, but the shape is paying interest on every future read.
+
+<VideoCallout videoId="CFRhGnuXG-4" videoTitle="Why You Shouldn't Nest Your Code by CodeAesthetic">
+  CodeAesthetic's 8-minute walkthrough of the same two reflexes — inversion (guard clauses) and extraction — applied to a heavily-nested function until the happy path comes back to the outer indent.
+</VideoCallout>
+
+## Ternaries at the expression level only
+
+The second form, and a short one. The rule lives in one sentence: **use a ternary when the result is a value being assigned, returned, or passed as an argument. Don't use a ternary for side effects.** The ternary's job is *value selection*, not *control flow*. When the branch is "do A or do B," an `if` reads better. When the branch is "this value or that value," the ternary reads like the data.
+
+Three places the ternary is the right reach. Each tab below shows one — same operator, different value-selection context.
+
+<CodeVariants>
+  <CodeVariant label="Assignment">
+    ```ts
+    const label = isPaid ? 'Paid' : 'Pending';
+    ```
+    **A value being computed and bound to a name.** The two branches are the two possible values of `label`. The whole expression is the value of the assignment.
+  </CodeVariant>
+
+  <CodeVariant label="Return">
+    ```ts
+    return user.isAdmin ? user.adminBadge : null;
+    ```
+    **A value being returned from a function.** Same shape — two possible return values, the ternary picks between them. The function's contract is "returns either the admin badge or null"; the ternary reads as that contract.
+  </CodeVariant>
+
+  <CodeVariant label="Argument (JSX prop)">
+    ```tsx
+    <Button variant={isDestructive ? 'danger' : 'primary'}>Delete</Button>
+    ```
+    **A value being passed as an argument — here as a JSX prop.** The destination wants a *value* (`'danger'` or `'primary'`), not a statement. The ternary is the right reach because the slot is value-shaped.
+  </CodeVariant>
+</CodeVariants>
+
+The anti-pattern is using the same operator for side effects:
+
+```ts
+user.isAdmin ? logAdmin(user) : logUser(user);
+```
+
+This works — JavaScript evaluates the ternary, picks one of the two function calls, runs it, throws away the result. But the shape *says* "pick a value" when what's actually happening is "choose which function to call." The reader has to mentally translate the value-selection operator into a control-flow statement, and the cost is paid every time someone scans the file. The `if` form says the truth out loud:
+
+```ts
+if (user.isAdmin) logAdmin(user);
+else logUser(user);
+```
+
+The verb-shaped branching reads as control flow, which is what it is. Same runtime behavior, honest shape.
+
+### Nested ternaries
+
+Nested ternaries divide opinions. The course's position: **acceptable when the structure reads at a glance; refactor when any branch has to be parsed.** The shape matters more than the rule "no nesting."
+
+A flat decision tree with one-token literal branches reads as a small lookup table:
+
+```ts
+const color = status === 'paid'
+  ? 'green'
+  : status === 'pending'
+    ? 'yellow'
+    : 'red';
+```
+
+One branch per line, the structure of the decision visible from indentation alone. The reader scans down and sees three cases mapped to three colors. When a chain like this grows past three or four cases on a single field, the lookup-map form below often reads better; you'll see that pattern in the next section.
+
+The form that earns the refactor is the one where each branch is itself an expression the reader has to parse:
+
+```ts
+const fee = type === 'card' ? amount * 0.029 + 30 : type === 'ach' ? amount * 0.008 : 0;
+```
+
+Three branches on one line, each with non-trivial arithmetic, no way to see the structure without re-reading. The fix is either a `switch` (next section) or a named helper:
+
+```ts
+const fee = computeFee(type, amount);
+```
+
+The trigger to refactor: when the reader can't see the structure of the decision at a glance, the ternary has outgrown its form.
+
+One sentence on Biome: it doesn't enforce "no ternaries for side effects" — that's a human review reflex. It does enforce `noUselessTernary`, which flags trivially wrong shapes like `x ? true : false` (the whole thing collapses to `x`). The body of this rule is yours to enforce in review.
+
+## Exhaustive `switch` for discriminated dispatch
+
+The third form and the lesson's biggest payoff. The reach: **fixed branch count, literal discriminant value, each case has its own logic.** The classic shape is a discriminated union — a `status` field on a `Payment`, an `event.type` on a webhook payload, a `kind` field on a state-machine state — where each variant gets its own handling. When the branches are uniform value-to-value mappings, the lookup map at the end of this section reads better; when each case has logic, `switch` is the reach.
+
+The full pattern in one snippet, walked one piece at a time.
+
+<AnnotatedCode lang="ts" code={`
+type Payment =
+  | { status: 'pending'; createdAt: Date }
+  | { status: 'paid'; paidAt: Date; amountCents: number }
+  | { status: 'failed'; reason: string };
+
+const assertNever = (x: never): never => {
+  throw new Error(\`Unhandled variant: \${JSON.stringify(x)}\`);
+};
+
+const describePayment = (payment: Payment): string => {
+  switch (payment.status) {
+    case 'pending':
+      return \`Pending since \${payment.createdAt.toISOString()}\`;
+    case 'paid':
+      return \`Paid \${payment.amountCents} cents at \${payment.paidAt.toISOString()}\`;
+    case 'failed':
+      return \`Failed: \${payment.reason}\`;
+    default:
+      return assertNever(payment);
+  }
+};
+`}>
+  <AnnotatedStep meta="{1-4}" color="blue">
+    The discriminated union. Each variant has a `status` field with a unique literal value (`'pending'`, `'paid'`, `'failed'`). That shared field is the <Term definition="The literal-typed field shared across the variants of a discriminated union that the dispatch reads to pick a case.">**discriminant**</Term> — the field the `switch` will dispatch on. Each variant also carries its own per-case fields; `paid` has `amountCents`, `failed` has `reason`. The shape installed here is the canonical 2026 way to model "one of these N states," and you'll write it for every state machine, webhook payload, and Server Action result in the rest of the course.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{6-8}" color="violet">
+    `assertNever` is the compile-time exhaustiveness helper. It takes one parameter typed `never` — TypeScript's <Term definition="TypeScript's bottom type — the type with no values. Useful as a parameter type to force a compile error when an unhandled union variant could reach the function. Full treatment in the chapter on TypeScript's narrowing model.">**`never` type**</Term>, the bottom type that represents "no possible value" — and throws at runtime if it's ever actually called. The function lives once per codebase, in `lib/assert-never.ts`, and gets imported everywhere a `switch` over a discriminated union appears. Why `never` does the compile-time work lands fully in the chapter on TypeScript narrowing; the final step of this walkthrough shows the behavior in action.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{10-12}" color="green">
+    The function signature returns `string` and takes a `Payment`. The `switch` dispatches on `payment.status` — the discriminant from step 1. Each `case` matches one literal value of that field. The structure is flat: one case per variant, no nesting.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{13-19}" color="green">
+    Every case returns — there's no `break` because `return` exits the function. TypeScript narrows `payment` inside each case based on the discriminant: inside `case 'paid'`, the compiler knows `payment` is the `{ status: 'paid'; paidAt; amountCents }` variant specifically, so reading `payment.amountCents` type-checks. Inside `case 'failed'`, accessing `payment.amountCents` would be a compile error because that variant doesn't have the field. The narrowing model lands fully in the chapter on TypeScript narrowing; what you need here is "the compiler picks the right variant per case automatically."
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{20-21}" color="orange">
+    The payoff. The `default` case calls `assertNever(payment)`. Because every other variant has been handled by the cases above, TypeScript has narrowed `payment` to `never` here — the type with no possible value, because there's nothing left. The call type-checks today. Tomorrow, when someone adds a fourth variant to `Payment` — say `{ status: 'refunded'; refundedAt: Date }` — and forgets to add a `case 'refunded':` to this switch, `payment` no longer narrows to `never` at the default (it narrows to the un-handled `refunded` variant), so the `assertNever(payment)` call becomes a **compile error**: "Argument of type `{ status: 'refunded'; ... }` is not assignable to parameter of type `never`." A missing case becomes structurally impossible to ship.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The rule, stated once: **every `switch` over a discriminated union ends with `default: return assertNever(value);`.** That single line turns an exhaustiveness bug from "production silently returns the wrong thing six months later" into "the build fails at the line you forgot to update." It's one of the highest-leverage type-system patterns the course teaches, and it costs you one extra line per `switch`.
+
+<VideoCallout videoId="CG3_Y9T03J4" videoTitle="TypeScript Exhaustive Switch by Andrew Burgess">
+  Andrew Burgess walks through the same pattern in 10 minutes — building a discriminated union from scratch, narrowing inside each `case`, and writing an `assertNever`-style helper (he calls it `assertCannotReach`) that turns a missing variant into a compile error.
+</VideoCallout>
+
+### The fallthrough safety net
+
+There's a second safety net the course's `tsconfig` enables: `noFallthroughCasesInSwitch`. In classic C-style `switch`, omitting `break` lets execution fall through into the next case — a bug class that's bitten every language with that operator since the 1970s. The compiler flag from `tsconfig.json` (configured in the chapter on TypeScript strict mode) makes any case that doesn't terminate with `break`, `return`, `throw`, or `continue` a compile error.
+
+<div data-mark-color="red">
+
+```ts {3}
+switch (kind) {
+  case 'a':
+    doA();
+  case 'b':
+    doB();
+    break;
+}
+```
+
+</div>
+
+Under `noFallthroughCasesInSwitch`, the absence of a terminating statement after `doA()` is a compile error — execution would fall through into `case 'b'` and run `doB()` too. The flag makes the classic "I forgot the `break`" bug ship-blocking; the only way to silence it is to add a real terminator (`break`, `return`, `throw`, or `continue`).
+
+Together, the two safety nets cover both failure modes: <Term definition="A TypeScript compiler flag enabled in the course's tsconfig.json that makes a switch case without a terminating statement (break, return, throw, continue) a compile error.">**`noFallthroughCasesInSwitch`**</Term> blocks accidental fallthrough between cases; `assertNever` in `default` blocks missing-variant exhaustiveness bugs. Both fire at compile time. Neither needs you to remember anything at the line you write the `switch` — the tools refuse the broken shapes.
+
+Try this. Which of the following `switch` blocks compile cleanly under `noFallthroughCasesInSwitch` and `assertNever`? More than one is correct.
+
+<MultipleChoice>
+  Given the `Payment` type and `assertNever` helper from the snippet above, which of these `switch` blocks compile under `noFallthroughCasesInSwitch` + `assertNever`? Select all that apply.
+
+  <McqChoice correct>
+    ```ts
+    switch (payment.status) {
+      case 'pending':
+        return 'p';
+      case 'paid':
+        return 'paid';
+      case 'failed':
+        return 'failed';
+      default:
+        return assertNever(payment);
+    }
+    ```
+  </McqChoice>
+  <McqChoice>
+    ```ts
+    switch (payment.status) {
+      case 'pending':
+        log('pending');
+      case 'paid':
+        return 'paid';
+      case 'failed':
+        return 'failed';
+      default:
+        return assertNever(payment);
+    }
+    ```
+  </McqChoice>
+  <McqChoice>
+    ```ts
+    switch (payment.status) {
+      case 'pending':
+        return 'p';
+      case 'paid':
+        return 'paid';
+      default:
+        return assertNever(payment);
+    }
+    ```
+  </McqChoice>
+  <McqChoice correct>
+    ```ts
+    switch (payment.status) {
+      case 'pending':
+        throw new Error('pending');
+      case 'paid':
+        return 'paid';
+      case 'failed':
+        return 'failed';
+      default:
+        return assertNever(payment);
+    }
+    ```
+  </McqChoice>
+
+  <McqWhy>The two correct shapes are the first and the last. The first compiles because every case terminates with `return`, every variant is handled, and `assertNever(payment)` type-checks at the `default` because `payment` has narrowed to `never`. The last also compiles — `throw` is a valid terminator for `noFallthroughCasesInSwitch`, every variant still has a case, and the `default` is still unreachable so `payment` still narrows to `never`. The second fails: `case 'pending':` runs `log('pending')` but never terminates, so the compiler errors on the fallthrough into `'paid'`. The third fails: `'failed'` is unhandled, so at the `default` `payment` is still `{ status: 'failed'; reason: string }`, not `never`, and `assertNever(payment)` is rejected with an "argument is not assignable to `never`" error. The pattern doesn't care whether you `return` or `throw`; it cares that every case terminates and every variant has a home.</McqWhy>
+</MultipleChoice>
+
+### The lookup-map alternative
+
+When the cases are uniform value-to-value mappings with **no logic per case**, an object literal lookup reads better than a `switch`. Same idea — pick a value based on a discriminant — but without the case/break/return scaffolding.
+
+<CodeVariants>
+  <CodeVariant label="Switch">
+    ```ts
+    const colorFor = (status: Payment['status']): string => {
+      switch (status) {
+        case 'paid':
+          return 'green';
+        case 'pending':
+          return 'yellow';
+        case 'failed':
+          return 'red';
+        default:
+          return assertNever(status);
+      }
+    };
+    ```
+    **Verbose for a flat mapping** — eleven lines for three cases, and the `case`/`return` scaffolding does nothing each branch actually needs. The `assertNever` payoff is real, but for a pure value-to-value mapping the form is heavier than the work.
+  </CodeVariant>
+
+  <CodeVariant label="Lookup map">
+    ```ts
+    const color = { paid: 'green', pending: 'yellow', failed: 'red' }[status] ?? 'gray';
+    ```
+    **One line.** The object literal *is* the mapping; the indexing operation is the lookup. The `?? 'gray'` handles the case where `status` doesn't match any key — under `noUncheckedIndexedAccess` (the strict flag from the chapter on TypeScript strict mode), the lookup's return type is `string | undefined`, so the fallback is required.
+  </CodeVariant>
+</CodeVariants>
+
+One watch-out on the lookup form. The course's `tsconfig` enables <Term definition="A TypeScript compiler flag that adds | undefined to the type of any indexed access (arr[i], obj[key]) where the key isn't statically known. Forces the caller to handle the miss.">**`noUncheckedIndexedAccess`**</Term>, which adds `| undefined` to the type of every indexed access where the compiler can't prove the key exists. That's why the `??` operator (covered in the next lesson on `??` and `||`) shows up — it supplies the fallback when the lookup misses. Without the fallback, the variable's type would be `string | undefined` and TypeScript would force you to handle the miss everywhere it's used.
+
+A tighter alternative if you want compile-time exhaustiveness on the lookup itself: type the map as a record indexed by the union, so TypeScript refuses to compile until every key is present.
+
+```ts
+const colors: Record<Payment['status'], string> = {
+  paid: 'green',
+  pending: 'yellow',
+  failed: 'red',
+};
+
+const color = colors[status] ?? 'gray';
+```
+
+`Record<Keys, Value>` is one of TypeScript's built-in mapped types — full treatment lands in the chapter on object types and records. Once the map is typed against the union, adding a new variant to `Payment['status']` makes the `colors` literal a compile error until you fill in the new key. Same exhaustiveness story as `assertNever`, applied to the lookup-map form. The `?? 'gray'` fallback is still required at the access site — `noUncheckedIndexedAccess` adds `| undefined` to any dynamic indexed lookup, even against a typed `Record`.
+
+The trade, in one sentence: lookup map is shorter and cleaner for uniform value-to-value mappings; `switch` + `assertNever` is the right reach when each case has logic and the compiler should enforce exhaustiveness.
+
+## Loops in 2026
+
+Four loop forms exist in modern JavaScript. The course writes one of them most of the time, two of them sometimes, one of them never. Ranked by reach:
+
+1. **`.map` / `.filter` / `.reduce` array methods.** The default for any list-to-list transformation. Expression-shaped, no mutable accumulator, the types thread through automatically. A later chapter on container-shaped data owns the depth on these — for this lesson, know that they're the first reach for transforming an array into a new array.
+
+2. **`for...of`** — for side-effecting iteration. Database writes inside a loop body, async work that has to await per item, early `break` to stop on a match, anything the array methods aren't shaped for. Use `for (const [index, value] of arr.entries())` when the index is needed; use `for (const [key, value] of Object.entries(obj))` to iterate an object's own enumerable keys safely. `break` and `continue` are clean here — reach for them when the body has multiple statements or async calls that `.some` / `.every` can't host.
+
+3. **`for (let i = 0; i < n; i++)`** — the C-style index loop. The narrow trigger: numeric ranges where the index *is* the data (matrix indexing, custom step sizes, reverse iteration before `.toReversed()` was available). Rare in 2026 SaaS code; when you reach for it, the index is doing semantic work, not just counting positions.
+
+4. **`for...in`** — the legacy form. Iterates *enumerable string keys, including inherited ones from the prototype chain*. Almost always wrong; use `Object.keys`, `Object.entries`, or `Object.values` instead. **The course never writes `for...in`.** You'll see it in older third-party code — recognize it, don't replicate it.
+
+The bug class `for...in` ships is worth seeing once before you ship the reflex to avoid it. The starter below uses `for...in` to sum the values of a plain object — and looks correct in isolation. The tests pin the actual behavior: the second test fails because `for...in` walks up the prototype chain and picks up an inherited numeric property the author never put on the object. Rewrite the function to use `for...of` + `Object.entries` and watch both tests pass.
+
+<ScriptCoding
+  runner="sandpack"
+  instructions="Rewrite sumValues to iterate only the object's own enumerable keys using Object.entries and for...of. The second test pins the bug the original ships: when the object's prototype carries a numeric property, the for...in form picks it up too."
+  starter={`export const sumValues = (obj: Record<string, number>): number => {
+  let total = 0;
+  for (const key in obj) {
+    total += obj[key];
+  }
+  return total;
+};
+`}
+  tests={`
+test('sums own keys of a plain object', () => {
+  expect(sumValues({ a: 1, b: 2, c: 3 })).toBe(6);
+});
+
+test('does not include inherited keys from the prototype chain', () => {
+  const proto = { inherited: 100 };
+  const child = Object.create(proto);
+  child.own = 5;
+  expect(sumValues(child)).toBe(5);
+});
+`}
+/>
+
+The fix isn't sophisticated; it's the default reach. `Object.entries` returns only the object's own enumerable string-keyed properties, and `for...of` iterates the resulting `[key, value]` pairs without touching the prototype chain. The bug `for...in` ships is invisible until the day a teammate adds something to a shared prototype — and by then the loop's been quietly miscounting for months.
+
+The deeper pattern across the four loop forms: each later form is the niche escape from the default. Array methods first; drop to `for...of` when the body needs side effects or async; drop to `for (let i …)` when the index is the data; never drop to `for...in`. The reflex is "what shape does the work fit," not "which loop syntax do I prefer today."
+
+## Refactor — flatten this function
+
+The closing exercise. Every reflex from the lesson — guard clauses for early exits, ternaries only at the expression level, exhaustive `switch` with `assertNever`, never `for...in` — appears at least once in the file below. Review it. Leave one inline comment per structural smell, name the class, propose the fix.
+
+<CodeReview instructions="Review this PR. The function does three jobs — validates input, dispatches on a discriminated `kind`, and aggregates a result. Each structural smell from this lesson appears at least once. Flag every line where a reviewer should call out a structural issue, name the class, and propose the fix.">
+  <ReviewFile name="src/billing/process-event.ts">
+    ```ts
+    import { assertNever } from '@/lib/assert-never';
+
+    type BillingEvent =
+      | { kind: 'charge'; amountCents: number }
+      | { kind: 'refund'; amountCents: number }
+      | { kind: 'chargeback'; amountCents: number; reason: string };
+
+    export const processEvent = (event: BillingEvent | null, totals: Record<string, number>) => {
+      if (event) {
+        if (event.amountCents > 0) {
+          event.kind === 'charge' ? recordCharge(event) : recordOther(event);
+
+          switch (event.kind) {
+            case 'charge':
+              totals.charges = (totals.charges ?? 0) + event.amountCents;
+              break;
+            case 'refund':
+              totals.refunds = (totals.refunds ?? 0) + event.amountCents;
+              break;
+          }
+
+          let total = 0;
+          for (const key in totals) {
+            total += totals[key];
+          }
+          return { ok: true, total };
+        } else {
+          return { ok: false, reason: 'amount' };
+        }
+      } else {
+        return { ok: false, reason: 'no-event' };
+      }
+    };
+    ```
+  </ReviewFile>
+
+  <ReviewIssue file="src/billing/process-event.ts" line={9} kernel="two-level nested if/else with happy path at indentation three; replace with guard clauses that return early on `!event` and `event.amountCents <= 0`">
+    This is the **nested-if** smell the guard-clause section opens with. Two levels of `if`/`else` wrap the entire dispatch — the happy path lives at indentation three, the error returns are buried inside `else` blocks at the bottom. Flip the polarity:
+
+    ```ts
+    if (!event) return { ok: false, reason: 'no-event' };
+    if (event.amountCents <= 0) return { ok: false, reason: 'amount' };
+    ```
+
+    Put those two guards at the top and the rest of the function dedents two levels. Biome's `noUselessElse` will catch the `else { return ... }` shape and offer the fix on save.
+  </ReviewIssue>
+
+  <ReviewIssue file="src/billing/process-event.ts" line={11} kernel="ternary used for side effects (its result is discarded); replace with an `if`/`else` because the branch is choosing what to do, not what value to produce">
+    This is the **ternary-for-side-effects** anti-pattern from the ternaries section. `event.kind === 'charge' ? recordCharge(event) : recordOther(event);` reads as "pick a value" when what's actually happening is "choose which function to call." The discarded ternary result is the tell — when nothing consumes the value the ternary produced, you're using it for control flow. The honest shape:
+
+    ```ts
+    if (event.kind === 'charge') recordCharge(event);
+    else recordOther(event);
+    ```
+
+    Verb-shaped branching reads as control flow, which is what it is.
+  </ReviewIssue>
+
+  <ReviewIssue file="src/billing/process-event.ts" line={13} kernel="switch on a discriminated union is missing the `chargeback` case and has no `assertNever` default; add the case and `default: return assertNever(event);` so the compiler enforces exhaustiveness">
+    This is the **missing-case** smell from the exhaustive-`switch` section. The `BillingEvent` union has three variants — `'charge'`, `'refund'`, `'chargeback'` — and the `switch` handles only two. There's no `default`, so the missing variant fails silently at runtime; `totals.chargebacks` never gets updated and nobody notices until reconciliation. Add the `chargeback` case **and** an `assertNever` default:
+
+    ```ts
+    case 'chargeback':
+      totals.chargebacks = (totals.chargebacks ?? 0) + event.amountCents;
+      break;
+    default:
+      return assertNever(event);
+    ```
+
+    The `assertNever` call is what turns the next forgotten variant into a compile error, not a silent bug six months from now.
+  </ReviewIssue>
+
+  <ReviewIssue file="src/billing/process-event.ts" line={23} kernel="`for...in` walks the prototype chain and picks up inherited keys; use `for (const [, value] of Object.entries(totals))` or `Object.values(totals).reduce(...)`">
+    This is the **`for...in`-on-an-object** smell from the loops section. `for (const key in totals)` iterates enumerable string-keyed properties including ones inherited from the prototype chain — so the moment something adds a numeric property to `Object.prototype` (a library extension, a polyfill, anything), the total starts including values that aren't part of `totals`. The safe default:
+
+    ```ts
+    for (const [, value] of Object.entries(totals)) {
+      total += value;
+    }
+    ```
+
+    `Object.entries` returns only the object's own enumerable keys, and the destructure drops the unused key name. Even tighter for this specific shape, `Object.values(totals).reduce((sum, v) => sum + v, 0)` collapses the loop entirely — the lesson on array methods owns that form.
+  </ReviewIssue>
+
+  <ReviewWhy>
+    Four smells, four reflexes — and you'll see the same four every week of your career. **Guard clauses** flatten the happy path so the function reads top-to-bottom. **Ternaries** select values, not actions. **`switch` over a discriminated union always ends with `assertNever`** so the next missed variant becomes a build failure instead of a silent bug. **`for...in` is never the reach** — `Object.entries` + `for...of` is the safe default for object iteration. The structural shape is the bug the senior reviewer is fixing; the conditions themselves might be correct, but the shape pays interest on every future read of the file.
+  </ReviewWhy>
+</CodeReview>
+
+The reflex this exercise installs, stated once more: you see the *shape* of the smell before you read the implementation. Indentation three or four levels deep is a guard-clause shape waiting to land. A ternary with a thrown-away result is an `if`/`else` in disguise. A `switch` without `default: return assertNever(value);` is a future production bug with a fixed date attached. A `for...in` over an object is a prototype-chain bug waiting for the next library upgrade to surface it. Four shapes, four reflexes — once they fire on autopilot, you spot the bug class from the diff line alone.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Biome — noUselessElse"
+    href="https://biomejs.dev/linter/rules/no-useless-else/"
+    icon="simple-icons:biome"
+    iconColor="#60A5FA"
+    description="The Biome rule that flags `else` blocks after an `if` that ends in `return`, `throw`, `continue`, or `break`. Backs the guard-clause reflex with an autofix."
+  />
+  <ExternalResource
+    title="TypeScript Handbook — Discriminated unions and exhaustiveness checking"
+    href="https://www.typescriptlang.org/docs/handbook/2/narrowing.html#exhaustiveness-checking"
+    icon="simple-icons:typescript"
+    iconColor="#3178C6"
+    description="The official TypeScript reference for discriminated unions and the `never` exhaustiveness pattern this lesson plants the runtime shape for. The type-system depth lands in a later chapter; this page is the canonical reference."
+  />
+  <ExternalResource
+    title="Refactoring.guru — Replace Nested Conditional with Guard Clauses"
+    href="https://refactoring.guru/replace-nested-conditional-with-guard-clauses"
+    icon="lucide:list-tree"
+    iconColor="#FF9118"
+    description="The canonical refactoring catalog entry, with before/after code in five languages and the same polarity-flip reflex the guard-clauses section teaches."
+  />
+  <ExternalResource
+    title="MDN — for...in"
+    href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/for...in"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The canonical reference for the loop the course never writes — including the prototype-chain behavior that ships the bug the loops section warns about."
+  />
+</CardGrid>

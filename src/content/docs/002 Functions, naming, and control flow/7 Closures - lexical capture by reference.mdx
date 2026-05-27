@@ -1,0 +1,339 @@
+---
+title: "Closures: lexical capture by reference"
+description: The mental model for predicting what a function sees at call time — lexical scope, by-reference capture, whole-environment retention — and the bug class it explains in modern loops, React effects, and Server Actions.
+chapter-id: 2
+sidebar:
+  order: 7
+  label: Closures
+---
+
+import ClosureCaptureStep from '../../../components/lessons/002/7/ClosureCaptureStep.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import PredictOutput from '../../../components/exercises/predict-output/PredictOutput.astro';
+import PredictWhy from '../../../components/exercises/predict-output/PredictWhy.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+A junior writes a loop that schedules three timeouts. The body looks correct — `for (var i = 0; i < 3; i++) setTimeout(() => console.log(i), 0)` — and the prediction is `0 1 2`. The actual output is `3 3 3`. The bug isn't in `setTimeout`. It's in what each callback **saw** when it finally ran: the same `i` the loop had finished mutating, not the `i` the callback was scheduled with.
+
+Every function you've written since the chapter on the JavaScript value model is already a closure. This lesson installs the rule that lets you predict what a closure sees at call time — not when it was defined, but when it actually runs. That rule has three components, and once they're in place, the loop bug above stops being mysterious and the same shape becomes recognizable in three places you'll meet in later units: React effect cleanups, Server Action module-scope captures, and route-handler factories.
+
+There's no new syntax to learn. The whole lesson is mental model.
+
+## The bug that motivates the model
+
+Read this snippet. Don't run it yet — predict the output first.
+
+```ts
+for (var i = 0; i < 3; i++) {
+  setTimeout(() => console.log(i), 0);
+}
+// Predicted: 0 1 2
+// Actual:    3 3 3
+```
+
+The three callbacks all ran *after* the loop finished. They all looked at the same `i`. The loop had run `i` up to `3` by then. That's what they saw — not the value `i` had at the moment each callback was scheduled, but the value `i` had when each callback was finally read.
+
+A <Term definition="A function paired with the variables it can see from where it was written.">**closure**</Term> is the technical name for this. The callback inside `setTimeout` is a closure over the outer `i`, and the question "what does it print?" is really "what does the closure see when it runs?" — which is the question the next section answers.
+
+## Lexical capture, by reference, of the whole environment
+
+Here's the model, stated once:
+
+> A closure is a function bundled with the <Term definition="The set of bindings in scope at the spot in the source where a function is defined.">**lexical environment**</Term> — the bindings in scope — where it was defined. When the function runs, it reads bindings, not snapshots of values, from that environment.
+
+Three components, each load-bearing. Read them slowly; everything else in this lesson is application.
+
+- **Lexical (write-time, not call-time).** What the closure can see is fixed by *where the function was written*, not *where it's called from*. A function defined inside `outer()` sees `outer`'s locals from wherever it's later invoked — another module, a timeout, a network response. The <Term definition="The ordered list of enclosing scopes a name lookup walks until it finds the binding or fails.">**scope chain**</Term> is decided at write time. Move the call site to the other side of the world and the closure still reads from the scopes it was *written* inside.
+
+- **By reference, not by value.** The closure holds a reference to the binding, not a copy of the value at definition. Back to the binding-vs-box model from the chapter on the JavaScript value model: the closure holds onto the **box**, not the value currently in it. When the outer scope changes the box's contents, the closure sees the new contents on its next call. `const` prevents the binding itself from being rebound, but a `const` array can still be mutated and that mutation is visible to the closure — same rule as the lesson on `const` and mutation.
+
+- **The whole environment, not just what's named.** A closure captures every binding in its enclosing scopes, including ones the function body doesn't visibly use. That's why a closure over a large object keeps it alive in memory until the closure itself is dropped. The memory-leak discipline gets one aside near the end of this lesson; for now the rule is the point — the closure carries the whole environment, not just the names you typed.
+
+The diagram below carries the "by reference" point in one figure. Step through it before reading on.
+
+<DiagramSequence>
+	<DiagramStep caption="Define. The closure stores a pointer to the count binding in the outer scope — not a copy of the value 0.">
+		<ClosureCaptureStep step={1} />
+	</DiagramStep>
+	<DiagramStep caption="The outer scope reassigns count to 5. The closure's pointer doesn't move — it still aims at the same binding. No snapshot was taken.">
+		<ClosureCaptureStep step={2} />
+	</DiagramStep>
+	<DiagramStep caption="Call time, not write time. When the closure runs, it follows its pointer and reads whatever the binding holds now: 5.">
+		<ClosureCaptureStep step={3} />
+	</DiagramStep>
+</DiagramSequence>
+
+The three components reduce to one sentence you can carry around: **the closure holds a pointer to the binding, the body runs at call time, and "call time" can be much later than you think.** Everything from here on is that sentence applied to specific shapes.
+
+<VideoCallout videoId="6Ixyltr8_R0" videoTitle="JavaScript Visualized — Closures by Lydia Hallie">
+  Lydia Hallie's 11-minute visualization of how function objects, environment records, and the scope chain actually wire closures together at the engine level — the spec-mechanics behind the model this section installs.
+</VideoCallout>
+
+## The stale-closure trap and the fix the language gives you
+
+Back to the `var i` loop, now armed with the model. Three things are true at once:
+
+1. `var i` is function-scoped. The whole loop shares **one** `i` binding — there's only one box, not three.
+2. Each callback closes over that same binding. Not its value at iteration time; the binding itself.
+3. By the time the timers fire, the loop has run `i` up to `3`. All three callbacks read through their pointer and find `3`.
+
+The fix isn't a clever workaround — it's a change to which scope holds the binding. `let` and `const` are block-scoped, so each iteration of the loop creates a **fresh** `i` binding (a fresh box), and each callback closes over a *different* one. And the modern loop form you already met in the chapter on flat control flow — `for...of` — gives you this behavior for free.
+
+<CodeVariants>
+  <CodeVariant label="Broken — `var`">
+    <div data-mark-color="orange">
+
+    ```ts {1}
+    for (var i = 0; i < 3; i++) {
+      setTimeout(() => console.log(i), 0);
+    }
+    // Output: 3 3 3
+    ```
+
+    </div>
+    **One binding for the whole loop.** `var` is function-scoped, so the whole loop shares a single `i` binding. All three callbacks point at the same binding, and by the time they fire, the loop has run `i` to `3`. They all read the same `3`.
+  </CodeVariant>
+
+  <CodeVariant label="Fixed — `let` or `for...of`">
+    <div data-mark-color="green">
+
+    ```ts {1, 7}
+    for (let i = 0; i < 3; i++) {
+      setTimeout(() => console.log(i), 0);
+    }
+    // Output: 0 1 2
+
+
+    for (const item of [0, 1, 2]) {
+      setTimeout(() => console.log(item), 0);
+    }
+    // Output: 0 1 2
+    ```
+
+    </div>
+    **A fresh binding per iteration.** `let` and `const` are block-scoped — each iteration creates a fresh `i` (or `item`) binding, so each callback closes over a different one. The `for...of` form gives this behavior for free; block scope per iteration is built in. The senior default from the previous chapter's flat-control-flow lesson is already the right shape.
+  </CodeVariant>
+</CodeVariants>
+
+The senior takeaway is small but worth stating plainly. In a 2026 codebase you'll essentially never write `var`, and `for...of` plus `.map`/`.forEach`-style callbacks all give per-iteration block scope. **The stale-closure-in-loop bug is structurally extinct in modern code** — the language already fixed it. The model still matters because the same shape surfaces in three production sites the loop form can't help you with, covered after the exercise below.
+
+<MultipleChoice>
+  You're writing `makeCounters(n)`, which builds an array of `n` functions. Each one should `console.log` its own index when called — so `makeCounters(3)` returns three functions that print `0`, `1`, `2` respectively. Which implementations behave correctly *and* are idiomatic in a 2026 codebase? Select all that apply.
+
+  <McqChoice>
+    ```ts
+    const counters = [];
+    for (var i = 0; i < n; i++) {
+      counters.push(() => console.log(i));
+    }
+    ```
+  </McqChoice>
+  <McqChoice correct>
+    ```ts
+    const counters = [];
+    for (let i = 0; i < n; i++) {
+      counters.push(() => console.log(i));
+    }
+    ```
+  </McqChoice>
+  <McqChoice correct>
+    ```ts
+    const counters = Array.from(
+      { length: n },
+      (_, i) => () => console.log(i),
+    );
+    ```
+  </McqChoice>
+  <McqChoice>
+    ```ts
+    const counters = [];
+    for (const i in Array(n).fill(null)) {
+      counters.push(() => console.log(i));
+    }
+    ```
+  </McqChoice>
+
+  <McqWhy>The two correct answers are the `let`-based `for` loop and the `Array.from` form. Each callback needs its **own** captured binding. `let` gives block-scoped per-iteration `i`, so each callback closes over a different one. `Array.from`'s callback parameter is the same idea spelled with `.map`-style per-iteration scope — each invocation has its own `i` parameter. The `var` version shares one `i` across the whole loop, so every callback reads the final value `n`. The `for...in` version is the trap from the chapter on flat control flow: it iterates string-keyed enumerable properties (including inherited ones from the prototype chain), and it produces *string* indices, not numeric ones — wrong reach for arrays even when it happens to print the right digits.</McqWhy>
+</MultipleChoice>
+
+## Why this bug class surfaces in three places you'll see again
+
+The loop fix is done. The model still earns its weight because the **same shape** — a function captured at one moment, invoked later, reading bindings whose values have moved — shows up in three places the rest of this course depends on. None of them is a loop. Each one is a place where the writer's reasonable mental model ("the function will read the value I'm looking at now") collides with closure semantics ("the function reads the binding through a pointer, *whenever* it runs"). You'll meet each in its own chapter; this section installs the recognition framing so the later treatments don't need to re-derive it.
+
+### `useEffect` cleanups see the previous render's bindings
+
+In React, `useEffect` runs a setup function after the component renders. That setup captures the *current* render's props and state. When the effect re-runs or the component unmounts, the **cleanup** function that runs is the one returned from the render that *created* it — so it reads through pointers into *that* render's bindings, not the latest. The classic shape, in pseudocode you'll meet for real in Unit 3:
+
+```tsx
+useEffect(() => {
+  const id = setInterval(() => console.log(count), 1000);
+  return () => clearInterval(id);
+}, []); // empty deps → closure captures `count` from first render only
+```
+
+The interval callback closes over `count` from the render that ran the effect. With empty deps, that's the first render — forever. Every subsequent re-render's new `count` is invisible to the timer, which dutifully logs whatever `count` was at mount and nothing else.
+
+The fix, current as of React 19.2 shipped in October 2025: **reach for `useEffectEvent`** when the effect needs to read the latest props or state without re-subscribing. It captures the latest values without joining the dependency array — the closure model is what makes the underlying mechanism work. The full effect lifecycle and the `useEffectEvent` API live in the chapter on React effects in Unit 3. (The older `useRef` workaround older codebases reach for is now legacy.)
+
+### Server Actions can't capture per-request data at module scope
+
+A Server Action exported from a module is *defined* once, at module load. If the file tries to capture per-request state in its outer scope — `cookies()`, `headers()`, the request's user — those bindings either don't exist at module-load time or, worse, hold values from whichever request happened to load the module. The whole module scope is **build-time-ish**; per-request data must be read **inside** the action body so each call resolves its own request context.
+
+<CodeVariants>
+  <CodeVariant label="Wrong — capture at module scope">
+    <div data-mark-color="orange">
+
+    ```ts {1, 4}
+    const user = await getCurrentUser();
+
+    export const archiveInvoice = async (id: string) => {
+      if (user.role !== 'admin') throw new Error('forbidden');
+    };
+    ```
+
+    </div>
+    `getCurrentUser()` runs **once**, at the moment the module loads. The action closes over that single `user` binding. Every subsequent request reads whatever `user` happened to be when the module was first imported — at best wrong, at worst a per-request authorization check that lets every caller in as whoever loaded the file first.
+  </CodeVariant>
+
+  <CodeVariant label="Right — read inside the action">
+    <div data-mark-color="green">
+
+    ```ts {2}
+    export const archiveInvoice = async (id: string) => {
+      const user = await getCurrentUser();
+      if (user.role !== 'admin') throw new Error('forbidden');
+    };
+    ```
+
+    </div>
+    `getCurrentUser()` runs **per call**, inside the body. Each invocation gets its own fresh value from its own request context. The closure still captures the surrounding module scope — but `user` isn't in it; it's a local in this call's stack frame, and every call has its own.
+  </CodeVariant>
+</CodeVariants>
+
+:::caution
+The same rule applies to anything you schedule inside a Server Action — `setTimeout`, `setInterval`, queued work. Next.js's request-scoped APIs (`cookies()`, `headers()`) must be called *directly* in the request's call stack; calling them inside a timer or another async context throws because the request scope is gone by the time the callback runs. The closure model explains why: the timer callback closes over the lexical scope, but it runs *outside* the original request's execution context — a different shape of the same "called later, in a different context than the author imagined" bug.
+:::
+
+The five-seam Server Action shape — including this module-scope rule — lives in the chapter on Server Actions in the forms and validation unit.
+
+### Route-handler factories close over their config
+
+<Term definition="A function that takes a function as input or returns a function as output.">**Higher-order functions**</Term> that produce route handlers are the third site, and the one where closures are the *feature*, not the bug. A factory like `withRole('admin', handler)` returns a new handler that has *captured* both the role string and the inner handler in its lexical scope. Each invocation of the factory produces a fresh handler closure with its own captured config; the closure model is what makes the pattern compose.
+
+```ts
+const withRole =
+  (role: string, handler: (req: Request, user: User) => Promise<Response>) =>
+  async (req: Request) => {
+    const user = await requireUser(req);
+    if (user.role !== role) return new Response('forbidden', { status: 403 });
+    return handler(req, user);
+  };
+
+export const POST = withRole('admin', archiveInvoice);
+```
+
+The returned async function closes over both `role` and `handler`. Calling `withRole('admin', archiveInvoice)` and `withRole('member', listInvoices)` produces two different closures, each carrying its own captured config. This is the foundation of the wrapper idioms — `safeAction`, `authedAction`, `requireRole` — covered in the chapter on typed wrappers in Unit 1, and applied at the route-handler surface in Unit 4. Same model as the bug, applied deliberately: a function bundled with the bindings you *wanted* it to remember.
+
+## Closures as a design tool, not just a bug source
+
+Time to flip the framing. Closures aren't only the source of bugs; they're the language's primary mechanism for hiding state behind a function boundary. In a 2026 SaaS codebase you'll write essentially no classes. "Private state" almost always lives in a module's lexical scope, and the exported functions are closures over that state. The classic illustration is a counter factory:
+
+```ts
+const makeCounter = () => {
+  let count = 0;
+  return () => ++count;
+};
+
+const next = makeCounter();
+next(); // 1
+next(); // 2
+next(); // 3
+```
+
+`count` lives inside `makeCounter`'s scope. Nothing outside the closure can read it, write it, or even see it exists. The returned function is the *only* surface — and it's a closure over `count`. That's how `useState` keeps a component's state private under the hood (covered in the chapter on the React render model in Unit 3), how memoization helpers cache results, and how every middleware-style wrapper holds its config. The course stays functional throughout; closures are why that works without losing encapsulation.
+
+:::note
+A closure that's never dropped keeps every binding in its captured scope alive in memory. Long-lived event listeners and timers are the two real-world leak sites — a listener attached on mount but never removed holds onto the whole component's scope forever. `AbortController`, covered in the chapter on async cancellation in Unit 1, and React effect cleanup, covered in the chapter on React effects in Unit 3, are the disciplines that prevent this. You don't need garbage-collection mechanics in your head; you need to know that a forgotten closure is a forgotten memory leak.
+:::
+
+## Closing exercise: predict the closure
+
+Three small scenarios in one program. Predict every line the program prints, in order. Get the model in your fingers before the next chapter on containers.
+
+<PredictOutput
+  instructions="Predict every line this program prints, in order. The scenarios build from easier to harder — if you get the first two right, lean on the model for the third."
+  expected={`1 2 1
+second
+0
+1
+2`}
+>
+
+```ts
+// 1. Counter factory — does each counter have its own count?
+const makeCounter = () => {
+  let count = 0;
+  return () => ++count;
+};
+const a = makeCounter();
+const b = makeCounter();
+console.log(a(), a(), b());
+
+// 2. The stale-closure-in-loop, now with `let`
+for (let i = 0; i < 3; i++) {
+  setTimeout(() => console.log(i), 0);
+}
+
+// 3. Outer-binding reassignment between definition and call
+let name = 'first';
+const greet = () => console.log(name);
+name = 'second';
+greet();
+```
+
+<PredictWhy>
+  **Scenario 1.** Each call to `makeCounter` creates a fresh closure with its own `count` binding. `a()` increments `a`'s `count` to `1`; `a()` again to `2`; `b()` increments `b`'s *separate* `count` to `1`. The line prints `1 2 1`.
+
+  **Scenario 2.** `let` gives per-iteration block scope, so each scheduled callback closes over a different `i` binding (`0`, `1`, `2`). They print in order — but only after all synchronous code has finished.
+
+  **Scenario 3.** `greet` doesn't snapshot `name` at definition; it reads through a pointer to the `name` binding at call time. The reassignment to `'second'` happens before `greet()` runs, so the closure reads the current contents of the box and prints `second`.
+
+  **Why `second` appears before `0 1 2`.** A small bonus from the event loop (covered in depth in the chapter on async and time): `setTimeout(..., 0)` queues a callback to run *after* the current synchronous code finishes. So the synchronous `greet()` runs before the three queued callbacks, even though the timers were scheduled first. The closure point stands either way — what each callback reads is decided by what its captured binding holds at the moment it actually runs.
+</PredictWhy>
+
+</PredictOutput>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="MDN — Closures"
+    href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Closures"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="MDN's canonical closure reference — scope chains, the counter factory pattern, and the loop trap covered at language depth."
+  />
+  <ExternalResource
+    title="You Don't Know JS Yet — Scope & Closures (2nd ed.)"
+    href="https://github.com/getify/You-Dont-Know-JS/blob/2nd-ed/scope-closures/README.md"
+    icon="simple-icons:github"
+    iconColor="#181717"
+    description="The depth-pass for students who want to go past the model this lesson installs — lexical environment internals, hoisting, the temporal dead zone, and closure mechanics at spec level."
+  />
+  <ExternalResource
+    title="React 19.2 — useEffectEvent"
+    href="https://react.dev/reference/react/useEffectEvent"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="React 19.2 (October 2025) shipped useEffectEvent stable as the canonical fix for stale closures in effects — the modern replacement for the older useRef workaround."
+  />
+</CardGrid>
