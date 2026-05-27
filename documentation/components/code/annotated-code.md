@@ -19,7 +19,7 @@ import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep
 | --- | --- | --- | --- | --- |
 | `code` | `string` | yes | — | The code shown in every step. Leading/trailing blank lines and common indentation are stripped, so you can author a template literal with normal MDX indentation. |
 | `lang` | `string` | yes | — | Expressive Code language identifier (`ts`, `tsx`, `js`, `bash`, `sql`, etc.). |
-| `maxLines` | `number` | no | — (no cap) | Caps the visible code-block height to ~`maxLines` lines and adds vertical scroll. On step change, scrolls the active step's first highlight into view. |
+| `maxLines` | `number` | no | `16` | Caps the visible code-block height to ~`maxLines` lines and adds vertical scroll. On step change, scrolls the active step's first highlight into view. Avoid raising above the default — taller blocks force readers to scroll while comparing the highlight to the prose, which defeats the stepped walkthrough. If the code doesn't fit, split it across multiple `<AnnotatedCode>` blocks instead. |
 
 ### `AnnotatedStep`
 
@@ -32,6 +32,7 @@ import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep
 
 - `<AnnotatedStep>` must be a **direct child** of `<AnnotatedCode>`. It carries no visible chrome on its own — it only contributes `meta` + prose to its parent.
 - Each step's slot is plain prose (markdown / inline JSX). No fenced code block — the code lives on the parent.
+- Keep each step's prose to **one paragraph, 6 lines max**. The reader is meant to glance between code and explanation; longer prose pushes the highlighted code off-screen and breaks that loop. If you need more, split into another step.
 - The Prev/Next bar + counter are rendered by `<AnnotatedCode>` automatically.
 
 ## Highlight syntax (`meta` prop)
