@@ -133,8 +133,11 @@ try {
                 content: `(function () {
 var path = location.pathname;
 var isRoot = path === '/' || path === '/index.html';
+// ?home=1 from the site-title click opts out of the lastLesson bounce
+// so the index page is reachable.
+var wantsHome = location.search.indexOf('home=1') !== -1;
 // Synchronous redirect from / — runs before paint, no flash.
-if (isRoot) {
+if (isRoot && !wantsHome) {
 		var last = localStorage.getItem('lastLesson');
 		if (last && last.charAt(0) === '/' && last.charAt(1) !== '/' && last !== path) {
         location.replace(last);
