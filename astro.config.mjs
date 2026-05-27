@@ -162,6 +162,61 @@ document.addEventListener('DOMContentLoaded', function () {
 });
 })();`,
             },
+            {
+                // Per-lesson "finished" dots in the left sidebar. A lesson is
+                // marked finished once the bottom pagination block has been
+                // continuously visible for >= 2s — captures "scrolled to the
+                // end and lingered" without false positives from a quick open.
+                // State is per-browser localStorage; the matching CSS lives in
+                // src/styles/custom.css under nav.sidebar a[data-finished].
+                tag: 'script',
+                content: `(function () {
+var KEY = 'finishedLessons';
+function readSet() {
+    try {
+        var raw = localStorage.getItem(KEY);
+        var arr = raw ? JSON.parse(raw) : [];
+        return new Set(Array.isArray(arr) ? arr : []);
+    } catch (e) { return new Set(); }
+}
+function paint(set) {
+    var links = document.querySelectorAll('nav.sidebar a[href]');
+    for (var i = 0; i < links.length; i++) {
+        if (set.has(links[i].pathname)) {
+            links[i].setAttribute('data-finished', '');
+        }
+    }
+}
+document.addEventListener('DOMContentLoaded', function () {
+    if (/^404\\b/.test(document.title)) return;
+    var finished = readSet();
+    paint(finished);
+    var path = location.pathname;
+    if (finished.has(path)) return;
+    var pagination = document.querySelector('.pagination-links');
+    if (!pagination) return;
+    var timer = null;
+    var observer = new IntersectionObserver(function (entries) {
+        for (var i = 0; i < entries.length; i++) {
+            if (entries[i].isIntersecting) {
+                if (timer === null) {
+                    timer = setTimeout(function () {
+                        finished.add(path);
+                        try { localStorage.setItem(KEY, JSON.stringify(Array.from(finished))); } catch (e) {}
+                        paint(finished);
+                        observer.disconnect();
+                    }, 2000);
+                }
+            } else if (timer !== null) {
+                clearTimeout(timer);
+                timer = null;
+            }
+        }
+    });
+    observer.observe(pagination);
+});
+})();`,
+            },
         ],
         sidebar: sidebarGroups,
         }),
