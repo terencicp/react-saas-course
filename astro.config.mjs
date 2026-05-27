@@ -98,7 +98,7 @@ export default defineConfig({
             theme: { default: '0', dark: '200' },
         }),
         starlight({
-        title: 'React SaaS Course',
+        title: 'LEARN REACT SAAS',
         customCss: ['./src/styles/custom.css'],
         plugins: [starlightFullViewMode({}), starlightLinksValidator()],
         components: {
