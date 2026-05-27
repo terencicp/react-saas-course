@@ -106,6 +106,9 @@ export default defineConfig({
             // reading chapter-id, chapter-title, and sidebar.order from
             // the lesson's frontmatter.
             PageTitle: './src/components/overrides/PageTitle.astro',
+            // Adds the React-inspired orbit mark + three-tone wordmark
+            // to the header, replacing Starlight's plain-text title.
+            SiteTitle: './src/components/overrides/SiteTitle.astro',
         },
         head: [
             {
