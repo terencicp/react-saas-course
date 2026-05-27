@@ -1,0 +1,355 @@
+---
+title: Arrays and the non-mutating update
+description: Read arrays safely under noUncheckedIndexedAccess, use .at() for positional access, and reach for the ES2023 non-mutating update family when the array is held in state.
+chapter-id: 3
+sidebar:
+  order: 2
+  label: Arrays, non-mutating
+---
+
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import PredictOutput from '../../../components/exercises/predict-output/PredictOutput.astro';
+import PredictWhy from '../../../components/exercises/predict-output/PredictWhy.astro';
+import ReactCoding from '../../../components/live-coding/ReactCoding/ReactCoding.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+Every developer writes some version of this React component once. The list of invoices renders, the "sort by amount" button is wired up, the click handler calls `.sort` on the state array — and clicking the button does nothing.
+
+```tsx
+const InvoiceList = () => {
+  const [invoices, setInvoices] = useState(initialInvoices);
+
+  const sortByAmount = () => {
+    invoices.sort((a, b) => a.amountCents - b.amountCents);
+    setInvoices(invoices);
+    // The list doesn't re-order. React skipped the re-render.
+  };
+
+  return <ul>{invoices.map((i) => <li key={i.id}>{i.amountCents}</li>)}</ul>;
+};
+```
+
+The click fires, the sort runs, the underlying array is genuinely reordered — and the component stays as it was on screen. React's reconciler compared `invoices` to `invoices`, saw the same reference, and bailed out of the re-render. `.sort()` mutated the array in place, so the reference never changed. The fix isn't a defensive copy reflex like `[...invoices].sort(...)` — it's reaching for the ES2023 non-mutating twin by name: `invoices.toSorted(...)`. New array, new reference, render lands.
+
+You'll meet React properly in a later unit; take this snippet on faith for now. The point isn't the React mechanics — it's the bug class. Any system that compares references and skips re-deriving on equality (and that's most of them: Zustand, TanStack Query's cache, Server Action serialization, every memoization layer) misses an in-place mutation the same way. This lesson installs the array surface that's safe to use inside that kind of code: index reads that respect TypeScript's strictness, `.at()` for positional access, the four non-mutating update methods that replace the mutating originals, and the rule for when mutating is still the right reach.
+
+## Indexing under strict TypeScript
+
+The course pins <Term definition={"The strict tsconfig flag the course pins on.\nMakes any indexed/bracket read return T | undefined instead of T,\nbecause TypeScript can't prove the key exists at runtime."}>`noUncheckedIndexedAccess`</Term>, so reading by index gives you `T | undefined`, not `T`. The same rule that applied to bracket reads on objects in the previous lesson applies to array indices here: TypeScript can't prove the slot is populated, and it forces you to handle the empty case.
+
+<CodeTooltips tooltips={{
+  first: "Inferred as `number | undefined`. Under `noUncheckedIndexedAccess`, `amounts[0]` is `T | undefined` even though `amounts` is typed as `number[]` — TypeScript can't prove the array is non-empty.",
+  firstOrZero: "Inferred as `number`. The `?? 0` collapses the `undefined` case into the fallback, so the result narrows to the array's element type.",
+}}>
+```ts
+const amounts: number[] = [4900, 1200];
+const first = amounts[0];
+const firstOrZero = amounts[0] ?? 0;
+```
+</CodeTooltips>
+
+The error message you'll see if you try to use `first` as a number without handling the `undefined` is `'amounts[0]' is possibly 'undefined'`. Recognize it — it's the strictness doing its job, not a misconfiguration to chase down.
+
+Two senior reaches close the gap. The first is `?? fallback` when a sensible default exists: `const first = amounts[0] ?? 0` returns the element-type, no `undefined` to thread through callers. The `??` operator was named back in the lesson on flat control flow — it returns the right-hand side only on `null` or `undefined`, never on `0` or `''`, which is exactly what you want here.
+
+The second is narrowing through a temporary binding when no default exists and you want to early-exit:
+
+```ts
+const first = amounts[0];
+if (first === undefined) return;
+// first is `number` from here on — narrowed by the guard
+```
+
+The shape that *doesn't* work is the one juniors reach for instinctively:
+
+```ts
+if (amounts.length > 0) {
+  const total = amounts[0] * 2; // TS error: amounts[0] is possibly 'undefined'
+}
+```
+
+TypeScript can't prove that a length check implies index 0 is populated (sparse arrays exist; the type system doesn't model them). The clean form is always the temp binding: read once into a `const`, guard the `undefined`, use the narrowed name below.
+
+:::caution
+Don't reach for a non-null assertion (`amounts[0]!.toFixed(2)`) to silence the error. It compiles, but it's a lie to the type checker — and if the array is ever empty, you've turned a typed bug into a runtime `TypeError`. The temp-binding guard or `?? fallback` is the form.
+:::
+
+## `.at()` reads from either end
+
+`.at()` is the ES2022 method for positional access that handles negative indices natively. `arr.at(0)` is the first element, `arr.at(-1)` is the last, `arr.at(-2)` is the second-to-last. The return type is `T | undefined` — same as bracket access under strict TS.
+
+```ts
+const amounts = [4900, 1200, 9900, 3300];
+
+const first = amounts.at(0);
+const last = amounts.at(-1);
+const secondToLast = amounts.at(-2);
+```
+
+The value-add is the negative index. For positive indices, `.at()` behaves identically to bracket access — write whichever reads cleaner at the call site. For the last element, though, `.at(-1)` is the reflex over `arr[arr.length - 1]`: shorter, no off-by-one math, and it reads as intent (*"the last one"*) rather than as arithmetic.
+
+## Reshape: mutate locally, replace when shared
+
+This is the lesson. The rule is about *ownership*, not about immutability as a philosophy.
+
+When the array is **owned by the function** — declared inside, never escaping to a caller that holds a reference — mutating methods are fine. `.push`, `.pop`, `.sort`, `.splice` all earn their place. The mutation can't surprise anyone, because nobody outside the function can see the array mid-construction.
+
+When the array is **shared** — held in React state, passed in as props, sitting in a `Map`, returned upward to a caller that's holding the reference — mutating in place is a bug. The caller's reference still points to the same array, so any system that compares references (React's reconciler is the canonical case; Zustand, Server Action serialization, and TanStack Query's cache do the same kind of check) sees no change and skips the re-derive. The fix is the non-mutating twin: build a new array, hand back the new reference.
+
+Four pairs are the entire reflex. Memorize the table.
+
+| Mutates the original              | Returns a new array                  |
+| --------------------------------- | ------------------------------------ |
+| `arr.sort(compareFn)`             | `arr.toSorted(compareFn)`            |
+| `arr.reverse()`                   | `arr.toReversed()`                   |
+| `arr.splice(start, count, ...x)`  | `arr.toSpliced(start, count, ...x)`  |
+| `arr[i] = value`                  | `arr.with(i, value)`                 |
+
+All four ES2023 non-mutating forms ship in every runtime the course targets — Node 20+ (Node 24 LTS is the course's pinned runtime) and every current evergreen browser. They're the senior reach by reflex when the array is held outside the function's own scope.
+
+The one-line swap is the entire fix for the chapter opener's bug:
+
+<CodeVariants>
+  <CodeVariant label="Mutates (wrong here)">
+    <div data-mark-color="red">
+
+    ```ts
+    setInvoices(invoices.sort((a, b) => a.amountCents - b.amountCents));
+    ```
+
+    </div>
+    **Same reference, React skips the re-render.** `.sort()` reorders `invoices` in place and returns the same array. React's reconciler compares the new state to the old by reference, sees identity equality, and bails out of the re-render. The list stays as it was, even though the underlying array is now sorted.
+  </CodeVariant>
+
+  <CodeVariant label="Non-mutating (right)">
+    <div data-mark-color="green">
+
+    ```ts
+    setInvoices(invoices.toSorted((a, b) => a.amountCents - b.amountCents));
+    ```
+
+    </div>
+    **New array, new reference, render lands.** `.toSorted` builds a fresh array with the same elements in sorted order, leaving `invoices` alone. The new reference is what `setInvoices` receives; React sees a different array, re-runs the render, and the list reorders on screen.
+  </CodeVariant>
+</CodeVariants>
+
+`.toSpliced` is the one whose mutating sibling juniors most often have memorized. The signature is the same as `.splice`: `(start, deleteCount, ...itemsToInsert)`. The first argument is where to start, the second is how many to delete, the rest are items to insert at that position — call it with `(2, 1)` to remove one element at index 2, or `(2, 0, newItem)` to insert without removing anything. The non-mutating version returns a new array; the mutating original returns the *removed* items as an array (the API itself is a footgun, separate from the mutation). Reach for `.toSpliced` outside the function's own scope.
+
+<VideoCallout videoId="opOkuHgQVKA" videoTitle="JavaScript Immutability (Real-World Examples with React)">
+  Sina Jazayeri of ColorCode walks through mutation, immutable update patterns, and exactly why React relies on reference equality — a 21-minute companion to this lesson's central thesis.
+</VideoCallout>
+
+## When mutate-in-place is still right
+
+The four mutating methods that earn their place when the array is yours:
+
+- `.push(item)` — append, returns the new length.
+- `.pop()` — remove the last, returns the removed item or `undefined`.
+- `.shift()` — remove the first, returns the removed item or `undefined`.
+- `.unshift(item)` — prepend, returns the new length.
+
+Plus `.sort`, `.reverse`, `.splice`, and bracket assignment from the table above. All of them are correct when the array is declared inside the function building it. The trigger is *"I declared `const result = []` two lines ago, I'm pushing into it inside a `for...of`, and nobody outside this function will ever see the intermediate state."*
+
+```ts
+const formatPaidLines = (
+  invoices: { id: string; amountCents: number; status: string }[],
+): string[] => {
+  const lines: string[] = [];
+  for (const invoice of invoices) {
+    if (invoice.status === 'paid') {
+      lines.push(`${invoice.id}: $${(invoice.amountCents / 100).toFixed(2)}`);
+    }
+  }
+  return lines;
+};
+```
+
+`lines` is built up via `.push` inside the loop, and that's correct: the array never escapes mid-construction, the caller only sees the finished result. (The same shape rewritten as `.filter().map()` would be cleaner here, and the next lesson will cover that — but the imperative form is still defensible, not a code smell.)
+
+The wrong reach is the one that looks superficially similar:
+
+:::caution
+This is the React bug rewritten with `.push` instead of `.sort` — same root cause, same silent failure:
+
+```ts
+setInvoices((prev) => {
+  prev.push(newInvoice);
+  return prev;
+});
+```
+
+`prev` is the array React is holding. Mutating it and handing back the same reference means React sees no change. The right form is `setInvoices((prev) => [...prev, newInvoice])` — a new array, new reference.
+:::
+
+One legacy form to recognize but never write: `arr.length = 0` clears an array in place. It compiles, it works, and it's how clears were done before reassignment was the cleaner answer. The form for "I want this binding to point to an empty array" is `arr = []` for a `let` binding, or `setArr([])` in React state. Recognize the length-write when you see it in older code; reach for reassignment in fresh code.
+
+## Spread and `.slice()`: when you do want a copy
+
+Two forms produce a shallow copy of an array. They're not part of the ES2023 family, but they're the same reflex for the same job.
+
+`[...arr, newItem]` is the default for adding one or two items at the boundary. `[...arr, x]` appends, `[x, ...arr]` prepends, `[head, ...rest]` decomposes. The form React state setters reach for when adding a row to a list.
+
+```ts
+const invoices = [
+  { id: 'inv_001', amountCents: 4900, status: 'paid' },
+  { id: 'inv_002', amountCents: 1200, status: 'pending' },
+];
+
+const withNew = [...invoices, { id: 'inv_003', amountCents: 9900, status: 'pending' }];
+const lastThree = invoices.slice(-3);
+```
+
+`arr.slice()` is the default for "shallow copy of the whole thing" or "extract a sub-range without mutating." `arr.slice(0, 3)` gives the first three, `arr.slice(-3)` gives the last three, `arr.slice()` with no arguments clones the whole array. The non-mutating cousin of `.splice` — the names being one letter apart is genuinely a footgun, flag it once and move on. `.slice` reads, `.splice` mutates.
+
+Both copy shallowly. Nested objects inside the array keep their reference — same rule as object spread, already named in the first lesson on the value model. You're getting a new outer array, not a deep clone of the contents.
+
+The decision rule between spread and the ES2023 methods: spread is for the boundary, `.with` and `.toSpliced` are for the middle. For appending or prepending, `[...arr, x]` is the cleanest. For replacing one item by index, `arr.with(i, updated)` beats `[...arr.slice(0, i), updated, ...arr.slice(i + 1)]` — one method call versus three concatenated slices. For removing one item by index, `arr.toSpliced(i, 1)` beats the same hand-rolled slice dance.
+
+## `Array.from` and `Array.of`
+
+`Array.from(iterable, mapFn?)` converts any iterable into an array. The iterable surface includes `Set`, `NodeList`, generators, strings, `arguments`, `URLSearchParams` — anything that implements the iteration protocol (which gets its own treatment later in this chapter). The optional second argument folds a `.map` step into the conversion in one pass.
+
+The canonical idiom is primitive-array dedup:
+
+```ts
+const tags = ['paid', 'pending', 'paid', 'overdue', 'pending'];
+const unique = Array.from(new Set(tags));
+// unique is ['paid', 'pending', 'overdue']
+```
+
+`new Set(arr)` collapses duplicates by `SameValueZero` equality, and `Array.from` turns the resulting `Set` back into an array. One line, reads as intent. The *why* of `Set` — when it earns its place beyond this dedup idiom — lands in a later lesson in this chapter.
+
+`Array.of(...items)` exists for one narrow reason: `Array(3)` is ambiguous. With one numeric argument, `Array(3)` builds a length-3 *sparse array* — three holes, not three `undefined`s, and most array methods skip them silently. `Array.of(3)` builds `[3]`, the element-list reading. The course writes array literals (`[3]`) by default and reaches for `Array.of` essentially never; recognize it for what it solves.
+
+## Where this lands later
+
+This lesson handled the *containing* operations on arrays — reading, copying, reshaping. The *element-by-element* surface (`.map`, `.filter`, `.reduce`, `.find` and friends) is the next lesson's job. A few forward links land softly:
+
+- React `useState<T[]>` and the non-mutating update rule — every `setState` call replaces the array reference. Spread, `.toSorted`, `.toSpliced`, and `.with` are the daily reach when the array lives in React state.
+- Drizzle's `select` queries hand back `T[]` — transforms before the response use the methods from this lesson and the array-method surface from the next.
+- `Array.from(formData.entries())` in Server Actions — `Array.from` over the form's pair-iterator is how form input becomes data the rest of the action can validate and operate on.
+
+## Predict the output
+
+Two short programs, back to back. The contrast between them is the lesson — read the first, commit to a prediction, then move to the second.
+
+<PredictOutput expected="[ 1, 2, 3 ] [ 1, 2, 3 ] true">
+
+```ts
+const original = [3, 1, 2];
+const sorted = original.sort((a, b) => a - b);
+console.log(sorted, original, sorted === original);
+```
+
+<PredictWhy>`.sort()` mutates `original` in place and returns the same reference, so both bindings point at the same — now sorted — array. The strict-equality check is `true` because there's only ever been one array. Reach for `.toSorted` when you want `original` to stay as it was.</PredictWhy>
+
+</PredictOutput>
+
+<PredictOutput expected="[ 1, 2, 3 ] [ 3, 1, 2 ] false">
+
+```ts
+const original = [3, 1, 2];
+const sorted = original.toSorted((a, b) => a - b);
+console.log(sorted, original, sorted === original);
+```
+
+<PredictWhy>`.toSorted` builds a new array with the same elements in sorted order and leaves `original` alone. Different references (`false` on `===`), different contents — one sorted, one as-declared.</PredictWhy>
+
+</PredictOutput>
+
+## Fix the silent re-render
+
+The component below has the chapter opener's bug. The "Sort by amount" button calls `.sort()` directly on the state array, then hands the same reference back to `setInvoices` — and the list never re-orders on screen, even though the underlying array is genuinely sorted.
+
+Swap the mutating method for the non-mutating twin so React sees a new array reference and re-renders the list.
+
+<ReactCoding
+  instructions="The list never re-orders when you click Sort by amount. Find the line that's mutating in place and reach for the non-mutating twin so React sees a new array."
+  starter={`import { useState } from 'react';
+
+const initialInvoices = [
+  { id: 'inv_003', amountCents: 9900, status: 'pending' as const },
+  { id: 'inv_001', amountCents: 4900, status: 'paid' as const },
+  { id: 'inv_004', amountCents: 3300, status: 'pending' as const },
+  { id: 'inv_002', amountCents: 1200, status: 'paid' as const },
+];
+
+export function App() {
+  const [invoices, setInvoices] = useState(initialInvoices);
+
+  const sortByAmount = () => {
+    setInvoices(invoices.sort((a, b) => a.amountCents - b.amountCents));
+  };
+
+  return (
+    <div className="p-4">
+      <button
+        onClick={sortByAmount}
+        className="px-4 py-2 rounded-md bg-indigo-600 text-white hover:bg-indigo-500"
+      >
+        Sort by amount
+      </button>
+      <ul className="mt-4 space-y-1 font-mono text-sm">
+        {invoices.map((invoice) => (
+          <li key={invoice.id}>
+            {invoice.id} — \${(invoice.amountCents / 100).toFixed(2)}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}`}
+  tests={`
+test('initial render shows the unsorted order', () => {
+  const items = document.querySelectorAll('li');
+  expect(items[0]?.textContent).toContain('$99.00');
+});
+
+test('clicking Sort by amount re-renders the list in ascending order', () => {
+  const button = document.querySelector('button');
+  button?.click();
+
+  const items = document.querySelectorAll('li');
+  expect(items[0]?.textContent).toContain('$12.00');
+  expect(items[3]?.textContent).toContain('$99.00');
+});
+`}
+/>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="React — Updating Arrays in State"
+    href="https://react.dev/learn/updating-arrays-in-state"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="The canonical React guide to the mutate-vs-replace decision, with a method table that maps cleanly onto this lesson's reflex."
+  />
+  <ExternalResource
+    title="MDN — Array.prototype.toSorted"
+    href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/toSorted"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="Reference for the headline ES2023 non-mutating method, with links to its three siblings."
+  />
+  <ExternalResource
+    title="TypeScript — noUncheckedIndexedAccess"
+    href="https://www.typescriptlang.org/tsconfig/#noUncheckedIndexedAccess"
+    icon="simple-icons:typescript"
+    iconColor="#3178C6"
+    description="The compiler-flag reference for the strict-indexing rule the course pins, with the type-narrowing examples it implies."
+  />
+  <ExternalResource
+    title="TC39 — change-array-by-copy proposal"
+    href="https://github.com/tc39/proposal-change-array-by-copy"
+    icon="simple-icons:github"
+    iconColor="#181717"
+    description="The Stage 4 spec proposal that shipped toSorted, toReversed, toSpliced, and with — the motivation behind the four-pair reflex."
+  />
+</CardGrid>

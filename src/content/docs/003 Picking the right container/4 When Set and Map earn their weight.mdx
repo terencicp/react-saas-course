@@ -1,0 +1,445 @@
+---
+title: When Set and Map earn their weight
+description: Pick the right container by trigger — Set for dedup, membership, and algebra; Map for non-string keys, churn, and ordered contracts; WeakMap at the narrow GC-coupled edge.
+chapter-id: 3
+sidebar:
+  order: 4
+  label: Set, Map, WeakMap
+---
+
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+Three bug shapes from three different teams, all rooted in the same thing: the team kept using `{}` or `[]` past the point either container fit the shape of the data.
+
+```ts
+const cache: Record<string, User> = {};
+const user = cache[userInput];
+user.name;
+```
+
+The first one is a `{}` used as a lookup table with user-controlled keys. Most of the time `cache[userInput]` returns a `User` or `undefined`, exactly as the type says. But when `userInput === 'toString'`, the property doesn't come from `cache` — it comes from `Object.prototype`, which every object literal inherits from. The lookup returns a built-in function, the next line tries to read `.name` on a function, and production logs an inscrutable `TypeError`. The previous lesson on objects named `Object.hasOwn` as the defensive read; the senior reach is one step further — when the keyspace is user-controlled, don't use `{}` at all.
+
+```ts
+const watchedCustomerIds: string[] = [/* 200 ids */];
+const flagged = bigInvoices.filter((i) =>
+  watchedCustomerIds.includes(i.customerId),
+);
+```
+
+The second one is the closing foreshadow from the previous lesson on array methods. With `bigInvoices.length === 10_000` and `watchedCustomerIds.length === 200`, the inner `.includes` walks the watch list for each invoice — two million comparisons for what should be one walk. The result is correct, the bug is silent, and the slowdown only shows up once the dataset grows. The senior reflex sees `.includes` inside a `.filter` callback and reaches for `Set`.
+
+```ts
+const selected = new Map([['inv_1', invoice]]);
+await fetch('/api/save', {
+  method: 'POST',
+  body: JSON.stringify({ selected }),
+});
+```
+
+The third one looks fine until you read the request body on the server. `JSON.stringify(new Map([...]))` returns `'{}'`. The map's data evaporates the moment it crosses a wire — no error, no warning, just an empty object on the other side. The serializer doesn't know about `Map`; the data is in internal slots it can't see.
+
+Each bug has the same fix shape: pick a container that matches the data's actual shape. The previous lessons installed the object literal as the workhorse record and the array as the ordered list. This lesson installs the two conditional containers — `Set` and `Map` — plus `WeakMap` parked at the narrow edge, and the named thresholds that flip your default reach toward each one.
+
+## Four containers, three questions
+
+The senior pick isn't *"which container is most powerful?"* — it's *"which container matches the shape of this data and the operation that dominates it?"* Four containers, three short questions, the answer falls out.
+
+<Figure caption="Pick the container by trigger, not by power.">
+```mermaid
+%%{init: {'themeCSS': '.node.term .nodeLabel { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }'} }%%
+flowchart LR
+  start([Pick a container])
+  q1{"Keys dynamic,<br/>user-controlled,<br/>or non-string?"}
+  q2{"Bag of unique values?<br/>Membership or<br/>set algebra?"}
+  q3{"Ordered list<br/>walked by index?"}
+
+  map["<b>Map</b><br/>non-string keys, churn,<br/>ordered contract"]
+  weakmap["<b>WeakMap</b><br/>cache dies with the object"]
+  set["<b>Set</b><br/>dedup, has(), set algebra"]
+  array["<b>Array</b><br/>ordered, walked, indexed"]
+  obj["<b>Object literal</b><br/>record with known fields"]
+
+  start --> q1
+  q1 -- Yes --> map
+  q1 -- No --> q2
+  q2 -- Yes --> set
+  q2 -- No --> q3
+  q3 -- Yes --> array
+  q3 -- No --> obj
+  map -. "keys are objects,<br/>cache should die<br/>with them" .-> weakmap
+
+  class map,weakmap,set,array,obj term
+  classDef term fill:#1f2937,stroke:#94a3b8,color:#f8fafc
+```
+</Figure>
+
+Reading the tree top to bottom: object literals are for records with known string-keyed fields where the shape is the contract. Arrays are for ordered lists you walk by index. `Set` enters when the collection is a bag of unique values and membership or set algebra is the operation that matters. `Map` enters when you're building a <Term definition={"An unordered collection of key→value pairs where the keyspace is unbounded or unknown at write time. Contrast: a record has a fixed, known field shape."}>dictionary</Term> — keys aren't fixed strings, or insertion and deletion are frequent, or insertion-order matters as part of the contract a reader can rely on.
+
+The terminology pair is worth installing now and reaching for later. A *record* is a fixed shape — `{ id, email, name }` — and the object literal is the right container for it. A *dictionary* is a dynamic keyspace — *which* keys are present is part of the data, not the type — and `Map` is the right container for it. Most "I have a JavaScript object" intuitions blur the two; the senior reflex is to ask *which one is this?* before picking.
+
+## Set: dedup, membership, algebra
+
+`Set` is a collection of unique values. No keys, no order contract beyond insertion order, no payload — just *"is this value in the set?"* and *"give me all the values."* Three triggers earn it.
+
+### Dedup
+
+The canonical idiom. Wrap an array in `new Set(...)` and you get the unique values; wrap that in `Array.from(...)` to get back an array:
+
+```ts
+const customerIds = ['cus_1', 'cus_2', 'cus_1', 'cus_3', 'cus_2'];
+const uniqueIds = Array.from(new Set(customerIds));
+```
+
+`Set` decides "same value" using <Term definition={"JavaScript's equality semantics for Map keys and Set values: like ===, except NaN matches NaN. Two distinct objects are never equal even if their fields are identical — equality is by reference, not by shape."}>SameValueZero</Term> — like `===` except `NaN` matches `NaN`. The practical upshot: two distinct object literals are never equal even if their fields look identical, because equality is by reference. Dedup over an array of objects needs a key function and a different pattern; the `new Set(arr)` form works for primitives.
+
+### Membership inside a loop
+
+This is the trigger from the lesson opener. `Array.prototype.includes` walks the array until it finds a match — `O(n)` for each call. `Set.prototype.has` is `O(1)` on average. The moment a membership check sits inside another loop, the costs compound multiplicatively.
+
+The fix is one line: build the `Set` once outside the loop, `.has`-check inside.
+
+<CodeVariants>
+  <CodeVariant label="Naive — O(n × m)">
+    <div data-mark-color="red">
+
+    ```ts "watchedCustomerIds.includes(i.customerId)"
+    const flagged = bigInvoices.filter((i) =>
+      watchedCustomerIds.includes(i.customerId),
+    );
+    ```
+
+    </div>
+    **One walk per invoice over the entire watch list.** With 10,000 invoices and 200 watched ids, `.includes` walks the watch list for every invoice — roughly two million comparisons before this `.filter` returns.
+  </CodeVariant>
+
+  <CodeVariant label="Set-fronted — O(n + m)">
+    <div data-mark-color="green">
+
+    ```ts "new Set(watchedCustomerIds)" "watched.has(i.customerId)"
+    const watched = new Set(watchedCustomerIds);
+    const flagged = bigInvoices.filter((i) => watched.has(i.customerId));
+    ```
+
+    </div>
+    **Build the `Set` once, `.has`-check inside.** Building the `Set` is one walk over the 200 ids. The `.filter` does one walk over the 10,000 invoices, with constant-time `.has` inside. Total: roughly 10,200 operations, two orders of magnitude faster.
+  </CodeVariant>
+</CodeVariants>
+
+The pattern to spot in code review is `.filter(x => other.includes(...))`, `.map(x => ... && other.includes(...))`, `for...of` with `.includes` in the body — anything where the membership check sits inside another walk. Drop a `new Set(other)` outside and the inner check becomes constant time.
+
+### Set algebra
+
+The headline beat. As of ES2025, `Set` ships seven composition methods natively — union, intersection, difference, symmetric difference, plus three boolean predicates. Universally available since June 2024 (Chrome, Firefox, Safari, Node 22+), and Node 24 LTS — the runtime this course will pin a few lessons from now — has them all.
+
+The methods split into two groups. The first four return a new `Set`:
+
+- **`a.union(b)`** — elements in either.
+- **`a.intersection(b)`** — elements in both.
+- **`a.difference(b)`** — in `a` but not `b`.
+- **`a.symmetricDifference(b)`** — in exactly one (the XOR).
+
+The other three return a boolean:
+
+- **`a.isSubsetOf(b)`** — every element of `a` is in `b`.
+- **`a.isSupersetOf(b)`** — every element of `b` is in `a`.
+- **`a.isDisjointFrom(b)`** — they share no elements.
+
+In real code the names *are* the documentation:
+
+```ts
+const activeIds = new Set(activeInvoiceIds);
+const flaggedIds = new Set(flaggedInvoiceIds);
+
+const needsReview = activeIds.intersection(flaggedIds);
+const safeToArchive = activeIds.difference(flaggedIds);
+const overlap = !activeIds.isDisjointFrom(flaggedIds);
+```
+
+Before ES2025, computing an intersection meant `arr.filter(x => other.has(x))` or pulling in `lodash.intersection`. Both are now retired. If you remember a `_.intersection` or `_.union` habit from years past, the senior reach in 2026 is to delete the import.
+
+One small thing worth knowing: the *other* operand doesn't have to be a `Set`. The methods accept any **set-like** object — anything with `.size`, `.has(value)`, and `.keys()`. A `Map` qualifies (its `.keys()` is the iteration), so `mySet.intersection(myMap)` works. You won't reach for this often, but when you read it in a library, it's not magic.
+
+## The Set surface a senior writes
+
+The full daily API in one block. Construct, mutate, query, iterate, size:
+
+```ts
+const selected = new Set<string>();
+selected.add('inv_1');
+selected.add('inv_2').add('inv_1');
+selected.has('inv_1');
+selected.delete('inv_3');
+selected.size;
+for (const id of selected) {
+  console.log(id);
+}
+const fromIter = new Set(['a', 'b', 'a']);
+```
+
+A few things to note as you scan the block. `Set<string>()` annotates the element type explicitly at construction — without the generic, TypeScript can't infer it from an empty initializer and you end up with a useless `Set<unknown>`. `.add` returns the `Set` so calls chain. `.delete` returns a boolean — `true` if something was actually removed. `for...of` on a `Set` yields the values themselves; there's no index, no key. The constructor accepts any iterable, which is how the dedup idiom works.
+
+One inherited rule from the array lesson: `.add` and `.delete` *mutate the set in place*. That's fine for a `Set` you own inside a function. For a `Set` held in React state or otherwise shared, you don't mutate it — you replace it: `setSelected(new Set(selected).add(id))`. Same ownership rule as `.push` vs `[...arr, x]`; the React state mechanics land in the React chapters.
+
+## Map: non-string keys, churn, ordered contract
+
+`Map` is `Set`'s richer cousin — every entry has a key *and* a value, and keys can be any type. Three triggers earn it.
+
+### Non-string keys
+
+Plain objects coerce every key to a string. Write `obj[42]` and JavaScript stores it under `"42"`. Write `obj[someDate]` and JavaScript stores it under whatever `someDate.toString()` returns — `"Mon Jan 01 2026 00:00:00 GMT+0000"`. Two `Date` instances with the same calendar day collide, two different objects with identical shapes collide, and the original key type is lost.
+
+`Map` keeps the key as the original value, identity and type intact:
+
+```ts
+const outstandingByCustomer = new Map<Customer, number>();
+outstandingByCustomer.set(customer, 4_200);
+outstandingByCustomer.get(customer);
+```
+
+Equality on `Map` keys is the same SameValueZero rule as `Set` — by reference for objects. Two distinct object literals with identical fields are *different* keys; you have to hand the same customer *instance* to `.set` and `.get` for the lookup to land.
+
+A practical note: in production SaaS code, you'd usually key by the customer's `id` (a string) rather than the customer object itself. The object-keyed shape exists for cases where the identity of the instance is the point — DOM nodes, React elements, parsed AST nodes. We'll see the canonical example in the `WeakMap` section.
+
+### Frequent insert and delete
+
+`Map` is engineered for the operation. Plain objects in V8 (and other modern engines) are optimized via hidden classes — every shape the object passes through builds an internal transition. Frequent insert and delete patterns can deoptimize those transitions, and the runtime falls back to a slower dictionary mode. `Map` skips the hidden-class machinery entirely; it's a hash table by design.
+
+You don't measure-and-prove this. The rule is *"if the operation dominating the lifetime of this container is adding and removing entries, `Map` is the right tool by intent."* The reader sees `Map`, knows churn is expected.
+
+### Insertion-ordered iteration
+
+Both `Map` and (in modern engines) plain objects iterate in insertion order. The difference is what *guarantees* the order. `Map` promises insertion order in the specification — every implementation must deliver it. Objects deliver it by current engine convention, with edge cases around integer-string keys that the spec used to fudge.
+
+When the contract is *"process these in the order they were added,"* reach for `Map`. The reader sees the promise.
+
+```ts
+const recent = new Map<string, Invoice>();
+recent.set('inv_3', latest);
+recent.set('inv_1', older);
+recent.set('inv_2', oldest);
+
+for (const [id, invoice] of recent) {
+  console.log(id, invoice.amountCents);
+}
+```
+
+The `for...of` here yields `[key, value]` pairs — the destructure-in-the-binding form from the array lesson, applied to a `Map`. That two-element shape is the cleanest visual difference from a `Set` (which yields just values).
+
+### Map.groupBy
+
+The headline. The previous lesson on objects introduced `Object.groupBy(items, keyFn)` for grouping an array by a string-valued key — invoices by status, customers by country. `Map.groupBy` is its non-string-key cousin. Same signature, returns a `Map` instead of an object, and the key can be any type.
+
+ES2024, baseline since the end of 2024 — every current browser and Node 22+.
+
+```ts
+const invoicesByDueDate = Map.groupBy(invoices, (i) => i.dueDate);
+```
+
+`invoicesByDueDate` is `Map<Date, Invoice[]>` — the key is the actual `Date` instance from the invoice, not a stringified copy. Try the same with `Object.groupBy` and every `Date` collapses into a string like `"Mon Jan 01 2026 ..."`. You lose the original `Date` from the key, any two days that happened to stringify the same would collide, and downstream code that needs to do date arithmetic has to re-parse the string back out.
+
+The same `Date`-as-object-key caveat from the non-string-keys section applies: two invoices built with separate `new Date(...)` calls land in *different* groups even when the dates represent the same instant. In practice you either canonicalize upstream so equal logical days share an instance, or you key by an ISO date string (`i.dueDate.toISOString().slice(0, 10)`) and use `Object.groupBy`. Choose by which side of the string boundary your downstream code wants to work on.
+
+The rule that pairs the two statics: string keys → `Object.groupBy`; anything else → `Map.groupBy`.
+
+## The Map surface and the .get rule
+
+The daily API for `Map`, in one block:
+
+```ts
+const byId = new Map<string, Invoice>();
+byId.set('inv_1', invoice);
+byId.set('inv_2', other).set('inv_3', third);
+byId.get('inv_1');
+byId.has('inv_99');
+byId.delete('inv_2');
+byId.size;
+for (const [id, invoice] of byId) {
+  console.log(id, invoice.amountCents);
+}
+byId.keys();
+byId.values();
+byId.entries();
+const fromPairs = new Map([
+  ['a', 1],
+  ['b', 2],
+]);
+```
+
+Same shape as `Set`'s surface — explicit generic at construction, chainable mutators, boolean returns from `.delete` and `.has`, iteration via `for...of`. The differences are what you'd expect: `.set(key, value)` instead of `.add(value)`, `.get(key)` returns the value or `undefined`, and `for...of` yields pairs. The three iterator views (`.keys()`, `.values()`, `.entries()`) work the way they do on objects.
+
+The one thing that *will* trip you the first time you write it is `.get`.
+
+### Map.get always returns V | undefined
+
+Even when the map is typed `Map<string, Invoice>`, `.get(k)` returns `Invoice | undefined` — never just `Invoice`. TypeScript has no way of knowing at compile time which keys are present at runtime. The map's type tells you what the values *will* be when they exist; whether a particular key has a value is runtime information.
+
+This is the same discipline as <Term definition={"A TypeScript flag the course turns on. With it, indexing an array returns T | undefined instead of T, because the index might be out of bounds at runtime. The senior reflex is to handle the undefined explicitly."}>noUncheckedIndexedAccess</Term> imposes on array indexing — `arr[i]` returns `T | undefined`, not `T`, because the compiler doesn't know whether the index is in bounds. The `Map.get` rule predates that flag and applies always; the array discipline is the same shape applied to indexing.
+
+Two senior reflexes for handling the miss. The first, when a default makes sense, is the `??` fallback:
+
+```ts
+const invoice = byId.get(id) ?? emptyInvoice;
+```
+
+`??` returns the right-hand side when the left is `null` or `undefined` — the form was introduced in the previous chapter, and it's the most common reach here.
+
+The second, when there's no sensible default and absence has to short-circuit the rest of the function, is the temp-binding-narrow pattern:
+
+```ts
+const invoice = byId.get(id);
+if (invoice === undefined) return;
+invoice.amountCents;
+```
+
+After the `if (invoice === undefined) return;`, TypeScript narrows `invoice` to `Invoice` and `.amountCents` reads without complaint. The pattern is the same one you'd use after `arr[0]` under the strict indexing flag; the muscle memory transfers.
+
+You'll occasionally see `.has(k)`-then-`.get(k)` written as a sequence — check first, then read. That works, but it's two lookups for the price of one and slightly less idiomatic than `.get` plus a null check. Pick one style, stick with it.
+
+## WeakMap: caches that die with the object
+
+`WeakMap` lives at the narrow edge of the daily container surface. Most of the time you won't reach for it; when you do, it's because the trigger is exact and nothing else fits.
+
+The difference from `Map` is one word: *weakly*. `WeakMap` holds its keys weakly. When the only remaining reference to a key is the `WeakMap` entry itself, the garbage collector reclaims the entry. The container vanishes alongside the object.
+
+Two hard constraints follow. Keys must be objects, not primitives — there's no way to weakly hold a string. And `WeakMap` is *not iterable* and has *no `.size`* — entries can disappear at any time, so iteration would yield inconsistent results, and any size you read would be stale by the time you read it.
+
+The trigger that earns it: caching computed metadata per object instance, where the cache should not prevent the object from being garbage-collected.
+
+```ts
+const measurements = new WeakMap<HTMLElement, DOMRect>();
+
+const getRect = (el: HTMLElement): DOMRect => {
+  const cached = measurements.get(el);
+  if (cached) return cached;
+  const rect = el.getBoundingClientRect();
+  measurements.set(el, rect);
+  return rect;
+};
+```
+
+This is the canonical shape. The cache keys are DOM elements; the values are their measured bounding rectangles. When an element is removed from the DOM and no other code holds a reference to it, the cache entry is reclaimed automatically. No manual `.delete`, no leak, no listener to wire up. The cache's lifetime is coupled to the element's lifetime, and the engine handles the coupling for you.
+
+The DOM API isn't formally introduced yet — that's in the next unit — but the *shape* is what matters here. Replace `HTMLElement` with any object whose lifetime you don't fully control (a React element, a parsed AST node, a request object) and the pattern is identical.
+
+`WeakSet` is the set cousin — same weak-key semantics, no values. The use case is "have I already processed this object?" checks where the set shouldn't prevent the object from being collected. Narrow enough that you'll rarely write one; named here for recognition.
+
+One historical footnote you might run into in older codebases: `WeakMap` was used to implement private state per instance before class private fields (`#field`) existed. The class private-field syntax replaces that use case entirely; the modern reach for private state in a class is `#field`, not `WeakMap`. Classes themselves get treated in a later chapter; the point here is just that *"private state in `WeakMap`"* is not the modern shape.
+
+## Map and Set don't survive JSON.stringify
+
+The serialization bug from the lesson opener, treated.
+
+`JSON.stringify(new Map([['k', 1]]))` returns `'{}'`. `JSON.stringify(new Set([1, 2, 3]))` returns `'{}'`. Both containers stringify to an empty object — no error, no warning. The data was there a line ago and isn't anymore.
+
+Why: `JSON.stringify` only serializes own enumerable properties. `Map` and `Set` store their entries in internal slots — engine-managed storage the serializer can't see and shouldn't try to.
+
+The fix isn't to stop using `Map` or `Set`. It's to *convert at the boundary* — wherever the data crosses into JSON, swap the container for its serializable equivalent, then convert back on the other side if you need to.
+
+- **`Map` ↔ array of pairs.** `Array.from(map)` gives the canonical `[[k, v], [k, v]]` shape. `new Map(array)` rebuilds the map from it.
+- **`Map` ↔ plain object** (when keys are strings). `Object.fromEntries(map)` from the object lesson; the inverse is `new Map(Object.entries(obj))`.
+- **`Set` ↔ array.** `Array.from(set)`. `new Set(array)` rebuilds.
+
+The two shapes side by side, applied to a `fetch` body:
+
+<CodeVariants>
+  <CodeVariant label="Disappears">
+    <div data-mark-color="red">
+
+    ```ts "selected"
+    const selected = new Set(['inv_1', 'inv_2']);
+
+    await fetch('/api/save', {
+      method: 'POST',
+      body: JSON.stringify({ selected }),
+    });
+    ```
+
+    </div>
+    **Server receives `{ "selected": {} }`.** The set's data is gone before the request leaves the browser — `JSON.stringify` can't see the internal slots where `Set` stores its entries.
+  </CodeVariant>
+
+  <CodeVariant label="Survives">
+    <div data-mark-color="green">
+
+    ```ts "Array.from(selected)"
+    const selected = new Set(['inv_1', 'inv_2']);
+
+    await fetch('/api/save', {
+      method: 'POST',
+      body: JSON.stringify({ selected: Array.from(selected) }),
+    });
+    ```
+
+    </div>
+    **Server receives `{ "selected": ["inv_1", "inv_2"] }`.** Convert the set to an array at the boundary; if the server needs `Set` semantics, it can wrap the array back into a `Set` on receipt.
+  </CodeVariant>
+</CodeVariants>
+
+Two clarifying notes. First, the React Server Components wire protocol — which we'll meet in the Next.js chapters — uses a richer serializer (`structuredClone`-shaped) that *does* preserve `Map`, `Set`, `Date`, and `BigInt`. This lesson's rule is about `JSON.stringify` specifically, which is the form that hits real wire boundaries: `fetch` bodies, `localStorage`, query strings, and any third-party API. The RSC case is the exception, not the default.
+
+Second, deep serialization — round-trips that need to preserve `Date` instances, `BigInt`, typed arrays, or custom classes — lands in a later chapter alongside `structuredClone`. The rule here is the narrow one: at any `JSON.stringify` boundary, convert `Map` and `Set` to their array forms first.
+
+## Where this lands later
+
+A few soft forward links so you know where these containers reappear.
+
+- The **LRU cache** idiom (the caching chapter, much later) builds directly on `Map`'s insertion-order contract. The whole touch-to-most-recent pattern is `map.delete(k); map.set(k, v);` — delete, re-insert, and the key is now at the end of the iteration order.
+- **Drizzle result-set transforms** (the database chapter) use `Set` for dedup and `Map` for ID-keyed lookup as a standard pre-response shape.
+- **TanStack Query** uses `WeakMap`-keyed metadata for query references internally — you won't write it yourself, but you'll see it in the source.
+- **`Object.groupBy` and `Map.groupBy`** are the two faces of the groupBy pattern. String keys → object; anything else → map. The pair is the practical reason to know both lessons.
+
+## Pick the right container
+
+One sort, eight items, four containers. Read each item, then drop it into the bucket whose triggers fit. The sort is the lesson collapsed into one drill — there's no syntax to remember, only the question *which container is this?*
+
+<Buckets twoCol instructions="Sort each data shape into the container whose triggers fit. Read the operation, not just the keys.">
+  <Bucket name="obj" label="Object literal" description="Known string-keyed fields; the shape is the contract." />
+  <Bucket name="arr" label="Array" description="Ordered, walked, indexed; same-type elements." />
+  <Bucket name="set" label="Set" description="Unique values; membership or set algebra dominates." />
+  <Bucket name="map" label="Map" description="Dynamic keys, frequent insert/delete, or non-string key types." />
+
+  <Item bucket="obj">The currently signed-in user's profile fields (`id`, `email`, `name`)</Item>
+  <Item bucket="arr">The list of invoices in display order on the dashboard</Item>
+  <Item bucket="set">The set of selected invoice IDs in a multi-select UI</Item>
+  <Item bucket="map">Lookup table from order ID to row, used for `O(1)` reads inside a render loop</Item>
+  <Item bucket="set">Tags applied to a post, deduplicated as the user types</Item>
+  <Item bucket="map">Cache of computed bounding-box metadata per DOM node, that should disappear when the node leaves the page</Item>
+  <Item bucket="map">A mapping from `Date` (the actual Date instance) to events scheduled on that day</Item>
+  <Item bucket="map">Count of how many times each word appears in a single paragraph of text</Item>
+</Buckets>
+
+A few items worth thinking about after you finish. Item 4 looks like a record at first glance — "lookup table" sounds like an object literal — but the *operation* is `O(1)` reads inside a hot loop with frequent inserts, which is the `Map` trigger. Item 6 lands in `Map` here because the four buckets don't include `WeakMap`, but the *better* answer in production is `WeakMap` — "DOM-node-keyed cache that should disappear when the node leaves the page" is the exact trigger from the `WeakMap` section. Item 8 is the dictionary-vs-record split — *counting words* means the keyspace is whatever the input text contains, dynamic and user-controlled, which is `Map`. If you wrote it as `Record<string, number>` and a user submitted `"constructor"` as a word, you'd start counting how many times a built-in function showed up. Same trap as the opener.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="MDN — Set"
+    href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Set"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The full Set reference, including the ES2025 composition methods (`union`, `intersection`, `difference`, `symmetricDifference`, and the three boolean predicates)."
+  />
+  <ExternalResource
+    title="MDN — Map.groupBy"
+    href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Map/groupBy"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The non-string-key grouping static, with the `keyFn`-returns-any-value semantics worked through."
+  />
+  <ExternalResource
+    title="web.dev — JavaScript Set methods are Baseline"
+    href="https://web.dev/blog/set-methods"
+    icon="simple-icons:googlechrome"
+    iconColor="#4285F4"
+    description="The Baseline-newly-available announcement (June 2024) for the seven Set composition methods. The senior reassurance that you can ship these in production without a polyfill."
+  />
+</CardGrid>

@@ -1,0 +1,411 @@
+---
+title: 'Regex: the modern flavor'
+description: The 2026 regex surface — literal vs constructor, the six daily flags, named capture groups, property escapes, the result-method asymmetry, lookarounds, and the senior reflex to drop the regex when a parser belongs.
+chapter-id: 3
+sidebar:
+  order: 6
+  label: Regex
+---
+
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import PredictOutput from '../../../components/exercises/predict-output/PredictOutput.astro';
+import PredictWhy from '../../../components/exercises/predict-output/PredictWhy.astro';
+import CodeReview from '../../../components/exercises/code-review/CodeReview.astro';
+import ReviewFile from '../../../components/exercises/code-review/ReviewFile.astro';
+import ReviewIssue from '../../../components/exercises/code-review/ReviewIssue.astro';
+import ReviewWhy from '../../../components/exercises/code-review/ReviewWhy.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+Two production bugs, both regex. The first looks like a textbook validator and rejects most of the world's names. The second is a hand-rolled twin of a method call sitting one import away.
+
+<div data-mark-color="red">
+
+```ts "[a-zA-Z0-9]+"
+const isValidUsername = (input: string) => /^[a-zA-Z0-9]+$/.test(input);
+
+isValidUsername('Smith');   // true
+isValidUsername('Müller');  // false
+isValidUsername('José');    // false
+isValidUsername('小明');     // false
+```
+
+</div>
+
+This regex shipped to a sign-up form on launch day. By the next morning the support inbox had thirty complaints from non-English users locked out of their own accounts. `[a-zA-Z0-9]` is ASCII; "letter" in 2026 is Unicode. Three out of four reasonable names fall through.
+
+<div data-mark-color="red">
+
+```ts {1}
+const EMAIL_RE = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+
+export const subscribe = async (formData: FormData) => {
+  const email = String(formData.get('email'));
+  if (!EMAIL_RE.test(email)) {
+    return { error: 'Invalid email' };
+  }
+  // ... persist subscriber
+};
+```
+
+</div>
+
+The regex is shorter than RFC 5322 and longer than the team would maintain. It rejects valid addresses (quoted local-parts, internationalized domain names, the `.museum` TLD), accepts garbage (`user@a.b` parses), and obscures the contract — *this field must be a deliverable email address* — behind a wall of escapes. One method call on a Zod schema does the job correctly, with a localized error message, a JSON Schema shape, and a maintained validator on the other end.
+
+This lesson teaches the regex flavor a 2026 engineer actually writes, and the threshold where the regex stops being the right tool.
+
+## Two construction forms
+
+A regex in JavaScript has two shapes. The first is the one you reach for by default; the second has a single trigger.
+
+<CodeVariants>
+  <CodeVariant label="Literal (default)">
+
+    ```ts
+    const hexColor = /^#[\da-f]{6}$/i;
+    ```
+
+    Slashes around the pattern, flags after the closing slash. Compiled once at parse time, syntax-highlighted in every editor, and the form every reader recognizes. Reach for it by reflex for any regex whose pattern is fixed at write time.
+  </CodeVariant>
+
+  <CodeVariant label="Constructor (dynamic pattern)">
+
+    ```ts
+    const buildSearchRe = (term: string) => {
+      const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(escaped, 'i');
+    };
+    ```
+
+    `new RegExp(pattern, flags)` takes the pattern as a string. The trigger is a pattern that's genuinely built from a variable — a user-supplied search term, a parameterized field name. The watch-out is structural: every backslash in the string doubles. `new RegExp('\\d+')` is the form, not `new RegExp('\d+')`, because the string literal eats one backslash before the regex parser sees it. And any user-supplied substring needs the three-line escape helper above, or the user can inject regex metacharacters into your pattern.
+  </CodeVariant>
+</CodeVariants>
+
+The constructor form is rare in application code — most patterns are known when you write them. When it is the right reach, the escape helper above is the form; reaching for an npm package for three lines of `replace` is over-engineering.
+
+## The flag surface
+
+Six flags do all the work. Each one earns its place against a named trigger.
+
+```ts
+// g — required for .matchAll and for .replaceAll(regex, ...)
+// i — case-insensitive; the daily reach for human input
+// m — ^ and $ match line boundaries, not just string boundaries
+// s — . matches newlines (dotAll); needed for patterns that span lines
+// u — Unicode mode; full code-point matching, enables \p{...} escapes
+// v — ES2024 Unicode sets mode; supersedes u, adds set ops and \p{RGI_Emoji}
+```
+
+Flag combinations are mostly obvious — `gi`, `gim`, `gs` — with one rule that catches everyone on first contact. <Term definition="The u regex flag enables Unicode-aware matching: full code-point handling, validation of escape sequences, and \p{...} property escapes.">Unicode mode</Term> (`u`) and <Term definition="The v regex flag (ES2024). Supersedes u: adds set operations (&&, --) inside character classes and properties-of-strings like \p{RGI_Emoji}. Mutually exclusive with u.">Unicode sets mode</Term> (`v`) are *mutually exclusive*. Writing `/pattern/uv` is a syntax error. The default is `u`; reach for `v` only when you need set operations inside a character class or when you're matching emoji sequences. Both are universally available in May 2026 — Node 24 LTS, every current browser — so the only question is which one the pattern wants, not whether your runtime supports it.
+
+:::tip
+When you reach the forms unit later in the course, Zod's `.regex(...)` validator accepts a `RegExp` directly — flags travel with the pattern, you don't restate them.
+:::
+
+## Named capture groups
+
+Any time a regex captures structure, give the captures names. The named form is the senior default in 2026; you'll see indexed `match[1]`, `match[2]` in older code and code reviews, but installing named as your first mental model keeps you out of the brittle-by-position trap from day one.
+
+<AnnotatedCode lang="ts" code={`
+const invoiceRe = /^INV-(?<year>\\d{4})-(?<num>\\d{4})$/;
+
+const match = 'INV-2026-0042'.match(invoiceRe);
+if (match?.groups) {
+  const { year, num } = match.groups;
+  // year: '2026', num: '0042'
+}
+`}>
+  <AnnotatedStep meta={`{1} "(?<year>\\d{4})" "(?<num>\\d{4})"`} color="blue">
+    The `(?<name>...)` syntax names a capture group inline. Each name has to be a valid identifier and unique within the pattern. The match for the group is whatever the inner pattern (`\d{4}` here) captures.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{4} "match?.groups"`} color="blue">
+    `.match(re)` returns either a match object or `null`. On a match, `.groups` is an object keyed by the names you used in the pattern; on no match, the whole result is `null`. The `match?.groups` guard handles both — optional chaining short-circuits when there's no match, and the truthiness check inside the `if` covers TypeScript's "could be undefined" worry.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5}" color="blue">
+    TypeScript types `.groups` as `{ [key: string]: string } | undefined`. The type system can't see which names appeared in the pattern, so the destructure gives you `string` (not `string | undefined`) once the guard above narrows. For tighter typing, validate the parsed values at the call site — Zod or a small `satisfies`-led shape — rather than chasing template-literal-type tricks on the regex itself.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Indexed capture groups still exist — `/^INV-(\d{4})-(\d{4})$/` and `match[1]`, `match[2]` is the older form. Recognize it in code review; write named groups yourself. Backreferences follow the same naming convention — `\k<year>` for named groups, `\1` for indexed — and the same default applies.
+
+One footgun worth a single sentence: any regex with nested unbounded quantifiers like `(a+)+` or an `.*` followed by alternation can hit <Term definition="Regular-expression Denial of Service. Adversarial input on patterns with nested quantifiers like (a+)+ causes catastrophic backtracking. Avoid nesting quantifiers; length-cap untrusted input before the regex.">ReDoS</Term> on hostile input, so don't nest quantifiers and length-cap any user-controlled string before the regex sees it.
+
+## `\p{Letter}` over `[a-zA-Z]`
+
+This is the single biggest reflex shift in the lesson, and it directly fixes the username bug that opened it. Watch the before/after.
+
+<CodeVariants>
+  <CodeVariant label="Latin-only (broken)">
+
+    ```ts del=/\[a-zA-Z\]/
+    const isLetters = (input: string) => /^[a-zA-Z]+$/u.test(input);
+
+    ['Müller', '小明', 'José', 'Smith'].map(isLetters);
+    // → [false, false, false, true]
+    ```
+
+    `[a-zA-Z]` is exactly the 52 ASCII letters. Anything outside that range — accented Latin, CJK, Cyrillic, Arabic, Devanagari — falls through. Three out of four reasonable names get rejected, and the team finds out from the support inbox.
+  </CodeVariant>
+
+  <CodeVariant label="Unicode-aware (correct)">
+
+    ```ts ins=/\\p\{Letter\}/
+    const isLetters = (input: string) => /^\p{Letter}+$/u.test(input);
+
+    ['Müller', '小明', 'José', 'Smith'].map(isLetters);
+    // → [true, true, true, true]
+    ```
+
+    `\p{Letter}` is a <Term definition="A \p{...} (or \P{...} for the negation) escape that matches Unicode characters by named property — \p{Letter}, \p{Number}, \p{Script=Han}. Requires the u or v flag.">property escape</Term> — *"any code point classified as a letter, in any script."* The `u` flag is required (it's what tells the engine `\p{...}` is a property escape, not a literal `p`). Same regex shape, correct semantics, no ASCII-by-accident bug.
+  </CodeVariant>
+</CodeVariants>
+
+The property catalog worth recognizing on sight:
+
+- `\p{Letter}` — any letter in any script. The default reach for *"this looks like a name."*
+- `\p{Number}` — any numeric character (digits, Roman numerals, Arabic-Indic digits).
+- `\p{White_Space}` — any whitespace, including non-ASCII spaces.
+- `\p{Emoji}` — any emoji code point.
+- `\p{Script=Latin}`, `\p{Script=Han}`, `\p{Script=Cyrillic}`, etc. — script-specific filters when you intentionally need one.
+
+The trigger is structural: any regex on human-entered text reaches for `\p{...}` by reflex. The `[a-zA-Z]` shape lives only in patterns over ASCII-by-contract data — an ASCII hex token, a Base64 chunk, a known protocol identifier where the spec itself is ASCII.
+
+The `v` flag adds one capability worth recognizing: *set operations* inside a character class.
+
+```ts
+// Letters that are also in ASCII — the explicit "Latin alphabet" form
+const asciiLetter = /^[\p{Letter}&&\p{ASCII}]+$/v;
+
+// Letters that are NOT ASCII — names with accents and non-Latin scripts
+const nonAsciiLetter = /^[\p{Letter}--\p{ASCII}]+$/v;
+```
+
+`&&` is intersection, `--` is difference, and a nested class is the default union. These aren't a daily-write surface — you'll go weeks without reaching for them — but you need to recognize `&&` and `--` *inside a character class* and not read them as logical operators.
+
+## The four-method result surface
+
+A regex is a value; the *methods* are what run it against a string. Four shapes cover everything, and the asymmetry between two of them is the trap that earns most regex bugs.
+
+**`pattern.test(string)`** is the fastest path to a boolean.
+
+```ts
+const isHexColor = /^#[\da-f]{6}$/i;
+
+isHexColor.test('#ff8800');   // true
+isHexColor.test('#FFFF');     // false
+isHexColor.test('not a hex'); // false
+```
+
+The senior reach for *"does this match?"* — no allocation, no object, just a boolean. The one watch-out: a regex with the `g` flag carries a `lastIndex` cursor across calls, so a `g`-flag regex reused with `.test` will start each call from where the previous one left off. Don't use `g` on patterns you call `.test` on more than once.
+
+**`string.match(pattern)`** is the asymmetric one. Without `g`, it returns a single match object — full match, `.groups`, `.index`, captures. With `g`, it returns a plain `string[]` of full matches, *and discards the groups and indices entirely*.
+
+```ts
+const re = /INV-(?<year>\d{4})-(?<num>\d{4})/;
+'order INV-2026-0042'.match(re)?.groups;
+// → { year: '2026', num: '0042' }
+
+const reG = /INV-(?<year>\d{4})-(?<num>\d{4})/g;
+'order INV-2026-0001 and INV-2026-0042'.match(reG);
+// → ['INV-2026-0001', 'INV-2026-0042']   ← strings only, no groups
+```
+
+This is the historical footgun the next method exists to replace.
+
+**`string.matchAll(pattern)`** *requires* the `g` flag (and throws `TypeError` if you forget it). It returns an iterator of full match objects — each one carries `.groups`, `.index`, and the captures.
+
+```ts
+const re = /INV-(?<year>\d{4})-(?<num>\d{4})/g;
+
+for (const match of 'INV-2026-0001 and INV-2026-0042'.matchAll(re)) {
+  if (!match.groups) continue;
+  const { year, num } = match.groups;
+  // year: '2026', num: '0001'  then  year: '2026', num: '0042'
+}
+```
+
+The iterator integrates naturally with the `for...of` loop from the previous lesson, and with `Array.from(text.matchAll(re))` when you want an array. For any capturing regex that you want to run multiple times against the same string, `.matchAll` — never `.match` with `g`.
+
+**`string.replaceAll(pattern, replacement)`** with a regex *also* requires `g` — TypeScript flags it, and the runtime throws. The strictness exists because the older `.replace(/x/, ...)` silently replaced only the first occurrence, which shipped to production constantly. The replacement can be a string (with `$<name>` for named groups or `$1` for indexed) or a function `(match, ...groups) => string` when you need logic.
+
+```ts
+const numbered = 'INV-2026-0001 / INV-2026-0042'.replaceAll(
+  /INV-(?<year>\d{4})-(?<num>\d{4})/g,
+  (_full, _year, num) => `#${num}`,
+);
+// → '#0001 / #0042'
+```
+
+The function form receives the named groups as a trailing object parameter in the latest spec, but the positional `(match, ...groups)` form is the one you'll see most. Reach for it when the replacement depends on the captured values.
+
+Now try the asymmetry trap. The bug below is the single most common regex mistake in code review.
+
+<PredictOutput
+  instructions="Both regexes match the same shape, but the methods do different things. Read carefully."
+  expected={`INV-2026-0001
+undefined`}
+>
+
+```js
+const text = 'order INV-2026-0001 and INV-2026-0042';
+const re = /INV-(?<year>\d{4})-(?<num>\d{4})/g;
+
+const result = text.match(re);
+
+console.log(result?.[0]);
+console.log(result?.[0]?.groups);
+```
+
+<PredictWhy>
+`.match` with `g` returns a plain `string[]` — the per-match group objects are thrown away. `result[0]` is the string `'INV-2026-0001'`, and strings have no `.groups` property, so the second log is `undefined`. The fix is `.matchAll`: `text.matchAll(re)` returns an iterator of full match objects, each with `.groups` on it. Reach for `.matchAll` any time you want both *all the matches* and *the captures inside each one*.
+</PredictWhy>
+
+</PredictOutput>
+
+## Lookarounds
+
+A <Term definition="A regex assertion that matches position by what surrounds it, without consuming characters. Four forms: (?=...), (?!...), (?<=...), (?<!...).">lookaround</Term> is an assertion about what's *around* the current position, without consuming any characters. There are four forms — two looking forward, two looking back, each in positive and negative — and one trigger that earns them: *the surrounding context is part of the match condition but shouldn't be part of the captured text.*
+
+```ts
+// (?=...)   positive lookahead — assert what follows
+// (?!...)   negative lookahead
+// (?<=...)  positive lookbehind — assert what precedes
+// (?<!...)  negative lookbehind
+
+// "Numbers immediately followed by px, without capturing the px"
+const pxValue = /\d+(?=px)/g;
+'padding: 16px 24em 32px'.match(pxValue);
+// → ['16', '32']
+```
+
+All four forms ship universally in 2026, so the only question is whether they earn their place. They're not a daily-write surface — most of the time, capturing the surrounding context and slicing it off in code is clearer than authoring a lookaround. Reach for them when the assertion-versus-capture distinction is genuinely the point.
+
+## When to drop the regex
+
+Now the hard part. The lesson started with two bugs, and one of them was an entire regex that shouldn't have existed — Zod's `z.email()` does the job. Half of the senior contribution to regex code is *not writing regex in the first place.* Two triggers earn the un-reach.
+
+**Trigger 1: the input is a structured format.** Email, URL, JSON, HTML, CSV, Markdown, ISO dates — every one of these has a real specification, and every one has a parser one import away. The grid below names the senior reach for each.
+
+| Format | Parser (senior reach) |
+| --- | --- |
+| Email | `z.email()` — Zod 4 top-level format builder, lands in the forms unit |
+| URL | `new URL(input)` (throws on invalid) or `URL.canParse(input)` for a boolean |
+| JSON | `JSON.parse(input)` — covered in the JSON chapter |
+| HTML | `DOMParser` in the browser, a real HTML parser on the server |
+| CSV | a CSV library — never regex |
+| Markdown | a Markdown parser |
+| ISO date | `Temporal.PlainDate.from(input)` — covered later, in the time chapter |
+
+The forward links land softly — you don't need any of these parsers yet. You just need the reflex that says *"this is a structured format, the regex is the wrong reach,"* before you start typing the pattern.
+
+**Trigger 2: the regex is becoming unreadable.** A rough threshold: when the reviewer can't tell what the pattern matches in one read, it has crossed. A small parser — a few `.indexOf` / `.slice` calls, or a real tokenizer for anything that earns one — is the right reach. Regex stays in its lane for short patterns over bounded unstructured text.
+
+If both gates pass — small, unstructured, bounded — then write modern regex: literal form, `u` flag (or `v` if you need set ops or emoji), named groups, `\p{Letter}` over `[a-zA-Z]`, `.matchAll` over `.match` with `g`. That's the entire decision.
+
+Now apply the rule. The PR below is a `validateContactInput` function with two hand-rolled regexes; both reach for regex where a parser belongs, and both have subtle bugs that prove the point. Read the file, leave a comment on each.
+
+<CodeReview instructions="Review this PR for a teammate. The function is supposed to accept either an email or a URL and tell the caller which. Two regex-versus-parser bugs to flag — leave a comment on each.">
+  <ReviewFile name="src/validate-contact.ts">
+    ```ts
+    type ContactKind = 'email' | 'url' | null;
+
+    export const validateContactInput = (input: string): ContactKind => {
+      const emailRe = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
+      if (emailRe.test(input)) {
+        return 'email';
+      }
+
+      const urlRe = /^https?:\/\/.+\..+$/;
+      if (urlRe.test(input)) {
+        return 'url';
+      }
+
+      return null;
+    };
+    ```
+  </ReviewFile>
+
+  <ReviewIssue
+    file="src/validate-contact.ts"
+    line={4}
+    kernel="hand-rolled email regex where z.email() does the job — the regex rejects valid addresses and accepts invalid ones"
+  >
+    Hand-rolled email regex is a perennial source of false rejections (this one drops anything with consecutive dots in the local-part, IDN domains, and quoted local-parts) and false accepts (`a@b.cc` parses fine). Zod 4's `z.email()` is the senior reach — it carries a maintained validator, a localized error message, and a JSON Schema shape, all at the cost of one import:
+
+    ```ts
+    import { z } from 'zod';
+
+    const emailSchema = z.email();
+    if (emailSchema.safeParse(input).success) {
+      return 'email';
+    }
+    ```
+
+    The course will cover Zod schemas in depth in the forms unit; for now, the takeaway is *parser, not regex,* for any input that has a specification.
+  </ReviewIssue>
+
+  <ReviewIssue
+    file="src/validate-contact.ts"
+    line={9}
+    kernel="hand-rolled URL regex where new URL() does the job — the regex matches malformed inputs like http:////foo"
+  >
+    URL parsing has the same shape — there's a real spec, a real parser is built into the runtime, and the hand-rolled regex matches strings the spec rejects (`http:////foo` passes this one). The senior reach is `URL.canParse(input)` for the boolean form:
+
+    ```ts
+    if (URL.canParse(input)) {
+      return 'url';
+    }
+    ```
+
+    `URL.canParse` is the static boolean cousin of `new URL(input)` and is universally available in 2026. The `try { new URL(input); } catch { ... }` shape works too, but `URL.canParse` is the cleaner read. The URL constructor lands properly in the HTTP chapter.
+  </ReviewIssue>
+
+  <ReviewWhy>
+    Two regex-versus-parser flags in one file. The pattern to scan for in any input-validation function is *hand-rolled regex against a structured format* — those are almost always wrong, the only question is *how* wrong. The instinct to write regex when a parser exists is the single biggest reach to retrain; once you have it, half the regex bugs in your codebase stop shipping.
+  </ReviewWhy>
+</CodeReview>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="MDN — Regular expression syntax"
+    href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Regular_expressions"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="Canonical reference for the full regex surface — every flag, every character class, every quantifier, with runnable examples."
+  />
+  <ExternalResource
+    title="MDN — Unicode property escapes"
+    href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Regular_expressions/Unicode_character_class_escape"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The full \p{...} property name catalog — Letter, Number, White_Space, Emoji, and every Script= filter."
+  />
+  <ExternalResource
+    title="V8 blog — RegExp v flag"
+    href="https://v8.dev/features/regexp-v-flag"
+    icon="simple-icons:googlechrome"
+    iconColor="#4285F4"
+    description="The canonical landing post for the v flag — set operations inside character classes, properties-of-strings, and why u and v are mutually exclusive."
+  />
+  <ExternalResource
+    title="Zod — String formats"
+    href="https://zod.dev/api?id=strings"
+    icon="simple-icons:zod"
+    iconColor="#3068B7"
+    description="The top-level format builders — z.email, z.url, z.iso.datetime — as the parser replacement for regex on structured formats."
+  />
+  <ExternalResource
+    title="regex101.com"
+    href="https://regex101.com/"
+    icon="lucide:flask-conical"
+    description="Interactive regex playground. Useful as a sanity-check workflow, and as a signal — if you need the tool to read your own regex, the unreadable threshold has crossed."
+  />
+</CardGrid>
