@@ -1,0 +1,299 @@
+---
+title: Backticks and tagged templates
+description: Backticks as the default string form, the tagged-template mechanic that powers them, and the two production tags every 2026 SaaS codebase ships with.
+chapter-id: 1
+sidebar:
+  order: 5
+  label: Backticks and tags
+---
+
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import PredictOutput from '../../../components/exercises/predict-output/PredictOutput.astro';
+import PredictWhy from '../../../components/exercises/predict-output/PredictWhy.astro';
+import Matching from '../../../components/exercises/matching/Matching.astro';
+import Pair from '../../../components/exercises/matching/Pair.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import Term from '../../../components/ui/Term.astro';
+
+Two strings, two production bugs. The first opens the door to SQL injection. The second turns a five-line system prompt into a maze of `+ '\n'` calls that no one wants to edit. They look nothing alike, but they're the same anti-pattern wearing two different costumes: a string assembled by concatenation. By the end of this lesson you'll know the one syntax that fixes both, and the two tagged-template surfaces that make the fix safe.
+
+<CodeVariants>
+  <CodeVariant label="Concatenated SQL">
+    <div data-mark-color="orange">
+
+    ```ts {2}
+    const email = req.body.email;
+    const query = 'SELECT * FROM users WHERE email = \'' + email + '\'';
+    const rows = await db.execute(query);
+    ```
+
+    </div>
+    If `email` arrives as `x' OR '1'='1`, the query reads every user in the table. The `+` is the door.
+  </CodeVariant>
+
+  <CodeVariant label="Concatenated multi-line">
+    <div data-mark-color="orange">
+
+    ```ts {1-5}
+    const prompt =
+      'You are an invoicing assistant.\n' +
+      'Customer ' + customerName + ' has ' + unpaidCount + ' unpaid invoices.\n' +
+      'Their plan is ' + planName + '.\n' +
+      'Reply in fewer than 200 words.';
+    ```
+
+    </div>
+    The source no longer reads as the output. Adding a line means re-threading the `+` and the `\n`; a missed newline yields one giant run-on the model misreads.
+  </CodeVariant>
+</CodeVariants>
+
+Different surface, same shape: a string built by gluing pieces with `+`. The fix is uniform — **backticks for both, tags when the string is structured**. The two tags worth knowing on sight in 2026 are `` sql`...` `` from Drizzle, which makes hand-written queries safe by default, and `` dedent`...` `` from npm, which fixes the multi-line indentation problem at one import.
+
+## Backticks as the default
+
+A <Term definition="A string literal authored with backticks. Supports ${expr} interpolation and multi-line content.">template literal</Term> is a string written with backticks instead of single or double quotes, with two extra affordances: `${expression}` interpolation, and newlines that come through as newlines. The expression inside `${...}` can be anything that evaluates to a value — a variable, a property access, a function call, a ternary.
+
+Four shapes a typical day reaches for:
+
+```ts
+const path = `/invoices/${invoiceId}`;
+const heading = `${count} active invoices`;
+const className = `rounded-md ${variant === 'primary' ? 'bg-blue-600' : 'bg-zinc-200'}`;
+const log = `User ${user.id} requested invoice ${invoice.id}`;
+```
+
+The reflex: any string built from variables uses a template literal. Reaching for `+` to glue a value into a string is a smell — it reads less clearly, it loses the placeholder structure that makes the intent obvious, and it's the gateway to the two bugs the lesson opened with. The course defaults to single quotes for plain strings (since they're the cheaper form when no interpolation is needed), but the moment a `${}` or a newline shows up, backticks are the answer.
+
+### Multi-line and the indentation gotcha
+
+Backticks also preserve newlines, which is why they're the default for anything that spans more than one line — log messages with structure, system prompts, fixture text, email bodies. But "preserves newlines" turns out to mean "preserves everything between the backticks," and that includes whitespace the author didn't intend to ship.
+
+<AnnotatedCode lang="ts" code={`
+const buildPrompt = (customerName: string): string => {
+  return \`
+    You are an invoicing assistant.
+    Customer \${customerName} has unpaid invoices.
+    Reply in fewer than 200 words.
+  \`;
+};
+`}>
+  <AnnotatedStep meta="{2-6}" color="blue">
+    The string preserves every character between the backticks — including the leading newline after the opening backtick, the indentation on each line that aligns with the surrounding function body, and the trailing newline before the closing backtick.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{3-5}" color="orange">
+    Every line carries the function-body indentation into the runtime output. Mildly annoying when the model reads the prompt; broken for whitespace-sensitive formats like YAML or Markdown code fences, where the leading spaces change what the parser sees.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The natural reaction is to un-indent the string — drag the lines back to the left margin so the content comes out clean. That works, but the source now sits visually out of phase with the surrounding function body, and every editor that reformats code wants to put it back. The right fix is to keep the source aligned and strip the indentation at runtime. That's a job for a tag — which is the bridge to the next section.
+
+One sibling worth naming once: `String.raw` is a tag function on `String` that returns the template's raw text without processing escape sequences. Useful when authoring Windows paths or regular-expression sources where `\n` shouldn't become a newline. You won't reach for it often, but if you see `` String.raw`C:\Users\${name}` `` in a library, that's why.
+
+## A tag is a function call
+
+A <Term definition="A function call whose arguments are the static and dynamic pieces of a template literal.">tagged template</Term> looks like a brand-new piece of syntax, but underneath it's a function call with the arguments rearranged. `` tag`Hello, ${name}!` `` is the same shape as `tag(['Hello, ', '!'], name)`. The backticks aren't a string going into a function — they're the function-call syntax itself, with the template's static segments and dynamic values handed in separately.
+
+Once that costume comes off, the rest reads as ordinary call semantics. Walk through a tiny example to make the shape concrete: a `currency` tag that takes integer-cents numbers (the same `1995` from the "Store cents, not dollars" lesson) and interpolates them as formatted dollar strings.
+
+<AnnotatedCode lang="ts" code={`
+const currency = (
+  strings: TemplateStringsArray,
+  ...values: number[]
+): string => {
+  return strings.reduce((acc, str, i) => {
+    const value = values[i];
+    const formatted = value === undefined ? '' : \`$\${(value / 100).toFixed(2)}\`;
+    return acc + str + formatted;
+  }, '');
+};
+
+const cents = 1995;
+const message = currency\`Your total is \${cents} including tax.\`;
+`}>
+  <AnnotatedStep meta={`{1-4} "strings: TemplateStringsArray" "...values: number[]"`} color="blue">
+    The tag receives two things: an array of the static string segments — everything between the `${'${}'}` placeholders — and the resolved values from each `${'${}'}`, spread as rest parameters. The `strings` array always has exactly one more element than the `values` array.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{12} "cents"`} color="blue">
+    Plain `number` — the same integer-cents value the "Store cents, not dollars" lesson stored. The tag doesn't care where it came from; it just receives a number.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{13}`} color="green">
+    The tag call. The runtime splits the literal into `['Your total is ', ' including tax.']` and the value `1995`, then passes them to `currency` exactly as if you'd called `currency(['Your total is ', ' including tax.'], 1995)`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5-9}" color="green">
+    The tag walks the segments, interleaving each one with the formatted value. The result is a regular string — `'Your total is $19.95 including tax.'` — that the caller uses like any other.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The shape is fixed: a tag function always receives a <Term definition="The first argument to a tag function — a readonly array of the static string segments between ${} placeholders.">`TemplateStringsArray`</Term> first and the interpolated values after. The semantics, though, are entirely the tag's call. It can escape HTML before interleaving. It can build a parameterized SQL query that never inlines the values into the query text. It can strip the common leading whitespace from every line. It can validate the inputs and throw on bad ones. It can return something other than a string — a SQL fragment object, a React element, a typed query builder. Whatever the tag wants to do with that array and those values, the syntax sits out of the way and lets it.
+
+You won't write production tag functions in this course — the two tags you'll actually use are imports, not authored. The point of the walkthrough above is *recognition*: when you see `` sql`...` `` or `` dedent`...` `` in later lessons, you'll know exactly what's happening at the call site.
+
+To confirm the segments-and-values shape landed, predict what the tag below prints.
+
+<PredictOutput expected="3 admins online">
+
+```ts
+const join = (
+  strings: TemplateStringsArray,
+  ...values: unknown[]
+): string => {
+  return strings.reduce((acc, str, i) => {
+    return acc + str + (i < values.length ? String(values[i]) : '');
+  }, '');
+};
+
+const role = 'admin';
+const count = 3;
+console.log(join`${count} ${role}s online`);
+```
+
+<PredictWhy>`strings` is `['', ' ', 's online']` — note the empty leading segment, because the literal starts with `${count}` rather than text. The reduce interleaves segments and values: `'' + '' + '3' + ' ' + 'admin' + 's online'`. The final segment `'s online'` is paired with no value (there is always one more segment than there are values), so the ternary skips the append.</PredictWhy>
+
+</PredictOutput>
+
+## The two production tags
+
+Two tags carry their weight in a 2026 SaaS codebase. The first keeps SQL injection-proof; the second keeps multi-line strings readable. The syntax shape is identical to the `currency` tag you just walked through — only the work each one does is different.
+
+### `` sql`...` `` — parameterized queries by default
+
+Every modern SQL client and ORM in 2026 ships a `sql` tagged template that **automatically parameterizes the interpolated values**. Drizzle exposes one as its escape hatch for the rare queries the query builder doesn't fit — and the values inside the `${}` placeholders are sent to the database as separately-bound parameters, never as inlined strings.
+
+Here's the shape you'll see when Drizzle lands properly in a few units. Don't worry about the surrounding `db.execute` call yet — the lesson here is the `sql`-tagged literal.
+
+<CodeTooltips tooltips={{
+  sql: "Drizzle's tagged template. Returns a SQL fragment with the dynamic values bound as parameters, not interpolated as strings.",
+  '${orgId}': 'Sent to the database as a bound parameter ($1), not interpolated into the SQL text. The injection door from the start of the lesson stays shut.',
+}}>
+
+```ts
+import { sql } from 'drizzle-orm';
+
+const status = 'paid';
+const orgId = '019385f0-1234-7000-a000-000000000001';
+
+const rows = await db.execute(
+  sql`SELECT id, total_cents FROM invoices
+      WHERE org_id = ${orgId} AND status = ${status}
+      ORDER BY created_at DESC LIMIT 50`,
+);
+```
+
+</CodeTooltips>
+
+The tagged-template shape is **what makes the SQL safe by default** — not the developer's discipline, not a linter rule, not a code-review reflex. A string built with `+` would inline `orgId` straight into the SQL text and require the developer to remember to escape it manually every single time. The `sql` tag intercepts the value, binds it to a numbered placeholder (`$1`, `$2`, and so on), and the database driver handles the rest. To write a SQL-injectable Drizzle query, you have to *deliberately* leave the tagged form — and that escape hatch is named, rare, and a code-review red flag when it shows up.
+
+<VideoCallout videoId="sX4svSMYdt0" videoTitle="How Is This Code Safe? — Web Dev Simplified on tagged template literals">
+  Kyle from Web Dev Simplified unpacks the Next.js 14 `sql` template that looked unsafe, in 6 minutes — the same mechanic this section just covered.
+</VideoCallout>
+
+:::caution
+Drizzle ships `sql.raw` for the genuine cases where the dynamic value is a column or table name, not a value — and `sql.raw` has no parameterization, by design. User input never goes through `sql.raw`. If you reach for it, the dynamic piece comes from a small fixed allowlist in your code, never from a request.
+:::
+
+The data layer unit later in the course lands the full Drizzle treatment, including when the `sql` tag earns its place against the query builder. The shape above is what you'll recognize on sight when that unit opens.
+
+### `` dedent`...` `` — multi-line strings without indentation noise
+
+The indentation gotcha from the backticks section has a tag-shaped fix. The <Term definition="An npm package exposing a tagged template that strips the common leading whitespace from every line of a multi-line string.">`dedent`</Term> package on npm exports a tag that strips the common leading whitespace from every line of a multi-line template literal. The source stays aligned with its surroundings; the runtime output comes out clean.
+
+<CodeVariants>
+  <CodeVariant label="Without `dedent`">
+    <div data-mark-color="orange">
+
+    ```ts {2-6}
+    const buildPrompt = (customerName: string, unpaidCount: number): string => {
+      return `
+        You are an invoicing assistant.
+        Customer ${customerName} has ${unpaidCount} unpaid invoices.
+        Reply in fewer than 200 words.
+      `;
+    };
+    ```
+
+    </div>
+    **Indentation leaks into the output.** Every line carries the function-body indentation, and the string opens and closes with stray newlines. Fine if the consumer doesn't care; broken for YAML, Markdown code fences, or any LLM that reads literal whitespace as part of the prompt.
+  </CodeVariant>
+
+  <CodeVariant label="With `dedent`">
+    <div data-mark-color="green">
+
+    ```ts {1,4}
+    import dedent from 'dedent';
+
+    const buildPrompt = (customerName: string, unpaidCount: number): string => {
+      return dedent`
+        You are an invoicing assistant.
+        Customer ${customerName} has ${unpaidCount} unpaid invoices.
+        Reply in fewer than 200 words.
+      `;
+    };
+    ```
+
+    </div>
+    **Same source, clean output.** The tag strips the common leading indentation from every line and trims the outer newlines. The source stays aligned with the surrounding function body, and the runtime string comes out indentation-free.
+  </CodeVariant>
+</CodeVariants>
+
+`dedent` earns its place because every alternative hurts something. Un-indenting the string puts the source visually out of phase with the surrounding function. Building the string with concatenation reintroduces the bug class the lesson opened with. Calling a hand-rolled `.replace(/^ {4}/gm, '')` rebuilds `dedent` worse, every time. One import, one tag, one consistent shape — and the source stays readable.
+
+You'll see `dedent` carry several multi-line surfaces later in the course: email body authoring when transactional email lands, system prompts wherever the course composes them, and fixture text in tests. The reach is identical every time — recognize it once here, and the rest is reflex.
+
+## Check yourself
+
+When you sit down to author a string, which shape do you reach for? Match each string described on the left to the right form on the right.
+
+<Matching instructions="Match each string to the right shape.">
+  <Pair>
+    <Fragment slot="left">A short interpolated URL path like `` `/invoices/${id}` ``.</Fragment>
+    <Fragment slot="right">Plain template literal — no tag, just `${id}`.</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">A 200-line system prompt the team edits inside the source file.</Fragment>
+    <Fragment slot="right">`` dedent`...` `` — strips the function-body indentation at runtime.</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">A hand-written SQL query selecting rows by a user-submitted org ID.</Fragment>
+    <Fragment slot="right">`` sql`...` `` — binds `${orgId}` as a parameter, not inlined text.</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">A one-line log message built from a user ID and an action name.</Fragment>
+    <Fragment slot="right">Plain template literal — no tag, just `${user.id}` and `${action}`.</Fragment>
+  </Pair>
+</Matching>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Template literals — MDN"
+    href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Template_literals"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The full reference for backtick syntax, interpolation, and the tagged-template form, with the edge cases not covered here."
+  />
+  <ExternalResource
+    title="Drizzle — sql template"
+    href="https://orm.drizzle.team/docs/sql"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The Drizzle escape hatch this lesson previews, including the sql.raw, sql.join, and sql.identifier helpers the data layer chapters cover in depth."
+  />
+  <ExternalResource
+    title="dedent — npm"
+    href="https://www.npmjs.com/package/dedent"
+    icon="simple-icons:npm"
+    iconColor="#CB3837"
+    description="The package the course uses for every multi-line template literal. One import, one tag, zero indentation noise."
+  />
+</CardGrid>

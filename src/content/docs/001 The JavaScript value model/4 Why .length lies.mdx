@@ -1,0 +1,238 @@
+---
+title: Why `.length` lies
+description: The three different counts a string can have, why `.length` is the wrong default for user-facing fields, and the normalization reflex that keeps "identical" strings from comparing as different.
+chapter-id: 1
+sidebar:
+  order: 4
+  label: Why `.length` lies
+---
+
+import PredictOutput from '../../../components/exercises/predict-output/PredictOutput.astro';
+import PredictWhy from '../../../components/exercises/predict-output/PredictWhy.astro';
+import ScriptCoding from '../../../components/live-coding/ScriptCoding/ScriptCoding.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import ThreeCountsTable from '../../../components/lessons/001/4/ThreeCountsTable.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+A user types 280 emojis into a bio field with a "280-character limit" and gets a "too long" error. A different user signs up with a name that contains an accented letter, and the duplicate-check passes against a row that looks visually identical. Both bugs trace to the same root: `string.length` in JavaScript counts UTF-16 storage chunks, not characters the user perceives. By the end of this lesson you'll know which of the three available counts to reach for, and how to compare two strings the user thinks of as identical.
+
+## The surprise: `.length` doesn't count characters
+
+Predict the output of these three lines. Two of them aren't going to be what you'd guess from looking at the strings.
+
+<PredictOutput expected={`5
+4
+11`}>
+
+```ts
+console.log('hello'.length);
+console.log('🇺🇸'.length);
+console.log('👨‍👩‍👧‍👦'.length);
+```
+
+<PredictWhy>
+
+Every JavaScript string is stored as a sequence of <Term definition={"The 16-bit chunks JavaScript strings are stored in. Characters above U+FFFF (most emoji, many CJK characters) need two code units — a surrogate pair — to represent one user-perceived character."}>UTF-16 code units</Term>, and `.length` reports that count — not the number of characters you see on screen.
+
+`'hello'` is five ASCII characters; each fits in one code unit, so `.length` is `5`. The flag emoji is built from two regional-indicator characters; each one lives above the 16-bit boundary and needs two code units (a *surrogate pair*) to represent it, so the total is `4`. The family emoji is four people glued together with zero-width joiners, each person above the boundary, totalling `11` code units.
+
+None of those numbers match what a user sees.
+
+</PredictWhy>
+
+</PredictOutput>
+
+The takeaway is sharper than "watch out for emojis." `.length` is a <Term definition={"A property of how the value is stored or transmitted, not of what the value represents. `.length` reports the storage form, not the human-meaningful count."}>serialization detail</Term> — it tells you how the engine stored the string, not how a human reads it. The rest of this lesson is the three counts you actually have available, and how a senior picks the right one for the job.
+
+## Three counts, three reaches
+
+There's no single "length of a string" in JavaScript. There are three, and each one answers a different question. The senior reflex isn't to ask "how long is this string?" — it's to ask "do I need code units, code points, or <Term definition={"One character as the user perceives it on screen. Can span multiple Unicode code points — a base letter plus combining marks, an emoji built from a zero-width-joiner sequence, a regional-indicator pair forming a flag."}>grapheme clusters</Term>?"
+
+Same input, three counts:
+
+```ts
+const family = '👨‍👩‍👧‍👦';
+
+family.length;                                            // 11
+[...family].length;                                       // 7
+[...new Intl.Segmenter('en', { granularity: 'grapheme' })
+  .segment(family)].length;                               // 1
+```
+
+Walk the three options with their triggers:
+
+- **Code units** — `string.length`. The right answer when the value is a key, an index back into the same string, or a byte budget for a serialized payload. Fast, no allocation, correct for ASCII. Wrong for anything the user sees.
+- **Code points** — `[...string].length` (or `Array.from(string).length`). Spreading a string iterates by Unicode code point, so surrogate pairs collapse to one. Better than `.length` for human-shaped counts; still wrong for any character built from joined sequences. The family above is *seven* code points but one cluster on screen.
+- **Grapheme clusters** — `new Intl.Segmenter(locale, { granularity: 'grapheme' })`, then count the segments. The right answer for "how many characters does the user see," and the 2026 default for any length check on a user-facing field.
+
+The same three counts against three representative inputs make the divergence concrete. Notice how the disagreement gets sharper as the input gets more "emoji-shaped":
+
+<ThreeCountsTable />
+
+The pattern in the table is the lesson: every step up in fidelity (code units → code points → grapheme clusters) catches another class of input the cruder count gets wrong. ASCII makes all three agree, which is why `.length` reads fine on `'hello'` and rots silently the moment a user pastes something more interesting.
+
+<VideoCallout videoId="ut74oHojxqo" videoTitle="Unicode, in friendly terms: ASCII, UTF-8, code points, character encodings, and more">
+  Studying With Alex walks the same grapheme/code-point/byte distinction from first principles in 10 minutes — a visual reinforcement of why three counts exist.
+</VideoCallout>
+
+One forward link: in a later unit, Zod's `.length()` constraint on string schemas defaults to `.length` — code units — so user-facing length validation needs a custom refinement that runs the segmenter. The fix is a one-liner; we'll wire it where validation lands.
+
+## `Intl.Segmenter`: the 2026 user-facing length
+
+`Intl.Segmenter` has been part of the platform baseline since 2024 — shipped in every modern browser this course targets and in Node 16 and up. The course pins Node 24 LTS, so it's just there. No polyfill, no `if (typeof Intl.Segmenter !== 'undefined')` check, no fallback path.
+
+The one-liner to memorize:
+
+```ts
+const countCharacters = (input: string): number =>
+  [...new Intl.Segmenter('en', { granularity: 'grapheme' }).segment(input)].length;
+
+countCharacters('🇺🇸');         // 1
+countCharacters('👨‍👩‍👧‍👦');     // 1
+countCharacters('café');        // 4
+```
+
+Two beats to read it.
+
+First, the constructor takes a **locale** and a **granularity** option. The locale matters for scripts where grapheme rules differ (Thai, Khmer, Devanagari) — for English and most Latin-script text the cluster boundaries come out the same either way, but you still pass a locale. `'grapheme'` is the user-perceived-character mode; the same constructor supports `'word'` and `'sentence'` granularities for the related jobs.
+
+Second, `.segment(input)` returns an iterable of `{ segment, index, ... }` objects, one per cluster. There's no `.size` or `.length` shortcut on the result, so the idiomatic count is to spread into an array and read its length. That spread-then-`.length` pattern is the standard form — see it in a codebase and you know exactly what it's doing.
+
+The companion granularities are worth knowing on sight even if you rarely reach for them: `granularity: 'word'` is the right tool for word-count features (each segment carries an `isWordLike` flag so you can skip punctuation and whitespace), and `granularity: 'sentence'` for sentence-count features. Both are rare in SaaS UIs; naming them here means you'll recognize `Intl.Segmenter` as the *one* tool that handles all three jobs when you see it elsewhere.
+
+:::caution
+Never truncate a user-facing string at an arbitrary character index. `'👨‍👩‍👧‍👦'.slice(0, 5)` cuts straight through the middle of the family emoji's code-point sequence and produces a broken Unicode string the renderer will display as garbled mojibake (literal "broken character" boxes). If a field needs a hard truncation — preview text, an SMS body, a card heading — iterate the segments and concatenate them up to the limit. The course returns to this pattern when display-text truncation lands in a later UI lesson.
+:::
+
+One forward link: the same `Intl.*` namespace also ships `Intl.NumberFormat` (mentioned in the previous lesson on money), `Intl.Collator` for locale-aware sorting, and `Intl.DateTimeFormat` for date and time rendering. This is the platform-native internationalization surface the course leans on instead of pulling in third-party libraries.
+
+## Normalization at the storage boundary
+
+The other half of the "two visually-identical strings disagree" problem is normalization. Look at this snippet — the two literals render the same on screen, but the comparison and the length checks both disagree:
+
+```ts
+const a = 'café';            // precomposed: 'c', 'a', 'f', 'é'
+const b = 'café';            // decomposed:  'c', 'a', 'f', 'e' + combining acute
+a === b;                     // false
+a.length;                    // 4
+b.length;                    // 5
+```
+
+The two strings look identical on screen and a user typed them as the same word. But they're different sequences of Unicode code points. The first uses a single precomposed `é` (one code point that already includes the accent). The second uses a plain `e` followed by a combining acute accent (two code points the renderer overlays into one visual cluster). The previous lesson's `===` rule still applies — for primitives, `===` compares the value byte for byte — and the bytes here genuinely differ.
+
+The fix is one method call:
+
+```ts
+a.normalize('NFC') === b.normalize('NFC');   // true
+```
+
+`.normalize('NFC')` collapses both forms to the same canonical sequence. `NFC` stands for **Normalization Form C** (Canonical Composition) — it combines characters into their precomposed form wherever possible. It's the form you want by default for storage, comparison, and search.
+
+There are four normalization forms in total. You only need a one-line trigger for each:
+
+- **`NFC`** (Canonical Composition) — combine characters into their precomposed form. **The senior default** for storage, comparison, and search. This is the form this lesson teaches.
+- **`NFD`** (Canonical Decomposition) — split precomposed characters into base + combining marks. Useful for accent-insensitive search where you decompose, then strip the combining marks.
+- **`NFKC`** / **`NFKD`** (Compatibility forms) — collapse visually-similar-but-semantically-distinct characters (the `ﬁ` ligature becomes `fi`, full-width digits become ASCII digits). Useful for fuzzy matching at a search boundary; the wrong default for storage because they lose information.
+
+Now the rule that turns this into a discipline, not a maintenance burden: **normalize once, at the database write boundary.** Don't sprinkle `.normalize('NFC')` at every `===` and every `.length` call site downstream. If every value in the table is already NFC, every comparison and every length check works against a canonical form for free. The same boundary that runs your input validation (where Zod lands in a later unit) is where normalization lives — one call, one place, the rest of the system stays clean.
+
+Scattered `.normalize` calls aren't just noise — they're a tell that the storage boundary isn't doing its job. If you find yourself reaching for `.normalize` deep inside a comparison helper or a search function, the fix is to walk back to the seam where the value entered the system and put it there instead.
+
+One forward link: Drizzle's `text` and `varchar` columns (in a later unit) don't normalize for you — Postgres stores whatever bytes you hand it. The normalization belongs in the schema or the action handler before the row hits the database.
+
+## The senior `String.prototype` surface
+
+`String.prototype` is huge, and most of it is legacy. The 2026 senior reaches for a small daily set with clear triggers; the long tail is recognition-only. Here's the working surface:
+
+- **`includes`** / **`startsWith`** / **`endsWith`** — substring tests. Reach for these over `indexOf(needle) !== -1`, which reads as "where is it?" not "is it there?"
+- **`at(-1)`** — last-character access. Cleaner than `string[string.length - 1]`, and negative indices count from the end for any position.
+- **`slice(start, end)`** — substring extraction. The default. Prefer over `substring` (which silently swaps arguments if `start > end`) and `substr` (deprecated).
+- **`split`** / **`join`** — the array-of-segments boundary, always paired. `split(sep)` to break apart, `join(sep)` to reassemble.
+- **`replaceAll(needle, replacement)`** — the modern reach for replacing every occurrence of a literal string. No more `replace(/needle/g, ...)` regex boilerplate when the needle isn't a regex anyway.
+- **`trim`** / **`trimStart`** / **`trimEnd`** — whitespace cleanup at input boundaries. Pair with the empty-string guard from the previous lesson when converting form input.
+- **`padStart`** / **`padEnd`** — fixed-width formatting. Rare in SaaS UIs; occasional in logs and CLI output.
+- **`localeCompare(other, locale, options)`** — locale-aware comparison for sorting. The right answer for any user-visible alphabetical sort; `<` and `>` on strings compare by code unit, which mangles accented characters in any order a human would call "alphabetical."
+- **`normalize(form)`** — the boundary tool from the previous section.
+
+And then the legacy surface — methods you'll see in older code and AI suggestions, but that don't earn a place in 2026 code:
+
+- **`substr`** — deprecated by the spec; behaves like `slice` with a length argument instead of an end index. Use `slice`.
+- **`substring`** — older sibling of `slice` that silently swaps arguments if `start > end`. No reason to prefer it.
+- **`escape`** / **`unescape`** — globals (not on `String.prototype`, but commonly grouped) deprecated for over two decades; use `encodeURIComponent` / `decodeURIComponent` for URL escaping.
+- **`String.prototype.bold`** / **`italics`** / **`fontcolor`** / etc. — HTML-wrapping methods from the 1990s, deprecated; the JSX layer owns markup in this stack.
+- **`String.raw`** — the template-literal escape hatch; this one isn't legacy, it's just owned by the next lesson, where tagged templates earn their treatment.
+
+Skim this list once and recognize each method on sight in later lessons. There's no reason to memorize a full reference — when you need the full surface, MDN has it.
+
+## Practice: count what the user sees
+
+Time to write the canonical segmenter pattern yourself. Implement `countCharacters(input)` so it returns the number of characters the user actually perceives — the count that matches what they'd type into a bio field with a character limit.
+
+<ScriptCoding
+  runner="sandpack"
+  instructions="Implement countCharacters(input) using Intl.Segmenter with granularity: 'grapheme'. The tests cover ASCII, emoji built from surrogate pairs, joined emoji sequences, combining marks, and the empty string. If you use .length or the spread form, the emoji tests will fail; only the segmenter passes all six."
+  starter={`export const countCharacters = (input: string): number => {
+  // Return the number of characters the user perceives.
+  // Hint: Intl.Segmenter with granularity: 'grapheme'.
+  return 0;
+};`}
+  tests={`
+test('counts ASCII as the obvious length', () => {
+  expect(countCharacters('hello')).toBe(5);
+});
+test('counts a flag emoji as one character', () => {
+  expect(countCharacters('🇺🇸')).toBe(1);
+});
+test('counts a family emoji as one character', () => {
+  expect(countCharacters('👨‍👩‍👧‍👦')).toBe(1);
+});
+test('counts combining marks as one character', () => {
+  // 'café' built as 'cafe' plus a combining acute accent (U+0301).
+  expect(countCharacters('café')).toBe(4);
+});
+test('counts an empty string as zero', () => {
+  expect(countCharacters('')).toBe(0);
+});
+test('counts a multi-emoji string', () => {
+  expect(countCharacters('🇺🇸🇪🇸')).toBe(2);
+});
+`}
+/>
+
+The flag-emoji and family-emoji tests are the load-bearing ones — they'll fail loudly if you reach for `.length` or the spread form, exactly the same way they failed in the table at the top of the lesson. The combining-mark test catches the implementation that uses `[...str].length` and stops there. Only the segmenter passes all six.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Intl.Segmenter — MDN"
+    href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/Segmenter"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The full reference, including the word and sentence granularities with worked isWordLike examples."
+  />
+  <ExternalResource
+    title="String.prototype.normalize — MDN"
+    href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/normalize"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The four normalization forms with worked examples covering precomposed vs decomposed, compatibility decomposition, and the search-friendly NFKC patterns."
+  />
+  <ExternalResource
+    title="The Absolute Minimum Every Software Developer Must Know About Unicode in 2023"
+    href="https://tonsky.me/blog/unicode/"
+    icon="simple-icons:rss"
+    iconColor="#FFA500"
+    description="Nikita Prokopov's modern rewrite of Joel Spolsky's classic — UTF-8, grapheme clusters, and normalization with the same systems mindset this lesson takes."
+  />
+  <ExternalResource
+    title="UniView — interactive Unicode inspector"
+    href="https://r12a.github.io/uniview/"
+    icon="lucide:search-code"
+    iconColor="#4A90E2"
+    description="Paste any string to see its code points, names, and grapheme breakdown — the fastest way to understand why an emoji has the length it does."
+  />
+</CardGrid>
