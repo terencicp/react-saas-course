@@ -1,0 +1,430 @@
+---
+title: The utility-type toolbox
+description: The eleven daily-reach utility types grouped by what they reshape, plus the two-utility composition rule that keeps derived types legible.
+chapter-id: 5
+sidebar:
+  order: 6
+  label: The utility-type toolbox
+---
+
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Matching from '../../../components/exercises/matching/Matching.astro';
+import Pair from '../../../components/exercises/matching/Pair.astro';
+import ExtractExcludeCut from '../../../components/lessons/005/6/ExtractExcludeCut.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+The last lesson installed the operators that lift values into types — `typeof`, `keyof`, `T[K]`. This one sits one layer above. TypeScript ships a small set of <Term definition="A built-in generic type alias that takes a type and returns a transformed type. Compile-time only — utility types erase like every other TS construct.">utility types</Term> — generic type aliases like `Partial<T>` and `Pick<T, K>` — that take a type and return a transformed version of it. The senior reflex is to reach for the name instead of restating the shape.
+
+Picture a single feature in the SaaS code you'll write. You have an `Invoice` type exported from the database schema. For this one feature you need five different shapes of it: a partial-update payload for `PATCH`, an insert payload with the DB-controlled fields removed, the subset of statuses that still allow edits, the resolved value of an async fetcher, and the first argument type of an existing `saveInvoice` action so a wrapper can forward it. You could hand-write every shape. Or you could reach for the toolbox.
+
+<CodeVariants>
+  <CodeVariant label="Restate — five hand-written shapes">
+    <div data-mark-color="red">
+
+    ```ts
+    type InvoiceUpdate = {
+      orgId?: OrgId;
+      status?: InvoiceStatus;
+      total?: number;
+      currency?: string;
+      notes?: string | null;
+    };
+
+    type InvoiceInsert = {
+      orgId: OrgId;
+      status: InvoiceStatus;
+      total: number;
+      currency: string;
+      notes: string | null;
+    };
+
+    type EditableStatus = 'draft' | 'sent';
+
+    type InvoicesResult = Invoice[];
+
+    type SaveInvoiceArgs = {
+      id: InvoiceId;
+      status: InvoiceStatus;
+      total: number;
+    };
+    ```
+
+    </div>
+    Five sources of truth, all parallel to `Invoice`. Adding a column to `Invoice` means hand-editing every shape that should include it and remembering which ones don't. Renaming `total` to `amountCents` updates `Invoice` and silently leaves three ghosts behind. Reviewers don't catch this; the build doesn't catch it.
+  </CodeVariant>
+
+  <CodeVariant label="Derive — five utility-type calls">
+    <div data-mark-color="green">
+
+    ```ts
+    type InvoiceUpdate = Partial<Omit<Invoice, 'id' | 'createdAt' | 'updatedAt'>>;
+    type InvoiceInsert = Omit<Invoice, 'id' | 'createdAt' | 'updatedAt'>;
+    type EditableStatus = Extract<InvoiceStatus, 'draft' | 'sent'>;
+    type InvoicesResult = Awaited<ReturnType<typeof fetchInvoices>>;
+    type SaveInvoiceArgs = Parameters<typeof saveInvoice>[0];
+    ```
+
+    </div>
+    One source of truth — `Invoice` — and five views onto it. Adding a column extends every shape that includes that column for free. Renaming a column fails to compile at every consumer until the dependency is satisfied. The maintenance burden moves from the team's discipline to the compiler.
+  </CodeVariant>
+</CodeVariants>
+
+That contrast is the whole motivation. The rest of the lesson names the eleven utility types you'll reach for in 2026 SaaS code, groups them by what they reshape, and shows the two-utility composition rule that keeps chains legible.
+
+One scope note: this lesson uses a hand-rolled `Invoice` type to keep the focus on the slicing. In real code, the source type comes from Drizzle's `$inferSelect` (the row type derived from the schema) or Zod's `z.infer` (the validated type derived from the schema) — both ship in later units. Both produce the canonical `Invoice` shape; the utilities below slice it the same way regardless of where it came from.
+
+The running shape for the lesson — same brand and discriminated-union vocabulary the chapter has been using:
+
+```ts
+type Invoice = {
+  id: InvoiceId;
+  orgId: OrgId;
+  status: 'draft' | 'sent' | 'paid' | 'void';
+  total: number;
+  currency: string;
+  notes: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+type InvoiceStatus = Invoice['status'];
+```
+
+The `Invoice['status']` line uses indexed access from the previous lesson — it pulls the status union off the type rather than restating it. The pattern compounds; you'll see it again below.
+
+## Field-modifier transforms
+
+The first group reshapes **every field of a type the same way**. Three utilities, all shallow — they touch only the top level of the shape.
+
+### `Partial<T>` — every field optional
+
+The reach: a partial-update payload where the caller sends only the fields they want to change.
+
+```ts
+type InvoiceUpdate = Partial<Invoice>;
+```
+
+What does `Partial<Invoice>` actually evaluate to? Hover the utility name to see:
+
+<CodeTooltips tooltips={{
+  'Partial<Invoice>': "Resolves to { id?: InvoiceId; orgId?: OrgId; status?: 'draft' | 'sent' | 'paid' | 'void'; total?: number; currency?: string; notes?: string | null; createdAt?: Date; updatedAt?: Date; }. Every field marked optional with `?`.",
+}}>
+```ts
+type InvoiceUpdate = Partial<Invoice>;
+```
+</CodeTooltips>
+
+Every field gains a `?`. That's it — that's the whole utility. A `PATCH /invoices/:id` body parser accepts a `Partial<Invoice>`, and the handler updates only the fields the caller sent. Fields that were already nullable, like `notes: string | null`, end up as `notes?: string | null` — the `?` and the `| null` express different things (the property can be absent vs. the value can be null) and both carry through cleanly.
+
+### `Required<T>` — every field required
+
+The mirror of `Partial`. Strips the `?` off every optional field.
+
+The reach: the **post-defaults shape**. A config type declares its fields as optional at the write site so callers can omit them and pick up defaults. By the time the rest of the app reads the config, the defaults have been applied and every field is present. `Required` is that read-side shape.
+
+```ts
+type AppConfigInput = {
+  port?: number;
+  host?: string;
+  logLevel?: 'debug' | 'info' | 'warn';
+};
+
+type AppConfig = Required<AppConfigInput>;
+```
+
+`AppConfig` is `{ port: number; host: string; logLevel: 'debug' | 'info' | 'warn' }` — no question marks. The function that fills in defaults returns `AppConfig`; every consumer past that point reads non-optional fields without a narrowing check.
+
+### `Readonly<T>` — every field `readonly`
+
+The reach: a return value you don't want the caller mutating. Marks every field `readonly` at the type level so the compiler refuses an assignment.
+
+```ts
+type FrozenInvoice = Readonly<Invoice>;
+
+const invoice: FrozenInvoice = getInvoice(id);
+invoice.total = 0;
+//      ~~~~~
+// Cannot assign to 'total' because it is a read-only property.
+```
+
+`Readonly<T>` is the type-level companion to the value-level `as const` from the previous chapter's lesson "Keeping literals narrow with as const and satisfies". The two work at different sites: `as const` freezes a *value* (every literal narrows, every property becomes `readonly` recursively), while `Readonly<T>` transforms a *type* (every top-level property becomes `readonly`, nothing recurses). Reach for `as const` when authoring the value; reach for `Readonly<T>` when describing a value's read-only view at a type boundary.
+
+:::caution
+`Partial<T>`, `Required<T>`, and `Readonly<T>` are all <Term definition="Operates on the top level only. Nested object fields keep their original shape; the transform doesn't recurse.">shallow</Term>. A nested object inside `Invoice` keeps its original shape — `Partial<Invoice>` doesn't reach into nested fields and mark *their* keys optional. Deep variants exist in libraries, but in 2026 SaaS code the deep-partial problem lands on the wire boundary and Zod owns it; the schema's `.partial()` produces the right shape with the right runtime validation.
+:::
+
+## Field-selection transforms
+
+The second group selects **a subset of fields** by name. Two utilities, two sides of the same operation.
+
+<CodeVariants>
+  <CodeVariant label="Pick — keep these fields">
+    ```ts
+    type InvoiceListItem = Pick<Invoice, 'id' | 'total' | 'currency' | 'status'>;
+    ```
+    The slim list-view row. The list endpoint doesn't need notes, doesn't need timestamps, doesn't need the org pointer — only the four fields the table actually renders. `Pick` keeps the named keys and drops the rest.
+  </CodeVariant>
+
+  <CodeVariant label="Omit — remove these fields">
+    ```ts
+    type InvoiceInsert = Omit<Invoice, 'id' | 'createdAt' | 'updatedAt'>;
+    ```
+    The insert payload. The database fills `id` (a generated UUID), `createdAt`, and `updatedAt`; the caller doesn't pass them. `Omit` removes the named keys and keeps the rest. This is the most-reached utility in CRUD code — every `INSERT` payload type you'll write descends from it.
+  </CodeVariant>
+</CodeVariants>
+
+Both utilities use a key union as their second argument — `'id' | 'createdAt' | 'updatedAt'` is itself a type, a union of string literals. The two are the two halves of the same field-selection operation: `Pick` says what to keep, `Omit` says what to drop. Reach for whichever reads cleaner at the call site — usually `Pick` for slim DTOs (three fields kept reads better than ten dropped), and `Omit` for "the same as the row, minus the DB-controlled columns" (three dropped reads better than ten kept).
+
+One mechanical detail worth naming once: `Pick<T, K>` and `Omit<T, K>` both **constrain `K` to `keyof T`**. The internal type signature is `Pick<T, K extends keyof T>` — if you pass a key that isn't actually in `T`, the compiler refuses. Typing `'totl'` instead of `'total'` is a compile error at the `Pick` call site, not a silent runtime mismatch. (You'll write this same `K extends keyof T` constraint yourself in the next lesson, when generics with constraints land.)
+
+## Nullability and union-set transforms
+
+The third group operates on **union members** rather than fields. `NonNullable` removes `null` and `undefined` from a union; `Extract` and `Exclude` slice union members by assignability.
+
+### `NonNullable<T>` — drop `null` and `undefined`
+
+The reach: after you've narrowed a value, you need its non-null type to feed into a slot that demands one.
+
+```ts
+type User = { id: UserId; avatarUrl: string | null };
+
+type AvatarUrl = NonNullable<User['avatarUrl']>;
+```
+
+`User['avatarUrl']` is `string | null` — indexed access from the last lesson. Wrapping it in `NonNullable<...>` strips the `null` and leaves `string`. The reach is usually after an `if (user.avatarUrl !== null)` narrow — the value is non-null inside the block, and a downstream helper's parameter is typed `NonNullable<User['avatarUrl']>`.
+
+### `Extract<T, U>` and `Exclude<T, U>` — slice a union
+
+Two halves of the same cut. Both take a union type `T` and split it against another type `U`.
+
+- **`Extract<T, U>`** — keep the members of `T` that are assignable to `U`.
+- **`Exclude<T, U>`** — drop the members of `T` that are assignable to `U`.
+
+```ts
+type InvoiceStatus = 'draft' | 'sent' | 'paid' | 'void';
+
+type EditableStatus = Extract<InvoiceStatus, 'draft' | 'sent'>;
+type TerminalStatus = Exclude<InvoiceStatus, 'draft' | 'sent'>;
+```
+
+`EditableStatus` is `'draft' | 'sent'` — the two members the second argument names. `TerminalStatus` is `'paid' | 'void'` — every member except those two. Same cut, expressed two ways.
+
+The same operation, visualized:
+
+<ExtractExcludeCut />
+
+The trigger for each: reach for `Extract` when the subset you want is small and easier to name positively ("the two statuses where editing is allowed"). Reach for `Exclude` when the complement is small and easier to name by what you don't want ("everything that isn't a terminal state"). Either form produces the same type when the cut is the same — pick the one that reads cleaner.
+
+One watch-out worth naming once: `Extract` and `Exclude` care about **assignability**, not literal equality. `Exclude<string | number, number>` is `string` — the rule is structural, not by-name. For literal-union narrowing (the canonical reach) this distinction rarely surprises; for broader types it can. If you ever see `Exclude` quietly returning `never`, check whether the type you're excluding is *assignable from* every member of the input.
+
+## Function-shape and async transforms
+
+The fourth group reads **function and Promise shapes**. In SaaS code, the function whose shape you want is almost always already written — an existing Server Action, an existing fetcher, an existing helper. Restating its parameters and return type by hand creates a second source of truth that drifts the moment the function changes signature. Derive instead.
+
+### `ReturnType<F>` — the function's return type
+
+```ts
+const saveInvoice = async (input: {
+  id: InvoiceId;
+  status: InvoiceStatus;
+  total: number;
+}): Promise<Invoice> => {
+  // ...
+};
+
+type SaveResult = ReturnType<typeof saveInvoice>;
+```
+
+Read this inside-out. `typeof saveInvoice` lifts the function value into the type register (the previous lesson's bridge). `ReturnType<...>` then reads the function type's return position. The result is `Promise<Invoice>`. Any downstream code that consumes `saveInvoice`'s result types its variable as `SaveResult` and stays in sync with the function automatically.
+
+### `Parameters<F>` — the parameter tuple
+
+```ts
+type SaveArgs = Parameters<typeof saveInvoice>[0];
+```
+
+`Parameters<...>` returns the function's parameters as a **tuple type**, not a single value. For a single-argument function, the parameter sits at position `[0]`. The indexed access — also from the previous lesson — pulls it out. `SaveArgs` is the `{ id; status; total }` shape `saveInvoice` accepts, read off the function itself instead of restated. The reach: typing a wrapper or higher-order function that forwards arguments to `saveInvoice` without rewriting the parameter shape.
+
+### `Awaited<T>` — unwrap a Promise
+
+```ts
+const fetchInvoices = async (): Promise<Invoice[]> => {
+  // ...
+};
+
+type Invoices = Awaited<ReturnType<typeof fetchInvoices>>;
+```
+
+`Awaited<T>` unwraps a `Promise<T>` to its resolved type. `ReturnType<typeof fetchInvoices>` is `Promise<Invoice[]>`; `Awaited<...>` reads the resolved value as `Invoice[]`. The utility also handles **recursive Promises** — `Awaited<Promise<Promise<User>>>` is `User`, not `Promise<User>`. The recursion handles cases where a function returns a Promise that resolves to another Promise (rare, but the utility doesn't make you think about it).
+
+Step through the chain on hover:
+
+<CodeTooltips tooltips={{
+  'typeof fetchInvoices': 'Resolves to () => Promise<Invoice[]>. The function value lifted into the type register.',
+  'ReturnType<typeof fetchInvoices>': 'Resolves to Promise<Invoice[]>. The return type read off the function.',
+  'Awaited<ReturnType<typeof fetchInvoices>>': 'Resolves to Invoice[]. The resolved type, unwrapped from the Promise.',
+}}>
+```ts
+type Invoices = Awaited<ReturnType<typeof fetchInvoices>>;
+```
+</CodeTooltips>
+
+That two-utility chain is the bridge into the next section.
+
+## Composing utility types
+
+Utility types compose. Each is a generic type alias — input is a type, output is a type — so the output of one is a valid input for another. The senior reach is to **chain two when the chain is more legible than the alternative**. Past two, the chain gets harder to read than a named intermediate alias, and the cost flips.
+
+Two canonical chains carry their weight in real code:
+
+**`Omit<T, K>` + `Partial<T>`** — the slim partial-update DTO.
+
+```ts
+type InvoiceUpdate = Partial<Omit<Invoice, 'id' | 'createdAt' | 'updatedAt'>>;
+```
+
+**`ReturnType<F>` + `Awaited<T>`** — the resolved value of an async function.
+
+```ts
+type Invoices = Awaited<ReturnType<typeof fetchInvoices>>;
+```
+
+Both read **inside-out**. The innermost utility runs first; each outer one transforms its output. For the first chain: take `Invoice`, drop the DB-controlled fields, then mark the rest optional. For the second: take `fetchInvoices` as a value, lift to its type, read the return, unwrap the Promise. Train yourself to read chains inside-out — you'll read more chains than you write, and the read matters more than the write.
+
+The rule about chain depth is short: **two utilities is the comfortable ceiling. At three, name an intermediate alias.** A reader has to mentally evaluate every layer of the chain to know what the final type is, and three layers of nested generics costs more than a name does.
+
+<CodeVariants>
+  <CodeVariant label="Deep chain — three levels, hard to read">
+    <div data-mark-color="red">
+
+    ```ts
+    type EditableInvoiceView = Readonly<Partial<Pick<Invoice, 'status' | 'total'>>>;
+    ```
+
+    </div>
+    Three utilities nested. To know what `EditableInvoiceView` is, the reader evaluates inside-out: `Pick` keeps `status` and `total`, `Partial` marks both optional, `Readonly` marks both `readonly`. The result is correct, but the path to it lives inside the generics. Every reviewer pays the cost again.
+  </CodeVariant>
+
+  <CodeVariant label="Named intermediate — two levels, plus a label">
+    <div data-mark-color="green">
+
+    ```ts
+    type EditableInvoiceFields = Pick<Invoice, 'status' | 'total'>;
+    type EditableInvoiceView = Readonly<Partial<EditableInvoiceFields>>;
+    ```
+
+    </div>
+    The intermediate `EditableInvoiceFields` is a named landing point — the reader sees the name, knows what it holds, and the second line stays two utilities deep. The chain breaks where the cognitive load would otherwise stack.
+  </CodeVariant>
+</CodeVariants>
+
+The rule isn't strict — `Partial<Omit<Invoice, 'id' | 'createdAt' | 'updatedAt'>>` is two utilities and reads fine, and you'll see it in every CRUD codebase. The line moves the moment a third utility joins. Name the intermediate, keep the depth at two, and the next person to read the file thanks you.
+
+## The eleven at a glance
+
+A reference table you can come back to three months from now when you've forgotten which utility produces which shape. The order matches the lesson's groups — field-modifier first, then field-selection, construction, nullability, union-set, function-shape, async.
+
+`Record<K, V>` carries over from the previous chapter's lesson "Dynamic keys — index signatures and Record" — it's the construction utility for lookup maps keyed by a literal union, and it's included here for completeness even though it's outside the "eleven" framing.
+
+| Utility | What it returns | Reach for it when… |
+| --- | --- | --- |
+| `Partial<T>` | Every field optional | PATCH-style partial updates |
+| `Required<T>` | Every field required | Post-defaults config read shape |
+| `Readonly<T>` | Every field `readonly` | Returned value the caller shouldn't mutate |
+| `Pick<T, K>` | Only the named fields | Slim list-view or detail DTO |
+| `Omit<T, K>` | All fields except the named | Insert payload, DB-controlled fields removed |
+| `Record<K, V>` | Object with `K` keys, `V` values | Lookup map keyed by a literal union |
+| `NonNullable<T>` | `T` without `null` or `undefined` | Post-narrow slot demanding non-null |
+| `Extract<T, U>` | Members of `T` assignable to `U` | Subset of a lifecycle union (e.g. editable states) |
+| `Exclude<T, U>` | Members of `T` not assignable to `U` | Complement of an Extract — terminal states |
+| `ReturnType<F>` | Return type of function `F` | Consuming an existing function's output shape |
+| `Parameters<F>` | Parameters of `F` as a tuple | Typing a wrapper around an existing function |
+| `Awaited<T>` | Resolved type of `Promise<T>` (recursive) | Async function's eventually-yielded value |
+
+That's the daily-reach surface. Bookmark this page; you'll be back.
+
+## What this lesson doesn't reach for
+
+A few utility types exist that aren't on the daily reach. They're named here so you recognize them when they appear in library types and know which side of the "use this / look it up" line they sit on.
+
+`Capitalize`, `Uncapitalize`, `Uppercase`, and `Lowercase` are string-literal transforms — they take a string-literal type and return another. You'll see them in template-literal type patterns when Next.js typed routes land later in the course. Rare in app-level type aliases.
+
+`InstanceType<C>` extracts the instance type of a class constructor. Classes earn one narrow lesson later in this unit; `InstanceType` follows them, and you'll rarely reach for it outside that context.
+
+`NoInfer<T>` was added in TypeScript 5.4. The trigger is a generic wrapper whose default parameter would otherwise widen the inferred type. You'll hit this case in the next lesson when generics with constraints land; the resolution is `NoInfer<T>` on the offending parameter position. Named once here so you know the tool exists when the situation arises.
+
+**Mapped types** (`{ [K in keyof T]: ... }`) are the underlying mechanism every utility above is built from. Authoring them yourself is library-author territory — reach for them only when the codebase needs the same custom transform three or more times and a chain of built-ins won't express it. The lesson stops at the built-ins because that's the daily reach.
+
+`infer` and conditional types — both out of scope. They're the next layer down, the one library authors live in. App code reaches for the built-ins above and lets the library handle the rest.
+
+## Exercise — pick the right utility
+
+Eight "I want this shape" prompts on the left, the utility-type expression that produces them on the right. The whole point of the lesson is reaching for the right name; this is the confirmation.
+
+<Matching instructions="Match each shape you want to the utility-type expression that gives it to you.">
+  <Pair>
+    <Fragment slot="left">The PATCH /invoices/:id body — partial fields, DB columns dropped</Fragment>
+    <Fragment slot="right">`Partial<Omit<Invoice, 'id' | 'createdAt' | 'updatedAt'>>`</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">The insert payload — Drizzle fills `id` and timestamps</Fragment>
+    <Fragment slot="right">`Omit<Invoice, 'id' | 'createdAt' | 'updatedAt'>`</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">The slim list-view row (`id`, `total`, `currency`, `status`)</Fragment>
+    <Fragment slot="right">`Pick<Invoice, 'id' | 'total' | 'currency' | 'status'>`</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">The resolved value of `fetchInvoices`</Fragment>
+    <Fragment slot="right">`Awaited<ReturnType<typeof fetchInvoices>>`</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">The first argument of `saveInvoice`</Fragment>
+    <Fragment slot="right">`Parameters<typeof saveInvoice>[0]`</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">The editable subset of `InvoiceStatus`</Fragment>
+    <Fragment slot="right">`Extract<InvoiceStatus, 'draft' | 'sent'>`</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">`User['avatarUrl']` after narrowing out `null`</Fragment>
+    <Fragment slot="right">`NonNullable<User['avatarUrl']>`</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">The post-defaults config — every field present</Fragment>
+    <Fragment slot="right">`Required<AppConfigInput>`</Fragment>
+  </Pair>
+</Matching>
+
+If you got all eight without rereading the table, the lesson has landed — you can reach for the right name from the shape you want. The composition pair (item 1, `Partial<Omit<...>>`) is the only one that requires the inside-out read; every other prompt maps to a single utility.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="TypeScript Handbook — Utility Types"
+    href="https://www.typescriptlang.org/docs/handbook/utility-types.html"
+    icon="simple-icons:typescript"
+    iconColor="#3178C6"
+    description="The canonical reference for every utility type in the language. Bookmark this — you'll come back when you need to confirm a signature."
+  />
+  <ExternalResource
+    title="Total TypeScript — Utility Types"
+    href="https://www.totaltypescript.com/books/total-typescript-essentials/objects"
+    icon="lucide:book-open"
+    iconColor="#E07B39"
+    description="Matt Pocock's free Total TypeScript Essentials chapter on object types — walks through Pick, Omit, Partial, and Required with the same composition-first framing this lesson uses."
+  />
+  <ExternalResource
+    title="TypeScript Handbook — Mapped Types"
+    href="https://www.typescriptlang.org/docs/handbook/2/mapped-types.html"
+    icon="simple-icons:typescript"
+    iconColor="#3178C6"
+    description="The layer beneath every utility above — the mechanism `Partial`, `Required`, and the others are built from. The 'want to go further' door, with the lesson's 'don't reach for this yet' framing intact."
+  />
+</CardGrid>

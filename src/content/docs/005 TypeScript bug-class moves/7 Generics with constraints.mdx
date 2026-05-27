@@ -1,0 +1,497 @@
+---
+title: Generics with constraints
+description: The generic surface a SaaS engineer writes — the four shapes that show up in production wrappers, sized to read and review without ceremony.
+chapter-id: 5
+sidebar:
+  order: 7
+  label: Generics with constraints
+---
+
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import Term from '../../../components/ui/Term.astro';
+import TypeCoding from '../../../components/live-coding/TypeCoding/TypeCoding.astro';
+
+You've spent six lessons reading generics without ever being asked to write one. `Result<T>` carried the success-or-failure shape from the "Impossible states, unrepresentable" lesson at the start of this chapter. `Brand<T, Name>` would have generalized the brand factory from the "Branded IDs" lesson if you'd needed it to. `Pick<T, K>`, `Omit<T, K>`, `Partial<T>`, `Awaited<T>`, `ReturnType<F>` carried the utility-type toolbox from the last lesson. Seven generics, all consumed, none authored. This lesson hands you the writing primitive — and the four shapes you'll actually ship.
+
+Start with the bug the primitive fixes.
+
+<CodeVariants>
+  <CodeVariant label="Loses the type">
+    <div data-mark-color="red">
+
+    ```ts {4}
+    const identity = (value: unknown): unknown => value;
+
+    const result = identity(42);
+    const next = result + 1;
+    //           ~~~~~~
+    // 'result' is of type 'unknown'.
+    ```
+
+    </div>
+    The function returns whatever you give it — but the type signature lies. It says `unknown` in, `unknown` out, throwing away the type information the call site has. The compiler can't connect what went in to what came back, so `result + 1` fails: `unknown` isn't a number. The type system collapsed the bridge between argument and return.
+  </CodeVariant>
+
+  <CodeVariant label="Preserves the type">
+    <div data-mark-color="green">
+
+    ```ts ins={1}
+    const identity = <T>(value: T): T => value;
+
+    const result = identity(42);
+    const next = result + 1;
+    ```
+
+    </div>
+    One symbol — `<T>` — and the type carries through. The compiler reads the argument `42` at the call site, fills `T` with `number`, and the return type becomes `number`. The call site has the type information it needs; `result + 1` compiles. The function body didn't change. The bridge did.
+  </CodeVariant>
+</CodeVariants>
+
+That symbol is a <Term definition="A function or type that accepts a type as a parameter. The call site supplies it explicitly (`identity<number>(42)`) or by inference (`identity(42)`).">generic</Term> — a function or type that accepts a type as a parameter. The `<T>` is the <Term definition="The `<T>` declaration. Names a type the caller will fill in. Used in parameter types, return types, and the function body's type annotations.">type parameter</Term>; the call site fills it in. The rest of this lesson hands you the form you'll write — three or four wrapper shapes that are load-bearing in 2026 SaaS code: `safeAction` for Server Actions, `requireRole` for authorization, a `memoize`-shape function preserver, and the `pluck` signature that already lives inside `Pick` and `Omit`. The library-author tower above this — conditional types, `infer`, mapped-type authoring — is named once at the end and explicitly skipped.
+
+One forward-link before you start: the three production wrappers the rest of the course leans on — `safeAction` (in the chapter on Server Actions), `requireRole` (in the chapter on RBAC), and `cache`-style memoizers (in the chapters on caching and rate limiting) — are generic functions. This lesson is the floor they sit on.
+
+## Generic functions
+
+The minimum shape you need from memory. Walk it on the same `identity` function, now broken into the three things that matter.
+
+<AnnotatedCode lang="ts" code={`
+const identity = <T>(value: T): T => value;
+
+const n = identity(42);
+const s = identity('hello');
+const u = identity<User>(currentUser);
+`}>
+  <AnnotatedStep meta={`"<T>"`} color="blue">
+    The `<T>` in angle brackets, just before the parameter list, declares a type parameter named `T`. You can reference `T` anywhere in the signature and the body — here it appears once as the parameter type and once as the return type. The convention is single-letter names: `T` for "any type," `K` for "key type," `V` for "value type," `R` for "return type," `P` for "parameters." Longer names (`TArgs`, `TReturn`) are accepted in some style guides; this course uses the single letters because every TypeScript reader knows them.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{3-4}" color="blue">
+    The compiler reads the argument and fills `T` in for you. `identity(42)` infers `T = number`; the return type is `number`. `identity('hello')` infers `T = string`; the return type is `string`. You don't write the type — the call site supplies it implicitly. **The senior reflex is to let inference do the work.**
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5}" color="blue">
+    When inference is wrong or ambiguous — the argument is `unknown`, or the function has no value parameter that can pin `T` — supply the type argument explicitly in angle brackets at the call site: `identity<User>(currentUser)`. This is the carve-out, not the default. If you find yourself writing the type argument on every call, the function probably has a missing parameter that should have constrained it.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+One rule worth stating plainly: **the type parameter is a type, not a value.** TypeScript erases it at compile time; there is no runtime representation of `T`. You can't reach for `T` as a value inside the function body — it doesn't exist when the code runs. This is the same type-level vs value-level register from the last lesson; name it once, move on.
+
+## Generic types
+
+The same primitive on the type-alias side. Take the `Result<T>` shape from the first lesson of this chapter and rewrite it as the authoring form:
+
+```ts
+type Result<T, E = AppError> =
+  | { ok: true; data: T }
+  | { ok: false; error: E };
+```
+
+Three things to notice. **The `<T, E = AppError>` after the alias name declares the type parameters** — same syntax as on a function, same scoping rules. The right-hand side references both by name, so a `Result<User>` resolves to `{ ok: true; data: User } | { ok: false; error: AppError }` and a `Result<User, ValidationError>` resolves to the same shape with `ValidationError` swapped in for the error variant.
+
+The `E = AppError` is a <Term definition="A type parameter declared with `= DefaultType`. If the caller omits the position, the default fills in. Like value-parameter defaults, with one tail rule: a defaulted parameter cannot precede a non-defaulted one.">default type parameter</Term>. If the caller omits the position, the default fills in. `Result<User>` is a valid shorthand because `E` falls back to `AppError`; `Result<User, ValidationError>` is a valid override because the caller filled both positions. The reach for defaults is exactly the reach for value-level defaults — keep the ergonomic call site for the common case, allow the override for the edge case. (`AppError` is the canonical error shape this course settles on; the chapter on Server Actions lands its concrete definition.)
+
+The position rules match value parameters too: required positions before optional ones, defaults trail. You can't write `<T = string, E>` — a defaulted parameter can't precede a non-defaulted one. Same rule, different register. **Type parameters behave like value parameters at the type level.** If you remember the value rule, you already remember this one.
+
+## Constraints with `extends`
+
+Here's where the lesson earns its name. An unconstrained `T` is structurally `unknown` from the function body's perspective — the body has no idea what shape `T` is, so the only operations it can safely run are the ones that work on every type. That is almost nothing. Try to do anything specific and the compiler stops you:
+
+```ts
+const firstChar = <T>(value: T): string => {
+  return value.charAt(0);
+  //           ~~~~~~
+  // Property 'charAt' does not exist on type 'T'.
+};
+```
+
+The compiler is right. `T` could be `number`, `boolean`, an object — none of those have `charAt`. The fix is to **name what the function needs from `T`**:
+
+<CodeVariants>
+  <CodeVariant label="Won't compile">
+    <div data-mark-color="red">
+
+    ```ts del={2}
+    const firstChar = <T>(value: T): string => {
+      return value.charAt(0);
+      //           ~~~~~~
+      // Property 'charAt' does not exist on type 'T'.
+    };
+    ```
+
+    </div>
+    Unconstrained `T` admits every type. The body can't safely call `charAt` because there's no guarantee `T` has it. The compiler is being cautious for you.
+  </CodeVariant>
+
+  <CodeVariant label="Constrained">
+    <div data-mark-color="green">
+
+    ```ts ins={1}
+    const firstChar = <T extends string>(value: T): string => {
+      return value.charAt(0);
+    };
+    ```
+
+    </div>
+    `<T extends string>` declares a <Term definition="An `extends` clause on a type parameter (`<T extends ...>`) that requires the caller's type to be assignable to the right-hand side. Inside the function, `T` is usable as that constrained shape.">constraint</Term> — `T` must be assignable to `string`. Inside the function body, the compiler now knows `T` is a string and lets you call `charAt`. At the call site, `T` still narrows to whatever string-shaped type the caller passed — a literal `'admin'`, a branded `UserId`, the plain `string`. The constraint **names what the function needs**, no more.
+  </CodeVariant>
+</CodeVariants>
+
+The senior reflex is to write the constraint that names what the function needs, from the first keystroke. There is no "first show unconstrained, then constrain" arc — unconstrained generics are a smell, not a starting point.
+
+Three constraint shapes carry most of the work you'll write.
+
+### `T extends string` (and other primitive constraints)
+
+Accept only string-assignable types. Useful for any helper that operates on string-shaped input — including the branded IDs from the "Branded IDs" lesson, where a `UserId` is structurally `string & { __brand: 'UserId' }`. A `UserId` satisfies `T extends string` cleanly, so the constraint accepts branded IDs without losing the brand at the return site.
+
+```ts
+const slugify = <T extends string>(value: T): string =>
+  value.toLowerCase().replace(/\s+/g, '-');
+```
+
+Same pattern works with `T extends number`, `T extends boolean`, or any other primitive — though `T extends string` is by far the most common reach in app code.
+
+### `T extends Record<string, unknown>` (and other object shapes)
+
+Accept any object. The reach for any helper that needs to enumerate fields or spread the input — the canonical example being a defaults merger:
+
+```ts
+const withDefaults = <T extends Record<string, unknown>>(
+  input: Partial<T>,
+  defaults: T,
+): T => ({ ...defaults, ...input });
+```
+
+The constraint says "I need an object I can spread"; the body does the spreading. The caller supplies any concrete object shape and the return type matches.
+
+### `K extends keyof T` — the load-bearing constraint
+
+This one earns its own treatment. **`pluck<T, K extends keyof T>(obj: T, key: K): T[K]` is the single most useful generic signature in 2026 app TypeScript.** Every "read one field of an object the caller supplied" helper has this shape. Every framework's `getValue(obj, key)` helper has this shape. The utility types from the last lesson — `Pick<T, K>` and `Omit<T, K>` — both use this exact constraint inside their definitions. Once you can write it, the utility-type definitions become mechanical.
+
+The signature:
+
+```ts
+const pluck = <T, K extends keyof T>(obj: T, key: K): T[K] => obj[key];
+```
+
+Walk it slowly.
+
+<AnnotatedCode lang="ts" code={`
+const pluck = <T, K extends keyof T>(obj: T, key: K): T[K] => obj[key];
+
+const u = { id: 'u_1' as UserId, name: 'Ada', age: 30 };
+
+const id = pluck(u, 'id');     // UserId
+const name = pluck(u, 'name'); // string
+const age = pluck(u, 'age');   // number
+`}>
+  <AnnotatedStep meta={`"<T, K extends keyof T>"`} color="blue">
+    Two parameters, declared in order: `T` for the object type, `K` for the key type. The second parameter is constrained — `K extends keyof T` — which means `K` must be assignable to the union of `T`'s keys. If `T` is `{ id: UserId; name: string; age: number }`, then `keyof T` is `'id' | 'name' | 'age'`, and `K` must be one of those three literals. The constraint references the previous type parameter; the order matters.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"obj: T, key: K"`} color="blue">
+    The value parameters use the type parameters by name. `obj` is typed `T` — whatever object the caller passed. `key` is typed `K` — whatever specific key literal the caller passed. Note the asymmetry: `T` infers from `obj` to the whole object's type, but `K` infers from `key` to the narrow literal `'id'`, not to the broad `keyof T` union. This is the magic — `K` stays narrow.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"T[K]"`} color="blue">
+    The return type uses the indexed-access operator from the last lesson on deriving types from values: `T[K]` is the type of `T` at the key `K`. If `T` is the user shape and `K` is the literal `'id'`, then `T[K]` is `UserId`. If `K` is `'age'`, `T[K]` is `number`. The return type recomputes per call site based on which key the caller supplied. The function gets one signature; the call site gets a different precise return type every time.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5-7}" color="blue">
+    Read the three calls bottom-up. `pluck(u, 'id')` returns `UserId`, not the broader `string | UserId | number`. `pluck(u, 'name')` returns `string`. `pluck(u, 'age')` returns `number`. The branded `UserId` survives — the brand from the branded-IDs lesson lives inside the object, and `pluck` extracts it precisely. One signature, three different return types, all inferred. **This is what generics with constraints buy you.**
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Hover the call sites to see the inferred types in place:
+
+<CodeTooltips tooltips={{
+  "pluck(u, 'id')": "Returns UserId. The literal key 'id' narrows K to 'id', and T[K] resolves to the branded type.",
+  "pluck(u, 'name')": "Returns string. K narrows to 'name'; T['name'] is string.",
+  "pluck(u, 'age')": "Returns number. K narrows to 'age'; T['age'] is number.",
+}}>
+
+```ts
+const id = pluck(u, 'id');
+const name = pluck(u, 'name');
+const age = pluck(u, 'age');
+```
+
+</CodeTooltips>
+
+The forward-link writes itself. The same `K extends keyof T` constraint lives inside `Pick<T, K>` and `Omit<T, K>` — the last lesson named that detail in passing. With this signature in your head, the utility-type definitions stop being magic. They're the same shape you just wrote.
+
+## The `const` type parameter modifier
+
+One short detour before the wrappers — a TypeScript 5.0 addition that fixes a narrow but recurring annoyance.
+
+Picture a tabs helper. The caller passes an inline array of tab names, and the helper returns an object that includes those names. Naively, the inferred type widens — `['home', 'about']` becomes `string[]` because TypeScript assumes arrays are mutable and string literals widen by default. That destroys downstream type-level work: a router that wanted to derive a literal union of valid route names ends up with `string`, and the literal information the caller had at the call site is gone.
+
+<CodeVariants>
+  <CodeVariant label="Widens to string[]">
+    <div data-mark-color="red">
+
+    ```ts {4}
+    const tabs = <T extends readonly string[]>(values: T): { values: T } => ({ values });
+
+    const t = tabs(['home', 'about']);
+    //   ^? { values: string[] }
+    ```
+
+    </div>
+    Without `const`, the inline array argument widens to `string[]` at the call site. `T` is inferred as `string[]`, and the literal information — that the array contained exactly `'home'` and `'about'` — is gone. Downstream code can't derive a literal union from `T` anymore; it would just see `string`.
+  </CodeVariant>
+
+  <CodeVariant label="Stays literal">
+    <div data-mark-color="green">
+
+    ```ts ins={1} {4}
+    const tabs = <const T extends readonly string[]>(values: T): { values: T } => ({ values });
+
+    const t = tabs(['home', 'about']);
+    //   ^? { values: readonly ['home', 'about'] }
+    ```
+
+    </div>
+    Add `const` in front of the type parameter and the compiler infers literal types for `T` — exactly as if the caller had written `as const` on the argument. The tuple narrows to `readonly ['home', 'about']`, and downstream type-level work — `T[number]` to derive the union, indexed access to derive paths — has the literals to work with.
+  </CodeVariant>
+</CodeVariants>
+
+The rule, plainly stated: **reach for `<const T>` when the wrapper's downstream consumer needs the literal types** — a router that derives route names, a permissions helper that derives a role union, a tabs helper that derives a key-of-tabs union. Without it, the literal information is lost at the call site. With it, the wrapper does the `as const` work for the caller, and the caller doesn't have to remember.
+
+One scope rule worth knowing: the <Term definition="TypeScript 5.0+ `<const T>` modifier. The compiler infers literal types for `T` where it would otherwise widen — equivalent to the caller writing `as const` on the argument. Permitted on functions, methods, and classes only.">const type parameter</Term> modifier is **permitted only on functions, methods, and classes**. The compiler refuses it on a generic type alias or interface. If you try, the diagnostic is clear: "A 'const' modifier cannot be used here." Reach for it on the function form; don't try to layer it onto a type alias.
+
+This composes neatly with the `typeof ARR[number]` derivation from the last lesson. A wrapper accepting `<const T extends readonly string[]>` and returning a shape that uses `T[number]` is the canonical "labeled-set" helper — one signature, literal narrows preserved, derived union available downstream.
+
+## Three wrappers you'll review
+
+The lesson's real-world payoff. These three wrappers show up in every SaaS codebase the course points at. The bodies aren't the point — the chapters on Zod and Server Actions, RBAC, and Next.js caching land those. The point is that you can **read these signatures and defend them in a code review**, knowing exactly which type parameter does what.
+
+### `safeAction` — the Server Action wrapper
+
+Server Actions need a uniform shape: parse the input, run the handler, return a `Result<T>`. The wrapper ties three types together — the Zod schema, the validated input the handler receives, and the value the handler returns:
+
+```ts
+const safeAction = <Schema extends z.ZodType, Output>(
+  schema: Schema,
+  handler: (input: z.infer<Schema>) => Promise<Output>,
+) => async (input: unknown): Promise<Result<Output>> => {
+  const parsed = schema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: toAppError(parsed.error) };
+  try {
+    return { ok: true, data: await handler(parsed.data) };
+  } catch (cause) {
+    return { ok: false, error: ensureAppError(cause) };
+  }
+};
+```
+
+The generics in the signature are the lesson. `<Schema extends z.ZodType, Output>` constrains `Schema` to a Zod schema type and declares an unconstrained `Output` for the handler's return. `z.infer<Schema>` then derives the validated input type from the schema and passes it as the handler's parameter — the handler receives a precisely typed input without writing the type by hand. The wrapper's return is `Result<Output>`, threading the handler's return into the success variant of the union from earlier.
+
+The caller's view stays clean:
+
+```ts
+export const createInvoice = safeAction(
+  createInvoiceSchema,
+  async (input) => db.insert(invoices).values(input).returning(),
+);
+```
+
+The caller writes the schema, writes the handler, and gets a function that validates, runs, and returns `Result<...>` end-to-end. No type annotations needed — the generics carry the types from the schema through to the result. The full chapter on Server Actions builds this body out with the error-funnel detail and the `useActionState` integration; this signature is the contract.
+
+:::note
+Zod 4 redesigned the schema-typing surface: `z.ZodType` is the canonical schema-type constraint; the older `z.ZodTypeAny` is deprecated. Reach for `z.ZodType` in new code.
+:::
+
+### `requireRole` — the authorization wrapper
+
+The shape that runs in front of every protected action. The wrapper ties the required role literal to the context shape the handler receives — if the caller required `'owner'`, the handler's `ctx.role` is the literal `'owner'`, not the broad role union:
+
+```ts
+const requireRole = <R extends Role, Output>(
+  role: R,
+  handler: (ctx: ActionCtx<R>) => Promise<Output>,
+): (() => Promise<Output>) => async () => {
+  const ctx = await getActionCtx();
+  if (!ctx.roles.includes(role)) throw new ForbiddenError(role);
+  return handler(ctx as ActionCtx<R>);
+};
+```
+
+`<R extends Role, Output>` constrains `R` to a member of the role union — the value-derived `Role` type from the last lesson — and declares an unconstrained `Output`. `ActionCtx<R>` is itself a generic type; its `role` field narrows to whatever literal `R` the caller supplied. The whole point is **carrying a literal through a wrapper** so downstream code can read it precisely, not as the broad `Role` union. This is exactly why the value-derived `Role` and the `<const T>` modifier from the last section exist as paired tools.
+
+```ts
+export const exportBilling = requireRole('owner', async (ctx) => {
+  // ctx.role is 'owner', not Role
+  return generateBillingExport(ctx.orgId);
+});
+```
+
+The chapter on RBAC builds this wrapper end-to-end with the audit-trail integration and the full `ActionCtx<Role>` shape.
+
+### `memoize` — preserve a function's call shape
+
+The third pattern is the one every cache, retry, instrumentation, and decorator wrapper uses. The wrapper takes any function and returns a function with the **same call signature** — same arguments, same return type, same TypeScript hints at the call site:
+
+```ts
+const memoize = <P extends unknown[], R>(
+  fn: (...args: P) => R,
+): ((...args: P) => R) => {
+  const cache = new Map<string, R>();
+  return (...args: P): R => {
+    const key = JSON.stringify(args);
+    if (!cache.has(key)) cache.set(key, fn(...args));
+    return cache.get(key) as R;
+  };
+};
+```
+
+`<P extends unknown[], R>` is the **spread-parameters generic idiom**. `P extends unknown[]` means "any tuple of value-parameter types" — the constraint accepts any function's parameter shape, captured as a tuple. `(...args: P)` then consumes the tuple as a rest parameter. The returned function spreads the same tuple back out. The result: the wrapped function has the exact same call shape as the input, and the caller's IDE shows the same parameter hints they'd see on the original. The pattern shows up in every logger decorator, every profiler hook, every third-party type definition that wants to wrap a function without losing its signature.
+
+One note on scope. The course's *production* caching reach is Next.js 16's `'use cache'` directive — the chapters on caching and rate limiting land it. This `memoize` is the **generics teaching vehicle** for the `<P extends unknown[], R>` pattern, not the cache you'll ship. Don't ship this body — `JSON.stringify(args)` as a cache key is fragile (it throws on circular refs, silently elides `undefined`, and doesn't guarantee key ordering across object shapes); the caching chapters cover production-grade keying. The pattern is what you need to recognize when you see it in the wild.
+
+## Conventional names and the variance footnote
+
+Two short pieces, both for recognition.
+
+**Conventional names.** `T` for "any type," `K` for "key," `V` for "value," `R` for "return," `P` for "parameters," `E` for "element" or "error." Position-named, not domain-named. Reach for a longer name (`TInvoice`, `TError`) only when a single signature juggles three or more generics and position alone is hard to read; in app code, this is rare. The single-letter convention isn't laziness — it's that every TypeScript reader recognizes them, so the signature parses faster.
+
+**Variance, named once.** Type parameters can behave differently under subtyping — this is called <Term definition="How a type parameter behaves under subtyping. Output-position parameters are *covariant* (a narrower `T` flows through). Input-position parameters are *contravariant* (a wider `T` flows through). `in`/`out` annotations make this explicit; app code rarely needs them.">variance</Term>. A parameter that only appears in output positions is *covariant* — a narrower `T` flows through. A parameter that only appears in input positions is *contravariant* — a wider `T` flows through. A parameter that appears in both is *invariant*. TypeScript 4.7 added explicit `in` and `out` annotations — `Producer<out T>`, `Consumer<in T>` — so library authors can declare variance directly. **This is library-author tooling.** You'll see these annotations in framework types (React, Effect, fp-ts) and shouldn't try to add them in app code. They're named here so the syntax doesn't surprise you the first time you encounter it.
+
+## What this lesson doesn't reach for
+
+The boundary is the lesson's other half. Everything below exists and you'll read it eventually, but you won't author it in 2026 SaaS app code.
+
+- **Conditional types** (`T extends U ? X : Y`) and **`infer`** (`T extends Promise<infer R> ? R : never`). The library-author primitives — the building blocks of `Awaited<T>`, Zod's inferred types, every fancy framework helper. You read them in framework types; you don't write them in app code. The TypeScript Handbook chapter on conditional types is the right resource if you're curious.
+
+- **Mapped types** as generic transforms (`type Lazy<T> = { [K in keyof T]: () => T[K] }`). The last lesson named them once; same call here. You'll read them in library definitions, not author them in feature code.
+
+- **`NoInfer<T>`** — a TypeScript 5.4 utility that prevents inference from a specific position. The narrow trigger: a generic function with a default-providing parameter where inference from the default would widen `T` incorrectly. The fix is wrapping the default-providing position in `NoInfer<T>`. Worth knowing the name exists so you can grep for it if you hit the symptom; not exercised here.
+
+- **Higher-kinded types** and type-level programming. Effect / fp-ts territory. The course doesn't reach.
+
+- **Generic classes.** Classes are a narrow reach in this course — the chapter on async and errors covers them for custom error classes specifically. The generic syntax applies to classes structurally — same `<T extends ...>` rules — and doesn't need a separate treatment.
+
+- **Function overloads** — the legacy "two call shapes, one body" form. You'll see them in some library declarations (`Array.prototype.flat`'s definition is the canonical example). The 2026 default is generics with constraints; overloads are named here only so you don't trip over them when reading `.d.ts` files.
+
+The point of this boundary is to keep the lesson load honest. You leave with what a SaaS engineer ships — function and type generics, the `extends` constraint with three shapes, defaults, `<const T>`, the `K extends keyof T` signature, and three production wrapper signatures. The library-author tower above this can wait until you genuinely need it.
+
+## Exercise: write `pluck`
+
+The lesson's center-of-gravity exercise. You'll write the signature you just walked through, and the type-checker will confirm the per-call narrows.
+
+<TypeCoding
+  instructions={`Type \`pluck\` so each call site returns the precise type of the field. The three \`^?\` queries should resolve to \`UserId\`, \`string\`, and \`number\`. The \`@ts-expect-error\` directive at the bottom should hold — meaning the line below it (the call with an invalid key) must actually fail to compile.`}
+  starter={`declare type UserId = string & { readonly __brand: 'UserId' };
+
+const pluck = (obj: object, key: string) => obj[key];
+
+const u = {
+  id: 'u_1' as UserId,
+  name: 'Ada',
+  age: 30,
+};
+
+const a = pluck(u, 'id');
+//    ^?
+const b = pluck(u, 'name');
+//    ^?
+const c = pluck(u, 'age');
+//    ^?
+
+// @ts-expect-error - 'email' is not a key of u
+const d = pluck(u, 'email');
+`}
+  expectedQueries={[
+    { line: 12, contains: 'UserId' },
+    { line: 14, contains: 'string' },
+    { line: 16, contains: 'number' },
+  ]}
+/>
+
+<details>
+<summary>Reveal the reference solution</summary>
+
+```ts
+const pluck = <T, K extends keyof T>(obj: T, key: K): T[K] => obj[key];
+```
+
+`<T, K extends keyof T>` declares two type parameters — `T` for the object, `K` constrained to a key of `T`. The value parameters use them by name (`obj: T`, `key: K`), and the return type is the indexed access `T[K]`. At each call site, `K` narrows to the literal key the caller passed (`'id'`, `'name'`, `'age'`), so the return type recomputes per call: `UserId`, `string`, `number`. The invalid `'email'` key fails the `keyof T` constraint, which makes the `@ts-expect-error` directive valid.
+
+</details>
+
+If you write that signature once from memory, you've absorbed the lesson. Every other wrapper in this course leans on the same `K extends keyof T` pattern in one form or another.
+
+## Exercise: match the wrapper shape
+
+A confirmation drill. Five scenarios, five generic signatures. Pair each scenario to the shape that fits it.
+
+import Matching from '../../../components/exercises/matching/Matching.astro';
+import Pair from '../../../components/exercises/matching/Pair.astro';
+
+<Matching instructions="Match each generic-function scenario on the left to the generic-parameter shape that fits it.">
+  <Pair>
+    <Fragment slot="left">A passthrough that keeps the argument's type intact</Fragment>
+    <Fragment slot="right">`<T>(value: T): T`</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">A function that reads one field of an object by key</Fragment>
+    <Fragment slot="right">`<T, K extends keyof T>(obj: T, key: K): T[K]`</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">A wrapper that takes any function and returns one with the same call shape</Fragment>
+    <Fragment slot="right">`<P extends unknown[], R>(fn: (...args: P) => R): (...args: P) => R`</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">A tabs helper whose inline array argument should stay narrow (`'home' | 'about'`, not `string`)</Fragment>
+    <Fragment slot="right">`<const T extends readonly string[]>(values: T): T`</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">A `Result<T>` whose error defaults to `AppError` but the caller can override</Fragment>
+    <Fragment slot="right">`type Result<T, E = AppError> = ...`</Fragment>
+  </Pair>
+</Matching>
+
+## External resources
+
+Four places to deepen the lesson if you want more depth on the patterns it surfaces.
+
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid>
+  <ExternalResource
+    title="TypeScript Handbook — Generics"
+    href="https://www.typescriptlang.org/docs/handbook/2/generics.html"
+    icon="simple-icons:typescript"
+    iconColor="#3178C6"
+    description="Canonical reference. The handbook chapter that lands the same shapes this lesson surfaced, with the library-author depth this lesson explicitly skipped."
+  />
+  <ExternalResource
+    title="Total TypeScript — Generics workshop"
+    href="https://www.totaltypescript.com/workshops/typescript-generics"
+    icon="lucide:graduation-cap"
+    iconColor="#3B82F6"
+    description="Matt Pocock's exercise-driven workshop on the same generics patterns. Worth the time if you want to write them daily and not just read them."
+  />
+  <ExternalResource
+    title="TS 5.0 release notes — const type parameters"
+    href="https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-0.html#const-type-parameters"
+    icon="simple-icons:typescript"
+    iconColor="#3178C6"
+    description="Official release notes for the `<const T>` modifier this lesson covered. Read it once so you recognize the addition's scope and limits."
+  />
+  <ExternalResource
+    title="TS 5.4 release notes — NoInfer"
+    href="https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-4.html#the-noinfer-utility-type"
+    icon="simple-icons:typescript"
+    iconColor="#3178C6"
+    description="Official release notes for the utility this lesson named but didn't exercise. The trigger and fix are both in the writeup."
+  />
+</CardGrid>
+
+You can now write a constrained generic function — particularly `pluck<T, K extends keyof T>` — from memory, read and defend the three production wrapper signatures in a code review, reach for `<const T>` when literals must survive the call site, and recognize variance annotations in library types without trying to use them in app code. The chapter ends here; the next chapter takes the same TypeScript floor and builds modules on top of it.

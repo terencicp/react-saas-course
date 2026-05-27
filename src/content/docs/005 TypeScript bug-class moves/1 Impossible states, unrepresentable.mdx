@@ -1,0 +1,318 @@
+---
+title: Impossible states, unrepresentable
+description: The discriminated-union shape as the structural enforcement that makes loading-with-data and success-without-data bugs uncompilable, with the four canonical SaaS variants.
+chapter-id: 5
+sidebar:
+  order: 1
+  label: Impossible states
+---
+
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import TypeCoding from '../../../components/live-coding/TypeCoding/TypeCoding.astro';
+import RequestStateMatrix from '../../../components/lessons/005/1/RequestStateMatrix.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+A request goes out. While it's in flight you want a spinner; on success you want to render the data; on failure you want an error banner. The shape that suggests itself looks innocuous, and it's the same shape you'll find shipped in production codebases written by people who should know better.
+
+<CodeVariants>
+  <CodeVariant label="The type">
+    ```ts
+    type RequestState = {
+      isLoading: boolean;
+      data?: User;
+      error?: Error;
+    };
+
+    const renderUser = (state: RequestState): string => {
+      if (state.isLoading) return 'Loading…';
+      if (state.error) return state.error.message;
+      return state.data.name;
+    };
+    ```
+    The type compiles. The function compiles. Three optional fields and a boolean — what could go wrong?
+  </CodeVariant>
+
+  <CodeVariant label="The runtime">
+    ```ts
+    const state: RequestState = {
+      isLoading: false,
+    };
+
+    renderUser(state);
+    ```
+    The runtime value some code path produced — maybe a reset that cleared `data` and `error` but forgot to flip `isLoading` to a sentinel, maybe an initial state from a store that defaults all fields. `isLoading` is `false`, no `error`, no `data`. The first two branches fall through and the function reaches `state.data.name` — except `state.data` is `undefined`. The page crashes six months after ship, in a code path nobody mocked.
+  </CodeVariant>
+</CodeVariants>
+
+The compiler allowed every combination of those fields, including the ones the runtime can never legally produce. A value with `isLoading: false` and no `data` and no `error` was never supposed to exist — there are only four valid runtime states (idle, loading, success, error), and none of them looks like that. But the type said it could exist, so the renderer was wrong to trust the field reads, and somewhere in the codebase a piece of state-management code produced exactly the value the type signed off on. The fix isn't to be more careful in the consumer. The fix is **structural** — make the impossible states unrepresentable, so the bad value can't be written in the first place.
+
+This chapter operates under a single recurring rule, and this lesson names it. **Architectural Principle #7: model with discriminated unions so impossible states cannot be written down.** Lesson 2 of this chapter extends the principle to transitions between states; lesson 3 makes the missing-variant case a compile error; lesson 4 brings nominal identity to the IDs that flow between variants. They all rest on what this lesson installs.
+
+## The combinatorial mismatch
+
+Before the fix, see the gap. The flag-set shape declares three independent fields — a boolean plus two optionals — and "data present" isn't one slot but many: any concrete `User` value the runtime can produce. The matrix below makes that concrete by crossing the four `(isLoading, error)` rows against four `data` columns — one for `undefined` and three for distinct `User` values standing in for the open set of users the type admits. That's 4 × 4 = **16 cells** the type signs off on.
+
+The runtime ever produces four states. A fresh form before the user clicks submit — `idle`. A request in flight — `loading`. A finished request that returned data — `success`. A finished request that errored — `error`. Every other combination the type admits is runtime garbage: `data` and `error` simultaneously set, `isLoading: true` with `data` already populated, `isLoading: false` with neither result nor error. The type signs off on all of them; the runtime should never produce any.
+
+<RequestStateMatrix />
+
+The matrix is the lesson's mechanical truth. Sixteen cells the type approves; four states the runtime ever inhabits. The shape `{ isLoading: boolean; data?: User; error?: Error }` is, structurally, a contract that says "any of these combinations is fine" — and the consumer code has to defend against all of them. The discriminated-union shape collapses the type's combinatorial space onto the runtime's.
+
+## The discriminated-union shape
+
+A <Term definition="A union type whose variants are object types each carrying a literal-typed discriminant the compiler narrows on.">discriminated union</Term> is a union of object types where every variant carries a literal-typed field — the <Term definition="Literal-typed field on every variant of a discriminated union identifying which variant a value is.">discriminant</Term> — that names the <Term definition="One of the object types making up a discriminated union.">variant</Term>. The compiler tracks the discriminant across runtime checks and narrows the value to the matching variant inside the branch.
+
+The canonical request-state shape:
+
+```ts
+type RequestState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'success'; data: User }
+  | { status: 'error'; error: Error };
+```
+
+Four variants. The discriminant is the literal-typed `status` field, and the per-variant data lives on the variant where it's valid — `data` on `success`, `error` on `error`. There's no shape with `status: 'loading'` and a `data` field. There's no shape with `status: 'error'` and no `error` field. The 12 <Term definition="A combination of fields the type allows but the runtime never produces.">impossible states</Term> from the flag-set shape simply cannot be written down — the compiler refuses them at the literal site.
+
+Reading a value of this type means narrowing first. The compiler tracks the discriminant through equality checks:
+
+<CodeTooltips tooltips={{
+  "state.status === 'success'": 'After this check, state is the success variant for the rest of the block — the compiler narrows on the literal discriminant.',
+  'state.data': 'Reading data here is type-safe — the success variant is the only one that carries it, and we are inside its branch.',
+}}>
+```ts
+const renderUser = (state: RequestState): string => {
+  if (state.status === 'success') {
+    return state.data.name;
+  }
+  return 'No user yet';
+};
+```
+</CodeTooltips>
+
+Inside the `if` block, the compiler knows `state` is the success variant — so `state.data` is a `User`, not an optional or possibly-missing field. Outside the block, `data` doesn't exist on the type at all. Reading `data` on a non-`success` variant fails at compile time, not at render time. The bug from the introduction is now uncompilable.
+
+<VideoCallout videoId="HDaPLwZWguo" videoTitle="You HAVE to know this TypeScript pattern — Matt Pocock">
+  Matt Pocock walks through the same flat-shape-to-discriminated-union refactor in under two minutes, naming the combinatorial explosion as the smell.
+</VideoCallout>
+
+## Conventions for the discriminant: `status`, `kind`, `type`
+
+There's no rule about what to name the discriminant field — the compiler narrows on any literal-typed key — but the convention is consistent across the SaaS ecosystem. Three names cover almost every case, and picking the right one signals the kind of thing being modeled.
+
+**`status`** is for async or request lifecycles. The running example uses it because that's exactly what it describes — a value moving through `idle`, `loading`, `success`, and `error` as a request progresses. You'll see this name again in TanStack Query state and in the return shape of Server Actions when those land in later chapters.
+
+**`kind`** is the general-purpose taxonomy discriminant. When the variants aren't a lifecycle — when they're more like "this thing can be one of several different things" — `kind` is the default. A polymorphic UI component that can render as a button or a link uses `kind`. A form field that can be text, number, or select uses `kind`.
+
+**`type`** is for event messages. This matches the vocabulary the platform already uses — `event.type` on every DOM event is a literal like `'click'` or `'submit'`, and Redux-shaped reducer actions have always discriminated on `type`. Webhooks from third parties follow the same convention. When you're modeling something that arrives as a message describing what happened, `type` is the read.
+
+One carve-out worth naming up front: `Result<T>` uses a **boolean** discriminant, `ok: true | false`, not a string. The course committed to that shape when it seeded `Result<T>` in the previous chapter, and ships it in `lib/result.ts`. The reason is local — `if (result.ok)` reads as the intent ("did this succeed?") at every call site, and the boolean is the right discriminant for a two-variant union where one variant is the happy path. Everywhere else, prefer string literals. They survive JSON serialization across the wire, they read clearly in DevTools without you guessing what `0` or `1` meant, and they don't collide with truthy/falsy short-circuiting at the use site.
+
+## Four canonical SaaS variants
+
+The discriminated-union shape shows up in four places across a SaaS codebase. Each variant owns a different seam — a place where data crosses from one layer to another, where the type needs to refuse impossible combinations.
+
+The first is the **request state** shape from the previous section.
+
+```ts
+type RequestState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'success'; data: User }
+  | { status: 'error'; error: Error };
+```
+
+This is the shape every async lifecycle takes. The `idle` variant earns its place when the request is conditional on something the user hasn't done yet — a search box waiting for input, a "Submit" button the user hasn't clicked. When the request fires immediately on mount, the union starts at `loading` and drops `idle`. You'll write this shape against TanStack Query state and Server Action returns in later chapters.
+
+The second is **`Result<T>`** — the expected-failure return shape. When a function can fail in known ways (validation, not-found, unauthorized) and the caller is supposed to handle the failure rather than have the framework catch a throw, the function returns a `Result<T>` instead of throwing.
+
+```ts
+type Result<T> =
+  | { ok: true; data: T }
+  | { ok: false; error: { code: string; userMessage: string } };
+```
+
+`T` here is a placeholder for whatever type the success case carries — generics get their proper treatment later in the chapter, but for now read `Result<User>` as "a result that, on success, carries a User." The two-channel rule (throw the unexpected, return the expected) gets its full treatment when the chapter on errors as a first-class concern lands later in this unit.
+
+The third is the **event message** shape — the form every webhook handler, reducer, and queue consumer reads.
+
+```ts
+type AppEvent =
+  | { type: 'user.created'; userId: string }
+  | { type: 'invoice.paid'; invoiceId: string; amount: number }
+  | { type: 'subscription.canceled'; subscriptionId: string };
+```
+
+Three variants, each carrying exactly the data its event needs. A `user.created` event doesn't have an `amount`. A `subscription.canceled` event doesn't have a `userId` field — and if the codebase eventually needs one there, you add it to the variant where it belongs, not to a top-level grab-bag. The IDs stay as plain `string` here; the lesson on branded identity later in the chapter is what gives them nominal protection across the schema boundary. Webhook ingestion and the notification dispatcher both consume this shape.
+
+The fourth is the **UI variant** — the shape that lets a polymorphic component refuse invalid prop combinations at the call site.
+
+```ts
+type ActionProps =
+  | { kind: 'button'; onClick: () => void }
+  | { kind: 'link'; href: string };
+```
+
+A "Button-or-Link" component that took both `onClick` and `href` as optional props would let the caller pass neither (broken UI), or both (which click handler wins?). The discriminated shape forces exactly one and refuses the others. The component's render function narrows on `kind` and reads the field that belongs to that variant. You'll write this shape against polymorphic components in the React unit.
+
+## Narrowing by the discriminant
+
+The narrowing surface from the previous chapter — `typeof`, `===`, `in`, `instanceof`, `Array.isArray`, discriminant equality — applies to every union. The discriminant form is the one this chapter's pattern leans on the hardest, and it shows up in three places.
+
+The first is an **`if` on the discriminant** — one branch handled, the rest pass through. You saw this in the consumer for `renderUser` above.
+
+```ts
+if (state.status === 'success') {
+  console.log(state.data.name);
+}
+```
+
+Inside the block, `state` is the success variant. Outside, it's the wider union.
+
+The second is a **`switch` on the discriminant** — full handling, one branch per variant. This is the canonical form for a render-side dispatch on a request state.
+
+```tsx
+switch (state.status) {
+  case 'idle':
+    return null;
+  case 'loading':
+    return <Spinner />;
+  case 'success':
+    return <UserCard user={state.data} />;
+  case 'error':
+    return <ErrorMessage error={state.error} />;
+  // exhaustiveness next lesson — a missing variant should fail to compile
+}
+```
+
+Each case narrows `state` to the matching variant, so `state.data` is accessible inside `'success'` and `state.error` inside `'error'`. The comment at the bottom flags what's missing: today, if someone adds a fifth variant to `RequestState`, this switch silently falls through. The next lesson installs the compile-error guarantee that makes the missing case loud.
+
+The third is **equality on the discriminant inside a `.filter` or `.map` callback** — the form you'll write when working with arrays of union-typed values.
+
+```ts
+const successes = states.filter((s) => s.status === 'success');
+```
+
+Inside the predicate function, the narrow works exactly as it does in an `if` — `s` is the success variant for the body of the callback. The catch is the **return type**. `successes` here doesn't get narrowed to `Array<{ status: 'success'; data: User }>`; it stays the wider `Array<RequestState>` because the language doesn't yet thread an inline equality back through `filter`'s signature. The fix is a type predicate (named in the previous chapter's narrowing lesson) — a function with a `value is T` return type that filter does honor. Use a type predicate when you need the array's element type to narrow; use the inline equality when you only need the narrowing inside the callback body.
+
+## The shape rule
+
+Three rules describe a well-formed discriminated union. They sound mechanical, but they're the checklist you apply when reading or designing a new one.
+
+**Every variant must carry the discriminant key with a literal value.** This is what makes the structural enforcement work. Without the discriminant on every variant, the compiler can't tell which variant a value is — and the narrowing falls apart. A union of `{ status: 'success'; data: User } | { data: User }` isn't a discriminated union; it's a shape union where the compiler has nothing to narrow on. Every variant gets the key. No exceptions.
+
+**Per-variant fields belong inside the variant where they're valid.** The `data` field lives on the `success` variant only; the `error` field lives on the `error` variant only. This is the structural enforcement the pattern is named for — fields that are only meaningful for one variant don't get promoted to a top-level optional, because the optional is the bug. A field that genuinely exists on every variant (a `requestId` for tracing, say) lives outside the discriminated structure entirely — on a wrapping type, not duplicated into each variant. The reflex: model variant-specific fields per-variant; only invariant fields wrap.
+
+**Keep discriminant literals literal.** TypeScript infers literal types for string-literal returns in most positions, so a factory `() => ({ status: 'loading' })` types correctly without ceremony. The watch-out is arrays and reassignable bindings — declaring `const states = [{ status: 'loading' }, { status: 'success', data: user }]` widens each `status` to `string`, and the discriminated narrowing breaks. The fix is `as const`, named in the previous chapter, applied where the literal would otherwise widen. The mechanics belong to that lesson; here it's enough to know the literal has to stay literal for the discriminated narrowing to track.
+
+To land the contrast one more time, here's the running example in both shapes side by side.
+
+<CodeVariants>
+  <CodeVariant label="Flat shape">
+    ```ts
+    type RequestState = {
+      isLoading: boolean;
+      data?: User;
+      error?: Error;
+    };
+    ```
+    **16 combinations admitted; 4 the runtime ever produces.** Three independent fields, twelve impossible cells the type signs off on. Every consumer has to defend against every combination — and forgetting one is the bug from the introduction.
+  </CodeVariant>
+
+  <CodeVariant label="Discriminated shape">
+    ```ts
+    type RequestState =
+      | { status: 'idle' }
+      | { status: 'loading' }
+      | { status: 'success'; data: User }
+      | { status: 'error'; error: Error };
+    ```
+    **4 combinations admitted; 4 the runtime ever produces.** Four variants, exactly matching the four runtime states. The compiler collapses the type's combinatorial space onto the runtime's, and the consumer can't read a field that doesn't exist on the variant it's looking at.
+  </CodeVariant>
+</CodeVariants>
+
+## Exercise — refactor the flag-set shape
+
+The mechanical move, on the running example. The function reads `state.data.name` from a value whose type doesn't promise the field exists — the `@ts-expect-error` directive marks where the flag-set shape misbehaves. Your job is to rewrite `RequestState` as a discriminated union on `status` with variants `'loading'`, `'success'`, and `'error'`, then update the checks in `handle` to narrow on `state.status`. When the type is right, the directive becomes unused (the line no longer fails to compile) — remove it.
+
+<TypeCoding
+  instructions="Rewrite `RequestState` as a discriminated union on `status` with variants `'loading'`, `'success'`, and `'error'`, then update the checks in `handle` to narrow on `state.status`. Once the type is right, the `@ts-expect-error` directive errors as unused — remove it."
+  starter={`type User = { name: string };
+
+type RequestState = {
+  isLoading: boolean;
+  data?: User;
+  error?: Error;
+};
+
+const handle = (state: RequestState): string => {
+  if (state.isLoading) return 'loading…';
+  if (state.error) return state.error.message;
+  // @ts-expect-error — data is optional on the flat shape
+  return state.data.name;
+  //           ^?
+};
+`}
+  expectedQueries={[
+    { line: 14, contains: 'User' },
+  ]}
+/>
+
+## Exercise — discriminated union or plain shape
+
+The pattern is for one thing: modeling a value that can be in one of several distinct, mutually exclusive shapes. Not every type benefits from it. A value with a single shape is just an object. A boolean is a boolean. The recall test is whether you recognize the situations where the pattern earns its weight.
+
+<Buckets twoCol instructions="Some values genuinely have multiple distinct shapes — those want a discriminated union. Others are just one shape, or a single value. Sort each scenario into the bucket that fits.">
+  <Bucket name="union" label="Discriminated union" description="Mutually exclusive variants with per-variant data." />
+  <Bucket name="shape" label="Plain shape" description="A single shape with no variants." />
+
+  <Item bucket="union">An async fetch lifecycle (idle, loading, success, error)</Item>
+  <Item bucket="union">A function that can fail in known ways and returns its outcome</Item>
+  <Item bucket="union">A webhook payload that arrives as one of N event types</Item>
+  <Item bucket="union">A button-or-link component that takes `onClick` or `href`, never both</Item>
+  <Item bucket="union">A form field that's text, number, or a select with options</Item>
+  <Item bucket="shape">A feature flag's on/off state</Item>
+  <Item bucket="union">A polymorphic toast notification (info, success, warning, error)</Item>
+  <Item bucket="shape">A user's display-name preference</Item>
+</Buckets>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="TypeScript Handbook — Discriminated unions"
+    href="https://www.typescriptlang.org/docs/handbook/2/narrowing.html#discriminated-unions"
+    icon="simple-icons:typescript"
+    iconColor="#3178C6"
+    description="The authoritative reference, including the compiler's narrowing rules for the discriminant form."
+  />
+  <ExternalResource
+    title="Total TypeScript — Discriminated unions"
+    href="https://www.totaltypescript.com/discriminated-unions-are-a-devs-best-friend"
+    icon="lucide:book-open"
+    description="Matt Pocock's treatment of the pattern, including the canonical anti-patterns and the reflex for spotting them."
+  />
+  <ExternalResource
+    title="Zod 4 — discriminatedUnion"
+    href="https://zod.dev/api?id=discriminated-unions"
+    icon="simple-icons:zod"
+    iconColor="#274D82"
+    description="The wire-boundary application — parsing an unknown JSON payload into a discriminated union. Lands properly in the validation unit later in the course."
+  />
+  <ExternalResource
+    title="Kent C. Dodds — Make Impossible States Impossible"
+    href="https://kentcdodds.com/blog/make-impossible-states-impossible"
+    icon="lucide:shield-check"
+    iconColor="#FFCB47"
+    description="The canonical naming of the pattern this lesson is built on, with the alert-component example that motivated it in the React world."
+  />
+</CardGrid>
