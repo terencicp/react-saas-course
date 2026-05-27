@@ -25,7 +25,7 @@ Six filters operationalize the pillars; if a lesson fails any, rewrite.
 ## 3. Lesson structure
 
 1. **Title** — can rephrase the TOC bullet for the page header.
-2. **Introduction** — state the lesson's goal, why it matters, connect it to what learner already know,  preview the practical skill or project built by the end, motivate the topic with a concrete problem. Keep it warm and brief.
+2. **Introduction** — state the lesson's goal, why it matters, connect it to what learner already know, preview the practical skill or project built by the end, motivate the topic with a concrete problem. Keep it warm and brief.
 3. **Body** — h2/h3 where there are distinct subtopics; teaching prose with code, exercises, and videos all placed where they belong, never at the end.
 5. **External resources** (optional LinkCards) — Official docs, tutorials, interactive explainers, supplementary video.
 
