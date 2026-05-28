@@ -18,6 +18,7 @@ import CodeVariant from '../../../components/code/code-variants/CodeVariant.astr
 | Prop | Type | Required | Default | Purpose |
 | --- | --- | --- | --- | --- |
 | `syncKey` | `string` | no | — | Forwarded to Starlight `<Tabs>`. Multiple `<CodeVariants>` blocks on the same page that share a `syncKey` switch tabs in lockstep. |
+| `maxLines` | `number` | no | `16` | Caps every variant's visible code-block height to ~`maxLines` lines and adds vertical scroll. Applies uniformly across all tabs so the card doesn't resize when switching variants. Pass `0` to disable the cap. |
 
 ### `CodeVariant`
 
@@ -31,7 +32,7 @@ import CodeVariant from '../../../components/code/code-variants/CodeVariant.astr
 - `<CodeVariant>` must be a **direct child** of `<CodeVariants>`. Neither stands alone.
 - Each variant's slot holds:
   1. **One fenced Expressive Code block.**
-  2. **Prose below it** (markdown — bold, inline code, links all fine).
+  2. **Prose below it** (markdown — bold, inline code, links all fine). Keep it to **one paragraph, six lines max** — the card is meant to be a quick A/B/C glance, not a long-form explanation. If the variant needs more, lead with the one-paragraph framing inside the tab and continue the discussion in regular prose below the `<CodeVariants>` block.
 - No nested components.
 
 Any variant-specific framing ("fast / slow", "leaks tokens", "cached") goes in the **first sentence of the prose**, not in props. The component has no header decorations.
