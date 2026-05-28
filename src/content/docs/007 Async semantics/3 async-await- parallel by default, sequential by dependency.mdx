@@ -1,0 +1,477 @@
+---
+title: '`async`/`await`: parallel by default, sequential by dependency'
+description: The dependency-check reflex that turns sequential awaits into parallel ones, the N+1 trap inside .map(async ...), the for await...of iteration shape, and the return-await stack-trace discipline.
+chapter-id: 7
+sidebar:
+  order: 3
+  label: Parallel by default
+---
+
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import ParallelVsSequentialTimeline from '../../../components/lessons/007/3/ParallelVsSequentialTimeline.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import ScriptCoding from '../../../components/live-coding/ScriptCoding/ScriptCoding.astro';
+import SandpackCallout from '../../../components/embeds/SandpackCallout.tsx';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+Look at this dashboard loader and read it the way an experienced engineer would:
+
+```ts
+const user = await getUser(userId);
+const org = await getOrg(orgId);
+const invoices = await listRecentInvoices(orgId);
+```
+
+Three `await`s, one after the other. Each one is a network round trip. If `getUser` takes 200ms, `getOrg` takes 180ms, and `listRecentInvoices` takes 220ms, the dashboard takes 600ms to load — the sum of all three. That sounds like the cost of doing three things. It isn't. Notice that `org` doesn't need anything from `user`, and `invoices` doesn't need anything from `org`. The three reads are independent. An experienced engineer reads this code, runs that dependency check in their head, and rewrites it so the three reads start at the same time. The total then drops to 220ms — the slowest of the three, not the sum.
+
+The previous lesson on Promise combinators handed you `Promise.all`. This lesson installs the reflex to reach for it. The chapter so far has installed the scheduler (the event loop and microtask queue) and the Promise contract with its four combinators; this lesson installs the patterns that ride on both — the dependency-check reflex, the N+1 trap inside `.map(async ...)`, the streaming iteration shape, and the stack-trace discipline that makes errors actually traceable.
+
+## Parallel by default, sequential by dependency
+
+The rule, in one line: **if two `await`s don't share data, they run in parallel.**
+
+That's the whole reflex. The mechanism — `Promise.all` — you already met last lesson. What this lesson is about is *reading* a block of consecutive `await`s and asking, before you reach for any tool, the dependency question:
+
+- **Does the next `await` need the previous one's value?** If no, promote to `Promise.all`. If yes, sequential is the only correct shape — keep them in order.
+
+Compare the two shapes side by side. The before tab is the dashboard loader from the opening; the after tab is the rewrite.
+
+<CodeVariants syncKey="dep-check">
+  <CodeVariant label="Sequential">
+    <div data-mark-color="red">
+
+    ```ts {1-3}
+    const user = await getUser(userId);
+    const org = await getOrg(orgId);
+    const invoices = await listRecentInvoices(orgId);
+    ```
+
+    </div>
+    **Three pauses, total time `t1 + t2 + t3`.** Three `await` keywords on three separate lines means three sequential pauses. The runtime pauses on line 1 until `getUser` settles, *then* starts `getOrg`, *then* `listRecentInvoices`. Nothing about the code shape forces this — the awaits are sequential because *the code is written sequentially*. The work itself is independent.
+  </CodeVariant>
+
+  <CodeVariant label="Promise.all">
+    <div data-mark-color="green">
+
+    ```ts {1-5}
+    const [user, org, invoices] = await Promise.all([
+      getUser(userId),
+      getOrg(orgId),
+      listRecentInvoices(orgId),
+    ]);
+    ```
+
+    </div>
+    **One await, total time `max(t1, t2, t3)`.** All three calls fire immediately when the array literal is evaluated; the single `await` then waits for the slowest. TypeScript infers a tuple from the array literal, so `user`, `org`, and `invoices` keep their original types in order — no annotation needed. Same correctness, lower latency, no extra cost.
+  </CodeVariant>
+</CodeVariants>
+
+The latency difference is the whole point of the rewrite, so it's worth seeing it laid out on a timeline. The figure below shows the same three reads in both shapes, with the bar widths scaled to request duration. The sequential row stacks the bars head-to-tail; the parallel row stacks them vertically, all starting at t=0.
+
+<ParallelVsSequentialTimeline />
+
+The dependency check has a second answer worth seeing. Not every block of `await`s should become a `Promise.all` — sometimes the next call genuinely needs the previous one's result:
+
+```ts
+const user = await getUser(userId);
+const invoices = await listInvoices(user.orgId);
+```
+
+Here `listInvoices` takes `user.orgId` as its argument. The second call cannot start until the first resolves, because the first's value is the second's input. This is the legitimate sequential shape — the rewrite doesn't apply, and forcing parallelism here would just be wrong. When the dependency is non-obvious to a future reader, leave a comment at the call site so the next person doesn't try to "optimize" by adding a `Promise.all` that breaks the data flow.
+
+One watch-out before we move on. The destructured tuple shape works because the array literal `[a, b, c]` is a fixed-length expression — TypeScript can infer a tuple and assign each position its own type. The moment the array is built dynamically, that inference widens to a union:
+
+```ts
+const results = await Promise.all(ids.map((id) => getOne(id)));
+```
+
+`results` is now `Awaited<ReturnType<typeof getOne>>[]` — an array of one type, not a positional tuple. That's the right shape when the inputs are homogeneous (a list of IDs going through the same fetcher), and the element-wise typing flows naturally from the mapper. The destructuring shape is for the three-different-reads case; the array shape is for the N-of-the-same-read case. Different ergonomics, same combinator.
+
+## The N+1 trap: `.map(async ...)`
+
+The array-shape rewrite above is fine for ten items. It is a production incident waiting to happen for five hundred. Look at this innocent-looking shape:
+
+```ts
+const values = await Promise.all(items.map((item) => fetchOne(item.id)));
+```
+
+Read it the way an experienced engineer would. The `.map` calls the async function once per item, so it returns an array of Promises. The JavaScript engine doesn't lazy-evaluate them — each `fetchOne` call fires the moment `.map` reaches that index. If `items` has 500 entries, the line above issues **500 concurrent network requests** the moment it runs. Three things go wrong, all at once:
+
+- **<Term definition="Issuing many concurrent async operations with no cap on the number in flight. The default failure mode of .map(async ...) over a large list.">Unbounded parallelism</Term>.** Five hundred requests fire at once. The downstream service rate-limits or falls over. The Postgres connection pool exhausts. The page never recovers — and worse, every other request hitting the same backend during that window degrades too.
+- **The await-in-loop "fix" is worse.** The instinct after seeing a request flood is to wrap the work in a `for` loop with `await` inside: `for (const item of items) { results.push(await fetchOne(item.id)); }`. Sequential, bounded, slow. It "fixes" the rate-limit, but at the cost of 500 round trips' worth of latency stacked end-to-end. Wrong tool for the wrong reason — it trades one failure mode for another instead of solving both.
+- **The hidden round trip.** Each `fetchOne` is a network call. If the work is N reads against the same backend, the right shape is often not parallel-vs-sequential at all — it's *one* batched call that returns all N rows in a single request.
+
+This pattern shows up so often it has a name: the <Term definition="An anti-pattern where one query to list N parent rows is followed by N additional queries to fetch each child. The fix is usually a single batched query that joins or filters by an IN list.">N+1</Term> problem — one query produces the list, then N more queries fetch each item's details. The canonical fix depends on what `fetchOne` actually does, so there are three correct answers and one bad one. The three correct ones are bounded `Promise.all`, `pMap` with a concurrency cap, and a single batched query. Pick by trigger.
+
+<CodeVariants syncKey="n-plus-one-fix">
+  <CodeVariant label="Bounded list">
+    <div data-mark-color="green">
+
+    ```ts {1}
+    const values = await Promise.all(items.map((item) => fetchOne(item.id)));
+    ```
+
+    </div>
+    **Trigger: small N, cheap calls.** When you can guarantee the list is bounded by the UI — five selected rows, the three replicas of a record, a fixed number of providers — bare `Promise.all` is fine. The mental ceiling is around ten. If the list can grow past that, even sometimes, this is the wrong tab. The questions to ask: *Where does this list come from? Can a user grow it? Can a paginated source feed it?* If yes to any of those, the next tab is your answer.
+  </CodeVariant>
+
+  <CodeVariant label="pMap (bounded concurrency)">
+    <div data-mark-color="green">
+
+    ```ts {3}
+    import pMap from 'p-map';
+
+    const values = await pMap(items, (item) => fetchOne(item.id), { concurrency: 8 });
+    ```
+
+    </div>
+    **Trigger: large N, work is genuinely independent, throughput-vs-rate-limit is the explicit trade.** `pMap` issues at most 8 concurrent calls and feeds the next as each completes. It's the project default for bounded fan-out across the course — when the work *must* fan out (e.g., five hundred image processing calls against a third-party API), and the API has a rate limit you need to respect, `pMap` is the right reach. Pick the concurrency cap to match what the downstream service can handle, not what your machine can throw at it. This pattern earns its weight as the explicit-<Term definition="When a consumer can not keep up with a producer. Bounded concurrency (pMap with concurrency) is the explicit fix; unbounded fan-out has none.">backpressure</Term> shape — the producer (your list) is throttled to match the consumer (the downstream service).
+  </CodeVariant>
+
+  <CodeVariant label="Database batch">
+    <div data-mark-color="green">
+
+    ```ts {1-4}
+    const rows = await db
+      .select()
+      .from(invoicesTable)
+      .where(inArray(invoicesTable.id, items.map((item) => item.id)));
+    ```
+
+    </div>
+    **Trigger: N reads against the same backend.** If `fetchOne` was a database lookup, the right move isn't to optimize the parallelism — it's to ask the database for the batch. One round trip, one query, the right shape. The Drizzle query builder's `inArray` is the canonical way to do this: `WHERE id IN (...)` under the hood. This is the reach whenever N awaits are all hitting the same backend — and the database isn't the only backend it applies to. A REST API with a `/bulk` endpoint, a GraphQL query with an array argument, a webhook ingestion that takes an array of events — the pattern is general. The N+1 chapter later in the course goes deeper into the database-specific variant.
+  </CodeVariant>
+</CodeVariants>
+
+:::caution
+The reflex when you see `.map(async ...)` in a code review is to ask what N could possibly be. If N is bounded by the UI — five selected rows, three replicas, a fixed list — `Promise.all` over the map is fine. If N is user-controlled, paginated, or fed by a backend list whose size you don't bound, the answer is `pMap` or a batch query, **never** a bare `.map(async ...)`. The shape is too easy to ship and too painful to debug after it does.
+:::
+
+## `for await...of`: streams and pagination
+
+Some async iteration genuinely is sequential. The order matters, parallelism would defeat the purpose, and the right shape is `for await...of` — a `for...of` loop that knows how to wait between iterations.
+
+Two canonical sites. The first is consuming a streamed response body:
+
+```ts
+const response = await fetch('/api/export', { signal });
+if (!response.body) return;
+for await (const chunk of response.body) {
+  processChunk(chunk);
+}
+```
+
+A streamed response body is an async iterable of `Uint8Array` chunks. The `for await...of` loop suspends between iterations — while the next chunk is in flight, the surrounding `async` function yields back to the event loop the way the previous lesson on the event loop described. When a chunk arrives, the body wakes up and the loop continues. The `signal` parameter threads through to cancel the read if the caller aborts; the cancellation lesson later in this chapter installs the full `signal` shape.
+
+The second canonical site is paginated SDKs. Most modern services — Stripe, OpenAI, the AI SDK, the Vercel platform — expose paginated results as an async iterable that fetches the next page on demand:
+
+```ts
+for await (const invoice of stripe.invoices.list({ limit: 100 })) {
+  await process(invoice);
+}
+```
+
+Under the hood, the iterator fetches one page, yields each item from that page one at a time, and only fetches the next page when the current one's items run out. You get bounded per-page work without writing a pagination loop yourself, and the iteration is sequential because **it has to be** — page 2's cursor comes from page 1's response. The dependency is structural, not stylistic.
+
+Now the watch-out. **`for await...of` is sequential.** Inside the loop, every iteration waits for the previous one to finish before starting. That's the right shape when order matters (streaming chunks must process in order, pages depend on each other's cursors) and the *wrong* shape for "process 500 independent items" — that's exactly the N+1 trap from the previous section, just dressed in different syntax. If you find yourself reaching for `for await...of` to fan out work, stop and ask whether the iterations are actually order-dependent. If they aren't, `pMap` is the answer.
+
+## `return await` inside `try`/`catch`
+
+A small but load-bearing detail. When an `async` function returns a Promise from inside a `try`/`catch` block, missing the `await` silently breaks the catch.
+
+A quick aside on `try`/`catch` itself, since this section assumes you've seen it: a `try` block that contains an awaited Promise behaves as if the rejection were a synchronous `throw` — `catch (err)` binds the reason. The full discipline (typing `err` as `unknown`, narrowing safely, throw-vs-return) lands in the next chapter on the error channel; here we're just using it to demonstrate the stack-trace consequence.
+
+Compare these two functions. They look almost identical. One catches the error; the other lets it sail past.
+
+<CodeVariants syncKey="return-await">
+  <CodeVariant label="The catch doesn't catch">
+    <div data-mark-color="red">
+
+    ```ts {3}
+    async function loadUser(id: string) {
+      try {
+        return getUser(id);
+      } catch (err) {
+        log.error('loadUser failed', { err });
+        throw err;
+      }
+    }
+    ```
+
+    </div>
+    `return getUser(id)` returns the Promise without awaiting it. By the time `getUser`'s Promise rejects, `loadUser`'s stack frame is gone — the function returned its Promise the moment the `return` ran. The rejection escapes the function *before* the `try` block resolves, so the `catch` never fires. The log line never runs. The error stack trace doesn't include `loadUser` at all. This is the canonical bug: the `try`/`catch` is present, looks correct, and silently does nothing.
+  </CodeVariant>
+
+  <CodeVariant label="return await">
+    <div data-mark-color="green">
+
+    ```ts {3}
+    async function loadUser(id: string) {
+      try {
+        return await getUser(id);
+      } catch (err) {
+        log.error('loadUser failed', { err });
+        throw err;
+      }
+    }
+    ```
+
+    </div>
+    The `await` keeps the function's stack frame alive until `getUser` settles. If the Promise rejects, the rejection becomes a synchronous `throw` inside the `try` block, the `catch` runs, the log line fires, and the rethrow propagates the original error with `loadUser` in its stack trace. **Inside a `try`/`catch`, `return await` is mandatory.**
+  </CodeVariant>
+</CodeVariants>
+
+Outside a `try`/`catch`, the correctness is the same — the rejection propagates either way — but the stack trace still includes the function's frame only with `return await`. The course's convention is to write `return await` consistently. There used to be an ESLint rule called `no-return-await` that flagged the pattern as redundant; it has been deprecated for this exact reason. Write `return await`, take the stack trace, move on.
+
+## The `async` function signature
+
+One paragraph on a detail that surprises students coming from typed languages with explicit task or future types. An `async` function **always** returns a `Promise<T>`. The keyword wraps the function's `return value` into a Promise's fulfillment, and the function's `throw` into the Promise's rejection. TypeScript handles the wrap automatically — your job is to declare what the function fulfills with, not the Promise around it.
+
+<CodeTooltips tooltips={{
+  'Promise<User>': "The `async` keyword wraps the function's `User` return into a Promise.\nThe return type annotation is `Promise<User>`, never the unwrapped `User`.\nTypeScript would reject `: User` on an `async` function — but it's a habit students from other typed languages reach for.\nThe fulfillment value is `User`; the function's *signature* is `Promise<User>`.",
+}}>
+```ts
+async function getUser(id: string): Promise<User> {
+  const [user] = await db
+    .select()
+    .from(usersTable)
+    .where(eq(usersTable.id, id));
+  return user;
+}
+```
+</CodeTooltips>
+
+One more shape worth recognizing without re-teaching: `await` is also legal at the top level of an ES module. The previous chapter on ES modules covered the decision of when to reach for top-level `await` versus lazy initialization; if you've forgotten the call, the rule is "only when the module's exports are derived from async work." For everything else, do the async work inside a function and let the caller `await` it.
+
+## Fire-and-forget, with an explicit `.catch`
+
+Sometimes you want to start async work and not wait for it. A "ping the analytics endpoint after sign-in" call has no return value the caller needs and no failure path the caller should block on. The naive shape is:
+
+```ts
+logEvent('signed-in', { userId });
+```
+
+This is a trap. The previous lesson named it: an unhandled rejection from a bare async call crashes Node 20+ by default, and silently fires `window.onunhandledrejection` in the browser. The fix is to attach an explicit `.catch` and mark the dropped Promise with `void` so the linter knows you mean it:
+
+```ts
+void logEvent('signed-in', { userId }).catch((err) => log.error('logEvent failed', { err }));
+```
+
+Two operators, two purposes. The `void` operator returns `undefined` and signals to the `no-floating-promises` lint rule that you've thought about this — the Promise is intentionally dropped. The `.catch` swallows any rejection so it can't crash the process. **Always pair them.** A `.catch` without `void` will trigger the lint rule; a `void` without `.catch` will crash on rejection. Both together is the correct fire-and-forget shape.
+
+That said: fire-and-forget is a tactical shape, not a strategic one. If the work needs durability — retries on transient failure, observability across runs, persistence across deploys — the right answer isn't to drop a Promise on the floor at all. It's to enqueue a background job. The unit on background work later in the course installs that pattern with Trigger.dev; until then, treat fire-and-forget as a tool for genuinely-fire-and-forget work (analytics pings, log writes that aren't load-bearing for correctness), not as a substitute for a job runner.
+
+## Practice: pick the shape
+
+The six shapes you just met cover almost every async pattern in a SaaS codebase. The exercise below classifies scenarios by which shape fits. Read each item, run the dependency check (and the "what is N?" check for any `.map(async ...)` shape), and drop it in the right bucket.
+
+<Buckets twoCol instructions="Run the dependency check (and the 'what is N?' check) on each scenario, then drop it in the shape that fits.">
+  <Bucket name="promise-all" label="Promise.all" description="Sequential-to-parallel rewrite, small bounded N" />
+  <Bucket name="pmap" label="pMap" description="Bounded fan-out over a large or user-controlled list" />
+  <Bucket name="for-await" label="for await...of" description="Sequential consumption of an async iterable" />
+  <Bucket name="batch" label="Batched query" description="N reads against a single backend" />
+  <Bucket name="sequential" label="Sequential await" description="Legitimate data dependency between calls" />
+  <Bucket name="fire-forget" label="void + .catch" description="Fire-and-forget, no caller blocks on the result" />
+
+  <Item bucket="promise-all">Render a dashboard that needs the user, the org, and the recent invoices in parallel</Item>
+  <Item bucket="pmap">Process 500 user uploads through a rate-limited image API</Item>
+  <Item bucket="for-await">Iterate a paginated Stripe SDK response to total all invoices for the year</Item>
+  <Item bucket="batch">Fetch all line items for a set of order IDs from the database</Item>
+  <Item bucket="sequential">Look up the user, then list the invoices that belong to the user's org</Item>
+  <Item bucket="for-await">Stream a downloaded export file's response body chunk by chunk</Item>
+  <Item bucket="sequential">Read a value from the cache; fall back to the database when the cache misses</Item>
+  <Item bucket="fire-forget">Fire an analytics ping after a successful sign-in; do not wait for the response</Item>
+</Buckets>
+
+## Practice: rewrite to `Promise.all`
+
+The exercise below is the dependency-check reflex at your fingertips. The starter is a dashboard loader that runs four sequential `await`s against fake helpers — none of them depend on the others' results. Your job is to rewrite the function so the four reads happen in parallel. The tests check three things: the return shape is unchanged, all four helpers are in flight at the same time (not back-to-back), and the function body actually uses `Promise.all` (so the parallelism check can't be passed by removing `await`s and breaking correctness).
+
+<ScriptCoding
+  instructions="Rewrite loadDashboard so all four reads run in parallel via Promise.all. Keep the return shape the same. The four helpers (getUser, getOrg, getRecentInvoices, getOrgMembers) are independent — none needs another's result."
+  starter={`const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function getUser(userId) {
+  await delay(200);
+  return { id: userId, name: 'Ada Lovelace' };
+}
+
+async function getOrg(orgId) {
+  await delay(200);
+  return { id: orgId, name: 'Analytical Engine' };
+}
+
+async function getRecentInvoices(orgId) {
+  await delay(200);
+  return [{ id: 'inv_1', orgId, total: 1200 }];
+}
+
+async function getOrgMembers(orgId) {
+  await delay(200);
+  return [{ id: 'usr_1', orgId, role: 'owner' }];
+}
+
+async function loadDashboard(userId, orgId) {
+  const user = await getUser(userId);
+  const org = await getOrg(orgId);
+  const invoices = await getRecentInvoices(orgId);
+  const members = await getOrgMembers(orgId);
+  return { user, org, invoices, members };
+}
+`}
+  tests={`
+test('returns the right shape with the right values', async () => {
+  const result = await loadDashboard('u1', 'o1');
+  expect(result).toEqual({
+    user: { id: 'u1', name: 'Ada Lovelace' },
+    org: { id: 'o1', name: 'Analytical Engine' },
+    invoices: [{ id: 'inv_1', orgId: 'o1', total: 1200 }],
+    members: [{ id: 'usr_1', orgId: 'o1', role: 'owner' }],
+  });
+});
+
+test('fires all four reads in parallel', async () => {
+  let inFlight = 0;
+  let peak = 0;
+  const wrap = (fn) => async (...args) => {
+    inFlight++;
+    if (inFlight > peak) peak = inFlight;
+    try {
+      return await fn(...args);
+    } finally {
+      inFlight--;
+    }
+  };
+  const original = { getUser, getOrg, getRecentInvoices, getOrgMembers };
+  getUser = wrap(original.getUser);
+  getOrg = wrap(original.getOrg);
+  getRecentInvoices = wrap(original.getRecentInvoices);
+  getOrgMembers = wrap(original.getOrgMembers);
+  try {
+    await loadDashboard('u1', 'o1');
+  } finally {
+    // Restore in the same lexical shape as the reassignments above so the
+    // cleanup mirrors the assignment site exactly, regardless of how the
+    // runner scopes these top-level function declarations.
+    getUser = original.getUser;
+    getOrg = original.getOrg;
+    getRecentInvoices = original.getRecentInvoices;
+    getOrgMembers = original.getOrgMembers;
+  }
+  expect(peak).toBe(4);
+});
+
+test('uses Promise.all in the implementation', () => {
+  expect(loadDashboard.toString()).toContain('Promise.all');
+});
+`}
+/>
+
+<details>
+<summary>Reveal solution</summary>
+
+```js
+async function loadDashboard(userId, orgId) {
+  const [user, org, invoices, members] = await Promise.all([
+    getUser(userId),
+    getOrg(orgId),
+    getRecentInvoices(orgId),
+    getOrgMembers(orgId),
+  ]);
+  return { user, org, invoices, members };
+}
+```
+
+Four reads, one `await`, same return shape. The wall-clock time becomes the slowest of the four, not the sum. The destructured tuple keeps each name's type without an annotation.
+
+</details>
+
+## Free play: feel the latency difference
+
+The exercise above is enforced; the playground below is just for poking. Two functions wrap the same four helpers — one runs them sequentially, the other through `Promise.all` — with `console.time` brackets around each call. Run both and read the output. The numbers shouldn't surprise you anymore; the point is to feel the difference in the runtime, not just on a Gantt chart.
+
+<SandpackCallout
+  client:visible
+  template="vanilla-ts"
+  showConsole
+  label="Open the timing playground"
+  description="Run both functions and read the console. Same work, different latency."
+  options={{ editorHeight: 520, showLineNumbers: true }}
+  files={{
+    '/index.ts': `const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+const getUser = async () => { await delay(200); return { id: 'u1', name: 'Ada' }; };
+const getOrg = async () => { await delay(200); return { id: 'o1', name: 'Analytical' }; };
+const getInvoices = async () => { await delay(200); return [{ id: 'inv_1' }]; };
+const getMembers = async () => { await delay(200); return [{ id: 'usr_1' }]; };
+
+async function sequentialLoad() {
+  const user = await getUser();
+  const org = await getOrg();
+  const invoices = await getInvoices();
+  const members = await getMembers();
+  return { user, org, invoices, members };
+}
+
+async function parallelLoad() {
+  const [user, org, invoices, members] = await Promise.all([
+    getUser(),
+    getOrg(),
+    getInvoices(),
+    getMembers(),
+  ]);
+  return { user, org, invoices, members };
+}
+
+const time = async (label: string, fn: () => Promise<unknown>) => {
+  const start = performance.now();
+  await fn();
+  console.log(\`\${label}: \${Math.round(performance.now() - start)}ms\`);
+};
+
+(async () => {
+  await time('sequential', sequentialLoad);
+  await time('parallel', parallelLoad);
+})();
+`,
+  }}
+/>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/await"
+    title="MDN — await"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The `await` operator's full semantics — including the suspension behavior and the rule that the surrounding function must be `async`."
+  />
+  <ExternalResource
+    href="https://github.com/sindresorhus/p-map"
+    title="sindresorhus/p-map"
+    icon="simple-icons:github"
+    iconColor="#181717"
+    description="The bounded-concurrency helper this lesson installs as the project default. Includes the `concurrency`, `stopOnError`, and `signal` options."
+  />
+  <ExternalResource
+    href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/for-await...of"
+    title="MDN — for await...of"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The async iteration shape, with examples for both async iterables and async generators."
+  />
+  <ExternalResource
+    href="https://developer.mozilla.org/en-US/docs/Web/API/ReadableStream"
+    title="MDN — ReadableStream"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The async iteration protocol on `response.body`, including the cancel-on-exit behavior and the `preventCancel` escape hatch."
+  />
+</CardGrid>

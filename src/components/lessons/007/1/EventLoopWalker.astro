@@ -1,0 +1,786 @@
+---
+// Step-through widget that plays a small async program tick by tick.
+//
+// Five panels per step:
+//   1. Source listing (left) with a highlighted "current line" marker.
+//   2. Call stack (top-right) — vertical, bottom to top.
+//   3. Microtask queue — horizontal, leftmost = next to run.
+//   4. Macrotask queue — horizontal, leftmost = next to run.
+//   5. Console (bottom, full width) — accumulating output lines.
+//
+// State is a pre-baked array of step snapshots — no JS execution simulation.
+// The widget renders every step's state into the DOM and toggles visibility
+// with a `is-active` class. Prev/Next/Reset wire to a small inline script.
+//
+// Color tokens match `ThreePartRuntime`:
+//   stack = teal-600, microtask = violet-600, macrotask = red-600.
+
+const STACK_COLOR = '#0d9488';
+const MICROTASK_COLOR = '#7c3aed';
+const MACROTASK_COLOR = '#dc2626';
+const CONSOLE_COLOR = '#475569'; // slate-600
+
+// Lines of the source program. Index = visual line number (1-based when
+// labeled). Blank entries draw blank lines so highlighting picks the right row.
+const SOURCE_LINES = [
+	`console.log('sync 1');`,
+	``,
+	`setTimeout(() => console.log('macro'), 0);`,
+	``,
+	`queueMicrotask(() => console.log('micro'));`,
+	``,
+	`const f = async () => {`,
+	`  console.log('sync 2');`,
+	`  await Promise.resolve();`,
+	`  console.log('micro 2');`,
+	`};`,
+	`f();`,
+	``,
+	`console.log('sync 3');`,
+];
+
+type StepSnapshot = {
+	// 1-based index into SOURCE_LINES; null = no line highlighted.
+	currentLine: number | null;
+	// Sub-band shown above the controls; null = none.
+	band: 'microtask-drain' | 'next-macrotask' | null;
+	// Stack frames, bottom to top.
+	stack: string[];
+	// FIFO queues — leftmost = next to run.
+	microtasks: string[];
+	macrotasks: string[];
+	// Console output lines, oldest at top.
+	consoleLines: string[];
+	// Short prose description of this step.
+	label: string;
+};
+
+const STEPS: StepSnapshot[] = [
+	{
+		currentLine: 1,
+		band: null,
+		stack: [],
+		microtasks: [],
+		macrotasks: [],
+		consoleLines: [],
+		label: "Top-level script begins running as the first macrotask.",
+	},
+	{
+		currentLine: 1,
+		band: null,
+		stack: [],
+		microtasks: [],
+		macrotasks: [],
+		consoleLines: ['sync 1'],
+		label: "Run console.log('sync 1'). Stack pushes and pops console.log.",
+	},
+	{
+		currentLine: 3,
+		band: null,
+		stack: [],
+		microtasks: [],
+		macrotasks: ['setTimeout(log macro)'],
+		consoleLines: ['sync 1'],
+		label: "setTimeout registers the callback as a macrotask. The body does not run now.",
+	},
+	{
+		currentLine: 5,
+		band: null,
+		stack: [],
+		microtasks: ['queueMicrotask(log micro)'],
+		macrotasks: ['setTimeout(log macro)'],
+		consoleLines: ['sync 1'],
+		label: "queueMicrotask registers the callback as a microtask.",
+	},
+	{
+		currentLine: 12,
+		band: null,
+		stack: ['f'],
+		microtasks: ['queueMicrotask(log micro)'],
+		macrotasks: ['setTimeout(log macro)'],
+		consoleLines: ['sync 1', 'sync 2'],
+		label: "Call f(). The body runs synchronously up to the first await — sync 2 logs.",
+	},
+	{
+		currentLine: 9,
+		band: null,
+		stack: [],
+		microtasks: ['queueMicrotask(log micro)', 'resume f after await'],
+		macrotasks: ['setTimeout(log macro)'],
+		consoleLines: ['sync 1', 'sync 2'],
+		label: "f returned from the stack. The code after await is now a queued microtask.",
+	},
+	{
+		currentLine: 14,
+		band: null,
+		stack: [],
+		microtasks: ['queueMicrotask(log micro)', 'resume f after await'],
+		macrotasks: ['setTimeout(log macro)'],
+		consoleLines: ['sync 1', 'sync 2', 'sync 3'],
+		label: "Synchronous tail of the script. The script's macrotask is now finished.",
+	},
+	{
+		currentLine: 5,
+		band: 'microtask-drain',
+		stack: [],
+		microtasks: ['resume f after await'],
+		macrotasks: ['setTimeout(log macro)'],
+		consoleLines: ['sync 1', 'sync 2', 'sync 3', 'micro'],
+		label: "Microtask drain step 1. Run queueMicrotask(log micro). Queue still has the resumption of f.",
+	},
+	{
+		currentLine: 10,
+		band: 'microtask-drain',
+		stack: [],
+		microtasks: [],
+		macrotasks: ['setTimeout(log macro)'],
+		consoleLines: ['sync 1', 'sync 2', 'sync 3', 'micro', 'micro 2'],
+		label: "Microtask drain step 2. The continuation of f runs and logs micro 2. Drain complete.",
+	},
+	{
+		currentLine: 3,
+		band: 'next-macrotask',
+		stack: [],
+		microtasks: [],
+		macrotasks: [],
+		consoleLines: ['sync 1', 'sync 2', 'sync 3', 'micro', 'micro 2', 'macro'],
+		label: "Microtask queue is empty. The loop picks the next macrotask — the timer callback.",
+	},
+	{
+		currentLine: null,
+		band: null,
+		stack: [],
+		microtasks: [],
+		macrotasks: [],
+		consoleLines: ['sync 1', 'sync 2', 'sync 3', 'micro', 'micro 2', 'macro'],
+		label: "All queues drained. The program has finished.",
+	},
+];
+
+const totalSteps = STEPS.length;
+
+// New console line per step (for the fade-in highlight effect).
+const newConsoleIndex = (step: number): number | null => {
+	if (step === 0) return null;
+	const prev = STEPS[step - 1].consoleLines.length;
+	const curr = STEPS[step].consoleLines.length;
+	return curr > prev ? prev : null;
+};
+---
+
+<div class="elw not-content" data-elw-root data-elw-lines={JSON.stringify(STEPS.map((s) => s.currentLine))}>
+	<div class="elw-band-row" aria-hidden="true">
+		{
+			STEPS.map((s, i) =>
+				s.band === null ? null : (
+					<div
+						class:list={[
+							'elw-band',
+							s.band === 'microtask-drain' && 'is-microtask-drain',
+							s.band === 'next-macrotask' && 'is-next-macrotask',
+						]}
+						data-elw-band={i}
+					>
+						{s.band === 'microtask-drain' && <span>Microtask drain</span>}
+						{s.band === 'next-macrotask' && <span>Next macrotask</span>}
+					</div>
+				),
+			)
+		}
+	</div>
+
+	<div class="elw-grid">
+		{/* SOURCE PANEL */}
+		<div class="elw-panel elw-source-panel">
+			<div class="elw-panel-header">Source</div>
+			<pre class="elw-source"><code>{
+				SOURCE_LINES.map((line, i) => {
+					const lineNum = i + 1;
+					return (
+						<span
+							class="elw-source-line"
+							data-elw-line={lineNum}
+						>
+							<span class="elw-source-line-no">{lineNum}</span>
+							<span class="elw-source-line-text">{line || ' '}</span>
+						</span>
+					);
+				})
+			}</code></pre>
+		</div>
+
+		{/* CALL STACK PANEL */}
+		<div class="elw-panel elw-stack-panel" style={`--accent: ${STACK_COLOR};`}>
+			<div class="elw-panel-header">Call stack</div>
+			<div class="elw-stack-marker">Top &darr;</div>
+			<div class="elw-stack-body">
+				{
+					STEPS.map((s, i) => (
+						<div class="elw-stack-state" data-elw-step={i}>
+							{s.stack.length === 0 ? (
+								<div class="elw-empty">empty</div>
+							) : (
+								// Render top-of-stack at the visual top — reverse the
+								// bottom-to-top array.
+								[...s.stack].reverse().map((frame) => (
+									<div class="elw-stack-cell">{frame}</div>
+								))
+							)}
+						</div>
+					))
+				}
+			</div>
+			<div class="elw-stack-baseline" aria-hidden="true"></div>
+		</div>
+
+		{/* MICROTASK QUEUE PANEL */}
+		<div class="elw-panel elw-queue-panel elw-queue-micro" style={`--accent: ${MICROTASK_COLOR};`}>
+			<div class="elw-panel-header">Microtask queue</div>
+			<div class="elw-queue-marker">Next &rarr;</div>
+			<div class="elw-queue-body">
+				{
+					STEPS.map((s, i) => (
+						<div class="elw-queue-state" data-elw-step={i}>
+							{s.microtasks.length === 0 ? (
+								<div class="elw-empty">empty</div>
+							) : (
+								s.microtasks.map((task) => (
+									<div class="elw-queue-cell">{task}</div>
+								))
+							)}
+						</div>
+					))
+				}
+			</div>
+		</div>
+
+		{/* MACROTASK QUEUE PANEL */}
+		<div class="elw-panel elw-queue-panel elw-queue-macro" style={`--accent: ${MACROTASK_COLOR};`}>
+			<div class="elw-panel-header">Macrotask queue</div>
+			<div class="elw-queue-marker">Next &rarr;</div>
+			<div class="elw-queue-body">
+				{
+					STEPS.map((s, i) => (
+						<div class="elw-queue-state" data-elw-step={i}>
+							{s.macrotasks.length === 0 ? (
+								<div class="elw-empty">empty</div>
+							) : (
+								s.macrotasks.map((task) => (
+									<div class="elw-queue-cell">{task}</div>
+								))
+							)}
+						</div>
+					))
+				}
+			</div>
+		</div>
+
+		{/* CONSOLE PANEL — spans full row */}
+		<div class="elw-panel elw-console-panel" style={`--accent: ${CONSOLE_COLOR};`}>
+			<div class="elw-panel-header">Console</div>
+			<div class="elw-console-body">
+				{
+					STEPS.map((s, i) => {
+						const newIdx = newConsoleIndex(i);
+						return (
+							<div class="elw-console-state" data-elw-step={i}>
+								{s.consoleLines.length === 0 ? (
+									<div class="elw-empty">empty</div>
+								) : (
+									s.consoleLines.map((line, k) => (
+										<div
+											class:list={['elw-console-line', k === newIdx && 'is-new']}
+										>
+											{line}
+										</div>
+									))
+								)}
+							</div>
+						);
+					})
+				}
+			</div>
+		</div>
+	</div>
+
+	{/* STEP LABEL */}
+	<div class="elw-label-wrap">
+		{
+			STEPS.map((s, i) => (
+				<p class="elw-label" data-elw-step={i}>
+					<span class="elw-label-step">Step {i} / {totalSteps - 1}</span>
+					<span class="elw-label-text">{s.label}</span>
+				</p>
+			))
+		}
+	</div>
+
+	{/* CONTROLS */}
+	<div class="elw-controls">
+		<button type="button" class="elw-btn elw-btn-secondary" data-elw-reset>
+			Reset
+		</button>
+		<button type="button" class="elw-btn" data-elw-prev>
+			&larr; Previous
+		</button>
+		<button type="button" class="elw-btn" data-elw-next>
+			Next &rarr;
+		</button>
+	</div>
+</div>
+
+<style>
+	.elw {
+		--elw-accent: hsl(217, 91%, 60%);
+		margin: 1.5rem 0;
+		background: var(--sl-color-bg-sidebar);
+		border: 1px solid var(--sl-color-hairline);
+		border-radius: 12px;
+		padding: 16px;
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+		max-width: 100%;
+	}
+
+	/* Sub-band above the grid that announces "microtask drain" / "next macrotask". */
+	.elw-band-row {
+		min-height: 22px;
+		display: grid;
+	}
+	.elw-band {
+		grid-column: 1;
+		grid-row: 1;
+		visibility: hidden;
+		display: flex;
+		align-items: center;
+		justify-content: flex-start;
+		font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+		font-size: 11px;
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		padding: 2px 10px;
+		border-radius: 999px;
+		align-self: center;
+		justify-self: start;
+		color: #ffffff;
+	}
+	.elw-band.is-microtask-drain {
+		background: #7c3aed;
+		border: 1px solid #7c3aed;
+	}
+	.elw-band.is-next-macrotask {
+		background: #dc2626;
+		border: 1px solid #dc2626;
+	}
+	.elw-band.is-active {
+		visibility: visible;
+	}
+
+	/* Grid: source on the left spans two rows; the two queue panels share the
+	   right column with the call stack. Console panel spans full width below. */
+	.elw-grid {
+		display: grid;
+		grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr) minmax(0, 1fr) minmax(0, 1fr);
+		grid-template-rows: auto auto;
+		gap: 10px;
+		align-items: start;
+	}
+
+	.elw-source-panel {
+		grid-column: 1;
+		grid-row: 1 / span 1;
+	}
+	.elw-stack-panel {
+		grid-column: 2;
+		grid-row: 1;
+	}
+	.elw-queue-micro {
+		grid-column: 3;
+		grid-row: 1;
+	}
+	.elw-queue-macro {
+		grid-column: 4;
+		grid-row: 1;
+	}
+	.elw-console-panel {
+		grid-column: 1 / -1;
+		grid-row: 2;
+	}
+
+	.elw-panel {
+		--accent: var(--sl-color-gray-3);
+		background: var(--sl-color-bg);
+		border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+		border-radius: 8px;
+		padding: 8px 10px;
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		min-width: 0;
+		min-height: 0;
+	}
+
+	.elw-panel-header {
+		font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+		font-size: 10.5px;
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		color: #ffffff;
+		background: var(--accent);
+		padding: 2px 8px;
+		border-radius: 999px;
+		align-self: flex-start;
+		white-space: nowrap;
+	}
+
+	/* SOURCE */
+	.elw-source {
+		margin: 0;
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+		font-size: 11px;
+		line-height: 1.35;
+		background: transparent;
+		padding: 0;
+		overflow-x: auto;
+	}
+	.elw-source code {
+		display: flex;
+		flex-direction: column;
+		gap: 0;
+		font-family: inherit;
+		font-size: inherit;
+		background: transparent;
+		padding: 0;
+	}
+	.elw-source-line {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+		padding: 1px 6px;
+		border-left: 3px solid transparent;
+		white-space: pre;
+		color: var(--sl-color-gray-2);
+	}
+	.elw-source-line.is-active {
+		background: color-mix(in srgb, var(--sl-color-accent) 14%, transparent);
+		border-left-color: var(--sl-color-accent);
+		color: var(--sl-color-white);
+	}
+	.elw-source-line-no {
+		flex: 0 0 auto;
+		width: 14px;
+		text-align: right;
+		color: var(--sl-color-gray-4);
+		font-size: 10px;
+		user-select: none;
+	}
+	.elw-source-line-text {
+		flex: 1 1 auto;
+		min-width: 0;
+		white-space: pre;
+	}
+
+	/* CALL STACK */
+	.elw-stack-marker,
+	.elw-queue-marker {
+		font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+		font-size: 10px;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--sl-color-gray-3);
+	}
+	.elw-stack-body,
+	.elw-queue-body,
+	.elw-console-body {
+		display: grid;
+		min-height: 0;
+	}
+	.elw-stack-state,
+	.elw-queue-state,
+	.elw-console-state {
+		grid-column: 1;
+		grid-row: 1;
+		visibility: hidden;
+		display: flex;
+		min-width: 0;
+	}
+	.elw-stack-state {
+		flex-direction: column-reverse;
+		gap: 3px;
+		align-items: stretch;
+	}
+	.elw-queue-state {
+		flex-direction: row;
+		gap: 4px;
+		align-items: center;
+		flex-wrap: wrap;
+	}
+	.elw-console-state {
+		flex-direction: column;
+		gap: 1px;
+	}
+	.elw-stack-state.is-active,
+	.elw-queue-state.is-active,
+	.elw-console-state.is-active {
+		visibility: visible;
+	}
+
+	.elw-stack-cell {
+		padding: 4px 8px;
+		border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+		background: color-mix(in srgb, var(--accent) 12%, transparent);
+		border-radius: 4px;
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+		font-size: 11.5px;
+		text-align: center;
+		color: var(--sl-color-white);
+	}
+	.elw-stack-baseline {
+		border-bottom: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+		margin-top: 4px;
+	}
+
+	.elw-queue-cell {
+		padding: 4px 8px;
+		border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+		background: color-mix(in srgb, var(--accent) 12%, transparent);
+		border-radius: 4px;
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+		font-size: 11px;
+		white-space: nowrap;
+		color: var(--sl-color-white);
+	}
+
+	.elw-empty {
+		font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+		font-size: 11px;
+		font-style: italic;
+		color: var(--sl-color-gray-4);
+		padding: 4px 0;
+	}
+
+	/* CONSOLE */
+	.elw-console-panel .elw-console-body {
+		max-height: 100px;
+		overflow-y: auto;
+		background: var(--sl-color-black, #0b0e14);
+		border-radius: 4px;
+		padding: 6px 8px;
+		color: #e5e7eb;
+	}
+	.elw-console-line {
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+		font-size: 12px;
+		padding: 1px 0;
+		color: #e5e7eb;
+	}
+	.elw-console-line.is-new {
+		animation: elw-console-fade 0.5s ease-out;
+		border-left: 2px solid var(--sl-color-accent);
+		padding-left: 4px;
+		margin-left: -6px;
+	}
+	@keyframes elw-console-fade {
+		0% {
+			background: color-mix(in srgb, var(--sl-color-accent) 35%, transparent);
+		}
+		100% {
+			background: transparent;
+		}
+	}
+
+	/* LABEL */
+	.elw-label-wrap {
+		display: grid;
+		min-height: 44px;
+	}
+	.elw-label {
+		grid-column: 1;
+		grid-row: 1;
+		visibility: hidden;
+		margin: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+		font-size: 13px;
+		line-height: 1.4;
+		color: var(--sl-color-gray-2);
+	}
+	.elw-label.is-active {
+		visibility: visible;
+	}
+	.elw-label-step {
+		font-size: 10.5px;
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		color: var(--sl-color-gray-3);
+	}
+	.elw-label-text {
+		color: var(--sl-color-white);
+	}
+
+	/* CONTROLS */
+	.elw-controls {
+		display: flex;
+		gap: 8px;
+		justify-content: flex-end;
+		align-items: center;
+		flex-wrap: wrap;
+	}
+	.elw-btn {
+		height: 30px;
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		background: var(--sl-color-accent);
+		border: 1px solid var(--sl-color-accent);
+		border-radius: 6px;
+		color: #ffffff;
+		cursor: pointer;
+		padding: 0 12px;
+		font-size: 12.5px;
+		font-weight: 600;
+		font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+		transition: filter 0.14s, box-shadow 0.14s, transform 0.06s, background-color 0.14s, border-color 0.14s, color 0.14s;
+	}
+	.elw-btn:hover:not(:disabled) {
+		filter: brightness(1.08);
+	}
+	.elw-btn:focus-visible {
+		outline: 2px solid var(--sl-color-accent);
+		outline-offset: 2px;
+	}
+	.elw-btn:active:not(:disabled) {
+		transform: translateY(1px);
+	}
+	.elw-btn:disabled {
+		background: var(--sl-color-bg);
+		border-color: var(--sl-color-hairline);
+		color: var(--sl-color-text);
+		opacity: 0.4;
+		cursor: not-allowed;
+	}
+	.elw-btn-secondary {
+		background: transparent;
+		color: var(--sl-color-text);
+		border-color: var(--sl-color-hairline);
+	}
+	.elw-btn-secondary:hover:not(:disabled) {
+		background: var(--sl-color-bg);
+		filter: none;
+	}
+
+	@media (max-width: 720px) {
+		.elw-grid {
+			grid-template-columns: minmax(0, 1fr);
+			grid-template-rows: repeat(5, auto);
+		}
+		.elw-source-panel,
+		.elw-stack-panel,
+		.elw-queue-micro,
+		.elw-queue-macro,
+		.elw-console-panel {
+			grid-column: 1;
+			grid-row: auto;
+		}
+	}
+</style>
+
+<script>
+	document.querySelectorAll<HTMLElement>('[data-elw-root]').forEach((root) => {
+		const sourceLines = Array.from(
+			root.querySelectorAll<HTMLElement>('[data-elw-line]'),
+		);
+		const stateNodes = Array.from(
+			root.querySelectorAll<HTMLElement>('[data-elw-step]'),
+		);
+		const bandNodes = Array.from(
+			root.querySelectorAll<HTMLElement>('[data-elw-band]'),
+		);
+		const prevBtn = root.querySelector<HTMLButtonElement>('[data-elw-prev]');
+		const nextBtn = root.querySelector<HTMLButtonElement>('[data-elw-next]');
+		const resetBtn = root.querySelector<HTMLButtonElement>('[data-elw-reset]');
+		if (!prevBtn || !nextBtn || !resetBtn) return;
+
+		// Total step count from the largest data-elw-step among label nodes.
+		const labelNodes = root.querySelectorAll<HTMLElement>('.elw-label[data-elw-step]');
+		const total = labelNodes.length;
+		if (total === 0) return;
+
+		// Maps step index -> current source line (1-based) to highlight. We read
+		// this from the data-elw-current-line attribute on each label node.
+		// Simpler: rebuild a map from the rendered source program by looking up
+		// the label's sibling state data — but that's overkill. Read from
+		// inlined `data-current-line` attributes if present, otherwise we don't
+		// highlight a line. To keep it simple, derive the active source line per
+		// step from a parallel data attribute on each label node.
+		// Instead of two passes, we look up the label's adjacent stack/queue/
+		// console blocks via `data-elw-step`.
+
+		// We pre-compute, per step, the source line to highlight by reading a
+		// data attribute baked at render time.
+		const labelByStep = new Map<number, HTMLElement>();
+		labelNodes.forEach((el) => {
+			const step = Number(el.dataset.elwStep);
+			labelByStep.set(step, el);
+		});
+
+		function setActive(step: number) {
+			const i = Math.max(0, Math.min(total - 1, step));
+
+			// Toggle the per-step state nodes.
+			stateNodes.forEach((el) => {
+				el.classList.toggle(
+					'is-active',
+					Number(el.dataset.elwStep) === i,
+				);
+			});
+
+			// Toggle the band (microtask drain / next macrotask).
+			bandNodes.forEach((el) => {
+				el.classList.toggle(
+					'is-active',
+					Number(el.dataset.elwBand) === i,
+				);
+			});
+
+			// Source line highlight — driven by per-step data baked in below.
+			const currentLine = currentLines[i];
+			sourceLines.forEach((el) => {
+				el.classList.toggle(
+					'is-active',
+					currentLine !== null && Number(el.dataset.elwLine) === currentLine,
+				);
+			});
+
+			prevBtn!.disabled = i === 0;
+			nextBtn!.disabled = i === total - 1;
+
+			(root as HTMLElement).dataset.elwCurrent = String(i);
+		}
+
+		function current(): number {
+			return Number((root as HTMLElement).dataset.elwCurrent ?? '0');
+		}
+
+		// Per-step current source line, baked into the script literal below.
+		const currentLines: (number | null)[] = JSON.parse(
+			(root as HTMLElement).dataset.elwLines || '[]',
+		);
+
+		prevBtn.addEventListener('click', () => setActive(current() - 1));
+		nextBtn.addEventListener('click', () => setActive(current() + 1));
+		resetBtn.addEventListener('click', () => setActive(0));
+
+		setActive(0);
+	});
+</script>
+
+</content>
+</invoke>

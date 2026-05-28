@@ -1,0 +1,416 @@
+---
+title: Cancellation with `AbortController` and `AbortSignal`
+description: The two-party cancellation contract every modern web and Node API speaks, the canonical user-cancel pattern with name-based catch discrimination, and the timeout and composition shapes that make it production-grade.
+chapter-id: 7
+sidebar:
+  order: 4
+  label: Cancellation
+---
+
+import { CardGrid } from '@astrojs/starlight/components';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import ProducerConsumerSplit from '../../../components/lessons/007/4/ProducerConsumerSplit.astro';
+import Matching from '../../../components/exercises/matching/Matching.astro';
+import Pair from '../../../components/exercises/matching/Pair.astro';
+import ScriptCoding from '../../../components/live-coding/ScriptCoding/ScriptCoding.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+
+A user types into a search box. The first keystroke is `r`. Your code fires `fetch('/api/search?q=r')`. By the time that request lands the user has typed `re`, `rea`, `reac`, `react` — five characters in roughly a second, five requests in flight. The fast network mostly returns them in order, but not always. The response for `rea` happens to be served from a cold cache; it lands *after* the response for `react`. Your dropdown, which renders whichever response arrives last, now shows results for `rea` while the user stares at the word `react`. The bug is reproducible, embarrassing, and not the user's fault.
+
+The fix isn't to debounce harder or sort responses by timestamp. The fix is to stop the obsolete requests the moment they become obsolete — to *cancel* them. The 2026 mechanism for that has two parts: <Term definition="The producer side of cancellation: an object whose abort() method signals downstream consumers to stop.">`AbortController`</Term> creates the cancellation token; <Term definition="The consumer-facing view of an AbortController; a read-only signal that async APIs subscribe to via { signal } to stop in-flight work.">`AbortSignal`</Term> is the read-only view consumers listen to. And it is everywhere. `fetch` takes a signal. `setTimeout` (the abortable Node variant) takes a signal. `addEventListener` takes a signal. The Vercel AI SDK's `streamText` takes a signal. Drizzle queries pass a signal to the underlying `pg` driver. Every Server Action this course writes accepts a signal. By the end of this lesson, when you see an async function that does any kind of I/O, you should expect a `signal` parameter — and feel something is off when it isn't there.
+
+## The producer–consumer split
+
+The mental model is two parties with one wire between them. On one side, the code that decides *when* to cancel — the component, the parent function, the request handler. On the other side, the code that's doing the work — `fetch`, the timer, the database driver. They are different parties on purpose. The party doing the work has no business deciding when to stop; the party deciding doesn't get to reach into the work and yank it.
+
+That asymmetry is what the two types encode. `AbortController` is the producer. The caller creates one, holds the reference, and calls `controller.abort()` when it wants the operation to stop. `AbortSignal` is the consumer-facing view. You get to it through `controller.signal`. It's read-only — no `abort()` method on the signal itself — which is precisely what makes it safe to hand out. Once the controller fires, the signal's `aborted` property flips to `true`, its `'abort'` event dispatches, and every consumer wired to that signal sees the same flip at the same time.
+
+The split is also what makes composition possible. Because the signal is a value you can pass around independently of its controller, you can build a signal that aborts when *any* of several signals abort, without ever exposing the underlying controllers. That composition shape lands later in the lesson. For now, the diagram below shows the picture that matters: one producer fanning out to many consumers through a single signal value.
+
+<ProducerConsumerSplit />
+
+In code, the controller side fits on two lines:
+
+```ts
+const controller = new AbortController();
+// later, when we want to stop
+controller.abort();
+```
+
+Two properties on the signal are worth knowing about because they show up when you write the consumer side of long-running work. `signal.aborted` is a boolean — `false` before, `true` after. `signal.reason` is whatever value you passed to `abort(reason)`, or a default `DOMException` if you called `abort()` with no argument. Long-running loops can guard against a mid-flight abort by checking `if (signal.aborted) break` between iterations. You won't reach for these often — most of the time you thread the signal into an API that handles the listening for you — but they exist when you need them.
+
+<VideoCallout videoId="pOQguIkDp5w" videoTitle="Software Developer Diaries — The Power of AbortController in JavaScript">
+  An 18-minute walkthrough that touches `fetch`, `addEventListener`, WebSocket cleanup, and the `signal.aborted` loop guard — a good second pass on the producer-consumer shape before the lesson zooms in on the parameter idiom.
+</VideoCallout>
+
+## The `{ signal }` parameter shape
+
+Now look at the same parameter on four different async surfaces. The point of the next block isn't four examples — it's *one* example, repeated, so the shape becomes muscle memory. Click through the tabs.
+
+<CodeVariants syncKey="signal-shape">
+  <CodeVariant label="fetch">
+    ```ts
+    const res = await fetch('/api/search?q=react', { signal });
+    ```
+    **The browser's `fetch`.** Pass `signal` as an option. When the signal fires, the request aborts mid-flight and the `await` rejects with an error whose `name` is `'AbortError'`.
+  </CodeVariant>
+
+  <CodeVariant label="setTimeout">
+    ```ts
+    import { setTimeout } from 'node:timers/promises';
+
+    await setTimeout(1_000, undefined, { signal });
+    ```
+    **The Promise-based timer.** Imported from `node:timers/promises`, not the global. The wait suspends the surrounding `async` function for one second and rejects with `AbortError` if the signal fires first. The global, callback-style `setTimeout` in the browser does **not** take a `signal` option — for browser-side timeouts, reach for `AbortSignal.timeout(ms)` instead (covered shortly).
+  </CodeVariant>
+
+  <CodeVariant label="addEventListener">
+    ```ts
+    button.addEventListener('click', handleClick, { signal });
+    ```
+    **DOM events.** The listener is registered now and *automatically removed* the moment the signal fires. Cleaner than juggling a matching `removeEventListener` — one cancellation source can tear down many listeners at once. Recognize this shape when you see it in framework code.
+  </CodeVariant>
+
+  <CodeVariant label="your function">
+    ```ts
+    async function searchSuggestions(
+      query: string,
+      { signal }: { signal?: AbortSignal },
+    ): Promise<Suggestion[]> {
+      const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`, { signal });
+      if (!res.ok) throw new Error(`search failed: ${res.status}`);
+      return res.json();
+    }
+    ```
+    **A helper you author.** The same shape on the consuming end: an options object with an optional `signal`. Thread it through to every I/O call you make. This is the shape the project uses for every async helper that touches the network or the database.
+  </CodeVariant>
+</CodeVariants>
+
+Read the four tabs again as one statement and you have the rule: *if an async function does I/O, its signature includes `signal`.* That sentence is the lesson's reflex. The project's default parameter shape for optional cancellation is `{ signal }: { signal?: AbortSignal }` in an options object, exactly as written on the fourth tab. Even when the immediate caller has no reason to cancel, the function still accepts the parameter — because the moment some future caller does need to cancel, you don't want to refactor a signature.
+
+## The canonical user-cancel pattern
+
+Time to put the search-suggestions example together end-to-end. Two parts: the function that does the work (accepts a signal, threads it to `fetch`) and the caller that holds the controller (aborts the previous one on each keystroke, creates a fresh one for the new request). The React-side wiring — holding the controller in a ref, aborting on unmount — lands in the React effects chapter; right now we're learning the function shape that React code will eventually call into. Step through the annotated walkthrough below.
+
+<AnnotatedCode lang="ts" maxLines={25} code={`
+type Suggestion = { id: string; label: string };
+
+async function searchSuggestions(
+  query: string,
+  { signal }: { signal?: AbortSignal },
+): Promise<Suggestion[]> {
+  const res = await fetch(\`/api/search?q=\${encodeURIComponent(query)}\`, { signal });
+  if (!res.ok) throw new Error(\`search failed: \${res.status}\`);
+  return res.json();
+}
+
+let active: AbortController | null = null;
+async function onInputChange(query: string) {
+  active?.abort();
+  active = new AbortController();
+  try {
+    const results = await searchSuggestions(query, { signal: active.signal });
+    render(results);
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') return;
+    throw err;
+  }
+}
+`}>
+  <AnnotatedStep meta="{5}" color="blue">
+    **The signature carries the signal.** The options object destructures `signal` with the project's canonical shape: optional, typed as `AbortSignal`. Every async helper that does I/O follows this shape, so the moment a caller needs to cancel, the API is already there.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{7}" color="blue">
+    **Thread the signal through.** The function doesn't *own* the signal — it just passes it to the work that knows how to listen. `fetch` accepts it directly. If this function also queried the database or read a file, those calls would take the same `signal` too.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{14}" color="orange">
+    **Abort the previous controller.** Each keystroke first cancels whatever the previous keystroke kicked off. The previous in-flight `fetch` rejects with `AbortError` the moment this line runs. The `?.` is defensive for the first call when there's no previous controller yet.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{15}" color="orange">
+    **Fresh controller per request.** Controllers are not reusable. Once aborted, they stay aborted. One controller per logical operation; here, one per keystroke. The previous one becomes garbage as soon as the assignment overwrites it.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{20}" color="green">
+    **Discriminate at the catch.** A cancelled request rejects, just like a network failure rejects. The difference is intent — *we* cancelled it, on purpose, by typing again. Treat that as a no-op. Real failures get rethrown. Once we add timeouts in the next section, this catch will grow a second branch for `TimeoutError`. The section after that unpacks exactly why this check uses `err.name` and not `instanceof DOMException`.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Two things to notice about the shape. First, the function and the caller are decoupled. The function takes a signal; it doesn't know or care who created the controller, or whether there even is one. That's what makes the function reusable from React, from a Server Action, from a CLI, from a test — wherever some caller can produce an `AbortSignal`. Second, every keystroke gets a brand new controller. Controllers aren't reusable; once you abort one, calling `abort()` again is a no-op and its signal stays aborted forever. Trying to share one across requests is the most common beginner trap.
+
+## Discriminating cancellation at the catch
+
+This section is the part most 2026 tutorials skip, and it's load-bearing. Three different conditions can cause an awaited operation to reject before it finished successfully, and your `catch` block has to tell them apart. Get this wrong and you either silently swallow real failures or you spam the console with noise on every keystroke. Let's name the three conditions in order:
+
+1. **User-cancel.** Someone called `controller.abort()`. The awaited operation rejects with an error whose `name` is <Term definition="The error name a fetch (or other abortable API) rejects with when its signal was aborted by controller.abort().">`'AbortError'`</Term>. Intentional — treat as a no-op and return early. Don't log it; the user just moved on.
+2. **Timeout.** The signal came from `AbortSignal.timeout(ms)` (next section). The reject has a `name` of <Term definition="The error name a signal from AbortSignal.timeout(ms) rejects with when the deadline elapses — distinct from AbortError.">`'TimeoutError'`</Term>. Also intentional, but the user probably wants to know — surface a message like "took too long, try again."
+3. **Real failure.** Anything else — network error, a 500 from the server, a JSON parse error, a runtime exception in the response handler. Propagate so the framework's error boundary or your top-level handler sees it.
+
+Tutorial code routinely conflates the first two ("if it aborted, it's an `AbortError`") and the result is the gotcha of the lesson. `AbortSignal.timeout(ms)` deliberately rejects with `TimeoutError`, not `AbortError`. The reason is the user experience asymmetry: a user-initiated cancel is silent and intentional, a timeout is unintentional and probably worth telling the user about. Your `catch` has to handle both, separately.
+
+Look at the same `try`/`catch` written two ways. The first tab is what most tutorials show and what is wrong in production. The second is the form the project uses.
+
+<CodeVariants syncKey="discrim">
+  <CodeVariant label="Without discrimination">
+    <div data-mark-color="red">
+
+    ```ts {3-5}
+    try {
+      await searchSuggestions(query, { signal });
+    } catch (err) {
+      console.error('search failed', err);
+    }
+    ```
+
+    </div>
+    **Every keystroke logs an error.** Each new keystroke aborts the previous request, which rejects, which lands here as a "real" failure. The console fills with noise. Worse, when an actual network failure occurs, it drowns in the same stream and you'll never spot it. The `catch` block has to discriminate.
+  </CodeVariant>
+
+  <CodeVariant label="With discrimination">
+    <div data-mark-color="green">
+
+    ```ts {4-9}
+    try {
+      await searchSuggestions(query, { signal });
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') return;
+      if (err instanceof Error && err.name === 'TimeoutError') {
+        notify('Search timed out, try again.');
+        return;
+      }
+      throw err;
+    }
+    ```
+
+    </div>
+    **Three branches, three intents.** `AbortError` is the user — silent return. `TimeoutError` is the deadline — surface it. Anything else is unexpected and rethrows, where the framework's error boundary or the top-level handler can deal with it.
+  </CodeVariant>
+</CodeVariants>
+
+A reasonable question: why `err.name === 'AbortError'` and not `err instanceof DOMException`? Because `DOMException` is a browser type. The same logical condition — "the work was aborted because we asked it to be" — can be thrown by Node's `pg` driver, by `node:fs`, by the Vercel AI SDK, or by a database adapter, and those throws can be different concrete classes that share the same `name` string. The `name` check is the durable form across the SaaS stack; the `instanceof DOMException` check works in the browser but breaks the moment you move the helper to a Server Action.
+
+The deeper story on narrowing `unknown` in `catch` blocks and the `ensureError` normalizer that wraps non-`Error` throws lands in the next chapter. For now, `err instanceof Error && err.name === '...'` is enough.
+
+## Timeouts with `AbortSignal.timeout(ms)`
+
+In the previous lesson on Promise combinators you saw `Promise.race`, and you might have wondered about its canonical use case — racing a `fetch` against a timer Promise. That pattern is retired in 2026. The reason is one line of code:
+
+```ts
+const res = await fetch('/api/slow', { signal: AbortSignal.timeout(5_000) });
+```
+
+`AbortSignal.timeout(ms)` is a static factory. It returns a fresh `AbortSignal` that aborts itself after `ms` milliseconds. No controller to hold, no `clearTimeout` to remember, no `Promise.race` to assemble. The timer cleans itself up if the request settles first. The signal becomes garbage as soon as the call returns. One line replaces the four-step legacy dance.
+
+The gotcha you already saw: when the timeout fires, the rejection's `name` is `'TimeoutError'`, not `'AbortError'`. That's not an inconsistency — it's a deliberate signal to your `catch` so it can tell "the user moved on" (silent) from "the network is too slow" (notify the user). The dual-name discrimination from the previous section is exactly why this matters.
+
+:::tip
+Often you want *both* a user-cancel signal *and* a deadline on the same request. The next section composes them with `AbortSignal.any` so a single `signal` does both.
+:::
+
+## Composing signals with `AbortSignal.any([...])`
+
+A typical SaaS request usually has more than one reason to be cancelled. The user clicked Stop. The server-side deadline expired. The process is shutting down and needs to drain. You want all three reasons to be able to terminate the same operation, and you want one `catch` block to handle all of them. `AbortSignal.any([...])` is the composition primitive for that — give it an array of signals, get back a single signal that aborts the moment *any* input signal aborts.
+
+Here is the canonical shape this course will use everywhere — in Server Actions, in background workers, in AI streaming, anywhere a single async operation has multiple legitimate reasons to stop:
+
+```ts
+const signal = AbortSignal.any([
+  userController.signal,
+  AbortSignal.timeout(30_000),
+  shutdownSignal,
+]);
+
+const result = await fetch('/api/ai/stream', { signal });
+```
+
+Three composition sources, each with a real trigger:
+
+- **User cancellation** — `userController` is held wherever the cancel UI lives. The user closes the tab, clicks Stop, navigates away. The component's effect aborts the controller as it tears down.
+- **Deadline** — `AbortSignal.timeout(30_000)` caps the operation at 30 seconds. If the upstream service hangs, the server gives up instead of holding the request socket open indefinitely.
+- **Shutdown** — `shutdownSignal` is a process-wide signal that fires when the server receives `SIGTERM` (a graceful shutdown). In-flight work drains; the deployment finishes faster. The wiring lands in a deployment chapter later — here, recognize the shape.
+
+The composed signal carries the reason from whichever input fired first. So inside your `catch`, the same name-based discrimination still works: if user-cancel fired first, the name is `'AbortError'`; if the timeout fired first, the name is `'TimeoutError'`. You don't need to know *which* input fired — the rejection tells you.
+
+One more factory worth naming: `AbortSignal.abort(reason?)` returns an already-aborted signal. Use it to short-circuit an operation the caller already knows it doesn't want — passing a pre-aborted signal causes the API to reject immediately without doing any work. Useful in tests, occasionally useful for guard logic.
+
+:::caution
+If you ever stash a composed signal in module scope and add listeners to it across many calls, use `{ once: true }` on each listener. Long-lived `AbortSignal.any` results can accumulate listeners across input-signal churn — a known issue in recent Node releases. The pattern shown above sidesteps the problem because the composed signal is created per-request and falls out of scope as soon as the call returns.
+:::
+
+## What cancellation does and does not do
+
+Two contracts, stated plainly so you don't reach for the wrong tool when one of them isn't enough.
+
+**Guaranteed.** When you call `controller.abort()`, the signal's `'abort'` event fires synchronously. Every consumer using `{ signal }` stops its pending work — `fetch` aborts the in-flight request, the abortable timer's wait is interrupted, the registered event listener is removed. The Promise the operation returned rejects, with `'AbortError'` (user-cancel) or `'TimeoutError'` (timeout). Your `catch` runs.
+
+**Not guaranteed.** Work that already completed is *not* reversed. If your `fetch` already received a 200 and the server already inserted a row into the database, that row is committed — aborting the signal at this point cancels nothing because the work is done. If your code called a Stripe charge that already settled, the charge has settled. Cancellation prevents *further* work, not work already done.
+
+The canonical sentence to carry forward: **the unit of cancellation is the work, not the Promise.** A Promise is just a value that tells you when the work finished and how. Cancelling the Promise itself is meaningless — there's no Promise-level "undo" in JavaScript, by design. What you cancel is the operation behind it.
+
+When you actually need "undo what was already done," you reach for a different tool: a transaction that rolls back if anything inside it fails (covered in the database chapter on transactions), or a compensating action that explicitly reverses a previous step (covered in the background-work chapter). Cancellation is the cheap, structural mechanism for stopping future work. Transactions and compensating actions are the expensive, deliberate mechanisms for undoing past work.
+
+## Practice — refactor a fetch helper
+
+Here is a `fetchUser` helper that does none of what you just learned: no `signal` parameter, no discrimination at the catch, every error path the same. Your job is to add the cancellation plumbing so it behaves correctly under all three "didn't finish" conditions.
+
+The tests pre-construct different signals to drive each scenario: a normal call should return the user object, an already-aborted controller should make the helper return `null` (the test surface stand-in for "user moved on"), an `AbortSignal.timeout(0)` should make it return `null` as well (stand-in for "show the timeout message"), and an HTTP 500 should propagate.
+
+<ScriptCoding
+  instructions="Refactor fetchUser so it (1) accepts an optional signal in its options, (2) threads the signal through to fetch, (3) returns null on AbortError, (4) returns null on TimeoutError, (5) rethrows anything else. The tests pre-mock global fetch to simulate each case."
+  starter={`async function fetchUser(id) {
+  try {
+    const res = await fetch(\`/api/users/\${id}\`);
+    if (!res.ok) throw new Error(\`fetch failed: \${res.status}\`);
+    return res.json();
+  } catch (err) {
+    console.error(err);
+    return null;
+  }
+}
+`}
+  tests={`
+test('returns the user on a normal fetch', async () => {
+  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ id: 'u1', name: 'Ada' }) });
+  const user = await fetchUser('u1', {});
+  expect(user).toEqual({ id: 'u1', name: 'Ada' });
+});
+
+test('returns null on AbortError when the caller cancels', async () => {
+  const controller = new AbortController();
+  controller.abort();
+  globalThis.fetch = async (_url, init) => {
+    if (init?.signal?.aborted) {
+      const e = new Error('aborted');
+      e.name = 'AbortError';
+      throw e;
+    }
+    return { ok: true, status: 200, json: async () => ({ id: 'u1', name: 'Ada' }) };
+  };
+  const user = await fetchUser('u1', { signal: controller.signal });
+  expect(user).toBe(null);
+});
+
+test('returns null on TimeoutError when the deadline elapses', async () => {
+  const signal = AbortSignal.timeout(0);
+  await new Promise((r) => setTimeout(r, 5));
+  globalThis.fetch = async (_url, init) => {
+    if (init?.signal?.aborted) {
+      const e = new Error('timed out');
+      e.name = 'TimeoutError';
+      throw e;
+    }
+    return { ok: true, status: 200, json: async () => ({ id: 'u1', name: 'Ada' }) };
+  };
+  const user = await fetchUser('u1', { signal });
+  expect(user).toBe(null);
+});
+
+test('rethrows real failures (500)', async () => {
+  globalThis.fetch = async () => ({ ok: false, status: 500, json: async () => ({}) });
+  let thrown;
+  try {
+    await fetchUser('u1', {});
+  } catch (e) {
+    thrown = e;
+  }
+  expect(thrown).toBeTruthy();
+});
+`}
+/>
+
+<details>
+<summary>Reveal solution</summary>
+
+```ts
+async function fetchUser(
+  id: string,
+  { signal }: { signal?: AbortSignal },
+): Promise<{ id: string; name: string } | null> {
+  try {
+    const res = await fetch(`/api/users/${id}`, { signal });
+    if (!res.ok) throw new Error(`fetch failed: ${res.status}`);
+    return res.json();
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') return null;
+    if (err instanceof Error && err.name === 'TimeoutError') return null;
+    throw err;
+  }
+}
+```
+
+The signature carries the optional `signal` in the canonical options-object shape; the `fetch` call threads it through to the I/O. The catch block discriminates by `err.name`: `AbortError` and `TimeoutError` are intentional stops (return `null`), anything else is a real failure and propagates.
+
+</details>
+
+## Practice — match the source to the move
+
+Five scenarios, five tools. Pattern-matching the trigger to the API surface is the reflex that turns this lesson's vocabulary into one you reach for without thinking.
+
+<Matching instructions="Match each cancellation scenario to the canonical 2026 move.">
+  <Pair>
+    <Fragment slot="left">User types a new search query; cancel the previous request</Fragment>
+    <Fragment slot="right">`controller.abort()` + a fresh `AbortController` per call</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">A request taking longer than 30 seconds should fail</Fragment>
+    <Fragment slot="right">`AbortSignal.timeout(30_000)`</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">Compose user-cancel, timeout, and shutdown into one cancel source</Fragment>
+    <Fragment slot="right">`AbortSignal.any([...])`</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">A one-shot click listener that auto-removes when its signal fires</Fragment>
+    <Fragment slot="right">`addEventListener('click', fn, { signal })`</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">Pass an already-aborted signal to skip the call entirely</Fragment>
+    <Fragment slot="right">`AbortSignal.abort()`</Fragment>
+  </Pair>
+</Matching>
+
+## Wrap-up
+
+You now have the 2026 cancellation toolbox in one piece: the producer-consumer split, the `{ signal }` parameter shape, the canonical user-cancel pattern, name-based discrimination at the catch, `AbortSignal.timeout(ms)` for deadlines, and `AbortSignal.any([...])` for composition. From here, every chapter that adds a new async surface — `fetch` proper, Drizzle queries, Server Actions, AI streaming — composes onto this floor. The reflex to install is small and uniform: **if it does I/O, it takes a signal.**
+
+The React-side wiring that holds the controller in a ref and aborts on effect cleanup lands in the chapter on React effects. Server-side cancellation through Server Actions and route handlers lands in the Server Actions and route-handler chapters. AI streaming cancellation lands in the AI chapter. All of them assume what you just learned.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    href="https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal"
+    title="MDN — AbortSignal"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The consumer-side reference, including the static factories `AbortSignal.timeout`, `AbortSignal.any`, and `AbortSignal.abort`."
+  />
+  <ExternalResource
+    href="https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal/timeout_static"
+    title="MDN — AbortSignal.timeout()"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The static method's reference, with the explicit note that it rejects with `TimeoutError` rather than `AbortError` — the gotcha this lesson centers on."
+  />
+  <ExternalResource
+    href="https://kettanaito.com/blog/dont-sleep-on-abort-controller"
+    title="Don't Sleep on AbortController"
+    icon="lucide:book-open"
+    iconColor="#3b82f6"
+    description="Artem Zakharchenko's tour of cancellable event listeners, fetch, streams, and even custom logic — including a Drizzle-style integration that mirrors the SaaS stack."
+  />
+  <ExternalResource
+    href="https://developer.chrome.com/blog/abortable-fetch"
+    title="Abortable fetch — Chrome for Developers"
+    icon="simple-icons:googlechrome"
+    iconColor="#4285F4"
+    description="Jake Archibald's original write-up on the API's design: why `AbortController` won over the earlier TC39 cancellation proposals, with patterns for timeouts and shared signals."
+  />
+</CardGrid>
