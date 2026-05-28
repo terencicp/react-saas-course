@@ -47,6 +47,7 @@ Visual scaffolds — wrappers, diagrams, and tabbed/sequenced panels.
 | `RequestTrace` | A scrubbable trace of one request through the App Router. | [request-trace.md](./figures/request-trace.md) |
 | `StateMachineWalker` | A chained multi-choice walk: each step is a question with branch buttons, and picking one advances to the next step. Two modes — decisions that end on a recommendation, or state machines whose questions are states with cycles allowed, synced topology diagram highlighting current state. | [state-machine-walker.md](./figures/state-machine-walker.md) |
 | `GraphExplorer` | Graph, click nodes or edge labels for info on bottom panel; optional play buttons that walk a named path through the graph. | [graph-explorer.md](./figures/graph-explorer.md) |
+| `Screenshot` | Fixed-shape, internally-scrolling frame for embedding UI screenshots. `desktop`/`tablet`/`mobile` viewport variants; tall captures scroll inside the frame instead of stretching the page. | [screenshot.md](./figures/screenshot.md) |
 
 ---
 
