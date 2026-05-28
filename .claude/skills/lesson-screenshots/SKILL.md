@@ -31,7 +31,7 @@ For multi-viewport sets (one surface shown at desktop / tablet / mobile), wrap t
 
 The MCP `mcp__Claude_Preview__preview_screenshot` tool returns an in-memory JPEG — it has **no `fullPage` option and does not save to disk**. Use it for verification only. For capturing assets, drive headless Chrome from Bash.
 
-1. `preview_start` with name `astro-dev` — reuses the running server (returns `serverId`, port 4321).
+1. `preview_start` with name `astro-dev` — reuses the running server (returns `serverId`).
 2. `preview_eval` → `window.location.href = '/<lesson-slug>/'`. The next `preview_eval` call will return `"Inspected target navigated or closed"` — that's expected; call it again to confirm `window.location.pathname`.
 3. `preview_resize` to the target viewport. Standard widths: **1280** (desktop), **768** (tablet), **360** (mobile). Pass an arbitrary `height` (e.g. 800 / 1024 / 740) — it doesn't constrain the capture.
 4. `preview_eval` → read `document.documentElement.scrollHeight`. Hold this number.
