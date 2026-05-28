@@ -16,7 +16,7 @@ Review the given lesson for serious issues that should be fixed before publishin
 - `documentation/content/chapter outlines/Chapter <X>.md`
 - `documentation/content/lesson outlines/Chapter <X>/Lesson <Y>.md`
 
-Consider these as a compass not a strict set of rules to follow.
+Consider these as a compass not a strict set of rules to follow. Do not flag video embeds not in the lesson outline as an issue.
 
 ## Pedagogic review
 
