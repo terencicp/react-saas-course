@@ -1,0 +1,326 @@
+---
+title: HTTPS on localhost with mkcert
+description: Wire up HTTPS on your local dev server with a machine-trusted local CA, eliminating the "works on localhost, breaks in preview" bug class on day one.
+chapter-id: 10
+sidebar:
+  order: 4
+  label: HTTPS on localhost
+---
+
+import Figure from '../../../components/figures/Figure.astro';
+import TabbedContent from '../../../components/figures/tabbed-content/TabbedContent.astro';
+import TabbedItem from '../../../components/figures/tabbed-content/TabbedItem.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import CertChainSvg from '../../../components/lessons/010/4/CertChainSvg.astro';
+import PadlockAddressBar from '../../../components/lessons/010/4/PadlockAddressBar.astro';
+import { Steps, FileTree, CardGrid } from '@astrojs/starlight/components';
+
+Modern browsers gate a growing set of APIs behind a single condition: the page must be on a *secure context*. HTTPS satisfies it. Plain `http://localhost` satisfies it too — for most APIs, most of the time. That carve-out is the trap. It's partial. It's asymmetric across browsers. And the day you test from your phone over the LAN, set a `Secure` cookie, or wire a service worker, the carve-out evaporates and code that "worked on localhost" stops working. The class of bug that follows — "works on my machine, breaks in preview" — is exactly the loss this course is trying to prevent.
+
+The fix is five minutes of one-time wiring. Install a small tool called `mkcert`, let it create a local Certificate Authority your machine trusts, issue a cert for `localhost`, and point Next.js at it. From then on you develop on `https://localhost:3000` with a green padlock, the bug class is gone, and you're at parity with production from day one of every project.
+
+Along the way you'll get the TLS mental model you need to understand *why* the green padlock appears — what a certificate is, what makes a browser trust it, and why a hand-rolled `openssl req` self-signed cert fails where `mkcert` succeeds. By the end of this lesson, `https://localhost:3000` will load without a warning, and you will know exactly what made the browser stop complaining.
+
+## Why HTTPS on localhost — the secure-context gate
+
+The browser exposes a boolean called `window.isSecureContext`. It returns `true` on HTTPS pages, and — by special-case — on `http://localhost`, `http://127.0.0.1`, and any `http://*.localhost` hostname. Powerful APIs read this boolean as their gate. The Clipboard API, Web Crypto's `subtle` interface, Service Workers, the Push API, geolocation, and a growing list of others refuse to run if the gate is shut. The gate exists because these APIs touch material — keys, clipboard contents, persistent background scripts — that a network attacker on a non-secure transport could observe or hijack.
+
+The carve-out for `http://localhost` is *partial* in three ways you will hit:
+
+- **`Secure` cookies don't fully work over plain HTTP-on-localhost.** Some browsers silently drop a cookie marked `Secure` when it's set over plain HTTP, even on localhost; others accept it. HTTPS removes the divergence. The full cookie attribute contract — `Secure`, `HttpOnly`, `SameSite` — is the topic of chapter 13 (Cookies and the trust model); what matters here is that the senior default for cookies is incompatible with developing over plain HTTP.
+- **The carve-out only covers `localhost` and `127.0.0.1`.** The moment you serve to a teammate over a LAN IP like `192.168.1.42:3000`, or open the preview on your phone using your machine's `.local` hostname for testing, the secure-context bypass disappears. `navigator.clipboard.writeText` silently throws. `crypto.subtle` is unavailable. The same code that "worked on localhost" breaks on the LAN.
+- **Service Workers and Push always require real HTTPS, even on localhost.** These are out of scope for the stack this course teaches, but they're the third place the carve-out doesn't apply.
+
+A <Term definition="A browser condition that gates powerful APIs (Clipboard, Web Crypto subtle, Service Workers, Push, geolocation, and more). Met by HTTPS pages, and by special-cased localhost/127.0.0.1 URLs for most — but not all — gated APIs.">secure context</Term>, then, isn't a single yes/no question — it's a function of *both* the URL and the API. An experienced engineer resolves the ambiguity by flipping every project to HTTPS on day one. The setup is five minutes; the recurring weekly cost of "but it worked on localhost" is gone.
+
+If you want to confirm the boolean from a page, you can sanity-check it from the Console panel of any tab:
+
+```js
+window.isSecureContext;
+```
+
+Returns `true` on HTTPS pages and on the `http://localhost` carve-out. We'll come back to this boolean at the end of the lesson as your verification step.
+
+## The TLS 1.3 handshake, at debug depth
+
+Lesson 1 of this chapter (URL bar to first byte) introduced TLS as one of the four network legs and named it as folded into the QUIC handshake. It deferred the actual handshake mechanics to this lesson. Here they are.
+
+A TLS handshake in 2026 is one round trip on a fresh connection, three messages over two flights, and it establishes two things at once: that the server is who it claims to be, and a pair of session keys both sides will use to encrypt the rest of the conversation. The diagram below is the whole shape.
+
+<Figure caption="TLS 1.3 in one round trip — ClientHello, then the server flight with the certificate chain, then Finished and the first HTTP request on the same flight. Over HTTP/3 the handshake folds into the QUIC transport setup, as seen in lesson 1 of this chapter.">
+```mermaid
+%%{init: {'themeCSS': '.messageText, .messageText tspan, .actor, .actor tspan, .noteText, .noteText tspan, .labelText, .labelText tspan { font-size: 18px !important; }'} }%%
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+
+    rect rgba(56, 189, 248, 0.12)
+        Note over C: cipher suites · key share · SNI=example.com · ALPN=[h3, h2, http/1.1]
+        C->>S: ClientHello
+    end
+
+    rect rgba(34, 197, 94, 0.12)
+        Note over S: chosen cipher suite · cert chain · server key share · signature
+        S->>C: ServerHello + Certificate + Finished
+    end
+
+    rect rgba(244, 114, 182, 0.12)
+        Note over C,S: keys derived · application data flows
+        C->>S: Finished + HTTP request
+    end
+```
+</Figure>
+
+**Phase 1 — ClientHello.** The client opens with the list of cipher suites it speaks, a fresh random for this connection, and its half of a Diffie–Hellman key exchange (its "key share"). Two extensions ride along that you'll want names for. The first is <Term definition="Server Name Indication — the hostname the client expects to reach, sent in the clear inside the ClientHello so a server hosting multiple sites picks the right certificate.">SNI</Term>: the hostname the client wants to reach, sent in the clear so a server hosting many sites on one IP picks the matching cert. The second is <Term definition="Application-Layer Protocol Negotiation — the client lists the protocols it speaks (h3, h2, http/1.1) and the server picks one in its hello.">ALPN</Term>: the list of application protocols the client speaks (`h3`, `h2`, `http/1.1`), so the server can pick one in its reply. Both are load-bearing — without SNI a CDN can't pick a cert; without ALPN, HTTP/3 can't be negotiated on the same handshake.
+
+**Phase 2 — ServerHello + Certificate + Finished.** The server picks one cipher suite from the client's list, returns its own key share, sends the certificate chain (the next section is about that chain), and signs a transcript hash of the handshake so far with the private key matching the leaf cert. That signature is what proves the server actually owns the cert — anyone could *send* a public certificate; only the holder of the matching private key can produce a signature against it that the public key in the cert verifies.
+
+**Phase 3 — Client Finished and application data.** Both sides now hold both halves of the Diffie–Hellman exchange and can derive the same session keys. The client sends its Finished message — an authenticated check that nothing tampered with the bytes of the handshake — and immediately follows it with the first HTTP request on the same flight. One round trip from ClientHello to first byte of application data. (Resumed connections compress that to 0-RTT early data, as covered in lesson 1 of this chapter.)
+
+The property that makes this design hold up is <Term definition="Even if the server's long-term private key leaks years later, recorded sessions cannot be decrypted, because the session keys came from per-connection Diffie–Hellman key shares that were never sent in the clear.">forward secrecy</Term>: the session keys come from per-connection key shares that never travelled in the clear, so even if the server's long-term private key leaks years later, recorded sessions from today can't be decrypted. TLS 1.3 always provides this for normal traffic; 0-RTT early data is the one exception, named in lesson 1.
+
+That's the whole handshake. Where this lesson is going next is the certificate that arrives in phase 2 — what's in it, and why the browser sometimes trusts it and sometimes shows a red interstitial.
+
+<VideoCallout videoId="JA0vaIb4158" videoTitle="TLS 1.3 Handshake — many changes from prior versions">
+  Practical Networking walks through the four big changes TLS 1.3 made to the handshake — 1-RTT, encrypted hellos, encrypted client certs, more session keys (17 min).
+</VideoCallout>
+
+## The certificate chain and the trust store
+
+This is the load-bearing concept of the lesson. Get this right and `mkcert` will feel obvious; get it wrong and `mkcert` will feel like magic that sometimes doesn't work.
+
+A certificate is a public key plus metadata — the hostnames it's valid for, the dates between which it's valid, what it can be used for — wrapped in a signature from a <Term definition="An entity that issues TLS certificates. A root CA's public key is preinstalled in the OS and browser trust stores; the browser trusts certs that chain up to a root.">Certificate Authority</Term>. The browser can't trust a public key just because it arrived in a handshake — anyone can mint a key pair. The browser trusts a public key when some authority it already trusts vouches for it. That trust is bootstrapped by a small set of *root CAs* preinstalled in the operating system and browser trust stores from the day you turn the machine on.
+
+The chain looks like this:
+
+<CertChainSvg />
+
+Two consequences fall out of this picture.
+
+**Self-signed certs fail because the chain has nowhere to terminate.** A cert signed only by itself is a leaf whose signer is unknown to the trust store. The browser walks the chain, reaches the self-signer, finds no preinstalled root that vouches for it, and rejects the connection: "your connection is not private." That rejection is correct. If browsers accepted self-signed certs silently, any coffee-shop network could mint a self-signed cert for `bank.com`, intercept your TLS connection, and re-encrypt it transparently — the entire point of HTTPS would be gone. The strict chain walk is the security boundary.
+
+**`mkcert` does something self-signing can't.** Instead of producing a leaf that signs itself, it generates a one-machine-only root CA, *installs that root into your OS trust store* (and Firefox's separate trust store), and then signs your project's leaf cert with that root. The browser walks: leaf → local root → "yes, I trust that" → green padlock. The trust is real, because the trust store really does have an entry that vouches for the chain. The trust is also local — only *your* machine knows the local root, so no one else's browser would trust a cert your local CA signed. That's a feature, not a limitation.
+
+:::caution
+`mkcert`'s root CA is a security boundary on your machine. The local root's private key can sign certificates for *any* hostname — `google.com`, your bank, anything. If you trust the root and someone else holds the key, they can impersonate any site to your browser. Never copy `rootCA-key.pem` (under the path printed by `mkcert -CAROOT`) onto another machine, and never commit it to a repo. The contract is per-machine, per-developer: each teammate runs `mkcert -install` once on their own laptop and never touches anyone else's root key.
+:::
+
+You now have the model. Time to wire it.
+
+## Wiring it up — `mkcert` and `next dev --experimental-https`
+
+Two phases. First, install `mkcert` and its local CA on your machine — you do this once, ever, and then forget about it. Second, in each project you work on, issue a project-local cert and point Next.js at it. The whole procedure is five steps end-to-end.
+
+<Steps>
+
+1. **Install `mkcert`.** Pick the platform that matches your machine.
+
+   <TabbedContent>
+     <TabbedItem label="macOS">
+       ```bash
+       brew install mkcert nss
+       ```
+     </TabbedItem>
+     <TabbedItem label="Linux">
+       ```bash
+       sudo apt install libnss3-tools
+       curl -JLO "https://dl.filippo.io/mkcert/latest?for=linux/amd64"
+       chmod +x mkcert-v*-linux-amd64
+       sudo mv mkcert-v*-linux-amd64 /usr/local/bin/mkcert
+       ```
+     </TabbedItem>
+     <TabbedItem label="Windows">
+       ```bash
+       choco install mkcert
+       # or, if you use Scoop:
+       scoop bucket add extras
+       scoop install mkcert
+       ```
+     </TabbedItem>
+   </TabbedContent>
+
+   The `nss` / `libnss3-tools` package on macOS and Linux is what lets `mkcert` write into Firefox's separate trust store in the next step. On Windows the install handles it.
+
+   *On disk:* nothing yet — only the `mkcert` binary on your `PATH`.
+
+2. **Install the local CA — once per machine.** This is the step that creates the root CA and registers it with your OS (and Firefox).
+
+   ```bash
+   mkcert -install
+   ```
+
+   You'll see output along these lines (paths vary by OS):
+
+   ```text
+   Created a new local CA at "/Users/you/Library/Application Support/mkcert"
+   The local CA is now installed in the system trust store!
+   The local CA is now installed in the Firefox trust store (requires browser restart)!
+   ```
+
+   *On disk:* a new root CA private key plus cert under the directory `mkcert -CAROOT` prints, and a fresh trust entry in the OS keychain (macOS) / system trust store (Linux) / certificate store (Windows). Firefox uses its own trust store and gets a separate install in the same step — restart Firefox once afterwards so it picks up the new root.
+
+   :::tip
+   If you ever wonder where the local CA lives, `mkcert -CAROOT` prints the path. The two files in that directory — `rootCA.pem` (the public cert) and `rootCA-key.pem` (the private key) — are your machine's local trust anchor. Treat `rootCA-key.pem` like an SSH private key: never share, never commit, never copy onto a machine you don't fully control.
+   :::
+
+3. **Issue a leaf cert for the project.** From the root of your Next.js project, run:
+
+   ```bash
+   mkcert localhost 127.0.0.1 ::1
+   ```
+
+   Expected output:
+
+   ```text
+   Created a new certificate valid for the following names
+    - "localhost"
+    - "127.0.0.1"
+    - "::1"
+
+   The certificate is at "./localhost+2.pem" and the key at "./localhost+2-key.pem"
+   ```
+
+   *On disk:* two new files in the project root — `localhost+2.pem` (the public cert) and `localhost+2-key.pem` (the private key). The public cert is shareable across the team; the private key is per-developer and never committed.
+
+   :::caution
+   The hostnames you list on this command are the *only* ones the cert will be valid for — that's the SAN (Subject Alternative Name) list. If you issue for just `localhost` and then visit `https://127.0.0.1:3000`, the browser will fail validation. Always include all three: `localhost 127.0.0.1 ::1`. If you ever serve from a `.local` mDNS name for cross-device testing, add it here too and re-issue.
+   :::
+
+4. **Stash the certs and gitignore the key.** Move both files into a `certificates/` directory so they have a stable home. The course standardizes on `./certificates/` because that's also where Next.js's auto-generated certs land — one directory, one mental model.
+
+   <FileTree>
+   - certificates/
+     - **localhost.pem** public cert — *OK to commit*
+     - **localhost-key.pem** private key — **never commit**
+   - .gitignore
+   - package.json
+   - next.config.ts
+   </FileTree>
+
+   Then add one line to `.gitignore` so the key never lands in Git history:
+
+   ```diff lang="text" title=".gitignore"
+   + certificates/*-key.pem
+   ```
+
+   *On disk:* the project commits the public cert (so a teammate who already ran `mkcert -install` on their own machine has a trusted root and can use this cert without re-issuing) but never the private key. The key is per-developer.
+
+5. **Wire the HTTPS server into `package.json` and start it.** Keep the existing `dev` script — sometimes a plain-HTTP dev server is genuinely easier to debug — and add an opt-in `dev:https` script alongside it.
+
+   ```json title="package.json" ins={4}
+   {
+     "scripts": {
+       "dev": "next dev",
+       "dev:https": "next dev --experimental-https --experimental-https-key ./certificates/localhost-key.pem --experimental-https-cert ./certificates/localhost.pem"
+     }
+   }
+   ```
+
+   Pointing Next.js at the `mkcert`-issued files (rather than letting it auto-generate its own) is the deliberate choice: the cert files live in one known directory, one `.gitignore` rule covers the key, and a teammate who already ran `mkcert -install` on their machine can use the committed cert without re-issuing anything.
+
+   Now run it:
+
+   ```bash
+   pnpm dev:https
+   ```
+
+   You should see something like:
+
+   ```text
+   ▲ Next.js 16.x.x (Turbopack)
+     - Local:        https://localhost:3000
+     - Network:      https://192.168.1.42:3000
+
+    ✓ Ready in 1.2s
+   ```
+
+   *On disk:* nothing further changes; the server now reads its cert and key from `./certificates/`.
+
+   :::tip
+   If you skip the `--experimental-https-key` and `--experimental-https-cert` flags and just pass `--experimental-https`, Next.js will detect `mkcert` on your `PATH` and auto-generate its own cert into `./certificates/`. That's fine for solo work. The course points at `mkcert`-issued files explicitly because the team-share story is cleaner — a committed public cert plus one-time `mkcert -install` per teammate.
+   :::
+
+</Steps>
+
+Open the browser at `https://localhost:3000`. You should see a green padlock in the address bar and no warning interstitial.
+
+<PadlockAddressBar />
+
+Click the padlock once. The browser will show "Connection is secure" and offer a "Certificate is valid" link that opens the certificate detail panel. Walk the chain — leaf cert, signed by your local mkcert CA, which the OS trust store now lists. That's the green padlock, decoded.
+
+## Pitfalls and verification
+
+A short watch-list. None of these are clever — they're just the failure modes that bite every new mkcert user once.
+
+- **The "still not trusted" loop.** Forgetting `mkcert -install` is the single most common cause. Symptom: the cert is signed, but by a CA the browser doesn't know about, so the connection is rejected. Fix: run `mkcert -install`, restart the browser.
+- **Cert valid for one hostname, browser visits another.** Issuing only `mkcert localhost` and then opening `https://127.0.0.1:3000` fails validation, because the SAN list doesn't include `127.0.0.1`. Always issue with all three together: `mkcert localhost 127.0.0.1 ::1`. Re-issue if you discover you need to add a hostname.
+- **Browser stuck on the previous untrusted cert.** Some browsers cache the cert rejection across reloads. Hard-reload (Cmd+Shift+R on macOS, Ctrl+Shift+R on Windows or Linux) or quit and relaunch the browser after `mkcert -install`.
+- **Firefox didn't get the root.** Firefox uses a trust store separate from the OS one. `mkcert -install` does install into Firefox automatically — but you must restart Firefox afterwards for it to pick up the new root.
+- **Committed the key.** If `*-key.pem` ever lands in Git history, the correct recovery is: rotate the local root with `mkcert -uninstall && mkcert -install`, re-issue every project cert that root signed, and purge the leaked key from history. The `.gitignore` rule from step 4 is what makes this recovery a thing you never have to do.
+
+For verification, open DevTools and run `window.isSecureContext` in the Console panel — it should return `true`. The Clipboard API, Web Crypto's `subtle` interface, and `Secure` cookies all light up from this point on; chapter 13 (Cookies and the trust model) and chapter 16 (Browser capability APIs) are the places those promises get cashed.
+
+One more line on what you don't have to do, ever: nobody manages production certs by hand any more. Vercel (and every other modern hosting platform) provisions a Let's Encrypt cert on the first request to your domain, auto-renews it months before expiry, and you never touch it. The five minutes you just spent are the *only* TLS wiring you'll do on this project — and on every project you start from this point on.
+
+## Closing exercise — does this run in a secure context?
+
+The pedagogical point of this lesson is that "is this secure?" is never one question. It's a function of *both* the URL and the API. The drill below tests whether that idea transferred.
+
+<Buckets twoCol instructions="For each URL + API combination, decide whether it runs in a secure context.">
+  <Bucket name="works" label="Works" description="Secure-context APIs are fully available." />
+  <Bucket name="localhost" label="Works (localhost exception)" description="Secure-context API, but the http://localhost carve-out covers it." />
+  <Bucket name="blocked" label="Blocked, needs real HTTPS" description="Throws, rejects, or silently fails." />
+
+  <Item bucket="works">`https://app.example.com` → `clipboard.writeText('hi')`</Item>
+  <Item bucket="localhost">`http://localhost:3000` → `crypto.randomUUID()`</Item>
+  <Item bucket="localhost">`http://localhost:3000` → `crypto.subtle.sign(...)`</Item>
+  <Item bucket="blocked">`http://192.168.1.42:3000` (phone on LAN) → `navigator.clipboard.writeText('hi')`</Item>
+  <Item bucket="blocked">`http://localhost:3000` → set cookie `Secure; HttpOnly; SameSite=Lax`</Item>
+  <Item bucket="works">`https://localhost:3000` (mkcert) → register a Service Worker</Item>
+</Buckets>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="mkcert"
+    href="https://github.com/FiloSottile/mkcert"
+    icon="simple-icons:github"
+    iconColor="#ffffff"
+    description="The tool's GitHub repo — install instructions, supported platforms, and the security note on rootCA-key.pem."
+  />
+  <ExternalResource
+    title="Use HTTPS for local development"
+    href="https://web.dev/articles/how-to-use-local-https"
+    icon="simple-icons:google"
+    iconColor="#4285F4"
+    description="web.dev's argument for why localhost HTTPS matters and a walk-through of the mkcert flow."
+  />
+  <ExternalResource
+    title="What happens in a TLS handshake?"
+    href="https://www.cloudflare.com/learning/ssl/what-happens-in-a-tls-handshake/"
+    icon="simple-icons:cloudflare"
+    iconColor="#F38020"
+    description="Cloudflare's plain-English explainer covering both TLS 1.2 and the TLS 1.3 1-RTT flow."
+  />
+  <ExternalResource
+    title="Secure contexts"
+    href="https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="MDN's full list of features gated by isSecureContext and the exact carve-out rules for localhost."
+  />
+</CardGrid>
+
+## What's next
+
+- The cookie attribute contract — `Secure`, `HttpOnly`, `SameSite` — is the topic of chapter 13 (Cookies and the trust model). Now that `https://localhost:3000` works, the senior cookie default lines up cleanly.
+- `crypto.subtle` for HMAC sign and verify, and `navigator.clipboard.writeText` for the copy-button pattern, both land in chapter 16 (Browser capability APIs). Both are the kind of API that a junior team accidentally cripples by not flipping to HTTPS on day one.
+- Production certs on Vercel are auto-provisioned and auto-renewed; you never touch them. The full production security baseline — HSTS, certificate transparency, the rest — is chapter 81 (The security baseline).
+
+The chapter quiz comes next. You should leave this chapter able to point at any of the four network stages from lesson 1 of this chapter (URL bar to first byte), the six rendering pipeline stages from lesson 2 of this chapter (First byte to pixels), the four DevTools panels from lesson 3 of this chapter (DevTools: the four panels that earn their keep), and the three TLS handshake phases from this lesson — and know which later chapter owns the deeper terrain for each.

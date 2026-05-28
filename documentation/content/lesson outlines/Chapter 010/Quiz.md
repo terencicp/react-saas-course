@@ -1,0 +1,72 @@
+sources:
+  10.1: URL bar to first byte
+  10.2: First byte to pixels
+  10.3: "DevTools: the four panels that earn their keep"
+  10.4: HTTPS on localhost with mkcert
+questions:
+  - source: 10.1
+    question: |
+      A user reloads a page they visited five minutes ago on the same browser session. The first document request to the same origin uses HTTP/3 and a session ticket is still cached. Roughly how many network round trips elapse between the browser opening the connection and the first byte of the response body arriving?
+    choices:
+      - text: |
+          Zero — the request rides in the very first QUIC packet as early data, and the response is the first thing that comes back.
+        correct: true
+      - text: |
+          One — TLS 1.3 always needs at least one round trip to derive session keys before any application data can flow.
+        correct: false
+      - text: |
+          Two — one for the QUIC handshake, one for the HTTP request and response.
+        correct: false
+    why: |
+      A resumed QUIC connection is the 0-RTT case: the client carries a session ticket from the previous visit and sends the HTTP request inside the very first packet (early data). The response arrives one network leg later, but no separate handshake round trip happens first. The 1-RTT count is the *fresh* QUIC case; 2-RTT is TCP+TLS 1.3. One catch the lesson named: early data is reserved for idempotent GETs, because the packet can be replayed.
+
+  - source: 10.2
+    question: |
+      An engineer is animating a card sliding in from the right. They have two equivalent-looking implementations: animating `transform: translateX(...)` from `-100%` to `0`, or animating `left` from `-100%` to `0`. Why does the `transform` version stay smooth at 60fps even when the main thread is busy, while the `left` version stutters?
+    choices:
+      - text: |
+          `transform` runs on the GPU while `left` runs on the CPU, and the GPU is faster.
+        correct: false
+      - text: |
+          The compositor thread can apply `transform` directly to an existing layer without re-running layout or paint; animating `left` invalidates layout every frame and forces main-thread work.
+        correct: true
+      - text: |
+          `transform` is hardware-accelerated by the browser; `left` is a legacy property that the modern rendering pipeline doesn't optimize.
+        correct: false
+    why: |
+      `transform` and `opacity` are the compositor-only properties — the compositor thread combines layers into the final frame on its own thread, separate from the main thread that handles layout and paint. Changing `transform` shifts a layer's position without touching either stage. Animating `left` is a geometry change, which invalidates layout; the main thread has to recompute layout, repaint, and only then can the compositor produce a frame. The moment the main thread misses the 16.7ms budget for one frame, the animation visibly stutters. "GPU vs CPU" is the wrong-but-tempting framing — both end up on the GPU eventually; the difference is which pipeline stages have to run first.
+
+  - source: 10.4
+    question: |
+      A teammate hand-rolls a self-signed certificate for `localhost` with `openssl req`, configures the dev server to use it, and visits `https://localhost:3000`. The browser shows "your connection is not private." They try the same workflow with `mkcert localhost 127.0.0.1 ::1` (after running `mkcert -install` once) and the green padlock appears. What does `mkcert` do that hand-rolled self-signing doesn't?
+    choices:
+      - text: |
+          `mkcert` uses TLS 1.3 cipher suites that browsers accept; `openssl` defaults to deprecated TLS 1.2 ones that browsers refuse.
+        correct: false
+      - text: |
+          `mkcert` generates a local Certificate Authority and installs its root into the OS (and Firefox) trust store, then signs the leaf cert with that root — so the chain terminates at a CA the browser already trusts.
+        correct: true
+      - text: |
+          `mkcert` registers the certificate with Let's Encrypt's local development service, which the browser auto-trusts on `localhost`.
+        correct: false
+    why: |
+      A self-signed cert is a leaf whose signer is unknown to the trust store — the browser walks the chain, reaches the self-signer, finds no preinstalled root that vouches for it, and rejects the connection. `mkcert -install` plants a local root CA in the OS trust store (and Firefox's separate store); `mkcert localhost 127.0.0.1 ::1` then issues a leaf signed by that local root. The chain now terminates at a CA the trust store recognizes, so validation succeeds. The trust is real, and it's also local — only your machine knows the local root, which is exactly the safety property you want.
+
+  - source: 10.3
+    question: |
+      Pick the panels you would open *first* for each of the situations below. (More than one option can be correct.)
+    choices:
+      - text: |
+          A class is present on the element in the DOM tree, but the style it should apply isn't taking effect — open **Elements** and read the cascade in the Styles pane for a struck-through rule.
+        correct: true
+      - text: |
+          A session cookie is set after login, but the next request to the API doesn't include it — open **Application**, inspect the cookie's `SameSite` and `Secure` attributes.
+        correct: true
+      - text: |
+          The API call returns 401 and the page renders a stale value — open **Console** and call `console.trace()` to find who issued the request.
+        correct: false
+      - text: |
+          The user reports a stale response after a fix shipped — open **Network**, check the cache headers on the request, and confirm Disable cache is on while you reproduce.
+        correct: true
+    why: |
+      Elements is the cascade-reading surface — struck-through rules in the Styles pane show exactly why a rule lost. Application is the storage and identity panel; cookie attributes (`SameSite`, `Secure`, `HttpOnly`) cause auth bugs that look like the cookie just isn't there. Network is where you read what the server actually returned and check cache headers. The 401 scenario is *also* a Network question — you want to see the response and the request headers, not who in the client called `fetch`. Reaching for `console.trace()` first is the junior reflex; the senior reflex is to start at what the server sent back.
