@@ -6,6 +6,10 @@ A web development course for junior devs from other fields with some previous ex
 
 **Stack core, May 2026.** React 19, Next.js 16.
 
+## Prompting style
+
+When writing prompts for agents keep them simple and concise. Avoid duplication, if istructions are in the file you reference do not repeat them in the prompt. Tell agents what to do, not what not to do, unless to correct model errors.
+
 ## Repo layout
 
 Read project files only if essential to your current task. Read only the relevant sections from each file.
