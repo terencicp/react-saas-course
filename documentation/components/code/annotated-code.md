@@ -19,7 +19,7 @@ import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep
 | --- | --- | --- | --- | --- |
 | `code` | `string` | yes | — | The code shown in every step. Leading/trailing blank lines and common indentation are stripped, so you can author a template literal with normal MDX indentation. |
 | `lang` | `string` | yes | — | Expressive Code language identifier (`ts`, `tsx`, `js`, `bash`, `sql`, etc.). |
-| `maxLines` | `number` | no | `16` | Caps the visible code-block height to ~`maxLines` lines and adds vertical scroll. On step change, scrolls the active step's first highlight into view. Avoid raising above the default — taller blocks force readers to scroll while comparing the highlight to the prose, which defeats the stepped walkthrough. If the code doesn't fit, split it across multiple `<AnnotatedCode>` blocks instead. |
+| `maxLines` | `number` | no | `18` | Caps the visible code-block height to ~`maxLines` lines and adds vertical scroll. On step change, scrolls the active step's first highlight into view. `18` is also a hard ceiling — passing a larger value throws a build error, because taller blocks force readers to scroll while comparing the highlight to the prose, which defeats the stepped walkthrough. If the code doesn't fit, split it across multiple `<AnnotatedCode>` blocks instead. |
 
 ### `AnnotatedStep`
 

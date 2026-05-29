@@ -18,7 +18,7 @@ import CodeVariant from '../../../components/code/code-variants/CodeVariant.astr
 | Prop | Type | Required | Default | Purpose |
 | --- | --- | --- | --- | --- |
 | `syncKey` | `string` | no | — | Forwarded to Starlight `<Tabs>`. Multiple `<CodeVariants>` blocks on the same page that share a `syncKey` switch tabs in lockstep. |
-| `maxLines` | `number` | no | `16` | Caps every variant's visible code-block height to ~`maxLines` lines and adds vertical scroll. Applies uniformly across all tabs so the card doesn't resize when switching variants. Pass `0` to disable the cap. |
+| `maxLines` | `number` | no | `18` | Caps every variant's visible code-block height to ~`maxLines` lines and adds vertical scroll. Applies uniformly across all tabs so the card doesn't resize when switching variants. `18` is also a hard ceiling — passing a larger value throws a build error. Pass `0` to disable the cap. |
 
 ### `CodeVariant`
 
