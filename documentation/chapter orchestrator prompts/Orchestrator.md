@@ -1,4 +1,4 @@
-Orchestrate a series of subagents that will build the chapter's content sequentially, no parallelism. Read only the minimal set of project files you need for your task. Pass the project's base paths to all subagents: `/Users/terenci/react-saas-course/`; pass each subagent only the fields listed, no need to prompt the agent further, it already knows what to do. Retry any failed steps.
+Orchestrate a series of subagents that will build the chapter's content sequentially, no parallelism. Read only the minimal set of project files you need for your task. Pass the project's base paths to all subagents: `/Users/terenci/react-saas-course/`; pass each subagent only the fields listed, no need to prompt the agent further, it already knows what to do. Retry any failed steps. Surface any serious issues (like an API limit reached) and stop if necessary.
 
 ## Read
 
