@@ -8,7 +8,7 @@ A web development course for junior devs from other fields with some previous ex
 
 ## Prompting style
 
-When writing prompts for agents keep them simple and concise. Avoid duplication, if istructions are in the file you reference do not repeat them in the prompt. Tell agents what to do, not what not to do, unless to correct model errors.
+When writing prompts for agents keep them simple and concise. Avoid duplication, if istructions are in the file you reference do not repeat them in the prompt. Tell agents what to do, not what not to do, unless to correct model errors. Prompts must be written as step by step instructions. Initial steps should have a context limited to the essential the agent needs to carry its task, later steps include more context and prompt the agent to reevaluate its work. Promote the agent's creative thinking when necessary. Break paragraphs into one sentence per line to help read diffs.
 
 ## Repo layout
 
