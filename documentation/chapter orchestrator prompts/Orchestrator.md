@@ -13,7 +13,13 @@ Folder and file names: Strip # and `, replace / with -, replace : with - making 
 
 ## Chapter selection
 
-The folder `src/content/docs` contains folders that represent chapters. Find the last chapter folder (highest id) and build the next chapter after that.
+The folder `src/content/docs` contains folders that represent chapters. Find the last chapter folder (highest id) and build the next chapter after that. Run this exact command to find the next chapter:
+
+```bash
+last=$(basename "$(ls -d /Users/terenci/react-saas-course/src/content/docs/*/ | sort | tail -1)")
+next=$(printf '%03d' $((10#${last:0:3} + 1)))
+echo "Last: $last → Next chapter: $next"
+```
 
 Project chapter ids: 028, 035, 041, 047, 050, 055, 059, 062, 065, 067, 069, 071, 073, 075, 077, 079, 082, 085, 091, 095, 100, 104, 108. Other chapters are teaching chapters.
 
