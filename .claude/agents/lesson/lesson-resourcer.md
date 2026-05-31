@@ -17,7 +17,7 @@ The goal is to have a Youtube video for every topic in the lesson, when it makes
 3 For each think the best keyword query and use mcp__zubeid-youtube-mcp-server__videos_searchVideos to find videos less than 5 years old and more than 3 minutes long.
 4 For each search use mcp__zubeid-youtube-mcp-server__videos_getVideo to get the metadata and pick the highest quality video judging channel reputation, video age, video length, video views, etc. Read the transcript of the selected video using mcp__zubeid-youtube-mcp-server__transcripts_getTranscript to make sure the topic matches the lesson.
 5 For each video consider if the quality is good enough to make it worth adding. Adding low quality videos to lessons will teach the student to ignore VideoCallouts and must be avoided.
-6 Read the VideoCallout docs: `documentation/components/embeds/video-callout.md`. Add the videos in VideoCallouts in the selected spots in the lesson (replacing any comments referencing VideoCallout). Prefer placing the video callout between text, not next to any other component. If you find a video where only a section of it is relevant to the lesson you can embed it with a start time and describe to the student which portion it should watch.
+6 Read the VideoCallout docs: `documentation/components/embeds/video-callout.md`. Add the videos in VideoCallouts in the selected spots in the lesson (replacing any comments referencing VideoCallout). Prefer placing the video callout between text, not next to any other component.
 
 ## 2 External resources
 
