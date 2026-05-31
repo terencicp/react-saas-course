@@ -5,6 +5,14 @@ description: Capturing and embedding UI screenshots in lesson MDX.
 
 # Lesson screenshots
 
+## Which viewports
+
+- **UI-focused lesson** (layout, components, responsive, theming) → **desktop + mobile**.
+- **Lesson not about the UI, but a screenshot still helps** → **desktop only**.
+- **No UI to show** → **no screenshot** (a one-paragraph description stands in).
+
+Never capture tablet.
+
 ## Component
 
 Always wrap the `<img>` in [`Screenshot`](../../../src/components/figures/screenshot/Screenshot.astro). It's a fixed-shape frame (max-height ~520px) with internal scroll — so tall full-page captures are the expected payload.
@@ -17,23 +25,23 @@ import Screenshot from '../../../components/figures/screenshot/Screenshot.astro'
 </Screenshot>
 ```
 
-`viewport` is `'desktop' | 'tablet' | 'mobile'`. Mobile narrows the frame to a phone-sized 320px centered column; desktop/tablet fill the lesson column.
+`viewport` is `'desktop' | 'mobile'`. Mobile narrows the frame to a phone-sized 320px centered column; desktop fills the lesson column.
 
-For multi-viewport sets (one surface shown at desktop / tablet / mobile), wrap the per-viewport `<Screenshot>`s in `<TabbedContent syncKey="…">` + `<TabbedItem label="Desktop · 1280">`. See [`028 Project- themed product surface/1 The bar and the brief.mdx`](../../../src/content/docs/028 Project- themed product surface/1 The bar and the brief.mdx) for the canonical pattern.
+For a multi-viewport set (the same surface at desktop and mobile), wrap the per-viewport `<Screenshot>`s in `<TabbedContent syncKey="…">` + `<TabbedItem label="Desktop · 1280">`. The project overview lesson's *What we're building* figure is the canonical pattern.
 
 ## Files
 
 - Save under `public/screenshots/<chapter-id>/<name>.png`. The chapter id is the lesson's frontmatter `chapter-id` (e.g. `028`). For demo/sandbox lessons use the folder's numeric prefix.
-- Kebab-case names. Multi-viewport sets: `desktop-1280.png`, `tablet-768.png`, `mobile-360.png`. Append a state suffix for variants: `mobile-360-drawer-open.png`.
+- Kebab-case names. Multi-viewport sets: `desktop-1280.png`, `mobile-360.png`. Append a state suffix for variants: `mobile-360-drawer-open.png`.
 - Reference from MDX as `/screenshots/<chapter-id>/<name>.png` (Astro serves `public/` from `/`).
 
 ## Capture workflow
 
 The MCP `mcp__Claude_Preview__preview_screenshot` tool returns an in-memory JPEG — it has **no `fullPage` option and does not save to disk**. Use it for verification only. For capturing assets, drive headless Chrome from Bash.
 
-1. `preview_start` with name `astro-dev` — reuses the running server (returns `serverId`).
+1. `preview_start` with name `astro-dev` — reuses the running server (returns `serverId`, port 4321).
 2. `preview_eval` → `window.location.href = '/<lesson-slug>/'`. The next `preview_eval` call will return `"Inspected target navigated or closed"` — that's expected; call it again to confirm `window.location.pathname`.
-3. `preview_resize` to the target viewport. Standard widths: **1280** (desktop), **768** (tablet), **360** (mobile). Pass an arbitrary `height` (e.g. 800 / 1024 / 740) — it doesn't constrain the capture.
+3. `preview_resize` to the target viewport. Standard widths: **1280** (desktop), **360** (mobile). Pass an arbitrary `height` (e.g. 800 / 740) — it doesn't constrain the capture.
 4. `preview_eval` → read `document.documentElement.scrollHeight`. Hold this number.
 5. (Optional) Hide the Astro dev toolbar so it doesn't bleed into the bottom of the capture: `preview_eval` → `document.querySelector('astro-dev-toolbar')?.remove()`.
 6. Run headless Chrome via Bash, sizing the window to `WIDTH × scrollHeight`:
