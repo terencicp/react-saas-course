@@ -12,6 +12,8 @@ Stress-test the plan against the real toolchain and fix any internal inconsisten
 
 Read `documentation/content/project plans/Chapter <X>.md`. Focus on `Locked decisions`, `Scaffolding recipe` (pinned versions, config knobs), `Slices` (load-bearing API shapes), and `Verification`. Read `documentation/code standards/Toolchain constraints.md`. List every combination where a framework flag, a pinned dependency version, a runtime environment, and a structural choice meet. These are the smoke targets.
 
+Also vet the `Verification` Rendered checks: each `assertion` must be checkable and falsifiable — a precise condition over declared, stable selectors that a booted page can be tested against for a clear pass/fail — and coverage must be complete, with every visual, layout, theme, streaming, or interaction feature carrying a Rendered check tagged to a slice.
+
 ## 2 Smoke
 
 For each smoke target, build the minimum reproduction needed to exercise it. Work under a throwaway directory at `projects/Chapter <X>/_smoke/`. Install the plan's pinned dependencies and run the relevant compile gate. When the target is a runtime environment (DB driver against a Docker image, etc.), boot it and probe.
@@ -23,6 +25,8 @@ You can collapse multiple targets into one minimal app when they share a surface
 For each failure, identify whether the plan, the version pin, or the locked rule is wrong. Use `WebSearch`/`WebFetch` against sources from the last 6 months to confirm current behavior. Then edit `documentation/content/project plans/Chapter <X>.md` surgically — the smallest change to `Locked decisions`, `Scaffolding recipe`, the relevant slice, `File tree`, or `Verification` that makes the combination buildable.
 
 Re-run the affected smoke until it passes. Repeat for every target.
+
+A Rendered check whose `assertion` is not falsifiable, or a visual feature with no Rendered check, is a plan bug — fix the plan: sharpen the assertion into a precise checkable condition, or add the missing check. This is blocking, not advisory.
 
 ## 4 Tear down
 

@@ -10,7 +10,7 @@ Review the chapter's built code against the plan. The codebase was assembled by 
 
 ## 1 Read
 
-Read the plan at `documentation/content/project plans/Chapter <X>.md` in full. Read `documentation/code standards/Toolchain constraints.md`; do not flag drift that matches a listed framework-mandated rewrite or constraint.
+Read the plan at `documentation/content/project plans/Chapter <X>.md` in full. Read `documentation/code standards/Toolchain constraints.md`; do not flag drift that matches a listed framework-mandated rewrite or constraint. The `lesson-verification/Lesson <Y>.ts` gates are placeholder stubs at this stage — `project-lesson-test-coder` fills their real assertions later, during the lessons phase — so do not flag them as vacuous, empty, or incomplete.
 
 ## 2 Verification
 

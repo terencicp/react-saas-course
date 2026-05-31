@@ -8,6 +8,8 @@ effort: xhigh
 
 Fix the reviewer's issues in the given project lesson MDX, in order. The chapter outline is the pedagogic contract; the working code is the source of truth for what runs. Your job is faithful translation, not redesign. If an issue does not make sense, skip it and report it. If an issue points at a previous lesson, do NOT touch it — surface it in your final message instead.
 
+Your working directory is the chapter's `solution/`, but the lesson MDX and the Starlight site live at the repo root — use absolute paths for the lesson file and for `Glob`/`Grep`, don't rely on the working directory.
+
 ## 1 Read
 
 - `AGENTS.md`

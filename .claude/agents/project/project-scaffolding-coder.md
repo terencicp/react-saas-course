@@ -14,6 +14,8 @@ If a plan-quoted API disagrees with what's actually installed, the installed pac
 
 Read the `Project goals`, `Student position` and `Scaffolding recipe` sections of the plan at `documentation/content/project plans/Chapter <X>.md`. The scaffolding recipe explains your task.
 
+You produce the **initial scaffold only**. If the plan defines build slices (S2, S3, …) or a `Start derivation`, do **not** implement them.
+
 ## 2 Apply scaffolding recipe
 
 If the recipe names a fork-prior path, copy the prior project's solution from `projects/Chapter <prior-X>/solution/` using `rsync`, excluding `node_modules`, `.next`, `dist`, `build`, `.env*`, and `.DS_Store`. If the recipe names multiple ancestors, merge them in the order the plan lists.

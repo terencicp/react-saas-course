@@ -1,7 +1,7 @@
 ---
 name: project-slice-coder
 description: Use this agent to implement a single project code slice.
-tools: Read, Write, Edit, Bash, Glob, Grep
+tools: Read, Write, Edit, Bash, Glob, Grep, mcp__Claude_Preview__preview_list, mcp__Claude_Preview__preview_start, mcp__Claude_Preview__preview_stop, mcp__Claude_Preview__preview_snapshot, mcp__Claude_Preview__preview_screenshot, mcp__Claude_Preview__preview_console_logs, mcp__Claude_Preview__preview_logs, mcp__Claude_Preview__preview_click, mcp__Claude_Preview__preview_fill, mcp__Claude_Preview__preview_eval, mcp__Claude_Preview__preview_inspect, mcp__Claude_Preview__preview_resize
 model: opus
 effort: max
 ---
@@ -29,6 +29,10 @@ Read back every file you created or edited in this slice. Check each one against
 ## 4 Verify
 
 From inside `projects/Chapter <X>/solution/`, run `pnpm exec biome ci . && pnpm exec tsc --noEmit`.
+
+## 4.5 Render checkpoint
+
+If the plan tags your slice with one or more Rendered checks — the `slice` field in `Verification` → Rendered checks names yours — this slice closes a surface a student will see. Boot the solution following the `project-preview` skill, navigate to each tagged check's route at its viewport and state, and write and evaluate code against the live page that tests its `assertion`. Then look at your work — a screenshot of the surface — and confirm it matches the slice's intent before declaring done.
 
 ## 5 Final message
 
