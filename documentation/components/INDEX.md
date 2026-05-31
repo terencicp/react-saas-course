@@ -47,7 +47,7 @@ Visual scaffolds — wrappers, diagrams, and tabbed/sequenced panels.
 | `RequestTrace` | A scrubbable trace of one request through the App Router. | [request-trace.md](./figures/request-trace.md) |
 | `StateMachineWalker` | A chained multi-choice walk: each step is a question with branch buttons, and picking one advances to the next step. Two modes — decisions that end on a recommendation, or state machines whose questions are states with cycles allowed, synced topology diagram highlighting current state. | [state-machine-walker.md](./figures/state-machine-walker.md) |
 | `GraphExplorer` | Graph, click nodes or edge labels for info on bottom panel; optional play buttons that walk a named path through the graph. | [graph-explorer.md](./figures/graph-explorer.md) |
-| `Screenshot` | Fixed-shape, internally-scrolling frame for embedding UI screenshots. `desktop`/`tablet`/`mobile` viewport variants; tall captures scroll inside the frame instead of stretching the page. | [screenshot.md](./figures/screenshot.md) |
+| `Screenshot` | Fixed-shape, internally-scrolling frame for embedding UI screenshots. `desktop`/`mobile` viewport variants. Use TabbedContent to add multiple screenshots. | [screenshot.md](./figures/screenshot.md) |
 
 ---
 
@@ -114,6 +114,7 @@ Lesson UI elements.
 | --- | --- | --- |
 | `Term` | Inline word or phrase in prose with a dashed underline and a hover/focus tooltip showing a short definition. | [term.md](./ui/term.md) |
 | `ExternalResource` | Clickable card linking out to an external resource with an icon badge, title, hostname, and short description. | [external-resource.md](./ui/external-resource.md) |
+| `Checklist`, `ChecklistItem` | Tickable checklist the student checks off as they work. Each item is a requirement with an optional `tested`/`untested` chip; ticks persist per page across reloads. Used by project-lesson briefs and verification. | [checklist.md](./ui/checklist.md) |
 
 ---
 

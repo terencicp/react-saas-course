@@ -14,7 +14,7 @@ import Screenshot from '../../../components/figures/screenshot/Screenshot.astro'
 
 | Prop | Type | Required | Default | Purpose |
 | --- | --- | --- | --- | --- |
-| `viewport` | `'desktop' \| 'tablet' \| 'mobile'` | yes | — | Selects the frame shape. `desktop` and `tablet` fill the available width; `mobile` is capped at `320px` to evoke a phone-width capture. Also sets the `aria-label` (`"<viewport> screenshot"`). |
+| `viewport` | `'desktop' \| 'mobile'` | yes | — | Selects the frame shape. `desktop` fills the available width; `mobile` is capped at `320px` to evoke a phone-width capture. Also sets the `aria-label` (`"<viewport> screenshot"`). |
 
 ## Slots
 
