@@ -2,16 +2,38 @@
 
 ## Chapter framing
 
-Chapter 079 cashes in the three-trigger funnel (lesson 1 of chapter 078), the v5 primitives (lesson 2 of chapter 078), and the worked-screen framing (lesson 3 of chapter 078) as one runnable four-step "new customer" wizard on top of the Unit chapter 062 customers surface. The student builds the per-feature store with four slices (contact / billing / preferences / meta), the `useRef`-pinned `WizardStoreProvider` on the shared `/customers/new` layout, the typed `useWizardStore<T>(selector)` hook, per-step Zod schemas shared client and server side, each step's form wired with atomic selectors, the Next-gate validation that runs `safeParse` on the current slice on every keystroke, the step-4 review that reads all three preceding slices, the `createCustomerAction` Server Action that re-parses the composite payload at the boundary, and the success-reset + redirect path. Each build slice closes on a runnable state: lesson 3 of chapter 079 ends with the store + provider + typed hook live so step 1's route loads with empty form values from the store; lesson 4 of chapter 079 ends with each step's form writing into its slice with field-level errors and the Next-gate gating per validity; lesson 5 of chapter 079 ends with the step-4 review submit firing the action and redirecting on success; lesson 6 of chapter 079 walks the "Done when" clause-by-clause.
+Chapter 079 cashes in the three-trigger funnel (lesson 1 of chapter 078), the v5 primitives (lesson 2 of chapter 078), and the worked-screen framing (lesson 3 of chapter 078) as one runnable four-step "new customer" wizard on top of the chapter 062 customers surface.
+The student builds the per-feature store with four slices (contact / billing / preferences / meta), the `useRef`-pinned `WizardStoreProvider` on the shared `/customers/new` layout, the typed `useWizardStore<T>(selector)` hook, per-step Zod schemas shared client and server side, each step's form wired with atomic selectors, the Next-gate validation that runs `safeParse` on the current slice on every keystroke, the step-4 review that reads all three preceding slices, the `createCustomerAction` Server Action that re-parses the composite payload at the boundary, and the success-reset + redirect path.
+Each build lesson closes on a runnable state: lesson 2 ends with the store + provider + typed hook live so step 1's route loads with empty form values from the store; lesson 3 ends with each step's form writing into its slice with field-level errors and the Next-gate gating per validity; lesson 4 ends with the step-4 review submit firing the action and redirecting on success.
 
-Threads through every lesson: Zustand is **per-feature and client-only** — the store lives under `src/lib/wizard/`, is imported nowhere outside the four step pages and the shared layout, and never crosses into a Server Component or Server Action body; the store factory uses `createStore` from `zustand/vanilla` not `create` — the per-request leak from lesson 2 of chapter 078 is the load-bearing reason; the `WizardStoreProvider` sits on the shared `/customers/new` layout (not on each step page — the canonical mistake) so back/forward navigation preserves state across the four route segments; selectors are atomic at the call site — components subscribe to the field or action they read, not the whole slice, and `useShallow` is reserved for the review step's mapped pick; each step's Zod schema is the single source of truth — the same `contactSchema` parses the slice at the Next-gate (client) and parses the composite payload at the action (server); refresh loses the store and this is the explicit product call named on the screen and in the verify recipe — anything that must survive refresh would need server-side draft persistence (out of scope); the submit boundary is a Server Action, the store does not insert; reset fires after submit-success (and is named once for sign-out and org-switch as the future tenancy boundary).
+### Project goals (Done when)
+
+The build is done when the wizard behaves as follows. These are the user-facing outcomes the build lessons distribute and verify; each Implementation lesson confirms the subset it delivers in its own Moment of truth.
+
+- Filling step 1 then navigating to step 2 and back returns to step 1 with the data intact — back/forward across the four route segments preserves draft state.
+- The Next-gate disables until the current slice is valid: empty fields keep it disabled, a single valid field is not enough, every field valid enables it, and an invalid value re-disables it and shows an inline field error.
+- The same Zod schema validates client-side at the gate and server-side at the action — a programmatic action call with a malformed payload returns `{ ok: false, error: { code: 'invalid-input' } }` and leaves the store untouched.
+- Atomic selectors keep re-renders surgical — typing in one field re-renders only that field's input; the footer re-renders only when the Next-gate boolean flips.
+- `useShallow` is used only on the review step's mapped pick; every other selector is atomic.
+- Submit on step 4 fires the action once with the composite payload — the network shows one Server-Action POST returning `{ ok: true, data: { id } }`, the audit-log tail gains one `customer.created` row, and the router pushes to `/customers/[newId]`.
+- Double-submit on step 4 does not fire twice — the `isPending` guard from `useTransition` lets only the first click through; one POST, one audit row.
+- Action failure does not wipe the draft — a forced failure shows an inline error under the button and leaves every field populated for retry.
+- After a successful submit, navigating back to step 1 shows the wizard reset to its initial state (`currentStep: 1`, `completedSteps` empty, all slices blank).
+- Refresh mid-flow loses the draft — this is the explicit product call; the store carries no `persist`, and anything that must survive refresh would need server-side draft persistence (out of scope).
+- The store is per-request and does not leak across sessions — session B never sees session A's draft.
+- The provider sits on the shared `/customers/new` layout, not on each step page, so navigation between segments preserves the one store instance.
+- Reset fires after submit-success only; the failure branch never resets.
+- Zustand is scoped to the wizard surface only — no `useWizardStore`, `createWizardStore`, or `WizardStoreProvider` reaches invoices, the dashboard, or any other surface.
+- No Server Component imports the store; every store importer is a Client Component, and the action file imports schemas only.
+
+Threads through every lesson: Zustand is **per-feature and client-only** — the store lives under `src/lib/wizard/`, is imported nowhere outside the four step pages and the shared layout, and never crosses into a Server Component or Server Action body; the store factory uses `createStore` from `zustand/vanilla` not `create` — the per-request leak from lesson 2 of chapter 078 is the load-bearing reason; the `WizardStoreProvider` sits on the shared `/customers/new` layout (not on each step page — the canonical mistake) so back/forward navigation preserves state across the four route segments; selectors are atomic at the call site — components subscribe to the field or action they read, not the whole slice, and `useShallow` is reserved for the review step's mapped pick; each step's Zod schema is the single source of truth — the same `contactSchema` parses the slice at the Next-gate (client) and parses the composite payload at the action (server); refresh loses the store and this is the explicit product call named on the screen — anything that must survive refresh would need server-side draft persistence (out of scope); the submit boundary is a Server Action, the store does not insert; reset fires after submit-success (and is named once for sign-out and org-switch as the future tenancy boundary).
 
 ### Dependency carry-in
 
 - **From chapter 062:** the toolbar / table / pagination pattern reused in the starter's `app/(app)/customers/page.tsx`, which is provided as a thin clone of chapter 062's invoices surface.
 - **From chapter 059:** `tenantDb(orgId)`, `authedAction(role, schema, fn)`, the active-org session slot, `logAudit(tx, event)`.
 - **From chapter 041:** `customers` table (`id uuid pk`, `organizationId uuid fk`, `name`, `email`, `createdAt`). chapter 079 ships a migration that adds `phone`, `line1`, `line2`, `city`, `region`, `postalCode`, `country`, `taxId`, `paymentTerms`, `defaultCurrency`, `language`, `notificationChannels jsonb` to match the four-slice payload.
-- **From chapter 042 / chapter 043:** Zod 4 `strictObject`, canonical Result `{ ok: true, data } | { ok: false, error }`, `useActionState` (named but not used here — see lesson 5 of chapter 079's alternative-rejected note).
+- **From chapter 042 / chapter 043:** Zod 4 `strictObject`, canonical Result `{ ok: true, data } | { ok: false, error }`, `useActionState` (named but not used here — see lesson 4's alternative-rejected note).
 - **From chapter 047 + chapter 059 + chapter 062:** Server Action wrapper pattern, audit-log write on customer creation.
 - **From lesson 1 of chapter 078:** the three-trigger funnel and the wizard as the case that clears it.
 - **From lesson 2 of chapter 078:** `createStore` from `zustand/vanilla`, `StateCreator<Store, Mws, Mws, Slice>` typed slice factory, atomic selectors as default, `useShallow` from `zustand/react/shallow` for mapped picks, the `useRef`-pinned provider, the typed `useStore(store, selector)` hook, the explicit `reset()` action.
@@ -74,6 +96,22 @@ src/
                                 #           re-render-counter panel
 ```
 
+Student writes only `types.ts`, the four slice files, `store.ts`, `store-provider.tsx`, `use-wizard-store.ts`, `actions.ts`, the layout wrap, the footer wiring, the four step pages, and the submit button. The chapter 062 customers list and detail page do not change.
+
+### Inspector page (provided verification surface)
+
+Single Server Component at `/inspector`, the verification surface every Moment of truth drives. The inspector is outside the wizard tree, so it does not mount the provider — it reads store snapshots through a small client component that opens the wizard in an iframe and broadcasts state via `postMessage` (starter ships this wiring; the student does not write it).
+
+- **Header:** session-user switcher (admin / member per org), org switcher (two seeded orgs).
+- **Store-snapshot panel:** live mirror of `currentStep`, `completedSteps`, and each slice's values, updating on every store change inside the iframed wizard. Used to verify atomic-selector re-render scoping (only the changed field flashes).
+- **"Force action failure" toggle:** when on, sets a server-side flag that makes the next `createCustomerAction` return `{ ok: false, error: { code: 'forced_failure', userMessage: 'Forced action failure for verification' } }` after a 200ms delay. Auto-clears. Verifies the store stays intact on failure.
+- **"Force double-submit" button:** triggers the wizard iframe's step-4 submit button twice 10ms apart via `postMessage` to verify the `isPending` guard.
+- **"Reset store" button:** broadcasts a reset message.
+- **"Refresh wizard" button:** force-reloads the wizard iframe.
+- **Audit-log tail:** last 20 `customer.created` rows in the active org.
+- **Re-render counter panel:** each step page broadcasts its render count via `postMessage`. Verifies atomic-selector surgical re-rendering.
+- **Debug flags:** two starter-shipped debug branches — `STORE_MODULE_SCOPED` (swaps the factory for a module-scoped instance) and `PROVIDER_ON_STEP_PAGE` (moves the provider into each step page) — sit behind flags so a Moment of truth can flip a single canonical bug into existence and revert it.
+
 ### Reference solution signatures lessons display
 
 - **Store types** (`src/lib/wizard/types.ts`):
@@ -95,271 +133,210 @@ src/
 - **Submit button** (`step-4/submit-button.tsx`): `'use client'`; reads slices via `useShallow`, `reset` action, `router` from `next/navigation`; `const [isPending, startTransition] = useTransition()`; `onSubmit = () => startTransition(async () => { const r = await createCustomerAction({...}); if (!r.ok) { setError(r.error.userMessage); return } reset(); router.push(\`/customers/${r.data.id}\`) })`; `<Button disabled={isPending} onClick={onSubmit}>Create customer</Button>`.
 - **Env entries:** unchanged from chapter 062.
 
-### Inspector page spec
-
-Single Server Component at `/inspector`, the verification surface. The inspector is outside the wizard tree, so it does not mount the provider — it reads store snapshots through a small client component that opens the wizard in an iframe and broadcasts state via `postMessage` (starter ships this wiring; the student does not write it).
-
-- **Header:** session-user switcher (admin / member per org), org switcher (two seeded orgs).
-- **Store-snapshot panel:** live mirror of `currentStep`, `completedSteps`, and each slice's values, updating on every store change inside the iframed wizard. Used to verify atomic-selector re-render scoping (only the changed field flashes).
-- **"Force action failure" toggle:** when on, sets a server-side flag that makes the next `createCustomerAction` return `{ ok: false, error: { code: 'forced_failure', userMessage: 'Forced action failure for verification' } }` after a 200ms delay. Auto-clears. Verifies the store stays intact on failure.
-- **"Force double-submit" button:** triggers the wizard iframe's step-4 submit button twice 10ms apart via `postMessage` to verify the `isPending` guard.
-- **"Reset store" button:** broadcasts a reset message.
-- **"Refresh wizard" button:** force-reloads the wizard iframe.
-- **Audit-log tail:** last 20 `customer.created` rows in the active org.
-- **Re-render counter panel:** each step page broadcasts its render count via `postMessage`. Verifies atomic-selector surgical re-rendering.
-
-Student writes only `types.ts`, the four slice files, `store.ts`, `store-provider.tsx`, `use-wizard-store.ts`, `actions.ts`, the layout wrap, the footer wiring, the four step pages, and the submit button.
-
-### Verify recipe mapped to "Done when"
-
-| Done-when clause | Verify step |
-| --- | --- |
-| Filling step 1 then navigating to step 2 and back returns to step 1 with data intact | Type contact fields in step 1, Next to step 2, fill billing, Back. Step 1 still populated. Snapshot panel shows both slices. The provider on the shared layout is the structural reason — confirm in `layout.tsx`. |
-| Submit on step 4 fires the action with the composite payload | Complete all four steps with valid data. Click "Create customer". Network shows one Server-Action POST; response is `{ ok: true, data: { id } }`. Audit-log tail shows new `customer.created` row. Router pushes to `/customers/[newId]`. |
-| After submit, navigating back to step 1 shows the wizard reset | Click "New customer" or navigate to `/customers/new/step-1`. Fields empty. Snapshot shows initial slices, `currentStep: 1`, `completedSteps: empty`. Success-reset closed the loop. |
-| Refresh mid-flow loses state (the senior call) | Fill steps 1+2, advance to step 3, fill some. Inspector "Refresh wizard". Wizard reloads at step 1; snapshot empty. Confirm in `store.ts`: no `persist`. Refresh-loses is the explicit product decision. |
-| Double-submit on step 4 does not fire twice | Inspector "Force double-submit". Network shows one Server-Action POST, not two. Audit-log shows one `customer.created` row. The `isPending` from `useTransition` is the guard. |
-| The Next-gate disables until the current slice is valid | On step 1 with empty fields, Next disabled. Type valid firstName; still disabled. Fill every field; enables. Type invalid email; disables; field shows inline error. The selector subscribing to `validateContact().success` re-evaluates per keystroke. |
-| Same Zod schema validates client-side at gate and server-side at action | `step-1/page.tsx`'s field errors call `contactSchema.safeParse` via `validateContact`; `actions.ts` parses `createCustomerInput` which embeds `contactSchema` again. Single source in `schemas.ts`. Bypass: programmatic action call with malformed payload → `{ ok: false, error: { code: 'invalid-input' } }`. Store unchanged. |
-| Action failure does not wipe the draft | Inspector "Force action failure" ON. On step 4, click "Create customer". 200ms spinner then inline error banner under the button. Navigate back to step 1 — fields still populated, store intact. Compare to hypothetical `reset()`-in-`onError` bug: deliberately add `reset()` to error branch, repeat, observe wipe — revert. |
-| Atomic selectors keep re-renders surgical | Re-render-counter panel: focus step-1 firstName; type ten characters. firstName mirror counter increments by ten; siblings stay flat. Footer's `isValid` re-renders only when boolean flips. |
-| `useShallow` is used only on the review step | Grep `useShallow`. One hit: `step-4/page.tsx` (and possibly `submit-button.tsx` if combined). All other selectors atomic. |
-| Store is per-request and does not leak across sessions | Session A: fill step 1+2. Switch to session B; `/customers/new/step-1` empty. Then flip `STORE_MODULE_SCOPED` debug flag (swaps factory for module-scoped instance); repeat → session B sees session A's draft. Revert. |
-| Provider sits on shared layout, not each step page | `<WizardStoreProvider>` only in `layout.tsx`. Flip `PROVIDER_ON_STEP_PAGE` debug branch (moves into each `step-N/page.tsx`); navigate step 1 → 2 → 1; each navigation creates a fresh provider and the store resets. Revert. |
-| Reset fires after submit-success only | `submit-button.tsx`: `reset()` inside the success branch after `router.push`. Failure branch has no `reset()` — draft preserved on failure. |
-| Zustand scoped to the wizard surface only | Grep `useWizardStore`, `createWizardStore`, `WizardStoreProvider` across the codebase. Hits only under `src/lib/wizard/` and `app/(app)/customers/new/`. No leak into invoices, dashboard, or any other surface. |
-| No Server Component imports the store | Grep imports of `/lib/wizard/store` and `/lib/wizard/use-wizard-store` — only Client Components. The action file imports schemas, never the store. |
-
 ### Concepts demonstrated → owning lesson
 
-- Three-trigger funnel; wizard as the case that clears it — lesson 1 of chapter 078 + lesson 3 of chapter 078.
-- `createStore` from `zustand/vanilla` vs. `create`; cross-request leak as reason — lesson 2 of chapter 078.
-- `StateCreator<Store, Mws, Mws, Slice>` typed slice factory + composition — lesson 2 of chapter 078.
-- Atomic selectors as default subscription shape — lesson 2 of chapter 078.
-- `useShallow` for mapped picks (review step composite read) — lesson 2 of chapter 078.
-- `useRef`-pinned provider on App Router shared layout — lesson 2 of chapter 078 + lesson 3 of chapter 078.
-- Typed `useFooStore<T>(selector)` hook reading store from context — lesson 2 of chapter 078.
-- Zod-per-step contract; same schema at client gate and server action — chapter 042 + lesson 3 of chapter 078.
-- Server Action submit boundary; the store does not insert — chapter 043 + lesson 3 of chapter 078.
-- `useTransition` for submit pending state + double-submit guard — chapter 044.
-- `reset()` action and success-only reset; tenancy-boundary forward pointer — lesson 2 of chapter 078 + lesson 3 of chapter 078 + chapter 056.
-- Architectural Principle #6 — per-feature, named, never global ambient — lesson 1 of chapter 078 + lesson 2 of chapter 078.
-- Zod parse at action boundary with canonical Result — chapter 042 + chapter 043.
+- Three-trigger funnel; wizard as the case that clears it — lesson 1 of chapter 078 + lesson 3 of chapter 078 (recapped in Project Overview).
+- `createStore` from `zustand/vanilla` vs. `create`; cross-request leak as reason — lesson 2 (build the store skeleton).
+- `StateCreator<Store, Mws, Mws, Slice>` typed slice factory + composition — lesson 2.
+- `useRef`-pinned provider on App Router shared layout — lesson 2.
+- Typed `useWizardStore<T>(selector)` hook reading store from context — lesson 2.
+- `reset()` action with replace-mode `set(initialState, true)` — lesson 2 (defined), lesson 4 (fired on submit-success).
+- Atomic selectors as default subscription shape — lesson 3 (wire the forms and the Next-gate).
+- Per-step Zod field errors via `flattenError` — lesson 3.
+- Next-gate deriving a primitive `.success` from a whole-slice `safeParse` — lesson 3.
+- Store action + `router.push` bundled in one Next handler — lesson 3.
+- `useShallow` for the review step's composite mapped-pick — lesson 4 (submit, reset, and guard).
+- Server Action submit boundary; the store does not insert — lesson 4.
+- `useTransition` for submit pending state + double-submit guard — lesson 4.
+- Composite-payload re-parse at the action with canonical Result; `23505` → conflict — lesson 4.
+- Success-only reset; tenancy-boundary forward pointer (sign-out, org-switch) — lesson 4.
+- Architectural Principle #6 — per-feature, named, never global ambient — threaded through all build lessons.
 
 ---
 
-## Lesson 1 — Project brief
+## Lesson 1 — Project Overview
 
-Frames the four-step routed customer wizard you will build on top of the chapter 062 customers surface, states the "Done when" clauses, and calls out the two structural decisions (shared-layout provider, vanilla `createStore`) that prevent the canonical bugs.
+No feature is built. The student leaves with the starter running locally — the chapter 062 customers surface plus the four wizard route segments as empty shells, Postgres up, schema migrated, seed loaded.
 
-Goals:
+**What we're building.** A four-step routed "new customer" wizard layered onto the chapter 062 customers surface.
+Each step lives at its own route segment (`/customers/new/step-1` through `step-4`); a shared `WizardStoreProvider` on the layout pins one Zustand store across the four navigations.
+Four slices hold the draft (contact / billing / preferences / meta); each step writes through atomic selectors; Next gates on the current slice's Zod validity; step 4 reviews the three data slices and submits through a Server Action that re-parses the composite payload server-side; on success the store resets and the router pushes to the new customer's detail page.
+Refresh mid-flow loses the draft — the deliberate product call.
+One figure: a capture of the flow — fill, Next, Back (preserved), Next, review, submit, redirect — alongside a refresh-mid-flow frame showing loss-by-design, with the step-4 review screen as the hero shot.
 
-- Frame the build: take the chapter 062 customers surface and add a four-step routed wizard at `/customers/new/step-1` through `step-4`. Each step has its own route segment; a shared `WizardStoreProvider` on the layout pins a Zustand store across the four navigations. Four slices (contact / billing / preferences / meta). Each step writes via atomic selectors; Next gates on the current slice's Zod validity; step 4 reviews three slices and submits via a Server Action that re-parses the composite payload server-side. On success, the store resets and the router pushes to the new customer's detail page. Show one screenshot of step 4's review screen.
-- State the "Done when" in one paragraph: filling step 1 then navigating away and back preserves data; submit on step 4 fires the action with the composite payload; success-reset and redirect close the loop; refresh loses state (the senior call); double-submit does not fire twice; Next enables only when the slice's Zod parse succeeds.
-- Scope cuts: no server-side draft persistence (refresh-loses is the product call); no per-step animations; no `persist` middleware autosave (named in lesson 2 of chapter 078, skipped here); no skip-to-step navigation; no edit-existing-customer flow; no `useActionState` shape on submit (see lesson 5 of chapter 079's alternative-rejected note).
-- Senior payoff: canonical Zustand-on-App-Router shape for the rest of the course. Future surfaces clearing the three-trigger funnel (routed cart, multi-step settings, long form split across panes) reuse the skeleton — `createStore` factory + `useRef`-pinned provider on shared layout + typed hook + atomic selectors + per-slice Zod + Server-Action submit + success-reset. Placement of the provider on the *shared layout* (not step pages) and use of `createStore` (not `create`) are the two structural calls that prevent the canonical bugs.
-- Show the end UX: a capture of the wizard — fill, Next, Back (preserved), Next, review, submit, redirect — plus a refresh-mid-flow showing loss-by-design.
-- Link the starter via `degit`.
+**What we'll practice.** Standing up the canonical Zustand-on-App-Router skeleton end to end: a `createStore` factory, a `useRef`-pinned provider on a shared layout, a typed selector hook, atomic selectors, per-slice Zod validation shared client and server, a Server-Action submit boundary, and success-reset discipline.
+This is the skeleton every later surface that clears the three-trigger funnel (a routed cart, multi-step settings, a long form split across panes) will reuse.
 
-Senior calls and watch-outs:
+**Architecture.** Labeled shape: the chapter 062 customers list and detail page (Server Components, untouched) sit above the wizard subtree; the `/customers/new` layout mounts the provider; the four step pages and the footer are leaf Client Components reading the store through atomic selectors; the submit button is the single seam where the client store meets the `createCustomerAction` Server Action, which owns the DB write and audit-log entry under `tenantDb(ctx.orgId)`.
 
-- Starter ships chapter 062 end-to-end plus four route segments, shared layout shell, progress indicator, footer shell, and schemas in full. The chapter 062 surface stays untouched — every change lives under `src/lib/wizard/` and `app/(app)/customers/new/`.
-- The TOC's split (store + slices vs. form wiring + Next-gate) is preserved because the runnable midpoint matters: lesson 3 of chapter 079 ends with the provider mounting and the wizard navigating empty across four routes; lesson 4 of chapter 079 ends with each form writing into its slice and the Next-gate working.
-- The submit lives in lesson 5 of chapter 079 with the success-reset because the action and the reset are the same architectural call.
+**Starting file tree.** Use the annotated tree above: comment one line on each file the lessons touch or that changed from chapter 062, leave the rest uncommented, and mark the TODO files as the highlighted focus.
+Top-level call-outs the student should leave the overview knowing: `src/lib/wizard/` is the feature-shaped home for the store, slices, schemas, provider, hook, and action; `app/(app)/customers/new/` holds the shared layout (where the provider belongs), the provided progress indicator and footer shell, and the four step pages; `app/inspector/page.tsx` is the provided verification surface; `next.config.ts` keeps `cacheComponents: true` from chapter 062 — the customers list above the wizard tree stays cached and the wizard routes are leaf Client Components with no cache interaction.
 
-Codebase state at entry: empty repo (student runs `degit`).
-Codebase state at exit: starter cloned, Postgres up, schema migrated, seed loaded; `/customers` lists customers; `/customers/new/step-1` shows the step-1 shell with empty fields and no provider, Next always disabled; `/inspector` loads with empty store-snapshot.
+**Roadmap.** One Card per build lesson:
 
-Estimated student time: 10 to 15 minutes.
+- **Lesson 2 — Build the store skeleton.** Adds the four-slice store, the `useRef`-pinned provider on the shared layout, and the typed hook, so the wizard navigates across four routes with state surviving.
+- **Lesson 3 — Wire the forms and the Next-gate.** Adds field bindings with inline Zod errors and the footer Next-gate, so each step writes into its slice and Next enables only when that slice is valid.
+- **Lesson 4 — Submit, reset, and guard.** Adds the composite-payload Server Action, the `useShallow` review, and the submit button with its pending/double-submit guard, success-reset, and redirect.
 
----
+**Setup.** Command sequence (Steps component): `degit` the starter, install dependencies, bring up Postgres via `docker-compose`, run the Drizzle migration, run the seed, start the dev server.
+Env var list: none new over chapter 062 (`.env.example` carries no new entries); note that the chapter 062 `DATABASE_URL` and auth/session variables are reused, copied from `.env.example`.
+Expected result on success: `/customers` renders the seeded list; `/customers/new/step-1` renders the step-1 shell with empty fields and no provider wrapped yet, so the footer Next is always disabled and the fields are unwired; `/inspector` loads with an empty store-snapshot panel.
 
-## Lesson 2 — Tour the starter
-
-Walks the file tree, the per-step Zod schemas, the four route segments, the progress and footer shells, and the inspector page with its debug flags so you know exactly which eight files you will fill in.
-
-Goals:
-
-- Walk the file tree, calling out provided vs. stubbed. Linger on the eight student files (`types.ts`, four slice files, `store.ts`, `store-provider.tsx`, `use-wizard-store.ts`, `actions.ts`) plus the seven consumer files (`layout.tsx` shell, `footer.tsx` shell, four `step-N/page.tsx` shells, `step-4/submit-button.tsx`).
-- Read `src/lib/wizard/schemas.ts` — three step schemas and the composite. Same schemas parse the slice client-side at the Next-gate and parse the composite server-side at the action. Single source of truth.
-- Read the `customers` table columns — chapter 041's narrow row (`id`, `organizationId`, `name`, `email`, `createdAt`) extended by a chapter 079 migration that adds `phone`, `line1`, `line2`, `city`, `region`, `postalCode`, `country`, `taxId`, `paymentTerms`, `defaultCurrency`, `language`, `notificationChannels jsonb` so the four-slice payload maps column-for-column. The action maps `{ contact: {firstName, lastName} }` into `name: \`${firstName} ${lastName}\`` plus email / phone / billing / preferences columns directly.
-- Read `progress.tsx` (provided) — reads `currentStep` + `completedSteps` via two atomic selectors and renders the four-pip indicator. The student doesn't write this but reads it to understand the consumer pattern.
-- Read `footer.tsx` shell — Back/Next placeholders present; the student wires `currentStep`, per-step `validate...().success`, `goBack`/`goNext` in lesson 4 of chapter 079.
-- Read each step shell — every field has empty `value` and no `onChange`; TODO markers indicate the atomic-selector wires. Step 4's review is a stub.
-- Read the inspector end-to-end — store-snapshot panel, "Force action failure" toggle, "Force double-submit" button, "Reset store", "Refresh wizard", audit-log tail, re-render-counter. Two starter-shipped debug branches (`STORE_MODULE_SCOPED`, `PROVIDER_ON_STEP_PAGE`) live behind flags for the verify lesson.
-- Read `next.config.ts`: `cacheComponents: true` from chapter 062; the customers list above the wizard tree stays cached; the wizard routes are leaf Client Components, no cache interaction.
-- Run the app: `/customers` renders the seeded list; `/customers/new/step-1` renders the step-1 shell but the layout doesn't yet wrap in the provider so the hook would throw if invoked — fields are unwired, no throw fires.
-
-Senior calls and watch-outs:
-
-- `src/lib/wizard/` is feature-shaped (Architectural Principle #4): the directory groups store, slices, schemas, provider, hook, action. Future routed wizards get their own sibling directory; per-feature, never global.
-- Eight student files + seven consumer files is the entire build surface. The chapter 062 customers list and detail page do not change.
-- The shared-layout placement of the provider is the load-bearing structural choice. Naming it on the file-tree read so the student notices the layout's role before writing the wrap in lesson 3 of chapter 079.
-- The `customers` table is already org-scoped via `organizationId`; the submit action uses `tenantDb(ctx.orgId)`. The store knows nothing about `orgId` — server concern only.
-- Seeded customers mean the redirect-to-`/customers/[id]` after submit lands on a meaningful detail page.
-
-Codebase state at entry: starter cloned, Postgres running, schema migrated, seed loaded.
-Codebase state at exit: every provided file read, inspector clicked through, wizard routes navigated as empty shells. No code written.
-
-Estimated student time: 15 to 25 minutes.
+The lesson ends when the starter runs locally.
 
 ---
 
-## Lesson 3 — Build the store skeleton
+## Lesson 2 — Build the store skeleton
 
-Defines the four-slice `WizardState`, writes the typed slice factories, composes them through a vanilla `createStore` factory, mounts the `useRef`-pinned provider on the shared layout, and exposes the typed `useWizardStore<T>(selector)` hook.
+Define the four-slice `WizardState`, write the typed slice factories, compose them through a vanilla `createStore` factory, mount the `useRef`-pinned provider on the shared layout, and expose the typed `useWizardStore<T>(selector)` hook.
+Finished result: navigating to `/customers/new/step-1` shows the progress indicator reading live store state ("1 of 4", first pip highlighted) and the inspector snapshot mirroring the initial store; the wizard navigates across all four routes with the store surviving each navigation — though every field is still unwired and Next stays disabled, the deliberate runnable midpoint.
 
-Goals:
+### Your mission
 
-- Fill `types.ts`: define `ContactSlice`, `BillingSlice`, `PreferencesSlice`, `MetaSlice`, and `WizardState = ContactSlice & BillingSlice & PreferencesSlice & MetaSlice`. Each slice lists its data, per-field setter signatures, and (first three) `validate...()` returning `z.SafeParseReturnType`. `MetaSlice` lists `currentStep`, `completedSteps` (a `Set<1|2|3|4>`), `goNext`, `goBack`, `markStepComplete`, `reset`. The intersection is the single state shape every `StateCreator` is parameterized on, so `set`/`get` see the whole store from inside any slice.
-- Fill the four slice files. Each: `export const createContactSlice: StateCreator<WizardState, [], [], ContactSlice> = (set, get) => ({ contact: {firstName: '', lastName: '', email: '', phone: ''}, setContactField: (k, v) => set((s) => ({ contact: {...s.contact, [k]: v} })), validateContact: () => contactSchema.safeParse(get().contact) })`. Billing/preferences mirror; preferences also exposes `togglePreferenceChannel` toggling array membership. Meta: `goNext` reads `currentStep` via `get()`, calls `markStepComplete(currentStep)`, then `set({ currentStep: currentStep + 1 })`; `goBack` decrements; `markStepComplete` adds to `completedSteps`; `reset: () => set(initialState, true)` — the `true` flag is the rare replace-mode; name why `set({}, true)` would be wrong (loses the action methods).
-- Fill `store.ts`: `import { createStore } from 'zustand/vanilla'` (not `create` from `zustand` — the load-bearing call). `export type WizardStore = ReturnType<typeof createWizardStore>`. `export const createWizardStore = (initial?: Partial<WizardState>) => createStore<WizardState>()((...a) => ({ ...createContactSlice(...a), ...createBillingSlice(...a), ...createPreferencesSlice(...a), ...createMetaSlice(...a), ...initial }))`. The factory returns a fresh vanilla store on every call; the provider calls it once per mount.
-- Fill `store-provider.tsx`: `'use client'`. Create `WizardStoreContext = createContext<WizardStore | null>(null)`. The provider: `const ref = useRef<WizardStore | null>(null); if (ref.current === null) ref.current = createWizardStore(); return <WizardStoreContext.Provider value={ref.current}>{children}</WizardStoreContext.Provider>`. `useRef` (not `useState`) is deliberate — exactly one creation per component instance, never on re-render. The lazy `if (ref.current === null)` is React's documented pattern for refs holding initialized values.
-- Fill `use-wizard-store.ts`: `'use client'`. Import `useStore` from `zustand` (the React-binding hook). `export function useWizardStore<T>(selector: (s: WizardState) => T): T { const store = useContext(WizardStoreContext); if (!store) throw new Error('useWizardStore must be used inside WizardStoreProvider'); return useStore(store, selector) }`. The generic gives call sites like `const firstName = useWizardStore((s) => s.contact.firstName)` an inferred `string` return.
-- Edit `layout.tsx`: import `WizardStoreProvider`; wrap `<WizardProgress />` + `{children}` + `<WizardFooter />` in `<WizardStoreProvider>`. The provider sits on the shared layout so all four step children share the same store instance.
-- The progress indicator's consumption is already shipped — reads `currentStep` + `completedSteps` via two atomic selectors. The student confirms the hook resolves and the first pip highlights on step 1.
-- Run the app: navigate to `/customers/new/step-1`. Progress shows "1 of 4" with first pip highlighted. Form fields render unwired. Footer Next is disabled (the `isValid` selector isn't wired yet — lesson 4 of chapter 079). Inspector's store-snapshot shows initial state: empty slices, `currentStep: 1`, `completedSteps: new Set()`. The snapshot stays in sync across renders while the iframe is mounted.
+This is the heaviest mechanics lesson in the chapter: you are standing up the store that every later lesson reads from, and two structural calls here are what keep the whole wizard correct.
+The store factory must use `createStore` from `zustand/vanilla`, not `create` from `zustand` — `create` puts a module-scoped store in the server bundle's memory, and the per-request leak surfaces the first time two users hit the layout in the same Node process (the load-bearing reason from lesson 2 of chapter 078).
+The provider belongs on the shared `/customers/new` layout, never on a step page — placing it under a step page is the canonical mistake that destroys the premise, because every navigation would re-mount the provider, re-create the store, and wipe the draft.
+Pin the store in a `useRef` with lazy `if (ref.current === null)` init rather than `useState(() => createWizardStore())`: React's strict-mode double-invoke can otherwise create two stores on first mount in dev, and `useRef` with lazy init is React's documented pattern for refs holding initialized values.
+Parameterize every `StateCreator` on the full `WizardState` intersection so `set`/`get` see the whole store from inside any slice; the middleware generics are empty tuples here because this chapter uses no `persist`, `devtools`, or `subscribeWithSelector` (named in lesson 2 of chapter 078, skipped here — they would fill the generics if they entered).
+Give `reset()` the replace-mode flag — `set(initialState, true)` — so a future slice field added without updating `initialState` still gets wiped; plain `set({})` would partial-merge to a no-op, and the typed hook's `if (!store) throw` is the runtime contract that catches a component reaching outside the provider's subtree.
+Out of scope: any form wiring, the Next-gate, and the submit — fields stay unwired at the end of this lesson by design.
 
-Senior calls and watch-outs:
+Requirements checklist:
 
-- `createStore` from `zustand/vanilla` + provider is the App Router-correct shape. The default-tutorial `create((set) => ({...}))` puts a module-scoped store in the server bundle's memory; the per-request leak surfaces the first time two users hit the layout in the same Node process. The bug is named at the import.
-- `useRef`-pinned store is mandatory. `useState(() => createWizardStore())` technically works but React's strict-mode double-invoke can create two stores on first mount in dev; documented pattern is `useRef` with lazy init.
-- The provider lives on the shared layout, not on each step page. Surfaced twice — at file location and at wrap call — because misplacing under a step page is the canonical bug that destroys the entire premise (every navigation re-mounts provider, re-creates store, wipes state). Verify lesson exercises this as deliberate-misuse demo.
-- `reset()` uses `set(initialState, true)` (replace-mode flag). Plain `set({})` would partial-merge (no-op); `set(initialState)` without `true` would also work because the merged result equals initial; `set(initialState, true)` is the explicit "wipe and replace" that future-proofs against new slice fields being added without updating `initialState`.
-- The slices composition `((...a) => ({ ...createA(...a), ...createB(...a) }))` is the standard `StateCreator` spread. The `[]`-`[]`-`Slice` middleware generics are empty tuples — this chapter doesn't use `persist`, `devtools`, `subscribeWithSelector` (named in lesson 2 of chapter 078, skipped). When middlewares enter, the generics fill out.
-- The typed hook's `if (!store) throw` is the runtime contract catching the most common usage bug — a component reaches outside the provider's subtree.
-- Fields are still unwired after this lesson — the deliberate runnable midpoint. Provider mounts, store survives navigation, progress reads from it; next lesson connects inputs.
+- [ ] Navigating to `/customers/new/step-1` loads the step with the progress indicator reading "1 of 4" and the first pip highlighted — the provided progress component resolves the hook against the mounted store.
+- [ ] The inspector store-snapshot panel mirrors the initial store: empty slices, `currentStep: 1`, `completedSteps` empty, and it stays in sync across renders while the iframe is mounted.
+- [ ] Navigating forward and back across `/customers/new/step-1` through `step-4` keeps the one store instance alive — the snapshot does not reset on navigation.
+- [ ] A component that reads the store from outside the provider's subtree throws a clear `useWizardStore must be used inside WizardStoreProvider` error rather than failing silently.
+- [ ] The store is per-request: with the provider on the shared layout and the vanilla `createStore` factory, a second session opening the wizard sees its own empty store, not the first session's state.
 
-Codebase state at entry: empty `wizard/` directory, empty layout, unwired form fields, footer disabled.
-Codebase state at exit: `types.ts`, four slice files, `store.ts`, `store-provider.tsx`, `use-wizard-store.ts` filled. Provider wraps the wizard layout. Progress reads `currentStep`. Wizard navigates between four routes (back/forward) but every field is empty and Next is permanently disabled. **Runnable — provider mounts on shared layout, store survives navigation, inspector snapshot mirrors live state.**
+### Coding time
 
-Estimated student time: 60 to 75 minutes. The chapter's heaviest mechanics lesson.
+Implement against the brief above; there is no test for this lesson's runnable midpoint beyond the inspector snapshot, so confirm by hand.
+Hidden `<details>` solution walkthrough, framed as material to read after attempting the work:
 
----
+- Full reference implementation organized as it appears in the repo: `types.ts` (the four slice types and the `WizardState` intersection — each slice lists its data, per-field setter signatures, and, for the first three, `validate...()` returning `z.SafeParseReturnType`; `MetaSlice` lists `currentStep`, `completedSteps` as a `Set<1|2|3|4>`, `goNext`, `goBack`, `markStepComplete`, `reset`); the four slice files (contact/billing/preferences mirror the contact shape, preferences adds `togglePreferenceChannel` toggling array membership; meta's `goNext` reads `currentStep` via `get()`, calls `markStepComplete(currentStep)`, then `set({ currentStep: currentStep + 1 })`, `goBack` decrements, `reset: () => set(initialState, true)`); `store.ts` (vanilla `createStore` factory composing the four slices via the `((...a) => ({ ...createA(...a), ... }))` spread); `store-provider.tsx`; `use-wizard-store.ts`; and the one-line `layout.tsx` wrap.
+- Decision rationale, one or two sentences each, for: `createStore` over `create` (the named import is where the per-request leak is prevented); `useRef` over `useState` for pinning; `set(initialState, true)` replace-mode over plain `set`; the empty middleware generics.
+- Coverage of the untested requirements: the throw-on-missing-provider contract, the provider's single placement on the shared layout, and why the progress indicator (provided) already consumes the store through two atomic selectors.
+- Callout on the `((...a) => ...)` slice spread, which looks unusual at a glance — it is the standard `StateCreator` composition.
+- For the App Router Server/Client boundary and `'use client'`, link to the owning regular lesson rather than re-explaining.
 
-## Lesson 4 — Wire the forms and the Next-gate
+### Moment of truth
 
-Binds every step-1/2/3 field through atomic selectors and slice setters, renders inline Zod errors, and wires the footer so Next gates on the current slice's `safeParse` and advances both store and URL together.
+Confirm by hand against the inspector (no automated test covers the empty-fields midpoint):
 
-Goals:
-
-- Wire `step-1/page.tsx` field by field. Each field: one input bound to one slice setter through one atomic selector: `const firstName = useWizardStore((s) => s.contact.firstName); const setContactField = useWizardStore((s) => s.setContactField); <Input value={firstName} onChange={(e) => setContactField('firstName', e.target.value)} />`. Repeat for `lastName`, `email`, `phone`. The atomic-selector default is the load-bearing choice — typing in email re-renders only the email input. The re-render counter panel verifies.
-- Render field-level errors. Below each field: `const contactErrors = useWizardStore((s) => { const result = s.validateContact(); return result.success ? null : z.flattenError(result.error).fieldErrors })`. Display `contactErrors?.email?.[0]` below the email input. The selector returns a new object only when the parse moves success↔failure or the error map shape changes — adequate for this surface. For finer control (per-field error subscription), one selector per field's error would be the move; this surface keeps the single-selector shape for clarity.
-- Repeat for `step-2/page.tsx`: each billing field bound via `setBillingField`; errors via `validateBilling` + `flattenError`. `paymentTerms` is a select with three options; `country` is a 2-letter input (in production a country picker; course keeps the surface lean).
-- Repeat for `step-3/page.tsx`: `defaultCurrency` and `language` are selects; `channels` is a multi-select via three checkbox toggles bound to `togglePreferenceChannel`.
-- Wire `footer.tsx`: `const currentStep = useWizardStore((s) => s.currentStep)`. The `isValid` selector branches on `currentStep` (validateContact / validateBilling / validatePreferences `.success`; step 4 returns `true`). `const goNext = useWizardStore((s) => s.goNext); const goBack = useWizardStore((s) => s.goBack)`. Next: `<Button disabled={!isValid} onClick={() => { goNext(); router.push(\`/customers/new/step-${currentStep + 1}\`) }}>`. `goNext` mutates `currentStep`; `router.push` advances the URL. Both fire on click. Back mirrors with `goBack` + `router.push` to prior step. On step 4 the Next button is replaced by the submit button rendered by the step-4 page itself — footer's Next only shown when `currentStep < 4`.
-- Run the app: navigate `/customers/new/step-1`. Type firstName; Next stays disabled while other fields empty. Re-render counter shows only firstName field's count incrementing. Type invalid email → "Invalid email" inline; Next disabled. Fix → Next enables. Fill remaining → click Next. URL advances to `/step-2`; store's `currentStep` becomes `2`; progress highlights pip 2; step-2 renders empty. Click Back; URL returns to step-1; previously typed values still there. Click Next; step-2 empty (its slice never touched). Fill step 2 → step 3 → step 4 (renders the review stub).
-
-Senior calls and watch-outs:
-
-- Atomic selectors are mandatory for re-render scoping. A naive `const { firstName, lastName, ... } = useWizardStore((s) => ({ ...s.contact, setContactField: s.setContactField }))` returns a new object every state change; default `Object.is` fails; component re-renders on every keystroke. Re-render counter is the demo. If a step genuinely needs a composite read (review), `useShallow` is the right tool — lesson 5 of chapter 079.
-- The Next-gate `isValid` calls `validate...()` on every store change. Returns fresh `SafeParseResult` each time; the `.success` boolean is primitive — `Object.is(true, true)` short-circuits re-render. Button re-renders only when boolean flips. Pattern: derive a primitive from a complex computation inside the selector.
-- The Next-gate is UX. The action on submit re-parses the composite schema server-side; the *contract* is the action's parse. A bypass (calling the action with malformed data) returns `{ ok: false, error }`; client gate is defense against UX confusion, not malformed data.
-- Next button's `onClick` does two things: store action `goNext` + router push. Bundling into one handler is canonical for routed wizards. Splitting (e.g., a `useEffect` watching `currentStep` and firing `router.push`) is wrong — effects-as-side-effect-orchestrators is the pattern the course rejects (AP #6 — explicit over magic).
-- `validate...()` runs `safeParse` on every store change. For tiny schemas this is cheap; for very large schemas, debouncing or memoizing would be a future move. Don't pre-optimize at this size.
-- Errors render conditionally and unobtrusively. Course UX baseline (Unit 3) — short red text under the field, no toast for validation errors.
-- Resist per-field `validateField` for finer error scoping. Whole-slice `validateContact` is right: form-state machines tracking "touched" fields complicate the model.
-- `markStepComplete` inside `goNext` populates `completedSteps`; progress indicator distinguishes completed pips from upcoming.
-
-Codebase state at entry: provider mounted, four-slice store, hook works; no form wired, Next permanently disabled.
-Codebase state at exit: every input on steps 1, 2, 3 writes into its slice via atomic selector; every field error renders inline; footer Next-gate enables only when current slice is valid; clicking Next advances both store and URL; clicking Back returns and prior step's data is intact. **Runnable — wizard navigates with state across all four routes; step 4 review still a stub; no submit yet.**
-
-Estimated student time: 50 to 65 minutes.
+- [ ] `/customers/new/step-1` shows "1 of 4" with the first pip highlighted; form fields render but are unwired; footer Next is disabled.
+- [ ] The inspector store-snapshot shows the initial state (empty slices, `currentStep: 1`, `completedSteps` empty) and stays in sync as the iframe re-renders.
+- [ ] Navigating step 1 → 2 → 3 → 4 and back leaves the snapshot's accumulated state intact — the store survives every navigation.
+- [ ] Reading `layout.tsx` confirms `<WizardStoreProvider>` wraps `<WizardProgress />`, `{children}`, and `<WizardFooter />` one level above the step children.
+- [ ] Flipping the `PROVIDER_ON_STEP_PAGE` debug branch and navigating step 1 → 2 → 1 clears the store on each navigation (the canonical bug); flip it back.
+- [ ] Flipping the `STORE_MODULE_SCOPED` debug flag and repeating a two-session test leaks session A's draft into session B; flip it back.
 
 ---
 
-## Lesson 5 — Submit, reset, and guard
+## Lesson 3 — Wire the forms and the Next-gate
 
-Builds the composite-payload Server Action with audit log, reads the three slices on step 4 through `useShallow`, and wires the submit button with `useTransition` for the pending guard, success-reset, and redirect.
+Bind every step-1/2/3 field through atomic selectors and slice setters, render inline Zod errors, and wire the footer so Next gates on the current slice's `safeParse` and advances both store and URL together.
+Finished result: typing in any field writes into its slice and re-renders only that field; invalid input shows an inline error and keeps Next disabled; filling every field on a step enables Next, which advances both the store's `currentStep` and the URL; Back returns with prior data intact; step 4 still renders the review stub.
 
-Goals:
+### Your mission
 
-- Fill `actions.ts`: `createCustomerAction = authedAction('member', createCustomerInput, async (input, ctx) => { ... })`. Inside the callback, wrap the insert in `tenantDb(ctx.orgId).transaction`: map the four-slice payload into the `customers` row (concatenate firstName + lastName into `name`; spread billing + preferences directly because column names match), insert + `returning()`, call `logAudit(tx, { action: 'customer.created', subjectType: 'customer', subjectId: row.id, actorUserId: ctx.user.id, orgId: ctx.orgId, payload: {} })`. Return `{ ok: true, data: { id: row.id } }`. Parse failure returns `{ ok: false, error }` via the wrapper. Wrap the transaction in `try/catch` and map Postgres `23505` (the `unique (organizationId, email)` violation from chapter 041) to `Result.error({ code: 'conflict', userMessage: 'A customer with this email already exists in this organization.' })`, mirroring chapter 047's `createInvoice` pattern; rethrow other errors. The action does not know about the store; the store doesn't import the action either; the submit button is the seam.
-- Wire `step-4/page.tsx`: review reads three preceding slices via `useShallow` because rendered JSX combines three slice objects into one component. `import { useShallow } from 'zustand/react/shallow'; const { contact, billing, preferences } = useWizardStore(useShallow((s) => ({ contact: s.contact, billing: s.billing, preferences: s.preferences })))`. Render three subsections (Contact, Billing, Preferences) as `<dl>`s. Mount `<SubmitButton />` below. This is the **only** `useShallow` use in the project. Reason: this component genuinely reads three slice objects, returns one new object each render; step 4 isn't mounted during steps 1-3 (route segments exclusive), so re-renders during typing don't apply. On step 4, re-renders fire only if a slice reference changes — but step 4 is read-only by design.
-- Fill `submit-button.tsx`. `'use client'`. Reads three slices via `useShallow`, the `reset` action, `router` from `next/navigation`. Use `useTransition`:
-  - `const [isPending, startTransition] = useTransition()`.
-  - `const [error, setError] = useState<string | null>(null)`.
-  - `actions.ts` also exports a plain wrapper for programmatic client use: `export async function submitCustomer(input: z.infer<typeof createCustomerInput>) { return createCustomerAction(null, input as unknown as FormData) }` — or, equivalently, the action body is factored into a shared `createCustomerImpl(input, ctx)` that both `authedAction(...)` and `submitCustomer` call. The submit button imports `submitCustomer`, not `createCustomerAction` directly, because `authedAction`'s return type is `(prev, formData) => Promise<Result>`.
-  - `const onSubmit = () => startTransition(async () => { setError(null); const result = await submitCustomer({ contact, billing, preferences }); if (!result.ok) { setError(result.error.userMessage); return } reset(); router.push(\`/customers/${result.data.id}\`) })`.
-  - `<Button disabled={isPending} onClick={onSubmit}>{isPending ? 'Creating…' : 'Create customer'}</Button> {error && <p className='text-destructive'>{error}</p>}`.
-  - `isPending` prevents double-submit: first click sets pending, button disables, second click fires no handler.
-- Submit is the Server Action call, not `<form action>` with `useActionState`. Alternative-rejected note:
-  - **Chosen path:** explicit button-handler calling the action programmatically. Right because submit composes three slices read via `useShallow` and the post-success path is store reset + router push (not the redirect-and-revalidate pattern `useActionState` is built for).
-  - **Considered and rejected:** `<form action={createCustomerAction}>` with `useActionState`. Native and progressive-enhancement-friendly, but payload would have to be encoded as `FormData` (hidden input per slice field serialized to JSON). The read side already has parsed slices in memory; serializing back through `FormData` is ceremony with no upside. Senior call: when data already lives in a client store, programmatic call is right; reach for `<form action>` when data is in form fields the user just typed.
-- Wire success-reset and redirect: on `{ ok: true }`, call `reset()` first (clears four slices, `currentStep: 1`, `completedSteps: empty`), then `router.push(\`/customers/${result.data.id}\`)`. Order matters — `router.push` triggers navigation that may unmount the wizard layout; resetting before pushing guarantees the next mount sees fresh state. The wizard layout *is* unmounted on navigation to `/customers/[id]` so the next visit to `/customers/new/step-1` mounts a fresh provider anyway. `reset()` is belt-and-suspenders here — but the discipline of "reset at submit-success" is the named senior call that generalizes to other Zustand surfaces where the provider stays mounted across reset (a cart inside a layout that doesn't unmount, for example).
-- Run the app: complete four steps with valid data. Step 4 review shows three filled slices. Click "Create customer". Button shows "Creating…" for ~100ms. Router pushes to `/customers/[newId]`. New customer detail renders. Navigate back to `/customers/new/step-1` — form empty (success-reset fired). Audit-log tail shows new `customer.created` row.
-- Verify action-failure path: inspector "Force action failure" toggle ON. Complete four steps; submit. Button shows "Creating…" for ~200ms; error banner under button; wizard stays on step 4 with data intact. Navigate back to step 1 — still populated. User can edit and retry.
-- Verify double-submit guard: complete four steps; click "Create customer"; click again within 10ms (or inspector "Force double-submit"). Network shows one POST. Audit-log shows one row.
+Every field on steps 1 through 3 binds through one atomic selector to one slice setter — `const firstName = useWizardStore((s) => s.contact.firstName)` paired with `const setContactField = useWizardStore((s) => s.setContactField)` — because the atomic-selector default is what keeps re-renders surgical; a naive whole-slice read like `useWizardStore((s) => ({ ...s.contact, setContactField: s.setContactField }))` returns a fresh object every state change, the default `Object.is` check fails, and the component re-renders on every keystroke (the re-render counter is the demo).
+Field errors come from a whole-slice selector that runs `validateContact()` and returns `flattenError(result.error).fieldErrors` on failure — resist per-field `validateField` scoping; whole-slice validation is right because tracking "touched" fields per input complicates the model, and this surface keeps the single-selector shape for clarity.
+The footer's Next-gate derives a primitive from a complex computation: the `isValid` selector branches on `currentStep` and returns the relevant `validate...().success` boolean (step 4 returns `true`), so although `validate...()` runs `safeParse` and returns a fresh result on every store change, the `.success` boolean is primitive and `Object.is(true, true)` short-circuits the re-render — the button re-renders only when validity flips.
+Next's `onClick` bundles two things in one handler — the store action `goNext` and `router.push` to the next segment — which is canonical for routed wizards; splitting them (a `useEffect` watching `currentStep` to fire the push) is the effects-as-orchestrators pattern the course rejects (AP #6, explicit over magic).
+Keep the gate framed as UX, not the security boundary: the action re-parses the composite schema server-side, so a bypass that calls the action with malformed data still returns `{ ok: false, error }`; the client gate is defense against UX confusion only.
+Render errors as short red text under the field per the Unit 3 UX baseline, no toast; `paymentTerms` is a three-option select and `country` a 2-letter input (a country picker in production, kept lean here), and `channels` is three checkbox toggles bound to `togglePreferenceChannel`.
+Out of scope: the step-4 review (still a stub) and any submit.
 
-Senior calls and watch-outs:
+Requirements checklist:
 
-- Action org-scoped via `authedAction`'s session resolution; store knows nothing about `orgId`. Tenancy lives at the action, the `organizationId` column, and `tenantDb`. Defense in depth.
-- Store/action separation is the architectural seam. Store owns the draft in memory; action owns the DB write. Submit button is the only place they meet. Architectural Principle #3 (pure /lib, side effects at named boundaries) applied to the client/server split.
-- `useShallow` is right *only* for this composite read. Senior reflex: if selector returns a fresh literal object/array, equality check is `useShallow`; if it returns a primitive or existing reference, default `Object.is` is fine. Reaching for `useShallow` everywhere is the over-reach.
-- `useTransition`'s `isPending` is the right pending-state shape for a Server Action call. Plain `useState<boolean>` works but loses the transition's automatic suspension/concurrency benefits.
-- `reset()` fires *before* `router.push`. Order documented; push-first/reset-after still works because wizard layout unmounts on navigation. Keep reset-first to teach the discipline: in surfaces where the layout stays mounted (cart in header), reset-first is required.
-- Action failure leaves the wizard intact deliberately. Common bug: `if (!result.ok) { reset(); setError(...) }` — wiping draft on a network blip. Verify recipe catches this.
-- The `error` state is local `useState`, not in store. Transient UI error state belongs in component state (lesson 1 of chapter 078's "useState is fine" default); store is for draft data the user owns.
-- `crypto.randomUUID()` not used (DB generates id); idempotency keys deferred to Unit 11. Customer-create is naturally idempotent at the application layer because one user, one transition, one submit (the `isPending` guard); `processed_events` pattern lands when trigger is external retries.
-- Redirect to `/customers/${newId}` lands on the real customer detail page (chapter 062). Seamless landing is the UX payoff.
-- Resist writing the new customer's id into the wizard store. Store is for draft; new id is server state; redirect transitions client from one to the other. Storing the id is role creep the per-feature discipline rejects.
+- [ ] Typing in a step-1/2/3 field updates that field's value and persists it in the slice — leaving and returning to the step shows the typed value.
+- [ ] An invalid value renders an inline error under its field (for example "Invalid email") and a valid value clears it.
+- [ ] The footer Next button is disabled while any field on the current step is invalid or empty, and enables only when the whole current slice parses.
+- [ ] Clicking Next advances both the URL to the next segment and the store's `currentStep`, and the progress indicator highlights the new pip.
+- [ ] Clicking Back returns to the prior segment with that step's previously typed data still populated.
+- [ ] Typing ten characters into one field re-renders only that field's input (and the footer at most once, when the Next-gate boolean flips), leaving sibling fields and the progress indicator unchanged.
 
-Codebase state at entry: forms wire steps 1-3, Next-gate works, step 4 a stub, no submit, no action.
-Codebase state at exit: `createCustomerAction` writes row + audit log + returns canonical Result. Step 4 reviews three slices via `useShallow`. Submit button uses `useTransition` for pending + double-submit guard, calls action, on success resets store and redirects, on failure shows error and leaves draft intact. **Runnable — full happy and unhappy paths live; ready for verify pass.**
+### Coding time
 
-Estimated student time: 50 to 65 minutes.
+Implement against the brief and the lesson's test suite.
+Hidden `<details>` solution walkthrough, framed as material to read after attempting the work:
+
+- Full reference implementation organized as it appears in the repo: `step-1/page.tsx` (four fields, each an atomic-selector + setter pair, with a whole-slice error selector); `step-2/page.tsx` (billing fields via `setBillingField`, `paymentTerms` select, `country` input); `step-3/page.tsx` (`defaultCurrency` and `language` selects, `channels` checkbox toggles); `footer.tsx` (the `currentStep` selector, the `isValid` branch selector, `goNext`/`goBack`, the Next button bundling `goNext` + `router.push`, Next shown only when `currentStep < 4`).
+- Decision rationale: the atomic-selector default vs. whole-slice read; deriving the primitive `.success` inside the `isValid` selector; bundling the store action and router push in one handler; whole-slice validation over per-field.
+- Coverage of the untested requirements: error-text placement and styling (Unit 3 baseline), `markStepComplete` firing inside `goNext` to populate `completedSteps` for the progress indicator, and the Next-button-hidden-on-step-4 branch.
+- Callout that the gate is UX-only and the action is the real contract — link to the chapter 042/043 Zod-and-Result regular lessons rather than re-explaining.
+- Note on not pre-optimizing: `safeParse` on every store change is cheap at this schema size; debouncing or memoizing would be a future move for very large schemas.
+
+### Moment of truth
+
+Run the lesson's test suite (the command and expected pass output the runner prints); the tests cover field writes, inline-error appearance, the Next-gate disabled/enabled transitions, and that Next advances the store's `currentStep`.
+Confirm by hand the outcomes the tests do not cover:
+
+- [ ] Clicking Next pushes the URL to the next `step-N` segment and the progress indicator highlights the new pip (URL/route behavior).
+- [ ] Clicking Back returns to the prior segment with that step's data intact.
+- [ ] On the re-render counter, focusing step-1 firstName and typing ten characters increments only firstName's counter by ten, leaves siblings flat, and re-renders the footer at most once.
+- [ ] Temporarily changing one field's selector to a whole-slice read `useWizardStore((s) => s.contact)` makes all four fields re-render on every keystroke; revert.
 
 ---
 
-## Lesson 6 — Verify clause by clause
+## Lesson 4 — Submit, reset, and guard
 
-Walks every "Done when" clause through the inspector — back/forward preserves, refresh loses by design, atomic re-render scoping, per-request store isolation, action-failure keeps the draft, double-submit fires once — with deliberate flag flips to demo each canonical bug.
+Build the composite-payload Server Action with its audit-log write, read the three slices on step 4 through `useShallow`, and wire the submit button with `useTransition` for the pending and double-submit guard, the success-reset, and the redirect.
+Finished result: completing all four steps and clicking "Create customer" fires one Server-Action POST that inserts the customer and an audit row, then redirects to the new customer's detail page with the wizard reset behind it; a forced failure shows an inline error and leaves the draft intact for retry; a double-click fires the action only once.
 
-Goals:
+### Your mission
 
-- Walk every "Done when" clause from the framing's verify recipe in order. The recipe lists the steps; this lesson is the execution plus surrounding senior commentary.
-- **Back/forward preserves:** fill step 1; advance; fill step 2; Back; step-1 fields show original values. Next; step 2 intact. Use browser back (not wizard Back) to land on step 1; same result. Snapshot panel shows both slices populated throughout. Confirm `<WizardStoreProvider>` is one level above `{children}` in `layout.tsx`.
-- **Refresh loses (the senior call):** complete steps 1-2, advance to step 3. Inspector "Refresh wizard". Wizard reloads at step 1 empty. Snapshot empty. Confirm `store.ts` has no `persist`. Compare to hypothetical persist wiring: deliberately wrap factory in `persist((set, get) => ({...}), { name: 'wizard-v1', storage: createJSONStorage(() => sessionStorage) })`; refresh; wizard resumes mid-flow. Revert.
-- **Submit fires with composite payload:** complete four steps; click "Create customer". Network shows one POST; response `{ ok: true, data: { id } }`. Router pushes to `/customers/[newId]`. Audit-log shows new row in active org.
-- **Success-reset fires only after success:** after redirect, navigate to `/customers/new/step-1`. Empty. Snapshot at initial. Then deliberately remove `reset()` from success branch; complete fresh customer; back to step 1 — fields show previous customer's data. Revert.
-- **Action failure leaves draft intact:** "Force action failure" ON. Complete four steps; submit. Error banner; wizard stays on step 4. Back to step 1 — all fields populated. Then deliberately add `reset()` to error branch; repeat; observe wipe. Revert.
-- **Double-submit fires once:** "Force double-submit" (or manual rapid click). Network shows one POST. Audit-log one new row. `isPending` from `useTransition` is the guard.
-- **Next-gate per-step:** empty step-1 → Next disabled. Valid email but empty firstName → still disabled (whole-slice validity). Fill all → enables. Invalid phone → disables; inline error renders. Next re-renders only when boolean flips — verify via re-render counter.
-- **Atomic selectors keep re-renders surgical:** focus step-1 firstName; type ten characters. Counter shows: firstName + 10, siblings unchanged, footer + 1 (boolean stayed false), progress + 0. Then deliberately change one selector to `useWizardStore((s) => s.contact)` (slice-object read); type ten characters; counter shows all four fields re-rendering ten times each. Revert.
-- **`useShallow` reserved for review step:** grep `useShallow`. One hit in `step-4/page.tsx` (and possibly `submit-button.tsx` if combined). Then deliberately replace step-4's reads with three separate atomic selectors and remove `useShallow`; page still renders correctly. The rule isn't "you must use `useShallow`"; it's "use `useShallow` when read is genuinely a composite mapped-pick."
-- **Store per-request, no leak:** session A: fill step 1. Switch to session B. `/customers/new/step-1` empty. Then flip `STORE_MODULE_SCOPED` debug flag (swaps factory for module-scoped instance); repeat cross-session test; session B sees session A's draft. Flip back.
-- **Provider on shared layout:** read `layout.tsx` — provider wraps four step children. Then flip `PROVIDER_ON_STEP_PAGE` (moves provider into each `step-N/page.tsx`); navigate step 1 → 2 → 1; form clears every navigation. Flip back.
-- **Same Zod schema parses at gate (client) and action (server):** read `step-1/page.tsx` — calls `contactSchema.safeParse` via `validateContact`. Read `actions.ts` — parses `createCustomerInput` which embeds `contactSchema`. Single import, both ends. Then in devtools, fetch the action with a malformed body bypassing the form; action returns `{ ok: false, error: { code: 'invalid-input' } }`; audit-log unchanged.
-- **Zustand scoped to wizard only:** grep `useWizardStore`, `createWizardStore`, `WizardStoreProvider`. Hits only under `src/lib/wizard/` and `app/(app)/customers/new/`.
-- **No Server Component imports the store:** grep imports of `/lib/wizard/store` and `/lib/wizard/use-wizard-store`. Every importer has `'use client'`. The action file imports schemas, not the store. RSC body remains store-free.
-- **Audit log inside the action's transaction:** force-fail the insert by introducing a unique-constraint violation (e.g., email already in seed); action returns `{ ok: false }`; audit-log unchanged because transaction rolled back insert + audit row together. Revert.
-- **Tenancy at the action:** session A (org X) completes the wizard; submit; new customer appears in org X's list, not org Y's. `authedAction`'s session resolution + `tenantDb(ctx.orgId)` scopes the insert.
-- Name the senior calls one more time:
-  - Library scoped to the leaf that meets the threshold; the rest stays Server-Component / Server-Action.
-  - Store factory uses `createStore` from `zustand/vanilla` so each provider mount creates a fresh instance — the per-request pattern.
-  - Provider on shared layout, never on step pages.
-  - Atomic selectors default; `useShallow` reserved for genuine composite mapped picks.
-  - Zod schema is the contract — same parse at client gate and server action.
-  - Store owns the draft; action owns the DB write; submit button is the seam.
-  - Success-reset fires after success; action-failure leaves draft intact.
-  - Refresh-loses is the explicit product call — anything that must survive refresh needs server-side draft persistence (out of scope).
-  - `isPending` from `useTransition` prevents double-submit.
-- Forward references:
-  - Chapter 080 — error discipline at seams; action-failure error rendering is one audited finding (user/operator message split).
-  - Chapter 082 — security baseline audit; wizard's tenancy at the action is one audited finding.
-  - Unit chapter 070 — notifications dispatcher; a "customer created" notification routes through the dispatcher after the audit-log write, not from the submit button.
-  - Unit chapter 089 — component tests; Next-gate validity transitions and submit pending/error states are mechanical against a mocked action.
-  - Chapter 056 — active-org-switch action; production should call wizard `reset()` from inside the org-switch flow as a tenancy-boundary discipline (named once as forward pointer).
-  - Unit chapter 092 — structured logs; `customer.created` audit-log entry is operator-truth side, in-app "Customer created" notification (Unit 13) is user-facing side.
+This lesson closes the loop, and the architectural seam is the point: the store owns the draft in memory, the action owns the DB write, and the submit button is the only place they meet (AP #3 — pure `/lib`, side effects at named boundaries, applied to the client/server split).
+The action re-parses the composite `createCustomerInput` at the boundary, wraps the insert and the `logAudit` call in one `tenantDb(ctx.orgId).transaction` so they commit or roll back together, maps the four-slice payload into the `customers` row (concatenating `firstName`+`lastName` into `name`, spreading billing and preferences directly because the column names match), and maps Postgres `23505` (the `unique (organizationId, email)` violation) to a `conflict` Result mirroring chapter 047's `createInvoice`, rethrowing other errors; the action never imports the store and the store never imports the action.
+Tenancy lives entirely server-side — `authedAction`'s session resolution, the `organizationId` column, and `tenantDb` — and the store knows nothing about `orgId`; this is defense in depth.
+The step-4 review is the one place `useShallow` belongs, because it genuinely reads three slice objects into one new object each render; the senior reflex is that a selector returning a fresh literal object/array wants `useShallow`, while a selector returning a primitive or an existing reference is fine on the default `Object.is` — reaching for `useShallow` everywhere is the over-reach.
+The submit button uses `useTransition`: `isPending` both drives the "Creating…" label and guards double-submit (the first click disables the button so the second click fires no handler), which is the right pending-state shape for a Server Action call over a plain `useState<boolean>` because it keeps the transition's concurrency behavior.
+On success, call `reset()` before `router.push` — order is the discipline: although the wizard layout unmounts on navigation to `/customers/[id]` (so the next visit mounts a fresh provider regardless), reset-first is required in surfaces where the layout stays mounted across reset (a cart in a header), and this is the named senior call that generalizes.
+On failure, set local error state and return without resetting — wiping the draft on a network blip (`if (!result.ok) { reset(); ... }`) is the common bug this lesson exists to prevent; the transient error belongs in component `useState`, not the store, which is for the draft the user owns.
+Choose the explicit button-handler calling the action programmatically over `<form action={createCustomerAction}>` with `useActionState`: the data already lives parsed in the client store, so serializing it back through `FormData` is ceremony with no upside — the senior call is that programmatic call is right when data lives in a client store, and `<form action>` is right when data is in form fields the user just typed.
+Out of scope: writing the new customer's id into the store (it is server state the redirect transitions to, and storing it is role creep), and `crypto.randomUUID()`/idempotency keys (the DB generates the id, and one user/one transition/one submit is naturally idempotent at this layer; `processed_events` lands when retries are external, Unit 11).
 
-Senior calls and watch-outs:
+Requirements checklist:
 
-- Verify lesson rehearses every failure mode the chapter exists to prevent. If a verification fails, point at the owning build lesson.
-- Deliberate failure demos (remove `reset()` from success, add `reset()` to error, flip `STORE_MODULE_SCOPED`, flip `PROVIDER_ON_STEP_PAGE`, wrap factory in `persist`, replace atomic with slice-object selector) must run as named single-flag changes. Verify each in isolation, then revert.
-- Org-switch reset is a forward pointer, not implementation. The chapter does not ship it because the active-org-switch action lives in chapter 056 and the reset hook is a single line — name where it goes, don't reach in.
-- Refresh-loses is the load-bearing product decision named throughout. The chapter does not turn this into a feature flag — anything that must survive refresh would force a server-side draft table, garbage collection, surfacing-on-return UX, and tenancy on drafts. Senior call: accept refresh-loses as the product trade and call out the cost of the alternative.
+- [ ] Completing all four steps with valid data and clicking "Create customer" fires exactly one Server-Action POST whose response is `{ ok: true, data: { id } }`.
+- [ ] The new customer and one `customer.created` audit row are written together in the active org — the audit-log tail shows the new row, and a rolled-back insert (for example a duplicate email) leaves the audit log unchanged.
+- [ ] On success the router pushes to `/customers/[newId]` and the real customer detail page renders.
+- [ ] After a successful submit, navigating back to `/customers/new/step-1` shows the wizard reset to its initial state.
+- [ ] With the inspector "Force action failure" toggle on, submitting shows an inline error under the button and leaves every field populated for retry — the draft survives the failure.
+- [ ] A double-click (or the inspector "Force double-submit") fires the action only once — one POST, one audit row — because `isPending` blocks the second handler.
+- [ ] The step-4 review renders the contact, billing, and preferences slices read through the single `useShallow` selector, and `useShallow` appears nowhere else in the project.
+- [ ] A programmatic action call with a malformed payload returns `{ ok: false, error: { code: 'invalid-input' } }` and leaves both the store and the audit log untouched.
 
-Codebase state at entry: full wizard + submit + success-reset + double-submit guard wired.
-Codebase state at exit: every "Done when" clause verified clause-by-clause; the student can articulate every primitive (`createStore` factory, `useRef`-pinned provider on shared layout, typed `useWizardStore<T>(selector)` hook, atomic selectors, `useShallow` for composite reads, Zod-per-step gate, Server-Action submit boundary, success-reset discipline, `useTransition` double-submit guard, refresh-loses as product call) and which forward unit will lean on it.
+### Coding time
 
-Estimated student time: 30 to 45 minutes.
+Implement against the brief and the lesson's test suite.
+Hidden `<details>` solution walkthrough, framed as material to read after attempting the work:
+
+- Full reference implementation organized as it appears in the repo: `actions.ts` (`createCustomerAction` via `authedAction('member', createCustomerInput, …)` with the transactional insert + `logAudit`, the `23505` → `conflict` mapping, and the plain `submitCustomer` wrapper — or a shared `createCustomerImpl(input, ctx)` — that the button calls because `authedAction`'s return type is `(prev, formData) => Promise<Result>`); `step-4/page.tsx` (the single `useShallow` selector and the three `<dl>` review subsections with `<SubmitButton />` below); `step-4/submit-button.tsx` (`useTransition`, local `error` state, the `onSubmit` calling `submitCustomer`, the reset-then-push success branch, the disabled/labelled button, and the error paragraph).
+- Decision rationale: store/action separation as the seam; `useShallow` only for this composite read; `useTransition`'s `isPending` over plain `useState`; reset-before-push ordering; the transactional audit write; the `23505`→`conflict` mapping.
+- Alternative-rejected note on `<form action>` + `useActionState`: native and progressive-enhancement-friendly, but the payload would have to be re-encoded as `FormData` from already-parsed in-memory slices — ceremony with no upside; programmatic call wins when data lives in a client store.
+- Coverage of the untested requirements: local error state vs. store, not storing the new id, and the org-switch/sign-out `reset()` forward pointer (named once, not implemented — the active-org-switch action lives in chapter 056 and the hook is a single line).
+- For Server Actions, the canonical Result, and `useTransition`, link to the chapter 043/044 regular lessons rather than re-explaining.
+
+### Moment of truth
+
+Run the lesson's test suite (the command and expected pass output the runner prints); the tests cover the happy-path action call and Result shape, the audit row written in the transaction, the double-submit guard reducing two clicks to one POST, the forced-failure path leaving the draft intact, and the malformed-payload rejection.
+Confirm by hand the outcomes the tests do not cover:
+
+- [ ] After submit the router lands on `/customers/[newId]` and the real chapter 062 detail page renders.
+- [ ] Navigating back to `/customers/new/step-1` after a successful submit shows empty fields and an initial snapshot; temporarily removing `reset()` from the success branch leaves the previous customer's data, confirming reset closed the loop; revert.
+- [ ] Temporarily adding `reset()` to the failure branch wipes the draft on a forced failure; revert.
+- [ ] Forcing a unique-constraint violation (an email already in the seed) returns `{ ok: false }` and leaves the audit log unchanged, proving the insert and audit row roll back together.
+- [ ] A session in org X completing the wizard creates the customer in org X's list, not org Y's — tenancy holds at the action.
+- [ ] Grepping `useShallow` returns a single hit on the review step; grepping `useWizardStore`, `createWizardStore`, and `WizardStoreProvider` returns hits only under `src/lib/wizard/` and `app/(app)/customers/new/`; grepping imports of `/lib/wizard/store` and `/lib/wizard/use-wizard-store` shows only Client Components, with the action file importing schemas only.
+- [ ] Refreshing mid-flow (inspector "Refresh wizard") reloads the wizard at step 1 with an empty snapshot, confirming refresh-loses; `store.ts` carries no `persist`.
+
+Forward references the lesson closes on:
+
+- Chapter 080 — error discipline at seams; the action-failure error rendering is one audited finding (user/operator message split).
+- Chapter 082 — security baseline audit; the wizard's tenancy at the action is one audited finding.
+- Chapter 071 — notifications dispatcher; a "customer created" notification routes through the dispatcher after the audit-log write, not from the submit button.
+- Chapter 089 — component tests; Next-gate validity transitions and submit pending/error states are mechanical against a mocked action.
+- Chapter 056 — active-org-switch action; production calls the wizard `reset()` from inside the org-switch flow as a tenancy-boundary discipline.
+- Chapter 092 — structured logs; the `customer.created` audit entry is the operator-truth side, the in-app "Customer created" notification (Unit 13) the user-facing side.

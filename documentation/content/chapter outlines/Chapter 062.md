@@ -2,9 +2,27 @@
 
 ## Chapter framing
 
-Chapter 062 takes the Unit 6 CRUD surface (Chapter 047's invoices) and turns it into the production list view every SaaS app eventually ships: filter, sort, search, and cursor pagination all in the URL through `nuqs`; soft delete plus archive as two distinct lifecycle states; restore from an Archived tab; optimistic concurrency via a `version` column that turns silent last-write-wins into a real 409 with a refresh-and-retry conflict surface. The schema layer (Unit 5), the Server Action shape (chapter 043), the tenant helper (chapter 056's `tenantDb`), and the RBAC wrapper (chapter 057's `authedAction`) are all in place — this chapter wires `searchParams` to the read, layers the soft-delete/archive base-query helper on top of `tenantDb`, and adds the `version` precondition to the update path. The output is a list view a coworker can paste a URL of, refresh a hundred times, archive rows from, restore them, and race two tabs against — every behavior holds.
+Chapter 062 takes the Unit 6 CRUD surface (Chapter 047's invoices) and turns it into the production list view every SaaS app eventually ships: filter, sort, search, and cursor pagination all in the URL through `nuqs`; soft delete plus archive as two distinct lifecycle states; restore from an Archived tab; optimistic concurrency via a `version` column that turns silent last-write-wins into a real 409 with a refresh-and-retry conflict surface.
+The schema layer (Unit 5), the Server Action shape (chapter 043), the tenant helper (chapter 056's `tenantDb`), and the RBAC wrapper (chapter 057's `authedAction`) are all in place — this chapter wires `searchParams` to the read, layers the soft-delete/archive base-query helper on top of `tenantDb`, and adds the `version` precondition to the update path.
+The output is a list view a coworker can paste a URL of, refresh a hundred times, archive rows from, restore them, and race two tabs against — every behavior holds.
 
-Threads that run through every lesson: the URL is the source of truth for filter + sort + search + cursor + visibility; defaults are implicit (stripped from the URL); the page is a Server Component reading a `nuqs` `searchParamsCache`, the client writes via `nuqs` setters with `replace` and `{ scroll: false }`; any change that shrinks or re-orders the result set bundles `cursor: null` in the same setter call; the base-query helper `tenantDb(orgId).invoices.active() / .archived() / .includingDeleted()` is the only way reads touch the table — hand-written `.from(invoices)` is a code-review red flag; every UPDATE has tenancy + lifecycle + `version` preconditions in the `WHERE`; zero rows affected returns the canonical 409 Result with `current` payload so the client renders the conflict without a second fetch; `useActionState` + `useOptimistic` handle the success path, the rollback, and the conflict banner; `useDeferredValue` + `useTransition` keep the search box responsive without a hand-rolled debounce. The chapter ships 1 brief + 1 starter walkthrough + 4 build lessons + 1 verify lesson; each build ends on a runnable state.
+### Project goals
+
+The finished list view is "done" when every one of these behaviors holds. They are the outcomes the build lessons each carry one slice of, and the architect should treat the set as the chapter's acceptance bar:
+
+- Filter, sort, and page changes update the URL; defaults stay implicit (stripped from the URL).
+- Refresh and share both reproduce the view: copying a URL into a fresh private window (same signed-in user) renders the identical list; a hard reload preserves filter, sort, cursor, and view.
+- Deleting an invoice (admin only) removes it from the default `active` list; it reappears under `view=all` with a "Deleted" badge.
+- `view=all` is RBAC-gated to admin: a member sees only `active` and `archived` tabs, and a member who hand-types `?view=all` is served `active` rows.
+- Archive removes a row from the default list and surfaces it in the Archived tab with an "Archived on …" label and a Restore button; Restore returns the row to active and writes an audit-log entry.
+- A partial unique index lets a soft-deleted invoice number be re-created: soft-delete `INV-0001`, create a fresh `INV-0001`, and the create succeeds.
+- Editing the same invoice from two tabs returns a 409 on the second submit, with a conflict banner showing the current server values and "Use latest" / "Overwrite" affordances; "Use latest" resets the form to `current` and advances the hidden `version` so the resubmit succeeds.
+- `useOptimistic` rolls back automatically on action failure, and the conflict banner renders alongside the rolled-back state.
+- The search input stays responsive while URL writes are throttled (settling roughly every 200ms, no back-button spam).
+- Any change that re-orders or shrinks the result set bundles `cursor: null`, so a filter/sort/search change drops the cursor and shows page one of the new result set.
+
+Threads that run through every lesson: the URL is the source of truth for filter + sort + search + cursor + visibility; defaults are implicit; the page is a Server Component reading a `nuqs` `searchParamsCache`, the client writes via `nuqs` setters with `replace` and `{ scroll: false }`; any change that shrinks or re-orders the result set bundles `cursor: null` in the same setter call; the base-query helper `tenantDb(orgId).invoices.active() / .archived() / .includingDeleted()` is the only way reads touch the table — hand-written `.from(invoices)` is a code-review red flag; every UPDATE has tenancy + lifecycle + `version` preconditions in the `WHERE`; zero rows affected returns the canonical 409 Result with `current` payload so the client renders the conflict without a second fetch; `useActionState` + `useOptimistic` handle the success path, the rollback, and the conflict banner; `useDeferredValue` + `useTransition` keep the search box responsive without a hand-rolled debounce.
+The chapter ships 1 overview + 4 implementation lessons; each implementation lesson ends on a runnable, verifiable state.
 
 ### Dependency carry-in
 
@@ -57,6 +75,11 @@ scripts/
   seed.ts                      # provided from chapter 041, plus a seeded "already archived" row and a "already soft-deleted" row
 ```
 
+The starter ships everything from chapter 047 working: the existing Unit 6 list view and edit form render, but with no URL state (filters are local), no archive/restore buttons, and an update path that silently overwrites on a two-tab race.
+The route segment moved from `app/invoices/[invoiceId]/edit-invoice-form.tsx` to `app/(app)/invoices/[id]/edit/edit-form.tsx` as part of the starter packaging (`[invoiceId]` → `[id]`); same component contract, new path, so the list and edit routes coexist cleanly.
+The migration that added `deletedAt`, `archivedAt`, `version`, and the partial indexes is already applied, and `version` defaults to 1 across every existing row (the senior call from lesson 3 of chapter 061).
+The base-query helper is empty intentionally; the existing `listInvoices` still uses raw `db.select().from(invoices).where(eq(invoices.organizationId, orgId))` — a bug by lesson 2 of chapter 061's standard that the student fixes in lesson 3.
+
 ### Reference solution signatures lessons display
 
 - **Parsers and search-params cache** (`src/lib/invoices/search-params.ts`):
@@ -90,28 +113,11 @@ A single Server Component at `/inspector` for verification, all read from `searc
 - **Header:** Org switcher (two seeded orgs), session-user switcher (admin user / member user — drives RBAC verification), "Reset and re-seed" form posting to a Server Action.
 - **Row-counts banner:** counts of `invoices` total / `active` / `archived` / `soft-deleted` for the current org, computed via `includingDeleted()` plus filtered counts. Updates after every action.
 - **Audit-log tail:** the last 20 `audit_logs` rows for the current org, streamed via Server Component refresh. Each archive / restore / soft-delete / update writes here.
-- **"Force version drift" tool:** a debug control that runs a raw `UPDATE invoices SET version = version + 1 WHERE id = :id` against a target row, bypassing the action layer — used in lesson 5 of chapter 062 to reproduce the 409 deterministically without juggling two real tabs.
+- **"Force version drift" tool:** a debug control that runs a raw `UPDATE invoices SET version = version + 1 WHERE id = :id` against a target row, bypassing the action layer — used in the two-tabs lesson to reproduce the 409 deterministically without juggling two real tabs.
 - **"Open this invoice in two tabs" helper:** a button that opens `/invoices/:id/edit` in a new window plus copies the URL — convenience for the manual two-tab race.
 - **Live partial-index probe:** a small panel running `EXPLAIN ANALYZE` on the current list query and printing the index name used; verifies the `WHERE deletedAt IS NULL` partial index gets picked.
 
 The inspector is provided in full; the student writes only the actions and parsers it exercises.
-
-### Verify recipe mapped to "Done when"
-
-| Done-when clause | Verify step |
-| --- | --- |
-| Filter + sort + page changes update the URL | Click status `paid`; URL shows `?status=paid`. Sort by total; URL shows `?sort=-total`. Click Next; URL carries `?cursor=...`. Defaults stay implicit. |
-| Refresh and share both reproduce the view | Copy any URL, paste in a private window (signed in as the same user); list renders identically. Hard reload preserves filter, sort, cursor, view. |
-| Deleting an invoice removes it from the default list | As admin, click "Delete" on an active row; row vanishes from the default `view=active` list. Switch to `view=all`; the row appears with a "Deleted" badge. |
-| Soft-deleted row appears under "show deleted" | `view=all` is RBAC-gated to admin; member sees only `active` and `archived` tabs; admin sees `all`. |
-| Editing from two tabs returns 409 on the second submit | Open the same invoice in two tabs; edit and save the first; edit and save the second; the second renders the conflict banner with the current server values and the "Use latest" / "Overwrite" affordances. |
-| Conflict banner offers refresh-and-retry | Click "Use latest"; form state resets to `current`, the hidden `version` advances; resubmitting succeeds. |
-| Archive removes from default list, surfaces in Archived tab | Click "Archive" on an active row; row vanishes from `view=active`; switch to `view=archived`; row appears with the "Archived on …" label and a "Restore" button. |
-| Restore returns the row to active | From `view=archived`, click "Restore"; row reappears in `view=active`; audit log shows the event. |
-| Partial unique index allows re-creating a soft-deleted invoice number | As admin, soft-delete invoice `INV-0001`; create a new invoice with `number = INV-0001`; the create succeeds (because the partial unique index excludes the soft-deleted row). |
-| `useOptimistic` rolls back on action failure | Force the update to fail via the inspector's "drift version" tool, submit the edit; the optimistic state rolls back automatically; the conflict banner renders. |
-| Search input stays responsive while the URL writes are throttled | Type a long query fast; the input never lags; the URL writes settle every ~200ms; no history-entry spam. |
-| Cursor reset on filter / sort / search change | With a non-null `cursor`, change status; URL drops `cursor`; list shows page 1 of the new filter. |
 
 ### Concepts demonstrated → owning lesson
 
@@ -131,183 +137,233 @@ The inspector is provided in full; the student writes only the actions and parse
 
 ---
 
-## Lesson 1 — The list view every SaaS ships
+## Lesson 1 — Project Overview
 
-Frames the project goal — turning the Unit 6 invoice CRUD into a URL-state list with soft delete, archive, restore, and optimistic concurrency — and names the "Done when" verifications, scope cuts, and senior payoff.
+The student leaves with the chapter 047 starter running locally — the existing Unit 6 list view and edit form working, but with no URL state, no archive/restore, and a silent last-write-wins update path. No feature is built.
 
-Goals:
+### What we're building
 
-- Frame what's being built: take the Unit 6 invoice CRUD surface and ship the production list view — URL-state filter/sort/search/pagination, soft-delete + archive + restore, optimistic concurrency on update. Show one screenshot of the finished `/invoices` page with the toolbar, the table, the active-filter chips, the pagination row, and the view tabs visible.
-- State the "Done when" verifications in one paragraph (URL captures every view-state piece; share-and-refresh holds; archive moves rows to the archived tab and restore brings them back; soft-delete hides rows from default but surfaces under `view=all` for admins; two-tab edit returns 409 with a conflict banner; optimistic rollback fires on action failure).
-- Name the scope cuts: no bulk actions (a senior would add multi-select + bulk archive but that's a separate UX pass — out of scope); no saved views / named presets (out of scope); no real-time list updates (no notifications wiring — Unit 13); no full-text search (Postgres `ilike` is enough for the seeded data — FTS lives in lesson 8 of chapter 038 if the student wants it); no Row-Level Security (application-layer tenancy is the course default — RLS named in chapter 061 as the alternative).
-- Set the senior payoff: the list view is the canonical SaaS screen — every internal tool, dashboard, and admin app becomes one. The patterns shipped here (URL state, base-query helper, version precondition, refresh-and-retry conflict UX) carry into every subsequent feature the student writes.
-- Show the end UX: a short animated capture of the toolbar interactions and the two-tab conflict flow.
-- Link the starter via `degit`.
+We take the Unit 6 invoice CRUD surface and ship the production list view every SaaS app eventually grows into: URL-state filter, sort, search, and cursor pagination; soft delete plus archive as two distinct lifecycle states; restore from an Archived tab; and optimistic concurrency on update that turns a silent two-tab overwrite into a real 409 with a refresh-and-retry conflict surface.
+Show one screenshot of the finished `/invoices` page with the toolbar, the table, the active-filter chips, the pagination row, and the view tabs all visible.
 
-Senior calls and watch-outs:
+### What we'll practice
 
-- The starter ships everything from chapter 047 working — this project is layering URL state on top and adding the lifecycle + concurrency disciplines. Resist the urge to rewrite the form or the actions wholesale.
-- The `view=all` tab is admin-only; the inspector intentionally shows the tab regardless of role so the student can verify the server-side refusal (defense-in-depth, not a missed UX hide — the chapter 059 lesson).
+- Promoting view-state (filter, sort, search, cursor, visibility) out of component state and into the URL so a view is shareable and survives refresh.
+- Composing a lifecycle-aware base-query helper on top of the tenant helper so reads cannot forget the tenancy or the `deletedAt IS NULL` filter.
+- Adding tenancy + lifecycle + `version` preconditions to every UPDATE and turning zero-rows-affected into an honest 409.
+- Wiring `useActionState` + `useOptimistic` to handle the success path, the automatic rollback, and the conflict banner in one shape.
 
-Codebase state at entry: empty repo (student runs `degit`).
-Codebase state at exit: starter cloned, `docker compose up -d` running Postgres, `pnpm install` clean, `pnpm db:migrate && pnpm db:seed` populated, `pnpm dev` shows the existing Unit 6 list view and edit form working — but with no URL state (filters are local, no archive/restore buttons, update silently overwrites on a two-tab race).
+### Architecture
 
-Estimated student time: 10 to 15 minutes.
+A labeled list of the moving parts and how they connect:
 
----
+- The `/invoices` page is a Server Component that parses the URL via a `nuqs` `searchParamsCache` and calls `listInvoices` with the parsed slice.
+- The toolbar is a Client Component that writes filter/sort/search/view/cursor back to the URL via `nuqs` setters (`replace`, `{ scroll: false }`), bundling `cursor: null` on any change that re-orders or shrinks the result set.
+- `listInvoices` reads exclusively through `tenantDb(orgId).invoices.active() / .archived() / .includingDeleted()`, routing on the `view` param (with `all` gated to admin at the read).
+- The lifecycle and update actions are `authedAction`-wrapped, run their UPDATE with tenancy + lifecycle + `version` preconditions, and write an audit-log row inside the same transaction.
+- The edit form carries a hidden `version` field; on a 409 it renders a conflict banner built from the `current` payload the action returns in the same round trip.
 
-## Lesson 2 — Tour the starter
+### Starting file tree
 
-Walks the stub vs. provided file tree, the lifecycle columns and partial indexes in the schema, the seeded archived and soft-deleted rows, the inspector verification surface, and the `tenantDb` plus `authedAction` helpers the project leans on.
+See the annotated tree in the Chapter framing above. The highlighted focus — the files carrying TODOs the student fills — are `search-params.ts`, `scoped-query.ts`, `actions.ts`, `queries.ts`, `toolbar.tsx`, `table.tsx`, `pagination.tsx`, and `edit-form.tsx`; everything else is provided.
 
-Goals:
+### Roadmap
 
-- Walk the file tree, calling out provided vs. stubbed. Linger on five files: the `searchParams.ts` stub (where the `nuqs` parsers go), `scoped-query.ts` (the empty helper module), `actions.ts` (the existing `updateInvoice` from chapter 047 that still needs the `version` precondition + the three new lifecycle actions), `app/(app)/invoices/page.tsx` (the Server Component shell that already calls `searchParamsCache.parse(props.searchParams)` — but the cache is empty), and `app/(app)/invoices/[id]/edit/edit-form.tsx` (the chapter 047 form, no hidden `version` field yet, no conflict banner). Call out the reframe: the chapter 047 edit form moved from `app/invoices/[invoiceId]/edit-invoice-form.tsx` to `app/(app)/invoices/[id]/edit/edit-form.tsx` as part of the starter packaging, and the route segment was renamed `[invoiceId]` → `[id]`. Same component contract, new path — the starter wraps the list view's detail/edit split into its own segment so the list and edit routes coexist cleanly.
-- Read the schema: confirm `deletedAt`, `archivedAt`, `version` columns on `invoices`; confirm the partial unique index `invoices_org_number_active_uq` on `(organizationId, number) WHERE deletedAt IS NULL`; confirm the partial composite index `invoices_org_status_created_id_active_idx` on `(organizationId, status, createdAt desc, id desc) WHERE deletedAt IS NULL AND archivedAt IS NULL`. These were added in a migration as part of Chapter 061's reading — verify by opening Drizzle Studio.
-- Read the seed: 60+ invoices per org, one row pre-archived (`archivedAt` set), one row pre-soft-deleted (`deletedAt` set), one row with a duplicated `number` against a soft-deleted row to prove the partial unique index works.
-- Read the inspector: confirm the row-counts banner, the "Force version drift" tool, the "Open this invoice in two tabs" helper, the audit-log tail. The inspector is the verification surface for every later lesson.
-- Run the app: confirm the existing list view renders, the existing edit form saves successfully (no concurrency), the filters in the toolbar are local state only (refresh wipes them).
-- Read `src/lib/tenant-db.ts` and `src/lib/authed-action.ts` end-to-end — the helpers from chapter 059 are load-bearing for every action this project writes; the student should remember the call shape.
+One Card per lesson in a CardGrid:
 
-Senior calls and watch-outs:
+- **Lesson 2 — Move every control to the URL.** Adds the `nuqs` parsers, the `searchParamsCache`, the toolbar, active-filter chips, cursor pagination, and the deferred-search rhythm so filter/sort/search/page all live in the URL.
+- **Lesson 3 — Scoped reads and the view tabs.** Adds the `invoiceScope` helper on `tenantDb` and routes `listInvoices` on the `view` param with RBAC gating, so the Active / Archived / All tabs each return the right rows.
+- **Lesson 4 — Archive, restore, and delete.** Adds the `archiveInvoice`, `restoreInvoice`, and `softDeleteInvoice` actions with audit-log writes and wires them to the row action menu.
+- **Lesson 5 — Two tabs, one winner.** Adds the `version` precondition to `updateInvoice`, returns a 409 with `current`, and renders the conflict banner with "Use latest" and an admin-gated "Overwrite".
 
-- The migration that added `deletedAt`, `archivedAt`, `version`, and the partial indexes is already applied. The `version` defaults to 1 across every existing row — the senior call from lesson 3 of chapter 061.
-- The base-query helper is empty intentionally; the existing `listInvoices` still uses raw `db.select().from(invoices).where(eq(invoices.organizationId, orgId))` — a bug by lesson 2 of chapter 061's standard. The student fixes it in lesson 4 of chapter 062.
+### Setup
 
-Codebase state at entry: starter cloned, Postgres running, schema migrated, seed loaded.
-Codebase state at exit: student has read every provided file, run the app, clicked through the existing surface, opened the inspector. No code written. The list view still has no URL state, no archive button, and no version precondition.
-
-Estimated student time: 20 to 25 minutes.
+The student runs `degit` to clone the starter, then the standard bring-up. List the exact command sequence in a Steps component: clone via `degit`, `docker compose up -d` (Postgres), `pnpm install`, `pnpm db:migrate`, `pnpm db:seed`, `pnpm dev`.
+Env vars are unchanged from chapter 047 / chapter 059 — copy `.env.example` to `.env` (`DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `BETTER_AUTH_SECRET`, `RESEND_API_KEY`, `SEED`); no new entries this chapter.
+On success, `pnpm dev` serves the existing Unit 6 list view and edit form: the filters in the toolbar are local state only (refresh wipes them), there are no archive/restore buttons, and the update path silently overwrites on a two-tab race.
+Point the student at `/inspector` as the verification surface every later lesson uses: the row-counts banner, the "Force version drift" tool, the "Open this invoice in two tabs" helper, and the audit-log tail.
 
 ---
 
-## Lesson 3 — Move every control to the URL
+## Lesson 2 — Move every control to the URL
 
-Builds the `nuqs` parsers and `searchParamsCache`, wires the Server Component page and the toolbar Client Component, refactors `listInvoices` to the parsed shape, adds active-filter chips, cursor pagination, and the deferred-search rhythm with the cursor-reset invariant.
+Take the toolbar's local filter state and lift filter, sort, search, view, and cursor into the URL, so any view is a paste-able link that survives a refresh.
+Finished result: clicking any control rewrites the URL, the active-filter chips render above the table, pagination advances the cursor, and the search box stays responsive while it writes — and pasting that URL into a fresh tab reproduces the view exactly.
 
-Goals:
+### Your mission
 
-- Fill `src/lib/invoices/search-params.ts`: define the five parsers (`status`, `sort`, `q`, `view`, `cursor`) and export `invoiceListSearchParams` and `invoiceListSearchParamsCache` via `createSearchParamsCache`. Match the parsers to the reference signatures.
-- Wire `app/(app)/invoices/page.tsx`: replace the empty-cache call with `const parsed = await invoiceListSearchParamsCache.parse(props.searchParams)`. Pass `parsed` slices into `listInvoices`. Pass the parsed values as props into `<Toolbar parsed={parsed} />` so the Client Component renders controlled inputs without re-reading the URL.
-- Refactor `listInvoices` to accept `{ status, sort, q, view, cursor, pageSize }` matching the parsed shape. Translate `sort` to a Drizzle `orderBy` tuple (one helper `resolveSort(sort)` mapping the enum string to `[column, direction]`). Apply `ilike(invoices.number, \`%${q}%\`)` or join-and-`ilike` against `customers.name` when `q` is non-empty.
-- Fill `app/(app)/invoices/toolbar.tsx`: a single Client Component using `useQueryStates(invoiceListSearchParams)`. Render the status dropdown (`<Select>`), the sort dropdown, the search input, the view tabs (`active` / `archived` / `all`). Every setter bundles `cursor: null` for the reset invariant. The search input holds typed state in `useState`, syncs via `useDeferredValue` + `useTransition` to `setQueryStates({ q: deferred, cursor: null })`.
-- Fill `app/(app)/invoices/pagination.tsx`: read `cursor` via `useQueryState`. Receive `nextCursor` and `hasPrev` as props from the server. "Next" calls `setCursor(nextCursor)`; "Previous" is conditional on `hasPrev` and pops to the prior page (or, simpler for this lesson, clears the cursor — the senior call to take the "next-only" path is named explicitly).
-- Render the active-filter chips above the table: a small Server Component that reads `parsed` and emits `<Chip key="status" label="Status: Paid" />` etc. Each chip's "x" is a Client `<ClearChip param="status" />` that calls `setQueryStates({ status: null, cursor: null })`.
-- Wrap the root layout in `<NuqsAdapter>` if the starter hasn't already (sanity check — it should be wrapped from chapter 060).
-- Run the app: click through every control, watch the URL change, refresh the page, copy and paste the URL into a new tab, verify the view reproduces. The view tabs work but only `active` returns rows (the helper still hand-filters; the archived rows already exist but the existing `listInvoices` doesn't yet branch on `view` — that's lesson 4 of chapter 062).
+This is the URL-state layer of the production list view.
+The URL is the source of truth for every piece of view-state that should survive a refresh, a share, or the back button — filter, sort, search, cursor, and the visibility tab — and the page is a Server Component that reads that URL through a `nuqs` `searchParamsCache` while the toolbar Client Component writes back through `nuqs` setters.
+Default values stay out of the URL: `nuqs` strips them, so the bare `/invoices` is the home state and only differences from default appear.
+The invariant that keeps pagination honest is that every setter which re-orders or shrinks the result set bundles `cursor: null` in the same call — miss it on a single setter and you ship the canonical stale-cursor bug.
+Use `replace`-only history (the search parser sets `history: 'replace'` explicitly) so a fast-changing filter does not bury the back button under fifty entries, and keep the search box responsive with `useDeferredValue` + `useTransition` driving the throttled URL write rather than a hand-rolled debounce.
+Out of scope for this lesson: the view tabs render but only `active` returns rows — branching `listInvoices` on `view` is the next lesson; lifecycle actions and the version precondition come later still.
 
-Senior calls and watch-outs:
+- Clicking a status, sort, or view control rewrites the URL to reflect it, and clearing back to defaults leaves the bare `/invoices` URL with no query string.
+- Copying the URL into a fresh private window signed in as the same user reproduces the identical list, and a hard reload preserves filter, sort, cursor, and view.
+- The active-filter chips render above the table for every non-default filter, and each chip's clear control removes that filter (and the cursor) from the URL.
+- Clicking Next advances the list by carrying a new `cursor` in the URL; the cursor is dropped whenever the status, sort, or search changes, so the new result set starts at page one.
+- Typing a long query fast keeps the input perfectly responsive while the URL settles roughly every 200ms, leaving only one or two back-button entries rather than one per keystroke.
 
-- Default values stay out of the URL — `nuqs` strips them. The empty `/invoices` URL is the home state; only differences from default appear.
-- Every setter that re-orders or shrinks the result set bundles `cursor: null` — the invariant from lesson 2 of chapter 060 and lesson 4 of chapter 060. Missing this on one setter is the canonical bug.
-- The search input's typed state lives in the component; the deferred value drives the URL. Wrapping the URL write in `useTransition` keeps the input responsive without a hand-rolled debounce — the lesson 3 of chapter 060 rhythm.
-- `replace` only — `nuqs`'s default for `useQueryStates` is `replace`, but the search parser explicitly sets `history: 'replace'` for clarity. Filter chip changes producing 50 back-button entries is the easy regression.
+### Coding time
 
-Codebase state at entry: parsers stub empty, toolbar uses local `useState`, page reads no URL state.
-Codebase state at exit: every interaction in the toolbar updates the URL; refresh and share reproduce the view; the active-filter chips render; pagination wires the cursor; the search input is responsive. The view tabs render but `archived` and `all` still return active rows only (helper not yet branching) — fixed in lesson 4 of chapter 062.
+Direct the student to fill the parsers, the page wiring, the toolbar, the pagination control, and the chips against the brief and the tests, then attempt it before opening the solution.
 
-Estimated student time: 50 to 65 minutes.
+Solution walkthrough (hidden in `<details>`):
+
+- `src/lib/invoices/search-params.ts`: define the five parsers (`status`, `sort`, `q`, `view`, `cursor`) and export `invoiceListSearchParams` plus `invoiceListSearchParamsCache` via `createSearchParamsCache`, matching the reference signatures above.
+- `app/(app)/invoices/page.tsx`: replace the empty-cache call with `const parsed = await invoiceListSearchParamsCache.parse(props.searchParams)`, pass the parsed slices into `listInvoices`, and pass the parsed values as props into `<Toolbar parsed={parsed} />` so the Client Component renders controlled inputs without re-reading the URL.
+- `listInvoices`: accept `{ status, sort, q, view, cursor, pageSize }` matching the parsed shape; translate `sort` to a Drizzle `orderBy` tuple via one `resolveSort(sort)` helper; apply `ilike(invoices.number, \`%${q}%\`)` (or a join-and-`ilike` against `customers.name`) when `q` is non-empty. (Reads still hand-filter tenancy here; the scoped helper lands next lesson.)
+- `app/(app)/invoices/toolbar.tsx`: a single Client Component using `useQueryStates(invoiceListSearchParams)` — status dropdown, sort dropdown, search input, view tabs (`active` / `archived` / `all`). Every setter bundles `cursor: null`. The search input holds typed state in `useState` and syncs via `useDeferredValue` + `useTransition` to `setQueryStates({ q: deferred, cursor: null })`.
+- `app/(app)/invoices/pagination.tsx`: read `cursor` via `useQueryState`; receive `nextCursor` and `hasPrev` as props from the server. "Next" calls `setCursor(nextCursor)`; explain the senior call to take the simpler "next-only" path for this lesson (Previous clears the cursor) versus a full bidirectional cursor stack.
+- Active-filter chips: a small Server Component that reads `parsed` and emits `<Chip key="status" label="Status: Paid" />` etc., each chip's "x" a Client `<ClearChip param="status" />` calling `setQueryStates({ status: null, cursor: null })`.
+- Sanity-check that the root layout is wrapped in `<NuqsAdapter>` (it should be, from chapter 060).
+- Decision rationale to surface: why defaults are stripped (clean shareable URLs), why `cursor: null` rides along on every shrinking/reordering setter, why the deferred value (not the raw input) drives the URL write. For the `nuqs` parser and `searchParamsCache` mechanics link to chapter 060 rather than re-explaining.
+
+### Moment of truth
+
+Run the lesson's test suite (state the command and the expected pass output) covering the URL-encoding and cursor-reset behavior.
+Then confirm by hand, ticking each off:
+
+- Click status `paid`, sort by total, click Next; the URL shows `?status=paid&sort=-total&cursor=...`. Clear filters; the URL becomes a bare `/invoices`.
+- Copy any URL into a private window signed in as the same user; the list renders identically. Hard reload; filter, sort, cursor, and view all survive.
+- With a non-null cursor, change the status; the URL drops `cursor` and the list shows page one of the new filter (repeat for sort and search).
+- Type a fast 30-character query; the input never lags, the URL writes settle roughly every 200ms, and the back-button count stays at one or two entries rather than thirty.
+- Note the expected partial state: the view tabs render but `archived` and `all` still return active rows only (the helper does not yet branch on `view`) — fixed in lesson 3.
 
 ---
 
-## Lesson 4 — Scoped reads, archive, restore, delete
+## Lesson 3 — Scoped reads and the view tabs
 
-Implements `invoiceScope(orgId)` with `active()` / `archived()` / `includingDeleted()` on top of `tenantDb`, routes `listInvoices` on the `view` param with RBAC gating, and ships the `archiveInvoice`, `restoreInvoice`, and `softDeleteInvoice` Server Actions with audit-log writes inside the same transaction.
+Replace the hand-written list query with a lifecycle-aware, tenant-scoped helper and route the read on the `view` param, so the Active / Archived / All tabs each return the right rows.
+Finished result: switching tabs returns the correct row set — Active hides archived and deleted rows, Archived shows the seeded archived row, and All (admin only) shows the seeded soft-deleted row with a "Deleted" badge — while a member who hand-types `?view=all` is quietly served `active` rows.
 
-Goals:
+### Your mission
 
-- Fill `src/lib/invoices/scoped-query.ts`: implement `invoiceScope(orgId)` returning `{ active(), archived(), includingDeleted() }`. Each method returns a chainable Drizzle builder pre-scoped to `eq(invoices.organizationId, orgId)` plus the lifecycle predicate. Export the shared `activeFilter` and `archivedFilter` `sql` fragments so hand-written joins can reuse them.
-- Wire the helper through `tenantDb`: the call site is `tenantDb(ctx.orgId).invoices.active()` — same shape Chapter 056 used; this project layers the lifecycle methods on the tenant-scoped table. Show the composition in one place; the rest of the project uses the named shape.
-- Refactor `listInvoices` to route on `view`: `'active'` → `active()`, `'archived'` → `archived()`, `'all'` → `includingDeleted()` (RBAC-gated at the page layer — `view=all` is dropped to `active` unless `ctx.role === 'admin'`). The pagination filter, status filter, sort, and cursor predicate compose on the builder returned by the helper.
-- Refactor `getInvoiceDetail` similarly: route on `view` (or accept `includeArchived` / `includeDeleted` booleans). The detail page for an archived invoice still loads (so restore works); the detail page for a soft-deleted invoice only loads for admin.
-- Fill the three lifecycle Server Actions in `src/lib/invoices/actions.ts`:
-  - `archiveInvoice = authedAction('member', z.strictObject({ id: z.string().uuid(), version: z.number().int() }), async ({ id, version }, ctx) => { ... })`. The UPDATE uses the scoped query — `tenantDb(ctx.orgId).invoices.active().update({ archivedAt: sql\`NOW()\`, version: sql\`version + 1\`, updatedAt: sql\`NOW()\` }).where(and(eq(invoices.id, id), eq(invoices.version, version))).returning()`. Zero rows means 409; one row means success. Wrap in `db.transaction` with `logAudit(tx, { action: 'invoice.archive', subjectType: 'invoice', subjectId: id, orgId: ctx.orgId, actorUserId: ctx.user.id, payload: {} })`.
-  - `restoreInvoice`: clears whichever of `archivedAt` / `deletedAt` is set. Uses `includingDeleted()` for the read leg (an admin restoring a soft-deleted row) but `archived()` for the typical member-restoring-archived path — the senior call to write two variants vs. one is named (one action, branch on role inside).
-  - `softDeleteInvoice = authedAction('admin', z.strictObject({ id, version }), ...)`. Sets `deletedAt = NOW()`. Cascade soft-delete on `invoice_lines` is handled inside the same transaction via a second UPDATE (or relies on `ON DELETE CASCADE` not firing — name the application-level cascade explicitly).
-- Wire the three actions to the row action menu in `app/(app)/invoices/table.tsx`: each `<form action={archiveInvoice}>` (or `<button formAction={...}>`) with hidden `id` and `version` fields. Use `useActionState` for the in-flight indicator and the conflict surface.
-- Optional: an `<RestoreButton />` in the archived tab that calls `restoreInvoice` and an `<UnDeleteButton />` (admin-only) on `view=all` rows with `deletedAt` set.
-- Run the app: switch between view tabs, archive a row from `active`, see it move to `archived`, click restore, see it return. As admin, soft-delete a row; switch to `view=all`; see it with a "Deleted" badge. The list query now uses the partial composite index on the active hot path — verify in the inspector's index probe.
+This lesson installs the read discipline the whole project leans on.
+Right now `listInvoices` reaches the table through a raw `db.select().from(invoices).where(eq(invoices.organizationId, orgId))` — a bug by the chapter 061 standard, because nothing stops a read from forgetting the tenancy filter or the `deletedAt IS NULL` lifecycle filter.
+You replace that with `invoiceScope(orgId)`, a helper layered on `tenantDb` that returns `active()`, `archived()`, and `includingDeleted()` builders, each pre-filtered by org and the matching lifecycle predicate, so the base-query helper plus `tenantDb` makes "I forgot the filter" structurally impossible at hand-written reads — and a lint rule against bare `.from(invoices)` is the second-layer defense.
+Route `listInvoices` (and `getInvoiceDetail`) on the `view` param, and enforce the RBAC gate at the read, not just in the toolbar: `view=all` drops to `active` unless `ctx.role === 'admin'`, so a member who hand-types the URL is refused at the data layer.
+The status filter, sort, cursor predicate, and pagination compose onto whichever builder the helper returns.
+Lean on the already-seeded archived and soft-deleted rows to confirm the tabs; the buttons that create new lifecycle states come in the next lesson.
 
-Senior calls and watch-outs:
+- Switching to the Archived tab returns the seeded archived row (and only archived rows); switching to Active hides both archived and soft-deleted rows.
+- As an admin, the All tab returns every row including the seeded soft-deleted one, marked with a "Deleted" badge; the detail page for an archived invoice loads, and for a soft-deleted invoice loads only for admin.
+- As a member, the All tab is absent from the toolbar, and hand-typing `?view=all` serves `active` rows — the refusal happens at the read.
+- The active-rows list query is served by the partial composite index (no `Seq Scan`), confirmed in the inspector's `EXPLAIN ANALYZE` probe.
 
-- The helper composes with `tenantDb` — both filters land in the same `where`, neither is hand-typed at the call site. Hand-writing `.from(invoices).where(eq(orgId, ...))` is the failure mode lesson 2 of chapter 061 named; the lint rule is the second-layer defense.
-- `view=all` is RBAC-gated at the page layer, not just at the toolbar. A member who hand-types `?view=all` gets `view=active` rows back — defense at the read, not at the UI hide.
-- The lifecycle actions write an audit log in the same transaction as the UPDATE. Failure to write the audit log rolls back the lifecycle change — the discipline from lesson 3 of chapter 081. The starter's `logAudit` helper takes the transaction as a parameter to make this composition mechanical.
-- The partial unique index on `(orgId, number) WHERE deletedAt IS NULL` is what lets a soft-deleted `INV-0001` and a new `INV-0001` coexist — verify by creating one (already in the seed) and watching the create succeed.
-- `useOptimistic` on archive/restore is optional but a senior reach — the row disappears from the table the moment the user clicks, rolls back on a 409. Wire it on archive; the rollback is automatic.
+### Coding time
 
-Codebase state at entry: parsers + toolbar wired, list query doesn't yet branch on `view`, lifecycle actions don't exist.
-Codebase state at exit: scoped query helper in place, list query branches on `view` and respects the RBAC gate, three lifecycle actions live and audit-log-writing, row action menu exposes them, archive / restore / soft-delete all work end-to-end. The update action still has no `version` precondition — silent last-write-wins still possible — fixed in lesson 5 of chapter 062.
+Direct the student to implement the scoped helper and the `view` routing against the brief and the tests before reading on.
 
-Estimated student time: 60 to 80 minutes.
+Solution walkthrough (hidden in `<details>`):
+
+- `src/lib/invoices/scoped-query.ts`: implement `invoiceScope(orgId)` returning `{ active(), archived(), includingDeleted() }`, each a chainable Drizzle builder pre-scoped to `eq(invoices.organizationId, orgId)` plus its lifecycle predicate. Export the shared `activeFilter` and `archivedFilter` `sql` fragments so hand-written joins can reuse them.
+- Composition with `tenantDb`: the call site is `tenantDb(ctx.orgId).invoices.active()` — the same shape chapter 056 used, with the lifecycle methods layered on the tenant-scoped table. Show the composition once; the rest of the project uses the named shape.
+- `listInvoices`: route on `view` — `'active'` → `active()`, `'archived'` → `archived()`, `'all'` → `includingDeleted()` — with `view=all` dropped to `active` at the page layer unless `ctx.role === 'admin'`. The status filter, sort, cursor predicate, and pagination compose on the returned builder.
+- `getInvoiceDetail`: route on `view` (or accept `includeArchived` / `includeDeleted` booleans) so an archived invoice's detail page loads for restore, and a soft-deleted invoice's detail page loads only for admin.
+- Decision rationale to surface: why the RBAC gate lives at the read and not only at the toolbar hide (defense at the data layer), and why exporting the `sql` fragments lets the rare hand-written join stay consistent with the helper. Link to lesson 2 of chapter 061 for the helper pattern itself rather than re-deriving it.
+- This lesson completes the view-tab behavior the toolbar wired in lesson 2 but could not yet satisfy.
+
+### Moment of truth
+
+Run the lesson's test suite (state the command and expected pass output) covering the `view` routing and the RBAC gate.
+Then confirm by hand:
+
+- Switch to Archived; the seeded archived row appears and active rows do not. Switch to Active; the archived and soft-deleted rows are hidden.
+- As admin, switch to All; the seeded soft-deleted row appears with a "Deleted" badge. Open its detail page (loads for admin); confirm an archived invoice's detail page also loads.
+- As a member, confirm the All tab is hidden in the toolbar; hand-type `?view=all` and confirm the list still returns `active` rows.
+- Open the inspector's index-probe panel; confirm the active-rows list query uses `invoices_org_status_created_id_active_idx` with no `Seq Scan`.
+
+---
+
+## Lesson 4 — Archive, restore, and delete
+
+Ship the three lifecycle Server Actions — archive, restore, and soft-delete — each writing an audit-log row in the same transaction, and wire them into the row action menu.
+Finished result: archiving a row from the Active tab makes it vanish and reappear under Archived with a Restore button; Restore returns it to Active; and an admin can soft-delete a row so it disappears from the default list and surfaces under All with a "Deleted" badge — every action recorded in the audit-log tail.
+
+### Your mission
+
+With reads routed on lifecycle state, this lesson adds the writes that move rows between those states.
+The three actions are `authedAction`-wrapped so role enforcement and Zod parsing happen at the boundary: archive and restore are open to `member`, soft-delete is gated to `admin`.
+Each action's UPDATE goes through the scoped helper and carries its lifecycle precondition in the `WHERE` (archive only touches rows that are active, restore only rows that are in the state it clears), and each runs inside `db.transaction` alongside a `logAudit(tx, …)` call — so a failure to write the audit log rolls back the lifecycle change, the discipline from lesson 3 of chapter 081, made mechanical by the helper taking the transaction as a parameter.
+The partial unique index on `(orgId, number) WHERE deletedAt IS NULL` is what lets a soft-deleted `INV-0001` and a fresh `INV-0001` coexist; the seed already contains the colliding pair, so creating the new one demonstrates the recovery.
+Wiring `useOptimistic` on archive so the row leaves the table the instant the user clicks (and rolls back on failure) is a senior reach worth taking here; the conflict surface for these actions is finished in the next lesson.
+Out of scope: the `version` precondition on the edit/update path and the conflict banner are the next lesson — these lifecycle actions return their 409 shape but the rich conflict UX comes later.
+
+- Archiving a row from the Active tab removes it from the default list and surfaces it under the Archived tab with an "Archived on …" label and a Restore button; the audit-log tail records the event.
+- Clicking Restore from the Archived tab returns the row to Active, and the audit-log tail records it.
+- As an admin, soft-deleting a row removes it from the default list and surfaces it under All with a "Deleted" badge; the soft-delete control is absent for a member.
+- After soft-deleting `INV-0001`, creating a fresh invoice numbered `INV-0001` succeeds, because the partial unique index excludes the soft-deleted row.
+- Each lifecycle action writes its audit-log row in the same transaction as the UPDATE, so the row-counts banner and the audit-log tail both move together after every action.
+
+### Coding time
+
+Direct the student to implement the three actions and the row-menu wiring against the brief and the tests before reading on.
+
+Solution walkthrough (hidden in `<details>`):
+
+- `src/lib/invoices/actions.ts`:
+  - `archiveInvoice = authedAction('member', z.strictObject({ id: z.string().uuid(), version: z.number().int() }), async ({ id, version }, ctx) => { ... })`. The UPDATE goes through the scoped query — `tenantDb(ctx.orgId).invoices.active().update({ archivedAt: sql\`NOW()\`, version: sql\`version + 1\`, updatedAt: sql\`NOW()\` }).where(and(eq(invoices.id, id), eq(invoices.version, version))).returning()`. Zero rows means 409; one row means success. Wrap in `db.transaction` with `logAudit(tx, { action: 'invoice.archive', subjectType: 'invoice', subjectId: id, orgId: ctx.orgId, actorUserId: ctx.user.id, payload: {} })`.
+  - `restoreInvoice`: clears whichever of `archivedAt` / `deletedAt` is set — `includingDeleted()` for the read leg when an admin restores a soft-deleted row, `archived()` for the typical member-restoring-archived path. Surface the senior call to keep one action that branches on role versus two separate actions.
+  - `softDeleteInvoice = authedAction('admin', z.strictObject({ id, version }), ...)`: sets `deletedAt = NOW()`. Handle the `invoice_lines` cascade explicitly inside the same transaction (a second UPDATE) and name why the application-level cascade is explicit rather than relying on `ON DELETE CASCADE`.
+- `app/(app)/invoices/table.tsx`: wire each action into the row action menu via `<form action={archiveInvoice}>` (or `<button formAction={...}>`) with hidden `id` and `version` fields; use `useActionState` for the in-flight indicator. Add the `<RestoreButton />` in the Archived tab and the admin-only un-delete control on `view=all` rows with `deletedAt` set.
+- Decision rationale to surface: why the audit-log write shares the transaction (atomic with the lifecycle change), why the lifecycle precondition lives in the `WHERE`, and why `useOptimistic` on archive is the senior reach (instant disappearance, automatic rollback). The partial-unique-index recovery is demonstrated against the seeded colliding pair.
+
+### Moment of truth
+
+Run the lesson's test suite (state the command and expected pass output) covering the three actions, the role gate, and the audit-log write.
+Then confirm by hand:
+
+- Archive a row from Active; it vanishes from the default list and appears under Archived with the archive timestamp and a Restore button; the audit-log tail shows the event.
+- Click Restore from Archived; the row returns to Active; the audit-log tail shows the event.
+- As admin, soft-delete a row; it vanishes from the default list and appears under All with a "Deleted" badge. As a member, confirm the soft-delete control is absent.
+- Soft-delete `INV-0001`, then create a fresh invoice numbered `INV-0001`; the create succeeds. (Optionally drop the partial index via `psql` and re-run to watch it fail, proving the index is what enables recovery.)
+- Watch the inspector's row-counts banner and audit-log tail move together after each action, confirming the shared transaction.
 
 ---
 
 ## Lesson 5 — Two tabs, one winner
 
-Adds the `version` precondition to `updateInvoice`, returns the 409 Result with a `current` payload on zero rows, wires the hidden version field and `<ConflictBanner>` into the edit form with "Use latest" and admin-gated "Overwrite anyway", and surfaces lifecycle-action conflicts as toasts.
+Add the `version` precondition to `updateInvoice` so a two-tab edit returns an honest 409, and render a conflict banner that lets the student refresh-and-retry without a second fetch.
+Finished result: editing the same invoice in two tabs lets the first save win; the second submit renders a conflict banner with the current server values and "Use latest" / admin-gated "Overwrite" affordances, and "Use latest" reloads the form so the resubmit succeeds.
 
-Goals:
+### Your mission
 
-- Refactor `updateInvoice` to add the `version` precondition. The input schema gets a `version: z.number().int()` field. The UPDATE's `where` becomes `and(eq(invoices.id, id), eq(invoices.organizationId, ctx.orgId), eq(invoices.version, clientVersion), isNull(invoices.deletedAt))`. The `set` clause bumps `version: sql\`version + 1\`` and `updatedAt: sql\`NOW()\``. `.returning()` gives zero or one row.
-- Branch on the result: one row → `{ ok: true, data: updated }`; zero rows → fetch the current row via `tenantDb(ctx.orgId).invoices.active().findFirst({ where: eq(invoices.id, id) })` and return `{ ok: false, error: { code: 'conflict', userMessage: 'This invoice was changed in another tab. Refresh to see the latest version.', current } }`. The fetch happens inside the same Server Action — the client gets one round trip.
-- Wire the form: add `<input type="hidden" name="version" value={invoice.version} />` to `edit-form.tsx`. The `useActionState` reducer already returns the Result shape — extend the type to include the `conflict` branch and the `current` payload.
-- Build the conflict banner: a new `<ConflictBanner current={current} onUseLatest={...} onOverwrite={...} />` Client Component. "Use latest" replaces the form's controlled state with `current` and resets the hidden `version` to `current.version`. "Overwrite anyway" is gated on `ctx.role === 'admin'` and calls the action with a `force: true` flag that bypasses the precondition — the rare carve-out, named loud.
-- `useOptimistic` interaction: the optimistic state rolls back automatically on `{ ok: false }` — React's documented behavior. The conflict banner renders alongside the rolled-back form values. The senior anchor: the optimistic UI is fine for the common case; the rollback is automatic.
-- Wire the lifecycle actions' 409 path the same way: archive / restore / soft-delete also return `{ ok: false, error: { code: 'conflict', current } }` on zero-rows-affected. The row action menu surfaces a toast on conflict ("This invoice changed elsewhere — refresh to retry") rather than the full banner — the row UI has no controlled form state to merge against.
-- Run the app: open an invoice in two tabs; edit and save the first; edit and save the second; see the conflict banner; click "Use latest"; the form reloads with the server's values and the new version; resubmit; success. Use the inspector's "Force version drift" tool to reproduce the conflict deterministically.
+This is the optimistic-concurrency layer that turns silent last-write-wins into a visible, recoverable conflict.
+Every UPDATE in the project now carries tenancy + lifecycle + `version` in its `WHERE`, and missing any one is a distinct bug class — missing tenancy is the cross-tenant overwrite, missing lifecycle is the edit-a-soft-deleted-row bug, missing version is silent last-write-wins — so name all three.
+The precondition lives in the `WHERE`, never as a separate `SELECT … THEN UPDATE`, because the two-statement form has a TOCTOU race; one atomic statement, and zero rows affected is the honest 409.
+On that 409 the action fetches the current row in the same round trip and returns it as the `current` payload, sparing the client a refetch — the senior anchor from lesson 3 of chapter 061 — and the form rebuilds the conflict banner from it.
+`useOptimistic` rolls back automatically on `{ ok: false }`, so the banner renders alongside the rolled-back values; the optimistic UI stays fine for the common case while the rollback is free.
+"Overwrite anyway" is a sharp edge gated to admin (the course default is show-to-admin, hide-for-member), and client-side tampering with the hidden `version` field just produces another 409 — bounded impact, with the server-side Zod parse as the front-line defense and the version precondition as the back-stop.
+`updatedAt`-as-version is named as the existing-tables alternative, but the course default is the `version` column for its cheap, unambiguous precision.
 
-Senior calls and watch-outs:
+- Editing the same invoice in two tabs lets the first submit succeed; the second submit returns a 409 and renders the conflict banner with the current server values.
+- The conflict banner's "Use latest" replaces the form's state with `current` and advances the hidden `version`, so resubmitting succeeds; "Overwrite anyway" appears only for admins and forces the write past the precondition.
+- Forcing the update to fail via the inspector's "Force version drift" tool makes the optimistic UI show the change briefly, then roll back automatically as the conflict returns, with the banner rendering on the rolled-back form.
+- A lifecycle action (archive / restore / soft-delete) that hits a stale `version` surfaces a conflict toast ("This invoice changed elsewhere — refresh to retry") rather than the full banner.
+- A forged submit carrying another org's invoice ID affects zero rows and takes the conflict (or not-found) path, so tenant isolation holds at the write just as it does at the read.
 
-- The precondition lives in the `WHERE`, not as a separate `SELECT ... THEN UPDATE` round trip — the latter has a TOCTOU race. One statement, atomic.
-- Every UPDATE has tenancy + lifecycle + version in the `where`. Missing any one is a distinct bug class: missing tenancy is the cross-tenant overwrite, missing lifecycle is the "edit a soft-deleted row" bug, missing version is silent last-write-wins. Name all three.
-- "Overwrite anyway" is a sharp edge. Gate it on role; consider hiding it entirely for non-admin product surfaces. The course's default is "show to admin, hide for member".
-- `updatedAt` as the alternative to `version` is named for the existing-tables case (lesson 3 of chapter 061); the course default is `version` because the column is cheap and the precision is unambiguous.
-- The `current` payload in the 409 Result saves the client a second round trip — the senior anchor from lesson 3 of chapter 061. Without it, the client either renders stale state or fires a refetch.
-- Tampering with the hidden `version` field at the client just produces a 409 — bounded impact. Zod parses on the server (chapter 042, lesson 4 of chapter 043) is the defense; the version precondition is the back-stop.
+### Coding time
 
-Codebase state at entry: lifecycle actions live, update action still silently overwrites on race.
-Codebase state at exit: update action has the version precondition, returns 409 with `current` on conflict, the form renders the conflict banner, "Use latest" and "Overwrite anyway" both work, lifecycle actions surface conflicts as toasts. Every UPDATE in the project has tenancy + lifecycle + version in its `WHERE`.
+Direct the student to add the precondition, the 409 branch, and the conflict banner against the brief and the tests before reading on.
 
-Estimated student time: 55 to 70 minutes.
+Solution walkthrough (hidden in `<details>`):
 
----
+- `updateInvoice`: add `version: z.number().int()` to the input schema; the UPDATE's `where` becomes `and(eq(invoices.id, id), eq(invoices.organizationId, ctx.orgId), eq(invoices.version, clientVersion), isNull(invoices.deletedAt))`, the `set` clause bumps `version: sql\`version + 1\`` and `updatedAt: sql\`NOW()\``, and `.returning()` yields zero or one row.
+- Branch on the result: one row → `{ ok: true, data: updated }`; zero rows → fetch the current row via `tenantDb(ctx.orgId).invoices.active().findFirst({ where: eq(invoices.id, id) })` and return `{ ok: false, error: { code: 'conflict', userMessage: 'This invoice was changed in another tab. Refresh to see the latest version.', current } }`. The fetch is in the same Server Action, so the client gets one round trip.
+- `edit-form.tsx`: add `<input type="hidden" name="version" value={invoice.version} />`; extend the `useActionState` Result type to include the `conflict` branch and the `current` payload.
+- `<ConflictBanner current={current} onUseLatest={...} onOverwrite={...} />` Client Component: "Use latest" replaces the controlled state with `current` and resets the hidden `version` to `current.version`; "Overwrite anyway" is gated on `ctx.role === 'admin'` and calls the action with a `force: true` flag that bypasses the precondition — the rare carve-out, named loud.
+- Lifecycle actions' 409 path: archive / restore / soft-delete return `{ ok: false, error: { code: 'conflict', current } }` on zero rows; the row action menu surfaces a toast (the row UI has no controlled form state to merge against) rather than the banner.
+- Decision rationale to surface: precondition-in-`WHERE` vs. TOCTOU `SELECT`-then-`UPDATE`, the `current` payload as the one-round-trip refresh source, and the admin gate on overwrite. Link to lesson 3 of chapter 061 for the concurrency pattern and to chapter 042 / lesson 4 of chapter 043 for the Zod boundary rather than re-explaining.
 
-## Lesson 6 — Run the failure modes
+### Moment of truth
 
-Walks every "Done when" clause — share-and-refresh, cursor reset, search responsiveness, archive and restore, soft-delete with RBAC, partial unique index recovery, two-tab 409, optimistic rollback, cross-tenant probe, index-plan check — and points forward to notifications, cache invalidation, audit-log hardening, and integration tests.
+Run the lesson's test suite (state the command and expected pass output) covering the version precondition, the 409 `current` payload, and the conflict branch.
+Then confirm by hand:
 
-Goals:
-
-- Walk every "Done when" clause as a verification step (the table in the framing).
-- URL behavior: click status `paid`, sort by `-total`, click Next page; URL shows `?status=paid&sort=-total&cursor=...`. Copy the URL to a private window (signed in as the same user); the view reproduces. Hard reload; reproduces. Click "Clear filters"; URL becomes `/invoices` (defaults stripped).
-- Cursor reset on other-change: with a non-null cursor, change status; URL drops `cursor`; first page of the new filter loads. Same for sort and search.
-- Search responsiveness: type a fast 30-character query; the input never lags; the URL writes settle every ~200ms; back-button count stays sane (one or two entries, not 30). Confirm the partial composite index `invoices_org_status_created_id_active_idx` is picked via the inspector's `EXPLAIN ANALYZE` panel.
-- Archive flow: archive a row from `view=active`; row vanishes; switch to `view=archived`; row appears with the archive timestamp; click restore; row returns to active. The audit log tail shows both events.
-- Soft-delete flow (as admin): delete a row from `view=active`; row vanishes; switch to `view=all` (admin-only tab); row appears with a "Deleted" badge. As member, hand-type `?view=all`; the read drops to `view=active` (server-side refusal). Verify the `view=all` tab is hidden for the member role in the toolbar.
-- Partial unique index: soft-delete invoice `INV-0001`; create a new invoice with `number = INV-0001`; create succeeds. Drop the partial index temporarily (via `psql`); re-run the create; it fails with a unique-constraint error — proving the partial index is what makes the recovery possible.
-- Two-tab concurrency: open an invoice in two tabs; edit and save the first; verify the version bumped in the audit log and in the inspector; edit and save the second; conflict banner renders; "Use latest" loads `current`, hidden version updates, resubmit succeeds. Use the "Force version drift" tool to reproduce the race deterministically.
-- Optimistic rollback: enable the inspector's "force next update to fail with 409"; edit a row; the optimistic UI shows the change briefly, then rolls back when the action returns the conflict; banner appears.
-- Cross-tenant probe: as a user in org A, hand-construct an edit URL for an invoice ID from org B; the detail page returns 404 (tenant filter holds at the read). As the same user, submit a forged form with the org-B invoice's ID; the action's `where` filters by `ctx.orgId`, the UPDATE affects zero rows, conflict path fires (or a `NOT_FOUND` error if the action distinguishes). Tenant isolation holds at both the read and the write.
-- Index plan check: open the inspector's index-probe panel; confirm the active-rows list query uses `invoices_org_status_created_id_active_idx` (the partial composite). Confirm `view=archived` uses a different plan (or the same composite without the partial filter). No `Seq Scan` on any list view.
-- Name the senior calls one more time:
-  - URL state is the source of truth for any view-state piece that survives refresh, share, or back button.
-  - The base-query helper plus `tenantDb` makes "I forgot the `deletedAt IS NULL` filter" or "I forgot the tenancy filter" structurally impossible at hand-written reads.
-  - Every UPDATE carries tenancy + lifecycle + version preconditions in its `WHERE`. Zero-rows-affected is the honest 409.
-  - `useActionState` + `useOptimistic` handles success, rollback, and conflict in one shape; the conflict's `current` payload spares the client a refetch.
-  - The cursor reset on every filter / sort / search change is the invariant that keeps pagination correct.
-- Forward references:
-  - Unit 13 (notifications) wires a notification on archive / restore so collaborators see lifecycle changes in real time.
-  - Unit 14 (cache) adds `cacheTag('invoices', orgId)` invalidation to the lifecycle actions so the list cache refreshes correctly.
-  - lesson 3 of chapter 081 hardens the audit-log discipline (append-only, retention policy).
-  - Unit chapter 088 writes integration tests for the conflict path and the cross-tenant probe.
-
-Senior calls and watch-outs:
-
-- The verify lesson is the rehearsal of the failure modes — running each one and naming what would break without the disciplines the student just installed.
-- If a verification fails, the lesson points at the owning build lesson, not at "debug it yourself".
-
-Codebase state at entry: full URL state, lifecycle, and concurrency wired.
-Codebase state at exit: same surface, verified clause-by-clause; the student can articulate every decision (URL vs. component state, helper vs. raw query, version vs. updatedAt, archive vs. soft delete) and which forward unit will lean on it.
-
-Estimated student time: 30 to 40 minutes.
+- Open an invoice in two tabs; edit and save the first (confirm the version bumped in the inspector and audit log); edit and save the second; the conflict banner renders with the current server values. Click "Use latest"; the form reloads with the server's values and the new version; resubmit; it succeeds. Use the "Force version drift" tool to reproduce the race deterministically.
+- Enable the inspector's force-fail tool; edit a row; the optimistic UI shows the change briefly, then rolls back when the conflict returns, and the banner appears.
+- Trigger a stale-version lifecycle action; confirm it surfaces a conflict toast rather than the full banner.
+- As a user in org A, hand-construct an edit URL for an org-B invoice ID; the detail page returns 404. Submit a forged form with the org-B ID; the UPDATE affects zero rows and the conflict (or not-found) path fires — tenant isolation holds at both read and write.
+- Confirm the chapter acceptance bar end to end: every Project-goals behavior in the framing now holds. Forward references for the curious: Unit 13 wires a notification on archive/restore, Unit 14 adds `cacheTag('invoices', orgId)` invalidation to the lifecycle actions, lesson 3 of chapter 081 hardens the audit-log discipline, and chapter 088 writes integration tests for the conflict path and the cross-tenant probe.

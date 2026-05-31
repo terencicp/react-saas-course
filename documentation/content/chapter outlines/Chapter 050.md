@@ -2,15 +2,24 @@
 
 ## Chapter framing
 
-Chapter 050 cashes in Unit 7: the verified-domain ceremony, the SPF/DKIM/DMARC plumbing, the transactional subdomain split, and the `email_suppressions` read discipline (chapter 048); plus the React Email component vocabulary, the preview dev loop, and the plain-text/accessibility/dark-mode posture (chapter 049). The student wires Resend on their own verified domain, writes `lib/email.ts` as the suppression-gated send wrapper, ships the `<WelcomeEmail />` React Email template, and exposes a Server Action that the pre-built inspector page fires from a single button. Every clause of "Done when" — real inbox arrival on the student's domain, DKIM=pass and SPF=pass in headers, plain-text fallback present, suppression path returns `{ ok: false, reason: 'suppressed' }` without calling Resend — is the verify recipe for the chapter.
+Chapter 050 cashes in Unit 7: the verified-domain ceremony, the SPF/DKIM/DMARC plumbing, the transactional subdomain split, and the `email_suppressions` read discipline (chapter 048); plus the React Email component vocabulary, the preview dev loop, and the plain-text/accessibility/dark-mode posture (chapter 049). The student wires Resend on their own verified domain, writes `lib/email.ts` as the suppression-gated send wrapper, ships the `<WelcomeEmail />` React Email template, and exposes a Server Action that the pre-built inspector page fires from a single button.
 
-Threads that run through every lesson: `lib/email.ts` is the single named seam — Architectural Principle #3 made operational; Resend is NOT wrapped in a generic adapter, the wrapper only adds the suppression read, the default `from`, and the `Result` shape (Principle #5 reminder from lesson 7 of chapter 064); the React Email template is a pure renderer with typed props, callers compute values, the template stays stateless; the Server Action follows the chapter 043 five-seam shape (parse → authorize → suppression-read → send → return `Result`); `@t3-oss/env-nextjs` schema-validates `RESEND_API_KEY`, `EMAIL_FROM`, `EMAIL_REPLY_TO` at boot — fail-closed; the `email_suppressions` read is at the wrapper, never at callers; the idempotency key is set on every transactional send (verification token / row ID); the verify is run against a real inbox on the student's own verified domain, not Resend's sandbox. The chapter ships 1 brief + 1 starter walkthrough + 2 build slices + 1 verify lesson; every build closes on a runnable state.
+The project's stated goals — the capabilities the finished app demonstrates:
+
+- A welcome email arrives in the student's real inbox, sent from their own verified domain, with the configured `from` display name and a `reply_to` that lands at a monitored mailbox.
+- The delivered message passes authentication: DKIM=pass, SPF=pass, and DMARC=pass in the receiving client's headers.
+- The React Email template renders correctly across desktop, mobile (375 px), and dark mode, and ships a plain-text fallback alongside the HTML part.
+- The suppression path short-circuits: a send to a suppressed recipient returns `{ ok: false, reason: 'suppressed' }` without calling Resend.
+- The idempotency key prevents double-sends — clicking send twice for the same recipient yields one email and the same Resend send ID.
+- The env schema fails closed: a missing `RESEND_API_KEY` stops the server from booting.
+
+Threads that run through every lesson: `lib/email.ts` is the single named seam — Architectural Principle #3 made operational; Resend is NOT wrapped in a generic adapter, the wrapper only adds the suppression read, the default `from`, and the `Result` shape (Principle #5 reminder from lesson 7 of chapter 064); the React Email template is a pure renderer with typed props, callers compute values, the template stays stateless; the Server Action follows the chapter 043 five-seam shape (parse → authorize → suppression-read → send → return `Result`); `@t3-oss/env-nextjs` schema-validates `RESEND_API_KEY`, `EMAIL_FROM`, `EMAIL_REPLY_TO` at boot — fail-closed; the `email_suppressions` read is at the wrapper, never at callers; the idempotency key is set on every transactional send (verification token / row ID); the verify is run against a real inbox on the student's own verified domain, not Resend's sandbox.
 
 ### Dependency carry-in
 
-- **From lesson 1 of chapter 048 / lesson 2 of chapter 048 / lesson 3 of chapter 048:** Resend account, the verified transactional subdomain (`send.<student>.<tld>`), SPF/DKIM/DMARC records published, the `resend` Node SDK, the per-purpose `from` address discipline, the `reply_to` pattern. The student walks chapter 048's setup again in lesson 2 of chapter 050 to land it on their *own* domain (not just read about it).
+- **From lesson 1 of chapter 048 / lesson 2 of chapter 048 / lesson 3 of chapter 048:** Resend account, the verified transactional subdomain (`send.<student>.<tld>`), SPF/DKIM/DMARC records published, the `resend` Node SDK, the per-purpose `from` address discipline, the `reply_to` pattern. The student walks chapter 048's setup again in the verified-domain ceremony walkthrough to land it on their *own* domain (not just read about it).
 - **From lesson 4 of chapter 048:** the `email_suppressions` Drizzle table shape (`id`, `email`, `reason` enum, `provider_event_id`, `bypass_until`, `metadata`, `created_at`, `updated_at`), the normalize-on-read rule (lowercase + trim), the read-at-the-wrapper pattern, the `bypassSuppression` carve-out semantics, the `reason`-aware bypass (transactional bypasses `manual_unsubscribe` only). The webhook *writer* lands in lesson 5 of chapter 063 — out of scope here.
-- **From lesson 1 of chapter 049 / lesson 2 of chapter 049 / lesson 3 of chapter 049:** the React Email primitives (`<Html>`, `<Head>`, `<Preview>`, `<Container>`, `<Section>`, `<Heading>`, `<Text>`, `<Button>`, `<Img>`, the `<Tailwind>` wrapper), `PreviewProps` as the mock-data contract, the `pnpm email dev` loop, the head meta plumbing for dark mode, the `lang`/`<Title>` accessibility floor. The student writes the template once in lesson 4 of chapter 050 against this vocabulary.
+- **From lesson 1 of chapter 049 / lesson 2 of chapter 049 / lesson 3 of chapter 049:** the React Email primitives (`<Html>`, `<Head>`, `<Preview>`, `<Container>`, `<Section>`, `<Heading>`, `<Text>`, `<Button>`, `<Img>`, the `<Tailwind>` wrapper), `PreviewProps` as the mock-data contract, the `pnpm email dev` loop, the head meta plumbing for dark mode, the `lang`/`<Title>` accessibility floor. The student writes the template once against this vocabulary.
 - **From lesson 1 of chapter 043 / lesson 2 of chapter 043 / lesson 3 of chapter 043 / lesson 4 of chapter 043 / lesson 5 of chapter 043:** the `'use server'` file-level directive, the five-seam action shape, the `Result<T>` type plus `ok`/`err` helpers in `lib/result.ts`, the `validation` / `conflict` / `not_found` / `internal` codes (`'suppressed'` is added here as a fifth common code), `revalidatePath` is NOT used (no list to revalidate), no transaction (the send is one external call).
 - **From lesson 2 of chapter 042 / lesson 6 of chapter 042 / lesson 7 of chapter 042:** `z.email()`, `z.uuid()`, `safeParse(Object.fromEntries(formData))`, `z.treeifyError(parsed.error).properties` for the `fieldErrors` shape.
 - **From chapter 041 / chapter 047:** the pooled `db` client, `db/schema.ts` already contains the `email_suppressions` table from lesson 4 of chapter 048 (the starter adds it if lesson 4 of chapter 048 didn't seed it into the running project — the starter README flags both paths), the `lib/auth-stub.ts` returning a fixed `{ organizationId, userId }` (Better Auth lands in Unit 8).
@@ -89,230 +98,192 @@ The inspector lives at `/inspector/send-welcome` and is the verification surface
   - **Validation/error card.** Shows when `Result.error.code` is `'validation'` or `'internal'`: the `userMessage` plus `fieldErrors` if present.
 - **No webhook surface, no event log, no metrics panel** — the bounce/complaint webhook handler is lesson 5 of chapter 063; the dashboard panel is out of scope here. The Resend dashboard *is* the observation surface for the send itself.
 
-### Verify recipe mapped to "Done when"
-
-| Done-when clause | Verify step |
-| --- | --- |
-| Real-inbox arrival on the student's verified domain | At `/inspector/send-welcome`, set `recipientEmail` to the student's own monitored inbox (Gmail or Apple Mail), click "Send welcome". The success card shows the Resend send ID within ~2 seconds; the inbox shows the email within ~15 seconds. The `from` reads as the configured `EMAIL_FROM` (display name + `noreply@send.<student-domain>`); the `reply_to` lands at the configured monitored mailbox. |
-| DKIM=pass and SPF=pass in headers | In Gmail: "Show original" → confirm `SPF: PASS` and `DKIM: PASS` for `send.<student-domain>`, plus `DMARC: PASS`. Re-run the test send to `check-auth@verifier.port25.com` and read the auto-reply's parsed-headers section. |
-| React Email template renders | The body of the inbox email matches the preview (the heading, the welcome text, the verify CTA button). Mobile view (open on phone) wraps cleanly at 375 px. Dark mode (toggle in Apple Mail or read on Gmail Android) renders without inverted-logo nightmares. |
-| Plain-text fallback present | In Gmail: "Show original" → confirm the message has both `text/plain` and `text/html` MIME parts. The text part contains the heading, the welcome paragraph, and the verify URL as `Verify your email [https://...]`. |
-| Suppression path returns `{ ok: false, reason: 'suppressed' }` without calling Resend | At `/inspector/send-welcome`, set `recipientEmail` to the seeded `suppressed@<student-domain>`, click "Send welcome". The suppression card shows; the Resend dashboard shows NO new send for that recipient. Add a temporary `console.log('calling resend')` before the SDK call and confirm it never fires on this path. Remove the log. |
-| Idempotency key prevents double-sends on retry | Click "Send welcome" to a fresh inbox; immediately click again with the same recipient. The Resend dashboard shows the second call returning the *same* send ID (the SDK retains the idempotency key for 24 hours); the inbox shows exactly one email. |
-| Env validation fails closed | Comment out `RESEND_API_KEY` in `.env.local`; run `pnpm dev`. The server fails to boot with the Zod env error — the `@t3-oss/env-nextjs` schema rejects the missing variable. Restore the value. |
-
 ### Concepts demonstrated → owning lesson
 
-- Resend account, verified domain, API key shapes (full-access vs. sending-only) — lesson 1 of chapter 048.
-- SPF / DKIM / DMARC records, the alignment rule, the 2026 enforcement bar — lesson 2 of chapter 048.
-- Transactional / marketing subdomain split, per-purpose `from` local parts, the `reply_to` pattern — lesson 3 of chapter 048.
-- `email_suppressions` schema, the read-at-the-wrapper discipline, the `bypassSuppression` carve-out, the `reason`-aware bypass — lesson 4 of chapter 048.
-- React Email primitives, the `<Tailwind>` component, `<Preview>` as the preheader, `<Img>` width/height discipline, the 102 KB clipping budget — lesson 1 of chapter 049.
-- `pnpm email dev` iteration loop, the viewport + dark-mode toggles, the test-send as the verification gate — lesson 2 of chapter 049.
-- Plain-text fallback via `render({ plainText: true })`, the email accessibility checklist, the dark-mode three-tier posture and head meta plumbing — lesson 3 of chapter 049.
-- Architectural Principle #3 (pure `/lib`, side effects at named boundaries — `lib/email.ts` is the named seam) — lesson 4 of chapter 043 (the principle), lesson 7 of chapter 064 (the do-not-wrap rule for Resend / Trigger.dev / R2).
-- Architectural Principle #5 (use the framework's conventions — don't invent a generic email adapter over Resend) — lesson 7 of chapter 064.
-- The Server Action five-seam shape and the canonical `Result<T>` — lesson 2 of chapter 043, lesson 3 of chapter 043.
-- Zod `z.email()`, `Object.fromEntries(formData)` + `safeParse`, `z.treeifyError` — lesson 2 of chapter 042, lesson 6 of chapter 042, lesson 5 of chapter 042.
-- `@t3-oss/env-nextjs` env validation, fail-closed at the boundary — chapter 030 (named), chapter 006 (the canonical `env.ts` shape).
-- The idempotency-key reflex on transactional sends — lesson 1 of chapter 048 (named), chapter 063 (generalized).
-- `useActionState` + the action prop on the form, the `<SubmitButton>` with `useFormStatus` — lesson 3 of chapter 044, lesson 4 of chapter 044.
+- Resend account, verified domain, API key shapes (full-access vs. sending-only) — lesson 1 of chapter 048; re-run on the student's own domain in the verified-domain ceremony walkthrough.
+- SPF / DKIM / DMARC records, the alignment rule, the 2026 enforcement bar — lesson 2 of chapter 048; landed on the student's registrar in the verified-domain ceremony walkthrough.
+- Transactional / marketing subdomain split, per-purpose `from` local parts, the `reply_to` pattern — lesson 3 of chapter 048; applied in the verified-domain ceremony walkthrough.
+- `email_suppressions` schema, the read-at-the-wrapper discipline, the `bypassSuppression` carve-out, the `reason`-aware bypass — lesson 4 of chapter 048; built into `isSuppressed` and the wrapper in the suppression-gated send wrapper lesson.
+- React Email primitives, the `<Tailwind>` component, `<Preview>` as the preheader, `<Img>` width/height discipline, the 102 KB clipping budget — lesson 1 of chapter 049; written into `<WelcomeEmail />` in the welcome email send path lesson.
+- `pnpm email dev` iteration loop, the viewport + dark-mode toggles, the test-send as the verification gate — lesson 2 of chapter 049; the dev surface stands up in the verified-domain ceremony walkthrough, the loop is used in the welcome email send path lesson.
+- Plain-text fallback via `render({ plainText: true })`, the email accessibility checklist, the dark-mode three-tier posture and head meta plumbing — lesson 3 of chapter 049; confirmed in the welcome email send path lesson.
+- Architectural Principle #3 (pure `/lib`, side effects at named boundaries — `lib/email.ts` is the named seam) — lesson 4 of chapter 043 (the principle), lesson 7 of chapter 064 (the do-not-wrap rule for Resend / Trigger.dev / R2); made operational in the suppression-gated send wrapper lesson.
+- Architectural Principle #5 (use the framework's conventions — don't invent a generic email adapter over Resend) — lesson 7 of chapter 064; applied in the suppression-gated send wrapper lesson.
+- The Server Action five-seam shape and the canonical `Result<T>` — lesson 2 of chapter 043, lesson 3 of chapter 043; followed in the welcome email send path lesson.
+- Zod `z.email()`, `Object.fromEntries(formData)` + `safeParse`, `z.treeifyError` — lesson 2 of chapter 042, lesson 6 of chapter 042, lesson 5 of chapter 042; applied in the welcome email send path lesson.
+- `@t3-oss/env-nextjs` env validation, fail-closed at the boundary — chapter 030 (named), chapter 006 (the canonical `env.ts` shape); extended in the suppression-gated send wrapper lesson.
+- The idempotency-key reflex on transactional sends — lesson 1 of chapter 048 (named), chapter 063 (generalized); applied in the welcome email send path lesson.
+- `useActionState` + the action prop on the form, the `<SubmitButton>` with `useFormStatus` — lesson 3 of chapter 044, lesson 4 of chapter 044; the provided inspector form is read in the Project Overview.
+
+### Forward references (where each discipline extends)
+
+- Unit 8 (Better Auth) replaces the `verifyUrl` placeholder with a real signed verification token and calls `sendEmail({ react: <VerificationEmail ... /> })` from the sign-up flow — same wrapper, new template.
+- Unit 9 (RBAC + invitations) ships `<InvitationEmail />` and calls `sendEmail` from the invite-create action; the audit log writes a row for every send.
+- lesson 5 of chapter 063 (webhook handler — Resend bounces and complaints) is the *writer* for `email_suppressions`. Once it ships, the table populates from real-world delivery telemetry; the suppression read this chapter installs immediately benefits.
+- Chapter 064 (billing) sends receipt emails through the same wrapper.
+- Unit 13a (Trigger.dev) sends the export-ready email through the same wrapper from inside a durable task — the chapter's signature works unchanged inside a Trigger task body.
+- Unit 13 (notification dispatcher) adds the per-channel and per-preference layer *on top of* `sendEmail`; the wrapper this chapter installs is the email-channel leaf of that dispatcher.
+- The DMARC policy graduates from `p=none` to `p=quarantine` to `p=reject` over the project's lifetime (lesson 2 of chapter 048's progression) — the chapter ships at `p=none`, the student schedules the bump.
 
 ---
 
-## Lesson 1 — Brief and scope cuts
+## Lesson 1 — Project Overview
 
-Frames the welcome send as the canonical transactional surface every later unit reuses, states the six "Done when" clauses, names the scope cuts, and calls out the cheap-real-domain prerequisite.
+This is the Project overview lesson. No feature is built; the student leaves with the starter running locally and the verified-domain ceremony queued as the next step.
 
-Goals:
+### What we're building
 
-- Frame the send as the canonical SaaS transactional surface: every later unit (auth verification email in Unit 8, invitation email in Unit 9, billing receipts in Unit 11, the notification dispatcher in Unit 13) reuses this exact wrapper, this exact suppression discipline, and this exact `Result` shape. The chapter ships one Server Action calling one template through one wrapper — the structural floor that holds for every send the student will ever wire.
-- State the "Done when" six clauses in one paragraph: real-inbox arrival on the student's verified domain, DKIM=pass and SPF=pass in headers, the React Email template renders (desktop + mobile + dark), the plain-text fallback is present, the suppression path short-circuits without calling Resend, the idempotency key prevents double-sends on retry.
-- Name the scope cuts: no webhook handler for bounces and complaints (lesson 5 of chapter 063 — the *write* side of `email_suppressions`), no batch sends (Unit 13 — `/emails/batch`), no marketing email (Resend Broadcasts is out of scope, the project is transactional only), no per-tenant custom-domain sending (named once in lesson 3 of chapter 048, dropped), no rate-limiter on the action (Chapter 075 wraps the auth surface; the inspector button is rate-limit-immune by being internal), no audit log on the send (Unit 9 owns the `audit_logs` write), no React Hook Form (`useActionState` owns the form state — chapter 044 chapter discipline).
-- Set the senior payoff: the wrapper shape installed here is the chokepoint for every email the SaaS will send. Adding a new send is "write the template, write the action, call `sendEmail`" — never "remember to check suppressions, remember to set the idempotency key, remember to default the `from`." The chokepoint is the discipline.
-- The prerequisite call-out: this chapter requires a cheap real domain. Resend's `onboarding@resend.dev` sandbox sender is explicitly out — deliverability is the point, and the sandbox sender lands in the spam folder for most providers. Namecheap / Porkbun / Cloudflare Registrar cost $8–12 per year for a `.com`. The student that already has a personal domain (a portfolio site, a side-project domain) uses a subdomain on it (`send.<existing>.<tld>`). The setup is one-time; later units (auth, invites, billing) reuse the same domain and key.
-- Show the end UX: one screenshot strip of `/inspector/send-welcome` → success card with the Resend ID → the Gmail inbox showing the rendered template → the Gmail "Show original" headers panel with the SPF/DKIM/DMARC pass lines.
-- Link the starter via `degit` from the `react-saas-course-projects` monorepo.
+One paragraph framing the welcome send as the canonical SaaS transactional surface every later unit reuses. Every later unit — auth verification email in Unit 8, invitation email in Unit 9, billing receipts in Chapter 064, the notification dispatcher in Unit 13 — reuses this exact wrapper, this exact suppression discipline, and this exact `Result` shape. The chapter ships one Server Action calling one template through one wrapper: the structural floor that holds for every send the student will ever wire. Adding a new send becomes "write the template, write the action, call `sendEmail`" — never "remember to check suppressions, remember to set the idempotency key, remember to default the `from`." Carries one screenshot strip of the finished experience: `/inspector/send-welcome` → success card with the Resend ID → the Gmail inbox showing the rendered template → the Gmail "Show original" headers panel with the SPF/DKIM/DMARC pass lines.
 
-Senior calls and watch-outs:
+### What we'll practice
 
-- The `onboarding@resend.dev` sandbox sender is forbidden in this project. Reaching for it to skip the DNS step trains a bad reputation (Resend's shared sandbox is widely deny-listed for inbox placement) and means the verify step can't prove DKIM-pass on the student's domain. The point of the chapter is to land deliverability *on the student's own domain*.
-- `lib/email.ts` is the chokepoint. Reaching for `resend.emails.send(...)` from anywhere except `lib/email.ts` is the structural smell — Unit 8's verification email, Unit 9's invitation email, Unit 11's billing receipt, Unit 13's notification dispatcher all go through this one function.
-- The Resend client is *not* wrapped in a generic `EmailProvider` interface for "future provider swap." The lesson 7 of chapter 064 rule: Resend, Trigger.dev, R2 are not wrapped; the swap cost doesn't justify the abstraction tax. The wrapper is a *convenience* layer (suppression + defaults + `Result` shape), not an *abstraction* layer.
+- Installing a side-effect boundary (`lib/email.ts`) as the single chokepoint for every email the SaaS will send.
+- Reading a suppression list at the boundary and short-circuiting before an external call.
+- Writing a props-only React Email template and eyeballing it across viewports and color schemes.
+- Composing a Server Action in the five-seam shape that returns a `Result` rather than throwing.
+- Proving deliverability against a real inbox using header authentication results.
 
-Codebase state at entry: empty working directory.
-Codebase state at exit: starter cloned, `docker compose up -d` running Postgres, `pnpm install` clean, `pnpm db:migrate && pnpm db:seed` populated (the seed includes one pre-suppressed `suppressed@<student-placeholder>` row), `pnpm dev` shows `/inspector/send-welcome` with the button rendered. Clicking the button errors (`sendWelcomeEmail` is empty) — that's the runnable starting point.
+### Architecture
 
-Estimated student time: 10 to 15 minutes.
+Labeled list (shape only): the inspector form (client) → the `sendWelcomeEmail` Server Action (parse → authorize via the auth stub → compute idempotency key → call the wrapper) → `lib/email.ts` (normalize → `isSuppressed` read → Resend SDK call) → Resend → the student's inbox. The `<WelcomeEmail />` template is rendered by the action and handed to the wrapper as a React element. `lib/env.ts` validates the three new entries at boot.
 
----
+### Starting file tree
 
-## Lesson 2 — Starter tour and the verified-domain ceremony
+Reproduce the annotated tree from the Chapter framing. Comment one line each only on the files the lessons touch or that changed from the carry-in project; mark the four TODO stubs (`lib/env.ts` additions, `lib/email.ts`, `lib/suppressions.ts`, `emails/WelcomeEmail.tsx`, `app/actions/send-welcome.ts`) as the highlighted focus. Name what each provided file does in one line — the deep per-file explanation lives in the lesson that first touches it:
 
-Walks the provided file tree, then re-runs the Resend + SPF/DKIM/DMARC setup against the student's own registrar so the transactional subdomain is `Verified` before any code is written.
+- The provided inspector page and form (`app/inspector/send-welcome/`) post `recipientEmail` and `firstName` to the student-written action and render three result cards against the action's `Result` shapes — read in full when wiring the action.
+- The provided `emails/components/EmailLayout.tsx` is the brand surface (header band with the logo, footer with the legal address) the welcome template wraps — its contract is unpacked when the template is written.
+- The provided `lib/result.ts`, `lib/auth-stub.ts`, `db/schema.ts`, and `scripts/seed.ts` are carry-ins; the seed inserts one pre-suppressed row.
 
-Goals:
+### Roadmap
 
-- Walk the file tree, separating provided from stub. Linger on three areas:
-  - **`lib/env.ts`** — the existing `@t3-oss/env-nextjs` schema; the TODO comment naming the three new entries. Students read the existing entries (`DATABASE_URL` and friends from chapter 041) and add the email block in lesson 3 of chapter 050.
-  - **`db/schema.ts` + `db/seed.ts`** — confirm the `email_suppressions` table exists (carry-in from lesson 4 of chapter 048 if the project repo carries it; the starter applies the migration if not). The seed inserts one row at `suppressed@<student-domain-placeholder>`; the README explains the placeholder gets replaced with the student's actual transactional subdomain before `pnpm db:seed` runs.
-  - **`app/inspector/send-welcome/page.tsx` + `send-welcome-form.tsx`** — read them to lock in the form's `FormData` shape: `recipientEmail` and `firstName` are the two fields, the form posts to the student-written `sendWelcomeEmail` action. The result cards are wired against the three `Result` shapes the action will return.
-- Walk the Resend ceremony on the *student's own* domain — this re-runs lesson 1 of chapter 048 + lesson 2 of chapter 048 + lesson 3 of chapter 048 against the student's real registrar account:
-  - Create a Resend account if not already done; create one sending-only API key for `dev` and one for `production` (one key per environment from day one — lesson 1 of chapter 048's senior call).
-  - Add the sending subdomain (`send.<student>.<tld>`) at Resend; Resend publishes the SPF TXT, the DKIM TXT (selector `resend._domainkey`), and the optional MX record.
-  - At the registrar (Namecheap / Porkbun / Cloudflare), add the records exactly as Resend issued them. Watch-out: some registrars truncate long TXT values — the DKIM key must be the full string; some registrars want the host as `resend._domainkey` and some as `resend._domainkey.send` (relative vs. absolute), the chapter names both conventions and the student picks based on their registrar's UI.
-  - Wait for verification (typically minutes, up to 24 hours). The Resend dashboard's domain page flips to `Verified` when SPF and DKIM resolve.
-  - Publish the apex DMARC record at `_dmarc.<student>.<tld>`: `v=DMARC1; p=none; rua=mailto:dmarc-reports@<student>.<tld>;` — `p=none` is the starting policy (lesson 2 of chapter 048's progression). The aggregate-report mailbox can be the student's personal inbox for a side project; production teams use a parsing service.
-  - Confirm the verification by sending a test from Resend's dashboard "Send test email" feature to the student's personal inbox; in Gmail's "Show original" panel, confirm SPF=PASS, DKIM=PASS, DMARC=PASS. *This is the unblocking gate for the rest of the chapter* — if verification fails here, no later step works.
-- Read the provided `emails/components/EmailLayout.tsx` to lock in the brand-surface contract: it reads `env.NEXT_PUBLIC_APP_NAME`, renders a header band with the logo (the URL is in `EmailLayout`'s constants — the student can swap it for their own asset hosted on the marketing site or R2 once Unit 13b lands), and a footer with the legal address (a placeholder the student edits to their real address). The template the student writes in lesson 4 of chapter 050 wraps its body in `<EmailLayout>`.
-- Bring up the dev surface twice: `pnpm dev` for the Next.js app, `pnpm email dev --port 3001` for the React Email preview server (the lesson 2 of chapter 049 port-clash watch-out). Both run side-by-side for the rest of the chapter.
+One Card per lesson in a CardGrid:
 
-Senior calls and watch-outs:
+- **Lesson 2 — The verified-domain ceremony.** Stand up Resend on the student's own domain and get the transactional subdomain to `Verified` with SPF/DKIM/DMARC passing.
+- **Lesson 3 — The suppression-gated send wrapper.** Add the email env entries, write `isSuppressed`, and build `lib/email.ts` as the single send seam that reads suppressions and requires an idempotency key.
+- **Lesson 4 — The welcome email send path.** Write the `<WelcomeEmail />` template and the `sendWelcomeEmail` Server Action so the inspector button delivers a real, rendered email end-to-end.
 
-- DKIM verification failure is almost always a TXT-record truncation or a wrong host. The chapter names this once: when verification stalls past 30 minutes, re-paste the DKIM value from Resend into the registrar field and compare against `dig TXT resend._domainkey.send.<domain> +short`.
-- The DMARC record at `_dmarc.<apex>` covers subdomains by inheritance (lesson 2 of chapter 048). Publishing DMARC at `_dmarc.send.<domain>` only and not at the apex leaves the apex unprotected.
-- The DMARC starts at `p=none` and `rua` reports flow for a week before the student bumps to `p=quarantine` (lesson 2 of chapter 048's progression). The chapter's project ships at `p=none`; the student schedules a calendar reminder to graduate the policy.
-- The student's seed-row email at `suppressed@send.<student>.<tld>` is *not* a real receiving address — the suppression read short-circuits before Resend would attempt delivery, so the address never needs to exist. The senior anchor: the suppression check happens at the application layer, the destination is irrelevant on that path.
+### Setup
 
-Codebase state at entry: starter cloned, Postgres up, seed run, dev servers boot but the action is empty.
-Codebase state at exit: the student's transactional subdomain is `Verified` in the Resend dashboard, SPF/DKIM/DMARC records are live (verified with a Resend-dashboard test send), the `RESEND_API_KEY` is in the student's password manager ready to drop into `.env.local`, both dev servers (`pnpm dev` and `pnpm email dev`) run side-by-side. No application code written yet.
+Command sequence (Steps component), then the dev-server commands and expected result.
 
-Estimated student time: 30 to 45 minutes (heavy on real-world DNS waits; the wait time is the dominant variable).
+- Clone the starter via `degit` from the `react-saas-course-projects` monorepo.
+- `pnpm install`.
+- `docker compose up -d` to run Postgres.
+- `pnpm db:migrate && pnpm db:seed` — the seed includes one pre-suppressed `suppressed@<student-placeholder>` row; the README explains the placeholder is replaced with the student's transactional subdomain before `pnpm db:seed` runs.
+- `pnpm dev` for the Next.js app, and `pnpm email dev --port 3001` for the React Email preview server (the lesson 2 of chapter 049 port-clash watch-out); both run side-by-side for the rest of the chapter.
+
+Env var list: the three new entries (`RESEND_API_KEY`, `EMAIL_FROM`, `EMAIL_REPLY_TO`) plus `NEXT_PUBLIC_APP_NAME` and `NEXT_PUBLIC_APP_URL` are listed in `.env.example`; the values are obtained in Lesson 2 (the API key) and Lesson 3 (set into `.env.local`). Name each variable's purpose and where its value comes from. This lesson does not require them filled — the env block is added in Lesson 3.
+
+Expected result: `pnpm dev` serves `/inspector/send-welcome` with the button rendered. Clicking the button errors because `sendWelcomeEmail` is empty — that is the intended runnable starting point.
+
+Prerequisite call-out (the one piece of rationale this lesson must carry, because it gates setup): this chapter requires a cheap real domain. Resend's `onboarding@resend.dev` sandbox sender is explicitly out — deliverability is the point, and the sandbox sender lands in the spam folder for most providers and can't prove DKIM-pass on the student's domain. Namecheap / Porkbun / Cloudflare Registrar cost $8–12 per year for a `.com`. A student who already has a personal domain uses a subdomain on it (`send.<existing>.<tld>`). The setup is one-time; later units (auth, invites, billing) reuse the same domain and key.
 
 ---
 
-## Lesson 3 — Env, suppression helper, and the send wrapper
+## Lesson 2 — The verified-domain ceremony
 
-Adds the three Resend env entries, fills `lib/suppressions.ts` with the normalize-on-read `isSuppressed` helper, and builds the `lib/email.ts` wrapper as the single suppression-gated, idempotency-key-required send seam.
+This is a Walkthrough lesson — step-by-step scaffolding, no exercises. It may carry supporting videos in the body and a closing external-resources section. It re-runs the Resend + SPF/DKIM/DMARC setup from lesson 1 of chapter 048 + lesson 2 of chapter 048 + lesson 3 of chapter 048 against the student's own registrar so the transactional subdomain is `Verified` before any code is written. This ceremony is the unblocking gate for the rest of the chapter — if verification fails here, no later lesson works.
 
-Goals:
+Steps to walk:
 
-- Fill the email block in `lib/env.ts`. Add to the `server` section of the existing `@t3-oss/env-nextjs` schema:
-  - `RESEND_API_KEY: z.string().min(1)` — fail-closed if missing.
-  - `EMAIL_FROM: z.string().min(1)` — the full `Display Name <local-part@send.domain.tld>` format. The student sets it in `.env.local` to their verified subdomain (e.g., `'Acme <noreply@send.acme.example>'`).
-  - `EMAIL_REPLY_TO: z.email()` — a monitored mailbox at the apex (`support@<student>.<tld>` or the student's personal inbox for the project).
-  Also add `NEXT_PUBLIC_APP_NAME: z.string().min(1)` and `NEXT_PUBLIC_APP_URL: z.url()` to the `client` section so `EmailLayout.tsx` can read the brand name and the action in lesson 4 of chapter 050 can compute the `verifyUrl` (Unit 8 reuses the same `NEXT_PUBLIC_APP_URL` when it swaps the placeholder for a real signed verification link). Confirm `pnpm dev` boots cleanly; comment out `RESEND_API_KEY` and confirm the boot fails with the Zod error (one verify step landed early).
-- Fill `lib/suppressions.ts`. Single named export:
-  - `isSuppressed(email: string, opts: { kind: 'transactional' | 'marketing' }): Promise<{ suppressed: boolean; reason?: string; bypassUntil?: Date }>`
-  - Normalize the email first (`email.trim().toLowerCase()`).
-  - Query `email_suppressions` by the normalized email — a single index lookup on the unique-on-email index from lesson 4 of chapter 048.
-  - No row → `{ suppressed: false }`.
-  - Row with `bypass_until > now()` → `{ suppressed: false, bypassUntil }` (the carve-out is active).
-  - Row with `reason === 'manual_unsubscribe'` and `kind === 'transactional'` → `{ suppressed: false, reason: 'manual_unsubscribe' }` (the transactional bypass from lesson 4 of chapter 048 — the user can't opt out of password resets).
-  - Otherwise → `{ suppressed: true, reason: row.reason }`.
-  Mark the helper `import 'server-only'` at the top — never bundle into a client component.
-- Fill `lib/email.ts`. The structure:
-  - `import 'server-only'` at the top, then the Resend client singleton: `const resend = new Resend(env.RESEND_API_KEY);` at module scope.
-  - The `SendInput` type and `sendEmail` function with the signature from the framing. Body:
-    1. Normalize `to` (lowercase, trim) — same rule as the suppression helper.
-    2. `const check = await isSuppressed(normalizedTo, { kind: 'transactional' });` — every transactional send through this wrapper passes `kind: 'transactional'` (the marketing send path lands in a hypothetical Unit 13 sibling; not built here).
-    3. If `check.suppressed && !bypassSuppression`, return `err('suppressed', 'This recipient is on the suppression list.')` — *do not call Resend*. Log the disposition (`console.info('[email] suppressed', { to: normalizedTo, reason: check.reason })`) so the operator sees it.
-    4. Otherwise: `const { data, error } = await resend.emails.send({ from: env.EMAIL_FROM, to: normalizedTo, replyTo: replyTo ?? env.EMAIL_REPLY_TO, subject, react }, { idempotencyKey });`.
-    5. On `error`, return `err('internal', 'Email send failed.')` (log the error structure). On `data`, return `ok({ id: data.id })`.
-- The `'suppressed'` code is added to the `Result.error.code` union in `lib/result.ts`. Update the type once (the file is provided; this is a one-line edit) so action callers can branch on `code === 'suppressed'` exhaustively.
-- Runnable proof: the inspector form still errors because the action is empty, but the helpers compile and the env loads. Test the suppression helper directly: add a temporary scratch route or run a one-liner via `pnpm tsx` that imports `isSuppressed` and prints the result for the seeded suppressed address (`true`) and an unrelated address (`false`). Confirm both, delete the scratch.
+- Create a Resend account if not already done; create one sending-only API key for `dev` and one for `production` (one key per environment from day one — lesson 1 of chapter 048's senior call). Store the key in a password manager ready to drop into `.env.local` in Lesson 3.
+- Add the sending subdomain (`send.<student>.<tld>`) at Resend; Resend publishes the SPF TXT, the DKIM TXT (selector `resend._domainkey`), and the optional MX record.
+- At the registrar (Namecheap / Porkbun / Cloudflare), add the records exactly as Resend issued them. Watch-out: some registrars truncate long TXT values — the DKIM key must be the full string; some registrars want the host as `resend._domainkey` and some as `resend._domainkey.send` (relative vs. absolute), name both conventions and let the student pick based on their registrar's UI.
+- Wait for verification (typically minutes, up to 24 hours). The Resend dashboard's domain page flips to `Verified` when SPF and DKIM resolve. Watch-out: DKIM verification failure is almost always a TXT-record truncation or a wrong host — when verification stalls past 30 minutes, re-paste the DKIM value from Resend into the registrar field and compare against `dig TXT resend._domainkey.send.<domain> +short`.
+- Publish the apex DMARC record at `_dmarc.<student>.<tld>`: `v=DMARC1; p=none; rua=mailto:dmarc-reports@<student>.<tld>;` — `p=none` is the starting policy (lesson 2 of chapter 048's progression). The DMARC record at the apex covers subdomains by inheritance; publishing it only at `_dmarc.send.<domain>` leaves the apex unprotected. The aggregate-report mailbox can be the student's personal inbox for a side project; production teams use a parsing service. The student schedules a calendar reminder to graduate the policy to `p=quarantine` after a week of reports.
+- Confirm verification by sending a test from Resend's dashboard "Send test email" feature to the student's personal inbox; in Gmail's "Show original" panel, confirm SPF=PASS, DKIM=PASS, DMARC=PASS.
+- Edit the seed-row placeholder: the seeded address is `suppressed@send.<student>.<tld>`. It is not a real receiving address — the suppression read short-circuits before Resend would attempt delivery, so the address never needs to exist. The senior anchor: the suppression check happens at the application layer, the destination is irrelevant on that path.
 
-Senior calls and watch-outs:
+Expected outcome on success: the student's transactional subdomain reads `Verified` in the Resend dashboard, SPF/DKIM/DMARC records are live (confirmed with a Resend-dashboard test send showing all three PASS lines), and the `RESEND_API_KEY` is stored ready for Lesson 3. No application code is written in this lesson.
 
-- The Resend client is `new Resend(env.RESEND_API_KEY)` at module scope, not inside the function. The SDK is cheap to construct, but the module-scope singleton matches the lesson 1 of chapter 048 pattern and avoids re-allocating per-request. Watch-out: in tests the singleton needs to be mockable — Unit 18 (testing) names the MSW boundary; this chapter doesn't test the wrapper directly.
-- The suppression check is at the wrapper, never at callers. The temptation in lesson 4 of chapter 050 will be "I'll check it in the action too, just in case." The lesson 4 of chapter 048 rule: the wrapper is the chokepoint; double-checking is the smell. Trust the chokepoint.
-- `idempotencyKey` is a required parameter, not optional. Reaching to make it optional ("for ad-hoc sends") is the smell — every transactional send has a logical event to key on (verification token ID, password-reset request ID, invoice send-job ID, in this chapter's case `welcome:${userId}:${recipientEmail}`). The required-parameter shape forces the caller to think about replay safety.
-- The `from` defaults to `env.EMAIL_FROM`, never accepts an override at the call site. Allowing per-call `from` is how multi-tenant sends accidentally land on the wrong subdomain. The lesson 3 of chapter 048 rule made structural: the wrapper owns the sender identity.
-- Log structure matters. `console.info('[email] sent', { id, to, subject })` and `console.error('[email] failed', { to, error })` — the structured-log pattern Unit chapter 092 generalizes. Don't reach for `console.log(JSON.stringify(...))` or freehand strings.
-- The wrapper's signature returns the union from lesson 3 of chapter 043 — no throws on expected failures (suppression, validation, Resend errors). Action callers read the `ok` boolean, never wrap in try/catch.
-
-Codebase state at entry: env is missing the email block; `lib/email.ts` and `lib/suppressions.ts` are empty stubs; the action is empty.
-Codebase state at exit: env loads with the new variables, `isSuppressed` works against the seeded row, `sendEmail` compiles and is importable. The action is still empty (next lesson) but every supporting piece is in place. `pnpm dev` boots cleanly; the inspector page renders.
-
-Estimated student time: 30 to 40 minutes.
+Closing external-resources section: Resend's domain-verification docs, the registrar DNS guides, and a DMARC primer (added later by the resourcer).
 
 ---
 
-## Lesson 4 — Welcome template and the send action
+## Lesson 3 — The suppression-gated send wrapper
 
-Writes the props-only `<WelcomeEmail />` React Email template, eyeballs it in the preview server (desktop, mobile, dark, plain-text), then wires the five-seam `sendWelcomeEmail` Server Action that the inspector button fires.
+The goal in one sentence: install `lib/email.ts` as the single suppression-gated, idempotency-key-required seam through which every email the SaaS sends will pass. The finished result: a `sendEmail` wrapper that compiles and is importable, an `isSuppressed` helper that correctly reports the seeded suppressed address as suppressed and any other address as clear, and an env schema that refuses to boot when `RESEND_API_KEY` is missing — all proven before any email is actually sent (the send path lands in Lesson 4).
 
-Goals:
+### Your mission
 
-- Fill `emails/WelcomeEmail.tsx`. Default-exported React component, typed props `{ firstName: string; verifyUrl: string }`, wrapped in `<EmailLayout>`. The structure mirrors lesson 1 of chapter 049's component vocabulary:
-  - `<Html lang="en">` + `<Head>` with `<Title>Welcome to {appName}</Title>`, the dark-mode meta tags (`color-scheme`, `supported-color-schemes`) from lesson 3 of chapter 049, and the inline `<style>` with `:root { color-scheme: light dark; }`.
-  - `<Preview>` set to `Welcome to {appName} — verify your email` (the inbox preheader from lesson 1 of chapter 049).
-  - `<Body>` → `<EmailLayout>` → `<Container>` → `<Section>` containing `<Heading as="h1">Welcome, {firstName}</Heading>`, `<Text>` with a one-paragraph welcome, `<Button href={verifyUrl}>Verify your email</Button>`, and a small `<Text>` with the alternate-text-link version (`If the button doesn't work, paste this link: {verifyUrl}`).
-  - Wrapped in `<Tailwind>` for utility-class styling (`text-zinc-900 dark:text-zinc-100`, `max-w-[600px] mx-auto`, `bg-zinc-50 dark:bg-zinc-900`).
-  - Exports `WelcomeEmail.PreviewProps = { firstName: 'Ada', verifyUrl: 'https://example.com/verify/abc-123' }` so the preview server renders without a separate fixtures file.
-- Eyeball the template in `pnpm email dev` at `http://localhost:3001`:
-  - Desktop view — heading wraps cleanly, button width comfortable.
-  - Mobile view (375 px toggle) — text reflows, button stays tappable (44 px touch target — lesson 3 of chapter 049 floor).
-  - Dark-mode toggle — background and text invert, brand color on the button stays readable.
-  - HTML tab — confirm `<Preview>` text is in the document, the `<Tailwind>` classes compiled to inline styles, the dark-mode meta tags are in `<head>`.
-  - Plain-text tab — read it top to bottom: `Welcome, Ada\n\n[paragraph]\n\nVerify your email [https://example.com/verify/abc-123]\n\nIf the button doesn't work...`. Confirm it stands alone as a coherent message (lesson 3 of chapter 049's coherence check).
-- Send a test from the preview server's "Send test" button to the student's personal Gmail and Apple Mail. Eyeball each in the real client. Cross-client check: does the button render correctly in Outlook (if the student has one)? Does Gmail Android's blanket inversion break anything?
-- Fill `app/actions/send-welcome.ts`. File-level `'use server'`. The `sendWelcomeEmail(prevState, formData)` action follows the five-seam shape:
-  1. **Parse.** `const raw = Object.fromEntries(formData);` → `const parsed = z.strictObject({ recipientEmail: z.email(), firstName: z.string().min(1).max(80) }).safeParse(raw);` → on `!parsed.success`, return `err('validation', 'Check the highlighted fields.', z.treeifyError(parsed.error).properties)`.
-  2. **Authorize (stub).** `const { userId } = await getActiveContext();` — Unit 8 swaps this for the real session read. No role check in this project (no `authedAction` wrapper yet — Unit 9).
-  3. **Idempotency key.** `const idempotencyKey = `welcome:${userId}:${parsed.data.recipientEmail.trim().toLowerCase()}`;` — the same retry of this action invocation produces the same key, Resend returns the same send ID, the inbox gets one email regardless of how many times the inspector button is clicked.
-  4. **Compute the verify URL.** For this project the URL is a placeholder: `const verifyUrl = `${env.NEXT_PUBLIC_APP_URL}/verify/placeholder-${idempotencyKey}`;` — Unit 8 replaces this with a real signed token. The placeholder is named in a `// TODO Unit 8` comment.
-  5. **Send.** `const result = await sendEmail({ to: parsed.data.recipientEmail, subject: `Welcome to ${env.NEXT_PUBLIC_APP_NAME}`, react: <WelcomeEmail firstName={parsed.data.firstName} verifyUrl={verifyUrl} />, idempotencyKey });`. Return `result` unchanged — the wrapper already returns `Result<{ id: string }>` with all three failure shapes (`'suppressed'`, `'internal'`, plus the action's own `'validation'`).
-- The inspector form (provided) already reads `useActionState(sendWelcomeEmail, null)` and renders the three result cards. Submitting now works end-to-end.
-- Runnable proof: at `/inspector/send-welcome`, set `recipientEmail` to the student's own inbox, click "Send welcome". Within ~2 seconds the success card shows the Resend send ID. Within ~15 seconds the email arrives in the inbox with the rendered template, the correct `from` and `reply_to`, and the plain-text part viewable via "Show original".
+You are building the chokepoint. Every transactional email this SaaS will ever send — the verification email in Unit 8, the invitation email in Unit 9, billing receipts, the notification dispatcher's email channel — flows through the one `sendEmail` function you write here, so the seam carries the disciplines no caller should have to remember: it reads the suppression list before it calls Resend, it defaults the `from` and `reply_to` from validated env, it requires an idempotency key, and it returns a `Result` rather than throwing. This is Architectural Principle #3 made operational, with Principle #5's corollary: the Resend client is *not* wrapped in a generic `EmailProvider` interface for some future provider swap — the swap cost doesn't justify the abstraction tax, so the wrapper is a convenience layer (suppression read plus defaults plus `Result` shape), never an abstraction layer. Construct the Resend client as a module-scope singleton, not per-call. Keep the suppression read at the wrapper and nowhere else: a caller double-checking suppressions is the smell, because the chokepoint is the whole point. Make the idempotency key a required parameter, not an optional one — every transactional send has a logical event to key on, and the required shape forces the caller to think about replay safety. Default the `from` to env and never accept a per-call override, the way per-call senders accidentally land multi-tenant mail on the wrong subdomain. Log dispositions with structured fields (`console.info('[email] sent', { id, to, subject })`, `console.error('[email] failed', { to, error })`), not freehand strings — the structured-log pattern Chapter 092 generalizes. The marketing send path and the bounce/complaint webhook *writer* are out of scope; the suppression helper takes a `kind` argument so the transactional bypass (a user can't opt out of password resets) is honored, but only `kind: 'transactional'` is exercised here.
 
-Senior calls and watch-outs:
+- A missing `RESEND_API_KEY` stops the server from booting: commenting it out in `.env.local` and running `pnpm dev` surfaces the `@t3-oss/env-nextjs` Zod error naming the variable, and restoring it boots cleanly.
+- The new env entries load and are typed: `EMAIL_FROM` (full `Display Name <local-part@send.domain.tld>` format), `EMAIL_REPLY_TO` (a monitored mailbox), plus `NEXT_PUBLIC_APP_NAME` and `NEXT_PUBLIC_APP_URL` so the brand layout and the Lesson 4 action can read them.
+- `isSuppressed` reports the seeded `suppressed@...` address as suppressed and an unrelated address as clear, confirmed by importing it directly (a `pnpm tsx` one-liner or a throwaway scratch route, removed after).
+- `isSuppressed` normalizes the email before querying (trim + lowercase) so casing and whitespace can't slip past the gate.
+- An active `bypass_until` window reports the recipient as not suppressed.
+- A `manual_unsubscribe` row reports a transactional recipient as not suppressed (the user can't opt out of transactional mail) while still suppressing a marketing recipient.
+- `sendEmail` reads the suppression list and, when the recipient is suppressed and `bypassSuppression` is not set, returns `err('suppressed', ...)` without calling Resend.
+- `sendEmail` compiles and is importable with its full signature (`to`, `subject`, `react`, required `idempotencyKey`, optional `replyTo`, optional `bypassSuppression`) returning `Result<{ id: string }>`.
+- The `'suppressed'` code is part of the `Result.error.code` union so callers can branch on it exhaustively.
 
-- The template is *props-only* — no env reads inside the component, no DB reads, no session reads. The action computes the values, passes them as props (lesson 1 of chapter 049's pure-renderer rule). The reach to "just import the app name from env inside the template" is the smell — the template's `PreviewProps` then drift from production, the preview server lies, the test-send doesn't match the real send. Read `env.NEXT_PUBLIC_APP_NAME` *outside* the template, pass it as a prop or read it in `EmailLayout` once where the brand surface lives.
-- The action's `safeParse` runs before `getActiveContext()` — the parse is cheap, the auth read is going to be a session-cookie + DB hit once Unit 8 lands. Parse-first means malformed inputs don't pay the auth cost. The lesson 4 of chapter 043 ordering rule made operational again.
-- The `recipientEmail` validation is `z.email()`, the modern Zod 4 top-level format builder from lesson 2 of chapter 042. The action does *not* do an MX-record probe (named in lesson 4 of chapter 048 as the high-stakes-signup defense, out of scope for this chapter) — for the welcome flow the suppression read after a bounce catches the typo case.
-- The `verifyUrl` placeholder is intentional — the student doesn't invent a real token-signing scheme to fill it. Unit 8 owns Better Auth's email-verification token flow; this chapter ships the placeholder URL and the `// TODO Unit 8` comment so the swap is obvious.
-- Returning the wrapper's `Result` unchanged is the discipline. The instinct to "wrap and re-shape" — `if (!result.ok && result.error.code === 'suppressed') return err('validation', 'Bad email')` — collapses the failure surface and the inspector loses the diagnostic. The action is a thin orchestrator; the wrapper owns the failure taxonomy.
-- The JSX in the action body (`<WelcomeEmail .../>`) compiles fine inside a `.ts` file because Next.js's tsconfig has `jsx: 'preserve'` and the file *is* a server file — the React element is constructed on the server, never serialized to a client, the Resend SDK runs `render` on it server-side. Watch-out for stale ESLint configs that flag JSX in non-`.tsx` files; rename to `send-welcome.tsx` if the linter complains (the chapter ships the file as `.tsx` for that reason).
+### Coding time
 
-Codebase state at entry: env loaded, helpers in place, action and template both empty.
-Codebase state at exit: full send path works end-to-end against the student's verified domain. The success path delivers a real email; the suppression path (testing with the seeded `suppressed@...` recipient) short-circuits; the validation path returns `fieldErrors` from an empty `recipientEmail`. Every clause of "Done when" is satisfiable from this state; lesson 5 of chapter 050 walks the verify.
+One line directing the student to implement `lib/env.ts` additions, `lib/suppressions.ts`, the `'suppressed'` code in `lib/result.ts`, and `lib/email.ts` against the brief and the tests, then attempt before reading the solution.
 
-Estimated student time: 40 to 55 minutes.
+Hidden `<details>` reference solution, organized as it appears in the repo:
+
+- **`lib/env.ts`** — add `RESEND_API_KEY: z.string().min(1)`, `EMAIL_FROM: z.string().min(1)`, `EMAIL_REPLY_TO: z.email()` to the `server` block; add `NEXT_PUBLIC_APP_NAME: z.string().min(1)` and `NEXT_PUBLIC_APP_URL: z.url()` to the `client` block. Rationale: `NEXT_PUBLIC_APP_URL` is the same value Unit 8 reuses when it swaps the placeholder verify link for a signed token.
+- **`lib/result.ts`** — one-line edit adding `'suppressed'` to the error-code union (the file is otherwise provided).
+- **`lib/suppressions.ts`** — `import 'server-only'` at the top; `isSuppressed(email, { kind })` normalizes, queries `email_suppressions` by the normalized email (single index lookup on the unique-on-email index from lesson 4 of chapter 048), and returns: no row → `{ suppressed: false }`; `bypass_until > now()` → `{ suppressed: false, bypassUntil }`; `reason === 'manual_unsubscribe'` with `kind === 'transactional'` → `{ suppressed: false, reason: 'manual_unsubscribe' }`; otherwise → `{ suppressed: true, reason }`.
+- **`lib/email.ts`** — `import 'server-only'`; `const resend = new Resend(env.RESEND_API_KEY)` at module scope (the lesson 1 of chapter 048 singleton pattern; avoids re-allocating per request, and Unit 18 names the MSW boundary for testing). `sendEmail` body: normalize `to`; `await isSuppressed(normalizedTo, { kind: 'transactional' })`; if suppressed and not bypassed, log and return `err('suppressed', 'This recipient is on the suppression list.')` *without calling Resend*; otherwise `await resend.emails.send({ from: env.EMAIL_FROM, to: normalizedTo, replyTo: replyTo ?? env.EMAIL_REPLY_TO, subject, react }, { idempotencyKey })`; on error return `err('internal', 'Email send failed.')`, on data return `ok({ id: data.id })`.
+
+Decision rationale callouts: the required (not optional) `idempotencyKey`; the env-only `from` with no call-site override; the wrapper returning the `Result` union with no throws on expected failures, so callers read the `ok` boolean instead of wrapping in try/catch. Link to lesson 4 of chapter 043 for the named-boundary principle and lesson 4 of chapter 048 for the suppression semantics rather than re-explaining.
+
+### Moment of truth
+
+How to run the lesson's test suite — the command and the expected pass output. Then the by-hand checklist for what the tests don't cover:
+
+- Comment out `RESEND_API_KEY` in `.env.local`, run `pnpm dev`, confirm the boot fails with the Zod env error naming the variable, then restore it and confirm a clean boot.
+- Run the `isSuppressed` probe (a `pnpm tsx` one-liner importing the helper) against the seeded `suppressed@...` address and an unrelated address; confirm `true` then `false`; delete the scratch.
+- Confirm `pnpm dev` boots cleanly and `/inspector/send-welcome` renders (the button still errors — the action lands next lesson).
 
 ---
 
-## Lesson 5 — Verify the send path clause by clause
+## Lesson 4 — The welcome email send path
 
-Walks every "Done when" clause as a verification step — real-inbox arrival, DKIM/SPF/DMARC pass in headers, template render across clients, plain-text fallback, suppression short-circuit, idempotency-key retry, and env fail-closed — then recaps disciplines and forward references.
+The goal in one sentence: deliver a real, rendered welcome email to the student's inbox when the inspector button is clicked. The finished result: a props-only `<WelcomeEmail />` template that previews cleanly across desktop, mobile, and dark mode and ships a coherent plain-text part, plus a `sendWelcomeEmail` Server Action that parses the form, keys the send for idempotency, and routes every outcome through the wrapper's `Result` — so a success delivers a real email, the seeded suppressed recipient short-circuits, and an empty field returns `fieldErrors`.
 
-Goals:
+### Your mission
 
-- Walk every "Done when" clause as a verification step (the table in the framing).
-- **Real-inbox arrival on the verified domain.** Set `recipientEmail` to the student's own Gmail. Click "Send welcome". The success card renders within ~2 seconds with the Resend send ID; the inbox shows the email within ~15 seconds. Read the `from` line — it matches `EMAIL_FROM`. Click "Reply" in Gmail — the recipient field is `EMAIL_REPLY_TO`, not the `noreply@` mailbox. The `noreply@`-plus-`reply_to` pattern from lesson 3 of chapter 048 lands visibly.
-- **DKIM and SPF pass.** In Gmail, three-dot menu → "Show original". Confirm `SPF: PASS with IP <Resend's outbound IP>`, `DKIM: PASS with domain send.<student>.<tld>`, `DMARC: PASS`. If any line says `FAIL` or `NEUTRAL`, the chapter points at the DNS step in lesson 2 of chapter 050 — re-check the TXT records via `dig`. Re-run the send to `check-auth@verifier.port25.com` and read the auto-reply for a second confirmation.
-- **Template renders correctly.** Eyeball the email body. The heading reads `Welcome, Ada` (or whatever `firstName` was submitted). The CTA button renders with the brand color, not a default Outlook blue or a missing-style gray. Mobile (open the same email on the student's phone): the layout reflows, the button stays tappable. Dark mode (toggle Apple Mail to dark, or open in Gmail Android): the background inverts, the text stays readable, the logo doesn't disappear.
-- **Plain-text fallback present.** "Show original" → scroll to the MIME parts. Confirm `Content-Type: multipart/alternative` with both `text/plain` and `text/html` boundaries. The text part contains the heading, the welcome paragraph, the verify link rendered as `Verify your email [https://...]`. Test the no-HTML case by viewing the message in a plain-text-only mode (Apple Mail's "Plain Text" view setting, or a corporate mailbox with HTML stripping if available).
-- **Suppression path returns `{ ok: false, reason: 'suppressed' }`.** Set `recipientEmail` to the seeded `suppressed@send.<student>.<tld>`. Click "Send welcome". The suppression card renders. Open the Resend dashboard's "Logs" tab — no entry for this address (the SDK was never called). Add a temporary `console.log('[email] calling resend')` in `lib/email.ts` immediately before `resend.emails.send(...)` and confirm via `pnpm dev` terminal output that it never fires on the suppressed path. Remove the log.
-- **Idempotency key prevents double-sends.** Set `recipientEmail` to a fresh test inbox (the student's secondary Gmail or an iCloud alias). Click "Send welcome"; the success card shows send ID `re_abc`. Immediately click again with the same recipient and same `firstName`. Watch the Resend dashboard — the second call returns the same `re_abc` (the SDK retains the idempotency key for 24 hours). The inbox shows exactly one email, not two. Now change the `firstName` and click — *still* the same key (the key is `welcome:${userId}:${recipientEmail}`), so still one email. Name the constraint: the chapter's key shape is "one welcome per user per recipient" — a per-day rotation (`welcome:${userId}:${recipientEmail}:${dailyToken}`) is the production reach when a "resend welcome" UX needs to bypass; the chapter ships the simpler form.
-- **Validation error path.** Submit the form with `recipientEmail` empty. The validation card renders with `fieldErrors.recipientEmail = ['Invalid email']` (or the Zod 4 default message). The `firstName` keeps its typed value. Submit with `firstName` blank — `fieldErrors.firstName` shows.
-- **Env validation fail-closed.** Comment out `RESEND_API_KEY` in `.env.local`; restart `pnpm dev`. The server fails to boot with the `@t3-oss/env-nextjs` Zod error pointing at the missing variable. Restore. Same test with `EMAIL_FROM` malformed (not a valid `Display Name <addr@domain>` shape) — the boot fails because the schema's `.min(1)` matches but the runtime will fail; tighten the schema if desired (a regex check on the full format) or leave as-is per the chapter's pragmatic floor. Name the trade.
-- **DKIM/SPF/DMARC headers on a second test send.** Run the test send from `/inspector/send-welcome` to an Outlook.com inbox (or Proton, or any non-Gmail). Confirm in the receiving client's "view source" or equivalent that the same three authentication results pass. This catches the case where Gmail's lenient parsing hides a misconfiguration that Outlook flags.
-- **Senior recap.** Name the disciplines installed:
-  - One named seam (`lib/email.ts`) for every email the SaaS will ever send.
-  - The suppression check is at the wrapper, never at the call site.
-  - The idempotency key is required, not optional.
-  - The template is a pure renderer; props in, HTML+text out.
-  - The action follows the chapter 043 five-seam shape; suppression failures and Resend failures both return through the same `Result` channel.
-  - Env validates at boot via `@t3-oss/env-nextjs`; missing `RESEND_API_KEY` fails the build, not the production send.
-  - The verified domain plus DKIM-pass plus DMARC-pass plus the suppression discipline is the deliverability floor for every later flow.
-- **Forward references.**
-  - Unit 8 (Better Auth) replaces the `verifyUrl` placeholder with a real signed verification token and calls `sendEmail({ react: <VerificationEmail ... /> })` from the sign-up flow — same wrapper, new template.
-  - Unit 9 (RBAC + invitations) ships `<InvitationEmail />` and calls `sendEmail` from the invite-create action; the audit log writes a row for every send.
-  - lesson 5 of chapter 063 (webhook handler — Resend bounces and complaints) is the *writer* for `email_suppressions`. Once it ships, the table populates from real-world delivery telemetry; the suppression read this chapter installs immediately benefits.
-  - Unit chapter 064 (billing) sends receipt emails through the same wrapper.
-  - Unit 13a (Trigger.dev) sends the export-ready email through the same wrapper from inside a durable task — the chapter's signature works unchanged inside a Trigger task body.
-  - Unit 13 (notification dispatcher) adds the per-channel and per-preference layer *on top of* `sendEmail`; the wrapper this chapter installs is the email-channel leaf of that dispatcher.
-  - The DMARC policy graduates from `p=none` to `p=quarantine` to `p=reject` over the project's lifetime (lesson 2 of chapter 048's progression) — the chapter ships at `p=none`, the student schedules the bump.
+You are wiring the send end-to-end: the template the recipient sees and the action the inspector fires. Write `<WelcomeEmail />` as a *pure renderer* — typed props in, HTML and text out, with no env reads, no DB reads, and no session reads inside the component; the action computes the values and passes them as props, because the moment the template reads `env` directly its `PreviewProps` drift from production and the preview server starts lying about what really ships. Build it from the React Email vocabulary from chapter 049 wrapped in `<EmailLayout>`: the dark-mode head meta, the `<Preview>` preheader, a `<Heading>`/`<Text>`/`<Button>` body, and an alternate text-link line so the CTA survives a stripped button. Eyeball it in `pnpm email dev` across desktop, the 375 px mobile toggle (the button stays a 44 px touch target), and the dark-mode toggle (the logo survives Gmail Android's blanket inversion), and read the plain-text tab top to bottom for coherence before you send a real test. Then write `sendWelcomeEmail` in the chapter 043 five-seam shape: parse first with `z.email()` and a bounded `firstName` (parse is cheap, the auth read will be a session+DB hit once Unit 8 lands, so malformed input shouldn't pay the auth cost); read the identity from the `getActiveContext()` stub — do not reach for `cookies()` or invent a session reader, Unit 8 swaps the stub cleanly; build the idempotency key as `welcome:${userId}:${normalizedRecipient}` so repeated clicks collapse to one send; compute the `verifyUrl` as an explicit placeholder with a `// TODO Unit 8` comment, because token-signing is Better Auth's job, not this chapter's; and return the wrapper's `Result` *unchanged*, never re-shaping a `'suppressed'` failure into a `'validation'` one — the action is a thin orchestrator and the wrapper owns the failure taxonomy. No MX-record probe on the recipient (out of scope; the suppression read after a bounce catches the typo case). The action file ships as `.tsx` because it constructs JSX (`<WelcomeEmail .../>`); the element is built and rendered server-side and never serialized to a client.
 
-Senior calls and watch-outs:
+- The template renders in `pnpm email dev` on desktop with the heading wrapping cleanly and a comfortable button width.
+- On the 375 px mobile toggle the text reflows and the button stays a tappable 44 px target.
+- In dark mode the background and text invert and the logo and button stay readable.
+- The HTML output carries the `<Preview>` preheader text, the compiled `<Tailwind>` styles, and the dark-mode meta tags in `<head>`.
+- The plain-text part stands alone as a coherent message: the heading, the welcome paragraph, and the verify URL rendered as `Verify your email [https://...]`.
+- Submitting the inspector form with the student's own inbox delivers a real email within ~15 seconds, with the success card showing the Resend send ID within ~2 seconds.
+- The delivered `from` matches `EMAIL_FROM` and replying lands at `EMAIL_REPLY_TO`, not the `noreply@` mailbox.
+- The delivered message passes authentication in the receiving client's "Show original": SPF=pass, DKIM=pass for `send.<student>.<tld>`, DMARC=pass — confirmed on Gmail and on one non-Gmail client (Outlook or Proton) to catch what Gmail's lenient parser hides.
+- The delivered message carries both `text/plain` and `text/html` MIME parts under `multipart/alternative`.
+- Submitting the seeded `suppressed@...` recipient renders the suppression card and produces no entry in the Resend dashboard logs (the SDK was never called).
+- Clicking send twice for the same recipient (even with a changed `firstName`) yields exactly one email and the same Resend send ID; the key is "one welcome per user per recipient".
+- Submitting with an empty `recipientEmail` renders the validation card with `fieldErrors.recipientEmail`, and the `firstName` field keeps its typed value; an empty `firstName` shows `fieldErrors.firstName`.
 
-- The verify lesson is the rehearsal of every failure mode the chapter installs the disciplines against. If a verify step fails, the chapter points the student at the owning build lesson — DKIM fail → lesson 2 of chapter 050's DNS step; suppression path called Resend → lesson 3 of chapter 050's wrapper structure; template missing `<Preview>` → lesson 1 of chapter 049.
-- The "Show original" headers panel in Gmail is the cheapest single source of truth for deliverability — every later unit's email send gets one "Show original" eyeball at feature-launch time. The 2026 reflex.
-- The cross-client test (Outlook or Proton) catches the misconfiguration Gmail's lenient parser hides. Run it once per chapter, not per send.
-- Production rollout — when the student deploys this to a real Vercel preview or production environment, the `RESEND_API_KEY` and `EMAIL_FROM` set in Vercel's env panel use the *production* Resend key (not the dev key). The per-environment key discipline from lesson 1 of chapter 048 lands here in practice.
+### Coding time
 
-Codebase state at entry: the full send path works end-to-end against the student's verified domain.
-Codebase state at exit: same surface, verified clause-by-clause. The student can articulate every decision made in the chapter and the unit that will extend each one. The `lib/email.ts` wrapper is the foundation for every send Units 8–13 will wire on top.
+One line directing the student to implement `emails/WelcomeEmail.tsx` and `app/actions/send-welcome.ts` against the brief and the tests, then attempt before reading the solution.
 
-Estimated student time: 25 to 35 minutes.
+Hidden `<details>` reference solution, organized as it appears in the repo:
+
+- **`emails/WelcomeEmail.tsx`** — default-exported component, props `{ firstName: string; verifyUrl: string }`, wrapped in `<EmailLayout>`. `<Html lang="en">` + `<Head>` with `<Title>`, the `color-scheme`/`supported-color-schemes` meta, and the `:root { color-scheme: light dark; }` inline style; `<Preview>Welcome to {appName} — verify your email</Preview>`; `<Body>` → `<EmailLayout>` → `<Container>` → `<Section>` with `<Heading as="h1">Welcome, {firstName}</Heading>`, a one-paragraph `<Text>`, `<Button href={verifyUrl}>Verify your email</Button>`, and a small alternate-link `<Text>`; wrapped in `<Tailwind>` (`text-zinc-900 dark:text-zinc-100`, `max-w-[600px] mx-auto`, `bg-zinc-50 dark:bg-zinc-900`). Exports `WelcomeEmail.PreviewProps = { firstName: 'Ada', verifyUrl: 'https://example.com/verify/abc-123' }`.
+- **`app/actions/send-welcome.ts`** (shipped as `.tsx`) — file-level `'use server'`. Five seams: (1) parse `Object.fromEntries(formData)` with `z.strictObject({ recipientEmail: z.email(), firstName: z.string().min(1).max(80) })`, on failure return `err('validation', 'Check the highlighted fields.', z.treeifyError(parsed.error).properties)`; (2) `const { userId } = await getActiveContext()`; (3) `const idempotencyKey = \`welcome:${userId}:${parsed.data.recipientEmail.trim().toLowerCase()}\``; (4) `const verifyUrl = \`${env.NEXT_PUBLIC_APP_URL}/verify/placeholder-${idempotencyKey}\`` with a `// TODO Unit 8` comment; (5) `await sendEmail({ to: parsed.data.recipientEmail, subject: \`Welcome to ${env.NEXT_PUBLIC_APP_NAME}\`, react: <WelcomeEmail firstName={parsed.data.firstName} verifyUrl={verifyUrl} />, idempotencyKey })`, return the result unchanged.
+
+Decision rationale callouts: parse-before-authorize ordering; the pure-renderer rule and why env reads belong in `EmailLayout` or the action, not the template; the intentional `verifyUrl` placeholder deferred to Unit 8; returning the wrapper's `Result` unchanged to preserve the diagnostic surface; the `.tsx` filename because the action constructs JSX (watch-out for stale ESLint configs flagging JSX in `.ts`). Link to lesson 1 of chapter 049 for the template vocabulary and lesson 3 of chapter 043 for the five-seam shape rather than re-explaining. The inspector form (provided) already reads `useActionState(sendWelcomeEmail, null)` and renders the three cards, so submitting now works end-to-end.
+
+### Moment of truth
+
+How to run the lesson's test suite — the command and the expected pass output. Then the by-hand checklist for what the tests can't reach (the deliverability and rendering clauses, which need a real inbox and eye):
+
+- Set `recipientEmail` to the student's own Gmail, click "Send welcome"; confirm the success card with the Resend send ID within ~2 seconds and the email in the inbox within ~15 seconds. Confirm the `from` reads as `EMAIL_FROM`; click "Reply" and confirm the recipient is `EMAIL_REPLY_TO`.
+- In Gmail "Show original": confirm `SPF: PASS`, `DKIM: PASS` for `send.<student>.<tld>`, `DMARC: PASS`. If any line is `FAIL` or `NEUTRAL`, re-check the DNS records from Lesson 2 via `dig`. Optionally re-send to `check-auth@verifier.port25.com` and read the auto-reply.
+- Re-send to a non-Gmail inbox (Outlook.com or Proton) and confirm the same three authentication results pass — this catches a misconfiguration Gmail's lenient parser hides.
+- Eyeball the delivered body: heading reads `Welcome, {firstName}`, the CTA renders with the brand color (not Outlook blue or unstyled gray). Open on a phone (reflows, button tappable) and in dark mode (background inverts, text readable, logo survives).
+- In "Show original" confirm `Content-Type: multipart/alternative` with both `text/plain` and `text/html` parts; the text part carries the heading, the welcome paragraph, and `Verify your email [https://...]`. View the message in a plain-text-only mode (Apple Mail's "Plain Text" view) for the no-HTML case.
+- Set `recipientEmail` to the seeded `suppressed@send.<student>.<tld>`, click send; confirm the suppression card renders and the Resend dashboard "Logs" tab shows no entry. To prove the SDK was never reached, temporarily add `console.log('[email] calling resend')` immediately before `resend.emails.send(...)` in `lib/email.ts`, confirm it does not fire on the suppressed path in the `pnpm dev` terminal, then remove it.
+- Send to a fresh inbox, note the send ID, then immediately click again with the same recipient; confirm the Resend dashboard returns the same send ID and the inbox shows exactly one email. Change the `firstName` and click again — still one email, same key.
+- Submit with `recipientEmail` empty (validation card with `fieldErrors.recipientEmail`, `firstName` retains its value) and with `firstName` empty (`fieldErrors.firstName`).
+- Senior recap and forward references: name the disciplines installed (one named seam; suppression at the wrapper; required idempotency key; pure-renderer template; five-seam action funneling all failures through one `Result`; env fail-closed at boot; verified domain + DKIM/DMARC + suppression as the deliverability floor) and point to the chapter framing's forward-references list for where each one extends. The "Show original" headers panel is the 2026 reflex for every later email send; run the cross-client check once per chapter, not per send. On production rollout, the Vercel env panel uses the *production* Resend key, landing the per-environment key discipline from lesson 1 of chapter 048.

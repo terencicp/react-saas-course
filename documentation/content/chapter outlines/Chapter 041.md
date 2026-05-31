@@ -4,7 +4,21 @@
 
 Chapter 041 cashes in everything Unit 5 installed: the relational model and the unpooled-URL discipline (chapter 036), the schema authoring vocabulary — `pgTable`, types, modifiers, UUIDv7 PKs, FK + `ON DELETE`, unique/check, junction tables, Relations v2, `$inferSelect`/`$inferInsert` (chapter 037) — the query toolkit — joins, the relational query API, cursor pagination with the n+1 trick, `EXPLAIN ANALYZE` (chapter 038, chapter 039) — and the migration + seed workflow (chapter 040). The student ships the canonical org-scoped invoicing data layer: `organizations`, `users` (Better Auth tables stubbed for now), `org_members`, `customers`, `invoices`, `invoice_lines`. They generate and run the migration against local Docker Postgres, write a deterministic `drizzle-seed` script that produces two orgs with overlapping members and 50+ invoices each, and write the two reads every later unit will reuse: a cursor-paginated org-scoped invoice list with a status filter, and a single-round-trip "one invoice with lines and customer" detail load.
 
-Threads that run through every lesson: the schema is the source of truth — types, queries, the inspector page, and every later unit derive from `db/schema.ts`; every tenant-owned row carries an `organization_id` FK and every read on a tenant table starts with `where eq(organizationId, ...)` — Unit 9's `tenantDb` helper is the structural enforcement, this chapter just installs the manual discipline so the helper has something to wrap; FK `ON DELETE` is a decision per edge, defaulted to `cascade` for owned-children edges and `restrict` for referenced-entity edges; indexes earn their weight by being demanded by a query the chapter actually ships — composite `(organization_id, created_at, id)` for the cursor list, `customer_id` for the detail join; the seed is idempotent (`reset` then `seed` with a fixed seed number) so re-runs produce the same data, and FK-aware so parents land before children; `EXPLAIN ANALYZE` is the proof step, not a feeling. The chapter ships 1 brief + 1 starter walkthrough + 3 build lessons + 1 verify lesson, each build ending on a runnable state.
+Threads that run through every lesson: the schema is the source of truth — types, queries, the inspector page, and every later unit derive from `db/schema.ts`; every tenant-owned row carries an `organization_id` FK and every read on a tenant table starts with `where eq(organizationId, ...)` — Unit 9's `tenantDb` helper is the structural enforcement, this chapter just installs the manual discipline so the helper has something to wrap; FK `ON DELETE` is a decision per edge, defaulted to `cascade` for owned-children edges and `restrict` for referenced-entity edges; indexes earn their weight by being demanded by a query the chapter actually ships — composite `(organization_id, created_at, id)` for the cursor list, `customer_id` for the detail join; the seed is idempotent (`reset` then `seed` with a fixed seed number) so re-runs produce the same data, and FK-aware so parents land before children; `EXPLAIN ANALYZE` is the proof step, not a feeling.
+
+### Project goals
+
+The student ships a data layer that clears these bars, each verified inside its owning lesson's Moment of truth:
+
+- Build-time env validation catches a missing `DATABASE_URL` before deploy: `pnpm build` fails with a clear error when the variable is absent and succeeds once it is restored.
+- `pnpm db:migrate` runs cleanly against an empty database and leaves exactly one row in `__drizzle_migrations`.
+- The seed populates two orgs with overlapping members (at least one user in both) and 50+ invoices each, surfaced in the inspector banner as `organizations: 2`, `org_members: 5+`, `invoices: ≥ 100`.
+- The seed is idempotent: running it twice produces identical row counts and an identical primary-key set on a sampled table.
+- The inspector paginates one org's invoices with no repeated rows across pages, each "Next page" click carrying a fresh `?cursor=...`.
+- `?status=paid` filters server-side: the URL carries the status, only paid rows render, and a hard reload preserves the view.
+- The invoice detail loads in a single round trip: the plan panel shows one query plan with one outer `Index Scan` on `invoices` joined to `customers` and `invoice_lines`.
+- The list query's plan uses `invoices_org_created_id_idx` (no status) or `invoices_org_status_created_id_idx` (with status), never a `Seq Scan`.
+- Every tenant-scoped read AND-includes `organizationId` in its `where`, so a cross-org `invoiceId` returns the empty state rather than the leaked row.
 
 ### Dependency carry-in
 
@@ -73,18 +87,6 @@ A single Server Component at `/inspector` with these surfaces, all read from `se
 
 The inspector is provided in full; the student fills the queries it imports.
 
-### Verify recipe mapped to "Done when"
-
-| Done-when clause | Verify step |
-| --- | --- |
-| `drizzle-kit migrate` runs cleanly on an empty database | Drop the local `app` database, `pnpm db:migrate`, no errors; `__drizzle_migrations` has one row. |
-| Seed populates two orgs with overlapping members and 50+ invoices each | After `pnpm db:seed`, the inspector banner shows `organizations: 2`, `org_members: 5+` (with at least one user belonging to both orgs), `invoices: ≥ 100`. |
-| Seed is idempotent | Run `pnpm db:seed` twice; row counts and a sampled row's primary key set are identical between runs. |
-| Inspector paginates one org's invoices | Click "Next page" 3 times; URL carries a fresh `?cursor=...` each time, list rows don't repeat. |
-| `?status=paid` filters server-side | Click "paid"; URL shows `?status=paid`, list only shows paid rows, hard reload preserves. |
-| Detail loads in a single round trip | Click an invoice; the plan panel shows one query plan with one outer `Index Scan` on `invoices`, joined to `customers` and `invoice_lines` in the same plan. |
-| `EXPLAIN ANALYZE` on the detail query uses the right indexes | The list query plan shows `Index Scan using invoices_org_status_created_id_idx` (or the no-status variant) — not `Seq Scan`. |
-
 ### Concepts demonstrated → owning lesson
 
 - Architectural Principle #2 (schema is the source of truth) — lesson 1 of chapter 037.
@@ -100,229 +102,238 @@ The inspector is provided in full; the student fills the queries it imports.
 
 ---
 
-## Lesson 1 — The brief: what we're building and what we're not
+## Lesson 1 — Project Overview
 
-Frames the org-scoped invoicing surface, the seven "Done when" verifications, the explicit scope cuts (no mutations, no real auth, no RBAC yet), and the senior payoff of installing tenant-aware schema discipline now.
+### What we're building
 
-Goals:
+Org-scoped invoicing is the canonical relational surface every later unit — CRUD, auth gates, RBAC, billing — layers on top of.
+This project ships the data layer for it and nothing else: six tables, the relations, the init migration, a deterministic seed, and the two reads every later unit reuses.
+The student explores the result through a provided inspector page at `/inspector` — an org switcher, a cursor-paginated invoice list with a server-side status filter, a single-round-trip detail panel, and an `EXPLAIN ANALYZE` plan panel that proves the indexes earn their weight.
+Figure: one screenshot of the inspector with the org switcher, the paginated list, an expanded detail, and the visible plan panel.
 
-- Frame the SaaS shape being built: org-scoped invoicing is the canonical relational surface every later unit (CRUD, auth gates, RBAC, billing) layers on top of; this chapter ships the schema and the two reads, nothing else.
-- State the seven "Done when" verifications in one paragraph (clean migrate, two orgs, idempotent seed, paginated list, server-side status filter, single-round-trip detail, indexed plans).
-- Name the scope cut: no mutations (Unit 6 owns Server Actions and CRUD on top of this schema), no real Better Auth tables (Unit 8 swaps the stub), no RBAC at the query layer (Unit 9 wraps these reads with `authedAction` and `tenantDb`).
-- Set the senior payoff: the schema decisions made now — `organizationId` on every tenant-owned row, the composite index for cursor pagination, the relations declaration that turns "one invoice with lines and customer" into one query — are the foundation that makes the rest of the course's data layer cheap. Skipping them surfaces three units later as N+1s, full table scans, and tenant-leak bugs.
-- Show the end UX: one screenshot of the inspector with the org switcher, the paginated list, an expanded detail, and the visible plan panel.
-- Link the starter via `degit`.
+### What we'll practice
 
-Senior calls and watch-outs:
+- Translating a tenant-aware SaaS data model into a Drizzle schema where the schema is the single source of truth and every row type flows from `$inferSelect`.
+- Deciding FK `ON DELETE` per edge and scoping every uniqueness constraint and index to the tenant.
+- Authoring a deterministic, idempotent seed that mixes the bulk seeder with targeted direct inserts.
+- Writing tenant-scoped reads — cursor pagination and a relational nested load — with the `organizationId` guard baked into every `where`.
+- Reading an `EXPLAIN ANALYZE` plan to confirm a query is fast for the reason you think it is.
 
-- The "schema is the source of truth" decision means the project's row types come from `$inferSelect`, not hand-written types — anything else drifts.
-- `organizationId` on every tenant-owned row is non-negotiable. Skipping it on one table is the failure mode that turns into a multi-day RLS migration two units later. Name the structural rule.
+### Architecture
 
-Codebase state at entry: empty repo (student runs `degit`).
-Codebase state at exit: starter cloned, `docker compose up -d` running Postgres, `pnpm install` clean, `pnpm dev` shows the inspector with empty banners (no tables exist yet).
+Labeled list of the layers, shape only: the schema and relations in `db/`, the typed reads in `lib/invoices/`, the seed in `scripts/`, and the provided inspector Server Component in `app/inspector/` that reads everything from `searchParams`.
+The schema sits at the center — types, queries, inspector, and every later unit derive from it.
 
-Estimated student time: 10 to 15 minutes.
+### Starting file tree
+
+See the "Starter file tree" under Chapter framing. Reproduce it here annotated: comment only the files lessons will touch, mark the three TODO files (`db/schema.ts`, `db/relations.ts`, `lib/invoices/queries.ts`, `scripts/seed.ts`) as the highlighted focus, and leave the provided plumbing uncommented. Deep per-file explanation lives in the Implementation lesson that first touches each file, not here.
+
+### Roadmap
+
+One Card per lesson in a CardGrid:
+
+- Lesson 2 — Type-safe environment variables: a missing `DATABASE_URL` fails the build instead of crashing the first request.
+- Lesson 3 — Authoring the schema and shipping the init migration: the six tables, relations, and indexes land in Postgres.
+- Lesson 4 — A deterministic, idempotent seed: two orgs with overlapping members and 100+ invoices, identical on every run.
+- Lesson 5 — The tenant-scoped invoice list: cursor pagination with a server-side status filter, proven against its query plan.
+- Lesson 6 — The single-round-trip invoice detail: one invoice with its lines and customer, guarded by `organizationId`.
+
+### Setup
+
+Steps component, in order, with the expected outcome on success:
+
+1. `degit` the starter into a new directory (name the repo path).
+2. `pnpm install` — completes with no errors.
+3. Copy `.env.example` to `.env.local` and fill the values. Env vars: `DATABASE_URL` and `DATABASE_URL_UNPOOLED` (the Postgres connection string; locally the same value, obtained from the Docker Compose service), `SEED` (the fixed seed number, default `1`).
+4. `docker compose up -d` — brings up the `postgres:18` service on `:5432`.
+5. `pnpm dev` — the inspector renders at `/inspector` with empty banners; no tables exist yet.
+
+The lesson ends when the starter runs locally and the inspector loads with empty banners. Scope cuts and technology rationale (no mutations, no real auth, no RBAC, why `$inferSelect`, why `organizationId` everywhere) belong to the Implementation lessons that introduce each decision, not here.
 
 ---
 
 ## Lesson 2 — Type-safe environment variables with @t3-oss/env-nextjs
 
-Wire build-time env validation with `@t3-oss/env-nextjs` and Zod 4 so a missing `DATABASE_URL` fails `pnpm build` before deploy, covering the `server`/`client` split, the `NEXT_PUBLIC_*` convention, the `.env.example` → `.env.local` pattern, and `SKIP_ENV_VALIDATION` as a deliberate escape hatch — the first project where env vars carry a real secret.
+The goal: a missing `DATABASE_URL` fails `pnpm build` before deploy, not the first request after it.
+Finished result: the project reads its config through a typed `env.ts` boundary, and removing a required variable turns a runtime 500 into a build-time error that names the missing variable.
 
-Topics to cover:
+### Your mission
 
-- The senior question, posed plainly. A SaaS app reads secrets and configuration from environment variables — `DATABASE_URL`, third-party API keys, public-vs-server flags. The failure mode every senior has seen at least once: deploy succeeds, the app boots, the first request crashes because `process.env.STRIPE_SECRET_KEY` is `undefined` and the call to Stripe throws inside a request handler. The user sees a 500; the team sees the alert ten minutes later; the fix is to redeploy with the variable set, which means the outage lasts as long as the deploy. The right place to catch this is **build time, not first-request time.** Chapter 041 is the first project where env vars carry a real secret (the Postgres connection string), and this lesson installs the discipline from line one.
-- `@t3-oss/env-nextjs` as the 2026 default. One paragraph: a thin, well-maintained wrapper around a Standard Schema-compliant validator (Zod 4 in this course; Valibot also supported) that runs at build time, enforces the Next.js naming convention (`NEXT_PUBLIC_` for client-visible variables, no prefix for server-only), and produces typed exports the rest of the app imports instead of touching `process.env` directly. Alternatives named in one sentence: hand-written `process.env` checks scattered across the code (no central enforcement), or no validation at all (the failure mode above). The trigger that would flip the choice: a non-Next.js runtime where the package's framework integration doesn't fit; the principle of validation-at-the-boundary stays the same.
-- The starter's `env.ts` file, read in full. The shape:
-  - `import { createEnv } from '@t3-oss/env-nextjs'` and `import { z } from 'zod'`.
-  - `export const env = createEnv({ server, client, experimental__runtimeEnv })`.
-  - `server` block — Zod schemas for the server-only variables. For chapter 041 this is `DATABASE_URL: z.url()` (the Postgres connection string the lessons that follow consume).
-  - `client` block — Zod schemas for `NEXT_PUBLIC_*` variables. Empty in this project; populated when PostHog (Unit 19) and others land.
-  - The `runtimeEnv` map that explicitly threads `process.env.X` to each schema. Why the map exists: Next.js inlines `NEXT_PUBLIC_*` at build time but leaves server vars dynamic, and the explicit map lets the validator know which is which without surprises. The student does not need the mechanics in depth; they need to know the map exists and why.
-- The Next.js naming convention, restated. `NEXT_PUBLIC_*` is shipped to the client bundle; everything else stays on the server. The `@t3-oss/env-nextjs` package refuses to validate a `NEXT_PUBLIC_*` variable in the `server` block and vice versa — structural enforcement that makes the "I accidentally leaked the API key" bug hard to write. Named here, revisited under the security baseline in Unit 16.
-- The build-time fire. A worked example: the starter ships `DATABASE_URL` in `.env.local` (which this lesson teaches the student to create from `.env.example`, see below). The student runs `pnpm build` — succeeds. The student removes `DATABASE_URL` from `.env.local`, runs `pnpm build` again — fails with a clear error naming the missing variable and the file it was expected in. The student adds it back, the build succeeds. The discipline is mechanical, not theoretical.
-- The `.env.example` and `.env.local` pattern. Two files, two purposes.
-  - `.env.example` lives in the repo, committed, names every variable the app expects with a dummy value or empty string. The starter ships it. The next contributor (or the student themselves on a second machine) copies it to `.env.local`, fills in real values, and the app boots.
-  - `.env.local` lives on the developer's machine, never committed, holds the real secrets. The `.gitignore` excludes `.env*.local`.
-  - The Vercel deploy story is named in one line: production env vars are set in the Vercel dashboard, the build still validates them at build time via `env.ts`, and a missing variable fails the deploy before traffic shifts. Unit 20 owns the deploy chapter; this lesson states the connection so the student knows what they're protecting against.
-- The import-side rule. Application code imports from `~/env` (or the project's path), never from `process.env`. Two senior reasons named: typed exports (`env.DATABASE_URL` is `string`, not `string | undefined`) and the seam where validation actually fires (importing from `~/env` runs the validation; bypassing it doesn't).
-- The `SKIP_ENV_VALIDATION` escape hatch. One paragraph: the package supports `SKIP_ENV_VALIDATION=true` to bypass validation for the specific case of a CI step that builds without the secrets present (e.g. a Docker image build that injects env at runtime). The senior watch-out: the flag is for the build that doesn't need to type-check the env shape, not for "make the error go away." Set it deliberately, in the script that needs it, never as a default.
-- Forward links. Architectural Principle #3 (pure `/lib`, side effects at named boundaries) — `env.ts` is the first concrete instance of a named boundary, surfaced here and named again in Unit 6. Security baseline (Unit 16) revisits env hygiene as part of the audit.
+This is the first project where an env var carries a real secret — the Postgres connection string — so it is where the project installs env discipline from line one.
+The failure mode every senior has seen at least once: the deploy succeeds, the app boots, and the first request crashes because a server-only variable is `undefined` and the downstream call throws inside a request handler; the user sees a 500 and the outage lasts as long as the redeploy.
+The fix is to validate at build time, and the 2026 default for that is `@t3-oss/env-nextjs` — a thin wrapper around a Standard Schema validator (Zod 4 here) that runs at build, enforces the Next.js naming convention (`NEXT_PUBLIC_` for client-visible variables, no prefix for server-only), and produces typed exports the rest of the app imports instead of touching `process.env`.
+The starter ships `env.ts` with a `server` block (`DATABASE_URL: z.url()`), an empty `client` block (populated when PostHog and others land in later units), and the `runtimeEnv` map that threads `process.env.X` to each schema so the validator knows which variables Next.js inlines and which stay dynamic; the student's job is to wire the project to it and prove the boundary fires, not to re-derive the file.
+The constraints that shape the work: application code imports from the project's `env` module, never `process.env`, because that import is the seam where validation actually runs and it is what makes `env.DATABASE_URL` typed as `string` rather than `string | undefined`; the package refuses a `NEXT_PUBLIC_*` variable in the `server` block and vice versa, which makes the leaked-secret bug hard to write.
+Out of scope: authoring Zod schemas in depth (chapter 042), connecting Drizzle to `DATABASE_URL` (lesson 3 of chapter 041), the Vercel deploy flow and secret rotation (Units 16 and 20), and Valibot as the alternative validator — the course commits to Zod.
+The trap to steer clear of is `SKIP_ENV_VALIDATION`: it exists for a CI build that legitimately runs without the secrets present, set deliberately in the one script that needs it — never reached for to make an error go away.
 
-What this lesson does not cover:
+- Removing `DATABASE_URL` from `.env.local` makes `pnpm build` fail with an error that names the missing variable; restoring it makes the build pass again.
+- The app boots and reads `DATABASE_URL` through the typed `env` export, with no remaining `process.env.DATABASE_URL` access in application code.
+- `.env.local` holds the real secret and is git-ignored; `.env.example` is committed and names every variable the app expects.
 
-- Authoring Zod schemas in depth (chapter 042).
-- Connecting Drizzle to `DATABASE_URL` — that's lesson 5 of chapter 041, where the schema and the first migration land.
-- The Vercel deploy flow for env vars (Unit 20).
-- Secret-rotation discipline, env per environment, or staging-vs-production separation (Unit 16 and Unit 20).
-- Valibot as the alternative validator. Named in one line; the course commits to Zod.
+### Coding time
 
-Pedagogical approach:
+One line directing the student to wire the project against `env.ts` and the tests, then attempt the build-failure verification before reading on.
 
-Pattern archetype. The lesson teaches a failure mode and the structural enforcement that prevents it; `@t3-oss/env-nextjs` is the enforcement, the missing-variable production crash is the failure. Open with the 500-on-first-request scenario in prose — concrete, lived-experience framing, no abstraction. Show the starter's `env.ts` as one labeled code block, then walk it section by section in adjacent prose (not in comments inside the block — the prose owns the explanation, the code owns the shape). The worked example is the lesson's center: a `Steps` block with three commands. `pnpm build` succeeds. The student edits `.env.local` to remove `DATABASE_URL`. `pnpm build` fails with an error message the student reads. The student restores the variable. `pnpm build` succeeds again. Each step has its labeled output block; the student watches the build catch the missing variable cause-and-effect. Close with a small `Buckets` exercise sorting eight variable names ("`DATABASE_URL`," "`NEXT_PUBLIC_POSTHOG_KEY`," "`STRIPE_SECRET_KEY`," "`NEXT_PUBLIC_SITE_URL`," "`RESEND_API_KEY`," "`NODE_ENV`," "`NEXT_PUBLIC_GA_ID`," "`SESSION_SECRET`") into "server block," "client block," or "framework-owned, don't put in env.ts." That exercise is the senior-reflex confirmation — the student should leave knowing where each new env variable belongs before they ever add one.
+Hidden `<details>` solution walkthrough:
 
-Estimated student time: 30 to 35 minutes.
+- The `env.ts` shape shown as it sits in the repo, with one or two sentences on why the `runtimeEnv` map exists and why imports go through `env` rather than `process.env`.
+- The `.env.example` → `.env.local` split: what each file is for, that `.gitignore` excludes `.env*.local`, and the one-line Vercel connection (production vars set in the dashboard still validate at build, so a missing one fails the deploy before traffic shifts — Unit 20 owns the deploy chapter).
+- The `SKIP_ENV_VALIDATION` escape hatch and the rule for when it is legitimate.
+- A callout linking Architectural Principle #3 (pure `/lib`, side effects at named boundaries): `env.ts` is the first concrete named boundary, revisited in Unit 6 and under the Unit 16 security baseline.
+
+### Moment of truth
+
+- Run the lesson's test suite (name the command); expected pass output.
+- By hand: `pnpm build` succeeds. Remove `DATABASE_URL` from `.env.local`, run `pnpm build` again, read the error naming the missing variable, then restore it and confirm the build passes. Tick each as you go.
+- By hand: confirm application code reads `env.DATABASE_URL`, not `process.env`.
 
 ---
 
-## Lesson 3 — Tour of the starter and the inspector contract
+## Lesson 3 — Authoring the schema and shipping the init migration
 
-Walks the provided file tree (`drizzle.config.ts`, the pooled `db` client, the cursor helpers, the inspector page, the `db:*` scripts), brings up Docker Postgres, and pins the contracts the student's queries must satisfy.
+The goal: the six tables, their relations, and the indexes the project's reads demand land in Postgres through one reviewed migration.
+Finished result: `pnpm db:migrate` creates `organizations`, `users` (stub), `org_members`, `customers`, `invoices`, and `invoice_lines` on a fresh database, all FKs, uniques, checks, and indexes visible in Studio, and a second `db:generate` reports no changes.
 
-Goals:
+### Your mission
 
-- Walk the file tree, calling out provided vs. stubbed. Linger on three files: `drizzle.config.ts` (the one config that drives `generate`, `migrate`, `push`, `studio` — point at the unpooled URL, casing, schema path), `src/db/client.ts` (the pooled `db` exported with the relations bag attached), `src/db/cursor.ts` (the encode/decode helpers and Zod schema the queries reuse — provided because the encoding contract is not the lesson).
-- Read `src/lib/invoices/schema.ts` — the `statusSchema` enum, the `listInvoicesInputSchema` (orgId, optional status, optional cursor, pageSize default 20, cap 100). The Zod input is what the inspector page calls with; the same shape will be reused in Unit 6's Server Action.
-- Read `src/app/inspector/page.tsx` end-to-end — the searchParams reads, the call sites for `listInvoices` and `getInvoiceDetail`, the plan-panel `<details>` that runs `EXPLAIN ANALYZE`. Name what each call expects so the student knows the contract their queries must satisfy.
-- Read the `package.json` scripts — `db:generate`, `db:migrate`, `db:seed`, `db:studio` — and the env loading path (`dotenv-cli` wraps Drizzle Kit invocations because Drizzle Kit doesn't read `.env` by itself, lesson 1 of chapter 040).
-- Bring up Postgres: `docker compose up -d`, `psql` in to confirm the empty `app` database exists. `pnpm db:migrate` will succeed against it (no tables yet, just creates `__drizzle_migrations`).
-- Open `pnpm db:studio`, confirm an empty schema browser.
+This is where the schema becomes the source of truth for the whole project — every row type, every later query, and every downstream unit derives from `db/schema.ts`, so the row types come from `$inferSelect`, never hand-written.
+You will author the six tables and their relations, then generate and run the init migration against the empty database the starter's Docker Postgres provides.
+The starter wires the tooling you build on: `drizzle.config.ts` drives `generate`/`migrate`/`studio` and points Drizzle Kit at the unpooled URL, the schema path, and snake-case casing; `src/db/client.ts` exports the pooled `db` with the relations bag attached; the `db:*` scripts wrap Drizzle Kit through `dotenv-cli` because Drizzle Kit does not read `.env` by itself.
+The decisions that shape the schema, each carried in from Unit 5: UUIDv7 primary keys via `$defaultFn(() => uuidv7())` for sortable, non-guessable IDs; `timestamptz` for every timestamp and `numeric(12, 2)` for money; `pgEnum` for `role` and `status` so the database enforces the domain; FK `ON DELETE` decided per edge rather than copied — cascade for owned children that lose meaning without their parent, restrict for referenced entities the schema can't make sense of without (a customer must not vanish under an invoice); every uniqueness scope and every index made tenant-aware, with composite index column order matching the list query's `where` plus `orderBy` direction.
+The structural rule that outlives this project: every tenant-owned table carries `organizationId` as a NOT NULL FK; the sole exception is `users`, which is global across orgs and joined through the `org_members` membership table.
+Out of scope: writing the reads (lessons 5 and 6) and seeding data (lesson 4); the inspector stays empty after this lesson.
+Two traps to avoid — reaching for `drizzle-kit push` even on a fresh database (the generate-and-commit loop is the muscle; push is chapter 040's prototype-only escape hatch), and skipping the read of the emitted SQL before migrating.
 
-Senior calls and watch-outs:
+- `pnpm db:migrate` runs cleanly on the empty database and Studio shows all six tables with their FKs, uniques, checks, and the three indexes.
+- The emitted migration SQL, read before applying, shows every `CREATE TABLE`, each FK with its intended `ON DELETE`, each tenant-scoped unique, the `total >= 0` check, and the three named indexes (`invoices_org_status_created_id_idx`, `invoices_org_created_id_idx`, `invoices_customer_id_idx`).
+- A second `pnpm db:generate` immediately after reports no changes — the snapshot is in sync.
+- The relations resolve a two-role join from `invoices` (the `createdBy` user side is named distinctly), and the exported `$inferSelect` row types are what `queries.ts` and the inspector consume.
 
-- The pooled URL drives the app's runtime queries; the unpooled URL drives Drizzle Kit. Running migrations against the pooled URL silently truncates long DDL — this is the lesson from lesson 4 of chapter 036 made concrete. The starter wires both correctly; the watch-out is reaching for the pooled URL in any new script the student writes later.
-- The cursor encoder/decoder lives in `db/cursor.ts`, not duplicated per query. Same shape every paginated list will reuse — Architectural Principle #3 (named seams) starting early.
+### Coding time
 
-Codebase state at entry: starter cloned, Postgres running.
-Codebase state at exit: student has read every provided file, run `db:migrate` against the empty DB once, opened Studio. No code written. The inspector still renders empty.
+One line directing the student to author `db/schema.ts` and `db/relations.ts` against the reference signatures and the tests, generate `--name init_schema`, read the SQL, then migrate.
 
-Estimated student time: 20 to 25 minutes.
+Hidden `<details>` solution walkthrough:
 
----
+- `src/db/schema.ts` in repo order — `organizations`, `users` (stub), `orgMembers` (composite PK), `customers`, `invoices`, `invoiceLines` — built in the order FKs demand, with one or two sentences each on the UUIDv7/`timestamptz`/`numeric`/`pgEnum` choices, the per-edge `ON DELETE` rationale (named once at `customers → invoices`), the tenant-aware uniques, and the three indexes declared at the bottom with column order matching the list `orderBy`.
+- `src/db/relations.ts` via `defineRelations` v2, calling out the named two-role join from `invoices` to `users`.
+- The `$inferSelect` / `$inferInsert` exports as the canonical row types.
+- A callout on the provided `drizzle.config.ts`: the unpooled URL drives Drizzle Kit while the pooled URL drives the app's runtime queries, and running migrations against the pooled URL silently truncates long DDL — the watch-out is reaching for the pooled URL in any new script written later.
+- A callout that the composite index column order is verified against the live query plan in lesson 5 of chapter 041, and links to the chapter 040 generate-and-commit lesson rather than re-explaining it.
 
-## Lesson 4 — Authoring the schema and shipping the init migration
+### Moment of truth
 
-Fills `db/schema.ts` and `db/relations.ts` with the six tables (`organizations`, `users` stub, `org_members`, `customers`, `invoices`, `invoice_lines`) including UUIDv7 PKs, FK `ON DELETE` decisions, tenant-scoped uniques, the three composite indexes, and the `$inferSelect` row types, then generates and runs the initial migration.
-
-Goals:
-
-- Fill `src/db/schema.ts` table by table in the order FKs demand: `organizations`, `users` (stub), `orgMembers` (composite PK referencing the two), `customers`, `invoices`, `invoiceLines`. Each table calls out the senior decisions inline:
-  - `id uuid` with `$defaultFn(() => uuidv7())` (UUIDv7 from lesson 5 of chapter 037 — sortable, no cross-table guess-leak).
-  - `timestamptz` for every timestamp, never `timestamp` (the lesson 3 of chapter 037 rule).
-  - `numeric(12, 2)` for money, never `real` or `double precision`.
-  - `pgEnum` for `role` and `status` (DB-enforced).
-  - FK `ON DELETE`: `cascade` on `org_members → organizations/users`, `cascade` on `customers → organizations`, `cascade` on `invoices → organizations`, `restrict` on `invoices → customers` (customers shouldn't disappear under an invoice — the lesson 6 of chapter 037 decision), `restrict` on `invoices → users`, `cascade` on `invoice_lines → invoices`.
-  - `unique(organizationId, number)` on invoices, `unique(organizationId, email)` on customers, `unique(invoiceId, position)` on invoice_lines — every uniqueness scope is tenant-aware (the structural rule).
-  - `check(sql\`total >= 0\`)` on invoices — DB-enforced invariant (lesson 7 of chapter 037).
-  - Indexes declared at the bottom of each table: composite `(organizationId, status, createdAt desc, id desc)`, `(organizationId, createdAt desc, id desc)`, `(customerId)`. Order matches the query's `orderBy` direction — the rule from lesson 1 of chapter 039.
-- Fill `src/db/relations.ts` using `defineRelations` v2: `organization` → many of `orgMembers`/`customers`/`invoices`, `user` → many `orgMembers` and `invoices` (via `createdBy`), `customer` → many `invoices` and one `organization`, `invoice` → one `organization`/`customer`/`createdBy`, many `invoiceLines`, `invoiceLine` → one `invoice`. Two relations from `invoices` to two different roles must be named (e.g., `creator` for the user-side join) — the senior call from lesson 9 of chapter 037.
-- Export `Invoice = typeof invoices.$inferSelect`, `NewInvoice = typeof invoices.$inferInsert`, same for the other tables — the canonical row types that flow into `queries.ts` and the inspector.
-- Run `pnpm db:generate --name init_schema`. Open the emitted SQL. Read it together: confirm every `CREATE TABLE`, every FK with the right `ON DELETE`, every index, every constraint. This is the review step from lesson 1 of chapter 040.
-- Run `pnpm db:migrate`. Confirm in Studio: six tables, indexes visible, FKs visible.
-- Re-run `db:generate` immediately: emits an empty migration ("no changes"). The senior signal that the snapshot is in sync.
-
-Senior calls and watch-outs:
-
-- Every tenant-owned table carries `organizationId` as a NOT NULL FK. The one table that doesn't carry it is `users` (which is global across orgs); that's the structural distinction membership tables make explicit (`org_members` joins them).
-- The composite index column order matches the `where` + `orderBy` of the list query, not alphabetical or random — the cursor query's plan depends on it. Name the rule, then verify with `EXPLAIN ANALYZE` in lesson 7 of chapter 041.
-- `cascade` vs. `restrict` is a decision per edge, not a default to copy. The mental model: cascade for owned children that lose meaning without the parent, restrict for referenced entities whose absence the schema can't make sense of. Name it once at `customers → invoices` and the student carries it through.
-- Don't reach for `drizzle-kit push` here — even on a fresh database, the generate-and-commit loop is the muscle. The push-as-prototype lane is lesson 2 of chapter 040's escape hatch, not the project's default.
-
-Codebase state at entry: empty `db/schema.ts`, no migration files.
-Codebase state at exit: schema and relations committed; one migration file (`0000_init_schema.sql`) plus its `meta/` snapshot committed; six tables exist in Postgres; `db:generate` reports no further changes. Inspector still renders empty (no rows yet).
-
-Estimated student time: 50 to 70 minutes.
+- Run the lesson's test suite (name the command); expected pass output.
+- By hand: drop and re-create the database, run `pnpm db:migrate`, confirm no errors and exactly one row in `__drizzle_migrations`. Open `pnpm db:studio` and confirm the six tables, their FKs, and the three indexes. Run `pnpm db:generate` again and confirm it reports no changes. Tick each as you go.
 
 ---
 
-## Lesson 5 — A deterministic, idempotent seed for two orgs
+## Lesson 4 — A deterministic, idempotent seed for two orgs
 
-Writes `scripts/seed.ts` using `reset` plus `seed().refine(...)` with `weightedRandom`, `valuesFromArray`, and `with` to produce two orgs with overlapping members and 100+ invoices, dropping to direct `db.insert` where the seeder's shape doesn't fit.
+The goal: one command fills the database with two orgs, overlapping members, and 100+ invoices, identical on every run.
+Finished result: `pnpm db:seed` makes the inspector banner read `organizations: 2`, `org_members: 5+` (one user in both orgs), and `invoices: ≥ 100`, and running it a second time leaves row counts and sampled primary keys unchanged.
 
-Goals:
+### Your mission
 
-- Fill `scripts/seed.ts`: import `db`, the schema bag, `seed` and `reset` from `drizzle-seed`. The script's shape is `await reset(db, schema); await seed(db, schema, { seed: Number(process.env.SEED ?? 1) }).refine(...)`.
-- Refine table by table:
-  - `organizations`: `count: 2`, columns `name` from a curated `valuesFromArray` (`Acme`, `Globex`), `slug` matching.
-  - `users`: `count: 4`, `email` unique (`valuesFromArray` with 4+ curated values), `name` from name generators.
-  - `orgMembers`: insert explicitly after the seed call — `drizzle-seed`'s `with` doesn't model the overlapping-membership shape cleanly. Use a small follow-up `db.insert(orgMembers).values([...])` block to assign: user 1 → org 1 (owner), user 2 → org 1 (member), user 3 → org 2 (owner), user 4 → org 2 (member), user 1 → org 2 (admin) — the overlap that the Unit 9 RBAC project will exercise. Name the senior call: when the seeder's shape doesn't fit, drop to direct inserts; mixing both is the pattern.
-  - `customers`: `count: 30`, `with: { invoices: 4-7 }` per customer — drives the invoice count past 100 organically. Columns: `name` from `companyName`, `email` unique-ish per org. Distribute customers across the two orgs via `organizationId` from `valuesFromArray` of the two org IDs (read after the orgs land — done by splitting the seed into two `.refine` calls, or by manual inserts; the lesson teaches the split).
-  - `invoices`: `count` driven by `with` from customers, columns: `status` via `weightedRandom` (`paid` 50%, `sent` 25%, `draft` 15%, `overdue` 10% — realistic distribution from lesson 3 of chapter 040), `total` `f.number({ minValue: 100, maxValue: 25000, precision: 100 })`, `number` from a sequence helper (`INV-0001`...), `issuedAt` `f.date` spread over the last 90 days, `dueAt` 30 days after `issuedAt` (computed post-seed or via a small follow-up update). `createdBy` from `valuesFromArray` of the relevant org's members.
-  - `invoiceLines`: `with: { count: 1-5 }` per invoice, `quantity`, `unitPrice`, `description` from `valuesFromArray` of curated service descriptions, `position` 1..N per invoice (post-seed update to renumber within each invoice).
-- Add the `db:seed` script: `dotenv -e .env -- tsx scripts/seed.ts`. The script `process.exit(0)`s on success.
-- Run it. Open Studio; eyeball: two orgs visible, the membership rows show the overlap, customers have a realistic spread, invoices show status distribution, line items count.
-- Run it again. Confirm row counts and a sampled invoice's `id` are identical — the determinism guarantee. This is the idempotency the inspector banner will read.
-- Update the inspector banner to count rows (already wired; just confirm).
+The data layer needs realistic, repeatable data so the reads in the next two lessons — and every later unit — have something to page through, and so verification is one glance at the banner rather than a guess.
+You will write `scripts/seed.ts` as `reset(db, schema)` followed by `seed(db, schema, { seed: Number(process.env.SEED ?? 1) }).refine(...)`, then wire the `db:seed` script.
+The shape of the data and the tools that produce it carry in from chapter 040: `valuesFromArray` for curated org names, emails, and service descriptions; `weightedRandom` for a realistic status mix (paid most common, overdue rarest); the `with` clause to fan invoices out from customers and line items out from invoices; numeric and date generators for totals, issue dates, and due dates.
+The defining constraint is determinism: the fixed seed number is the contract, so the same number must always produce the same data — bumping it deliberately shifts the shape, while editing the `.refine` config without bumping it silently breaks the contract.
+The senior pattern this lesson teaches is mixing the bulk seeder with targeted direct inserts: the overlapping-membership shape (user 1 in both orgs) and computed columns like `position` renumbered per invoice or `dueAt` derived from `issuedAt` don't fit the seeder cleanly, so drop to `db.insert(...)` after the `seed(...)` call for those — mixing both in one script is the pattern, not a smell.
+Two traps to avoid: `drizzle-seed`'s `with` count is per-parent, not total, so `count: 30` customers with 4–7 invoices each yields 120–210 invoices, not 4–7; and `reset` issues `TRUNCATE ... CASCADE`, which is fine against local Docker but would hold locks on a shared branch, so this stays local-only and reaches the unpooled URL for the long transaction, the same rule as migrations.
 
-Senior calls and watch-outs:
+- Running `pnpm db:seed` makes the inspector banner show two orgs, 5+ memberships with at least one user belonging to both orgs, 30 customers spread across the orgs, and 100+ invoices.
+- The seeded invoices show a realistic status distribution and totals, with each invoice's line items numbered by `position` and `dueAt` falling after `issuedAt`.
+- Running `pnpm db:seed` a second time leaves the row counts and a sampled invoice's `id` unchanged from the first run.
 
-- `drizzle-seed`'s `with` is per-parent count, not total. `customers` with `with: { invoices: 4-7 }` and `count: 30` produces 120-210 invoices, not 4-7. Name the trap from lesson 3 of chapter 040.
-- When `drizzle-seed`'s shape doesn't fit (overlapping memberships, computed columns), drop to direct `db.insert(...)` after the `seed(...)` call. The seeder is the bulk shape; manual inserts are the targeted corrections. Mixing both inside one script is the senior pattern, not the smell.
-- The fixed seed number is the determinism contract. Bumping it intentionally shifts the data shape; changing the `.refine` config without bumping the number silently breaks the contract — the watch-out from lesson 3 of chapter 040.
-- `reset(db, schema)` uses `TRUNCATE ... CASCADE` which holds locks; fine against local Docker, would be a problem against a shared dev branch. Local-only is the rule.
-- The script reaches the unpooled URL via `DATABASE_URL_UNPOOLED` to handle the longer transaction the seed produces — the same rule as migrations.
+### Coding time
 
-Codebase state at entry: schema and migration in place, but the database is empty (or holds only the `__drizzle_migrations` row).
-Codebase state at exit: running `pnpm db:seed` populates the database; the inspector banner shows the expected counts; running it twice produces identical state. The list and detail panels still don't render (queries still TODO).
+One line directing the student to write `scripts/seed.ts` against the reference shape and the tests, wire `db:seed`, then run it twice and compare.
 
-Estimated student time: 55 to 75 minutes.
+Hidden `<details>` solution walkthrough:
 
----
+- `scripts/seed.ts` in repo order: the `reset` call, the `seed(...).refine(...)` block table by table (`organizations` count 2, `users` count 4, `customers` count 30 with `with: { invoices: 4-7 }`, status via `weightedRandom`, totals and dates via generators), and the follow-up direct-insert block for the overlapping memberships and the `position`/`dueAt` corrections — with a sentence on why each correction lives outside the seeder.
+- The `db:seed` script wiring through `dotenv` and `tsx`, and that the script exits 0 on success.
+- A callout on the per-parent-count trap and the arithmetic that lands invoices past 100.
+- A callout that the fixed seed number is the determinism contract and what bumping it versus editing `.refine` does, linking the chapter 040 seed lesson rather than re-explaining it.
+- A note that `reset`'s `TRUNCATE ... CASCADE` and the long transaction are why the seed is local-only and uses the unpooled URL.
 
-## Lesson 6 — Writing the two tenant-scoped reads
+### Moment of truth
 
-Implements `listInvoices` (cursor pagination with the composite tiebreaker predicate and the `limit(pageSize + 1)` trick) and `getInvoiceDetail` (relational `findFirst` with `lines` and `customer`), with the `organizationId` tenant guard baked into every `where`.
-
-Goals:
-
-- Fill `src/lib/invoices/queries.ts` with `listInvoices`. The shape:
-  - Validate inputs against `listInvoicesInputSchema` (orgId required, status optional, cursor optional decoded via `cursor.decode`, pageSize default 20 cap 100).
-  - Use `db.query.invoices.findMany`: `where` AND-combines `eq(invoices.organizationId, organizationId)`, optional `eq(invoices.status, status)`, and the cursor predicate `or(lt(invoices.createdAt, cursor.createdAt), and(eq(invoices.createdAt, cursor.createdAt), lt(invoices.id, cursor.id)))` when cursor is present. `orderBy: [desc(invoices.createdAt), desc(invoices.id)]`. `limit(pageSize + 1)`. `with: { customer: true }` because the list cell shows the customer's name and that's still a single query through the relational API (the join is one round trip).
-  - Slice the first `pageSize` rows; `nextCursor = rows.length > pageSize ? cursor.encode({ createdAt, id } of the last returned) : null`. Return `{ rows, nextCursor }`.
-- Fill `getInvoiceDetail`:
-  - Validate inputs (`organizationId`, `invoiceId`).
-  - `db.query.invoices.findFirst({ where: and(eq(invoices.id, invoiceId), eq(invoices.organizationId, organizationId)), with: { lines: { orderBy: asc(invoiceLines.position) }, customer: true } })`. The tenant guard is `eq(organizationId, ...)` in the `where`, not "load and then check" — security at the query, not the post-condition.
-  - Return `null` if not found.
-- The inspector page already calls both; refresh the page. The list panel paginates, the detail loads. Click "Next page", confirm a new `?cursor=...` in the URL. Click an invoice, confirm the detail loads with its lines and customer in one paint.
-- Switch the org in the org switcher; confirm rows differ. Try `?status=paid`; confirm filtering. Try `?invoiceId=<id-from-org-A>&orgId=<org-B>`; confirm the detail returns `null` (the tenant guard holds).
-
-Senior calls and watch-outs:
-
-- Cursor pagination requires the tiebreaker — sorting only by `createdAt` skips or duplicates rows when two invoices share a timestamp. The composite predicate is mandatory, not optional. The lesson 6 of chapter 038 rule made concrete.
-- Tenant filter goes in the `where`, not after the load. The "load then check" pattern is the failure mode that surfaces as IDOR — anyone with a valid invoice ID from any org reads it. The structural rule is `where: and(eq(organizationId), eq(id))`; this is what Unit 9's `tenantDb` will enforce structurally but the manual discipline starts here.
-- The relational query API (`with: { ... }`) issues either one query or a small batch under the hood — well within "single round trip" territory because the planner sees the joins. Compare to a manual loop of `getCustomer(invoice.customerId)` + `getLines(invoice.id)` which would be 3 round trips. Name the contrast, point at lesson 2 of chapter 039 for the N+1 deep dive.
-- The `nextCursor` is null when fewer than `pageSize + 1` rows came back; the inspector's "Next page" link is disabled in that case. The n+1 trick avoids a separate `count()` round trip — the lesson 6 of chapter 038 punchline.
-- The Zod parse on `listInvoicesInputSchema` is the same shape Unit 6 will reuse against a Server Action `formData`. Architectural Principle #3 at work — the schema is in `/lib`, callers compose it.
-
-Codebase state at entry: schema and seeded data ready; inspector renders empty list and empty detail.
-Codebase state at exit: inspector fully functional. List paginates with cursors, filters by status, switches between orgs; detail loads with relations; tenant guard verified by attempting a cross-org `invoiceId`. Plan panel `<details>` still un-inspected — that's lesson 7 of chapter 041's verification step.
-
-Estimated student time: 50 to 70 minutes.
+- Run the lesson's test suite (name the command); expected pass output.
+- By hand: run `pnpm db:seed`, read the inspector banner for two orgs, 5+ memberships (one user in both orgs), and 100+ invoices; open Studio to eyeball the status spread and line-item counts. Run `pnpm db:seed` again and confirm identical row counts and a sampled invoice `id` across both runs. Tick each as you go.
 
 ---
 
-## Lesson 7 — Verifying the seven "Done when" clauses
+## Lesson 5 — The tenant-scoped invoice list with cursor pagination
 
-Runs each Done-when check end-to-end (clean migrate, idempotent seed, cursor pagination, server-side status filter, cross-org tenant guard, single-round-trip detail, `EXPLAIN ANALYZE` showing the right indexes) and forward-references Units 6, 8, 9, and 10.
+The goal: the inspector lists one org's invoices, pages through them with a cursor, and filters by status server-side.
+Finished result: the inspector's list panel renders an org's invoices with customer name, status, total, and due date; "Next page" carries a fresh `?cursor=...` with no repeated rows; `?status=paid` shows only paid rows and survives a reload; and the list query's plan uses the matching composite index, never a `Seq Scan`.
 
-Goals:
+### Your mission
 
-- Walk every "Done when" clause as a verification step (the table in the framing).
-- Drop and re-create the database (`docker compose down -v && docker compose up -d && pnpm db:migrate`) — confirm a clean migrate on a fresh database with no errors and one row in `__drizzle_migrations`.
-- `pnpm db:seed` twice in a row — confirm the banner shows identical row counts and a sampled invoice's `id` is the same across runs (the determinism guarantee).
-- Inspector pagination: click "Next page" three times against one org; copy each cursor value; confirm no row repeats across the three pages (open Studio if needed).
-- Status filter: click `paid`; URL shows `?status=paid`; only paid rows render; hard reload preserves; URL share to a second tab reproduces the view.
-- Cross-org tenant guard: hand-construct an inspector URL with `orgId` of org A and `invoiceId` from org B (read from Studio); confirm the detail panel renders empty-state, not the leaked invoice.
-- Expand the plan panel on the detail load — confirm the plan shows `Index Scan using invoices_pkey` (the PK lookup) joined to `customers` and `invoice_lines` in one plan. Read the plan bottom-up using the lesson 3 of chapter 039 vocabulary. Note the `actual time` per node and the buffer hit/read counts.
-- Switch the plan panel to the list query (provided control). Confirm without `?status=...` the plan uses `invoices_org_created_id_idx`; with `?status=paid` the plan uses `invoices_org_status_created_id_idx`. If either falls back to `Seq Scan`, the index column order is wrong — point at lesson 4 of chapter 041 and the lesson 1 of chapter 039 rule.
-- Name the senior calls one more time:
-  - Schema is the source of truth: types, queries, the inspector, every later layer flow from `db/schema.ts`.
-  - Every tenant-owned read filters by `organizationId` in the `where`, never after the load.
-  - Cursor pagination requires the tiebreaker; the composite index column order matches the `orderBy`.
-  - `EXPLAIN ANALYZE` is the proof of "this query is fast for the reason I think it is" — feel doesn't count.
-  - Seeds are deterministic and idempotent; the reset-then-seed shape is the contract.
-- Forward references:
-  - Unit 6 will add Server Actions that mutate this schema with Zod validation at the action boundary, and `useOptimistic` on top of `listInvoices`.
-  - Unit 8 will drop the `users` stub and switch to Better Auth's tables — additive migration, the FK targets stay.
-  - Unit 9 will wrap `listInvoices` and `getInvoiceDetail` in a `tenantDb(orgId)` helper that makes the missing `organizationId` filter structurally impossible to write — this chapter built the discipline manually so the wrapper has something to enforce.
-  - Unit 10 will turn the inspector's URL-state into the production list view with soft delete, sort controls, and optimistic concurrency.
+This is the read every later list in the course is built on, so it sets the pattern: a tenant-scoped, cursor-paginated, status-filterable query that the planner serves from an index.
+You will write `listInvoices` in `src/lib/invoices/queries.ts` against the provided `listInvoicesInputSchema` (orgId required, status optional, cursor optional and decoded through the provided `db/cursor.ts` helpers, pageSize default 20 capped at 100) — the same input shape Unit 6 will reuse against a Server Action's `formData`, which is why the schema lives in `/lib` for callers to compose.
+The query uses the relational API's `findMany` with a `where` that AND-combines the tenant guard, the optional status equality, and the cursor predicate, ordered by `(createdAt desc, id desc)`, with `with: { customer: true }` so the list cell's customer name comes back in the same round trip.
+Two constraints define correctness here: cursor pagination needs the composite tiebreaker — ordering by `createdAt` alone skips or duplicates rows whenever two invoices share a timestamp, so the predicate must be `or(lt(createdAt, c.createdAt), and(eq(createdAt, c.createdAt), lt(id, c.id)))`; and the page boundary uses the `limit(pageSize + 1)` trick — fetch one extra row to learn whether a next page exists, set `nextCursor` from the last kept row, and avoid a separate `count()` round trip.
+The structural rule that outlives this project: the `organizationId` filter goes in the `where`, never as a post-load check — the "load then filter" shape is the IDOR failure mode, and this is the manual discipline Unit 9's `tenantDb` will later enforce structurally.
+Out of scope: the detail read (lesson 6), the provided plan panel's wiring (you read its output here but don't build it), and any mutation — this project is read-only, since Unit 6 owns the Server Actions and CRUD that write to this schema.
+The trap to avoid is treating the tiebreaker or the `+ 1` as optional polish — both are load-bearing for correct paging.
 
-Senior calls and watch-outs:
+- The inspector list panel renders an org's invoices, and switching orgs in the switcher changes which rows appear.
+- Clicking "Next page" carries a fresh `?cursor=...` in the URL, and no row repeats across pages; the link is disabled on the last page.
+- `?status=paid` shows only paid rows, the URL carries the status, and a hard reload (or opening the URL in a second tab) reproduces the filtered view.
+- The list query's plan uses `invoices_org_created_id_idx` without a status filter and `invoices_org_status_created_id_idx` with one, never a `Seq Scan`.
 
-- The verify lesson is the rehearsal of the failure modes — running each one and naming what would break without the discipline the student just installed.
-- If a verification fails, the lesson points at the owning build lesson, not at "debug it yourself."
+### Coding time
 
-Codebase state at entry: full schema, seed, and queries working.
-Codebase state at exit: same surface, verified clause-by-clause; the plan output proves the indexes earn their weight; the student can articulate every schema decision and which later unit will lean on it.
+One line directing the student to implement `listInvoices` against the brief and the tests, then exercise the inspector list before reading on.
 
-Estimated student time: 25 to 35 minutes.
+Hidden `<details>` solution walkthrough:
+
+- `listInvoices` as it sits in `queries.ts`: input validation against `listInvoicesInputSchema`, the `findMany` call with the AND-combined `where`, the `orderBy`, `limit(pageSize + 1)`, and `with: { customer: true }`, then the slice and `nextCursor` computation.
+- A sentence each on why the tiebreaker is mandatory and why `with: { customer: true }` stays one round trip (the planner sees the join) versus a manual per-row customer fetch — linking the chapter 038 cursor lesson and the chapter 039 N+1 lesson rather than re-explaining.
+- A callout that the `listInvoicesInputSchema` reuse in Unit 6 is Architectural Principle #3 at work.
+- A callout on reading the list query's plan in the provided plan panel: `Index Scan using ...`, read bottom-up with the chapter 039 vocabulary, and that a `Seq Scan` here means the index column order from lesson 3 of chapter 041 is wrong.
+
+### Moment of truth
+
+- Run the lesson's test suite (name the command); expected pass output.
+- By hand: click "Next page" three times against one org and confirm no row repeats across the three pages (open Studio if needed); switch orgs and confirm the rows differ. Click `paid`, confirm the URL shows `?status=paid`, only paid rows render, and a hard reload preserves the view. Switch the plan panel to the list query and confirm it uses `invoices_org_created_id_idx` (no status) and `invoices_org_status_created_id_idx` (with status), never a `Seq Scan` — if it falls back, the index order from lesson 3 of chapter 041 is wrong. Tick each as you go.
+
+---
+
+## Lesson 6 — The single-round-trip invoice detail read
+
+The goal: clicking an invoice loads it with its line items and customer in one query, and only if it belongs to the current org.
+Finished result: the inspector's detail panel renders an invoice header, its customer, and its line items ordered by position; the plan panel shows one query plan with an outer `Index Scan` on `invoices` joined to `customers` and `invoice_lines`; and a cross-org `invoiceId` returns the empty state instead of the row.
+
+### Your mission
+
+This read closes the data layer and proves the relational API turns "one invoice with its lines and customer" into a single round trip rather than the N+1 a hand-written loop would produce.
+You will write `getInvoiceDetail` in `src/lib/invoices/queries.ts` using `findFirst` with `with: { lines: { orderBy: asc(position) }, customer: true }`, returning `null` when nothing matches.
+The defining constraint is the tenant guard: the `where` must AND-include both `eq(invoices.id, invoiceId)` and `eq(invoices.organizationId, organizationId)`, so the security lives in the query rather than in a check after the load — the same structural rule the list read follows and the discipline Unit 9's `tenantDb` will enforce.
+The performance constraint is the single round trip: the relational `with` lets the planner satisfy the customer and line-item joins in one plan, which is why the plan panel shows one outer `Index Scan` on `invoices` rather than three separate lookups; point at the chapter 039 N+1 material rather than re-deriving it.
+Out of scope: the list read (lesson 5) and the plan panel's wiring; you read its output to confirm the single round trip.
+The trap to avoid is the "load the invoice, then check its `organizationId`" shape — it reads as correct but leaks any invoice whose ID an attacker guesses, so the org filter belongs inside the `where`.
+
+- Clicking an invoice loads the detail panel with the invoice header, its customer, and its line items ordered by `position`.
+- An inspector URL pairing one org's `orgId` with another org's `invoiceId` renders the empty state, not the cross-org invoice.
+- The plan panel on the detail load shows one query plan with a single outer `Index Scan` on `invoices` joined to `customers` and `invoice_lines`.
+
+### Coding time
+
+One line directing the student to implement `getInvoiceDetail` against the brief and the tests, then exercise the detail panel before reading on.
+
+Hidden `<details>` solution walkthrough:
+
+- `getInvoiceDetail` as it sits in `queries.ts`: input validation, the `findFirst` with the AND-combined tenant `where` and the `with` block ordering lines by `position`, and the `null` return.
+- A sentence on why the tenant filter lives in the `where` (IDOR otherwise) and why the relational `with` is one round trip versus a manual `getCustomer` + `getLines` loop, linking the chapter 039 N+1 lesson.
+- A callout on reading the detail plan in the provided panel — one outer `Index Scan` on `invoices` joined to the two tables — read bottom-up with the chapter 039 vocabulary.
+- A short closing pointer to where this data layer is picked up next: Unit 6 adds Server Actions and `useOptimistic` on top of these reads, Unit 8 swaps the `users` stub for Better Auth's tables (additive migration, FK targets unchanged), Unit 9 wraps both reads in `tenantDb(orgId)` so the missing `organizationId` filter becomes impossible to write, and Unit 10 turns the inspector's URL state into the production list view.
+
+### Moment of truth
+
+- Run the lesson's test suite (name the command); expected pass output.
+- By hand: click an invoice and confirm the detail renders its customer and line items ordered by position in one paint. Hand-construct an inspector URL with org A's `orgId` and an `invoiceId` read from org B in Studio, and confirm the detail panel shows the empty state, not the leaked invoice. Expand the plan panel on the detail load and confirm one plan with an outer `Index Scan` on `invoices` joined to `customers` and `invoice_lines`. Tick each as you go.

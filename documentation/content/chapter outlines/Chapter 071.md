@@ -2,7 +2,26 @@
 
 ## Chapter framing
 
-Chapter 071 cashes in the four teaching lessons of chapter 070 — the dispatcher seam and the notifiable-vs-logged line (lesson 1 of chapter 070), the uniform channel-function shape (lesson 2 of chapter 070), category-grained prefs resolved once with default-on (lesson 3 of chapter 070), and 60-second dedup keyed by `(event_type, dedup_key, recipient_user_id)` (lesson 4 of chapter 070) — as one runnable surface. The student writes the `notifiable_events` registry, the `dispatch(event)` function that resolves prefs and dedups before fanning out, the two channel functions (`sendEmailChannel`, `writeInboxRow`), the `user_notification_preferences` and `notification_dedup` schemas, and the wiring at three real call sites: invite-sent and role-change (chapter 059 Server Actions) and billing-past-due (chapter 065 webhook). Each build closes on a runnable state: lesson 3 of chapter 071 ends with `dispatch()` callable with dedup but stub channels; lesson 4 of chapter 071 with both channels live and prefs respected; lesson 5 of chapter 071 with three real call sites firing; lesson 6 of chapter 071 walks the "Done when" clause-by-clause.
+Chapter 071 cashes in the four teaching lessons of chapter 070 — the dispatcher seam and the notifiable-vs-logged line (lesson 1 of chapter 070), the uniform channel-function shape (lesson 2 of chapter 070), category-grained prefs resolved once with default-on (lesson 3 of chapter 070), and 60-second dedup keyed by `(event_type, dedup_key, recipient_user_id)` (lesson 4 of chapter 070) — as one runnable surface.
+The student writes the `notifiable_events` registry, the `dispatch(event)` function that resolves prefs and dedups before fanning out, the two channel functions (`sendEmailChannel`, `writeInboxRow`), the `user_notification_preferences` and `notification_dedup` schemas, and the wiring at three real call sites: invite-sent and role-change (chapter 059 Server Actions) and billing-past-due (chapter 065 webhook).
+Each build closes on a runnable state: the registry/dedup lesson ends with `dispatch()` callable with dedup but stub channels; the channels/prefs lesson with both channels live and prefs respected; the call-site lesson with three real call sites firing.
+
+The project's verifiable outcomes are runtime behaviors observed through the `/inspector` and `/inbox` surfaces: a `DispatchResult` shape (`{ sent, deduped, suppressedByPrefs }`), an inbox row appearing, the email-sent counter incrementing, and dedup suppressing duplicates.
+Every Implementation lesson's requirements are phrased as one of these confirmable behaviors.
+
+The project's stated goals — what "done" means:
+
+- Each of the three event-fires produces one inbox row plus one email where prefs allow.
+- Rapid-firing any event five times in two seconds produces exactly one inbox row plus one email, with `deduped: 4` aggregated and one `notification_dedup` row.
+- Toggling `team` → `email` off and firing `invite-sent` produces an inbox row but no email, with `suppressedByPrefs: 1`.
+- A recipient with no preferences row defaults to on — both channels fire.
+- A `billing-past-due` event with `billing` → `email` toggled off still sends email, because the registry marks email the critical channel.
+- The three real call sites each dispatch after their transaction commits: invite-sent and role-change from `/members`, billing-past-due from the Stripe webhook.
+- One channel failing never kills the other — an inbox-write failure still lets the email send, and vice versa.
+- A rolled-back action notifies nobody — no rows anywhere, no email increment.
+- The inbox reads `userId` from the session, never `orgId` from a query, so hand-crafted cross-tenant URLs do not leak.
+- A registry miss surfaces as a `NotificationError('REGISTRY_MISS')` rather than a swallowed channel failure.
+- The unsubscribe link in the rendered email carries a signed HMAC token; tampering with one character returns a 400.
 
 Threads through every lesson: the dispatcher is the only seam — `dispatch` imports from `lib/notifications/index.ts` only, a grep for `sendEmail(` or `db.insert(notifications)` outside `lib/notifications/` is a red flag; the registry is the source of truth — adding an event is a one-file change; prefs read once per dispatch with default-on (`?? true`); dedup inside the dispatcher, before channels, after prefs, check-then-insert on `notification_dedup`; channel functions uniform `({ recipient, event, payload })` behind per-channel `try/catch` so one failing channel never kills the other; dispatch fires after the action's transaction commits — never inside it, transactional-outbox alternative named and deferred; inbox rows rendered at dispatch time so the row is a snapshot, not a live join; `{ sent, deduped, suppressedByPrefs }` is the observability shape every call site logs.
 
@@ -39,7 +58,7 @@ src/
     schema.ts                   # provided: users (Better Auth), organizations + member
                                 #           + audit_logs (chapter 059), invitations (chapter 059),
                                 #           plan_entitlements (chapter 065); three stub tables
-                                #           commented out — TODO student fills in lesson 3 of chapter 071/4
+                                #           commented out — TODO student fills in registry/dedup lesson
     client.ts                   # provided
     relations.ts                # provided
   lib/
@@ -76,6 +95,9 @@ src/
                                 #           processed_events tail, debug tools, reset-and-re-seed
 ```
 
+The three stub tables (`notifications`, `user_notification_preferences`, `notification_dedup`) are commented-out blocks in `db/schema.ts`; the existing chapter 059 + chapter 065 tables (`users`, `organizations`, `org_members`, `invitations`, `audit_logs`, `processed_events`, `plan_entitlements`) are unchanged.
+The provided `lib/notifications/` pieces are the typed shapes (`types.ts`), the `NotificationError` subclass (`errors.ts`), and the HMAC token sign/verify (`tokens.ts`); the three React Email templates in `src/emails/` are full components — the student does not author email JSX.
+
 ### Reference solution signatures lessons display
 
 - **Registry** (`lib/notifications/registry.ts`):
@@ -111,7 +133,7 @@ src/
 
 ### Inspector page spec
 
-Single Server Component at `/inspector`, the verification surface for every "Done when" clause. Reads server-side, refreshes on submit via `router.refresh()`.
+Single Server Component at `/inspector`, the verification surface for every project goal. Reads server-side, refreshes on submit via `router.refresh()`.
 
 - **Header:** session-user switcher (admin/member per seeded org), org switcher (two seeded orgs), "Reset and re-seed" Server Action (truncates three notification tables, re-seeds).
 - **Preferences panel:** for the active user, three categories (`team`, `billing`, `security`) with per-channel toggles. The `security` category's `email` is rendered disabled with a tooltip; toggling it has no effect server-side. Other toggles post to `setPref`.
@@ -124,22 +146,6 @@ Single Server Component at `/inspector`, the verification surface for every "Don
 - **Debug tools:** `Force registry miss` (renders the `NotificationError`); `Make email fail` (sets a flag that makes `sendEmail` throw — verifies channel independence); `Wrap invite in rollback` (forces the invite action's outer transaction to roll back — verifies fire-after-commit); `Tampered unsubscribe token`.
 
 The inspector is provided in full; the student writes only dispatcher, channels, prefs, dedup, registry, and the three call-site additions.
-
-### Verify recipe mapped to "Done when"
-
-| Done-when clause | Verify step |
-| --- | --- |
-| Invite-sent fires one email + one inbox row (where prefs allow) | Click `Fire invite-sent` as admin. One new `notifications` row with matching `eventType`/`subjectId`/`title`; `MOCK_EMAIL_SENT_COUNT += 1`; `DispatchResult = { sent: { email: 1, inbox: 1 }, deduped: 0, suppressedByPrefs: 0 }`. |
-| Rapid-fire 5x in 2s → one of each, not five | `Rapid-fire invite-sent (5x in 2s)`. Exactly one new inbox row, one email increment, aggregated `deduped: 4`. One row in `notification_dedup`. |
-| Disabling email in prefs keeps inbox, suppresses email | Toggle `team` → `email` off; fire `invite-sent`. New inbox row; counter unchanged; `suppressedByPrefs: 1`. |
-| Default-on for missing prefs row | Reset + re-seed; confirm no prefs row for the target user; fire `invite-sent`; both inbox and email increment. |
-| Critical-channel override | Toggle `billing` → `email` off; fire `billing-past-due` (has `criticalChannel: 'email'`); email still increments. |
-| Call-site — invite sent | From `/members`, invite an existing user; action commits then dispatches; one inbox row + email for the invitee. |
-| Call-site — role changed | From `/members`, change a member's role; both `audit_logs` and `notifications` write; one email increment for the affected member. |
-| Call-site — billing past due | `stripe trigger invoice.payment_failed`; webhook commits then dispatches to org owners; one inbox row + email per owner. |
-| Channel independence — inbox failure does not kill email | Debug tool makes `writeInboxRow` throw; fire `invite-sent`; email counter still increments; the dispatch log shows the inbox error swallowed. |
-| Fire after commit — rolled-back actions do not notify | Debug tool wraps the invite action in a transaction that always rolls back; submit; no rows anywhere, no email increment. |
-| Tenant isolation | `/inbox` reads `userId` from session, never `orgId` from query; cross-tenant hand-crafted URLs do not leak. |
 
 ### Concepts demonstrated → owning lesson
 
@@ -162,193 +168,232 @@ The inspector is provided in full; the student writes only dispatcher, channels,
 
 ---
 
-## Lesson 1 — Project brief
+## Lesson 1 — Project Overview
 
-Three events, one dispatcher: scope, "Done when", and the demo loop you will reproduce.
+Three events, one dispatcher: the runnable surface you will build and the demo loop you will reproduce.
 
-Goals:
+A short capture of the inspector working anchors the lesson: clicking `Fire invite-sent` (inbox +1, email +1), `Rapid-fire 5x` (inbox +1, dedup badge "4 deduped"), then toggling email off and refiring (inbox grows, counter does not).
+One screenshot of the inspector with the three event buttons, the inbox panel populated, the email counter at 3, and the prefs panel.
 
-- Frame the build: the dispatcher is the one seam, the registry is the source of truth, prefs read once per dispatch, 60-second dedup window, three real call sites (invite, role change, billing past-due) prove the pattern earns its weight by needing more than one channel and more than one preference resolution. Show one screenshot of the inspector with the three event buttons, the inbox panel populated, the email counter at 3, and the prefs panel.
-- State the "Done when" in one paragraph: three event-fires each produce one inbox row + one email; rapid-fire 5x in 2s on any event produces exactly one inbox row + one email plus `deduped: 4`; toggling `team` → `email` off and firing `invite-sent` produces an inbox row but no email; resetting and re-seeding (no prefs rows) defaults to "on"; the three real call sites each dispatch after commit.
-- Scope cuts: no push/SMS/Slack (named as future additions); no quiet hours/digest (named, deferred to a later unit); no Trigger.dev-backed channel queue (named as the durable upgrade in lesson 1 of chapter 070, deferred to Unit chapter 066); no coalesce — dedup only; no per-org admin override on member prefs; no transactional-outbox (the dispatcher is called after commit, loss-on-crash window accepted in v1); no inbox UI past `/inbox` server-rendered list; no full settings page (inspector's prefs panel is the verification surface).
-- Senior payoff: the dispatcher is the canonical shape every later notification feature copies. Adding push later is one new channel function with the same signature; adding an event is one registry entry; muting noise per category is the user's lever.
-- Show the end UX: a short capture clicking `Fire invite-sent` (inbox +1, email +1), `Rapid-fire 5x` (inbox +1, dedup badge "4 deduped"), toggle email off and refire (inbox grows, counter does not).
-- Link the starter via `degit`.
+### What we'll practice
 
-Senior calls and watch-outs:
+- The dispatcher seam — one named entry point every call site and channel routes through, the canonical shape every later notification feature copies.
+- The registry as the source of truth — adding an event is one entry; adding a channel later is one function with the same signature.
+- Preference resolution read once per dispatch with default-on, and the critical-channel override that keeps billing email flowing.
+- Time-windowed dedup keyed per recipient, so a burst collapses to one notification.
+- Fire-after-commit discipline at three real call sites, so rolled-back work never notifies.
+- Channel independence under per-channel `try/catch`, so one failing channel never kills the other.
 
-- The starter ships chapter 059 + chapter 065 working — members surface, Stripe webhook, audit log. This project is layering the dispatcher on top, not rewriting; the only changes at call sites are two lines (`await dispatch(...)` plus the import).
-- `MOCK_EMAIL_SENT_COUNT` is the inspector's verification proxy because real Resend round-trips during development are slow and rate-limited. The starter's `lib/email.ts` mocks Resend in inspector mode and logs rendered HTML to the server console. Student does not change `lib/email.ts`.
-- `NOTIFICATION_UNSUBSCRIBE_SECRET` must be generated locally and put in `.env.local`. Starter's `tokens.ts` is provided.
-- Stripe-CLI setup inherited from chapter 065 — needs `stripe listen` running for the billing-past-due verification. If chapter 065 skipped, the inspector's `Fire billing-past-due` button replaces it.
+### Architecture
 
-Codebase state at entry: empty repo (student runs `degit`).
-Codebase state at exit: starter cloned, Postgres up, schema migrated, seed loaded, `pnpm dev` shows the chapter 059 members surface working; `/inspector` shell loads but every fire button errors (`dispatch` undefined); `/inbox` renders empty.
+A labeled list of the seam, shape only:
 
-Estimated student time: 15 to 25 minutes.
+- **Call sites** (invite action, role-change action, billing webhook) build a `DispatchEvent` and `await dispatch(...)` after their transaction commits.
+- **`dispatch(event)`** looks up the registry entry, reads preferences once for all recipients, then per recipient resolves channels, claims dedup, and fans out.
+- **Channel functions** (`sendEmailChannel`, `writeInboxRow`) share `({ recipient, event, payload })` and run behind per-channel `try/catch`.
+- **The registry** maps each event type to its category, channels, dedup window, templates, and optional critical channel.
+- **Three tables** back the seam: `notifications` (the inbox feed), `user_notification_preferences` (per-category channel toggles), `notification_dedup` (the time window).
+- **`/inspector`** drives every behavior; **`/inbox`** is the server-rendered read of `notifications`.
 
----
+### Starting file tree
 
-## Lesson 2 — Tour the starter
+The annotated tree, provided-vs-stubbed callouts, and the TODO highlights live in the Chapter framing's "Starter file tree" section above.
+The highlighted focus — the files the student fills — are `registry.ts`, `dispatcher.ts`, `dedup.ts`, `prefs.ts`, `channels/email.ts`, `channels/inbox.ts`, `index.ts`, the three stub tables in `db/schema.ts`, and the three call sites (`src/lib/invitations/send.ts`, the role-change action, the Stripe webhook past-due branch).
 
-Walk the file tree, schema stubs, seeded users, and inspector panels before writing any code.
+### Roadmap
 
-Goals:
+A CardGrid, one Card per lesson:
 
-- Walk the file tree, calling out provided vs. stubbed. Linger on six files: `lib/notifications/registry.ts` (empty — lesson 3 of chapter 071), `dispatcher.ts` (empty — lesson 3 of chapter 071), `prefs.ts` (empty — lesson 4 of chapter 071), `dedup.ts` (empty — lesson 3 of chapter 071), `channels/email.ts` and `inbox.ts` (empty — lesson 4 of chapter 071), and `app/(app)/members/actions.ts` (provided from chapter 059, no `dispatch` calls yet — lesson 5 of chapter 071).
-- Read the schema: the three stub tables (`notifications`, `user_notification_preferences`, `notification_dedup`) are commented-out blocks in `db/schema.ts` with TODO markers naming the lesson that fills each. The existing chapter 059 + chapter 065 tables (`users`, `organizations`, `org_members`, `invitations`, `audit_logs`, `processed_events`, `plan_entitlements`) are unchanged.
-- Read the seed: two orgs, four users (`alice@`, `bob@` in org A as admin/member; `carol@`, `dan@` in org B); one seeded invitation for `eve@example.com` (non-user, `RECIPIENT_NOT_FOUND` target); one explicit prefs row turning `team` → `email` off for `bob` (suppression target); `alice` has no prefs row (default-on target).
-- Read the inspector end-to-end — every panel, button, debug tool. It is the verification surface for every later lesson.
-- Read provided pieces in `lib/notifications/`: `types.ts` (full TypeScript shapes for `DispatchEvent`/`DispatchResult`/`Channel`/`Recipient`/`EventDefinition`), `errors.ts` (`NotificationError` extends `BaseError` from chapter 009), `tokens.ts` (HMAC sign + verify, 30-day expiry). The three React Email templates in `src/emails/` are full components — student does not author email JSX.
-- Run the app: members page renders; invite submission writes `invitations` + `audit_logs` (no notification yet — that's what this project ships); `/inbox` empty; inspector loads but fire buttons throw.
+- **Lesson 2 — Registry, dispatcher, and dedup.** Define the three events, write `dispatch()` with stub channels, and prove the 60-second dedup window from the inspector.
+- **Lesson 3 — Channels and preferences live.** Replace the stubs with the inbox writer, the email channel, and a batched preferences read with default-on and the critical-channel override.
+- **Lesson 4 — Wire the three call sites.** Add `dispatch()` after commit in the invite action, the role-change action, and the Stripe past-due webhook branch.
 
-Senior calls and watch-outs:
+### Setup
 
-- `lib/notifications/index.ts` will be the only export surface — call sites import `dispatch` from here, never reach into the channel files. Matches `lib/billing/index.ts` from chapter 065.
-- The seed's `bob`-with-email-off and `alice`-with-no-row are the deterministic verification targets. Resetting restores them.
-- React Email templates accept `{ unsubscribeUrl: string }` as part of their payload — the email channel must thread the URL through, not hard-code it.
+Setup commands, in order (Steps component):
 
-Codebase state at entry: starter cloned, Postgres running, schema migrated, seed loaded.
-Codebase state at exit: every provided file read, inspector clicked through, members page tried, `/inbox` empty. No code written.
+1. Clone the starter via `degit`.
+2. `pnpm install`.
+3. `docker compose up -d` (Postgres 18).
+4. Generate the unsubscribe secret: `openssl rand -base64 32`, paste into `.env.local` as `NOTIFICATION_UNSUBSCRIBE_SECRET`. Copy the remaining keys from `.env.example`.
+5. `pnpm db:migrate && pnpm db:seed`.
+6. `pnpm dev`.
 
-Estimated student time: 20 to 30 minutes.
+Env vars: `DATABASE_URL` (Postgres connection, from `docker-compose.yml`), `BETTER_AUTH_SECRET`, `RESEND_API_KEY` (mocked in inspector mode — any non-empty value works locally), `STRIPE_WEBHOOK_SECRET` (from chapter 065's `stripe listen`, needed only for the billing-past-due call site), `APP_URL` (`http://localhost:3000`), `NOTIFICATION_UNSUBSCRIBE_SECRET` (HMAC token signing, generated above).
+Stripe-CLI setup is inherited from chapter 065 — `stripe listen` running enables the billing-past-due call site; without it, the inspector's `Fire billing-past-due` button stands in.
 
----
-
-## Lesson 3 — Registry, dispatcher, dedup
-
-Define the three notifiable events, write `dispatch()` with stub channels, and prove the 60-second dedup window from the inspector.
-
-Goals:
-
-- Fill `db/schema.ts`: uncomment the three stub tables per reference. `pnpm db:generate --name add_notifications`, inspect SQL (three `CREATE TABLE`s, three composite indexes, one partial index on unread), `pnpm db:migrate`. Confirm in Drizzle Studio.
-- Fill `lib/notifications/registry.ts`: define `notifiable_events` with the three keys per reference. Import the three React Email templates. Type with `satisfies Record<string, EventDefinition>` so unknown keys are flagged.
-- Fill `lib/notifications/dedup.ts`: implement `claimDedup(tx, { eventType, dedupKey, recipientUserId, windowSeconds })`. SELECT most-recent row for the triple with `firedAt > NOW() - INTERVAL '${windowSeconds} seconds'`; if exists return `{ claimed: false }`; else INSERT and return `{ claimed: true }`. Implement `computeDedupKey(eventDef, payload)` — joins `keyBy` payload values with `:`.
-- Fill `lib/notifications/dispatcher.ts`: write `dispatch(event)` per reference. Order: lookup `notifiable_events[event.type]` → throw `NotificationError('REGISTRY_MISS')` if absent; per-recipient loop; **stub** prefs with `const enabledChannels = eventDef.channels` (full prefs in lesson 4 of chapter 071); compute `dedupKey`; `claimDedup`; on hit, increment `deduped` and continue; on claim, fan out — **stub** channel calls with `console.log` plus `sent.<channel>++` (full channels in lesson 4 of chapter 071). Wrap each channel call in `try/catch`.
-- Write `lib/notifications/index.ts`: re-export `dispatch`, the event-type union, and `DispatchEvent`. Mark `'server-only'` at the top.
-- Wire the inspector's three fire buttons to call `dispatch()` with fixed payloads (the action stubs are already there; student adds imports + dispatch calls).
-- Run the app: click `Fire invite-sent` → `DispatchResult` shows `{ sent: { email: 1, inbox: 1 }, deduped: 0, suppressedByPrefs: 0 }` (stubs increment the counter); one row in `notification_dedup`. Click again within 60s → `deduped: 1`, no second dedup row. `Rapid-fire (5x in 2s)` → `deduped: 4` aggregated. Wait 61 seconds, fire again → fresh dispatch, dedup released.
-
-Senior calls and watch-outs:
-
-- The registry is `const`-asserted with `satisfies` so the event-type union is inferred — adding an event is one entry, types propagate (chapter 005 narrowing discipline).
-- `keyBy` typed as `ReadonlyArray<string>` validated at runtime; the typed-mapped alternative (`ReadonlyArray<keyof PayloadFor<EventType>>`) is named, not chosen for registry simplicity.
-- Check-then-insert race in `claimDedup` accepted (lesson 4 of chapter 070) — one duplicate per rare concurrent burst; unique-constraint upgrade is the next reach.
-- Per-channel `try/catch` is structural — one channel's throw must not prevent the other. The dispatcher swallows and logs per channel; dispatch never throws on channel failure.
-- 60-second default is per-event in the registry. Widen for high-frequency events (comments, mentions: 5-10 min); for financial events, either skip dedup or use payload-discriminating keys.
-- `recipientUserId` in the dedup row is load-bearing — dedup is per-recipient. Two recipients getting the same event is not a duplicate.
-
-Codebase state at entry: registry empty, dispatcher empty, dedup empty, three stub tables.
-Codebase state at exit: registry defined for three events, dispatcher callable, dedup populated and respected, inspector's fire buttons produce `DispatchResult`. Channels still `console.log` — no real inbox rows, no real email-counter increment. **Runnable — `dispatch()` end-to-end with dedup working.**
-
-Estimated student time: 70 to 85 minutes.
+Expected result: `pnpm dev` shows the chapter 059 members surface working; `/inspector` loads but every fire button errors (`dispatch` undefined); `/inbox` renders empty.
+The starter ships chapter 059 + chapter 065 working — members surface, Stripe webhook, audit log — and this project layers the dispatcher on top rather than rewriting; `MOCK_EMAIL_SENT_COUNT` is the inspector's verification proxy because real Resend round-trips during development are slow and rate-limited, and the student does not change `lib/email.ts`.
 
 ---
 
-## Lesson 4 — Channels and preferences live
+## Lesson 2 — Registry, dispatcher, and dedup
 
-Replace the stubs with the inbox writer, the email channel, and a batched preferences read with default-on and the critical-channel override.
+Define the three notifiable events and ship a callable `dispatch()` that dedups a burst down to one.
+The finished result: from `/inspector`, `Fire invite-sent` returns `{ sent: { email: 1, inbox: 1 }, deduped: 0, suppressedByPrefs: 0 }` and writes one `notification_dedup` row; firing again inside 60 seconds returns `deduped: 1` with no second dedup row; `Rapid-fire (5x in 2s)` returns `deduped: 4`; after 61 seconds the window releases and a fresh fire dedups from zero.
+Channels are still stubs that only increment counters — no real inbox rows or email yet.
 
-Goals:
+### Your mission
 
-- Fill `lib/notifications/prefs.ts`: implement `readPrefsForCategory(userIds, category)` — one `WHERE userId IN (...) AND category = ?` query returning a `Map<userId, PrefRow | null>` (missing users map to `null`). Implement `resolveChannels({ event, recipientId, prefs })` — `event.channels.filter(c => (prefs.get(recipientId)?.channels[c] ?? true) || c === event.criticalChannel)`. The `?? true` is the default-on rule; the `|| critical` clause is the override.
-- Wire the prefs read into the dispatcher: replace the lesson 3 of chapter 071 stub with the batched read before the per-recipient loop and the `resolveChannels` call inside the loop. The read happens **once per dispatch**, not per recipient.
-- Track `suppressedByPrefs` — when `resolveChannels` returns fewer channels than `eventDef.channels`, increment by the diff.
-- Fill `lib/notifications/channels/inbox.ts`: implement `writeInboxRow` per reference. One call to `event.template.inbox(payload)`, one INSERT, no joins.
-- Fill `lib/notifications/channels/email.ts`: implement `sendEmailChannel` per reference. Resolve `to` via `getUserEmail` (throw `RECIPIENT_NOT_FOUND` on null — dispatcher catches); sign unsubscribe token; compose `unsubscribeUrl`; render template with payload + unsubscribe URL; call `sendEmail` with `List-Unsubscribe` + `List-Unsubscribe-Post: One-Click` headers (lesson 2 of chapter 048 bulk-sender bar). Suppression is the wrapper's concern.
-- Replace dispatcher's stub channel calls with real ones. The dispatcher imports `const channels = { email: sendEmailChannel, inbox: writeInboxRow } as const` so the loop is `await channels[channel](args)` with no branching.
-- Wire the inspector's preferences panel: Server Component reads `user_notification_preferences` for the active user; toggles post to `setPref` (`authedAction`-wrapped) that UPSERTs. The `security` → `email` toggle is rendered disabled with the tooltip.
-- Run the app: as `bob` (seeded `team` → `email` off), `Fire invite-sent` → one new inbox row, counter unchanged, `suppressedByPrefs: 1`. Switch to `alice` (no prefs row), fire → inbox + email increment (default-on). Toggle `alice` `team` → `inbox` off, fire → email only. Reset; with `team` → `email` off, fire `billing-past-due` → email still increments (critical-channel override held).
+This lesson lands the spine of the dispatcher: the registry that names what can be notified, the dedup helper that collapses a burst, and the `dispatch()` function that ties them together.
+These three pieces only reach a confirmable state as a unit — dedup is observable only through a `dispatch()` that consults the registry — so they ship together, with the channels deliberately stubbed so the dedup behavior is what you are verifying.
+The registry is `const`-asserted with `satisfies Record<string, EventDefinition>` so the event-type union is inferred and an unknown key is a compile error; adding an event stays a one-entry change.
+Dedup lives inside the dispatcher, after the (stubbed) preference step and before channels, keyed by `(event_type, dedup_key, recipient_user_id)` — `recipientUserId` is load-bearing, because two recipients getting the same event is not a duplicate.
+The 60-second window is per-event in the registry, widened for high-frequency events and reconsidered for financial ones; the check-then-insert race is accepted here (one duplicate per rare concurrent burst), with the unique-constraint upgrade named as the next reach.
+A registry miss throws `NotificationError('REGISTRY_MISS')` and is never swallowed — that is a programmer error, not a channel failure, so the per-channel `try/catch` you scaffold is per-channel, not per-dispatch.
+Out of scope this lesson: real channels, real preference resolution (stub it with `const enabledChannels = eventDef.channels`), and the call-site wiring — all of those land later.
 
-Senior calls and watch-outs:
+Requirements checklist — each item a behavior you can confirm from the inspector or the database:
 
-- Prefs are batched across recipients — one `WHERE userId IN (...)` per dispatch, not one per recipient (lesson 2 of chapter 039 N+1 discipline).
-- `?? true` (default-on) is the load-bearing line — a senior reading the file should explain it on sight: silence-by-default is worse than friction (lesson 3 of chapter 070).
-- `|| c === event.criticalChannel` keeps the override inside `resolveChannels` — all decisions in one place.
-- `writeInboxRow` renders at insert time; the inbox UI is a pure read. Render-at-display is rejected for actor-name drift and join cost (lesson 2 of chapter 070).
-- `RECIPIENT_NOT_FOUND` from `getUserEmail` returning null (e.g., seeded `eve` who is not yet a user) is swallowed by the dispatcher; the inbox channel skips because the user row doesn't exist. The chapter 059 invitation email still goes via the unauthenticated `sendEmail` path; the dispatcher does not duplicate.
-- `List-Unsubscribe` + `List-Unsubscribe-Post: One-Click` headers (RFC 8058) are mandatory by the 2026 bar (lesson 2 of chapter 048). Starter's `/api/email/unsubscribe` route handles the POST.
-- `REGISTRY_MISS` bubbles out (not swallowed) — registry miss is a programmer error, not a channel failure. The `try/catch` is per-channel, not per-dispatch.
+- The three stub tables (`notifications`, `user_notification_preferences`, `notification_dedup`) exist after migration, with the dedup composite index `(event_type, dedup_key, recipient_user_id, fired_at desc)` and the partial unread index on `notifications`, confirmable in Drizzle Studio.
+- `Fire invite-sent` from the inspector returns `{ sent: { email: 1, inbox: 1 }, deduped: 0, suppressedByPrefs: 0 }` and writes exactly one `notification_dedup` row.
+- Firing the same event again within 60 seconds returns `deduped: 1` and writes no second dedup row.
+- `Rapid-fire invite-sent (5x in 2s)` returns one new dispatch with `deduped: 4` aggregated.
+- Waiting 61 seconds and refiring returns a fresh dispatch with `deduped: 0` — the window has released.
+- Firing an unknown event type surfaces `NotificationError('REGISTRY_MISS')` rather than a silent no-op.
 
-Codebase state at entry: dispatcher with dedup but stub channels and stub prefs.
-Codebase state at exit: full dispatcher with prefs and channels live; inspector verifies pref toggling, default-on, critical-channel override, channel independence; `MOCK_EMAIL_SENT_COUNT` is now load-bearing. **Runnable — every inspector button produces the expected effect.**
+### Coding time
 
-Estimated student time: 75 to 90 minutes. The chapter's heaviest lesson — channels + prefs land together because the dispatcher is only verifiable end-to-end once both are real.
+Implement the registry, `dedup.ts`, `dispatcher.ts`, and `index.ts` against the reference signatures and the lesson's tests; wire the inspector's three fire buttons to call `dispatch()` with their fixed payloads.
+Then read the solution walkthrough.
 
----
+The hidden solution covers:
 
-## Lesson 5 — Wire the three call sites
+- `db/schema.ts`: uncommenting the three stub tables per reference; `pnpm db:generate --name add_notifications`, inspecting the SQL (three `CREATE TABLE`s, three composite indexes, one partial index on unread), `pnpm db:migrate`.
+- `registry.ts`: the three keys per reference, importing the three React Email templates, typed with `satisfies Record<string, EventDefinition>` so unknown keys are flagged — and why `keyBy` is `ReadonlyArray<string>` validated at runtime rather than the typed-mapped alternative (registry simplicity).
+- `dedup.ts`: `claimDedup` selecting the most-recent row for the triple with `firedAt > NOW() - INTERVAL '${windowSeconds} seconds'`, returning `{ claimed: false }` on hit else inserting and returning `{ claimed: true }`; `computeDedupKey` joining `keyBy` payload values with `:`; the accepted check-then-insert race and the unique-constraint upgrade named.
+- `dispatcher.ts`: the body order — registry lookup throwing `REGISTRY_MISS` if absent, per-recipient loop, the stubbed prefs (`const enabledChannels = eventDef.channels`), `computeDedupKey`, `claimDedup` (increment `deduped` and continue on hit), the stubbed channel calls (`console.log` plus `sent.<channel>++`) each wrapped in `try/catch`; why the `try/catch` is per-channel and `REGISTRY_MISS` is not caught.
+- `index.ts`: re-exporting `dispatch`, the event-type union, and `DispatchEvent`, marked `'server-only'`.
+- Inspector wiring: the imports plus `dispatch()` calls added to the existing fire-button action stubs.
+- Callouts: the `satisfies` inference (chapter 005 narrowing discipline), the per-recipient dedup key, and the per-event window guidance (5-10 min for comments/mentions; skip or payload-discriminate for financial events).
 
-Add `dispatch()` after commit in the invite action, the role-change action, and the Stripe past-due webhook branch.
+### Moment of truth
 
-Goals:
+Run the lesson's test suite (the command and its expected pass output ship with the starter); it covers the dedup window, the `DispatchResult` shape, and the `REGISTRY_MISS` throw.
+Then confirm by hand the parts the tests leave to you:
 
-- Edit `src/lib/invitations/send.ts` (chapter 059 `sendInvitationAction`). After the transaction commits, call `await dispatch({ type: 'org.invitation.sent', recipientUserIds: invitee ? [invitee.id] : [], subjectId: invitation.id, payload: { invitedEmail, role, orgName, inviterName, acceptUrl }, orgId: ctx.orgId })`. `invitee` is resolved by `select user where email = ?`; if absent, `recipientUserIds: []` and the dispatcher no-ops. The chapter 059 invitation email still sends via the unauthenticated path for the absent-user case.
-- Edit the role-change action. After commit, call `await dispatch({ type: 'org.member.role_changed', recipientUserIds: [memberUserId], subjectId: memberUserId, payload: { newRole, oldRole, orgName, changedByName }, orgId: ctx.orgId })`. The chapter 059 audit-log write stays unchanged — both `audit_logs` (admin-facing) and `notifications` (user-facing) write.
-- Edit `app/api/webhooks/stripe/route.ts` (chapter 065 handler). In the `onSubscriptionUpdated` past-due branch, after the `plan_entitlements` UPDATE and audit-log write — **still inside the outer transaction** — collect the org's owners (`select user_id from member where organization_id = ? and role = 'owner'`) into a closure variable. After commit, call `await dispatch({ type: 'org.billing.past_due', recipientUserIds: ownerIds, subjectId: organizationId, payload: { orgName, amountDue, currentPeriodEnd }, orgId: organizationId })`. Read inside transaction (consistent with the transition); dispatch after commit (no notification for rolled-back state).
-- Sanity-check each call site from the real surface — full clause-by-clause walks live in lesson 6 of chapter 071. Submit a new invite for an existing user; change a member's role; `stripe trigger invoice.payment_failed`. Each should produce its notification + audit pair. Inspect the `lib/email.ts` mock console log — the rendered HTML body shows the unsubscribe URL with a signed token.
+- Drizzle Studio shows the three tables and their indexes after migration.
+- `Fire invite-sent` shows `{ sent: { email: 1, inbox: 1 }, deduped: 0, suppressedByPrefs: 0 }` and one `notification_dedup` row.
+- A second fire within 60 seconds shows `deduped: 1` with no second dedup row.
+- `Rapid-fire (5x in 2s)` shows `deduped: 4`.
+- After a 61-second wait, a fresh fire shows `deduped: 0`.
 
-Senior calls and watch-outs:
-
-- Dispatch runs **after** the action's transaction commits — never inside it. The pattern: `await tx`-action; `await dispatch(...)`. Notifying for state that rolls back is the failure mode lesson 1 of chapter 070 names.
-- The webhook path is the awkward one: read the owner list inside the transaction (consistent with the transition), capture in a closure, dispatch after commit. The transactional-outbox alternative is named, deferred.
-- The invite-already-a-user case produces two emails: chapter 059's unauthenticated invitation email + the dispatcher's `org.invitation.sent`. Merging them is the next reach; v1 accepts the duplication because refactoring chapter 059 is out of scope. Named in verify.
-- The dispatcher trusts its caller — gating happens at the action boundary (chapter 057). A direct call from a non-action path bypasses the admin check.
-- Two layers of dedup compose: `processed_events` at the webhook handler (chapter 063) catches duplicate deliveries; `notification_dedup` inside the dispatcher catches duplicate user-facing notifications even from distinct event IDs.
-- Grep test after this lesson: `sendEmail(` outside `lib/email.ts` and `lib/notifications/channels/email.ts` → zero hits; `db.insert(notifications)` outside `lib/notifications/channels/inbox.ts` → zero hits. Structural seam enforcement.
-
-Codebase state at entry: dispatcher full and verified via inspector; three call sites unchanged.
-Codebase state at exit: three real call sites dispatch after commit; members surface and Stripe webhook produce real notifications and emails; `/inbox` shows real rows. **Runnable — production-shaped flow end-to-end.**
-
-Estimated student time: 50 to 65 minutes.
+This lesson closes runnable: `dispatch()` works end-to-end with dedup, channels still `console.log` — no real inbox rows, no real email-counter increment yet.
 
 ---
 
-## Lesson 6 — Verify clause by clause
+## Lesson 3 — Channels and preferences live
 
-Walk every "Done when" item in order — dedup, prefs, critical override, channel independence, fire-after-commit, tenant isolation, and the unsubscribe link.
+Replace the stubs so every inspector button produces its real effect.
+The finished result: as the seeded `bob` (with `team` → `email` off), `Fire invite-sent` writes one inbox row, leaves the email counter unchanged, and returns `suppressedByPrefs: 1`; as `alice` (no prefs row), it increments both inbox and email; toggling a channel off suppresses just that channel; firing `billing-past-due` with `billing` → `email` off still increments the email counter because email is its critical channel.
 
-Goals:
+### Your mission
 
-- Walk every "Done when" clause from the framing's verify recipe in order. The recipe lists the steps; this lesson is the execution and the surrounding senior commentary.
-- **Happy path per event:** fire each event button; confirm one inbox row + one email-counter increment per event; `DispatchResult` shows zero deduped and zero suppressed.
-- **Rapid-fire dedup (the chapter's load-bearing proof):** five-in-two-seconds → one inbox row, one email increment, `deduped: 4`, one `notification_dedup` row. Wait 61 seconds, refire single → fresh dispatch, window expired. Skipping the 61-second wait leaves the student believing dedup is permanent.
-- **Pref-respect:** as `bob` (seeded `team` → `email` off), fire `invite-sent` → inbox row, no email increment, `suppressedByPrefs: 1`.
-- **Default-on:** reset + re-seed → `alice` has no prefs rows → fire → both channels fire. Toggle `team` → `email` off (creates the row) → refire → email skipped. Toggle back on → fires again.
-- **Critical-channel override:** as `alice`, toggle `billing` → `email` off; fire `billing-past-due` → email still increments. The `security` → `email` toggle is rendered disabled on the prefs panel.
-- **Channel independence:** debug tools (a) drop `notifications` briefly → email still increments; (b) force `sendEmail` to throw → inbox row still written. Each channel's failure is structurally swallowed.
-- **Registry miss:** "Force registry miss" → `NotificationError('REGISTRY_MISS')` bubbles. Registry-miss is a programmer error; the per-channel `try/catch` is per-channel, not per-dispatch.
-- **Fire-after-commit:** "Wrap invite in rollback" → submit invite → no rows anywhere, no email, no dedup. The dispatcher never fired because the commit never happened.
-- **Tenant isolation:** `/inbox` reads `userId` from session, never `orgId` from query — hand-crafted URLs do not cross tenants.
-- **Three call sites end-to-end:**
-  - Invite `eve@example.com` (not a user) → chapter 059 invite email only, dispatcher no-ops.
-  - Invite `bob@example.com` (existing user) → chapter 059 invite email AND dispatcher fires for `bob`. Name the two-email duplication explicitly — accepted in v1.
-  - Role change `bob` member → admin → audit row + notification + email. Re-firing with no change still writes (the call site fired); senior call to short-circuit no-op role changes at the action layer is named, not built.
-  - `stripe trigger invoice.payment_failed` → `processed_events` + entitlement + audit + one notification per owner. Replay → `processed_events` blocks at the handler; dispatcher's dedup is a second layer.
-- **Unsubscribe link:** copy `unsubscribeUrl` from the server-console rendered email, visit it → category's `email` toggle pre-set to off, HMAC verified. Tamper one character → 400.
-- **Inbox feed query plan:** the inspector's index-probe panel confirms `(userId, createdAt desc)` and the partial `(userId) WHERE readAt IS NULL` indexes are picked. No `Seq Scan`.
-- Name the senior calls one more time:
-  - The dispatcher is the only seam — grep `sendEmail(` and `db.insert(notifications)` outside `lib/notifications/`; zero hits is the structural check.
-  - The registry is the source of truth; adding an event is one entry.
-  - Prefs read once per dispatch, batched across recipients, `?? true` for default-on, `|| critical` for the override.
-  - Dedup inside the dispatcher, before channels, keyed by `(event_type, dedup_key, recipient_user_id)` with the registry-defined window.
-  - Channels independent under `try/catch`; one failing does not kill the other.
-  - Fire after commit; rolled-back actions do not notify.
-  - Inbox row is a dispatch-time snapshot; the inbox UI is a pure read.
-- Forward references:
-  - Unit chapter 073 — `cacheTag('notifications', userId)` on the inbox feed when volume justifies; the project deliberately does not cache.
-  - Unit chapter 075 — Upstash-backed dedup replaces the table when throughput crosses the database-write threshold; dispatcher contract stays the same.
-  - Unit chapter 066 — Trigger.dev-backed channel queue moves channel sends behind a durable worker; dispatcher contract stays the same.
-  - Unit chapter 081 — audit-log line, HMAC unsubscribe-token discipline, channel-failure log discipline.
-  - Unit chapter 088 — integration tests for prefs-respected, default-on, dedup, channel-independence.
-  - Unit chapter 092 — `DispatchResult` is the structured-log shape; dashboards on dedup rate, suppression rate, channel-failure rate live there.
+This lesson makes the dispatcher real on both ends at once: the two channel functions that actually write, and the preference resolution that decides which channels run.
+They land together because the dispatcher is only verifiable end-to-end once both are real — a live channel with stubbed prefs cannot demonstrate suppression, and live prefs with stubbed channels cannot demonstrate a send.
+Preferences are read once per dispatch, batched across all recipients in a single `WHERE userId IN (...) AND category = ?` query rather than one read per recipient — the N+1 discipline from chapter 039.
+The `?? true` default-on rule is load-bearing: silence-by-default is worse than friction, so a user with no preferences row receives everything.
+The `|| c === event.criticalChannel` clause keeps the override inside `resolveChannels`, so every channel decision lives in one place.
+The inbox writer renders `event.template.inbox(payload)` at insert time and writes one row with no joins — render-at-dispatch, so the row is a snapshot immune to later actor-name drift and the inbox UI stays a pure read.
+The email channel resolves the address via `getUserEmail` (a null throws `RECIPIENT_NOT_FOUND`, which the dispatcher swallows), threads a signed `unsubscribeUrl` through the template, and sends with `List-Unsubscribe` + `List-Unsubscribe-Post: One-Click` headers — mandatory under the 2026 bulk-sender bar; suppression stays the wrapper's concern.
+Out of scope: the call-site wiring (next lesson) and any inbox UI past the provided `/inbox` list.
 
-Senior calls and watch-outs:
+Requirements checklist — each item a behavior you can confirm from the inspector:
 
-- The verify lesson rehearses every failure mode the chapter exists to prevent. If a verification fails, point at the owning build lesson.
-- The rapid-fire test must run as the inspector button, not five manual clicks — manual clicks span the window or hit different recipients across session switches.
+- As `bob` (seeded `team` → `email` off), `Fire invite-sent` writes one new inbox row, leaves the email counter unchanged, and returns `suppressedByPrefs: 1`.
+- As `alice` (no prefs row), `Fire invite-sent` increments both the inbox panel and the email counter — default-on holds.
+- Toggling `alice`'s `team` → `inbox` off and refiring increments the email counter only.
+- With `team` → `email` off, `Fire billing-past-due` still increments the email counter — the critical-channel override holds.
+- A new inbox row's `title` and `body` match the registry's inbox template for the event, written once at dispatch time.
+- The `security` → `email` toggle is rendered disabled on the prefs panel and has no server-side effect.
 
-Codebase state at entry: full dispatcher + three call sites + verifying surface wired.
-Codebase state at exit: every "Done when" clause verified clause-by-clause; the student can articulate every primitive and which forward unit will lean on it.
+### Coding time
 
-Estimated student time: 35 to 50 minutes.
+Implement `prefs.ts`, `channels/inbox.ts`, and `channels/email.ts`, wire them into the dispatcher, and wire the inspector's preferences panel, against the reference signatures and the lesson's tests.
+Then read the solution walkthrough.
+
+The hidden solution covers:
+
+- `prefs.ts`: `readPrefsForCategory` as one batched `WHERE userId IN (...)` query returning `Map<userId, PrefRow | null>` (missing users map to `null`); `resolveChannels` with the `?? true` default-on and `|| c === event.criticalChannel` override — the two load-bearing clauses explained on sight.
+- Dispatcher edits: replacing the stub prefs with the batched read before the per-recipient loop and the `resolveChannels` call inside it (read once per dispatch); incrementing `suppressedByPrefs` by the diff when `resolveChannels` returns fewer channels than `eventDef.channels`; the `const channels = { email: sendEmailChannel, inbox: writeInboxRow } as const` map so the loop is `await channels[channel](args)` with no branching.
+- `channels/inbox.ts`: one `event.template.inbox(payload)` call, one INSERT, no joins; why render-at-display is rejected (actor-name drift, join cost).
+- `channels/email.ts`: resolving `to` via `getUserEmail` (throw `RECIPIENT_NOT_FOUND` on null), signing the unsubscribe token, composing `unsubscribeUrl`, rendering the template with payload plus URL, calling `sendEmail` with the `List-Unsubscribe` headers; suppression as the wrapper's concern; why `RECIPIENT_NOT_FOUND` (e.g. seeded `eve`, not yet a user) is swallowed and the chapter 059 invitation email still goes via the unauthenticated path.
+- Inspector wiring: the preferences Server Component reading `user_notification_preferences`, toggles posting to an `authedAction`-wrapped `setPref` that UPSERTs, and the disabled `security` → `email` toggle.
+- Callouts: `REGISTRY_MISS` bubbling out while channel failures are swallowed (the `try/catch` is per-channel, not per-dispatch), and the RFC 8058 `List-Unsubscribe-Post: One-Click` requirement (lesson 2 of chapter 048; the starter's `/api/email/unsubscribe` handles the POST).
+
+### Moment of truth
+
+Run the lesson's test suite (command and expected pass output ship with the starter); it covers default-on, channel suppression, the critical-channel override, and channel independence.
+Then confirm by hand:
+
+- As `bob`, `Fire invite-sent` writes an inbox row, leaves the counter unchanged, returns `suppressedByPrefs: 1`.
+- As `alice` (no prefs row), both channels fire; toggle `team` → `inbox` off and only email fires.
+- After resetting, with `team` → `email` off, `Fire billing-past-due` still increments the email counter.
+- A new inbox row's `title`/`body` match the registry's inbox template.
+- Use `Make email fail` and fire — the inbox row is still written; the dispatch log shows the email error swallowed.
+
+This lesson closes runnable: every inspector button produces its expected effect, and `MOCK_EMAIL_SENT_COUNT` is now load-bearing.
+
+---
+
+## Lesson 4 — Wire the three call sites
+
+Fire the dispatcher from real product surfaces, always after the transaction commits.
+The finished result: inviting an existing user from `/members` writes the invitation, commits, then dispatches an inbox row plus email to the invitee; changing a member's role writes both an `audit_logs` row and a `notifications` row; `stripe trigger invoice.payment_failed` lands the webhook, commits, then dispatches to each org owner.
+
+### Your mission
+
+This lesson moves the dispatcher off the inspector and onto the three call sites it exists to serve — the invite action, the role-change action, and the Stripe past-due webhook branch.
+The single discipline tying them together: dispatch runs after the action's transaction commits, never inside it — `await tx`-work, then `await dispatch(...)` — because notifying for state that later rolls back is the failure mode the seam exists to prevent.
+These three are one capability — wire the production flow — verified as a set, because each is the same fire-after-commit move applied to a different surface, and the inspector already proved the dispatcher itself.
+The webhook is the awkward one: read the org's owner list inside the transaction (consistent with the transition it commits), capture it in a closure, and dispatch after commit; the transactional-outbox alternative is named and deferred.
+The dispatcher trusts its caller — gating happens at the action boundary via `authedAction`, so a direct call from a non-action path bypasses the admin check.
+Two dedup layers compose without conflict: `processed_events` at the webhook handler catches duplicate deliveries, while `notification_dedup` inside the dispatcher catches duplicate user-facing notifications even from distinct event IDs.
+For an invite to an existing user, two emails go out — chapter 059's unauthenticated invitation email plus the dispatcher's `org.invitation.sent`; merging them is the next reach, and v1 accepts the duplication because refactoring chapter 059 is out of scope.
+Out of scope: changing `lib/email.ts`, merging the duplicate invite emails, and short-circuiting no-op role changes.
+
+Requirements checklist — each item a behavior you can confirm from the real surface:
+
+- Inviting an existing user from `/members` writes the invitation, commits, then produces one inbox row plus one email increment for the invitee.
+- Inviting `eve@example.com` (not yet a user) sends only the chapter 059 invitation email — the dispatcher no-ops on the empty recipient list.
+- Changing a member's role writes both an `audit_logs` row and a `notifications` row, with one email increment for the affected member.
+- `stripe trigger invoice.payment_failed` lands the webhook, commits, then produces one inbox row plus one email per org owner.
+- Wrapping the invite action in a forced rollback (the `Wrap invite in rollback` debug tool) produces no rows anywhere and no email increment.
+- A grep for `sendEmail(` and `db.insert(notifications)` outside `lib/notifications/` returns zero hits — the seam holds.
+
+### Coding time
+
+Add the `dispatch()` call after commit in `src/lib/invitations/send.ts`, the role-change action, and the Stripe webhook past-due branch, against the reference call-site shape and the lesson's tests.
+Then read the solution walkthrough.
+
+The hidden solution covers:
+
+- `src/lib/invitations/send.ts`: the `await dispatch({ type: 'org.invitation.sent', recipientUserIds: invitee ? [invitee.id] : [], subjectId: invitation.id, payload: {...}, orgId: ctx.orgId })` after the transaction commits; `invitee` resolved by `select user where email = ?`, the empty-array no-op for an absent user, and the chapter 059 email still sending via the unauthenticated path.
+- The role-change action: the `await dispatch({ type: 'org.member.role_changed', ... })` after commit, with the chapter 059 audit-log write left unchanged so both `audit_logs` and `notifications` write.
+- The Stripe webhook past-due branch: collecting owner IDs inside the outer transaction (`select user_id from member where organization_id = ? and role = 'owner'`) into a closure, then `await dispatch({ type: 'org.billing.past_due', recipientUserIds: ownerIds, ... })` after commit — read inside, dispatch after.
+- Callouts: the fire-after-commit pattern (`await tx`-action; `await dispatch(...)`), the webhook's read-inside/dispatch-after shape with the transactional-outbox alternative deferred, the two-email duplication for existing-user invites accepted in v1, the trust-the-caller gating at the action boundary, the two composing dedup layers, and the grep seam check (`sendEmail(` / `db.insert(notifications)` outside `lib/notifications/` → zero hits).
+
+### Moment of truth
+
+Run the lesson's test suite (command and expected pass output ship with the starter); it covers the invite, role-change, and webhook call sites and the fire-after-commit guarantee.
+Then confirm by hand:
+
+- From `/members`, invite an existing user — inbox row plus email for the invitee, after the action commits.
+- Invite `eve@example.com` — chapter 059 invite email only, dispatcher no-ops.
+- Change a member's role — both `audit_logs` and `notifications` write, one email increment.
+- `stripe trigger invoice.payment_failed` — `processed_events` plus entitlement plus audit plus one notification per owner; replay blocks at the handler and the dispatcher's dedup is the second layer.
+- `Wrap invite in rollback` then submit — no rows anywhere, no email, no dedup.
+- Copy the `unsubscribeUrl` from the server-console rendered email and visit it — the category's `email` toggle is pre-set off and the HMAC verifies; tamper one character and it returns 400.
+- Run the grep seam check: `sendEmail(` and `db.insert(notifications)` outside `lib/notifications/` return zero hits.
+- The inspector's index-probe panel confirms the `(userId, createdAt desc)` and partial unread indexes are picked for the inbox feed — no `Seq Scan`.
+
+This lesson closes runnable: three real call sites dispatch after commit, the members surface and Stripe webhook produce real notifications and emails, and `/inbox` shows real rows — the production-shaped flow end-to-end.
+
+This is the project's final build, so it also names the forward references the dispatcher hands off:
+
+- Chapter 073 — `cacheTag('notifications', userId)` on the inbox feed when volume justifies; the project deliberately does not cache.
+- Chapter 075 — Upstash-backed dedup replaces the table when throughput crosses the database-write threshold; the dispatcher contract stays the same.
+- Chapter 066 — a Trigger.dev-backed channel queue moves channel sends behind a durable worker; the dispatcher contract stays the same.
+- Chapter 081 — the audit-log line, the HMAC unsubscribe-token discipline, and the channel-failure log discipline.
+- Chapter 088 — integration tests for prefs-respected, default-on, dedup, and channel-independence.
+- Chapter 092 — `DispatchResult` is the structured-log shape; dashboards on dedup rate, suppression rate, and channel-failure rate live there.

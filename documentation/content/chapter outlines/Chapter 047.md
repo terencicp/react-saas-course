@@ -4,7 +4,19 @@
 
 Chapter 047 cashes in Unit 6: Zod 4 as the schema vocabulary (chapter 042), the Server Action as the mutation seam with the five-seam shape and the canonical `Result` return (chapter 043), and the native React 19 form pattern with `useActionState` / `useFormStatus` / `useOptimistic` plus the Constraint Validation API and progressive enhancement (chapter 044). The student takes the Unit 5 invoicing schema and ships a full CRUD surface: a "new invoice" form, an "edit invoice" form, and a delete-with-confirmation button. Every mutation goes through one of three Server Actions, each parsing its input with a `drizzle-zod`-derived Zod schema, each returning the canonical `Result`, each revalidating the list after success. The create form layers `useOptimistic` so the row appears immediately and rolls back when the action returns `ok: false`. The delete is wrapped in a Drizzle transaction so the pattern lands explicitly even when the FK cascade would do the same work. Field errors render inline from the action's `Result.error.fieldErrors`, not from client state. The whole thing works with JavaScript disabled.
 
-Threads that run through every lesson: the schema is the contract — `createInsertSchema(invoices)` + refinement is the action's input shape, the form's input `name`s match the schema's keys, drift is impossible; `safeParse` + return `Result` is the action body's opening discipline, never `parse`, never throw on validation; `useActionState` reads the same `Result` the action writes — both sides see one shape; the form is a Client Component with uncontrolled inputs and `defaultValue`, the action prop fires the submit, the JS-disabled path still works; `useOptimistic` rolls back implicitly when the surrounding transition fails — no manual rollback bookkeeping; the transaction is for atomicity, external calls don't go inside it. The chapter ships 1 brief + 1 starter walkthrough + 4 build lessons + 1 verify lesson; every build closes on a runnable state.
+Threads that run through every lesson: the schema is the contract — `createInsertSchema(invoices)` + refinement is the action's input shape, the form's input `name`s match the schema's keys, drift is impossible; `safeParse` + return `Result` is the action body's opening discipline, never `parse`, never throw on validation; `useActionState` reads the same `Result` the action writes — both sides see one shape; the form is a Client Component with uncontrolled inputs and `defaultValue`, the action prop fires the submit, the JS-disabled path still works; `useOptimistic` rolls back implicitly when the surrounding transition fails — no manual rollback bookkeeping; the transaction is for atomicity, external calls don't go inside it.
+
+### Project goals
+
+The finished surface satisfies every one of these, and each is confirmed in the owning lesson's verification:
+
+- A valid invoice submits and persists with JavaScript disabled — the browser navigates to the new detail page and the row is in the database.
+- Validation failures re-render the form with messages under each offending field, sourced from the action's `Result.error.fieldErrors`, while the other fields keep their typed values and the submit button re-enables.
+- A duplicate invoice number for the same org returns a `conflict` and surfaces a form-level banner from `Result.error.userMessage`.
+- The optimistic create row appears at the top of the list immediately, then reconciles with the persisted row by key on success, or rolls back cleanly when the action returns `ok: false`.
+- The delete confirmation submits through the form action — one POST to the action URL, no `/api/*` fetch — and still deletes with JavaScript disabled via an inline fallback form.
+- The delete runs inside a Drizzle transaction so the invoice and its lines commit or roll back atomically.
+- Every create, edit, and delete refreshes the `/invoices` list through `revalidatePath` without a manual reload.
 
 ### Dependency carry-in
 
@@ -52,7 +64,7 @@ The provided pages assume the student-written form components exist at those pat
 
 ### Reference solution signatures lessons display
 
-- `CreateInvoiceInput = z.input<typeof createInvoiceInputSchema>` and `Output = z.output<typeof ...>` — the schema is derived from `createInsertSchema(invoices, { number: s => s.min(1).max(50), total: s => s.refine(n => n >= 0) })` then `.omit({ organizationId: true, createdBy: true, createdAt: true })`. The `id` column is *not* omitted — it stays optional (the column has a `$defaultFn` UUIDv7) so the create form can supply a client-generated UUIDv7 in lesson lesson 5 of chapter 047 for the optimistic-reconcile pattern without re-shaping the schema mid-chapter. Fields the form posts: `id` (optional uuid), `customerId` (uuid), `number` (string), `status` (enum), `total` (coerced number), `currency` (string with default), `issuedAt` (coerced date), `dueAt` (coerced date).
+- `CreateInvoiceInput = z.input<typeof createInvoiceInputSchema>` and `Output = z.output<typeof ...>` — the schema is derived from `createInsertSchema(invoices, { number: s => s.min(1).max(50), total: s => s.refine(n => n >= 0) })` then `.omit({ organizationId: true, createdBy: true, createdAt: true })`. The `id` column is *not* omitted — it stays optional (the column has a `$defaultFn` UUIDv7) so the create form can supply a client-generated UUIDv7 in lesson 5 of chapter 047 for the optimistic-reconcile pattern without re-shaping the schema mid-chapter. Fields the form posts: `id` (optional uuid), `customerId` (uuid), `number` (string), `status` (enum), `total` (coerced number), `currency` (string with default), `issuedAt` (coerced date), `dueAt` (coerced date).
 - `UpdateInvoiceInputSchema` = `CreateInvoiceInputSchema.extend({ id: z.uuid() })`. The form posts the `id` as a hidden input.
 - `DeleteInvoiceInputSchema = z.object({ id: z.uuid() })`.
 - `createInvoice(prevState: Result<{ id: string }> | null, formData: FormData): Promise<Result<{ id: string }>>` — file-level `'use server'`.
@@ -72,17 +84,6 @@ This project uses production-shaped surfaces, not an inspector dashboard — the
 - **`/invoices/new`** (Server Component shell + client `NewInvoiceForm`): renders the create form. On success the action redirects to `/invoices/[newId]`.
 - **`/invoices/[invoiceId]`** (Server Component): loads the invoice via the provided `getInvoiceDetail`, renders the read-only detail panel above the `EditInvoiceForm`, and renders a `DeleteInvoiceForm` (a small `<form>` with a confirmation `<Dialog>` from shadcn).
 - **No new inspector page** — every verify runs against these three routes.
-
-### Verify recipe mapped to "Done when"
-
-| Done-when clause | Verify step |
-| --- | --- |
-| The form submits without JavaScript | DevTools → settings → "Disable JavaScript", reload `/invoices/new`, submit a valid invoice — the browser navigates to the new detail page, `pnpm db:studio` shows the row. |
-| Field errors display on validation failure | Submit `/invoices/new` with `total` blank and a malformed `dueAt` — the form re-renders with messages under each field, the unfilled fields keep their typed values, the submit button is enabled again. |
-| The optimistic UI rolls back on action failure | Add `?fail=1` support to the create action that returns `{ ok: false, error: 'internal' }` after a 500ms delay; submit a valid invoice with `?fail=1`; the row appears optimistically in the list, then disappears, and a banner shows the action's `userMessage`. |
-| The delete confirmation submits through a form action, not a `fetch` | Open `/invoices/[id]`, click "Delete", confirm the dialog — the submit fires through the Server Action (one POST to the action URL in DevTools Network, no `/api/*` fetches). With JS disabled, the shadcn `<Dialog>` (Radix-backed) doesn't open; the delete form renders inline as the no-JS fallback so the submit still works. |
-| `revalidatePath` refreshes the list | After every create/edit/delete, navigating back to `/invoices` shows the change without a manual reload. |
-| The delete action is wrapped in a transaction | Read `actions.ts`: the delete body is `await db.transaction(async tx => { ... })`. |
 
 ### Concepts demonstrated → owning lesson
 
@@ -106,228 +107,329 @@ This project uses production-shaped surfaces, not an inspector dashboard — the
 
 ---
 
-## Lesson 1 — Project brief
+## Lesson 1 — Project Overview
 
-The scope, the five "Done when" clauses, the deferred-to-later-units carve-outs, and the senior payoff of installing the canonical Server Action shape on a real CRUD surface.
+No header (intro). We take the Unit 5 invoicing data layer — schema, relations, seeds, and read-path queries already in place — and ship a full CRUD surface on it: a "new invoice" form, an "edit invoice" form, and a delete-with-confirmation button, every mutation flowing through a Server Action that parses with Zod, returns the canonical `Result`, and revalidates the list. Single figure: a screenshot strip of `/invoices` → `/invoices/new` → a field-error state → the success redirect → an optimistic add → the delete confirmation dialog.
 
-Goals:
+### What we'll practice
 
-- Frame the CRUD surface as the canonical SaaS mutation flow: every later unit (auth gates in 10, soft delete in 11, billing-gated mutations in 12) layers on top of this exact shape. The chapter ships create / read / update / delete against the Unit 5 invoices schema and nothing more.
-- State the "Done when" five clauses in one paragraph: JS-disabled submit works, field errors render inline from the Result, optimistic create rolls back on failure, delete submits through the form action (not `fetch`), `revalidatePath` updates the list.
-- Name the scope cuts: no auth (Unit 8/10 owns sessions and RBAC; the starter ships a fixed-org stub), no soft delete (Unit 10), no audit log (Unit 9), no idempotency key (Chapter 063 — the slot is named in lesson 5 of chapter 043 and the form hidden-field shape is foreshadowed here but not enforced), no React Hook Form (the trigger doesn't fire — chapter 045), no route handlers (the form is in-app — chapter 046).
-- Set the senior payoff: the three actions written here are the shape every action in Units 7–22 reuses. The discipline installed — parse on entry, return `Result`, revalidate, transaction for multi-step, optimistic only when the trigger fires — is what turns "form code" into "audit-clean form code" later.
-- Show the end UX: one screenshot strip of `/invoices` → `/invoices/new` → field error state → success redirect → optimistic add → delete confirmation.
-- Link the starter via `degit` from the `react-saas-course-projects` monorepo.
+- Deriving a mutation schema from the Drizzle table with `createInsertSchema` + refinement, then treating that schema as the single contract both the action and the form's input `name`s obey.
+- Writing Server Actions in the five-seam shape — parse, authorize, mutate, revalidate, return — that hand back a `Result` instead of throwing.
+- Building native React 19 forms with `useActionState`, uncontrolled inputs, `useFormStatus`, and `useOptimistic`, wired so the whole surface still works with JavaScript disabled.
+- Reaching for a Drizzle transaction when a mutation is multi-step, and keeping external calls out of it.
 
-Senior calls and watch-outs:
+### Architecture
 
-- The `getActiveContext()` stub is intentionally not session-shaped. Reaching for `cookies()` or inventing a session reader now creates code Unit 9 will rewrite — leave the stub alone, the wrapper drops in cleanly later.
-- Every action returns `Result`, never throws on validation. The student's instinct from older codebases is to `throw new ValidationError(...)`; the chapter's discipline is the opposite.
+Labeled list, shape only: the browser submits a `<form action={serverAction}>`; the Server Action parses the `FormData` against the Zod schema, reads the active org/user from the auth stub, writes through the pooled Drizzle client (the delete inside a transaction), calls `revalidatePath('/invoices')`, and returns a `Result`; `useActionState` on the client renders that `Result` — field errors inline, a banner for the rest — while `useOptimistic` paints the pending create row until the revalidated list arrives.
 
-Codebase state at entry: empty working directory.
-Codebase state at exit: starter cloned, `docker compose up -d` running the Unit 5 Postgres, `pnpm install` clean, `pnpm db:migrate && pnpm db:seed` populated, `pnpm dev` shows `/invoices` with the seeded list of invoices (read path inherited from chapter 041; mutations not wired).
+### Starting file tree (stubs marked with TODO)
 
-Estimated student time: 10 to 15 minutes.
+```
+src/
+  db/                            # provided: full schema, relations, client, cursor (from chapter 041)
+  lib/
+    invoices/
+      schema.ts                  # provided: statusSchema, listInvoicesInputSchema (from chapter 041)
+      mutation-schemas.ts        # TODO student: createInvoiceInput, updateInvoiceInput, deleteInvoiceInput
+      queries.ts                 # provided: listInvoices, getInvoiceDetail (from chapter 041)
+      actions.ts                 # TODO student: createInvoice, updateInvoice, deleteInvoice (file-level 'use server')
+    result.ts                    # provided: Result<T>, ok(), err(), unique-violation mapping helper
+    auth-stub.ts                 # provided: getActiveContext() returning fixed org + user
+  app/
+    layout.tsx                   # provided: root layout with <Toaster /> from sonner preinstalled
+    invoices/
+      page.tsx                   # provided: server component, list of invoices, "New invoice" link, OptimisticInvoicesList wrapper
+      _components/
+        optimistic-invoices-list.tsx  # TODO student: client component (useOptimistic list)
+      new/
+        page.tsx                 # provided: server-rendered shell
+        new-invoice-form.tsx     # TODO student: client component
+      [invoiceId]/
+        page.tsx                 # provided: server component, loads detail, renders edit form + delete button
+        edit-invoice-form.tsx    # TODO student: client component
+        delete-invoice-form.tsx  # TODO student: client component
+    _components/
+      submit-button.tsx          # TODO student: useFormStatus + shadcn Button
+      field-error.tsx            # TODO student: reads Result.error.fieldErrors[name]
+  components/ui/                 # provided: shadcn primitives (Input, Label, Textarea, Select, Button, Dialog, Form*)
+```
 
----
+The highlighted focus is the TODO set: `mutation-schemas.ts`, `actions.ts`, the two `_components` (`submit-button.tsx`, `field-error.tsx`), the three form components, and `optimistic-invoices-list.tsx`. Everything else is provided. The provided pages assume the student-written form components exist at those paths and accept their documented props.
 
-## Lesson 2 — Reading the starter
+Two provided files worth knowing before the build:
 
-A tour of the provided files (`Result<T>`, the auth stub, the page shells, the shadcn `<Form>` primitives) and the TODO stubs the student will fill across the chapter.
+- `lib/result.ts` holds the `Result<T>` type, the `ok`/`err` helpers, and the `isUniqueViolation` helper that maps a Postgres unique violation to a `conflict` (the pattern from lesson 3 of chapter 043). Students read it; they never redeclare `Result` per action — the type is the contract, it lives in one place.
+- `lib/auth-stub.ts` exposes `getActiveContext()`, a fixed `{ organizationId, userId }` for the seeded "Acme" org and owner user. It is intentionally not session-shaped; the lessons call it once at the top of each action body where chapter 057's `authedAction` wrapper drops in later. Reaching for `cookies()` or inventing a session reader now only creates code Unit 9 rewrites.
 
-Goals:
+The `_components` underscore-prefixed folders are the App Router convention for "not a route segment, just shared components."
 
-- Walk the file tree, separating provided from stub. Linger on four files: `lib/result.ts` (the `Result<T>` type, `ok` and `err` helpers, the `mapUniqueViolation` helper — students read it, don't write it, the unique-violation-to-`conflict` pattern from lesson 3 of chapter 043 lives here), `lib/auth-stub.ts` (the fixed-context helper and the reason it exists), `app/invoices/page.tsx` (the server component reading the list and rendering the `OptimisticInvoicesList` client wrapper — the wrapper is stubbed too and gets filled in lesson 5 of chapter 047), and `components/ui/form.tsx` (the shadcn `<Form>`, `<FormField>`, `<FormItem>`, `<FormLabel>`, `<FormControl>`, `<FormMessage>` primitives — the layout primitives the chapter uses without RHF, the discipline from lesson 6 of chapter 044).
-- Read `lib/invoices/mutation-schemas.ts` — empty with TODO comments naming the three exports the actions will import.
-- Read `lib/invoices/actions.ts` — the file starts with `'use server'` and three empty function signatures with TODOs.
-- Read `app/_components/submit-button.tsx` and `field-error.tsx` — empty TODOs with the expected props.
-- Sonner's `<Toaster>` is preinstalled in the root layout (the starter wires `<Toaster />` from `sonner` in `app/layout.tsx`); the `toast.success(message)` call shape lands in lesson 6 of chapter 047 for the URL-param success toast after a delete.
-- Read the three form components' page-side parents to lock in what the student-written client components receive as props and what they must render. The edit page passes the loaded invoice; the new page passes nothing; the detail page passes the invoice and the delete is a separate small form.
-- Bring up the dev surface: `pnpm dev` renders `/invoices` with the seeded list. Clicking "New invoice" 404s because `new-invoice-form.tsx` is empty. That's the runnable starting point.
+### Roadmap
 
-Senior calls and watch-outs:
+CardGrid, one Card per lesson:
 
-- The `_components` underscore-prefixed folder in App Router is the convention for "this folder isn't a route segment, it's shared components." Named once; the student stops trying to make every component a page.
-- `Result<T>` lives in one file and one place. The temptation to redeclare the type per action ("for clarity") is the smell — the type is the contract.
-- The provided pages call student-written form components by relative import — keep the file names and exports as documented, the page wiring breaks otherwise.
+- **Lesson 2 — Create an invoice.** Derive the create schema, write `createInvoice` in the five-seam shape, and wire `NewInvoiceForm` with the reusable `<SubmitButton>` and `<FieldError>` so a valid invoice persists and redirects.
+- **Lesson 3 — Edit an invoice.** Extend the schema with an `id`, write `updateInvoice` with a tenant-scoped `where`, and prefill `EditInvoiceForm` so edits save in place and a duplicate number surfaces a conflict banner.
+- **Lesson 4 — Delete with confirmation.** Add `deleteInvoice` and a shadcn `<Dialog>` delete form that submits through the action, with an inline no-JS fallback.
+- **Lesson 5 — Optimistic create.** Layer `useOptimistic` on the list and a client-generated UUIDv7 so the new row appears instantly, reconciles by key, and rolls back on failure.
+- **Lesson 6 — Transactional delete.** Wrap the delete in a Drizzle transaction for atomic multi-step deletion and add a URL-param success toast.
 
-Codebase state at entry: starter cloned, Postgres up, seed run, `pnpm dev` renders `/invoices`.
-Codebase state at exit: student has read the provided files and TODO stubs. No code written. `pnpm dev` still renders `/invoices` with the seeded list; clicking through reveals empty/404 states for `new` and `[invoiceId]` (the detail page works for read, but it imports the empty edit form).
+### Setup
 
-Estimated student time: 15 to 20 minutes.
+Steps component, in order:
 
----
-
-## Lesson 3 — Schemas and actions: parse, mutate, revalidate, return
-
-Authoring the three `createInsertSchema`-derived mutation schemas and the create/update/delete actions in the canonical five-seam shape with `safeParse`, `Result`, tenant-scoped `where` clauses, and `revalidatePath`.
-
-Goals:
-
-- Fill `lib/invoices/mutation-schemas.ts`. Three exports:
-  - `createInvoiceInputSchema` from `createInsertSchema(invoices, { number: s => s.min(1).max(50), total: s => s.refine(n => n >= 0, 'Total must be non-negative') }).omit({ organizationId: true, createdBy: true, createdAt: true })`. The `id` column stays in the schema (optional, defaulted) so lesson 5 of chapter 047 can supply a client-generated UUIDv7 without re-shaping. Layer the form's coercion via column overrides for `total: z.coerce.number().nonnegative().multipleOf(0.01)`, `issuedAt: z.coerce.date()`, `dueAt: z.coerce.date()`, `customerId: z.uuid()`. The result is the action's input contract; `z.input<typeof ...>` is the `FormData` raw shape, `z.output<typeof ...>` is what the typed action body works with.
-  - `updateInvoiceInputSchema = createInvoiceInputSchema.extend({ id: z.uuid() })`.
-  - `deleteInvoiceInputSchema = z.object({ id: z.uuid() })`.
-- Fill `lib/invoices/actions.ts` with the three actions. The file starts with `'use server'` at the top. Each follows the five-seam shape from lesson 2 of chapter 043:
-  - `createInvoice(prevState, formData)`: `const raw = Object.fromEntries(formData);` → `const parsed = createInvoiceInputSchema.safeParse(raw);` → on `!parsed.success`, return `err('validation', 'Check the highlighted fields.', z.treeifyError(parsed.error).properties)`. Then `const { organizationId, userId } = await getActiveContext();`. Then `try { const [row] = await db.insert(invoices).values({ ...parsed.data, organizationId, createdBy: userId }).returning({ id: invoices.id }); revalidatePath('/invoices'); return ok({ id: row.id }); } catch (e) { if (isUniqueViolation(e)) return err('conflict', 'An invoice with that number already exists for this org.'); throw e; }`. Add `redirect('/invoices/' + row.id)` after the return-shape decision so the success path navigates.
-  - `updateInvoice`: same shape, `db.update(invoices).set(parsed.data).where(and(eq(invoices.id, parsed.data.id), eq(invoices.organizationId, organizationId)))`. Tenant guard in the `where`, not after the load (lesson 2 of chapter 043 rule, chapter 041 tenant-filter rule). Returns `ok({ id })` without a redirect — the edit form stays on the page.
-  - `deleteInvoice`: simple single-`db.delete(...)` form for now (lesson 6 of chapter 047 wraps it in a transaction). Returns `ok(null)` and `redirect('/invoices')` after `revalidatePath`.
-- Each action revalidates *after* the database write and *before* the return. The order from lesson 5 of chapter 043 made concrete.
-- The runnable proof for this lesson is *not* a wired-up UI yet (forms land in lesson 4 of chapter 047). The runnable proof is `pnpm dev` still serving the read paths (the list page, the detail page) without runtime errors, and a temporary scratch invocation: add a tiny "Run create with test data" button to `/invoices` that's hard-coded to call `createInvoice` with a `FormData` built in the click handler (the test-only button is removed in lesson 4 of chapter 047 when the real form lands). The student verifies the row writes, the redirect fires, the list refreshes; with a malformed `dueAt`, the returned `Result` has `fieldErrors`.
-
-Senior calls and watch-outs:
-
-- `safeParse` first, every single time. The temptation to read `formData.get('total')` field by field is the smell — the schema is the contract, the parse covers all of it.
-- The tenant filter in the `update` and `delete` `where` clauses is non-negotiable. Loading the row first and then checking the org ID is the IDOR-class bug from lesson 6 of chapter 041; structural rule is tenant ID in the `where`, never after.
-- `revalidatePath` before the return, never inside the transaction (foreshadow), never before the database write.
-- `redirect` inside an action throws a control-flow exception — don't swallow it in the unique-violation catch. The cleanest pattern is to redirect *after* the try/catch, on the success branch.
-- The `getActiveContext()` call goes *after* the parse, not before. Reading auth on every parse failure wastes a session lookup once chapter 057's wrapper replaces the stub. The lesson 4 of chapter 043 rule: parse first, everything else after.
-- The `Result` failure path returns the object shape — never `null`, never a string, never `throw`. The form layer's read shape (next lesson) depends on the object.
-
-Codebase state at entry: empty schemas and actions files; the form components are empty stubs.
-Codebase state at exit: schemas written; three actions written; the temporary scratch button on `/invoices` proves the create action end-to-end (writes a row, redirects, validation errors return in `state`). No real forms exist yet.
-
-Estimated student time: 30 to 40 minutes.
+1. `npx degit org/react-saas-course-projects/chapter-047-starter invoices-crud` — clone the starter from the `react-saas-course-projects` monorepo.
+2. `cd invoices-crud && pnpm install` — installs clean.
+3. `docker compose up -d` — starts the Unit 5 Postgres.
+4. `cp .env.example .env.local` — the starter reuses chapter 041's `DATABASE_URL` and `DATABASE_URL_UNPOOLED`; no new env vars. `DATABASE_URL` points at the local Docker Postgres (pooled), `DATABASE_URL_UNPOOLED` at the same instance for migrations.
+5. `pnpm db:migrate && pnpm db:seed` — applies the schema and loads two orgs with 50+ invoices each.
+6. `pnpm dev` — expected result: `/invoices` renders the seeded list (the read path is inherited from chapter 041). Clicking "New invoice" reaches an empty form because the form components are still stubs — that is the runnable starting point.
 
 ---
 
-## Lesson 4 — Wiring the forms to the actions
+## Lesson 2 — Create an invoice
 
-Building the create, edit, and delete client forms with `useActionState`, uncontrolled inputs mirroring schema constraints, the reusable `<SubmitButton>` and `<FieldError>` components, and a shadcn `<Dialog>` delete with a no-JS fallback.
+A student can fill the "new invoice" form, submit it, and land on the new invoice's detail page with the row persisted — even with JavaScript disabled. Finished result: `/invoices/new` renders a labeled form; a valid submission writes the row and redirects to `/invoices/[newId]`; an invalid submission re-renders with messages under the offending fields.
 
-Goals:
+### Your mission
 
-- Fill `app/_components/submit-button.tsx`. Client component, calls `useFormStatus()`, renders shadcn `<Button type="submit" disabled={pending}>` with a `<Loader2 className="animate-spin">` inside when `pending`. Imports `useFormStatus` from `'react-dom'` (the lesson 4 of chapter 044 watch-out). Accepts `children` and an optional `variant` prop forwarded to `<Button>`.
-- Fill `app/_components/field-error.tsx`. Takes `{ name: string; fieldErrors: Record<string, string[]> | undefined }` and renders `<p id={`${name}-error`} className="text-destructive text-sm mt-1">{fieldErrors?.[name]?.[0]}</p>` or `null`. The companion input sets `aria-describedby={`${name}-error`}` and `aria-invalid={!!fieldErrors?.[name]?.[0]}` — the accessibility wiring from lesson 5 of chapter 027.
-- Fill `app/invoices/new/new-invoice-form.tsx`. Client component. `const [state, formAction] = useActionState(createInvoice, null);` plus `const fieldErrors = state?.ok === false ? state.error.fieldErrors : undefined;`. Native `<form action={formAction}>` with the shadcn layout primitives wrapping each input. Per-field shape: `<FormField name="total"><FormLabel>Total</FormLabel><FormControl><Input name="total" type="number" step="0.01" min="0" required inputMode="decimal" defaultValue="" aria-describedby="total-error" aria-invalid={!!fieldErrors?.total?.[0]} /></FormControl><FieldError name="total" fieldErrors={fieldErrors} /></FormField>`. Repeat for `customerId` (a `<Select>` populated from a `customers` prop the page passes in), `number`, `status`, `issuedAt`, `dueAt`, `currency`. Form-level banner: `{state?.ok === false && state.error.code !== 'validation' && <p className="text-destructive">{state.error.userMessage}</p>}`. Submit: `<SubmitButton>Create invoice</SubmitButton>`. Remove the temporary scratch button from lesson 3 of chapter 047.
-- Constraint Validation API attributes mirror the schema rules: `required` on every non-optional field, `type="number"`/`type="date"` matching the schema, `inputMode="decimal"` on `total`, `autoComplete="off"` on `number`. Tailwind class for `:user-invalid` styling on the shadcn `<Input>` so the post-interaction red ring lands without `:invalid`'s on-mount red flash.
-- Fill `app/invoices/[invoiceId]/edit-invoice-form.tsx`. Same shape with `useActionState(updateInvoice, null)`, the page passes the loaded invoice as a prop, every field's `defaultValue` reads from the prop, a hidden `<input type="hidden" name="id" value={invoice.id} />` carries the ID. Success stays on the page — `updateInvoice` doesn't redirect; the Server Component page re-fetches after `revalidatePath`, the form re-renders with fresh defaults.
-- Fill `app/invoices/[invoiceId]/delete-invoice-form.tsx`. The shadcn `<Dialog>` trigger is a "Delete" button on the detail page; the dialog body holds `<form action={formAction}>` with a hidden `<input name="id" value={invoice.id} />` and two actions: "Cancel" (closes the dialog, no submit) and `<SubmitButton variant="destructive">Delete</SubmitButton>`. `deleteInvoice` redirects to `/invoices` after revalidating, so the dialog closes via the page navigation. The PE fallback: wrap the dialog in a `<noscript>`-aware pattern — when JS is off the dialog won't open, so the same `<form>` renders as a regular inline form on the detail page (a simple `<noscript>` block, or render both and let CSS / JS gate visibility). Pick the simpler pattern; the verify in lesson 7 of chapter 047 confirms the no-JS path.
+This is the first cut of the canonical SaaS mutation flow, and it carries the most weight because the create path establishes the shape every later action reuses. You derive the create schema from the Drizzle `invoices` table with `createInsertSchema` so the action's input contract and the form's input `name`s can never drift, then write `createInvoice` in the five-seam shape: parse the `FormData` with `safeParse` (never `parse`, never throw on validation), read the active org and user from `getActiveContext()` *after* the parse so a parse failure never costs an auth lookup, insert through the pooled client, `revalidatePath('/invoices')`, and return a `Result` — `redirect` to the new detail page on the success branch, *after* the try/catch so the redirect's control-flow throw isn't swallowed by the unique-violation catch. The schema keeps the `id` column optional rather than omitting it: lesson 5 supplies a client-generated UUIDv7 there for the optimistic reconcile, so leaving it in now avoids re-shaping mid-chapter. The form is a Client Component with uncontrolled inputs, `defaultValue`, and Constraint Validation API attributes that mirror the schema rules — drift between a `.min(1)` and a missing `minLength` is exactly the bug the mirror prevents — and the reusable `<SubmitButton>` and `<FieldError>` you build here serve every later form. Field errors render from the action's `Result.error.fieldErrors`, not from local state: the form layer is a renderer. Out of scope here: editing, deleting, optimism, and the transaction — they each land in their own lesson. Hold the line on `safeParse` over field-by-field `formData.get(...)` reads, and on the tenant context coming from the stub rather than a session you invent.
 
-Senior calls and watch-outs:
+Build it so each of these holds:
 
-- The `<FieldError>` component reads from the action's `Result`, not from local state. The form layer is a renderer; the lesson 3 of chapter 044 rule.
-- `defaultValue` not `value` on every input. Reaching for controlled inputs to "make the edit form easier" is the smell — `revalidatePath` re-renders the Server Component, the new `defaultValue` flows down, the DOM reconciles by uncontrolled-input identity.
-- Constraint API attributes mirror the schema. If the schema says `.min(1)`, the input has `minLength="1"`. Drift between the two is the bug class the mirror prevents.
-- `aria-invalid` and `aria-describedby` are non-optional. The visual error is for sighted users; the ARIA wiring is for assistive tech.
-- The shadcn `<Form>` primitives don't require React Hook Form despite the docs implying it. The chapter uses them as pure layout primitives — `useActionState` owns the state. The lesson 6 of chapter 044 senior call.
-- The `<Dialog>` for delete is shadcn's primitive, which handles focus trap, Esc-close, and click-outside (lesson 4 of chapter 027 dividend). The form lives inside the dialog body — closing the dialog doesn't cancel the submit, submitting closes the dialog by virtue of the redirect.
+- [ ] Submitting `/invoices/new` with a valid invoice writes the row, redirects to its `/invoices/[newId]` detail page, and the new row appears on `/invoices`.
+- [ ] The same valid submission succeeds with JavaScript disabled — the browser POSTs to the action URL and navigates to the detail page.
+- [ ] Submitting with `total` blank and a malformed `dueAt` re-renders the form with a message under each offending field, sourced from the action's `Result`.
+- [ ] On that validation failure the other fields keep their typed values and the submit button re-enables.
+- [ ] The submit button shows a spinner while the action is in flight.
+- [ ] Each field's input constraints (required, numeric, date) match the schema's rules, and the post-interaction invalid styling appears only after the user touches a field, not on mount.
 
-Codebase state at entry: actions exist; form components are empty stubs; the temporary scratch button proves the backend.
-Codebase state at exit: full CRUD surface visually complete. Create form renders field errors inline, edit form prefills and saves, delete form opens a dialog and submits. Every submit button shows a spinner during in-flight. JS-disabled submit still works — verified at the end of the lesson with a quick DevTools toggle.
+### Coding time
 
-Estimated student time: 40 to 55 minutes.
+Implement `NewInvoiceForm`, `createInvoice`, `createInvoiceInputSchema`, and the shared `<SubmitButton>`/`<FieldError>` against the brief and the tests, then read the reference build.
 
----
+<details>
 
-## Lesson 5 — Optimistic create with a client-generated UUID
+Reference implementation, organized as it appears in the repo:
 
-Adding `useOptimistic` to the invoice list, a UUIDv7 hidden input that reconciles the optimistic and persisted rows by key, and a `?fail=1` debug branch to observe the implicit rollback.
+- `lib/invoices/mutation-schemas.ts` — `createInvoiceInputSchema` from `createInsertSchema(invoices, { number: s => s.min(1).max(50), total: s => s.refine(n => n >= 0, 'Total must be non-negative') }).omit({ organizationId: true, createdBy: true, createdAt: true })`. Column overrides carry the `FormData` coercion: `total: z.coerce.number().nonnegative().multipleOf(0.01)`, `issuedAt: z.coerce.date()`, `dueAt: z.coerce.date()`, `customerId: z.uuid()`. The `id` column stays in the schema, optional and defaulted. `z.input<typeof createInvoiceInputSchema>` is the raw `FormData` shape; `z.output<...>` is what the typed action body works with.
+- `lib/invoices/actions.ts` — file-level `'use server'`, then `createInvoice(prevState, formData)`: `const raw = Object.fromEntries(formData)` → `const parsed = createInvoiceInputSchema.safeParse(raw)` → on `!parsed.success`, `return err('validation', 'Check the highlighted fields.', z.treeifyError(parsed.error).properties)`. Then `const { organizationId, userId } = await getActiveContext()`. Then `try { const [row] = await db.insert(invoices).values({ ...parsed.data, organizationId, createdBy: userId }).returning({ id: invoices.id }); revalidatePath('/invoices'); } catch (e) { if (isUniqueViolation(e)) return err('conflict', 'An invoice with that number already exists for this org.'); throw e; }` then `redirect('/invoices/' + row.id)` after the try/catch.
+- `app/_components/submit-button.tsx` — Client Component, `useFormStatus()` from `'react-dom'`, renders shadcn `<Button type="submit" disabled={pending}>` with `<Loader2 className="animate-spin" />` when pending. Accepts `children` and an optional `variant` forwarded to `<Button>`.
+- `app/_components/field-error.tsx` — takes `{ name: string; fieldErrors: Record<string, string[]> | undefined }`, renders `<p id={`${name}-error`} className="text-destructive text-sm mt-1">{fieldErrors?.[name]?.[0]}</p>` or `null`.
+- `app/invoices/new/new-invoice-form.tsx` — Client Component. `const [state, formAction] = useActionState(createInvoice, null)` plus `const fieldErrors = state?.ok === false ? state.error.fieldErrors : undefined`. Native `<form action={formAction}>` with shadcn layout primitives per field, e.g. `<FormField name="total"><FormLabel>Total</FormLabel><FormControl><Input name="total" type="number" step="0.01" min="0" required inputMode="decimal" defaultValue="" aria-describedby="total-error" aria-invalid={!!fieldErrors?.total?.[0]} /></FormControl><FieldError name="total" fieldErrors={fieldErrors} /></FormField>`, repeated for `customerId` (a `<Select>` from a `customers` prop the page passes), `number`, `status`, `issuedAt`, `dueAt`, `currency`. Form-level banner: `{state?.ok === false && state.error.code !== 'validation' && <p className="text-destructive">{state.error.userMessage}</p>}`. Submit: `<SubmitButton>Create invoice</SubmitButton>`.
 
-Goals:
+Decision rationale:
 
-- Fill `app/invoices/_components/optimistic-invoices-list.tsx` (provided as a stub; the `/invoices` page already imports and wraps the list with it). Client component:
-  - Props: `{ initialInvoices: Invoice[] }` (the server-fetched list from `listInvoices`).
-  - `const [optimisticInvoices, addOptimistic] = useOptimistic(initialInvoices, (current, next: Invoice) => [next, ...current]);`
-  - Renders the list rows from `optimisticInvoices`. The pending row gets a visual indicator (a `<Loader2 className="animate-spin" />` next to the number, a subtle `opacity-60` row).
-  - Exports a `addOptimisticInvoice(invoice: Invoice)` function via a small React context so the create form can call it without prop-drilling.
-- Refactor `new-invoice-form.tsx`:
-  - Generate a client-side UUIDv7 at form-mount with `useState(() => uuidv7())`, render it as a hidden `<input type="hidden" name="id" value={tempId} />` — the client-generated UUID pattern from lesson 5 of chapter 044. The schema already accepts an optional `id` (lesson 3 of chapter 047 kept it in the shape for exactly this reason), so no schema changes here. The action's `db.insert(...).values({ ...parsed.data, organizationId, createdBy: userId })` passes the client ID through when supplied; missing IDs fall back to the column's `$defaultFn`.
-  - On submit, wrap the action call in a transition that fires the optimistic append before the action: `const handleSubmit = (formData: FormData) => { startTransition(() => { addOptimisticInvoice({ id: tempId, ...rawValuesFromFormData, status: 'draft' as const, pending: true }); formAction(formData); }); }`. The `<form action={handleSubmit}>` wires it; `useOptimistic`'s update only persists during the transition.
-  - The action's success path: redirects to `/invoices/[id]`; on return to `/invoices`, the server-rendered list now includes the new invoice with the same UUID the optimistic add used. React reconciles by `key={invoice.id}` and the optimistic row swaps to the real one without a flicker.
-  - The action's failure path: returns `{ ok: false, error: ... }`; the transition ends; `useOptimistic` discards the appended item; the list reverts to `initialInvoices`. The form-level banner reads `state.error.userMessage`.
-- Add a `?fail=1` debug branch to `createInvoice` (named in the code with a comment that says "remove before production"; this is for the verify step in lesson 7 of chapter 047). When `formData.get('_debug_fail') === '1'`, the action sleeps 500ms then returns `err('internal', 'Forced failure for verify')`. The form adds a hidden checkbox or button click that sets the debug flag — wire the simplest pattern (a checkbox labeled "Simulate failure", `name="_debug_fail"`, `value="1"`).
-- Run it:
-  - Submit a valid invoice without the failure flag → the row appears immediately in the list, then the redirect fires, the detail page renders, navigating back shows the same row already there with its real persisted data.
-  - Submit with the failure flag → the row appears in the list with the spinner indicator → 500ms later the row disappears → the form shows the banner with `userMessage: 'Forced failure for verify'` → the input values are still in the form (no reset).
+- The `getActiveContext()` call sits after the parse because once chapter 057's wrapper replaces the stub, reading auth on every parse failure would waste a session lookup (the lesson 4 of chapter 043 rule: parse first, everything after).
+- `redirect` lives after the try/catch: it throws a control-flow exception, and putting it on the success branch outside the catch keeps the unique-violation handler from swallowing it.
+- `defaultValue`, never `value`: the inputs are uncontrolled, so the form needs no client state and the JS-disabled path works unchanged.
 
-Senior calls and watch-outs:
+Coverage of untested requirements: the Constraint Validation attributes mirror the schema (`required` on every non-optional field, `type="number"`/`type="date"` matching the column, `inputMode="decimal"` on `total`, `autoComplete="off"` on `number`); `:user-invalid` styling on the shadcn `<Input>` produces the red ring only after interaction, avoiding `:invalid`'s on-mount flash; `aria-invalid` and `aria-describedby` wire the error for assistive tech (the lesson 5 of chapter 027 accessibility pattern).
 
-- `useOptimistic` must be called inside a transition for the update to persist; `startTransition` wrapping the `formAction` call is the pattern. The lesson 5 of chapter 044 rule.
-- The client-generated UUID pattern avoids the flicker that temp string IDs would produce. Reconciliation by key is what makes the swap invisible.
-- The optimistic reducer is pure. Logging to the console inside the reducer is the smell — React may call it multiple times during reconciliation.
-- The `_debug_fail` flag is a chapter-local pattern; production actions never accept "please fail" inputs. Name this once; the chapter strips it during the verify if desired.
-- `useOptimistic` doesn't pair well with mutations that have a high failure rate — the chapter's create has near-100% success once the schema and the auth context land. The lesson 5 of chapter 044 threshold rule made concrete.
-- Don't optimistically update the *edit* form. The trigger (visible-to-user, high success, small UI change) doesn't fire as strongly — the user is staring at the form and the save banner is enough. Optimism is for the *list-and-add* shape.
+Callout: the shadcn `<Form>` primitives are used as pure layout here, without React Hook Form despite the shadcn docs implying it — `useActionState` owns the state (the lesson 6 of chapter 044 senior call).
 
-Codebase state at entry: full CRUD with no optimism.
-Codebase state at exit: create is optimistic, the rollback is invisible to write (React owns it), the failure case is observable through the debug flag. Edit and delete remain non-optimistic.
+</details>
 
-Estimated student time: 25 to 35 minutes.
+### Moment of truth
+
+Run the lesson's test suite with `pnpm test invoices/create` (expected: all create-path specs pass — happy-path persistence, the validation-failure `Result` shape, the conflict mapping). Then confirm by hand the requirements the tests don't cover:
+
+- [ ] DevTools → settings → "Disable JavaScript", reload `/invoices/new`, submit a valid invoice — the browser navigates to `/invoices/[newId]` and `pnpm db:studio` shows the row.
+- [ ] With JS enabled, submit with `total` blank and a malformed `dueAt` (temporarily remove `required` to reach the server path) — messages render under both fields, the other inputs keep their values, the submit button re-enables. Restore `required`.
+- [ ] The submit button shows its spinner during the in-flight submit.
+- [ ] The invalid styling on a field appears only after you touch it, not on first render.
 
 ---
 
-## Lesson 6 — Delete inside a Drizzle transaction
+## Lesson 3 — Edit an invoice
 
-Refactoring `deleteInvoice` to a `db.transaction` block that holds the shape for later audit-log and notification extensions, with the "no external calls inside the tx" rule and a URL-param success toast.
+A student can open an existing invoice, change its fields, and save the edit in place, with a duplicate invoice number surfacing as a conflict. Finished result: `/invoices/[invoiceId]` renders a prefilled edit form above the read-only detail; saving valid changes refreshes the page with the new values; reusing another invoice's number shows a form-level banner.
 
-Goals:
+### Your mission
 
-- Refactor `deleteInvoice` in `lib/invoices/actions.ts`. Replace the single `db.delete(...)` call with:
-  - `const result = await db.transaction(async tx => { const existing = await tx.query.invoices.findFirst({ where: and(eq(invoices.id, parsed.data.id), eq(invoices.organizationId, organizationId)) }); if (!existing) return { notFound: true as const }; await tx.delete(invoiceLines).where(eq(invoiceLines.invoiceId, parsed.data.id)); await tx.delete(invoices).where(and(eq(invoices.id, parsed.data.id), eq(invoices.organizationId, organizationId))); return { notFound: false as const, deletedNumber: existing.number }; });`
-  - Translate `result.notFound` to `err('not_found', 'Invoice not found.')`; on success, `revalidatePath('/invoices')` and `redirect('/invoices')`.
-- The senior framing for why this transaction earns its weight even when the FK `ON DELETE CASCADE` on `invoice_lines → invoices` would delete the children automatically: making the atomicity explicit at the action layer means the reviewer reads the action and sees the multi-step shape, the future addition (audit log write, soft-delete flag, notification dispatch, file cleanup — all coming in later units) drops into the same transaction without a re-architecture, and the senior anchor "no external calls inside the transaction" gets installed at the right moment so the Unit 7 email send and the Unit 12 file cleanup land *outside* the tx block when those layers arrive. Name the trade explicitly: the FK cascade alone would work today; the tx wrapper is the shape that holds for tomorrow.
-- Name the senior anti-patterns the transaction protects against:
-  - The pre-load → check → delete sequence outside a transaction (two round trips, race window between the check and the delete) becomes one atomic operation. Even though Postgres's FK constraint would still reject an orphan write, the application's intent is one unit of work.
-  - Calling an external API (Resend, Stripe, a webhook) inside the `tx => ...` callback diverges state on rollback — name it once, this is the lesson 5 of chapter 043 watch-out made operational. The student's instinct after seeing the tx block is "while we're here, also email the customer that their invoice was deleted." Hold the line: the email goes after the tx commits (Unit 7 + Unit 13 own the dispatch).
-- Add a small UX win the transaction's success enables: the redirect target carries a `?deleted=INV-0042` search param; the `/invoices` page reads it and renders a shadcn `Sonner` toast ("Invoice INV-0042 deleted"). The success data flows through the URL — no client state, no React context. Named once; the toast lives until the next navigation.
-- Run it: delete an invoice from the detail page → the dialog opens, confirm → the action runs the transaction, both deletes commit atomically, the redirect fires, the list page shows the toast. Open Studio: the invoice row is gone, the invoice-lines rows are gone.
-- Optional senior touch (5-minute extension, not load-bearing for the verify): the action takes ~10ms to run in dev; in prod against a network DB it would take ~50–80ms. Pair the delete with `useOptimistic` for the list-removal animation if the student wants the practice — the chapter doesn't require it because edit is the case the optimism trigger doesn't fire on, but removal is borderline. Name the call; leave the build to the student's discretion.
+Editing reuses everything the create path established and adds two ideas: a schema that requires the `id`, and a mutation that must not let one org touch another org's row. You extend the create schema with `updateInvoiceInputSchema = createInvoiceInputSchema.extend({ id: z.uuid() })` and write `updateInvoice` in the same five-seam shape, but the tenant guard goes *in the `where` clause* — `and(eq(invoices.id, parsed.data.id), eq(invoices.organizationId, organizationId))` — never as a load-then-check after the fact, which is the IDOR-class bug from lesson 6 of chapter 041. Unlike create, `updateInvoice` returns `ok` without redirecting: the edit form stays on the page, and because the action calls `revalidatePath('/invoices')`, the Server Component page re-fetches and the form re-renders with fresh defaults. The form mirrors `NewInvoiceForm` but reads every `defaultValue` from the loaded invoice the page passes as a prop and carries the row id in a hidden input. A duplicate `number` for the same org trips the Postgres unique constraint, which `isUniqueViolation` maps to a `conflict`; that surfaces as the form-level banner rather than a field error, because the violation is on the org+number composite, not one field's value alone. Out of scope: optimism (the edit case deliberately skips it — the user is staring at the form and the save is enough) and the transaction. Resist controlled inputs to "make editing easier"; uncontrolled inputs with `defaultValue` reconcile correctly when `revalidatePath` flows new defaults down.
 
-Senior calls and watch-outs:
+Build it so each of these holds:
 
-- The transaction wraps reads-then-writes that must agree. Reading the existing row inside the tx ensures the row count check is atomic with the delete; in a read-then-delete-outside-tx pattern, a second admin could delete between the two queries and the second action's "not found" wouldn't fire.
-- `tx` is a different value from `db`. Every query inside the callback uses `tx`; missing one (`db.delete(...)` inside the callback) is the failure mode — the un-tx'd query runs in its own implicit transaction, breaks atomicity, and the rollback wouldn't include it. The Drizzle convention from lesson 4 of chapter 039.
-- Returning a value from the callback is the way to communicate to the action body what happened. Throwing inside the callback rolls back the transaction; returning a discriminated value lets the action map to the right `Result`.
-- The `revalidatePath` call lives *outside* the transaction (the lesson 5 of chapter 043 rule made operational once more). Calling `revalidatePath` inside the `tx => ...` callback would invalidate the cache even if the transaction rolls back.
-- The `?deleted=...` pattern works without JS. The redirect carries the param, the server-rendered list reads it, the toast is server-rendered (or hydrated by Sonner on mount). Progressive enhancement extends to the success toast.
+- [ ] Opening `/invoices/[invoiceId]` shows the edit form prefilled with the invoice's current values.
+- [ ] Saving valid changes persists them and the page reflects the new values without a manual reload.
+- [ ] Editing one org's invoice cannot modify another org's row — the tenant filter is in the `where`.
+- [ ] Setting an invoice's `number` to one already used by another invoice in the same org surfaces a form-level banner, not a field error.
+- [ ] An invalid edit re-renders the form with field-level messages and keeps the entered values.
 
-Codebase state at entry: delete works through a single `db.delete(...)` call.
-Codebase state at exit: delete is transactional, the success toast renders from a URL param, the action body's shape matches what every later unit will extend (Unit 9 adds audit-log writes inside the tx, Unit 10 adds the soft-delete branch, Unit 7 adds an email send *after* the tx commits).
+### Coding time
 
-Estimated student time: 20 to 30 minutes.
+Implement `updateInvoiceInputSchema`, `updateInvoice`, and `EditInvoiceForm` against the brief and the tests, then read the reference build.
+
+<details>
+
+Reference implementation, organized as it appears in the repo:
+
+- `lib/invoices/mutation-schemas.ts` — add `export const updateInvoiceInputSchema = createInvoiceInputSchema.extend({ id: z.uuid() })`.
+- `lib/invoices/actions.ts` — `updateInvoice(prevState, formData)` in the five-seam shape: parse with `updateInvoiceInputSchema`, read context, then `db.update(invoices).set(parsed.data).where(and(eq(invoices.id, parsed.data.id), eq(invoices.organizationId, organizationId)))`, `revalidatePath('/invoices')`, `return ok({ id: parsed.data.id })`. No redirect. Same unique-violation catch as create.
+- `app/invoices/[invoiceId]/edit-invoice-form.tsx` — Client Component, `useActionState(updateInvoice, null)`, the page passes the loaded invoice as a prop, each field's `defaultValue` reads from it, and `<input type="hidden" name="id" value={invoice.id} />` carries the id. Field layout, `<FieldError>`, banner, and `<SubmitButton>` mirror the create form.
+
+Decision rationale:
+
+- The tenant id sits in the `where`, not in a post-load check, so a forged `id` for another org simply matches zero rows instead of leaking or mutating a foreign row.
+- No redirect on success keeps the user in context; `revalidatePath` is what makes the page show fresh data, so no client-side state sync is needed.
+
+Coverage of untested requirements: the conflict renders as a form-level banner (the org+number composite isn't tied to a single field), a distinction the student confirms by hand; `defaultValue` over `value` is what lets the re-fetched Server Component flow new values into the uncontrolled inputs.
+
+Callout: the edit action intentionally has no `useOptimistic` — see the create lesson for where optimism earns its place and lesson 5 for why edit is the case where the trigger doesn't fire.
+
+</details>
+
+### Moment of truth
+
+Run `pnpm test invoices/update` (expected: update-path specs pass — in-place persistence, the tenant-scoped `where`, the conflict mapping). Then confirm by hand:
+
+- [ ] Open an invoice, change a field, save — the page shows the new value with no manual reload.
+- [ ] Set the `number` to one another invoice in the same org already uses, save — the form-level banner appears, not a field error.
+- [ ] Submit an invalid edit — field messages render and the entered values stick.
 
 ---
 
-## Lesson 7 — Verify and forward-reference
+## Lesson 4 — Delete with confirmation
 
-Walking each "Done when" clause as a test (JS-disabled submit, field errors, conflict path, optimistic rollback, transactional delete, revalidation) and naming the Units 7–14 layers that will extend each discipline.
+A student can delete an invoice from its detail page behind a confirmation dialog, and the delete still works with JavaScript disabled. Finished result: `/invoices/[invoiceId]` shows a "Delete" button that opens a shadcn `<Dialog>`; confirming submits through the Server Action and returns to `/invoices` with the row gone; with JS off, an inline fallback form performs the same delete.
 
-Goals:
+### Your mission
 
-- Walk every "Done when" clause as a verification step (the table in the framing).
-- **JS-disabled flow.** DevTools → settings → "Disable JavaScript" → reload `/invoices/new` → fill the form → submit. The browser POSTs to the action's URL, the action runs, the redirect to `/invoices/[newId]` fires, the detail page renders with no React hooks active. Verify in `pnpm db:studio` that the row landed. Re-enable JS; soft-reload the list page; the new invoice is there.
-- **Invalid-data field errors.** With JS enabled, submit `/invoices/new` with `total` blank and `dueAt` set to a malformed value. The constraint API catches the missing field first (the browser's native invalid-bubble before submit); remove `required` temporarily to test the server path; submit; the action's `safeParse` fails; the form re-renders with `<FieldError>` messages under both fields; the unfilled inputs keep their typed values; the submit button is enabled again. Add the `required` back.
-- **Conflict (`code: 'conflict'`) path.** Edit an existing invoice and set its `number` to one already used by another invoice in the same org. Submit. The Postgres unique violation fires; `isUniqueViolation(e)` matches; the action returns `err('conflict', 'An invoice with that number already exists for this org.')`. The form renders the form-level banner (not a field-level error, because the conflict isn't tied to one field's value alone — the org+number composite). Name this distinction.
-- **Optimistic rollback.** With the `?fail=1` debug branch (or by toggling the "Simulate failure" hidden field), submit a valid create. The row appears at the top of the list with the spinner indicator; 500ms later it vanishes; the banner shows `Forced failure for verify`. The form values persist. Disable the debug flag, resubmit; the create succeeds, the row stays, the redirect fires.
-- **Delete confirmation through a form action.** Open `/invoices/[id]`; click "Delete"; the shadcn `<Dialog>` opens; confirm. The submit fires through `formAction`. Inspect Network in DevTools: one POST to the action URL, no `/api/*` `fetch` calls. With JS disabled, the shadcn `<Dialog>` (Radix-backed) doesn't open — the no-JS fallback renders the delete `<form>` inline on the detail page (the `<noscript>`-gated pattern from lesson 4 of chapter 047) so the action still fires. Submit; the action runs the transaction; the redirect fires.
-- **Transaction atomicity check.** Add a temporary `throw new Error('debug rollback')` inside the delete transaction after `tx.delete(invoiceLines)` but before `tx.delete(invoices)`. Try to delete an invoice; the action throws; the page kicks to `error.tsx`. Refresh `pnpm db:studio` — the invoice and its lines are both still there. The tx rolled both back atomically. Remove the throw.
-- **Revalidation.** Create, edit, and delete invoices in sequence. Each time, navigate back to `/invoices` — the list reflects the change without a manual reload. `revalidatePath` is firing.
-- **Progressive enhancement edge cases.** Disable JS; the optimistic add doesn't fire (no `useOptimistic`, no transition) but the form still creates the row via the redirect. The user sees the new invoice when they land on the detail page; the list still reflects the change on next navigation. The delete works (the dialog falls back per above); the edit works (no optimism on edit anyway, so JS-disabled is the same UX).
-- **Senior recap.** Name the disciplines installed:
-  - Every action parses on entry with `safeParse`.
-  - Every action returns `Result`, never throws on expected failures.
-  - Every action revalidates *after* the database write, *before* the return.
-  - Every action runs the auth read after the parse (using the stub that chapter 057's wrapper will replace).
-  - Every form is a Client Component with uncontrolled inputs, a `name` attribute matching the schema, `defaultValue` for edits, and the action prop wiring the submit.
-  - Field errors render from the action's `Result.error.fieldErrors`, never from local state.
-  - The `<SubmitButton>` is reused across every form by reading `useFormStatus` from context.
-  - `useOptimistic` is reserved for the high-success / visible / small-UI-change case (create).
-  - The delete transaction's shape holds for the audit-log, notification, and external-call extensions of Units 7–13.
-- **Forward references.**
-  - Unit 7 (transactional email) adds a Resend send after `createInvoice`'s tx commits — *not* inside it.
-  - Unit 8 (Better Auth) replaces `getActiveContext()` with a real session read; the `users` stub goes away, the `createdBy` FK target stays valid.
-  - Unit 9 (RBAC) wraps every action in `authedAction('member', schema, fn)` so the parse, the auth read, and the `Result.error.code === 'unauthorized'` path become structural. The student's per-action `safeParse` lines disappear into the wrapper; the action body shrinks to the mutation seams.
-  - Unit 10 (URL-state list with soft delete + concurrency) adds a `version` column for optimistic concurrency control on edits (the `409` Result path) and a `deletedAt` column for soft delete; `updateInvoice` and `deleteInvoice` change shape accordingly.
-  - Unit 11 (Stripe billing + idempotency) drops the `id` hidden field in the create form to a Server Action `Idempotency-Key` shape derived from a UUIDv7 — the same client-generated UUID pattern, repurposed for replay safety.
-  - Unit 14 (cache) replaces the blunt `revalidatePath` with `updateTag('org:X:invoices')` so the cached read on the list refreshes only its tagged subset.
+Delete is the smallest action but it makes the progressive-enhancement discipline concrete. You add `deleteInvoiceInputSchema = z.object({ id: z.uuid() })` and a `deleteInvoice` action that, for now, runs a single `db.delete(...)` with the tenant id in the `where` (lesson 6 wraps it in a transaction), revalidates, and redirects to `/invoices`. The interesting work is the form: the delete must submit through the form action — one POST to the action URL, no `fetch` to an `/api/*` route — so an inexperienced dev's reflex to wire an `onClick` handler that calls `fetch` is exactly the trap to avoid. The confirmation uses the shadcn `<Dialog>` (Radix-backed, so focus trap, Esc-close, and click-outside come for free from the lesson 4 of chapter 027 install), with the `<form action={formAction}>` living inside the dialog body and a hidden `id` input. Because Radix needs JavaScript to open the dialog, the no-JS path needs a fallback: the same delete `<form>` renders inline on the detail page when scripting is off, so the action still fires. Pick the simpler of the gating patterns. Out of scope: the transaction and the success toast, both in lesson 6.
 
-Senior calls and watch-outs:
+Build it so each of these holds:
 
-- The verify lesson is the rehearsal of the failure modes — running each one and naming what would break without the discipline. If a verify step fails, the lesson points the student at the owning build lesson, not at "debug it yourself."
-- The JS-disabled test is the cheapest single test that proves the form pattern was built right. The 2026 reflex: every form gets one JS-disabled pass at feature-launch time.
+- [ ] Clicking "Delete" on `/invoices/[invoiceId]` opens a confirmation dialog; confirming removes the invoice and returns to `/invoices` without it.
+- [ ] The confirmed delete fires as a single POST to the action URL with no `/api/*` fetch.
+- [ ] Cancelling the dialog closes it and changes nothing.
+- [ ] With JavaScript disabled, the inline fallback form deletes the invoice and returns to the list.
+- [ ] Deleting one org's invoice cannot remove another org's row.
 
-Codebase state at entry: full CRUD with optimism and transactional delete.
-Codebase state at exit: same surface, verified clause-by-clause. The `?fail=1` debug branch is removed (or left with a comment, depending on the student's preference). The student can articulate every decision made in the chapter and the unit that will extend each one.
+### Coding time
 
-Estimated student time: 20 to 30 minutes.
+Implement `deleteInvoiceInputSchema`, `deleteInvoice`, and `DeleteInvoiceForm` against the brief and the tests, then read the reference build.
+
+<details>
+
+Reference implementation, organized as it appears in the repo:
+
+- `lib/invoices/mutation-schemas.ts` — add `export const deleteInvoiceInputSchema = z.object({ id: z.uuid() })`.
+- `lib/invoices/actions.ts` — `deleteInvoice(prevState, formData)`: parse, read context, `await db.delete(invoices).where(and(eq(invoices.id, parsed.data.id), eq(invoices.organizationId, organizationId)))`, `revalidatePath('/invoices')`, `redirect('/invoices')`.
+- `app/invoices/[invoiceId]/delete-invoice-form.tsx` — Client Component. The shadcn `<Dialog>` trigger is a "Delete" button; the dialog body holds `<form action={formAction}>` with `<input type="hidden" name="id" value={invoice.id} />`, a "Cancel" button that closes the dialog without submitting, and `<SubmitButton variant="destructive">Delete</SubmitButton>`. The no-JS fallback renders the same `<form>` inline on the detail page so it works when the dialog can't open.
+
+Decision rationale:
+
+- The submit rides the form action rather than a `fetch` so progressive enhancement holds and there's no client-side request plumbing to maintain.
+- The redirect (not `ok`) closes the dialog implicitly via the page navigation, so no dialog-state bookkeeping is needed on success.
+
+Coverage of untested requirements: the tenant id in the delete `where` mirrors the update rule; the inline no-JS fallback is the part a human verifies with scripting disabled.
+
+Callout: the form lives *inside* the dialog body — closing the dialog doesn't cancel an in-flight submit, and a successful submit closes the dialog by navigating away.
+
+</details>
+
+### Moment of truth
+
+Run `pnpm test invoices/delete` (expected: delete-path specs pass — removal, the tenant-scoped `where`, the not-yet-found case). Then confirm by hand:
+
+- [ ] Click "Delete", confirm — the invoice is gone from `/invoices`. In DevTools Network: one POST to the action URL, no `/api/*` fetch.
+- [ ] Click "Delete", then "Cancel" — nothing changes.
+- [ ] Disable JavaScript, reload the detail page, use the inline fallback form — the invoice is deleted and you land on `/invoices`.
+
+---
+
+## Lesson 5 — Optimistic create
+
+A student sees a newly created invoice appear at the top of the list the instant they submit, reconciling with the persisted row on success and vanishing on failure. Finished result: submitting `/invoices/new` paints a pending row immediately; on success it swaps to the real row without a flicker; on a forced failure it rolls back and a banner explains why.
+
+### Your mission
+
+This lesson adds the perceived-instant feel without manual rollback bookkeeping, because `useOptimistic` discards its update automatically when the surrounding transition fails. You fill `OptimisticInvoicesList` — already imported by the provided `/invoices` page — with `useOptimistic(initialInvoices, (current, next) => [next, ...current])`, render the pending row with a spinner and a subtle dimming, and expose an `addOptimisticInvoice` function through a small React context so the create form calls it without prop-drilling. The reconciliation trick is a client-generated UUIDv7: the create form generates it at mount, posts it as the hidden `id` input, and the action passes it through to the insert; because the optimistic row and the revalidated row share the same `id`, React reconciles them by `key` and the swap is invisible. The schema already accepts the optional `id` from lesson 2, so nothing changes there. On submit, the form fires the optimistic append and the action call inside one `startTransition` — `useOptimistic`'s update only persists for the life of that transition, so when the action returns `ok: false` the transition ends and the list reverts to `initialInvoices`. To make the rollback observable you add a chapter-local `_debug_fail` branch to `createInvoice` that sleeps and returns an `internal` error; this is a teaching aid, and production actions never accept a "please fail" input. Keep the reducer pure — no `console.log` inside it, since React may call it several times during reconciliation. Optimism stays on the create-and-list shape only: don't extend it to edit, where the trigger (high success, visible, small UI change) doesn't fire as strongly.
+
+Build it so each of these holds:
+
+- [ ] Submitting a valid invoice paints a pending row at the top of `/invoices` immediately, before the server responds.
+- [ ] On success the pending row becomes the persisted row without a flicker or a duplicate.
+- [ ] On a forced failure the optimistic row disappears and a banner shows the action's `userMessage`.
+- [ ] After a forced failure the form keeps the typed values (no reset).
+- [ ] Editing an invoice does not trigger an optimistic update.
+
+### Coding time
+
+Implement `OptimisticInvoicesList`, the create-form refactor, and the `_debug_fail` branch against the brief and the tests, then read the reference build.
+
+<details>
+
+Reference implementation, organized as it appears in the repo:
+
+- `app/invoices/_components/optimistic-invoices-list.tsx` — Client Component, props `{ initialInvoices: Invoice[] }`, `const [optimisticInvoices, addOptimistic] = useOptimistic(initialInvoices, (current, next: Invoice) => [next, ...current])`. Renders rows from `optimisticInvoices`; the pending row gets `<Loader2 className="animate-spin" />` and `opacity-60`. Exposes `addOptimisticInvoice(invoice)` via a small React context.
+- `app/invoices/new/new-invoice-form.tsx` — generate the id with `useState(() => uuidv7())`, render `<input type="hidden" name="id" value={tempId} />`. On submit: `const handleSubmit = (formData: FormData) => { startTransition(() => { addOptimisticInvoice({ id: tempId, ...rawValuesFromFormData, status: 'draft' as const, pending: true }); formAction(formData); }); }`, wired via `<form action={handleSubmit}>`.
+- `lib/invoices/actions.ts` — in `createInvoice`, a guarded branch: when `formData.get('_debug_fail') === '1'`, await a 500ms sleep then `return err('internal', 'Forced failure for verify')`, marked with a "remove before production" comment. The insert already threads the client id through `values({ ...parsed.data, ... })`; a missing id falls back to the column `$defaultFn`.
+
+Decision rationale:
+
+- The client-generated UUIDv7 is what lets the optimistic and persisted rows reconcile by key — temp string ids would flicker on swap.
+- The optimistic append and `formAction` share one `startTransition` because `useOptimistic` only holds its update for the transition's lifetime; that is also what gives the automatic rollback.
+
+Coverage of untested requirements: the reducer stays pure; the context avoids prop-drilling the add function; edit is deliberately left non-optimistic, which the student confirms by inspection.
+
+Callout: the `_debug_fail` input is chapter-local scaffolding for the failure verification, not a production pattern.
+
+</details>
+
+### Moment of truth
+
+Run `pnpm test invoices/optimistic` (expected: the optimistic-list reducer and reconcile-by-key specs pass). Then confirm by hand:
+
+- [ ] Submit a valid invoice — the row appears at the top instantly, then the detail page renders; navigating back shows the same row already persisted, no duplicate.
+- [ ] Toggle "Simulate failure" and submit — the pending row appears, then 500ms later vanishes, the banner shows "Forced failure for verify", and the form keeps its values.
+- [ ] Open the edit form and save — no optimistic row appears.
+
+---
+
+## Lesson 6 — Transactional delete
+
+A student deletes an invoice and its line rows atomically inside one Drizzle transaction, and sees a success toast carried through the URL. Finished result: confirming a delete removes the invoice and its `invoice_lines` in a single transaction; the list page shows a "Invoice INV-0042 deleted" toast; a forced mid-transaction error leaves both the invoice and its lines intact.
+
+### Your mission
+
+The delete already works through a single statement, so this lesson is about the shape the action needs for everything later units will add to it. You refactor `deleteInvoice` to wrap its reads and writes in `db.transaction(async tx => ...)`: load the existing row (tenant-scoped) to capture its number and detect a missing row, delete the `invoice_lines` children, then delete the invoice — all on `tx`, never `db`, because a stray `db` call inside the callback runs in its own implicit transaction and breaks atomicity (the lesson 4 of chapter 039 convention). The callback returns a discriminated value rather than throwing for the expected "not found" case, letting the action body map it to `err('not_found', ...)`; throwing is reserved for genuine rollback. The senior point to internalize: the FK `ON DELETE CASCADE` on `invoice_lines → invoices` would delete the children on its own today, so the transaction isn't buying correctness for the current code — it's the explicit multi-step shape a reviewer can read, and the slot where Unit 9's audit-log write, Unit 10's soft-delete branch, and later file cleanup drop in without re-architecture. That is also where the durable rule lands: no external calls inside the transaction. The instinct after seeing the tx block is "while we're here, email the customer" — hold the line, the email goes *after* the commit (Units 7 and 13 own dispatch), because an external call inside a transaction diverges state on rollback. `revalidatePath` likewise stays outside the callback, or a rollback would still have invalidated the cache. Finally, add a small win the atomic delete enables: redirect with a `?deleted=INV-0042` param and have the list page render a Sonner toast from it — success data flowing through the URL, no client state, and it works with JS off.
+
+Build it so each of these holds:
+
+- [ ] Confirming a delete removes the invoice and all its line rows together.
+- [ ] A forced error after the line delete but before the invoice delete leaves both the invoice and its lines intact.
+- [ ] Deleting a missing or other-org invoice returns a not-found result rather than throwing.
+- [ ] After a successful delete the list page shows a toast naming the deleted invoice.
+- [ ] The success toast appears even with JavaScript disabled.
+
+### Coding time
+
+Implement the transactional `deleteInvoice` and the URL-param toast against the brief and the tests, then read the reference build.
+
+<details>
+
+Reference implementation, organized as it appears in the repo:
+
+- `lib/invoices/actions.ts` — `deleteInvoice` body: `const result = await db.transaction(async tx => { const existing = await tx.query.invoices.findFirst({ where: and(eq(invoices.id, parsed.data.id), eq(invoices.organizationId, organizationId)) }); if (!existing) return { notFound: true as const }; await tx.delete(invoiceLines).where(eq(invoiceLines.invoiceId, parsed.data.id)); await tx.delete(invoices).where(and(eq(invoices.id, parsed.data.id), eq(invoices.organizationId, organizationId))); return { notFound: false as const, deletedNumber: existing.number }; })`. Map `result.notFound` to `err('not_found', 'Invoice not found.')`; on success `revalidatePath('/invoices')` then `redirect('/invoices?deleted=' + result.deletedNumber)`.
+- `app/invoices/page.tsx` (provided, lightly extended) — reads the `deleted` search param and renders a Sonner `toast.success('Invoice ' + deleted + ' deleted')` (the `<Toaster>` is preinstalled in `app/layout.tsx`).
+
+Decision rationale:
+
+- The read sits inside the transaction so the existence check and the delete are atomic — a read-then-delete outside a tx leaves a race window where a second deleter slips between the two queries.
+- The callback returns a discriminated value instead of throwing for "not found" so the action maps to the right `Result`; throwing is reserved for actual rollback.
+- `revalidatePath` and `redirect` live outside the callback so a rollback never invalidates the cache or navigates on a failed delete.
+
+Coverage of untested requirements: every query inside the callback uses `tx`, not `db`; no external call goes inside the transaction (the email/file-cleanup additions of later units land after the commit); the `?deleted=` param carries success state without client state, so the toast survives a JS-disabled load.
+
+Callout: the transaction is deliberately heavier than today's FK cascade requires — it is the shape that holds when audit-log, soft-delete, and notification steps join it.
+
+</details>
+
+### Moment of truth
+
+Run `pnpm test invoices/delete-transaction` (expected: the atomic-delete and not-found specs pass). Then confirm by hand:
+
+- [ ] Delete an invoice, confirm — both the invoice row and its `invoice_lines` rows are gone in `pnpm db:studio`, and the list shows the "Invoice INV-0042 deleted" toast.
+- [ ] Temporarily `throw new Error('debug rollback')` between the two deletes, attempt a delete — the page hits `error.tsx` and Studio still shows both the invoice and its lines. Remove the throw.
+- [ ] Disable JavaScript and delete via the inline fallback — the toast still renders on the list page from the URL param.

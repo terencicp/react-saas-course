@@ -2,9 +2,35 @@
 
 ## Chapter framing
 
-Chapter 073 cashes in the decision discipline of chapter 072 — the route-class checklist and cacheable shortlist (lesson 1 of chapter 072), the four tag shapes funneled through `tags.ts` (lesson 1 of chapter 072), the `fetchedAt` diagnostic (lesson 1 of chapter 072), the four-way invalidation tree (lesson 2 of chapter 072), the `updateTag`-Server-Action-only rule (lesson 2 of chapter 072), the after-commit-then-redirect sequence (lesson 2 of chapter 072) — as one runnable surface on top of the Unit chapter 062 invoices list. The student adds `use cache` boundaries to two cached reads (the list and the per-org summary), defines the `tags.ts` helper that mirrors `org:${orgId}:invoices`, `invoice:${id}`, and `org:${orgId}:summary`, emits a `fetchedAt` timestamp inside each cached function as the cache-state proxy, calls `updateTag` from the edit and lifecycle actions (read-your-writes — the same user is sitting on the redirect), and calls `revalidateTag` from a Trigger.dev daily summary task (eventual — no user is watching). Each build closes on a runnable state: lesson 3 of chapter 073 ends with cached reads emitting `fetchedAt` and the tag scheme in place; lesson 4 of chapter 073 ends with both invalidation paths firing at their seams; lesson 5 of chapter 073 walks the "Done when" clause-by-clause.
+Chapter 073 cashes in the decision discipline of chapter 072 — the route-class checklist and cacheable shortlist (lesson 1 of chapter 072), the four tag shapes funneled through `tags.ts` (lesson 1 of chapter 072), the `fetchedAt` diagnostic (lesson 1 of chapter 072), the four-way invalidation tree (lesson 2 of chapter 072), the `updateTag`-Server-Action-only rule (lesson 2 of chapter 072), the after-commit-then-redirect sequence (lesson 2 of chapter 072) — as one runnable surface on top of the chapter 062 invoices list.
+The student adds `use cache` boundaries to the cached reads (the list, the per-org summary, and the detail page), defines the `tags.ts` helper that mirrors `org:${orgId}:invoices`, `invoice:${id}`, and `org:${orgId}:summary`, emits a `fetchedAt` timestamp inside each cached function as the cache-state proxy, calls `updateTag` from the edit and lifecycle actions (read-your-writes — the same user is sitting on the redirect), and calls `revalidateTag` from a Trigger.dev daily summary task (eventual — no user is watching).
+Each build closes on a runnable state the student confirms through the inspector.
 
-Threads through every lesson: caching is opt-in and the senior default for the authenticated SaaS surface is dynamic — only the list query and the summary widget take `use cache`, the rest stays dynamic; `tags.ts` is the only place tag strings exist — read sites and write sites import the same functions, a grep for raw `'org:'` strings outside `tags.ts` is a red flag; the cached read is a function whose tags depend only on its arguments — `orgId` is passed in, never read from `auth()` inside the cached function; `fetchedAt` is the verification proxy because Next.js doesn't surface cache hit/miss to user code — stable timestamp across requests means hit, advancing timestamp means miss; the invalidation call runs after commit, then the redirect — never inside the transaction; `updateTag` only inside Server Actions for read-your-writes, `revalidateTag` from the Trigger.dev task for the eventual path; misusing `revalidateTag` from the Server Action is the deliberate failure-mode demo in lesson 5 of chapter 073; the inspector's `fetchedAt` strip is the on-page reading of cache state for every verification step.
+The senior calls that thread through every lesson:
+
+- Caching is opt-in and the senior default for the authenticated SaaS surface is dynamic — only the list query, the summary widget, and the detail read take `use cache`, the rest stays dynamic.
+- `tags.ts` is the only place tag strings exist — read sites and write sites import the same functions, a grep for raw `'org:'` strings outside `tags.ts` is a red flag.
+- The cached read is a function whose tags depend only on its arguments — `orgId` is passed in, never read from `auth()` inside the cached function.
+- `fetchedAt` is the verification proxy because Next.js doesn't surface cache hit/miss to user code — stable timestamp across requests means hit, advancing timestamp means miss.
+- The invalidation call runs after commit, then the redirect — never inside the transaction.
+- `updateTag` only inside Server Actions for read-your-writes, `revalidateTag` from the Trigger.dev task for the eventual path; misusing `revalidateTag` from the Server Action is the deliberate failure-mode demo.
+- The inspector's `fetchedAt` strip is the on-page reading of cache state for every verification step.
+
+### Project goals
+
+The finished surface satisfies these outcomes, each confirmable through `/invoices` and the inspector:
+
+- First list visit shows one `listFetchedAt`; a refresh keeps it stable (cache hit), and five consecutive refreshes through the inspector hit/miss probe read the same timestamp every time.
+- Editing an invoice and returning to the list shows a fresh `listFetchedAt` and the new value on the same render (read-your-writes via `updateTag`), with `updateTag` fired for list + record + summary.
+- Firing the background summary job leaves `summaryFetchedAt` unchanged on the current visit; the next visit shows the new aggregate with a fresh `summaryFetchedAt` (eventual via `revalidateTag`, stale-while-revalidate).
+- Misusing `revalidateTag` from the server action leaves `listFetchedAt` stale and the edited value invisible on the submitting request — the deterministic demonstration of why read-your-writes needs `updateTag`.
+- Archive, restore, and soft-delete each invalidate both the list and the summary: the row enters or leaves `view=active`, `listFetchedAt` advances, and `summaryFetchedAt` advances as totals shift.
+- A record-level edit invalidates only the affected invoice's detail: after editing invoice A, detail B's `fetchedAt` stays stable while detail A's advances.
+- Invalidation in org A does not invalidate org B's caches — the org-B list `listFetchedAt` is unchanged after an org-A edit, because `org:${A}:invoices` is a distinct tag from `org:${B}:invoices`.
+- Tag strings exist only in `tags.ts`: a grep for `org:.*:invoices` and `invoice:` outside `tags.ts` and the cached read sites returns zero raw hits at write sites.
+- The inspector's `cacheLife` readout shows `listInvoices: 'minutes'`, `getInvoiceDetail: 'minutes'`, and `getOrgInvoiceSummary: 'hours'` — short for the high-edit list and detail, long for the task-refreshed summary.
+- The cached reads take `orgId` as an explicit argument and never close over session — a grep for `auth()` / `cookies()` / `headers()` inside the cached bodies returns zero hits.
+- Each action commits the transaction, then fires its `updateTag` calls, then redirects — the after-commit ordering is visible in the source.
 
 ### Dependency carry-in
 
@@ -46,11 +72,13 @@ src/
     audit-log.ts                # provided
     cache/
       tags.ts                   # TODO student: orgInvoicesTag, invoiceTag, orgSummaryTag helpers
+      profiles.ts               # TODO student: cacheLife profile map for the readout panel
+      log.ts                    # provided: logCacheInvalidation(tag, source) writing cache_invalidation_log
     invoices/
       schema.ts                 # provided from chapter 062
       scoped-query.ts           # provided from chapter 062
       queries.ts                # provided shell; TODO student: add `use cache` + cacheTag + fetchedAt
-                                #           to listInvoices and getOrgInvoiceSummary
+                                #           to listInvoices, getOrgInvoiceSummary, getInvoiceDetail
       actions.ts                # provided from chapter 062; TODO student: add updateTag calls after commit
       search-params.ts          # provided from chapter 062
   trigger/
@@ -74,6 +102,10 @@ src/
                                 #           current cacheLife profile readout per cached function
 ```
 
+The starter ships chapter 062 working end-to-end: URL state, scoped query helper, version-precondition actions, audit log, conflict banner.
+This project layers the cache on top — no rewrites to the existing surface, only additions inside the query functions and the actions plus the new task file, `tags.ts`, and `profiles.ts`.
+The highlighted focus files (TODOs) are `src/lib/cache/tags.ts`, `src/lib/cache/profiles.ts`, `src/lib/invoices/queries.ts`, `src/lib/invoices/actions.ts`, and `src/trigger/summary-recompute.ts`.
+
 ### Reference solution signatures lessons display
 
 - **Tag helper** (`src/lib/cache/tags.ts`):
@@ -86,6 +118,8 @@ src/
   - `args.orgId` is always passed in by the page; the cached function does not read session inside.
 - **Cached summary read** (`src/lib/invoices/queries.ts`):
   - `getOrgInvoiceSummary(orgId: string): Promise<{ totalCount: number; totalAmount: number; updatedAt: Date; fetchedAt: string }>` — body opens with `'use cache'`, then `cacheLife('hours')`, then `cacheTag(orgSummaryTag(orgId))`. Reads from `org_invoice_summaries` for the precomputed aggregate; falls back to a `count(*) + sum(total)` query if the row is absent (first run before the task lands).
+- **Cached detail read** (`src/lib/invoices/queries.ts`):
+  - `getInvoiceDetail({ orgId, id }): Promise<{ ...; fetchedAt: string }>` — body opens with `'use cache'`, then `cacheLife('minutes')`, then both `cacheTag(invoiceTag(id))` and `cacheTag(orgInvoicesTag(orgId))` so either a record-level or an org-level invalidation hits it (the union-of-tags rule from lesson 1 of chapter 072).
 - **Update action with `updateTag` fan-out** (`src/lib/invoices/actions.ts`):
   - `updateInvoice` body, after the transaction commits and before `redirect`:
     - `await updateTag(orgInvoicesTag(ctx.orgId))` — invalidates the list.
@@ -103,7 +137,7 @@ src/
 
 ### Inspector page spec
 
-Single Server Component at `/inspector`, the verification surface for every "Done when" clause. Server-side reads; refreshes on submit via `router.refresh()` and on Server-Action redirects.
+Single Server Component at `/inspector`, the verification surface for every project outcome. Server-side reads; refreshes on submit via `router.refresh()` and on Server-Action redirects.
 
 - **Header:** session-user switcher (admin / member per seeded org), org switcher (two seeded orgs), "Reset and re-seed" Server Action (truncates `org_invoice_summaries`, re-runs the chapter 062 seed).
 - **`fetchedAt` strip:** the same `<FetchedAtStrip />` component the list page renders. Two timestamps: `listFetchedAt` (from `listInvoices`) and `summaryFetchedAt` (from `getOrgInvoiceSummary`). Each row labels its `cacheLife` profile and the tags emitted.
@@ -114,208 +148,262 @@ Single Server Component at `/inspector`, the verification surface for every "Don
 - **Tag-invalidation log tail:** a Server Component panel reading the last 20 lines from a starter-provided `cache_invalidation_log` table (the actions write a row `{ tag, source: 'action' | 'task', firedAt }` next to the `updateTag`/`revalidateTag` call). The tail is the structured-log surface foreshadowed in lesson 2 of chapter 072.
 - **`cacheLife` readout:** per cached function, the profile string and the resolved (stale / revalidate / expire) triple. Sourced from a small `lib/cache/profiles.ts` map the student populates alongside `tags.ts`.
 - **"Hit/miss probe":** five consecutive refreshes of `/invoices`; the strip captures each `fetchedAt` reading. Identical timestamps prove hits; one new timestamp followed by four stable ones proves a miss then four hits.
+- **"Force `updateTag` from task" debug button:** calls `updateTag` inside the task body; the framework throws at runtime with a clear message — the API enforcing the architectural rule.
 
-The inspector is provided in full; the student writes only `tags.ts`, the `use cache` annotations on the two queries, the invalidation calls in the four actions, and the Trigger.dev task body.
-
-### Verify recipe mapped to "Done when"
-
-| Done-when clause | Verify step |
-| --- | --- |
-| First list visit shows one `fetchedAt`; refresh shows the same `fetchedAt` (cache hit) | Open `/invoices`; note `listFetchedAt`. Hard-refresh; `listFetchedAt` unchanged. Five consecutive refreshes via the inspector hit/miss probe; same timestamp every time. |
-| Editing an invoice and returning to the list shows a fresh `fetchedAt` and the new value | Inspector "Edit one invoice"; redirect lands on `/invoices`; `listFetchedAt` advances; the edited row's amount reflects the delta. `updateTag` for list + record + summary all fired. |
-| Firing the background job leaves `fetchedAt` unchanged on the current visit but the next visit shows the new aggregate with a fresh `fetchedAt` | Inspector "Run summary task"; redirect to `/inspector` shows `summaryFetchedAt` stale (the task fired `revalidateTag`, not `updateTag` — stale-while-revalidate). Next manual visit to `/inspector` (or `/invoices` summary section) → `summaryFetchedAt` advances; new totals visible. |
-| Misusing `revalidateTag` from the server action shows a stale `fetchedAt` and value on the submitting request | Toggle "Misuse `revalidateTag` from action" on; "Edit one invoice"; redirect lands on `/invoices`; `listFetchedAt` stale, edited row's amount still old. Toggle off; repeat; `listFetchedAt` advances, new amount visible. The deterministic demo of why read-your-writes needs `updateTag`. |
-| Archive / restore / soft-delete all invalidate list and summary | Inspector "Archive one invoice"; redirect to list; row missing from `view=active`, `listFetchedAt` advances, `summaryFetchedAt` advances (totals dropped). Restore; redirect; row back, both timestamps advance. Soft-delete (admin); switch to `view=all`; row visible with "Deleted" badge; summary excludes it. |
-| Record-level tag invalidates only the affected invoice's detail | Edit invoice A; visit detail B; B's `fetchedAt` stable (the record tag for A did not invalidate B). Detail A's `fetchedAt` advances. |
-| Cross-org isolation: invalidation in org A does not invalidate org B's caches | As admin in org A, edit an invoice; switch session to org B; the org-B list `listFetchedAt` is unchanged from before. The org-scoped tag `org:${A}:invoices` is distinct from `org:${B}:invoices`. |
-| Tags only exist in `tags.ts` | Grep `org:.*:invoices` and `invoice:` outside `lib/cache/tags.ts` and the cached read sites — zero raw string hits at write sites. Every write site imports the helper. |
-| `cacheLife` profile readout matches expectations | Inspector readout shows `listInvoices: 'minutes'` and `getOrgInvoiceSummary: 'hours'`. Senior call: list cache profile is short because users edit and view; summary cache profile is long because the task refreshes it. |
-| The cached function does not close over session | Cached function signatures take `orgId` as an explicit argument. Grep `auth()` / `cookies()` / `headers()` inside `listInvoices` and `getOrgInvoiceSummary` bodies — zero hits. |
-| Invalidate-after-commit, not before | The action's source orders: `await db.transaction(...)`, then `await updateTag(...)` (multiple), then `redirect(...)`. The inverse order is the deliberate failure mode in lesson 5 of chapter 073. |
+The inspector is provided in full; the student writes only `tags.ts`, `profiles.ts`, the `use cache` annotations on the three queries, the invalidation calls in the four actions, and the Trigger.dev task body.
 
 ### Concepts demonstrated → owning lesson
 
-- `cacheComponents: true` and dynamic-by-default — lesson 1 of chapter 032.
-- `use cache` directive, serializable args, closure rules — lesson 3 of chapter 032.
-- `cacheLife` profile selection — lesson 4 of chapter 032 + lesson 1 of chapter 072 (UX framing).
-- `cacheTag` and the four tag shapes — lesson 4 of chapter 032 + lesson 1 of chapter 072.
-- `tags.ts` helper as the structural enforcement — lesson 1 of chapter 072.
-- The `fetchedAt` diagnostic — lesson 1 of chapter 072.
-- The "tags are arguments, not ambient" rule — lesson 1 of chapter 072.
-- The four-call invalidation surface and the decision tree — lesson 6 of chapter 032 + lesson 2 of chapter 072.
-- The user-expectation question as the primary driver — lesson 2 of chapter 072.
-- `updateTag` Server-Action-only restriction — lesson 2 of chapter 072.
-- `revalidateTag` from webhooks and background jobs — lesson 2 of chapter 072.
-- Multiple tags per mutation (the fan-out) — lesson 2 of chapter 072.
-- After-commit-then-redirect ordering — lesson 2 of chapter 072.
-- Org-scoping the tag mirrors data-layer scoping — chapter 056 + lesson 1 of chapter 072.
-- Trigger.dev `schemaTask` and queue declaration — lesson 4 of chapter 066.
-- `authedAction`, `tenantDb`, audit-log writes — chapter 057 / chapter 059.
+- `cacheComponents: true` and dynamic-by-default — lesson 1 of chapter 032 (carried in; surfaced in lesson 1 of chapter 073).
+- `use cache` directive, serializable args, closure rules — lesson 3 of chapter 032; applied in lesson 2 of chapter 073.
+- `cacheLife` profile selection — lesson 4 of chapter 032 + lesson 1 of chapter 072 (UX framing); applied in lesson 2 of chapter 073.
+- `cacheTag` and the four tag shapes — lesson 4 of chapter 032 + lesson 1 of chapter 072; applied in lesson 2 of chapter 073.
+- `tags.ts` helper as the structural enforcement — lesson 1 of chapter 072; built in lesson 2 of chapter 073.
+- The `fetchedAt` diagnostic — lesson 1 of chapter 072; emitted in lesson 2 of chapter 073.
+- The "tags are arguments, not ambient" rule — lesson 1 of chapter 072; enforced in lesson 2 of chapter 073.
+- The four-call invalidation surface and the decision tree — lesson 6 of chapter 032 + lesson 2 of chapter 072; applied across lessons 3 and 4 of chapter 073.
+- The user-expectation question as the primary driver — lesson 2 of chapter 072; surfaced in lessons 3 and 4 of chapter 073.
+- `updateTag` Server-Action-only restriction — lesson 2 of chapter 072; applied in lesson 3 of chapter 073.
+- `revalidateTag` from webhooks and background jobs — lesson 2 of chapter 072; applied in lesson 4 of chapter 073.
+- Multiple tags per mutation (the fan-out) — lesson 2 of chapter 072; applied in lesson 3 of chapter 073.
+- After-commit-then-redirect ordering — lesson 2 of chapter 072; applied in lesson 3 of chapter 073.
+- Org-scoping the tag mirrors data-layer scoping — chapter 056 + lesson 1 of chapter 072; applied in lessons 2 and 3 of chapter 073.
+- Trigger.dev `schemaTask` and queue declaration — lesson 4 of chapter 066; applied in lesson 4 of chapter 073.
+- `authedAction`, `tenantDb`, audit-log writes — chapter 057 / chapter 059; carried in.
+
+### Forward references
+
+- Chapter 074 — Upstash for distributed cache and rate limiting; the cache backend on Vercel deployments is the cross-process variant of what runs locally here.
+- Chapter 081 — security baseline; cached reads must never include per-user PII keyed by org scope (a real concern once caching enters the picture).
+- Chapter 088 — integration tests for the invalidation paths; the "`fetchedAt` advances after edit" assertion is mechanical.
+- Chapter 092 — structured logs; the `cache_invalidation_log` table is the development-time analog of the production dashboard for invalidation rate per tag.
+- Chapter 099 — schema migrations against a live app; cached reads that close over schema shape need the expand-migrate-contract discipline.
 
 ---
 
-## Lesson 1 — Brief and the finished cache shape
+## Lesson 1 — Project Overview
 
-Frame the build: two `use cache` reads (list and per-org summary), a three-helper `tags.ts`, `updateTag` fan-out from four actions, `revalidateTag` from a Trigger.dev summary task, and the `<FetchedAtStrip />` as the on-page cache-state readout.
+The starter is the chapter 062 invoices list — URL state, scoped queries, version-precondition actions, audit log — running dynamically with no caching.
+This project layers a tag-driven cache on top: `use cache` on the list, the per-org summary, and the detail read; a three-helper `tags.ts`; `updateTag` fan-out from the four lifecycle actions for read-your-writes; and `revalidateTag` from a Trigger.dev summary task for the eventual path.
+The finished `/invoices` page carries a `<FetchedAtStrip />` at the top showing two timestamps and the resolved `cacheLife` triple per cached function — the on-page reading of cache state.
 
-Goals:
+### What we'll practice
 
-- Frame the build: take the chapter 062 invoices surface and instrument it with `use cache` on the list query and a per-org summary aggregate, lay down a three-helper `tags.ts` (`orgInvoicesTag`, `invoiceTag`, `orgSummaryTag`), fire `updateTag` from the four user-facing actions for the read-your-writes path, fire `revalidateTag` from a Trigger.dev daily summary task for the eventual path. Show one screenshot of the finished `/invoices` page with the `<FetchedAtStrip />` visible at the top — two timestamps labeled and the resolved `cacheLife` triple per cached function.
-- State the "Done when" in one paragraph: first visit shows one `listFetchedAt`; refresh keeps it stable (cache hit); editing through the inspector advances it on the next render (read-your-writes via `updateTag`); running the summary task leaves the current visit's `summaryFetchedAt` stable but advances it on the next visit (eventual via `revalidateTag`); toggling the "misuse `revalidateTag` from action" debug shows the stale read the framework's restriction is designed to prevent.
-- Scope cuts: no `'use cache: private'` per-user caches (named, deferred — per-user reads are dynamic by default and a senior call until the workload justifies it); no edge-cache or CDN tuning (out of scope, Vercel data-cache layer named once); no full prerendered route segments — the chapter is about the dynamic-with-cached-subtree shape that fits the SaaS list view; no `revalidatePath` worked example (named in lesson 2 of chapter 072; the chapter chooses tags over paths because the tag scheme captures the cases); no notification on edit (Unit 13 territory).
-- Senior payoff: this is the canonical cache shape for the rest of the course. Lists, detail pages, and per-org aggregates all follow the same pattern: cached function takes its scoping as an argument, emits a tag through `tags.ts`, mutations fan out invalidations to every affected tag after commit, background work uses `revalidateTag`. Adding a cached read later is a three-line change in queries.ts plus one helper in `tags.ts`.
-- Show the end UX: a short capture of the inspector — five refreshes (stable `fetchedAt`), edit one invoice (timestamp advances on next render), run summary task (summary timestamp stays stable, then advances on the next visit), toggle misuse (stale read, deliberate).
-- Link the starter via `degit`.
+- Choosing what earns a `use cache` directive on an authenticated SaaS surface and what stays dynamic.
+- Centralizing tag strings in a single `tags.ts` module that read sites and write sites share.
+- Keeping a cached read pure: its tags depend only on its arguments, never on ambient session state.
+- Reading cache hit/miss off a `fetchedAt` proxy because the framework does not surface it.
+- Picking between `updateTag` (read-your-writes, from Server Actions) and `revalidateTag` (eventual, from background work) by asking who is waiting on the result.
+- Fanning a single mutation out to every cached read it affects, after commit and before redirect.
 
-Senior calls and watch-outs:
+### Architecture
 
-- The starter ships chapter 062 working end-to-end: URL state, scoped query helper, version-precondition actions, audit log, conflict banner. This project layers the cache on top — no rewrites to the existing surface, only additions inside the two query functions and the four actions plus the new task file and `tags.ts`.
-- `next.config.ts` already has `cacheComponents: true`. No code in the starter currently opts in — the entire list view is dynamic until lesson 3 of chapter 073 lands the directives.
-- `TRIGGER_SECRET_KEY` is optional. The inspector mocks the task in-process when absent so students without a Trigger.dev cloud account can complete the verification. The task code is identical either way — only the invocation differs.
+The shape, read-to-write:
 
-Codebase state at entry: empty repo (student runs `degit`).
-Codebase state at exit: starter cloned, Postgres up, schema migrated, seed loaded, `pnpm dev` shows the chapter 062 list view working dynamically; `/inspector` loads; `<FetchedAtStrip />` renders with two `fetchedAt` timestamps that advance on every request (the queries are not yet cached); the "Edit one invoice" button works (the chapter 062 update action commits) but no `updateTag` calls fire yet; "Run summary task" produces a console error (the task body is empty).
+- The `/invoices` Server Component reads the session, then calls the cached reads with `orgId` passed in as an argument — `listInvoices(args)`, `getOrgInvoiceSummary(orgId)`, and `getInvoiceDetail({ orgId, id })` on the detail route.
+- Each cached read opens with `'use cache'`, sets a `cacheLife` profile, emits its tags through `tags.ts`, and returns a `fetchedAt` timestamp frozen into the cache entry.
+- The four lifecycle Server Actions (`updateInvoice`, `archiveInvoice`, `restoreInvoice`, `softDeleteInvoice`) commit their transaction, then fan `updateTag` out to the list, record, and summary tags, then redirect — the same user lands on a fresh read.
+- The Trigger.dev `summaryRecomputeTask` recomputes `org_invoice_summaries` off the schedule and calls `revalidateTag` for the summary tag — no user is waiting, so the next visit picks up the new aggregate.
+- The `/inspector` Server Component drives every cache-state observation: the `fetchedAt` strip, the hit/miss probe, one-click edit and lifecycle buttons, the run-summary-task button, the misuse toggle, and the tag-invalidation log tail.
 
-Estimated student time: 10 to 15 minutes.
+### Starting file tree
 
----
+See the **Starter file tree** in the chapter framing above for the full annotated layout.
+The five TODO files are the focus: `src/lib/cache/tags.ts` and `src/lib/cache/profiles.ts` (empty), `src/lib/invoices/queries.ts` (chapter 062 reads with no `use cache`), `src/lib/invoices/actions.ts` (chapter 062 actions with no invalidation), and `src/trigger/summary-recompute.ts` (empty `schemaTask` skeleton).
+Everything else — the schema (including the new `org_invoice_summaries` table, seeded empty), `next.config.ts` with `cacheComponents: true` already set, the seed, the `cache_invalidation_log` table with its `logCacheInvalidation(tag, source)` helper, the `<FetchedAtStrip />`, and the entire inspector — is provided.
 
-## Lesson 2 — Starter tour and inspector surface
+The starter's `getOrgInvoiceSummary` falls back to a live `count(*) + sum(total)` query when the summary row is absent, so the cached read works from minute one; once the task lands and populates the row, the query reads from the precomputed table.
+The `<FetchedAtStrip />` is provided — the student threads the `fetchedAt: new Date().toISOString()` line through each cached function's return so the strip has a value to show, rather than authoring the component.
 
-Walk the chapter 062-based starter, the new `org_invoice_summaries` table, the empty stubs (`tags.ts`, queries directives, action invalidations, task body), and every inspector panel that will verify later lessons.
+### Roadmap
 
-Goals:
+- **Lesson 2 — Cache the reads.** Write `tags.ts` and `profiles.ts`, annotate the list, summary, and detail reads with `use cache` + `cacheLife` + `cacheTag`, and emit `fetchedAt` so the strip shows stable timestamps across refreshes.
+- **Lesson 3 — Read-your-writes invalidation.** Fan three `updateTag` calls out of the four lifecycle actions after commit, so editing or moving an invoice refreshes the list and summary on the same render; wire the misuse-`revalidateTag`-from-action branch as the failure-mode demo.
+- **Lesson 4 — Eventual invalidation.** Implement the `summaryRecomputeTask` that recomputes the aggregate and calls `revalidateTag`, so the background job lands the new summary on the next visit (stale-while-revalidate).
 
-- Walk the file tree, calling out provided vs. stubbed. Linger on four files: `src/lib/cache/tags.ts` (empty — lesson 3 of chapter 073), `src/lib/invoices/queries.ts` (provided from chapter 062 with no `use cache` — lesson 3 of chapter 073), `src/lib/invoices/actions.ts` (provided from chapter 062 with no invalidation calls — lesson 4 of chapter 073), `src/trigger/summary-recompute.ts` (empty `schemaTask` skeleton — lesson 4 of chapter 073).
-- Read the schema: confirm the new `org_invoice_summaries` table (one row per org, `totalCount`, `totalAmount`, `updatedAt`), seeded empty. The chapter 062 tables (`invoices`, `invoice_lines`, `customers`, `organizations`, `org_members`, `audit_logs`) are unchanged.
-- Read `next.config.ts`: `cacheComponents: true` flag set, `experimental.useCache` enabled. The framework is ready; the code has not opted in yet.
-- Read the inspector end-to-end — every panel, button, debug tool. It is the verification surface for every later lesson. Confirm `<FetchedAtStrip />` reads `listFetchedAt` and `summaryFetchedAt` from its props, which the page wires from the two query return values.
-- Read the seed: two orgs, 60+ invoices per org from chapter 062 (one pre-archived, one pre-soft-deleted, one duplicated-number row), `org_invoice_summaries` empty. The student's `revalidateTag` task populates it on first run.
-- Read the provided `cache_invalidation_log` table and the small `logCacheInvalidation(tag, source)` helper. The helper is exported from `src/lib/cache/log.ts` for the actions and the task to import alongside the actual `updateTag` / `revalidateTag` calls.
-- Run the app: `/invoices` renders, the list-page `fetchedAt` strip shows two timestamps that advance on every refresh (no cache); `/inspector` loads; "Edit one invoice" succeeds at the database (audit log writes); "Run summary task" throws.
+### Setup
 
-Senior calls and watch-outs:
+Clone the starter, install, bring up Postgres, migrate, seed, and run the dev server:
 
-- `lib/cache/tags.ts` will be the only place tag strings exist. The lesson 1 of chapter 072 rule: read sites and write sites both import the helper, the raw string never leaks. The student should commit this convention from the first line written.
-- The starter's `getOrgInvoiceSummary` falls back to a live `count(*) + sum(total)` query when the summary row is absent. Once the task lands and populates the row, the query reads from the precomputed table. The fallback is the bootstrap path so the cached read works from minute one.
-- The `<FetchedAtStrip />` is provided. The student does not author the strip — they just thread the `fetchedAt: new Date().toISOString()` line through each cached function's return so the strip has a value to show. The lesson 1 of chapter 072 discipline made operational.
-- The inspector's "misuse `revalidateTag` from action" toggle requires the action to branch on a flag — the starter provides the flag wiring (an env var the inspector flips); the student adds the branch alongside the correct `updateTag` call in lesson 4 of chapter 073.
+1. `npx degit <starter-repo> chapter-073-cache && cd chapter-073-cache`
+2. `pnpm install`
+3. `cp .env.example .env` — then fill the values below.
+4. `docker compose up -d` — starts `postgres:18`.
+5. `pnpm db:migrate` — applies the chapter 062 schema plus `org_invoice_summaries`.
+6. `pnpm db:seed` — loads two orgs, 60 invoices per org (one pre-archived, one pre-soft-deleted, one duplicated-number row), `org_invoice_summaries` empty.
+7. `pnpm dev`
 
-Codebase state at entry: starter cloned, Postgres running, schema migrated, seed loaded.
-Codebase state at exit: every provided file read, inspector clicked through, list page tried, summary task button errors as expected. No code written.
+Environment variables (`.env`):
 
-Estimated student time: 15 to 25 minutes.
+- `DATABASE_URL` — pooled Postgres connection string; from the local `docker-compose` Postgres (the `.env.example` value works as-is for local dev).
+- `DATABASE_URL_UNPOOLED` — direct (unpooled) connection for migrations; from the same local Postgres.
+- `BETTER_AUTH_SECRET` — any random 32+ char string for local session signing; generate with `openssl rand -base64 32`.
+- `TRIGGER_SECRET_KEY` — optional; from the Trigger.dev dashboard if you have an account. Leave it unset and the inspector invokes the summary task in-process — the verification surface is identical either way.
 
----
-
-## Lesson 3 — Tag helpers, cached reads, and fetchedAt
-
-Write `tags.ts`, annotate `listInvoices`, `getOrgInvoiceSummary`, and `getInvoiceDetail` with `'use cache'` + `cacheLife` + `cacheTag`, return `fetchedAt`, and verify hits through the inspector's hit/miss probe.
-
-Goals:
-
-- Fill `src/lib/cache/tags.ts`: define the three helpers per reference (`orgInvoicesTag`, `invoiceTag`, `orgSummaryTag`). Pure arrow functions, lowercase colon-delimited strings, scope first. Add the `cacheLife` profile map (`listInvoices: 'minutes'`, `getOrgInvoiceSummary: 'hours'`) in a sibling `profiles.ts` if the readout panel needs it.
-- Annotate `listInvoices` in `src/lib/invoices/queries.ts`: open the function body with `'use cache'`, then `cacheLife('minutes')`, then `cacheTag(orgInvoicesTag(args.orgId))`. Return `{ rows, nextCursor, hasPrev, fetchedAt: new Date().toISOString() }` so the strip has a value. The existing chapter 062 implementation (scoped query, view/status/sort/cursor handling) stays unchanged — the directives wrap it.
-- Annotate `getOrgInvoiceSummary` the same way: `'use cache'`, `cacheLife('hours')`, `cacheTag(orgSummaryTag(orgId))`. Return `{ totalCount, totalAmount, updatedAt, fetchedAt: new Date().toISOString() }`. Implement the fallback live-aggregate read for the case where the row is missing (first run before the task lands).
-- Verify the closure rule: the cached function signatures take `orgId` (and the other filter args for `listInvoices`) explicitly. Grep the bodies for `auth()`, `cookies()`, `headers()` — zero hits. The caller (page-level Server Component) reads the session and passes `orgId` in.
-- Add a third cached read for the detail page: `getInvoiceDetail({ orgId, id })` gets the same treatment with `cacheTag(invoiceTag(id))` and `cacheTag(orgInvoicesTag(orgId))` — both tags so either an org-level or record-level invalidation hits it. The lesson 1 of chapter 072 union-of-tags rule applied.
-- Wire the page-level Server Component (`app/(app)/invoices/page.tsx`): the parent already calls `listInvoices(args)` and `getOrgInvoiceSummary(orgId)`; pass the returned `fetchedAt` values through to `<FetchedAtStrip listFetchedAt={...} summaryFetchedAt={...} />`. Single-line wiring change.
-- Run the app: open `/invoices`; note `listFetchedAt` and `summaryFetchedAt`. Refresh; both timestamps stable — the cache is hitting. Open the inspector hit/miss probe; five refreshes; same timestamps every time. Change a URL filter (`?status=paid`); a new `listFetchedAt` (different cache key for the new args); refresh again; that timestamp stable. Open a detail page; note its `fetchedAt`; refresh; stable.
-
-Senior calls and watch-outs:
-
-- `cacheLife('minutes')` for the list is the senior call from lesson 1 of chapter 072's UX framing — the list is read often, edited often, "a few minutes of staleness if the action chain fails to invalidate" is the right ceiling. `cacheLife('hours')` for the summary is the right call because the task refreshes it explicitly and the underlying totals only matter on the dashboard.
-- The cached function's argument list is part of the cache key. Filter / sort / cursor changes produce distinct cache entries — verify by switching filters in the URL and watching `fetchedAt` advance for the new args, then stable on refresh. This is correct behavior, not a bug; the cache is keyed on the args, the org-scoped tag invalidates every entry across all arg combinations.
-- The `fetchedAt` value lives inside the cached function's return — it is computed once when the function runs and frozen into the cache entry. A stable timestamp across requests means the framework served the cached value. An advancing timestamp means the function re-ran. The lesson 1 of chapter 072 discipline is now the diagnostic.
-- The detail page tags itself with both `invoiceTag(id)` and `orgInvoicesTag(orgId)` because either a record-level write (`updateInvoice`) or an org-level write (a future bulk import) should invalidate it. Tagging at the granularity of the affected writes, not just the read's identity.
-- Resist the temptation to add `'use cache'` to the toolbar render or any Client Component piece. The toolbar is dynamic by definition (it reads URL state, which is request-scoped). Only the two query functions take the directive — the cacheable shortlist from lesson 1 of chapter 072 holds.
-
-Codebase state at entry: `tags.ts` empty, queries dynamic, `fetchedAt` advances on every request.
-Codebase state at exit: tag helpers in place, two cached reads with `cacheLife` and `cacheTag` set, detail page cached with the union tag, `fetchedAt` strip shows stable timestamps across refreshes for the same args. **Runnable — caching demonstrably works, no invalidation paths exist yet so writes leave the cache stale until the entry's `cacheLife` expires.**
-
-Estimated student time: 50 to 65 minutes.
+On success, `pnpm dev` serves `/invoices` rendering the chapter 062 list dynamically, with the `<FetchedAtStrip />` showing two `fetchedAt` timestamps that advance on every refresh (the reads are not yet cached).
+`/inspector` loads; "Edit one invoice" commits at the database (the audit log writes) but fires no `updateTag` yet; "Run summary task" throws because the task body is empty.
 
 ---
 
-## Lesson 4 — Wiring both invalidation paths
+## Lesson 2 — Cache the reads
 
-Fan out three `updateTag` calls after commit in the four lifecycle actions, implement the `summaryRecomputeTask` that calls `revalidateTag`, and wire the deliberate misuse-`revalidateTag`-from-action branch as the failure-mode demo.
+Instrument the chapter 062 reads so the list, the per-org summary, and the detail page serve from cache, and the `<FetchedAtStrip />` reads stable timestamps across refreshes.
 
-Goals:
+The finished state: opening `/invoices` shows a `listFetchedAt` and a `summaryFetchedAt` that hold steady on refresh, and an invoice detail page shows a `fetchedAt` that holds steady on refresh — the framework is serving cached values.
 
-- Edit `updateInvoice` in `src/lib/invoices/actions.ts`: after the existing transaction commits (the chapter 062 version-precondition UPDATE), and before the (existing) redirect, call the three-tag fan-out in order:
-  - `await updateTag(orgInvoicesTag(ctx.orgId))` — the list cache invalidates.
-  - `await updateTag(invoiceTag(id))` — the record cache invalidates.
-  - `await updateTag(orgSummaryTag(ctx.orgId))` — the summary cache invalidates (totals shift).
-  - Each call also goes through `logCacheInvalidation(tag, 'action')` so the inspector log tail captures the event.
-  - Then `redirect('/invoices')`. The lesson 2 of chapter 072 sequence: commit → invalidate → redirect.
-- Edit `archiveInvoice`, `restoreInvoice`, `softDeleteInvoice` with the same three-tag fan-out. Each lifecycle change moves a row in or out of the active set — the list filter result changes, the record's display changes, the summary totals change.
-- Add the "misuse `revalidateTag` from action" branch in `updateInvoice` (and only `updateInvoice` — one place is enough to demonstrate the bug deterministically). Read the `INSPECTOR_MISUSE_REVALIDATE` env var the inspector toggle flips; when on, call `revalidateTag(orgInvoicesTag(ctx.orgId), 'max')` instead of `updateTag` for the list tag. The other two tags still use `updateTag`. The lesson surfaces this as the deliberate failure-mode wiring — lesson 5 of chapter 073 walks the demo.
-- Fill `src/trigger/summary-recompute.ts`: implement `summaryRecomputeTask` per reference. `schemaTask` declaration with `id`, the Zod payload schema (`z.strictObject({ orgId: z.string().uuid() })`), a code-defined queue (`{ name: 'summary', concurrencyLimit: 5 }`), and the `run` body that recomputes totals, UPSERTs `org_invoice_summaries`, and calls `await revalidateTag(orgSummaryTag(orgId), 'max')`. Log the invalidation via `logCacheInvalidation(orgSummaryTag(orgId), 'task')`.
-- Wire the inspector's "Run summary task" button: provided shell that posts to a Server Action; the action calls the task (`tasks.trigger` when `TRIGGER_SECRET_KEY` is set, else imports the run function directly). The student adds the import and the call inside the provided action shell.
-- Run the app: open `/invoices`, note both `fetchedAt` values. From the inspector, "Edit one invoice"; the redirect lands on `/invoices` with both `listFetchedAt` and `summaryFetchedAt` advanced and the edited row's amount reflecting the delta. From the inspector, "Run summary task"; the task body executes; the inspector redirects to itself; `summaryFetchedAt` is **unchanged** (stale-while-revalidate — the framework will serve the previous value on this render and refresh on the next visit). Refresh `/inspector` again; now `summaryFetchedAt` advances and the new totals are visible.
+### Your mission
 
-Senior calls and watch-outs:
+Take the three reads the invoices surface depends on — the paginated list, the per-org totals summary, and the single-invoice detail — and turn them into cached functions without touching their existing chapter 062 query logic.
+A cached read opens its body with `'use cache'`, picks a `cacheLife` profile, and emits its invalidation tags through the shared `tags.ts` helpers; the directives wrap the existing scoped query rather than replacing it.
+The senior call you are making here is which reads earn the directive at all: the list, the summary, and the detail are read often and tolerate brief staleness, so they take `use cache`; the toolbar and any Client Component stay dynamic because they read request-scoped URL state, and adding `use cache` to them is the trap to avoid.
+The cache backend does not expose hit/miss to user code, so each cached function returns a `fetchedAt` timestamp computed once when the function runs and frozen into the entry — a stable timestamp across requests means a hit, an advancing one means a miss; this is your only window into cache state and the rest of the project leans on it.
+Two constraints shape the tags: every tag string lives only in `tags.ts` (lowercase, colon-delimited, scope first) so read sites and write sites import the same function, and a cached function's tags depend only on its arguments — `orgId` is passed in by the page, never read from `auth()` inside the cached body, or the cache key would silently leak request state.
+The detail read is the one place a read carries two tags, the record tag and the org tag, so that either a single-invoice write or an org-wide change invalidates it.
+Out of scope: any `updateTag` or `revalidateTag` wiring (the next two lessons), per-user `'use cache: private'` caches (a senior call deferred until a workload justifies it), and edge or CDN tuning.
 
-- The action's order is load-bearing: transaction commits, then the invalidations fire, then `redirect`. Inverting any pair is a distinct bug: invalidate-then-commit risks invalidating-then-rolling-back (the inverse of the lesson 2 of chapter 070 dispatcher's after-commit rule); redirect-then-invalidate produces a one-render stale view on the destination (the lesson 2 of chapter 072 anti-pattern). Name both.
-- Multiple `await updateTag` calls are sequential — each is cheap. The senior call from lesson 2 of chapter 072: list every cached read the mutation affects, invalidate each. Missing one is the silent stale-read bug. The three-tag fan-out here is the minimum complete set for an invoice edit.
-- `updateTag` only works inside Server Actions. The Trigger.dev task body cannot use it — the framework rejects the call. `revalidateTag` works everywhere. The lesson surfaces this as the API enforcing the architectural rule: outside an action, no specific user is sitting on the redirect, so read-your-writes is the wrong semantic.
-- The task's `revalidateTag` lands the new summary on the **next** visit, not the current one. This is correct: no specific user is waiting on this task; stale-while-revalidate is the right UX. The inspector's "next refresh shows fresh" verification is the demonstration of stale-while-revalidate that lesson 2 of chapter 072 named conceptually.
-- The `INSPECTOR_MISUSE_REVALIDATE` toggle is deliberately user-facing. A senior reading this code asks: "Why is there a branch here?" The answer is the teaching surface — production code never reads a misuse flag. Strip the branch in any real codebase. The lesson surfaces the convention explicitly.
-- The `cache_invalidation_log` writes happen after the actual `updateTag` / `revalidateTag` call returns. Logging before the call is the small bug where a failing invalidation produces a misleading log; logging after is the discipline.
-- The summary task's payload schema is the discipline from lesson 4 of chapter 066 and chapter 042 (Zod at the boundary). A typoed `orgId` from a misconfigured trigger surfaces as a Zod parse error, not a silent recompute of the wrong org.
+- The three tag helpers in `tags.ts` each return their documented string and are imported wherever a tag is needed — a grep for raw `org:` or `invoice:` strings outside `tags.ts` and the cached reads returns zero hits.
+- Opening `/invoices` shows a `listFetchedAt` that stays identical across a hard refresh and across five consecutive refreshes on the inspector's hit/miss probe.
+- The per-org summary shows a `summaryFetchedAt` that stays identical across refreshes, and reads correctly whether or not the `org_invoice_summaries` row exists yet (the live-aggregate fallback covers the empty seed).
+- Changing a URL filter (for example `?status=paid`) produces a new `listFetchedAt` for the new arguments, which then stays stable on refresh — the filter, sort, cursor, and page size participate in the cache key.
+- An invoice detail page shows a `fetchedAt` that stays stable across refreshes.
+- The inspector's `cacheLife` readout shows `listInvoices: 'minutes'`, `getInvoiceDetail: 'minutes'`, and `getOrgInvoiceSummary: 'hours'`.
+- A grep of the three cached bodies for `auth()`, `cookies()`, or `headers()` returns zero hits — the page passes `orgId` in.
 
-Codebase state at entry: cached reads in place, no invalidation paths, writes silently stale the cache until `cacheLife` expires.
-Codebase state at exit: four actions fan out three `updateTag` calls each after commit; the Trigger.dev task body recomputes the summary and calls `revalidateTag`; the misuse toggle wires a deterministic failure-mode demo; the inspector's tag-invalidation log tail captures every call. **Runnable — every inspector button produces the expected cache-state change; the four-way decision tree is now wired against real flows.**
+### Coding time
 
-Estimated student time: 55 to 75 minutes. The chapter's heaviest lesson — the read-your-writes path and the eventual path land together because the decision tree is only verifiable end-to-end once both are real.
+Implement the three cached reads, `tags.ts`, and `profiles.ts` against the brief and the test suite, then read the reference walkthrough.
+
+The reference signatures are in the chapter framing. The decisions worth narrating in the walkthrough:
+
+- `cacheLife('minutes')` for the list and detail versus `cacheLife('hours')` for the summary: the list and detail are read and edited often, so a few minutes is the right staleness ceiling if an invalidation ever fails to fire; the summary is refreshed explicitly by the task and only matters on the dashboard, so hours is the right call. Populate the `profiles.ts` map so the inspector readout matches.
+- The `fetchedAt` line goes inside the cached function's return so it is computed once per cache entry, not per request — this is what makes a stable timestamp meaningful as a hit signal.
+- The detail read carries both `invoiceTag(id)` and `orgInvoicesTag(orgId)` so it invalidates on either a record-level write (`updateInvoice`) or a future org-level write — tagging at the granularity of the writes that should reach it, not just the read's own identity.
+- The page-level wiring is a single-line change: the parent already calls `listInvoices(args)` and `getOrgInvoiceSummary(orgId)`; pass the returned `fetchedAt` values through to `<FetchedAtStrip listFetchedAt={...} summaryFetchedAt={...} />`.
+- Keep the directive off the toolbar and any Client Component — it reads URL state, which is request-scoped, and is dynamic by definition.
+
+### Moment of truth
+
+Run the lesson's test suite:
+
+- `pnpm test cache-reads` (or the command the starter documents) — expect all assertions green, covering stable `fetchedAt` across repeated reads, distinct cache entries per filter argument, and the absence of session reads inside the cached bodies.
+
+Confirm by hand the requirements the tests do not cover:
+
+- [ ] Open `/invoices`; note `listFetchedAt` and `summaryFetchedAt`. Hard-refresh; both unchanged.
+- [ ] Run the inspector's hit/miss probe (five refreshes); the same `listFetchedAt` every time.
+- [ ] Change the URL filter to `?status=paid`; `listFetchedAt` is new for the new args; refresh; it holds stable.
+- [ ] Open an invoice detail page; note its `fetchedAt`; refresh; it holds stable.
+- [ ] The inspector `cacheLife` readout shows `listInvoices: 'minutes'`, `getInvoiceDetail: 'minutes'`, `getOrgInvoiceSummary: 'hours'`.
+- [ ] Grep for `org:` and `invoice:` strings outside `tags.ts` and the cached reads — zero hits at any other site.
+
+Caching demonstrably works at this point; no invalidation paths exist yet, so a write leaves the cache stale until the entry's `cacheLife` expires — the next two lessons close that gap.
 
 ---
 
-## Lesson 5 — Verify clause-by-clause
+## Lesson 3 — Read-your-writes invalidation
 
-Walk every "Done when" clause via the inspector: cache hits, read-your-writes through `updateTag`, record-level scoping, cross-org isolation, lifecycle fan-out, eventual via `revalidateTag`, the misuse demo, and the tag-string and closure-rule disciplines.
+Make every edit and lifecycle change refresh the list and summary on the same render, so a user who edits an invoice and lands back on the list sees the new value immediately.
 
-Goals:
+The finished state: from the inspector, "Edit one invoice" redirects to `/invoices` with `listFetchedAt` and `summaryFetchedAt` both advanced and the edited amount visible; archive, restore, and soft-delete behave the same against their seeded rows.
 
-- Walk every "Done when" clause from the framing's verify recipe in order. The recipe lists the steps; this lesson is the execution and the surrounding senior commentary.
-- **Cache hit baseline:** open `/invoices` as admin in org A; note `listFetchedAt`. Refresh five times via the inspector's hit/miss probe; the same timestamp every time. The `cache_invalidation_log` is empty. Pure hits.
-- **Read-your-writes via `updateTag`:** inspector "Edit one invoice"; the action commits, fires three `updateTag` calls, redirects. The redirected `/invoices` render shows `listFetchedAt` advanced, the edited amount reflected, `summaryFetchedAt` advanced (totals shifted). The invalidation log tail shows three entries — list, record, summary — sourced as `action`. Refresh; both timestamps stable again (the post-invalidate read is now the cached entry).
-- **Record-level scoping:** edit invoice A; visit invoice B's detail; `fetchedAt` on B is stable from before — the record tag `invoice:A` did not invalidate B's cached entry. Visit invoice A's detail; `fetchedAt` advances (both the record tag and the org-level tag invalidated it). The lesson 1 of chapter 072 granularity rule is the on-page reading.
-- **Cross-org isolation:** as admin in org A, edit; switch the inspector session to org B; the org-B list `listFetchedAt` is unchanged from before. Different org-scoped tag, different cache entry, untouched. Tenant isolation holds at the cache layer the same way it does at the data layer.
-- **Lifecycle fan-out:** archive a row; redirect; `listFetchedAt` advances (`view=active` row count dropped), `summaryFetchedAt` advances. Restore from the archived tab; both advance again. Soft-delete; both advance and the summary totals exclude the row.
-- **Eventual via `revalidateTag`:** inspector "Run summary task"; the task body fires `revalidateTag(orgSummaryTag(orgId), 'max')`; the redirect to `/inspector` shows `summaryFetchedAt` **stable** — the stale entry served on this render. Refresh `/inspector`; `summaryFetchedAt` advances; new totals visible. The invalidation log shows the entry sourced as `task`. The senior anchor: stale-while-revalidate is the correct UX when no specific user is sitting on the redirect.
-- **The misuse demo (the chapter's load-bearing failure):** flip "Misuse `revalidateTag` from action" on; "Edit one invoice"; redirect; `listFetchedAt` **stable**, the edited amount **not visible** on this render. The other two tags (record + summary) still used `updateTag`, so their entries refresh — but the list is the user-facing surface the redirect lands on. Refresh once; the list catches up. Flip the toggle off; repeat the edit; `listFetchedAt` advances on the redirected render and the new amount is there. The demo is the operationalization of lesson 2 of chapter 072's `updateTag` vs. `revalidateTag` framing — `updateTag` gives read-your-writes, `revalidateTag` gives one stale render.
-- **Tag-string discipline:** open `lib/cache/tags.ts`; the only place the strings exist. Grep `'org:.*:invoices'` and `'invoice:'` outside `tags.ts` and the cached read sites — zero raw hits at write sites. Every action imports the helper.
-- **The closure-rule check:** open `listInvoices`, `getOrgInvoiceSummary`, `getInvoiceDetail`; grep the bodies for `auth()`, `cookies()`, `headers()` — zero hits. Org scoping is an argument, not ambient state.
-- **`cacheLife` readout:** the inspector's per-function readout shows `listInvoices: 'minutes'` with the resolved triple, `getOrgInvoiceSummary: 'hours'` with the longer triple. The UX framing from lesson 1 of chapter 072 is the on-page reading: short for the high-edit list, long for the task-refreshed summary.
-- **After-commit ordering:** read `updateInvoice`'s source aloud — `await tx...`, then three `await updateTag(...)`, then `redirect(...)`. The lesson 2 of chapter 072 sequence is the lint rule a senior reader runs by eye.
-- **The `updateTag`-outside-action error (forced):** the inspector's "force `updateTag` from task" debug button calls `updateTag` inside the task body; the framework throws at runtime with a clear message. The API enforces the architectural rule — the bug is impossible to ship.
-- **Index plan unchanged:** the existing chapter 062 partial composite index on `(organizationId, status, createdAt desc, id desc) WHERE deletedAt IS NULL AND archivedAt IS NULL` still gets picked on the cached list query's underlying SELECT. Caching does not bypass the index; the cached payload is the result the index produced.
-- Name the senior calls one more time:
-  - Caching is opt-in; the default for the authenticated SaaS surface is dynamic; only the list and the summary earned their `use cache` directives.
-  - `tags.ts` is the only place tag strings exist; write sites and read sites share the helper.
-  - The cached function takes its scoping as an argument; closing over session is the leak bug.
-  - `fetchedAt` inside the cached function's return is the cache-state proxy; Next.js does not surface hit/miss, the timestamp does.
-  - `updateTag` from Server Actions for read-your-writes; `revalidateTag` from background work for stale-while-revalidate; the user-expectation question picks between them.
-  - Invalidate after commit, then redirect; fan out to every affected tag; multiple `await updateTag` calls are the right shape.
-  - The misuse demo proves why the framework restricts `updateTag` to actions — read-your-writes requires the in-band redirect path.
-- Forward references:
-  - Unit chapter 074 — Upstash for distributed cache and rate limiting; the cache backend on Vercel deployments is the cross-process variant of what's running locally here.
-  - Unit chapter 081 — security baseline; cached reads must never include per-user PII keyed by org scope (a real concern when caching enters the picture).
-  - Unit chapter 088 — integration tests for the invalidation paths; the "fetchedAt advances after edit" assertion is mechanical.
-  - Unit chapter 092 — structured logs; the `cache_invalidation_log` table is the development-time analog of the production dashboard for invalidation rate per tag.
-  - Unit chapter 099 — schema migrations against a live app; cached reads that close over schema shape need the expand-migrate-contract discipline.
+### Your mission
 
-Senior calls and watch-outs:
+The four lifecycle actions already commit correctly against the chapter 062 version-precondition transaction; your job is to make each one invalidate every cached read it affects, so the user who triggered the write reads their own change on the redirect.
+An invoice edit touches three cached entries — the org list, that invoice's record, and the org summary totals — so each action fans `updateTag` out to all three; missing one is the silent stale-read bug, and the three-tag fan-out is the minimum complete set for an invoice mutation.
+Ordering is load-bearing and is the discipline this lesson exists to teach: the transaction commits, then the `updateTag` calls fire, then the redirect runs — invalidating before commit risks invalidating a change that then rolls back, and redirecting before invalidating produces a one-render stale view on the destination.
+`updateTag` is the right primitive here precisely because a specific user is sitting on the redirect and expects read-your-writes; it only works inside Server Actions, and you are calling it from the four actions through the `tags.ts` helpers, never with a raw string.
+To make the contrast deterministic, wire one branch — in `updateInvoice` only — that reads the inspector's misuse flag and calls `revalidateTag` instead of `updateTag` for the list tag when the flag is on; this is a teaching surface, not production code, and the walkthrough should say so plainly.
+Each invalidation call also goes through the provided `logCacheInvalidation(tag, 'action')` helper, placed after the actual `updateTag` call returns so a failed invalidation never produces a misleading log entry.
+Out of scope: the Trigger.dev summary task and its `revalidateTag` call (the next lesson) — here every invalidation is the in-band, user-facing path.
 
-- The verify lesson rehearses every failure mode the chapter exists to prevent. If a verification fails, point at the owning build lesson.
-- The misuse demo must run with the toggle deliberately — flipping it in the middle of an unrelated verification produces confusing results. Use it as its own dedicated step.
+- From the inspector, "Edit one invoice" redirects to `/invoices` with `listFetchedAt` advanced and the edited amount reflected on the redirected render.
+- The same edit advances `summaryFetchedAt` on the redirected render (the totals shifted), and the invalidation log tail shows three entries — list, record, summary — sourced as `action`.
+- Editing invoice A and then visiting invoice B's detail leaves B's `fetchedAt` stable, while invoice A's detail `fetchedAt` advances — the record tag scopes to the affected invoice.
+- Archive, restore, and soft-delete each redirect with both `listFetchedAt` and `summaryFetchedAt` advanced, and the row correctly enters or leaves `view=active` and the summary totals.
+- Editing as admin in org A and switching the inspector session to org B leaves org B's `listFetchedAt` unchanged — the org-scoped tags are distinct.
+- With the misuse toggle on, "Edit one invoice" redirects with `listFetchedAt` stale and the edited amount not visible on that render; with the toggle off, the same edit advances `listFetchedAt` and shows the new amount.
+- Reading any action's source shows the order: transaction commit, then the `updateTag` calls, then the redirect.
 
-Codebase state at entry: full cache + invalidation paths + verifying surface wired.
-Codebase state at exit: every "Done when" clause verified clause-by-clause; the student can articulate every primitive (`use cache`, `cacheLife`, `cacheTag`, `tags.ts`, `fetchedAt`, `updateTag`, `revalidateTag`, after-commit ordering, multi-tag fan-out, the closure rule) and which forward unit will lean on it.
+### Coding time
 
-Estimated student time: 30 to 45 minutes.
+Implement the `updateTag` fan-out across the four actions and the misuse branch against the brief and the tests, then read the reference walkthrough.
+
+The reference signatures are in the chapter framing. The decisions worth narrating:
+
+- The three-tag fan-out per action (list + record + summary): narrate why each lifecycle action needs all three — archive, restore, and soft-delete each move a row in or out of the active set, change the record's display, and shift the summary totals.
+- After-commit ordering, named as a lint rule a senior runs by eye: `await tx...`, then the `await updateTag(...)` calls, then `redirect(...)`. Name both inverse bugs — invalidate-then-commit and redirect-then-invalidate — and why each is wrong.
+- `updateTag` is Server-Action-only by design: outside an action no specific user is sitting on the redirect, so read-your-writes is the wrong semantic and the framework rejects the call. This is the API enforcing the architectural rule.
+- The misuse branch reads `INSPECTOR_MISUSE_REVALIDATE` (the inspector flips it) and swaps `revalidateTag` in for `updateTag` on the list tag only; the other two tags stay on `updateTag`. Call out that production code never reads a misuse flag — the branch exists solely as the teaching surface.
+- `logCacheInvalidation(tag, 'action')` is called after the real invalidation returns, not before, so a throwing `updateTag` does not leave a log row claiming success.
+
+### Moment of truth
+
+Run the lesson's test suite:
+
+- `pnpm test invalidation-actions` (or the command the starter documents) — expect all assertions green, covering `fetchedAt` advancing after an edit, the record-tag scoping, cross-org isolation, and the after-commit ordering.
+
+Confirm by hand the requirements the tests do not cover:
+
+- [ ] Inspector "Edit one invoice"; the redirect lands on `/invoices` with `listFetchedAt` and `summaryFetchedAt` advanced and the edited amount visible; the log tail shows three `action` entries.
+- [ ] Edit invoice A, then open invoice B's detail; B's `fetchedAt` is stable. Open invoice A's detail; its `fetchedAt` advanced.
+- [ ] Archive a row; the redirect drops it from `view=active` and advances both timestamps. Restore it; both advance and the row returns. Soft-delete (as admin); switch to `view=all`; the row shows with a "Deleted" badge and the summary excludes it.
+- [ ] As admin in org A, edit; switch the inspector session to org B; org B's `listFetchedAt` is unchanged from before.
+- [ ] Flip "Misuse `revalidateTag` from action" on; "Edit one invoice"; the redirect shows `listFetchedAt` stale and the old amount. Flip it off; repeat; `listFetchedAt` advances and the new amount shows.
+- [ ] Read `updateInvoice`'s source: commit, then the three `await updateTag(...)`, then `redirect(...)`.
+
+Both the read-your-writes path and its deliberate failure mode are now wired; the eventual path follows in the next lesson.
+
+---
+
+## Lesson 4 — Eventual invalidation
+
+Recompute the per-org summary off a background job, so the new aggregate lands on the next visit without any user waiting on it.
+
+The finished state: from the inspector, "Run summary task" recomputes `org_invoice_summaries` and redirects to `/inspector` with `summaryFetchedAt` still stable on that render; a second refresh advances `summaryFetchedAt` and shows the new totals.
+
+### Your mission
+
+The summary aggregate is the one read in this project that a background job owns rather than a user action, and that ownership picks the invalidation primitive: no specific user is sitting on the recompute, so the task calls `revalidateTag` for the summary tag and the framework serves the stale value on the in-flight render, then refreshes on the next visit — stale-while-revalidate is the correct UX here, exactly because no one is waiting.
+Implement the Trigger.dev `summaryRecomputeTask` as a `schemaTask`: a stable `id`, a Zod `strictObject` payload validating `orgId` at the boundary so a misconfigured trigger surfaces as a parse error rather than a silent recompute of the wrong org, and a code-defined queue with a concurrency limit.
+The run body recomputes the totals from the live invoice rows (excluding soft-deleted), UPSERTs the one summary row for the org, and then calls `revalidateTag(orgSummaryTag(orgId), 'max')` through the `tags.ts` helper — never with a raw string — and logs the invalidation via `logCacheInvalidation(orgSummaryTag(orgId), 'task')`.
+Note the contrast the task makes concrete: `updateTag` is unavailable here because it only works inside Server Actions, while `revalidateTag` works in background work — the API itself enforces which path a non-interactive recompute may take.
+The inspector's "Run summary task" button posts to a provided Server Action shell; your remaining wiring is the import and the call inside that shell — `tasks.trigger('org-summary-recompute', { orgId })` when `TRIGGER_SECRET_KEY` is set, or the run function invoked inline when it is not, with the verification surface identical either way.
+Out of scope: scheduling the task on a real cron (the inspector button is the trigger for verification) and any change to the action-side invalidation from the previous lesson.
+
+- From the inspector, "Run summary task" executes the task body and redirects to `/inspector` with `summaryFetchedAt` unchanged on that render (the stale value served).
+- A manual refresh of `/inspector` after the task advances `summaryFetchedAt` and shows the recomputed totals.
+- The invalidation log tail shows the summary-tag entry sourced as `task`.
+- Running the task with `TRIGGER_SECRET_KEY` unset still produces the same observable outcome (in-process invocation).
+- A payload with a malformed `orgId` is rejected at the task boundary rather than recomputing the wrong org.
+- The inspector's "Force `updateTag` from task" debug button throws at runtime with a clear message — `updateTag` is unavailable outside a Server Action.
+
+### Coding time
+
+Implement `summaryRecomputeTask` and the inspector action wiring against the brief and the tests, then read the reference walkthrough.
+
+The reference signature is in the chapter framing. The decisions worth narrating:
+
+- `revalidateTag` lands the new summary on the next visit, not the current one, and that is correct: no specific user is waiting on the task, so stale-while-revalidate is the right behavior. The inspector's "stable on this render, fresh on the next refresh" sequence is the demonstration of the concept lesson 2 of chapter 072 named.
+- The `schemaTask` payload schema is the Zod-at-the-boundary discipline from lesson 4 of chapter 066 and chapter 042 — a typoed `orgId` from a misconfigured trigger is a parse error, not a silent wrong-org recompute.
+- The code-defined queue with `concurrencyLimit: 5` keeps a burst of recomputes from overwhelming the database.
+- The dual invocation path (`tasks.trigger` when keyed, inline run otherwise) keeps the project completable without a Trigger.dev cloud account while exercising the identical task body.
+- `logCacheInvalidation(orgSummaryTag(orgId), 'task')` distinguishes task-sourced invalidations from action-sourced ones in the log tail.
+
+### Moment of truth
+
+Run the lesson's test suite:
+
+- `pnpm test summary-task` (or the command the starter documents) — expect all assertions green, covering the recompute math, the UPSERT, the payload validation, and the eventual (next-visit) refresh.
+
+Confirm by hand the requirements the tests do not cover:
+
+- [ ] Inspector "Run summary task"; the redirect to `/inspector` shows `summaryFetchedAt` stable on that render.
+- [ ] Refresh `/inspector` again; `summaryFetchedAt` advances and the new totals are visible.
+- [ ] The invalidation log tail shows the summary tag sourced as `task`.
+- [ ] With `TRIGGER_SECRET_KEY` unset, the button still produces the same outcome.
+- [ ] The "Force `updateTag` from task" debug button throws with a clear message.
+
+With both invalidation paths wired, the four-call decision tree is now real end-to-end: `updateTag` from actions for read-your-writes, `revalidateTag` from the task for eventual, and the inspector reads every cache-state change off the `fetchedAt` strip.
 
 ---
 

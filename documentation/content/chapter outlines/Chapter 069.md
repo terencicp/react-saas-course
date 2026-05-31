@@ -2,16 +2,35 @@
 
 ## Chapter framing
 
-Chapter 069 cashes in the chapter 068 primitives — scoped credentials and CORS (lesson 2 of chapter 068), presigned PUT/GET with the two-step write (lesson 3 of chapter 068), the `file_metadata` row shape with tenancy at the read boundary (lesson 4 of chapter 068), the workload split between user uploads and export outputs (lesson 5 of chapter 068) — and lands them as one runnable upload surface. The student writes the `presignedPut` Server Action that signs against R2 without piping bytes through the function, the browser-side direct-to-R2 PUT with XHR progress, the `finalizeUpload` action that HEADs the object and inserts the row, the `Files` list rendering rows with fresh per-render presigned GETs, and the retrofit on the chapter 067 export job so the `console.log`-shaped `downloadUrl` becomes a real R2 object and the email's link is a 10-minute presigned GET. Each build lesson closes on a runnable state: lesson 3 of chapter 069 ends with a fireable action verified by `curl`-PUT; lesson 4 of chapter 069 ends with the browser upload landing the bytes and the row; lesson 5 of chapter 069 ends with the `Files` page rendering downloads; lesson 6 of chapter 069 ends with the export emailing a working R2 link. Verify walks the "Done when" clause-by-clause, including the long-tail proof — a refresh 11 minutes later still works because GETs are re-issued per render.
+Chapter 069 cashes in the chapter 068 primitives — scoped credentials and CORS (lesson 2 of chapter 068), presigned PUT/GET with the two-step write (lesson 3 of chapter 068), the `file_metadata` row shape with tenancy at the read boundary (lesson 4 of chapter 068), the workload split between user uploads and export outputs (lesson 5 of chapter 068) — and lands them as one runnable upload surface. The student writes the `presignedPut` Server Action that signs against R2 without piping bytes through the function, the browser-side direct-to-R2 PUT with XHR progress, the `finalizeUpload` action that HEADs the object and inserts the row, the `Files` list rendering rows with fresh per-render presigned GETs, and the retrofit on the chapter 067 export job so the `console.log`-shaped `downloadUrl` becomes a real R2 object and the email's link is a 10-minute presigned GET.
 
-Threads through every lesson: the function never sees the bytes for user uploads — Network tab shows small JSON to/from the action and the multi-MB PUT going straight to `${bucket}.r2.cloudflarestorage.com`; the two-step write is structural — sign → upload → finalize-with-HEAD → row insert, never row-before-upload; `objectKey` is server-constructed (`org/${organizationId}/files/${rowId}.${ext}`), never client-supplied; `byteSize` and `contentType` come from the post-upload `HeadObjectCommand`, not the client's claim; presigned GETs are fresh-per-render, never persisted, never cached past expiry; tenancy is enforced at every read via `tenantDb(orgId)` and at the action via `authedAction('member', ...)`; `lib/r2.ts` is constructed once and powers both consumers (browser-PUT user uploads, server-PUT export retrofit) — one mechanism, two consumers.
+This project builds a UI-plus-data-layer feature, so its verifiable outcomes are user-facing behaviors and object-storage results: a chosen file lands in R2 and writes a `file_metadata` row, the `Files` list renders working downloads, a copied download URL dies at 11 minutes while a refreshed page keeps working, the export emails a real R2 link, and the export writes no `file_metadata` row. Each Implementation lesson closes on one such outcome the student can confirm: lesson 2 ends with a fireable action verified by `curl`-PUT; lesson 3 ends with the browser upload landing the bytes and the row; lesson 4 ends with the `Files` page rendering downloads and a copied URL expiring; lesson 5 ends with the export emailing a working R2 link.
+
+### Project goals
+
+The student leaves the chapter having built and confirmed:
+
+- A 5 MB file chosen from `/files` lands as one R2 object at `org/<orgId>/files/<uuid>.<ext>` and writes one `file_metadata` row with matching `objectKey`, `byteSize`, and `contentType`.
+- The `Files` list renders each row with a working "Download" link that saves under the original file name.
+- A download URL copied from the page returns `403 AccessDenied` after 11 minutes, while a refresh of `/files` re-issues a fresh, working URL for the same row — the URL is never persisted and never cached.
+- The chapter 067 export emails a real R2 link that downloads the CSV when clicked within the 10-minute window, with the inspector panel showing the same link.
+- For user uploads the function never sees the bytes — the Network tab shows small JSON to and from the action while the multi-MB PUT goes straight to `${bucket}.r2.cloudflarestorage.com`.
+- Payload validation at the action boundary rejects a disallowed content type or an over-cap `claimedSize` before any R2 call.
+- Tenancy holds at the GET boundary — a file owned by one org returns `object-not-found` to another.
+- The layered size defense catches a lying client — a small `claimedSize` followed by an over-cap PUT is rejected by the post-upload HEAD, and no row is inserted.
+- The bucket CORS allows the upload from `localhost` and rejects a non-allowed host.
+- Exports write no `file_metadata` row — `select count(*) from file_metadata where object_key like 'org/%/exports/%'` returns 0.
+
+### Threads through every lesson
+
+The function never sees the bytes for user uploads — Network tab shows small JSON to/from the action and the multi-MB PUT going straight to `${bucket}.r2.cloudflarestorage.com`; the two-step write is structural — sign → upload → finalize-with-HEAD → row insert, never row-before-upload; `objectKey` is server-constructed (`org/${organizationId}/files/${rowId}.${ext}`), never client-supplied; `byteSize` and `contentType` come from the post-upload `HeadObjectCommand`, not the client's claim; presigned GETs are fresh-per-render, never persisted, never cached past expiry; tenancy is enforced at every read via `tenantDb(orgId)` and at the action via `authedAction('member', ...)`; `lib/r2.ts` is constructed once and powers both consumers (browser-PUT user uploads, server-PUT export retrofit) — one mechanism, two consumers.
 
 ### Dependency carry-in
 
 - **From lesson 2 of chapter 068:** the bucket with CORS for `http://localhost:3000` allowing `GET`/`PUT`/`Content-Type`; scoped token with Object Read + Object Write; env `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`; `lib/r2.ts` with `S3Client({ region: 'auto', endpoint, credentials })`.
 - **From lesson 3 of chapter 068:** `getSignedUrl` + `PutObjectCommand`/`GetObjectCommand`, 5-min PUT expiry / 10-min GET expiry, layered size defense, content-type allowlist, two-step write, CORS preflight failure shape.
 - **From lesson 4 of chapter 068:** the row shape (`id` UUIDv7 as key segment, `organizationId`, `uploadedBy`, `objectKey` unique, `originalFileName`, `contentType`, `byteSize`, `uploadedAt`, `deletedAt`); index `(organizationId, deletedAt, uploadedAt desc, id desc)`; no-`url`-column rule.
-- **From lesson 5 of chapter 068:** user uploads use `file_metadata` + browser PUT + soft-delete; exports use no metadata row + server-side worker PUT + lifecycle-rule cleanup; lesson 6 of chapter 069 retrofits the export to write `org/${orgId}/exports/${runId}.csv`.
+- **From lesson 5 of chapter 068:** user uploads use `file_metadata` + browser PUT + soft-delete; exports use no metadata row + server-side worker PUT + lifecycle-rule cleanup; lesson 5 of chapter 069 retrofits the export to write `org/${orgId}/exports/${runId}.csv`.
 - **From chapter 067:** the `exportInvoices` parent task with the paginate-page loop, `metadata.set('downloadUrl', ...)`, `sendExportEmail` child accepting `downloadUrl`, the inspector reading `run.metadata`.
 - **From chapter 050:** `sendEmail` in `lib/email.ts`; `ExportReadyEmail` template taking `{ orgName, rowCount, downloadUrl }`.
 - **From chapter 056/chapter 057:** `tenantDb(orgId)`; `authedAction('member', schema, fn)`; `audit_logs` with `logAudit(tx, event)`.
@@ -50,9 +69,9 @@ src/
       list.ts                  # TODO student: listFiles({ orgId, cursor })
       soft-delete.ts           # provided: softDeleteFile (named, not exercised)
     invoices/                  # provided (chapter 067)
-    exports/                   # provided (chapter 067) — student edits in lesson 6 of chapter 069
+    exports/                   # provided (chapter 067) — student edits in lesson 5 of chapter 069
   trigger/
-    export-invoices.ts         # provided (chapter 067) — student edits in lesson 6 of chapter 069
+    export-invoices.ts         # provided (chapter 067) — student edits in lesson 5 of chapter 069
     paginate-page.ts           # provided (chapter 067)
     send-export-email.ts       # provided (chapter 067) — payload already accepts downloadUrl
   emails/ExportReadyEmail.tsx  # provided (chapter 067)
@@ -88,21 +107,6 @@ src/
 
 **`/inspector` page** (provided, from chapter 067 + one addition): the run-status panel renders `metadata.downloadUrl` as a clickable link once the export completes.
 
-### Verify recipe mapped to "Done when"
-
-| Done-when clause | Verify step |
-| --- | --- |
-| 5 MB file uploaded lands in R2 + `file_metadata` row written | Upload `fixtures/sample-5mb.jpg` from `/files`. Confirm one R2 object at `org/<orgId>/files/<uuid>.jpeg` and one row with matching `objectKey`, `byteSize ≈ 5242880`, `contentType: 'image/jpeg'`. |
-| `Files` list renders rows with working download | List shows the row; click "Download"; browser saves as `sample-5mb.jpg` (from `Content-Disposition`). |
-| Download works after the GET window | View source, copy a `href`. Wait 11 minutes. Copied URL returns `403 AccessDenied`. Refresh `/files` — same row's `href` is different; click — works. **Load-bearing proof.** |
-| chapter 067 export emails a working R2 link | Trigger export. Inspector shows `downloadUrl` as a real R2 link. Email arrives with same URL — click within 10 minutes — CSV downloads. |
-| Function never sees the bytes (user uploads) | Network tab: `presignedPut` POST ~400 B response; PUT to `<bucket>.r2.cloudflarestorage.com` carries the MB body; `finalizeUpload` POST ~100 B response. |
-| Payload validation at the action boundary | `presignedPut({ contentType: 'application/octet-stream', ... })` → `{ ok: false, error: { code: 'invalid-input' } }`; no R2 call. Same for `claimedSize > MAX_BYTES`. |
-| Tenancy at GET boundary | Upload in org A; switch to org B. `getFileDownloadUrl({ fileId: <orgA-id> })` → `{ ok: false, error: { code: 'object-not-found' } }`. |
-| HEAD-based size verification | Debug helper: `claimedSize: 1024`, PUT 10 MB body. R2 accepts. `finalizeUpload` HEADs, sees 10 MB, throws `size-mismatch`. No row inserted. |
-| CORS in the browser | Serve on `127.0.0.1:3000` (not allowed). PUT preflight 403 (R2-side). Restore `localhost` — works. |
-| No `file_metadata` for exports | `select count(*) from file_metadata where object_key like 'org/%/exports/%'` → 0. |
-
 ### Concepts demonstrated → owning lesson
 
 - Threshold for object storage, R2 vs. S3 — lesson 1 of chapter 068.
@@ -119,216 +123,245 @@ src/
 
 ---
 
-## Lesson 1 — Brief and Done-when
+## Lesson 1 — Project Overview
 
-Frames the runnable upload surface, locks the "Done when" clauses (5 MB lands, list downloads, 11-minute-later refresh still works, export emails a real R2 link), and names the scope cuts (no transforms, no multipart, no virus scan, no soft-delete UI).
+No feature is built. The student leaves with the starter running: `/files` rendering an empty list with a non-functional form, and `/inspector` carrying the chapter 067 surface.
 
-Goals:
+### What we're building
 
-- Frame the build: direct-browser-to-R2 upload with `Files` list, plus the chapter 067 export retrofit so the email carries a real R2 link. One screenshot: `/files` with form, progress mid-flight, list of completed rows.
-- State the "Done when" in one paragraph (5 MB lands and writes row, list renders downloads, refresh 11 min later still works because URL re-issues, export emails working R2 link, function never sees user-upload bytes, tenancy holds, layered size defense catches a lying client).
-- Scope cuts: no image transformation (Cloudflare Images, named once); no multipart for >100 MB (25 MB cap); no virus scanning (named); no client preview past file-picker echo; no soft-delete UI in this chapter (action exists, column verified); no orphan-cleanup sweep (forward note).
-- Senior payoff: the canonical R2 shape every later upload feature copies — `lib/r2.ts` once, presigned PUT, two-step write with HEAD, fresh-per-render GETs, `file_metadata` as canonical identity. The retrofit on chapter 067 proves the same primitives work from a worker with server-side PUT.
-- Show the end UX: an animated capture of choose-file → progress → row appears → download → export fires → email arrives → click email → CSV opens.
-- Link the starter via `degit`.
+One paragraph framing the runnable upload surface: a direct-browser-to-R2 upload with a `Files` list, plus the chapter 067 export retrofit so the export email carries a real R2 link. The canonical R2 shape every later upload feature copies — `lib/r2.ts` constructed once, a presigned PUT, the two-step write with a post-upload HEAD, fresh-per-render GETs, and `file_metadata` as the canonical identity — with the chapter 067 retrofit proving the same primitives work from a worker doing a server-side PUT.
 
-Senior calls and watch-outs:
+Figure: one screenshot of `/files` with the form, a progress bar mid-flight, and a list of completed rows. (An animated capture of choose-file → progress → row appears → download → export fires → email arrives → click email → CSV opens is a nice-to-have.)
 
-- R2 account, bucket, scoped token, and CORS must be set up first (one-time). Starter ships env keys; student's account fills values. `pnpm r2:cors` runs once per environment before the first browser upload, or the preflight fails.
-- Starter inherits chapter 067's Trigger.dev project. lesson 6 of chapter 069 needs both `pnpm trigger:dev` and `pnpm dev` in two terminals.
-- 25 MB cap is a course choice; production often allows 100 MB+ via multipart. The cap is the simplest defense against the size-bomb attack the verify exercises.
+Scope cuts, stated here so the student knows the edges: no image transformation (Cloudflare Images, named once); no multipart for files over 100 MB (the project caps at 25 MB); no virus scanning (named); no client preview past the file-picker echo; no soft-delete UI (the action exists and the column is verified, but no button); no orphan-cleanup sweep (forward note).
 
-Codebase state at entry: empty repo (student runs `degit`).
-Codebase state at exit: starter cloned, deps installed, Postgres up, chapter 067 schema migrated and seeded, R2 bucket/token/env created, `pnpm r2:cors` run, `/files` renders empty list with broken form, `/inspector` carries the chapter 067 surface.
+### What we'll practice
 
-Estimated student time: 20 to 30 minutes.
+- Signing a presigned PUT in a Server Action so the function never pipes the bytes.
+- The two-step write — sign, upload, finalize-with-HEAD, insert — and why the row never lands before the bytes.
+- Verifying true size and content type from a post-upload HEAD instead of trusting the client's claim.
+- Issuing fresh-per-render presigned GETs and keeping the page out of the cache so URLs never go stale.
+- Enforcing tenancy at every read and a `member` role gate at the action.
+- Driving one `lib/r2.ts` from two consumers — browser-PUT user uploads and a server-PUT export retrofit.
 
----
+### Architecture
 
-## Lesson 2 — Tour the starter
+Labeled shape (shape only — mechanics belong to chapter 068 and the Implementation lessons):
 
-Walks the provided pieces (singleton `lib/r2.ts`, pure `buildObjectKey` keyed off the validated content type, `UploadError` codes, idempotent CORS script) and identifies the five `lib/files/` TODOs plus the two `app/files/` TODOs the student will fill in.
+- Browser → `presignedPut` action (signs, no DB) → browser PUTs bytes straight to R2 → `finalizeUpload` action (HEADs, inserts row).
+- `/files` server render → `listFiles` → per-row `getFileDownloadUrl` (fresh presigned GET) → "Download" links.
+- chapter 067 export worker → server-side `PutObjectCommand` under `org/<id>/exports/` → `getSignedGetForKey` → `downloadUrl` on the email.
+- One `lib/r2.ts` `S3Client`, two consumers (Next.js function, Trigger.dev worker); one bucket per environment, prefixes carry the workload split.
 
-Goals:
+### Starting file tree
 
-- Walk the file tree, calling out provided vs. stubbed. Linger on the five TODO files in `lib/files/` and the two in `app/files/`. The chapter 067 task files are provided in full chapter 067 form; student edits them in lesson 6 of chapter 069.
-- Read the provided pieces: `lib/r2.ts` (singleton `S3Client` + constants), `lib/files/keys.ts` (pure `buildObjectKey` — extension from the validated content type, never from the user filename), `lib/files/errors.ts` (the four error codes), `lib/files/soft-delete.ts` (named, not exercised), `scripts/r2-cors.ts` (CORS JSON per lesson 2 of chapter 068). Confirm `pnpm r2:cors` ran successfully.
-- Read `app/inspector/page.tsx` — the chapter 067 surface intact, the new "downloadUrl as clickable link" rendering provided.
-- Bring up the dev rhythm: `pnpm trigger:dev` in one terminal, `pnpm dev` in another. Visit `/files`: form renders, picking a file does nothing (action empty). Visit `/inspector`: chapter 067 surface works (export still produces `console.log`-shaped placeholder, not R2 yet).
+Use the annotated tree under "Starter file tree (stubs marked TODO)" above. Comment one line on each file changed from chapter 067 or that a lesson will touch; leave the rest uncommented. Mark the seven TODO surfaces as the highlighted focus: the four `lib/files/` stubs (`presigned-put.ts`, `finalize.ts`, `presigned-get.ts`, `list.ts`), the `file_metadata` table in `db/schema.ts`, and the two `app/files/` files (`page.tsx`, `upload-form.tsx`).
 
-Senior calls and watch-outs:
+Brief orientation only — name each provided piece in one line and defer the deep read to the lesson that first touches it:
 
-- `lib/r2.ts` is constructed once and imported everywhere — the same discipline as `lib/db.ts`, `lib/resend.ts`. Per-request construction churns the connection pool. Principle #5 — no wrapping past the call site.
-- `ALLOWED_CONTENT_TYPES` is reused at the Zod boundary so the allowlist is one source of truth. Drift between Zod and the bucket policy is the kind of bug structural uniqueness prevents.
-- `buildObjectKey` takes `contentType` and looks up the extension via a static map. User filenames are untrusted.
-- `pnpm r2:cors` is idempotent — re-running overwrites the same rules. The script logs after the push so the student can eyeball-confirm `AllowedOrigins: ['http://localhost:3000']` (not `'*'`).
+- `lib/r2.ts` — singleton `S3Client` plus `ALLOWED_CONTENT_TYPES` and `MAX_BYTES` constants. Reused as-is from chapter 068; first exercised in lesson 2.
+- `lib/files/keys.ts` — pure `buildObjectKey`, extension from the validated content type, never the user filename. First exercised in lesson 2.
+- `lib/files/errors.ts` — `UploadError` with the four codes. First exercised in lesson 2 (`invalid-input` path) and lesson 3 (`object-not-found` / `size-mismatch`).
+- `lib/files/soft-delete.ts` — `softDeleteFile`, provided and named but not exercised in this chapter.
+- `scripts/r2-cors.ts`, `scripts/r2-lifecycle.ts` — the idempotent CORS push and the 7-day lifecycle rule; run in Setup and lesson 5 respectively.
+- `app/inspector/page.tsx` — the chapter 067 surface intact, with the new "render `metadata.downloadUrl` as a clickable link" addition provided; the link goes live in lesson 5.
+- `trigger/*`, `lib/exports/*` — chapter 067 task files in full chapter 067 form; the student edits the export in lesson 5.
 
-Codebase state at entry: starter cloned, deps installed, R2 set up.
-Codebase state at exit: student has read every provided file, confirmed both terminals running, confirmed CORS rules, visited both pages. No code written.
+### Roadmap
 
-Estimated student time: 20 to 30 minutes.
+One Card per Implementation lesson:
 
----
+- **Lesson 2 — Sign the PUT, no DB write.** Adds the `presignedPut` action that signs a direct-to-R2 upload, verified by `curl`.
+- **Lesson 3 — Browser PUT, HEAD, then insert.** Adds the `file_metadata` migration, the `finalizeUpload` HEAD-then-insert, and the XHR upload form, so a picked file lands in R2 and writes its row.
+- **Lesson 4 — Fresh-per-render GETs.** Adds the un-cached `/files` list that signs a new download URL per row per render, with the 11-minute expiry proof.
+- **Lesson 5 — Real downloadUrl for the export.** Retrofits the chapter 067 export to write a real R2 object and email a working presigned link.
 
-## Lesson 3 — Sign the PUT, no DB write
+### Setup
 
-Builds the `presignedPut` Server Action with Zod-validated input, server-generated `uploadId`, a server-constructed `objectKey`, and a 5-minute signed `PutObjectCommand`, verified end-to-end by `curl`-PUTting bytes straight to R2.
+Command sequence (Steps component), in order. Expected outcome stated for the final step.
 
-Goals:
+1. Clone the starter via `degit`, then `pnpm install`.
+2. Bring up Postgres (`docker compose up -d`), then `pnpm db:migrate` and `pnpm db:seed` — the chapter 067 schema and seed data (orgs and invoices; no `file_metadata` rows yet).
+3. Create the R2 bucket, a scoped token with Object Read + Object Write, and fill the env values (see below).
+4. Run `pnpm r2:cors` once for this environment to push the CORS rules. The script logs the effective rules after the push — confirm `AllowedOrigins: ['http://localhost:3000']`, not `'*'`. This must run before the first browser upload or the preflight fails.
+5. Start two terminals: `pnpm trigger:dev` (the chapter 067 Trigger.dev project, needed for the lesson 5 export) and `pnpm dev`.
 
-- Write `lib/files/presigned-put.ts` per the reference signature. The action: Zod input (`fileName`, `contentType` from the enum, `claimedSize` positive int ≤ `MAX_BYTES`); generates `uploadId = uuidv7()`; builds `objectKey = buildObjectKey({ orgId: ctx.orgId, fileId: uploadId, contentType })`; signs `PutObjectCommand` with `Bucket`, `Key: objectKey`, `ContentType`, `ContentLength: claimedSize` at `expiresIn: 300`; returns `{ ok: true, data: { uploadId, url, objectKey } }`.
-- The action does **no** DB write. The row lands in `finalizeUpload` *after* the bytes are confirmed in R2.
-- Verify without writing the client yet:
-  - From the browser console: `await presignedPut({ fileName: 'sample.jpg', contentType: 'image/jpeg', claimedSize: 5_000_000 })` returns `{ ok: true, data: { uploadId, url: 'https://<bucket>.r2.cloudflarestorage.com/...?X-Amz-Signature=...', objectKey } }`.
-  - `curl -X PUT -H "Content-Type: image/jpeg" --data-binary @some.jpg "<url>"` returns 200. R2 dashboard shows the object at `org/<orgId>/files/<uploadId>.jpeg`. **Proof that the byte-pipe rule holds — no function in the call.**
-  - `curl`-PUT with mismatched `Content-Type: image/png` against the JPEG-signed URL — R2 returns 403 `SignatureDoesNotMatch`.
-  - `presignedPut({ contentType: 'application/octet-stream' })` → `{ ok: false, error: { code: 'invalid-input' } }` from the Zod parse. No R2 call.
-  - `presignedPut({ claimedSize: 100_000_000 })` (exceeds `MAX_BYTES`) → same.
+Expected result: `/files` renders an empty list with a non-functional form (the actions are empty stubs), and `/inspector` shows the working chapter 067 surface (the export still produces a `console.log`-shaped placeholder, not an R2 link yet).
 
-Senior calls and watch-outs:
+Env vars (carried from chapter 068; student's own R2 account fills the values):
 
-- `uploadId` is server-generated, never client-supplied. Letting the client choose the ID is the tenancy-bypass shape — a crafted UUID could clobber an existing row in `finalizeUpload`.
-- `ContentLength` is signed but R2 does not enforce it server-side (the lesson 3 of chapter 068 quirk). Signing is still correct — it documents intent and matches the AWS SDK shape — but the *enforcement* is the post-upload HEAD in `finalizeUpload`.
-- 5-min `expiresIn` is the trade-off — long enough for 25 MB on a slow connection (the client can also re-sign on retry), short enough that leaks don't grant indefinite write.
-- Role is `member`, not `admin`. The function-level gate is the structural defense — R2 credentials are app-wide.
-- Students often want to "reserve" a row with `status: pending`. The senior call: no row until the bytes are confirmed. Orphan rows lie in the UI; orphan objects are cheap to clean.
-- `'invalid-input'` is mapped at the `authedAction` boundary (from Unit 9), not by the action body.
+- `R2_ACCOUNT_ID` — the Cloudflare account ID; from the R2 dashboard.
+- `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` — the scoped token credentials; shown once when the token is created.
+- `R2_BUCKET_NAME` — the bucket created in step 3.
+- Plus the chapter 067 vars carried in `.env.example` (`DATABASE_URL`, Resend, Trigger.dev).
 
-Codebase state at entry: empty `presigned-put.ts`.
-Codebase state at exit: `presignedPut` works end-to-end against R2 (verified via `curl`); payload validation rejects bad inputs; no client-side upload yet. **Runnable — action fires; next lesson wires the browser.**
-
-Estimated student time: 45 to 60 minutes.
+Note on a course choice the student should understand, not just follow: the 25 MB cap is the simplest defense against the size-bomb attack lesson 3 exercises; production often allows 100 MB+ via multipart, named but not built.
 
 ---
 
-## Lesson 4 — Browser PUT, HEAD, then insert
+## Lesson 2 — Sign the PUT, no DB write
 
-Lands the `file_metadata` migration, the `finalizeUpload` action that HEADs the object for true size and content-type before inserting the row inside a `tenantDb` transaction, and the XHR-driven client form that streams bytes direct to R2 with a live progress bar.
+The student builds the `presignedPut` Server Action that hands the browser a short-lived URL to upload a file straight to R2, with no bytes through the function.
 
-Goals:
+By the end, calling the action from the browser console returns a signed R2 URL, and `curl`-PUTting a file to that URL lands the object in the bucket without any server involvement in the transfer.
 
-- Write the `file_metadata` migration. Add the table to `db/schema.ts` per the reference. Run `pnpm db:generate --name add_file_metadata`, inspect emitted SQL, run `pnpm db:migrate`. Confirm in Studio.
-- Write `lib/files/finalize.ts`: Zod input (`uploadId` uuid, `objectKey`, `originalFileName`, `contentType` from the enum). `r2.send(new HeadObjectCommand({ Bucket, Key: objectKey }))` — catch 404 → `UploadError('object-not-found')`. Assert `head.ContentType === input.contentType`. Assert `head.ContentLength <= MAX_BYTES` → `size-mismatch` otherwise. In `tenantDb(ctx.orgId).transaction`: insert the row with `id: input.uploadId`, `uploadedBy: ctx.user.id`, `byteSize: head.ContentLength`, `contentType: head.ContentType`; call `logAudit(tx, { action: 'file.uploaded', subjectType: 'file', subjectId: input.uploadId, actorUserId: ctx.user.id, orgId: ctx.orgId, payload: { byteSize: head.ContentLength, contentType: head.ContentType } })`. Return `{ ok: true, data: { fileId: uploadId } }`.
-- Write `app/files/upload-form.tsx` as a client component: `<input type="file" accept="...">` + `useRef`; status `useState` (`idle | signing | uploading | finalizing | done | failed`) + progress (0-100); on submit, client-side validation (`file.size <= MAX_BYTES`, `file.type` in allowlist) → `'signing'`, call `presignedPut` → `'uploading'`, create `XMLHttpRequest`, `xhr.open('PUT', data.url)`, `xhr.setRequestHeader('Content-Type', file.type)` (must match signed `ContentType`), `xhr.upload.onprogress` drives the bar, `xhr.send(file)`; on PUT 200 → `'finalizing'`, call `finalizeUpload` with the `uploadId` + `objectKey` + `originalFileName` + `contentType`; on success → `'done'`, `router.refresh()`, reset after 2s.
-- Pre-fill the `/files` page list section with a minimal empty state. Full list rendering is lesson 5 of chapter 069.
-- Verify: 1 MB upload runs to `done`, progress bar smooth; refresh shows empty list still (next lesson). 30 MB picks rejects client-side, no `presignedPut` call. `.exe` filtered by `accept` (or rejected by client validation on drag-drop). Network tab during success: small POST to `presignedPut`, MB-scale PUT to `r2.cloudflarestorage.com`, small POST to `finalizeUpload`. **Byte-pipe verification — function-side bytes, not megabytes.** `audit_logs` has one `file.uploaded` row.
+### Your mission
 
-Senior calls and watch-outs:
+This is the first half of the two-step write. The action's whole job is to authorize one upload: it validates what the client claims about the file, decides where the object will live, and signs a time-boxed `PutObjectCommand` the browser can PUT to directly. It writes no database row — the row belongs to `finalizeUpload` in the next lesson, after the bytes are confirmed in R2, so a never-completed upload leaves no orphan row lying in the UI. The constraints that shape the solution: the object key is server-constructed from the org and a server-generated UUID, never anything the client sends, because letting the client choose the key or the ID is the tenancy-bypass shape — a crafted value could later clobber another org's row; the content type is constrained to the shared `ALLOWED_CONTENT_TYPES` allowlist reused at the Zod boundary, so the policy has one source of truth; the signed URL expires in five minutes, long enough to push 25 MB on a slow link (and the client can re-sign on retry) but short enough that a leaked URL grants no lasting write; and the action gates on the `member` role, the structural defense given that the R2 credentials are app-wide. Sign `ContentLength` from the claimed size even though R2 will not enforce it server-side — signing documents intent and matches the SDK shape, but the real size check is the post-upload HEAD next lesson. Out of scope: any DB write, any client-side upload UI, and trusting the claimed size as the final word. Reuse `buildObjectKey` and the `authedAction` wrapper rather than re-deriving either.
 
-- Migration adds the table; re-running `db:generate` emits "no changes" (determinism signal from chapter 040).
-- `XMLHttpRequest` over `fetch` for one reason — `xhr.upload.onprogress` fires per chunk; `fetch` does not expose upload progress to user code.
-- PUT's `Content-Type` must match the signed one *exactly*. Common bug: `.JPG` is `image/jpeg` on some OSes, `image/pjpeg` on others. Symptom: `403 SignatureDoesNotMatch`. Fix: normalize via the allowlist before signing.
-- `finalizeUpload` HEADs to catch a malicious client calling with a stale `uploadId`/`objectKey` from a previous flow. The `unique` constraint on `objectKey` also rejects a duplicate row insert. Layered defense.
-- HEAD-then-insert is not transactional with R2 — between HEAD and insert, the object could (in principle) be deleted. Microsecond gap, lifecycle rules are 7-day prefix-scoped. Named, accepted.
-- `audit_logs` writes are in the same `tenantDb(orgId).transaction` as the row insert — both roll back together.
-- Client-side validation duplicates the server-side allowlist — defense-in-depth, not duplication smell. Client = instant feedback; server = trust boundary.
-- 4xx on PUT triggers full-flow retry (re-sign + re-upload), not PUT-only. Reusing a signed URL after a 4xx is undefined.
-- Network drop or tab close mid-PUT leaves an orphan object (lifecycle cleanup).
+- Calling the action with a valid file name, an allowlisted content type, and a claimed size within the cap returns a signed `https://<bucket>.r2.cloudflarestorage.com/...` URL plus the server-generated upload ID and object key, with no database row written.
+- `curl`-PUTting a file to that URL with the matching `Content-Type` returns 200 and the object appears in R2 at `org/<orgId>/files/<uploadId>.<ext>` — proof the byte transfer involves no function.
+- `curl`-PUTting with a `Content-Type` that differs from the signed one is rejected by R2 with `403 SignatureDoesNotMatch`.
+- Calling the action with a disallowed content type is rejected as `invalid-input` with no R2 call.
+- Calling the action with a claimed size over the cap is rejected the same way.
 
-Codebase state at entry: `presignedPut` works; no migration, no `finalizeUpload`, no client form.
-Codebase state at exit: full upload flow end-to-end — file picked, progress, row in `file_metadata`, bytes in R2, audit logged. List still empty (next lesson). **Runnable — uploads work.**
+### Coding time
 
-Estimated student time: 75 to 90 minutes. The chapter's heaviest lesson — migration + action + client land together because each one alone is not runnable.
+One line directing the student to implement `presignedPut` against the brief and the tests, then the hidden solution `<details>`.
 
----
+Reference implementation: `lib/files/presigned-put.ts` per the signature under "Reference solution signatures" — Zod `strictObject` input (`fileName`, `contentType` from the enum, `claimedSize` positive int ≤ `MAX_BYTES`); `uploadId = uuidv7()`; `objectKey = buildObjectKey({ orgId: ctx.orgId, fileId: uploadId, contentType })`; `getSignedUrl` over `PutObjectCommand({ Bucket, Key: objectKey, ContentType, ContentLength: claimedSize })` at `expiresIn: 300`; returns `{ ok: true, data: { uploadId, url, objectKey } }`.
 
-## Lesson 5 — Fresh-per-render GETs
+Decision rationale to cover in the walkthrough:
 
-Writes `getFileDownloadUrl`, `listFiles`, and the un-cached `/files` server component that signs a new GET per row per render, then proves the discipline by watching a copied URL die at 11 minutes while a refreshed page keeps working.
+- `uploadId` is server-generated; a client-chosen ID is the tenancy-bypass shape that could clobber an existing row when `finalizeUpload` inserts by that ID.
+- `ContentLength` is signed but not enforced by R2 (the chapter 068 lesson 3 quirk) — link to that lesson rather than re-explaining; the enforcement is next lesson's HEAD.
+- The five-minute expiry trade-off; the client re-signs on retry.
+- Role `member`, not `admin` — the function-level gate is the defense because R2 credentials are app-wide.
+- No "reserved" row with `status: pending` — no row until the bytes are confirmed. Orphan objects are cheap to clean; orphan rows lie in the UI.
+- `invalid-input` is mapped at the `authedAction` boundary (Unit 9), not in the action body — link rather than re-explain.
 
-Goals:
+### Moment of truth
 
-- Write `lib/files/presigned-get.ts`: read the row via `tenantDb(ctx.orgId)` filtered by `isNull(deletedAt)`; on no row → `{ ok: false, error: { code: 'object-not-found' } }`; sign `GetObjectCommand({ Bucket, Key: row.objectKey, ResponseContentDisposition: \`attachment; filename="${encodeRFC5987(row.originalFileName)}"\` })` at `expiresIn: 600`; return `{ url, fileName: row.originalFileName, contentType: row.contentType }`. Also export `getSignedGetForKey({ objectKey, expiresIn })` — pure, no tenant check, for the worker caller in lesson 6 of chapter 069.
-- Write `lib/files/list.ts`: `tenantDb(orgId).fileMetadata.findMany({ where: isNull(deletedAt), orderBy: [desc(uploadedAt), desc(id)], limit: limit + 1 })`. Cursor decode/encode lives in a new `lib/files/cursor.ts` with shape `{ uploadedAt: string; id: string }` (base64url-encoded JSON, Zod-validated) — `db/cursor.ts` from chapter 041 hardcodes `createdAt` and is not reusable here.
-- Write `app/files/page.tsx` as a Server Component: read `searchParams.cursor` (Zod-validated); call `listFiles`; for each row call `getFileDownloadUrl({ fileId: row.id })` to attach a fresh signed URL (**N signing calls per page render**, ~microseconds each, no R2 round trip); render the table; render `"Next page"` link with `nextCursor`. Call `logAudit(tx, { action: 'file.list_viewed', subjectType: 'file', subjectId: 'list', actorUserId: ctx.user.id, orgId: ctx.orgId, payload: { fileIds } })` once per page render (batched — one row per view, not per signed URL).
-- Verify: upload from lesson 4 of chapter 069 now appears; click "Download" → fetches via presigned GET; saves as `originalFileName`. View source — `href`s are real `https://<bucket>.r2.cloudflarestorage.com/...?X-Amz-Signature=...` URLs. **Fresh-per-render proof:** copy a URL, wait 11 minutes, paste in new tab — `403 AccessDenied`. Refresh `/files` — same row's `href` is different; click — works. **Senior anchor of the chapter.** Cross-org test: upload in A, switch to B, `/files` empty; `getFileDownloadUrl({ fileId: <A-id> })` → `object-not-found`.
+Tests cover the action's contract: a valid call returns a signed URL and upload ID with no DB write, a disallowed content type returns `invalid-input` with no R2 call, and an over-cap claimed size returns `invalid-input`.
 
-Senior calls and watch-outs:
+Run the lesson's test suite (state the command and the expected pass output). Then confirm by hand:
 
-- Page is **not** `use cache`. Caching serves stale presigned URLs; the URL expires, the cached HTML lies. Fresh-per-render belongs at the boundary; cache lives one layer up (forecasts chapter 072).
-- N signing calls per render is not a hot spot — `getSignedUrl` is local HMAC, no R2 round trip. Signing is free; R2 round trips are not.
-- `ResponseContentDisposition` overrides the default. Without it, the browser saves as the `objectKey` segment (`<uuid>.jpeg`). Must be RFC 5987-encoded for non-ASCII names (`encodeRFC5987` helper provided).
-- `isNull(deletedAt)` is the structural enforcement of soft-delete hiding. The base-query helper from chapter 062 would normally enforce this; the project has one read shape so the manual `isNull` is the discipline.
-- Cursor shape is `{ uploadedAt, id }` (file-local, in `lib/files/cursor.ts`) — `(uploadedAt desc, id desc)` matched by the composite index. chapter 041's `db/cursor.ts` is `createdAt`-hardcoded and not reusable for an `uploadedAt` payload.
-- Audit at the user action (visit), not the derived effect (sign N URLs). Cardinality choice.
-
-Codebase state at entry: uploads work, no list.
-Codebase state at exit: full upload + list flow — pick, upload, see row, download, get the file. Multi-tenancy verified, URL freshness verified. **Runnable end-to-end for user uploads.**
-
-Estimated student time: 50 to 65 minutes.
+- [ ] `curl -X PUT -H "Content-Type: image/jpeg" --data-binary @some.jpg "<signed-url>"` returns 200 and the object appears in the R2 dashboard at `org/<orgId>/files/<uploadId>.jpeg`.
+- [ ] `curl`-PUT with a mismatched `Content-Type: image/png` against the JPEG-signed URL returns `403 SignatureDoesNotMatch`.
 
 ---
 
-## Lesson 6 — Real downloadUrl for the export
+## Lesson 3 — Browser PUT, HEAD, then insert
 
-Retrofits the chapter 067 export task to do a server-side `PutObjectCommand` under the `org/<id>/exports/` prefix, hand a fresh `getSignedGetForKey` URL to the email, and rely on the lifecycle rule for cleanup with no `file_metadata` row written.
+The student completes the upload path so a file picked in the browser streams straight to R2 with a live progress bar and lands as a `file_metadata` row whose size and content type are read back from the object, not trusted from the client.
 
-Goals:
+By the end, choosing a file on `/files` shows a smooth progress bar, the bytes go directly to R2, and one row appears in `file_metadata` with the true size and content type — with one audit entry recorded.
 
-- Edit `trigger/export-invoices.ts`. After the page loop accumulates `csvAccumulator`: `const buffer = Buffer.from(csvAccumulator, 'utf8'); const objectKey = \`org/${organizationId}/exports/${ctx.run.id}.csv\`; await r2.send(new PutObjectCommand({ Bucket, Key: objectKey, Body: buffer, ContentType: 'text/csv', ContentDisposition: \`attachment; filename="export-${dayBucket()}.csv"\` }))`. **Server-side PUT** — bytes pass through this Trigger.dev worker, which is correct per lesson 5 of chapter 068.
-- `const { url: downloadUrl } = await getSignedGetForKey({ objectKey, expiresIn: 600 })`. `metadata.set('downloadUrl', downloadUrl)`. Pass `downloadUrl` to `sendExportEmail.triggerAndWait({ ..., downloadUrl })` (payload schema already accepts it from chapter 067).
-- **No `file_metadata` row** — exports are short-lived; lifecycle rule (7-day) on `org/*/exports/*` handles cleanup. Configure via `pnpm r2:lifecycle` (script provided); verify by logging effective rules, not by waiting 7 days.
-- Verify: trigger export from `/inspector`; on completion, panel renders `downloadUrl` as a real R2 link → click → CSV downloads (filename `export-<day>.csv` from `ContentDisposition`). Email arrives in Resend-verified inbox with same URL — click within 10 min → CSV. **Full end-to-end retrofit proof.** R2 dashboard shows the object at `org/<orgId>/exports/<runId>.csv`. `select count(*) from file_metadata where object_key like 'org/%/exports/%'` → 0. Run the kill-resume drill from chapter 067 — Ctrl-C trigger CLI at `pagesDone: 2/7`, restart; export resumes; the R2 PUT happens at end of the resumed parent (not on retry of completed pages); cross-step idempotency holds. Final: one CSV, one email, one audit row.
+### Your mission
 
-Senior calls and watch-outs:
+This lesson lands the second half of the two-step write and the browser side that drives it, all at once, because none of the three pieces reaches a confirmable state alone — the migration has nothing to fill it, `finalizeUpload` has nothing to finalize, and the form has nowhere to record the result. `finalizeUpload` is the trust boundary: after the browser reports a successful PUT, it HEADs the object to learn the true content length and content type, then inserts the row with those server-observed values inside a `tenantDb` transaction that also writes the audit entry, so the two commit or roll back together. This is where the layered size defense pays off — a client that lied about its size in the signing step is caught here, because the HEAD sees the real bytes; the `unique` constraint on the object key is the second layer, rejecting a replayed finalize. The browser form uses `XMLHttpRequest` rather than `fetch` for one concrete reason — only XHR exposes upload progress to user code — and its PUT must send the exact `Content-Type` that was signed, the common `.JPG`-is-sometimes-`image/pjpeg` trap that surfaces as `403 SignatureDoesNotMatch`. Client-side size and type checks are defense-in-depth for instant feedback, not a substitute for the server boundary. Out of scope: the rendered file list (next lesson) — leave a minimal empty state. Constraints to weave in: the HEAD-then-insert is not transactional with R2 (a microsecond gap, accepted, lifecycle rules cover the orphan case), and a 4xx on the PUT means re-running the whole flow, not reusing the signed URL. Reuse `logAudit` and the `UploadError` codes; the one new browser tool is `XMLHttpRequest`.
 
-- Server-side PUT is the *only* place in the project where a function (Trigger.dev worker) sees the bytes. The rule from lesson 5 of chapter 068 — browser PUT for user-facing flows; server PUT for workers.
-- CSV-in-memory is bounded by `pagesTotal × pageSize × avgRowSize`. Project-scale: MB. Production-scale (>100 MB or >10s generation): switch to multipart streaming per `paginatePage`. Named, not built.
-- Same bucket as user uploads — one bucket per environment, prefixes carry the workload split. Separate buckets per environment, never per workload.
-- 10-min GET expiry trade-off: user who opens the email 30 minutes later gets a dead link; senior call is "re-trigger" rather than "longer expiry".
-- Same `lib/r2.ts` for both Next.js function and Trigger.dev worker — one client, two consumers.
-- `getSignedGetForKey({ objectKey, expiresIn })` takes a raw key (no tenant check) because the worker has no request context. Tenant checks live at the boundary the caller is on.
+- Adding the `file_metadata` table and running the migration produces the table with the columns and composite index from the reference, and re-running the generate step reports no changes.
+- Choosing a valid file on `/files` runs the status through signing → uploading → finalizing → done with a smooth progress bar.
+- After a successful upload, one `file_metadata` row exists with `byteSize` and `contentType` taken from the post-upload HEAD and `uploadedBy` set to the current user.
+- During a successful upload the function exchanges only small JSON with the two actions while the multi-MB body goes straight to `<bucket>.r2.cloudflarestorage.com`.
+- A client that signs a small claimed size and then PUTs an over-cap body is rejected at finalize with `size-mismatch` and no row is inserted.
+- Picking an over-cap file is rejected in the browser before any signing call, and a disallowed type is kept out by the file picker.
+- Each successful upload records exactly one `file.uploaded` audit entry, committed in the same transaction as the row.
+- Serving the app on a host not in the CORS allowlist makes the browser PUT fail, while the allowed `localhost` origin succeeds.
 
-Codebase state at entry: chapter 067 export works against placeholder URL.
-Codebase state at exit: export end-to-end produces a real R2 object; email link works; both consumers of `lib/r2.ts` operate against the same bucket. **Runnable — full project surface complete.**
+### Coding time
 
-Estimated student time: 45 to 60 minutes.
+One line directing the student to implement the migration, `finalizeUpload`, and the upload form against the brief and the tests, then the hidden solution `<details>`.
+
+Reference implementation, organized as in the repo:
+
+- `db/schema.ts` — the `file_metadata` table per "Reference solution signatures"; generate with `pnpm db:generate --name add_file_metadata`, inspect the SQL, `pnpm db:migrate`.
+- `lib/files/finalize.ts` — Zod `strictObject` input (`uploadId` uuid, `objectKey`, `originalFileName`, `contentType` from the enum); `HeadObjectCommand`, catching 404 as `UploadError('object-not-found')`; assert `head.ContentType === input.contentType`; assert `head.ContentLength <= MAX_BYTES` else `size-mismatch`; in `tenantDb(ctx.orgId).transaction` insert the row (`id: uploadId`, `uploadedBy: ctx.user.id`, `byteSize`/`contentType` from the HEAD) and `logAudit(tx, { action: 'file.uploaded', ... })`; return `{ ok: true, data: { fileId: uploadId } }`.
+- `app/files/upload-form.tsx` — client component, `<input type="file" accept="...">` + `useRef`; status state (`idle | signing | uploading | finalizing | done | failed`) + progress; client-side validation, then `presignedPut`, then an `XMLHttpRequest` PUT (`setRequestHeader('Content-Type', file.type)`, `xhr.upload.onprogress` drives the bar), then `finalizeUpload`, then `router.refresh()` and reset; errors surface `error.userMessage`.
+- `app/files/page.tsx` — minimal empty-state list section; full rendering is next lesson.
+
+Decision rationale to cover: `XMLHttpRequest` over `fetch` for upload progress; the exact-`Content-Type` match and the `.JPG` normalization trap; the HEAD catching a stale `uploadId`/`objectKey` plus the `unique` constraint as layered defense; the non-transactional HEAD-then-insert gap, named and accepted; audit in the same transaction; client validation as defense-in-depth, not duplication; full-flow retry on a 4xx PUT; orphan object on a mid-PUT network drop. The migration determinism signal links to chapter 040 rather than re-explaining.
+
+### Moment of truth
+
+Tests cover: the migration produces the table and index; a valid upload writes one row with HEAD-sourced size and content type; a lying-size client is rejected at finalize with `size-mismatch` and no row; one `file.uploaded` audit entry per upload.
+
+Run the lesson's test suite (state the command and the expected pass output). Then confirm by hand:
+
+- [ ] A ~1 MB upload runs to `done` with a smooth progress bar.
+- [ ] During that upload the Network tab shows a small POST to `presignedPut`, an MB-scale PUT to `r2.cloudflarestorage.com`, and a small POST to `finalizeUpload`.
+- [ ] Picking a 30 MB file is rejected client-side with no `presignedPut` call; an `.exe` is excluded by the picker.
+- [ ] Serving on `127.0.0.1:3000` (not in the allowlist) makes the browser PUT fail; restoring `localhost` works. (The browser preflight cannot be reproduced with `curl` — this check must run in a browser.)
 
 ---
 
-## Lesson 7 — Verify
+## Lesson 4 — Fresh-per-render GETs
 
-Walks each "Done when" clause as a runnable check — the 11-minute URL-death proof, function-side byte-pipe inspection, cross-org GET denial, `size-mismatch` from a lying client, CORS preflight on a non-allowed host, and the exports-have-no-row SQL.
+The student renders the `/files` list so each uploaded file shows a working "Download" link, signed fresh on every page render so a link is never stale and never cached.
 
-Goals:
+By the end, an uploaded file appears in the list with a "Download" link that saves under its original name, and a link copied off the page stops working after its 10-minute window while a refresh of the page hands back a fresh, working one.
 
-- Walk every "Done when" clause as a verification step (the table in the framing).
-- **User upload + row:** upload `fixtures/sample-5mb.jpg` from `/files`; confirm one R2 object at `org/<orgId>/files/<uuid>.jpeg`; confirm one `file_metadata` row with matching `objectKey`, `byteSize ≈ 5242880`, `contentType: 'image/jpeg'`, `uploadedBy: ctx.user.id`.
-- **List + download:** click "Download"; file saves as `sample-5mb.jpg` via `Content-Disposition`.
-- **Fresh-per-render (chapter's load-bearing proof):** view source, copy a `href`, wait 11 minutes, paste in new tab → `403 AccessDenied (Request has expired)`. Refresh `/files` — same row's `href` is different; click — works. **Senior anchor of the chapter — the URL is never persisted, never cached.**
-- **Export emails working R2 link:** trigger export; panel shows real R2 `downloadUrl`; click — CSV downloads. Email has the same URL; click within 10 min — CSV downloads.
-- **Function never sees user-upload bytes:** Network tab — `presignedPut` ~400 B response; PUT to `<bucket>.r2.cloudflarestorage.com` carries the MB body; `finalizeUpload` ~100 B response. Function-side bytes are orders of magnitude less than the upload.
-- **Payload validation:** `presignedPut({ contentType: 'application/octet-stream' })` → `{ ok: false, error: { code: 'invalid-input' } }`, no R2 call. Same for `claimedSize: 100_000_000`.
-- **Tenancy at GET:** upload in A; switch session to B (seeded users); `/files` empty; `getFileDownloadUrl({ fileId: <A-id> })` → `object-not-found`. Even with the right ID, wrong org returns no row.
-- **HEAD-based size verification (layered defense):** `debug:fake-upload` calls `presignedPut({ claimedSize: 1024 })` then PUTs 10 MB. R2 accepts. `finalizeUpload` reads `head.ContentLength: 10485760` → throws `size-mismatch`. No row inserted. Orphan 10 MB object remains (cleanup sweep named).
-- **CORS in the browser:** serve on `127.0.0.1:3000` (not in allowlist). PUT preflight returns 200 (allowed for the host); R2 returns 403 on the PUT because origin doesn't match. Restore `localhost` — works.
-- **No `file_metadata` for exports:** `select count(*) from file_metadata where object_key like 'org/%/exports/%'` → 0.
-- **Audit log:** `select action, count(*) from audit_logs group by action` — `file.uploaded` per upload (the `finalizeUpload` `logAudit(tx, { action: 'file.uploaded', subjectType: 'file', subjectId: fileId, actorUserId: ctx.user.id, orgId: ctx.orgId, payload: { byteSize, contentType } })` call), `file.list_viewed` per page render (the `/files` `logAudit(tx, { action: 'file.list_viewed', subjectType: 'file', subjectId: 'list', actorUserId: ctx.user.id, orgId: ctx.orgId, payload: { fileIds } })` call), `file.download_url_issued` per email link from the export task (`logAudit(tx, { action: 'file.download_url_issued', subjectType: 'file', subjectId: objectKey, actorUserId: null, orgId: organizationId, payload: { objectKey, expiresIn: 600 } })`).
-- **Soft-delete column exists:** `select column_name from information_schema.columns where table_name = 'file_metadata' and column_name = 'deleted_at'` returns the column. Action exists in `lib/files/soft-delete.ts`; structural shape verified.
-- Name the senior calls once more:
-  - Function never sees bytes for user uploads — browser PUT direct to R2.
-  - Two-step write — sign → upload → finalize-with-HEAD → row insert.
-  - `byteSize` and `contentType` from the HEAD, not the client claim.
-  - `objectKey` server-constructed; never client-supplied.
-  - Presigned GETs fresh-per-render; never persisted, never cached.
-  - Tenancy at every read via `tenantDb(orgId)`.
-  - One bucket per environment; prefixes carry the workload split. One `lib/r2.ts` for both consumers.
-  - User uploads use `file_metadata`; exports use no row + lifecycle rule.
-  - CORS specific origin, never `*`.
-- Forward references:
-  - **Unit 13:** `file.uploaded` fires the notification dispatcher; channel choice is the dispatcher's.
-  - **Unit 15a:** `/files` deliberately not cached; cache one layer up at the metadata read if volume demands.
-  - **Unit 16:** layered size defense, CORS specificity, `deletedAt` reads are audit line items.
-  - **Unit 20:** rotating R2 credentials follows staged-rollover discipline.
-  - **Avatars (9.x forward note):** Better Auth's hosted avatar handles its own pipeline; a custom avatar field reuses this chapter's shape with `contentType` restricted to images. Named, not built.
+### Your mission
 
-Senior calls and watch-outs:
+This lesson closes the user-upload loop with a read surface, and its load-bearing idea is that a presigned URL is a credential with a short life, not a stable address — so the page mints a new one for every row on every render and never stores or caches it. That single decision drives the rest: the `/files` Server Component must not opt into `use cache`, because a cached response would freeze URLs that then expire, leaving the page lying about links that no longer work; signing N URLs per render is fine because `getSignedUrl` is local HMAC with no R2 round trip, so it is effectively free. Reads go through `tenantDb(ctx.orgId)` filtered to non-deleted rows, the structural enforcement that one org never sees another's files and that soft-deleted rows stay hidden. The download must save under the user's original file name, which means setting `ResponseContentDisposition` (RFC 5987-encoded) on the GET — without it the browser saves the opaque object-key segment. Audit the list view once per render at the user action, not once per signed URL — a cardinality choice. The same file also exports a tenant-free `getSignedGetForKey` helper for the worker caller next lesson, which has no request context and signs a raw key. Out of scope: a soft-delete button (the column and action exist, unused here) and any caching layer (forecast for chapter 072). Constraint to weave in: keyset pagination needs a `{ uploadedAt, id }` cursor matched to the composite index, so it gets its own file rather than reusing chapter 041's `createdAt`-hardcoded cursor.
 
-- Verify rehearses each failure mode and names what would break without the disciplines. If a verification fails, point at the owning build lesson.
-- The 11-min-later refresh proof is the chapter's headline verification — run the timer in real time (or fast-forward the system clock). Skipping it produces a student who thinks `<img src>={signedUrl}` survives a long page session.
-- The CORS test requires actually serving on a non-allowed host — `curl` won't reproduce the browser preflight. CORS is a browser concept; verify must run in a browser.
+- An uploaded file appears as a row in the `/files` list showing its original name, content type, formatted size, and humanized upload time.
+- Each row's "Download" link points at a fresh presigned R2 URL and downloading it saves the file under its original name.
+- A download URL copied from the page returns `403 AccessDenied` after its 10-minute window passes, while refreshing `/files` yields a different, working URL for the same row.
+- A file uploaded by one org is absent from another org's list, and requesting that file's download URL while acting as the other org returns `object-not-found`.
+- The list renders past the first page through a "Next page" cursor link.
+- Each page view records exactly one `file.list_viewed` audit entry, regardless of how many rows it signs.
 
-Codebase state at entry: full upload + list + export retrofit wired.
-Codebase state at exit: every "Done when" clause verified clause-by-clause; the student can articulate every primitive and which forward unit will lean on it.
+### Coding time
 
-Estimated student time: 30 to 45 minutes.
+One line directing the student to implement the GET helpers, the list query, and the `/files` server page against the brief and the tests, then the hidden solution `<details>`.
+
+Reference implementation, organized as in the repo:
+
+- `lib/files/presigned-get.ts` — `getFileDownloadUrl({ fileId }, ctx)` reads via `tenantDb(ctx.orgId)` filtered by `isNull(deletedAt)`, returns `object-not-found` on no row, signs `GetObjectCommand` with the RFC 5987 `ResponseContentDisposition` at `expiresIn: 600`; plus the pure `getSignedGetForKey({ objectKey, expiresIn })` for the worker.
+- `lib/files/list.ts` — `tenantDb(orgId).fileMetadata.findMany` with `isNull(deletedAt)`, `orderBy: [desc(uploadedAt), desc(id)]`, `limit + 1` for the next-cursor trick.
+- `lib/files/cursor.ts` — `{ uploadedAt, id }` base64url-encoded JSON, Zod-validated.
+- `app/files/page.tsx` — Server Component: Zod-validate `searchParams.cursor`, call `listFiles`, attach a fresh `getFileDownloadUrl` per row, render the table and the "Next page" link, and `logAudit` the view once per render.
+
+Decision rationale to cover: why the page is not `use cache` (cached HTML outlives the URL); N signs per render is not a hot spot; `ResponseContentDisposition` and the RFC 5987 encoding; `isNull(deletedAt)` as the soft-delete read discipline (chapter 062's base-query helper would normally own this — link); the file-local cursor versus chapter 041's hardcoded one; audit at the visit, not per URL.
+
+### Moment of truth
+
+Tests cover: an uploaded file appears in its org's list and not another org's; `getFileDownloadUrl` returns `object-not-found` across orgs; one `file.list_viewed` entry per render; the cursor advances past the first page.
+
+Run the lesson's test suite (state the command and the expected pass output). Then confirm by hand:
+
+- [ ] The file uploaded last lesson appears in the list; clicking "Download" saves it under its original name.
+- [ ] Viewing source shows real `https://<bucket>.r2.cloudflarestorage.com/...?X-Amz-Signature=...` hrefs.
+- [ ] Copy an href, wait 11 minutes, open it in a new tab — `403 AccessDenied (Request has expired)`. Refresh `/files` — the same row's href is different and works. (This is the chapter's headline proof; run the timer in real time or fast-forward the clock. Skipping it leaves a student who believes a signed URL survives a long page session.)
+
+---
+
+## Lesson 5 — Real downloadUrl for the export
+
+The student retrofits the chapter 067 CSV export so its email carries a real, working R2 download link instead of the placeholder, proving the same `lib/r2.ts` powers a worker doing a server-side PUT.
+
+By the end, triggering an export from `/inspector` produces a real R2 object, the completion panel and the email both link to it, and clicking within the window downloads the CSV — with no `file_metadata` row written for the export.
+
+### Your mission
+
+This lesson closes the project by reusing every primitive from the other side of the trust boundary. The chapter 067 export already accumulates the CSV in memory; the retrofit writes those bytes to R2 with a server-side `PutObjectCommand` under an `org/<id>/exports/` prefix, signs a download URL with the tenant-free `getSignedGetForKey` helper, and hands it to the existing export email. This is the one place in the project where a function sees the bytes, and that is correct: the byte-pipe rule is browser-PUT for user-facing flows, server-PUT for workers, which have no browser to offload to. Exports are throwaway artifacts, so they get no `file_metadata` row — a 7-day lifecycle rule on the exports prefix handles cleanup, and you confirm the rule by logging the effective rules rather than waiting a week. The export and the user uploads share one bucket; the prefix, not a separate bucket, carries the workload split. Constraints to weave in: the 10-minute GET expiry means a user opening the email an hour later gets a dead link, and the senior call is re-trigger rather than a longer-lived URL; the in-memory CSV is bounded by page count times page size, fine at project scale but a switch to multipart streaming past ~100 MB, named not built; and the R2 write must sit at the end of the resumed parent run so the chapter 067 kill-resume idempotency still holds. Out of scope: any change to the pagination loop or the email template. Reuse `getSignedGetForKey`, the chapter 067 `metadata.set` and `sendExportEmail` plumbing (its payload already accepts the URL), and the same `lib/r2.ts` client.
+
+- Triggering an export writes one R2 object at `org/<orgId>/exports/<runId>.csv` via a server-side PUT.
+- The export completion panel on `/inspector` renders the download URL as a real R2 link that downloads the CSV when clicked, named `export-<day>.csv`.
+- The export email arrives carrying the same URL, and clicking it within the 10-minute window downloads the CSV.
+- The export writes no `file_metadata` row — `select count(*) from file_metadata where object_key like 'org/%/exports/%'` returns 0.
+- The 7-day lifecycle rule on the exports prefix is present (confirmed by logging the effective rules).
+- Killing the trigger mid-run and restarting still produces exactly one CSV, one email, and one audit entry, with the R2 PUT happening once at the end of the resumed parent.
+
+### Coding time
+
+One line directing the student to retrofit `trigger/export-invoices.ts` against the brief and the tests, then the hidden solution `<details>`.
+
+Reference implementation: after the page loop, `Buffer.from(csvAccumulator)`, a server-side `PutObjectCommand({ Bucket, Key: \`org/${organizationId}/exports/${ctx.run.id}.csv\`, Body, ContentType: 'text/csv', ContentDisposition: \`attachment; filename="export-${dayBucket()}.csv"\` })`, then `getSignedGetForKey({ objectKey, expiresIn: 600 })`, `metadata.set('downloadUrl', ...)`, and the URL passed to `sendExportEmail`. No `file_metadata` row. Lifecycle configured via `pnpm r2:lifecycle` (script provided).
+
+Decision rationale to cover: the server-PUT-for-workers rule (link to chapter 068 lesson 5); same bucket, prefix carries the split; the 10-minute expiry trade-off and the re-trigger answer; in-memory CSV bounds and the multipart escape hatch, named not built; the same `lib/r2.ts` driving two consumers; `getSignedGetForKey` taking a raw key because the worker has no request context; the PUT placed so the chapter 067 cross-step idempotency holds (link to chapter 067).
+
+### Moment of truth
+
+Tests cover: the export writes an object under the exports prefix and no `file_metadata` row; the export email and metadata carry the same signed URL; the kill-resume drill yields one object, one email, one audit entry.
+
+Run the lesson's test suite (state the command and the expected pass output). Then confirm by hand:
+
+- [ ] Trigger an export from `/inspector`; the panel shows a real R2 `downloadUrl`; clicking it downloads `export-<day>.csv`.
+- [ ] The email arrives in the Resend-verified inbox with the same URL; clicking within 10 minutes downloads the CSV.
+- [ ] `select count(*) from file_metadata where object_key like 'org/%/exports/%'` returns 0.
+- [ ] Run the chapter 067 kill-resume drill — Ctrl-C the trigger CLI at `pagesDone: 2/7`, restart — and confirm the export resumes, the PUT happens once at the end, and the result is one CSV, one email, one audit row.
+
+This is the last lesson, so it also closes the project. The audit log now carries `file.uploaded` per upload (from finalize), `file.list_viewed` per `/files` render, and `file.download_url_issued` per export link — confirmable with `select action, count(*) from audit_logs group by action`. The senior calls the student should be able to articulate: the function never sees bytes for user uploads; the two-step write; size and content type from the HEAD, not the client; the server-constructed object key; fresh-per-render GETs that are never persisted or cached; tenancy at every read; one bucket per environment with prefixes carrying the workload split and one `lib/r2.ts` for both consumers; `file_metadata` for user uploads versus no row plus a lifecycle rule for exports; CORS scoped to a specific origin. Forward references worth naming: Unit 13's notification dispatcher can fire on `file.uploaded`; Unit 15a may cache one layer up at the metadata read if volume demands while `/files` itself stays uncached; Unit 16 treats the layered size defense, CORS specificity, and `deletedAt` reads as audit line items; Unit 20 rotates R2 credentials under staged-rollover discipline; and a custom avatar field (forward note) reuses this chapter's shape with the content type restricted to images.

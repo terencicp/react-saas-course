@@ -2,15 +2,31 @@
 
 ## Chapter framing
 
-Chapter 065 stitches the webhook discipline from chapter 063 and the Stripe billing model from chapter 064 into one runnable surface: the `/api/webhooks/stripe` route handler that ingests `checkout.session.completed`, `customer.subscription.updated`, and `customer.subscription.deleted` — signature-verified with constant-time compare, deduped via `processed_events`, wrapped in one outer transaction, ordered with a `last_event_at` predicate — and the derived `plan_entitlements` row the app reads on every request. On the in-bound side the student writes the `billing.*` interface (`upgrade`, `openPortal`, `requirePlan`), wires the inspector's Checkout and Portal buttons through it, and proves the loop end-to-end with `stripe listen` + `stripe trigger` against a local dev URL. The chapter ships 1 brief + 1 starter walkthrough + 4 build lessons + 1 verify lesson; each build closes on a runnable state and a deterministic verification step.
+Chapter 065 stitches the webhook discipline from chapter 063 and the Stripe billing model from chapter 064 into one runnable surface: the `/api/webhooks/stripe` route handler that ingests `checkout.session.completed`, `customer.subscription.updated`, and `customer.subscription.deleted` — signature-verified with constant-time compare, deduped via `processed_events`, wrapped in one outer transaction, ordered with a `last_event_at` predicate — and the derived `plan_entitlements` row the app reads on every request.
+On the in-bound side the student writes the `billing.*` interface (`upgrade`, `openPortal`, `requirePlan`), wires the inspector's Checkout and Portal buttons through it, and proves the loop end-to-end with `stripe listen` + `stripe trigger` against a local dev URL.
 
-Threads that run through every lesson: the webhook is the only writer for `plan_entitlements` — Server Actions, the Portal return, and the Checkout success page all read, never write; the route handler verifies before parsing before logging, returns 400 on signature failure with no body work; the dedup INSERT and the entitlement UPSERT live in one transaction so a crash mid-handler can never leave partial state and a replay never mutates twice; the entitlement UPSERT carries the `last_event_at < event.created` predicate so out-of-order delivery silently no-ops the older event; `lookup_key` is the only stable handle Stripe IDs travel by — `price_id` strings never appear in app code; the `billing.*` interface is the only place `stripe` is imported, every other call site reads the entitlement row or calls one of three exported methods; `hasActiveAccess(entitlement)` and `requirePlan(planSlug)` are the two gate functions, encoded once. The chapter inherits the chapter framing of chapter 062 — every UPDATE carries tenancy + lifecycle + ordering preconditions in its `WHERE`, zero-rows-affected is the honest no-op.
+The project is **done when**, against the provided inspector and a test-mode Stripe account:
+
+- `stripe listen` forwards a test checkout to the dev server and the inspector's `processed_events` panel gains one row within a second.
+- The derived `plan_entitlements` row reflects the new plan after the trigger — `plan: 'pro'`, a populated `subscriptionId`, `currentPeriodEnd` set, `lastEventAt` matching the event's `created`.
+- Replaying the same event ID leaves the event landed exactly once: no second `processed_events` row, `plan_entitlements.updatedAt` does not advance, no second `audit_logs` row.
+- Out-of-order delivery silently no-ops the older event: the newer values stand and `lastEventAt` does not regress.
+- Signature tampering and a missing signature header both return 400 `application/problem+json` with no `processed_events` row and no body parsing.
+- The Portal button opens the Stripe customer portal in a new tab, and a cancel-at-period-end there surfaces the new flag on the entitlement panel.
+- `billing.requirePlan('pro')` gates a paywalled Server Component — the `error.tsx` fallback before the upgrade, the protected content after.
+- The redirect-versus-webhook race resolves cleanly: the success page shows "finalizing" then swaps to "you're on Pro" within a second or two, and falls back to "check your email" if the webhook never lands.
+- A forged `subscription_data.metadata.organization_id` cannot write to the wrong org — the handler cross-checks metadata against the Customer's owning org and rejects a mismatch.
+
+Threads that run through every lesson: the webhook is the only writer for `plan_entitlements` — Server Actions, the Portal return, and the Checkout success page all read, never write; the route handler verifies before parsing before logging, returns 400 on signature failure with no body work; the dedup INSERT and the entitlement UPSERT live in one transaction so a crash mid-handler can never leave partial state and a replay never mutates twice; the entitlement UPSERT carries the `last_event_at < event.created` predicate so out-of-order delivery silently no-ops the older event; `lookup_key` is the only stable handle Stripe IDs travel by — `price_id` strings never appear in app code; the `billing.*` interface is the only place `stripe` is imported, every other call site reads the entitlement row or calls one of three exported methods; `hasActiveAccess(entitlement)` and `requirePlan(planSlug)` are the two gate functions, encoded once.
+The chapter inherits the chapter framing of chapter 062 — every UPDATE carries tenancy + lifecycle + ordering preconditions in its `WHERE`, zero-rows-affected is the honest no-op.
+
+Scope cuts the project makes, named once here so each lesson can lean on them: test mode only, never a `sk_live_` key; hosted Checkout, no embedded form (lesson 2 of chapter 064); the Portal owns cancellation, no in-house cancel screen (lesson 3 of chapter 064); the three subscription events are enough for the entitlement projection — no `invoice.paid` / `invoice.payment_failed` handling (the past-due banner is a forward reference to chapter 071); the `seats` column ships but seat enforcement is left to Unit 9's membership gate and Unit 13's over-seat banner; plan changes go through the Portal, never `stripe.subscriptions.update` from app code; automatic tax off, no promotion codes, no `incomplete_expired` recovery flow, no webhook-secret-rotation drill (the rotation drill is a forward reference to Unit 16).
 
 ### Dependency carry-in
 
 - **From chapter 063 (the webhook discipline):** the canonical handler skeleton (verify → parse → claim → mutate inside one transaction → 200/400), the `processed_events(provider, eventId, eventType, receivedAt)` table with `unique(provider, eventId)`, the `claimEvent(tx, provider, eventId, eventType)` helper, `stripe.webhooks.constructEvent` and the raw-body rule, the `last_event_at` ordering predicate, the 200-on-dedup-hit success path, the `STRIPE_WEBHOOK_SECRET` env entry, the `stripe listen` / `stripe trigger` local loop.
 - **From chapter 059 (tenancy + RBAC):** the `organizations` table with `id`, `name`, `ownerId`; the active-org slot in the session; `tenantDb(orgId)`; `authedAction(role, schema, fn)`; the `audit_logs` table and `logAudit(tx, event)` helper. The starter adds an `ownerEmail` getter so `stripe.customers.create({ email })` has something to pass.
-- **From chapter 055 (auth + protected routes):** the `proxy.ts` matcher and the session reads in the layout; the `BillingError` subclass (closes the thread from lesson 2 of chapter 009) is added in lesson 6 of chapter 065, the existing `error.tsx` segment renders it.
+- **From chapter 055 (auth + protected routes):** the `proxy.ts` matcher and the session reads in the layout; the `BillingError` subclass (closes the thread from lesson 2 of chapter 009) is added in lesson 5 of chapter 065, the existing `error.tsx` segment renders it.
 - **From chapter 043 + chapter 047 (Server Actions):** the canonical Result shape `{ ok: true, data } | { ok: false, error: { code, userMessage } }`, `useActionState` plumbing, Server Action with `'use server'` directive.
 - **From chapter 041 (schema):** Drizzle setup, the migration cadence (`drizzle-kit generate` then `db:migrate`), `db.transaction` shape, `ON CONFLICT` upserts.
 - **From chapter 050 (Resend):** `sendEmail({ to, subject, react, idempotencyKey })` lives in `/lib/email.ts`; not exercised in this project but referenced when an entitlement change should email the org owner ("forward note — Unit 13 wires the notification").
@@ -35,7 +51,7 @@ src/
   db/
     schema.ts                   # provided: organizations (+ stripeCustomerId), users, org_members,
                                 #           audit_logs, processed_events (full from lesson 2 of chapter 063),
-                                #           plan_entitlements stub — TODO student adds columns in lesson 5 of chapter 065
+                                #           plan_entitlements stub — TODO student adds columns in lesson 4 of chapter 065
     client.ts                   # provided
     relations.ts                # provided
   lib/
@@ -43,6 +59,7 @@ src/
     authed-action.ts            # provided
     audit-log.ts                # provided
     email.ts                    # provided (Unit 7)
+    logger.ts                   # provided: structured Pino logger (Chapter 092)
     webhooks/
       stripe.ts                 # TODO student: verifyStripeEvent + handler dispatch
       processed-events.ts       # provided: claimEvent(tx, provider, eventId, eventType) from lesson 2 of chapter 063
@@ -51,7 +68,7 @@ src/
       catalog.json              # populated by seed-stripe.ts: lookup_key → planSlug mapping
       catalog.ts                # provided: typed loader for catalog.json with z.parse
       entitlement.ts            # TODO student: getEntitlement(orgId), hasActiveAccess(e), planFromLookupKey
-      projection.ts             # TODO student: subscriptionToEntitlement(subscription)
+      projection.ts             # TODO student: subscriptionToEntitlement(subscription) — EntitlementPatch + PlanSlug types provided
       upgrade.ts                # TODO student: billing.upgrade action
       portal.ts                 # TODO student: billing.openPortal action
       require-plan.ts           # TODO student: billing.requirePlan gate
@@ -70,7 +87,11 @@ src/
         success/Poller.tsx      # provided: 500ms router.refresh, 30s budget, "finalizing" → "ready"
     inspector/
       page.tsx                  # provided: plan_entitlements panel, processed_events tail, Checkout/Portal
-                                #           buttons, "Replay last event" debug, "Tamper signature" debug
+                                #           buttons, "Replay last event" debug, "Tamper signature" debug,
+                                #           "Missing header" / "Force older event" / "Forge metadata" /
+                                #           "Force entitlement status" debugs
+      pro-only/
+        page.tsx                # provided: calls billing.requirePlan('pro') at the top, renders gated content
 ```
 
 ### Reference solution signatures lessons display
@@ -86,6 +107,8 @@ src/
   - `onCheckoutCompleted(tx, event)` — reads `session.customer` (the Stripe Customer ID), reads `session.subscription`, calls `stripe.subscriptions.retrieve(subscriptionId)` once (the one allowed `stripe.*` call inside a handler — names the carve-out), resolves `organizationId` via `session.subscription_data?.metadata?.organization_id` or by reading the `organizations` row with the matching `stripeCustomerId`, UPSERTs `plan_entitlements` from the projection with `last_event_at = event.created`, writes `audit_logs` row `{ action: 'billing.subscription.activated', subjectType: 'subscription', subjectId: subscriptionId, orgId: organizationId, actorUserId: null, payload: { plan } }` via `logAudit(tx, ...)`.
   - `onSubscriptionUpdated(tx, event)` — projects the subscription, UPDATEs `plan_entitlements` with `WHERE organizationId = ? AND (last_event_at IS NULL OR last_event_at < ?)`, writes `audit_logs` `{ action: 'billing.subscription.updated', subjectType: 'subscription', subjectId: subscriptionId, orgId: organizationId, actorUserId: null, payload: { plan, status, cancelAtPeriodEnd } }` via `logAudit(tx, ...)` (only when the UPDATE returns a row).
   - `onSubscriptionDeleted(tx, event)` — UPDATEs `plan_entitlements` to `plan: 'free'`, `status: 'canceled'`, `subscriptionId: null`, same ordering predicate, writes `audit_logs` `{ action: 'billing.subscription.canceled', subjectType: 'subscription', subjectId: subscriptionId, orgId: organizationId, actorUserId: null, payload: {} }` via `logAudit(tx, ...)`.
+- **The metadata cross-check** (`lib/webhooks/stripe.ts`):
+  - `resolveOrgIdFromCustomer(tx, stripeCustomerId)` reads `organizations.id WHERE stripeCustomerId = ?`; throws `BillingError('UNKNOWN_CUSTOMER')` if not found. `onCheckoutCompleted` cross-checks `session.subscription_data?.metadata?.organization_id` against this resolved org and rejects (log + 500) on mismatch.
 - **The `plan_entitlements` schema** (`db/schema.ts`):
   - `organizationId uuid pk references organizations(id) on delete cascade`, `plan text not null default 'free'` (`'free' | 'pro' | 'team'`), `status text not null default 'active'`, `subscriptionId text` nullable, `currentPeriodEnd timestamptz` nullable, `cancelAtPeriodEnd boolean not null default false`, `seats integer not null default 1`, `lastEventAt timestamptz` nullable, `updatedAt timestamptz not null default now()`. Free row inserted at org creation by a trigger or by the org creation flow (the starter wires the latter).
 - **`getEntitlement(orgId)`** (`lib/billing/entitlement.ts`):
@@ -112,25 +135,15 @@ A single Server Component at `/inspector` providing the verification surface for
 - **`processed_events` tail:** the last 20 rows for `provider='stripe'`, newest first. Each row shows `eventId`, `eventType`, `receivedAt`. The student watches rows land here in real time as `stripe trigger` fires.
 - **Checkout button:** calls `billing.upgrade('pro')`, redirects to the returned URL. The "Upgrade to Team" button calls `billing.upgrade('team')`.
 - **Portal button:** calls `billing.openPortal()`, opens the returned URL in a new tab. Disabled (with tooltip "No Stripe Customer yet — start a Checkout first") when `stripeCustomerId` is null.
-- **"Replay last event" debug:** re-fires the last claimed event by re-POSTing the original raw body and signature to the local webhook URL via the Stripe CLI (`stripe events resend <event_id>`). Used in lesson 7 of chapter 065 to prove idempotency.
+- **"Replay last event" debug:** re-fires the last claimed event by re-POSTing the original raw body and signature to the local webhook URL via the Stripe CLI (`stripe events resend <event_id>`). Used to prove idempotency.
 - **"Tamper signature" debug:** sends a forged POST to `/api/webhooks/stripe` with a body but an invalid `stripe-signature` header; the panel shows the 400 + problem+json response.
+- **"Missing header" debug:** sends a POST with a body and no `stripe-signature` header at all; the panel shows the same 400.
+- **"Force older event" debug:** re-fires a `customer.subscription.updated`-shaped event with a hand-rolled `created` value 60 seconds before the row's `lastEventAt`, to exercise the ordering predicate.
+- **"Forge metadata" debug:** fires a Checkout event whose `subscription_data.metadata.organization_id` points at an org other than the one owning the Customer, to exercise the cross-check.
+- **"Force entitlement status" debug:** writes a chosen `status` onto the active org's entitlement row directly so the gate function can be walked through all eight statuses without Stripe round-trips.
 - **Audit-log tail:** the last 20 `audit_logs` rows for the active org. Every successful entitlement transition writes one.
 
 The inspector is provided in full; the student writes only the handlers and the `billing.*` methods it exercises.
-
-### Verify recipe mapped to "Done when"
-
-| Done-when clause | Verify step |
-| --- | --- |
-| `stripe listen` forwards a test checkout to the dev server | `stripe listen --forward-to localhost:3000/api/webhooks/stripe` prints the secret; paste into `.env.local` as `STRIPE_WEBHOOK_SECRET`; restart dev. `stripe trigger checkout.session.completed` fires; the inspector's `processed_events` panel gains one row within 1s. |
-| The inspector panel shows the event landed once even when Stripe retries | Click "Replay last event" in the inspector; CLI resends the same `event.id`; `processed_events` still shows one row; `plan_entitlements.updatedAt` does not advance; `audit_logs` does not gain a second row. |
-| The derived `plan_entitlements` row reflects the new plan | Before trigger: row reads `plan: 'free'`, `status: 'active'`, `subscriptionId: null`. After trigger: `plan: 'pro'`, `status: 'trialing' \| 'active'`, `subscriptionId: 'sub_...'`, `currentPeriodEnd` populated, `lastEventAt` matches the event's `created`. |
-| Replaying the same event ID does not produce a second `audit_logs` row | After replay, the audit panel's row count is unchanged; the `processed_events` row's `receivedAt` is unchanged (the second attempt lost the claim, no row updated). |
-| The portal button opens the Stripe customer portal in a new tab | After a successful Checkout, the inspector's "Portal" button is enabled; clicking opens a `https://billing.stripe.com/p/session/...` URL in a new tab; clicking "Cancel subscription" in the portal returns the user to `STRIPE_PORTAL_RETURN_URL`; the inspector picks up `customer.subscription.updated` with `cancel_at_period_end: true`; the `plan_entitlements` panel shows the new flag. |
-| Signature tampering returns 400 | Click the "Tamper signature" debug button; the panel shows `400 application/problem+json` with `title: 'invalid_signature'`; `processed_events` does not gain a row; no body parsing occurred (verifiable in the structured log). |
-| Out-of-order delivery silently no-ops the older event | Fire `customer.subscription.updated` twice with hand-crafted `event.created` timestamps via `stripe events resend --idempotency-key <new>` — the newer one lands, then the older one returns 200 but `plan_entitlements.lastEventAt` does not regress and the panel still shows the newer values. |
-| `billing.requirePlan('pro')` gates a paywalled Server Component | A provided `/inspector/pro-only` page calls `await billing.requirePlan('pro')`; before the upgrade, it renders the `error.tsx` segment ("Upgrade to Pro to access this"); after the upgrade, it renders the protected content. |
-| The redirect-versus-webhook race resolves cleanly | After clicking Checkout, complete the test-card flow; land on `/billing/success?session_id=...`; the page shows "finalizing your subscription"; within 1-2s the poller picks up the new entitlement and the page swaps to "you're on Pro." Disable the webhook handler temporarily and confirm the page sits in "finalizing" until the 30s budget elapses and surfaces "check your email." |
 
 ### Concepts demonstrated → owning lesson
 
@@ -150,283 +163,235 @@ The inspector is provided in full; the student writes only the handlers and the 
 - `tenantDb(orgId)` for org-scoped reads — chapter 056.
 - `audit_logs` append-only on every privileged transition — chapter 059.
 - Custom `BillingError` Error subclass and `error.tsx` interop — lesson 2 of chapter 009, chapter 043.
+- Structured logging keyed by event id, verify-before-log discipline — lesson 2 of chapter 092.
 
 ---
 
-## Lesson 1 — The brief
+## Lesson 1 — Project Overview
 
-Frames the build, the "Done when" verification recipe, scope cuts, and the senior payoff of owning the webhook seam end-to-end.
+The student leaves with the starter cloned and running: Postgres up, schema migrated and seeded, the Stripe test-mode catalog created, the Stripe CLI tunnel forwarding to the dev server, and the inspector showing `plan: 'free'` for the active org with a disabled Portal button.
+No webhook logic exists yet — a `stripe trigger` would 404 — and that is the starting line the implementation lessons build from.
 
-Goals:
+This project ingests three Stripe webhooks, projects them into one `plan_entitlements` row per org, exposes three methods (`upgrade`, `openPortal`, `requirePlan`) behind `/lib/billing/`, and proves the loop with `stripe listen` + `stripe trigger`.
+A single figure shows the finished inspector: the entitlement panel reading `plan: 'pro'`, the `processed_events` tail with one row, the Portal button enabled, plus a short animated capture of the end UX — clicking Upgrade through Stripe test-card checkout to the success page flipping to Pro, the Portal cancel-at-period-end picking up the new flag, and the "Tamper signature" debug returning 400.
 
-- Frame what's being built: ingest three Stripe webhooks, project them into one `plan_entitlements` row per org, expose three methods (`upgrade`, `openPortal`, `requirePlan`) at `/lib/billing/`, prove the loop with `stripe listen` + `stripe trigger`. One screenshot of the inspector with the entitlement panel showing `plan: 'pro'`, the `processed_events` tail with one row, and the Portal button enabled.
-- State the "Done when" in one paragraph (verify with constant-time compare, dedup via `processed_events` in one transaction, derive `plan_entitlements` from three events, `last_event_at` ordering predicate, portal button opens, signature tampering returns 400, replay does not mutate twice).
-- Name the scope cuts: no real Stripe production keys — test mode only; no embedded Checkout — hosted is the default (lesson 2 of chapter 064); no in-house cancel screen — the Portal owns it (lesson 3 of chapter 064); no `invoice.paid` / `invoice.payment_failed` handling — the three subscription events are enough for the entitlement projection (the project notes the past-due banner is a forward reference); no seat enforcement — the `seats` column ships but the membership gate is left to Unit 13's notification project where the over-seat banner lands; no `stripe.subscriptions.update` calls from app code — plan changes go through the Portal; no automatic tax — toggled off in Checkout; no promotion codes; no `incomplete_expired` recovery flow; no webhook secret rotation drill.
-- Set the senior payoff: the webhook seam is the production async edge of every modern SaaS — and the careless code is the most expensive code in the codebase. The patterns shipped here (verify-then-claim-then-mutate-in-one-transaction, the `last_event_at` predicate, the single-writer rule, the derived-view projection, the thin interface around an SDK that earns wrapping) carry into every async ingest the student writes — payment webhooks, email-bounce webhooks, third-party callbacks, internal event buses.
-- Show the end UX: a short animated capture of (a) clicking Upgrade → completing Stripe test-card checkout → success page polling → entitlement panel flipping to Pro; (b) clicking Portal → cancel-at-period-end → inspector picking up the new flag; (c) the "Tamper signature" debug button returning 400.
-- Link the starter via `degit`.
+### What we'll practice
 
-Senior calls and watch-outs:
+The webhook seam is the production async edge of every modern SaaS — and the careless code is the most expensive code in the codebase.
+This project practices the discipline that makes the seam safe: verify-then-claim-then-mutate inside one transaction, the `last_event_at` ordering predicate, the single-writer rule for derived state, the derived-view projection, and the thin interface that earns wrapping around an SDK.
+These patterns carry into every async ingest the student writes next — payment webhooks, email-bounce webhooks, third-party callbacks, internal event buses.
+The starter already ships the webhook claim helper and the Stripe SDK singleton; the chapter 063 discipline is carry-in, not something the student re-derives — this project is its application to one real third-party.
 
-- The starter ships the webhook claim helper and the Stripe SDK singleton — the discipline from chapter 063 is the carry-in, not something the student re-derives. This project is the application of the discipline to one real third-party.
-- Stripe test mode is the only environment the project runs in. Test-mode keys and live-mode keys are wholly separate universes; the project's `.env.example` ships `sk_test_` and `whsec_` (local) — never paste a `sk_live_` here.
-- The `pnpm seed:stripe` script must run once before the project works. The script creates three Products and their monthly Prices in the student's test account, then writes the resolved `lookup_key`s to `catalog.json`. Re-running the seed is idempotent (uses `lookup_key` to find-or-create).
+### Architecture
 
-Codebase state at entry: empty repo (student runs `degit`).
-Codebase state at exit: starter cloned, Stripe CLI installed (`brew install stripe/stripe-cli/stripe`), `stripe login` complete, test-mode keys pasted into `.env.local`, `pnpm install` clean, `docker compose up -d` running Postgres, `pnpm db:migrate && pnpm db:seed` populated, `pnpm seed:stripe` created the catalog, `pnpm dev` shows the inspector with `plan: 'free'` for the active org and a disabled Portal button. No webhook handler logic yet — `stripe trigger` would fire but the route returns 404.
+The shape of the loop, named here and built across the lessons:
 
-Estimated student time: 15 to 20 minutes.
+- **In-bound (the webhook):** Stripe → `POST /api/webhooks/stripe` → verify signature → claim in `processed_events` → dispatch by event type → project the Subscription → UPSERT/UPDATE `plan_entitlements` → write `audit_logs` → 200. All DB work inside one `db.transaction`.
+- **Out-bound (the interface):** the inspector's buttons → `billing.upgrade` / `billing.openPortal` (Server Actions) → Stripe-hosted Checkout / Portal → redirect back. `billing.requirePlan` gates Server Components by reading the entitlement row.
+- **The contract between them:** the webhook is the only writer for `plan_entitlements`; every other surface reads. `subscription_data.metadata.organization_id` is the carry-channel from Checkout to webhook; the `stripeCustomerId` reverse lookup is the safety net and cross-check.
 
----
+### Starting file tree
 
-## Lesson 2 — Tour the starter and open the Stripe CLI tunnel
+See the annotated starter file tree in the Chapter framing above — the TODO-marked files are the focus: the webhook route handler, `lib/webhooks/stripe.ts`, the four `lib/billing/` stubs (`projection.ts`, `entitlement.ts`, `upgrade.ts`, `portal.ts`, `require-plan.ts`, `errors.ts`, `index.ts`), and the `plan_entitlements` schema stub.
+Everything else — the SDK singleton, the claim helper, the catalog loader, the inspector, the success page and poller, the seeds — is provided.
+The starter's `billing/stripe.ts` is the only file that may import `stripe`; the SDK singleton is configured there with `apiVersion` pinned, `STRIPE_SECRET_KEY` from the typed env, and `typescript: true`.
+The catalog loader exposes `planFromLookupKey(key) → 'free' | 'pro' | 'team' | null` — the projection function's only path from Stripe-side IDs to app-side plan slugs — over the `{ "lookup_keys": { "course_pro_monthly": "pro", "course_team_monthly": "team" } }` that `seed:stripe` writes.
+The provided `lib/webhooks/processed-events.ts` exports `claimEvent(tx, provider, eventId, eventType)` from lesson 2 of chapter 063, returning `boolean` (true = claimed, false = already processed) — the seam every webhook handler in the codebase shares.
+The provided success page reads the entitlement and renders the `Poller` Client Component (`router.refresh()` every 500ms, 30s budget) when the entitlement looks stale relative to the `session_id` — the resolution of the redirect-versus-webhook race from lesson 3 of chapter 063.
 
-Walks the file tree, reads the provided `claimEvent` / SDK singleton / catalog, runs `stripe listen` + one `stripe trigger` to prove the local tunnel is alive.
+### Roadmap
 
-Goals:
+- **Lesson 2 — Verify before you parse.** Lands the route handler's read-raw-body, `constructEvent`, and 400-with-problem+json verification skeleton with structured logging on every disposition.
+- **Lesson 3 — Claim the event inside one transaction.** Wraps the post-verify path in `db.transaction`, dedupes against `processed_events`, and stubs the dispatch switch.
+- **Lesson 4 — Project three events into one entitlement row.** Completes the `plan_entitlements` schema, writes the pure projection, and lands the three handlers with the ordering predicate and audit logs.
+- **Lesson 5 — Ship the three-method billing interface.** Implements `upgrade`, `openPortal`, and `requirePlan`, wires the Checkout and Portal buttons, and exercises the Stripe-hosted flow end-to-end with a test card.
+- **Lesson 6 — Harden the webhook against forged tenancy.** Adds the metadata cross-check so a forged `organization_id` cannot write to the wrong org.
 
-- Walk the file tree, calling out provided vs. stubbed. Linger on six files: the empty `app/api/webhooks/stripe/route.ts` (the handler skeleton the student writes), the empty `lib/webhooks/stripe.ts` (the dispatch + handlers), the empty `lib/billing/projection.ts` (the projection function), the stub `plan_entitlements` schema in `db/schema.ts` (columns to be filled in lesson 5 of chapter 065), the empty `billing/upgrade.ts` / `portal.ts` / `require-plan.ts`, and the provided `billing/stripe.ts` (the SDK singleton — the only file that may import `stripe`).
-- Read the provided `lib/webhooks/processed-events.ts` end-to-end — `claimEvent(tx, provider, eventId, eventType)` from lesson 2 of chapter 063, returning `boolean` (true = claimed, false = already processed). This is the seam every webhook handler in the codebase will share.
-- Read `lib/billing/stripe.ts`: the configured singleton with `apiVersion` pinned, `STRIPE_SECRET_KEY` from the typed env, `typescript: true` flag. Names the rule: this file is the only place `import Stripe from 'stripe'` appears; the lint config from lesson 6 of chapter 064 flags violations.
-- Read `lib/billing/catalog.ts` and `catalog.json`: the seed-stripe script wrote `{ "lookup_keys": { "course_pro_monthly": "pro", "course_team_monthly": "team" } }` after creating the test-mode Products and Prices. The catalog loader exposes `planFromLookupKey(key) → 'free' | 'pro' | 'team' | null` — the projection function's only path from Stripe-side IDs to app-side plan slugs.
-- Read the inspector: confirm the `plan_entitlements` panel, the `processed_events` tail, the Checkout / Portal buttons (currently broken — the buttons exist but the actions throw), the "Replay last event" and "Tamper signature" debug tools.
-- Read the success page: `app/(app)/billing/success/page.tsx` is a Server Component that reads the entitlement; if `lastEventAt` is older than the current `session_id` lookup's expected window, it renders the `Poller` Client Component that calls `router.refresh()` every 500ms with a 30s budget. The poller is the resolution of the redirect-versus-webhook race from lesson 3 of chapter 063.
-- Run the Stripe CLI: `stripe login`, then `stripe listen --forward-to localhost:3000/api/webhooks/stripe` — the CLI prints the local webhook signing secret to paste into `.env.local` as `STRIPE_WEBHOOK_SECRET`. Restart the dev server so the env reloads. The CLI keeps running in a side terminal for the rest of the project.
-- Run `stripe trigger checkout.session.completed` once: the handler 404s (no route logic yet), the CLI prints the 404 — proves the tunnel is alive. The next lesson lands the 200.
-- Read `lib/billing/projection.ts`'s type definitions (provided): `EntitlementPatch` and `PlanSlug` are already exported as type aliases so the handler signatures compile incrementally; the function body is the TODO.
+### Setup
 
-Senior calls and watch-outs:
+Run these once, in order:
 
-- The webhook secret from `stripe listen` is different on every fresh CLI session and from the dashboard-configured production secret. Paste-into-env each time the student restarts the CLI is the daily rhythm; named here so it doesn't surprise them later.
-- The Stripe CLI's `--forward-to` tunnel forwards to whatever URL the student gives it. Forgetting to start it (or starting it pointed at the wrong port) is the canonical "my handler doesn't fire" bug — the CLI prints "200 OK" or "404" on every forward, so the side terminal is the live verification.
-- `STRIPE_SECRET_KEY` is server-only. The starter's `env.ts` (from Chapter 050's typed env discipline) does not expose it to the client bundle. Pasting a live-mode key here is a security incident — the project's `.env.example` ships only the `sk_test_` prefix and the typed env validates the prefix at boot.
-- Reading the inspector before writing any code is the discipline named in lesson 2 of chapter 062 — the student should know every panel before they need it.
+1. `npx degit <starter-repo> stripe-entitlements` — clone the starter.
+2. `pnpm install` — installs dependencies; expect a clean install with no peer warnings.
+3. `brew install stripe/stripe-cli/stripe` — installs the Stripe CLI (the project's local webhook tunnel and event trigger).
+4. `stripe login` — opens the browser to authorize the CLI against the student's Stripe account; expect "Done! The Stripe CLI is configured."
+5. `cp .env.example .env.local` and paste the test-mode keys (see the env list below).
+6. `docker compose up -d` — starts Postgres 18; expect the container healthy.
+7. `pnpm db:migrate && pnpm db:seed` — applies migrations and seeds two orgs, two users, and a `'free'` `plan_entitlements` row each.
+8. `pnpm seed:stripe` — creates the free/pro/team Products and monthly Prices in the student's test-mode account and writes their `lookup_key`s to `lib/billing/catalog.json`; re-running is idempotent (find-or-create by `lookup_key`). Run this once before the project works.
+9. `pnpm dev` — starts the app.
+10. In a second terminal, `stripe listen --forward-to localhost:3000/api/webhooks/stripe` — prints the local webhook signing secret. Paste it into `.env.local` as `STRIPE_WEBHOOK_SECRET` and restart `pnpm dev` so the env reloads. Keep this terminal running for the rest of the project.
 
-Codebase state at entry: starter cloned, deps installed, Postgres up, schema migrated, seed loaded, `seed:stripe` ran, CLI installed.
-Codebase state at exit: student has read every provided file, run the inspector, started `stripe listen`, fired one `stripe trigger` event and watched it 404 cleanly. No app code written. The Checkout and Portal buttons still throw because the actions are empty.
+Env vars (`.env.local`):
 
-Estimated student time: 25 to 35 minutes.
+- `STRIPE_SECRET_KEY` — the test-mode secret key (`sk_test_...`), from the Stripe Dashboard → Developers → API keys in **test mode**. Server-only; never paste a `sk_live_` key here — the typed env validates the `sk_test_` prefix at boot.
+- `STRIPE_WEBHOOK_SECRET` — the local signing secret (`whsec_...`) printed by `stripe listen`. Different on every fresh CLI session and from the dashboard-configured production secret; re-paste each time the CLI restarts.
+- `STRIPE_PORTAL_RETURN_URL` — `http://localhost:3000/billing`, the Portal's return navigation target.
+- `APP_URL` — `http://localhost:3000`, used for Checkout `success_url` / `cancel_url`.
+- existing `DATABASE_URL`, `BETTER_AUTH_SECRET`, `RESEND_API_KEY` from prior projects.
 
----
-
-## Lesson 3 — Verify before you parse
-
-Writes the route handler's read-raw-body, `constructEvent`, 400-with-problem+json-on-failure skeleton with structured logging on every disposition.
-
-Goals:
-
-- Fill `app/api/webhooks/stripe/route.ts` with the verification skeleton from lesson 1 of chapter 063:
-  - `export async function POST(request: Request)`.
-  - `const body = await request.text()` — once, before anything else; never `request.json()`.
-  - `const signature = request.headers.get('stripe-signature')` — null check returns 400.
-  - `try { const event = stripe.webhooks.constructEvent(body, signature, env.STRIPE_WEBHOOK_SECRET) } catch (err) { return problemJson(400, 'invalid_signature') }` — the SDK helper encapsulates timestamp parse, HMAC compute, constant-time compare, and the 5-minute tolerance.
-  - On success, log `{ eventId: event.id, eventType: event.type }` via the structured logger and return `Response.json({ received: true }, { status: 200 })` — no business logic yet; the dispatch lands in lesson 4 of chapter 065.
-- Add the `problemJson(status, title)` helper to `lib/webhooks/stripe.ts` (or import the one from chapter 046 if the starter ships it). Returns `new Response(JSON.stringify({ type, title, status, instance }), { status, headers: { 'content-type': 'application/problem+json' } })`. No body echo, no detail leakage.
-- Verify the route is the Node runtime: the starter sets `export const runtime = 'nodejs'` at the top — names the rule from lesson 1 of chapter 063 even though Edge would also work for the HMAC.
-- Wire the structured logger from Chapter 092 (provided in the starter as `lib/logger.ts`): every verification path logs `{ eventId, eventType, disposition }` where disposition is `'verified'`, `'invalid_signature'`, or `'missing_header'`. Structured logging — key-value JSON via Pino — is the discipline that lets 2am debugging filter by event-id (depth in lesson 2 of chapter 092); the structured log is what 2am debugging will need.
-- Run the verification:
-  - `stripe trigger checkout.session.completed` → handler logs `verified`, returns 200, no `processed_events` row yet (that's lesson 4 of chapter 065).
-  - Click the inspector's "Tamper signature" debug → handler logs `invalid_signature`, returns 400 with problem+json body; the inspector's debug panel renders the 400 status and the body inline.
-  - Submit a POST with a missing `stripe-signature` header (via the inspector's "Missing header" debug, or via `curl`): handler returns 400 with `invalid_signature` (same disposition — the signature is the contract, missing or wrong is the same answer).
-
-Senior calls and watch-outs:
-
-- `request.text()` is read once. Calling `request.json()` later consumes the same stream and returns empty — the canonical bug from lesson 1 of chapter 063. The lesson shows the broken shape (`const data = await request.json(); ... stripe.webhooks.constructEvent(JSON.stringify(data), ...)`) and the fix (`const body = await request.text(); ... JSON.parse(body)` only after `constructEvent` succeeds).
-- 400, never 401, on signature failure — Stripe retries on 5xx and treats 4xx as terminal, which is the desired behavior; a 401 misleads operators reading the dashboard's failed-delivery panel.
-- No logging of the body before verification — attacker-controlled strings in the structured log become a log-injection vector. The lesson restates the verify-before-log rule.
-- `stripe.webhooks.constructEvent` throws `Stripe.errors.StripeSignatureVerificationError` on failure. The `instanceof` check is the discrimination; any other error is a 5xx (genuine server error). Names the asymmetry.
-- The Edge-vs-Node question: the Stripe SDK works on Node only; switching to Edge would require hand-rolling HMAC (lesson 1 of chapter 063 covered the primitives). The project picks Node uniformly for the chapter.
-- The 5-minute tolerance is the SDK default; do not lower it without coordinating with the senders — under clock skew, a tight window starts producing false-positive `invalid_signature` errors that look exactly like an attack.
-
-Codebase state at entry: empty route handler, the SDK singleton + claim helper + logger provided.
-Codebase state at exit: the route verifies signatures, returns 200 on success and 400 with problem+json on failure, logs every disposition. `stripe trigger` lands cleanly; the inspector's tamper button reproduces the 400. No `processed_events` writes yet, no business logic — the dispatch and dedup land in lesson 4 of chapter 065.
-
-Estimated student time: 35 to 50 minutes.
+**Expected result:** `pnpm dev` shows the inspector at `/inspector` with `plan: 'free'` for the active org and a disabled Portal button.
+The `stripe listen` terminal prints `200 OK` or `404` on every forward — it is the live verification that the tunnel is alive.
+Firing `stripe trigger checkout.session.completed` now returns 404 (no route logic yet); the next lesson lands the 200.
 
 ---
 
-## Lesson 4 — Claim the event inside one transaction
+## Lesson 2 — Verify before you parse
 
-Wraps the post-verify path in `db.transaction`, calls `claimEvent` to dedupe against `processed_events`, and stubs the dispatch switch with structured logging.
+Write the webhook route handler's verification skeleton: read the raw body once, verify the Stripe signature with constant-time compare, and answer 400 `application/problem+json` on any failure — all with structured logging on every disposition.
 
-Goals:
+The finished route accepts a `stripe trigger checkout.session.completed` with a logged `verified` disposition and a 200, and rejects both the inspector's "Tamper signature" and "Missing header" debugs with a 400 and a problem+json body the inspector renders inline.
+No `processed_events` row appears and no business logic runs yet.
 
-- Wrap the post-verification path in `db.transaction`:
-  - `return await db.transaction(async (tx) => { const claimed = await claimEvent(tx, 'stripe', event.id, event.type); if (!claimed) { logger.info({ eventId: event.id, disposition: 'duplicate' }); return Response.json({ received: true, duplicate: true }, { status: 200 }); } await dispatch(tx, event); return Response.json({ received: true }, { status: 200 }); })`.
-- Build the dispatch stub in `lib/webhooks/stripe.ts`:
-  - `dispatch(tx, event)` switches on `event.type`: cases for `'checkout.session.completed'`, `'customer.subscription.updated'`, `'customer.subscription.deleted'` log + return for now (the projection + mutations land in lesson 5 of chapter 065); the `default` case logs `{ eventType, disposition: 'unhandled' }` and returns.
-- Verify `processed_events` writes:
-  - `stripe trigger checkout.session.completed` once: inspector's `processed_events` panel gains one row with `eventId`, `eventType: 'checkout.session.completed'`, `receivedAt: now()`. The structured log shows `verified` then `claimed`.
-  - `stripe events resend <eventId>` (or the inspector's "Replay last event"): the same `event.id` arrives a second time; `claimEvent` returns false (the unique constraint on `(provider, eventId)` blocked the insert); the handler logs `duplicate` and returns 200 with `{ duplicate: true }`. The inspector's panel still shows one row — no second insert. This is the structural idempotency proof.
-- Verify the 200-on-duplicate rule: returning 4xx or 5xx on a duplicate would tell Stripe to retry, producing an infinite loop. 200 is the success path for both first-arrival and replay (lesson 2 of chapter 063).
-- Add structured logging on every code path: `verified`, `duplicate`, `claimed`, `dispatched`, `unhandled` — each with the `eventId`. The log is the live forensic surface; the inspector's audit panel is the user-visible one.
-- Name the timing budget: Stripe waits 30 seconds for a 2xx. The current handler does nothing in dispatch yet, so latency is trivial; in lesson 5 of chapter 065 the handlers add one Stripe API call (`subscriptions.retrieve`) plus a DB write — still well within budget. The lesson names the threshold so lesson 5 of chapter 065's API call doesn't look like an accident.
-- (Optional senior reach.) The `processed_events.eventType` column is stored for observability — the analyst can answer "how many `checkout.session.completed` did we see this week" without a Stripe round trip. Costs nothing; pays off the first time someone asks.
+### Your mission
 
-Senior calls and watch-outs:
+This is the boundary of the webhook seam, and the order of operations is the whole lesson: read the raw request body exactly once with `request.text()`, verify the signature, and only then trust anything in the payload.
+`stripe.webhooks.constructEvent(body, signature, env.STRIPE_WEBHOOK_SECRET)` encapsulates the timestamp parse, the HMAC compute, the constant-time compare, and the 5-minute tolerance; it throws `Stripe.errors.StripeSignatureVerificationError` on failure, and that `instanceof` check is the discrimination — any other thrown error is a genuine 500, not a 400.
+The constraint that shapes everything else: never read the body twice (calling `request.json()` after `request.text()` consumes the stream and returns empty — the canonical chapter 063 bug), never log the body before verification (attacker-controlled strings in a structured log are a log-injection vector), and answer 400 rather than 401 on a bad signature so Stripe treats the delivery as terminal instead of retrying.
+A missing signature header and a wrong signature are the same answer — the signature is the contract.
+The route runs on the Node runtime (the Stripe SDK is Node-only; the starter pins `export const runtime = 'nodejs'`), and the structured logger from chapter 092 (provided as `lib/logger.ts`) records every disposition so 2am debugging can filter by event id.
+Out of scope this lesson: claiming the event, the dispatch switch, and any DB write — those land next; the `problemJson(status, title)` helper either ships in the starter (from chapter 046) or is added here returning `application/problem+json` with no body echo and no detail leakage.
 
-- The dedup INSERT and the dispatch must live in the same `db.transaction`. Claiming outside the transaction and dispatching inside (or vice versa) re-introduces the partial-state bug from lesson 2 of chapter 063 — the claim row commits, the business work fails, the next retry sees "already processed" and skips, leaving the database wrong. One transaction, one boundary.
-- The dispatch function takes `tx` (the transaction handle), not `db`. Every database call inside a handler must go through `tx`, never the global `db`. Mis-routing a call to `db` opens an outer transaction that races the inner — name the rule, then catch in code review.
-- The `default` case (unknown event type) returns 200, not 400. Stripe sends events the application hasn't subscribed to from dashboard misconfigurations; refusing them produces dashboard noise. The right shape: ignore quietly, log for observability, move on.
-- The `dispatch` switch is exhaustive over the events the application acts on. New event types added later require a new case; missing a case means the event lands as `unhandled`. TypeScript's `event.type` union (Stripe's SDK types) helps but isn't load-bearing — the runtime log is the safety net.
-- Side effects inside the transaction (`stripe.subscriptions.retrieve`, Resend sends, R2 uploads) hold DB connections across network IO. The lesson names the discipline: DB-only work goes in the transaction; the one allowed exception inside `onCheckoutCompleted` (the `subscriptions.retrieve` call in lesson 5 of chapter 065) is the smallest reach that earns its weight; anything else queues to a background job. (Pointing forward to chapter 066, not blocking here.)
+- A valid `stripe trigger checkout.session.completed` returns 200 and the structured log carries one line with the event id, event type, and disposition `verified`.
+- The inspector's "Tamper signature" debug returns 400 `application/problem+json` with `title: 'invalid_signature'`, and the inspector's debug panel renders the 400 status and body inline.
+- A POST with no `stripe-signature` header (the inspector's "Missing header" debug or `curl`) returns the same 400 `invalid_signature` — disposition `missing_header` in the log, same answer to the caller.
+- No request body is parsed or logged before the signature verifies — the structured log on a tampered request contains no body content.
+- The 200 response carries no business effect yet — firing a trigger adds no `processed_events` row.
 
-Codebase state at entry: route verifies signatures and returns 200, no DB writes.
-Codebase state at exit: route claims events into `processed_events` inside `db.transaction`, replay produces no second row, the dispatch stub logs every event type. The inspector's `processed_events` tail lights up; the `plan_entitlements` panel is still `free` because the handlers are empty — that's lesson 5 of chapter 065.
+### Coding time
 
-Estimated student time: 45 to 60 minutes.
+Implement the route handler against the brief and the lesson's tests, then read the reference solution.
 
----
-
-## Lesson 5 — Project three events into one entitlement row
-
-Completes the `plan_entitlements` schema, writes the pure `subscriptionToEntitlement` projection, and lands the three handlers with the `last_event_at` ordering predicate plus audit logs.
-
-Goals:
-
-- Complete the `plan_entitlements` schema in `db/schema.ts` per the reference signatures (org PK, plan/status/subscriptionId/currentPeriodEnd/cancelAtPeriodEnd/seats/lastEventAt/updatedAt). Run `pnpm drizzle-kit generate` then `pnpm db:migrate`. Backfill: the seed already inserted a `'free'` row per seeded org; new orgs created later get a row from the org-creation flow (the starter wires this — names the discipline).
-- Fill `lib/billing/projection.ts`:
-  - `subscriptionToEntitlement(sub: Stripe.Subscription, catalog: Catalog): EntitlementPatch` — reads `sub.items.data[0].price.lookup_key`, resolves to a plan slug via `catalog.planFromLookupKey`, returns `{ plan, status: sub.status, subscriptionId: sub.id, currentPeriodEnd: new Date(sub.current_period_end * 1000), cancelAtPeriodEnd: sub.cancel_at_period_end, seats: sub.items.data[0].quantity ?? 1 }`. The function is pure — no DB access, no SDK calls — and the test target in Unit 18.
-- Fill the three handlers in `lib/webhooks/stripe.ts`:
-  - **`onCheckoutCompleted(tx, event)`**: extract `session = event.data.object`. Resolve `organizationId` — prefer `session.subscription_data?.metadata?.organization_id` written by `billing.upgrade` (lesson 6 of chapter 065); fall back to a lookup via `organizations.stripeCustomerId = session.customer`. Call `stripe.subscriptions.retrieve(session.subscription)` to fetch the full Subscription (the Checkout event payload is summary; the Subscription object carries the full price + status). UPSERT `plan_entitlements` via Drizzle's `onConflictDoUpdate` keyed on `organizationId`, setting the projection result + `lastEventAt = new Date(event.created * 1000)`. Write `audit_logs` `{ action: 'billing.subscription.activated', subjectType: 'subscription', subjectId: subscriptionId, orgId: organizationId, actorUserId: null, payload: { plan } }` via `logAudit(tx, ...)`.
-  - **`onSubscriptionUpdated(tx, event)`**: project the subscription directly from `event.data.object` (already a full Subscription on this event type — no second SDK call needed). UPDATE `plan_entitlements` with `SET plan = ..., status = ..., currentPeriodEnd = ..., cancelAtPeriodEnd = ..., seats = ..., subscriptionId = ..., lastEventAt = event.created, updatedAt = now() WHERE organizationId = ? AND (lastEventAt IS NULL OR lastEventAt < event.created) RETURNING id`. Zero rows → log `{ disposition: 'stale_ordering' }` and return. One row → `logAudit(tx, { action: 'billing.subscription.updated', subjectType: 'subscription', subjectId: subscriptionId, orgId: organizationId, actorUserId: null, payload: { plan, status, cancelAtPeriodEnd } })`.
-  - **`onSubscriptionDeleted(tx, event)`**: UPDATE `plan_entitlements` with `SET plan = 'free', status = 'canceled', subscriptionId = NULL, currentPeriodEnd = NULL, cancelAtPeriodEnd = false, lastEventAt = event.created, updatedAt = now() WHERE organizationId = ? AND (lastEventAt IS NULL OR lastEventAt < event.created)`. Resolve `organizationId` via the existing entitlement row's `subscriptionId = event.data.object.id` (the simpler reverse lookup — the row is already org-keyed). Write `logAudit(tx, { action: 'billing.subscription.canceled', subjectType: 'subscription', subjectId: subscriptionId, orgId: organizationId, actorUserId: null, payload: {} })`.
-- Resolve the `organizationId` lookup helper: `resolveOrgIdFromCustomer(tx, stripeCustomerId)` reads `organizations.id WHERE stripeCustomerId = ?`; throws `BillingError('UNKNOWN_CUSTOMER')` if not found (the webhook was for a Customer the app didn't create — log + 200 to prevent retries, the lesson names the trade-off vs. 500-to-investigate).
-- Add `getEntitlement(orgId)` in `lib/billing/entitlement.ts`: `React.cache`-wrapped, simple `tenantDb(orgId).planEntitlements.findFirst({ where: eq(planEntitlements.organizationId, orgId) })`. Throws if missing (every org has a row from creation — missing is a real bug).
-- Add `hasActiveAccess(e: PlanEntitlement): boolean`: encodes the decision table from lesson 5 of chapter 064 — `trialing | active | past_due → true`; `canceled` with `cancelAtPeriodEnd === true` and `currentPeriodEnd > now() → true`; `incomplete | incomplete_expired | unpaid → false`. Pure function; named once.
-- Verify each handler:
-  - `stripe trigger checkout.session.completed`: inspector flips `plan: 'free' → 'pro'`, `status: 'trialing' \| 'active'` (depends on whether the Checkout used a trial), `subscriptionId` populated, `lastEventAt` matches `event.created`. `audit_logs` gains the `billing.subscription.activated` row.
-  - `stripe trigger customer.subscription.updated` (with the existing subscription ID — the CLI's `--add` lets you override): inspector picks up new `status` / `currentPeriodEnd` / `cancelAtPeriodEnd`. The "Force older event" debug button replays the event with a hand-crafted `created` 60 seconds in the past — the handler logs `stale_ordering` and the entitlement does not regress.
-  - `stripe trigger customer.subscription.deleted`: inspector flips `plan: 'pro' → 'free'`, `status: 'canceled'`, `subscriptionId: null`.
-- One Mermaid sequence diagram in the lesson: Checkout → `checkout.session.completed` event → handler claims in `processed_events` → projects → UPSERTs `plan_entitlements` → writes `audit_logs` → returns 200 → inspector picks up via `router.refresh` poll.
-
-Senior calls and watch-outs:
-
-- The `onCheckoutCompleted` handler is the one place inside a webhook handler where the course allows a `stripe.*` call — `subscriptions.retrieve(session.subscription)` because the Checkout event payload's `subscription` is just the ID. The senior call: this is one round trip, well inside the 30s budget; alternatives (a separate `customer.subscription.created` event arriving moments later) are functionally equivalent but introduce a second event to handle. The course defaults to retrieve-on-Checkout.
-- `onSubscriptionUpdated` does *not* call `subscriptions.retrieve` — the event's payload is already the full Subscription. Re-fetching is the canonical "I copied the Checkout handler" bug; the lesson shows it as a watch-out.
-- The `lastEventAt` predicate is in the UPDATE's `WHERE`, not in a pre-read. A pre-read-then-write opens the same race window from lesson 3 of chapter 063 — two concurrent handlers both see "mine is newer," both write, the older one wins. The atomic `UPDATE ... WHERE lastEventAt < ?` lets Postgres evaluate the condition under row-lock.
-- UPSERT vs. UPDATE: `onCheckoutCompleted` uses UPSERT because a Checkout might land before the entitlement row exists (rare, but possible if the org-creation insert was retried after Checkout); the other two use UPDATE because the row is guaranteed by the time they fire. Names the asymmetry.
-- Resolving `organizationId` from `Customer` ID is a fallback path — the primary path is `subscription_data.metadata.organization_id` set in `billing.upgrade` (lesson 6 of chapter 065). Names the rule: metadata is the carry-channel; the lookup is the safety net.
-- `Stripe.Subscription`'s TypeScript types from the SDK have known gaps around `lookup_key` nullability — the projection function's null check on `catalog.planFromLookupKey` is the structural guard. An unrecognized `lookup_key` (a Stripe-side seed drift) returns `null`; the projection throws `BillingError('UNKNOWN_PLAN')` with the offending key, the handler logs + 500s, Stripe retries. Names the trade-off.
-- The `audit_logs` write is inside the transaction with the entitlement write. Failure to log rolls back the entitlement change — the discipline from lesson 3 of chapter 081. Restated, not re-taught.
-- The `seats` column ships per the reference schema, but no enforcement logic ships in this chapter — the gate lives in the membership flow (Unit 9) and the over-seat banner lands in Unit 13's notification project. Named here so the column is not orphaned.
-
-Codebase state at entry: dedup works, dispatch logs but does not mutate.
-Codebase state at exit: the three handlers project Stripe events into `plan_entitlements` with the `last_event_at` ordering predicate, audit logs land on every transition, `getEntitlement` and `hasActiveAccess` are exported from `lib/billing/`. The inspector's panel flips through `free → pro → free` as the student fires events. `billing.upgrade` and `openPortal` still throw — the Checkout flow can't be exercised end-to-end yet — that's lesson 6 of chapter 065.
-
-Estimated student time: 75 to 90 minutes. The chapter's heaviest lesson; the projection + three handlers + the entitlement schema all close on one runnable surface.
+[Reference solution `<details>`: the `POST` handler reading `request.text()` once, the null-check on the header, the `try`/`catch` around `constructEvent` with the `StripeSignatureVerificationError` discrimination, the `problemJson` helper, and the structured-log calls on the `verified` / `invalid_signature` / `missing_header` paths.
+Decision rationale to cover: why 400 not 401 (Stripe retries 5xx, treats 4xx as terminal; a 401 misleads operators reading the dashboard's failed-delivery panel); why the body is read once and parsed only after `constructEvent` succeeds (show the broken `request.json()` shape and the fix); why no body logging before verify; why Node runtime over Edge (the SDK is Node-only; lesson 1 of chapter 063 covered the hand-rolled HMAC path Edge would need); why the 5-minute tolerance is left at the SDK default (tightening it produces false-positive `invalid_signature` errors under clock skew that look exactly like an attack).
+Link to lesson 1 of chapter 063 for the verification primitives rather than re-explaining.]
 
 ---
 
-## Lesson 6 — Ship the three-method billing interface
+## Lesson 3 — Claim the event inside one transaction
 
-Implements `upgrade`, `openPortal`, and `requirePlan` behind `lib/billing/`, wires the inspector's Checkout and Portal buttons, and exercises the Stripe-hosted flow end-to-end with a test card.
+Wrap the post-verification path in `db.transaction`, claim the event against `processed_events` to dedupe, and stub the dispatch switch so every event type is logged.
 
-Goals:
+The finished route writes one `processed_events` row per first-seen event and none on a replay: firing `stripe trigger checkout.session.completed` lands a row, and the inspector's "Replay last event" re-fires the same `event.id` to a logged `duplicate` and a 200 with `{ duplicate: true }`, leaving the panel at one row.
+The `plan_entitlements` panel stays `free` — the handlers are still empty.
 
-- Create `lib/billing/errors.ts`: `class BillingError extends Error { constructor(public code: 'NO_CUSTOMER' | 'PLAN_REQUIRED' | 'NO_ACCESS' | 'UNKNOWN_PLAN' | 'UNKNOWN_CUSTOMER', message?: string) { super(message ?? code); this.name = 'BillingError'; } }`. Hooks into the existing `error.tsx` segment via `instanceof BillingError` discrimination.
-- Fill `lib/billing/upgrade.ts`:
-  - `upgrade = authedAction('admin', z.strictObject({ planSlug: z.enum(['pro', 'team']) }), async ({ planSlug }, ctx) => ...): Promise<Result<{ url: string }>>`.
-  - Ensure Stripe Customer: read `organizations.stripeCustomerId` for `ctx.orgId`; if null, call `stripe.customers.create({ email: ctx.org.ownerEmail, metadata: { organization_id: ctx.orgId } })` and `UPDATE organizations SET stripeCustomerId = ? WHERE id = ?`. The two writes (the Stripe Customer creation and the column update) cannot be made atomic across systems — the senior anchor: order them so the Stripe-side write happens first and the local update is the idempotent follow-up; a duplicate-but-orphan Customer on retry is fixable, a local pointer to a non-existent Customer is not.
-  - Resolve the Price ID via the catalog: `const priceId = await catalog.priceIdForPlan(planSlug, 'monthly')` — the catalog tracks Stripe Price IDs per lookup_key (the seed-stripe script writes them).
-  - Create the Checkout session: `stripe.checkout.sessions.create({ mode: 'subscription', customer: stripeCustomerId, line_items: [{ price: priceId, quantity: 1 }], success_url: `${env.APP_URL}/billing/success?session_id={CHECKOUT_SESSION_ID}`, cancel_url: `${env.APP_URL}/billing`, subscription_data: { metadata: { organization_id: ctx.orgId }, trial_period_days: 14 }, allow_promotion_codes: false, payment_method_collection: 'always' })`.
-  - Return `{ ok: true, data: { url: session.url } }`.
-- Fill `lib/billing/portal.ts`:
-  - `openPortal = authedAction('admin', z.strictObject({ returnPath: z.string().optional() }), async ({ returnPath }, ctx) => ...): Promise<Result<{ url: string }>>`.
-  - Read `stripeCustomerId`; if null, return `{ ok: false, error: { code: 'NO_CUSTOMER', userMessage: 'Subscribe to manage billing' } }`. No Customer creation here — the Portal is for existing customers (lesson 3 of chapter 064).
-  - Create the Portal session: `stripe.billingPortal.sessions.create({ customer: stripeCustomerId, return_url: returnPath ? `${env.APP_URL}${returnPath}` : env.STRIPE_PORTAL_RETURN_URL })`.
-  - Return `{ ok: true, data: { url: session.url } }`.
-- Fill `lib/billing/require-plan.ts`:
-  - `requirePlan(planSlug: 'pro' | 'team'): Promise<void>` — reads the active org from session (the helper from chapter 059), reads the entitlement via `getEntitlement(orgId)`, checks `hasActiveAccess(e)` and the plan tier (`'team'` includes `'pro'` access; the tier comparison is a small `PLAN_TIER: Record<PlanSlug, number>` table). Throws `BillingError('NO_ACCESS')` or `BillingError('PLAN_REQUIRED')` on fail.
-  - Not an `authedAction` — it's a Server-Component-callable helper. Names the asymmetry: actions handle mutations and return Result; helpers throw and rely on `error.tsx`.
-- Re-export the three methods from `lib/billing/index.ts`: `export { upgrade, openPortal } from './...'; export { requirePlan } from './require-plan'; export { getEntitlement, hasActiveAccess } from './entitlement'; export { BillingError } from './errors';`. Every other file imports from `billing`, never the underlying modules — the wrapper boundary.
-- Wire the inspector's Checkout and Portal buttons:
-  - The "Upgrade to Pro" button is a `<form action={async (formData) => { 'use server'; const result = await upgrade(null, formData); if (result.ok) redirect(result.data.url); }}> <input type="hidden" name="planSlug" value="pro" />` Server-Action-inline form. (Or a Client Component calling the action with a constructed `FormData` and using `window.location.assign(result.data.url)`.)
-  - The "Manage billing" button is the same shape, an inline `<form action={async (formData) => { 'use server'; const result = await openPortal(null, formData); if (result.ok) /* open in new tab */ }}> <input type="hidden" name="returnPath" value="/inspector" />`, opening the URL in a new tab via `target="_blank"`. Disabled (with tooltip) when `stripeCustomerId` is null.
-- Wire `/inspector/pro-only` (a provided page that calls `await billing.requirePlan('pro')` at the top, then renders "Pro-only content"). Before Checkout: the page throws `BillingError('NO_ACCESS')`, `error.tsx` renders "Upgrade to Pro." After Checkout: the page renders the protected content.
-- Add the `BillingError` rendering in the existing `error.tsx` segment: discriminate on `error instanceof BillingError`, switch on `error.code`, render the appropriate copy + a deep-link to the Portal or to the Upgrade flow.
-- Verify end-to-end:
-  - Click "Upgrade to Pro" in the inspector. Stripe Checkout opens (hosted page); pay with `4242 4242 4242 4242`; land on `/billing/success?session_id=...`. The poller shows "finalizing" for ~1-2s; the webhook lands; the entitlement panel flips to Pro; the success page renders "you're on Pro."
-  - Click "Manage billing." The Portal opens in a new tab. Click "Cancel subscription"; confirm; close the tab. Within a moment the inspector picks up `customer.subscription.updated` with `cancel_at_period_end: true`; the panel shows the new flag. The provided billing-page banner reads "your subscription ends on <date>."
-  - Open `/inspector/pro-only` after Pro: renders the protected content. Cancel via the Portal in test mode at-period-end-now (the dashboard's test-clock or `stripe trigger customer.subscription.deleted` for the seeded subscription): the entitlement flips to free; the protected page renders the error fallback again.
-- Lint rule: add (or call out as already-present) the eslint rule `no-restricted-imports` blocking `import Stripe from 'stripe'` and `import { stripe } from '@/lib/billing/stripe'` outside `lib/billing/**`. The rule is the structural enforcement of lesson 6 of chapter 064's principle.
+### Your mission
 
-Senior calls and watch-outs:
+Idempotency is structural here, not hopeful: the dedup INSERT and the business work must live in the same `db.transaction`, because claiming outside the transaction and dispatching inside (or the reverse) re-introduces the partial-state bug from lesson 2 of chapter 063 — the claim row commits, the work fails, the next retry sees "already processed" and skips, and the database is left wrong.
+`claimEvent(tx, 'stripe', event.id, event.type)` is the provided check-and-claim: it returns `true` when the row is freshly inserted and `false` when the `unique(provider, eventId)` constraint blocked it, and on `false` the handler logs `duplicate` and returns 200 — never a 4xx or 5xx, which would tell Stripe to retry forever.
+Every database call inside a handler goes through the transaction handle `tx`, never the global `db`; mis-routing to `db` opens an outer transaction that races the inner one.
+The dispatch switch is exhaustive over the events the app acts on, with the `default` case returning 200 after a log (Stripe sends events from dashboard misconfigurations the app never subscribed to; refusing them is just dashboard noise).
+Structured logging covers every path — `verified`, `duplicate`, `claimed`, `dispatched`, `unhandled` — each keyed by event id, because the log is the live forensic surface and the inspector's panels are the user-visible one.
+Out of scope: the projection and the mutations — the case bodies log and return for now.
+Mind the timing budget named here so next lesson's Stripe API call does not look like an accident: Stripe waits 30 seconds for a 2xx, and side effects inside the transaction (a `subscriptions.retrieve`, a Resend send, an R2 upload) hold a DB connection across network IO — the one allowed reach lands next lesson; anything heavier queues to a background job (a forward note to chapter 066).
 
-- The lazy Customer creation in `upgrade` is the one cross-system write the project has. The order matters: create on Stripe first, then UPDATE the local row. A failure after the Stripe create leaves an orphan Customer (Stripe-side garbage but no app-side reference); the retry creates a second Customer — the senior fix is to check for an existing Customer by metadata first (`stripe.customers.list({ email, limit: 1 })`) before creating. The lesson names the trade-off; the project ships the simpler retry-with-orphan path for clarity and notes the production hardening.
-- `subscription_data.metadata.organization_id` is the carry-channel that lets the webhook resolve `organizationId` without a DB lookup. Names the pattern from lesson 1 of chapter 064 and lands the code.
-- `payment_method_collection: 'always'` is the default for trial-collecting flows (lesson 2 of chapter 064) — collects a card at trial start, avoids the "trial ended, no card on file" downgrade dance.
-- `allow_promotion_codes: false` is the conservative default; flipping to `true` enables Stripe-dashboard-defined coupons. Named, not exercised.
-- The success URL contains `{CHECKOUT_SESSION_ID}` — Stripe interpolates the ID. The success page reads `searchParams.session_id` but does *not* call `stripe.checkout.sessions.retrieve` from the page — the read-and-poll pattern is structurally cleaner than the "trust the session_id" pattern (the latter requires the success page to verify the session server-side and write entitlements; the former lets the webhook own writes).
-- The Portal is opened in a new tab (`target="_blank"`) because Stripe's hosted Portal navigates back via `return_url` — the new-tab opens a focused billing context the user closes when done, no SPA back-button confusion.
-- `requirePlan` is the load-bearing gate (lesson 6 of chapter 064). Every Server Component or Server Action that gates behind a plan calls it at the top. Forgetting the call is the same lint-rule target as forgetting `authedAction` (Chapter 080's audit class); the rule is "every privileged Server Component imports `requirePlan` from `billing` and calls it before any data read."
-- The `BillingError` discrimination in `error.tsx` is the seam — without it, every billing-gated page renders a generic 500. Names the wiring once; the test in chapter 091 exercises it.
-- The `STRIPE_PORTAL_RETURN_URL` env is a default — the action accepts a `returnPath` override so a "Cancel my subscription" link in settings can return to settings, not the inspector.
-- Don't add `billing.cancel` or `billing.changePlan` methods — the Portal owns user-initiated mutations (lesson 6 of chapter 064). The temptation to "for symmetry" wrap is the failure mode named in lesson 7 of chapter 064. Interface stays at three methods.
+- Firing `stripe trigger checkout.session.completed` once adds exactly one row to the `processed_events` panel with the event id, `eventType`, and `receivedAt`, and the log shows `verified` then `claimed`.
+- The inspector's "Replay last event" (or `stripe events resend <eventId>`) re-delivers the same `event.id`, the panel still shows one row, and the response is 200 with `{ duplicate: true }`.
+- A duplicate delivery never returns a 4xx or 5xx — the dedup-hit path is a success path.
+- An event type the app does not handle returns 200 and logs disposition `unhandled` with no error.
+- Every disposition is logged with its event id; the `plan_entitlements` panel remains `free` because the handlers are still stubs.
 
-Codebase state at entry: handlers mutate `plan_entitlements`, `billing.*` is empty.
-Codebase state at exit: `billing.upgrade`, `openPortal`, `requirePlan` shipped, the inspector exercises Checkout end-to-end with a real test card and the Portal end-to-end with cancel-at-period-end, `/inspector/pro-only` gates correctly. The lint rule blocks stray `stripe` imports. Verification step is mostly complete; the deterministic forensic recipes land in lesson 7 of chapter 065.
+### Coding time
 
-Estimated student time: 75 to 90 minutes. Second-heaviest lesson; closes the loop the user touches.
+Implement the transaction wrapper and dispatch stub against the brief and the tests, then read the reference solution.
+
+[Reference solution `<details>`: the `db.transaction(async (tx) => { ... })` body with the `claimEvent` call, the `{ received: true, duplicate: true }` early return on a lost claim, the `dispatch(tx, event)` call, and the dispatch switch in `lib/webhooks/stripe.ts` with the three subscription cases logging-and-returning plus the `default` case.
+Decision rationale to cover: why one transaction is one boundary (the partial-state failure mode spelled out); why `tx` not `db` inside handlers; why the `default` returns 200 not 400; why the response carries a `duplicate` flag (operators and the chapter 091 test depend on the shape); the (optional) note that `processed_events.eventType` is stored for observability so an analyst can count event types without a Stripe round-trip.
+Link to lesson 2 of chapter 063 for the claim-and-transaction pattern rather than re-explaining.]
 
 ---
 
-## Lesson 7 — Rehearse every failure mode
+## Lesson 4 — Project three events into one entitlement row
 
-Walks every "Done when" clause as a deterministic probe — tamper, replay, out-of-order, Portal cancel, redirect race, cross-tenant metadata, every `hasActiveAccess` status — and lands the metadata cross-check hardening.
+Complete the `plan_entitlements` schema, write the pure `subscriptionToEntitlement` projection, and land the three handlers with the `last_event_at` ordering predicate and an audit-log write on every transition.
 
-Goals:
+After this lesson the inspector's panel flips through `free → pro → free` as the student fires events: `checkout.session.completed` activates Pro, `customer.subscription.updated` refreshes status and the cancel flag, `customer.subscription.deleted` reverts to free — each with a matching `audit_logs` row, and an out-of-order replay leaving the row untouched.
+`billing.upgrade` and `openPortal` still throw, so the Checkout flow is not yet exercisable end-to-end.
 
-- Walk every "Done when" clause as a verification step (the table in the framing).
-- Signature path:
-  - `stripe trigger checkout.session.completed` → `processed_events` gains one row, `plan_entitlements` flips to `pro`, `audit_logs` gains one row. Inspector logs `verified → claimed → dispatched`.
-  - Inspector's "Tamper signature" → handler returns 400 + problem+json, no `processed_events` write, no body parse occurred (verifiable in the structured log which does not contain the body).
-  - `curl -X POST localhost:3000/api/webhooks/stripe -d '{}'` (no signature header) → 400 with `invalid_signature`.
-- Idempotency path:
-  - `stripe events resend <eventId>` of a previously claimed event → `processed_events` row count unchanged, `plan_entitlements.updatedAt` unchanged, `audit_logs` row count unchanged. The handler logs `verified → duplicate → 200`. The lesson names the deterministic proof: the row count is the load-bearing assertion.
-  - Verify the success path returned `{ duplicate: true }` in the response body (visible in the `stripe events resend` CLI output).
-- Ordering path:
-  - Two-event drill. Fire `customer.subscription.updated` for the current subscription (the CLI's `stripe trigger` with `--add subscription:status=past_due` produces a tailored event); confirm `plan_entitlements.status: 'past_due'`. Inspector's "Replay last event with older created" debug fires the same event-shape with a hand-rolled `created` value 60 seconds before the row's `lastEventAt`; handler logs `stale_ordering`, the entitlement does not change. Inspector confirms `status: 'past_due'` (unchanged).
-- Portal flow:
-  - Click "Manage billing" after a Checkout → Portal opens in new tab; cancel → return to app → inspector picks up the new `cancel_at_period_end: true` flag within a moment.
-  - With Stripe's test clock (or via `stripe trigger customer.subscription.deleted`): the period-end deletion fires; entitlement flips to free; `/inspector/pro-only` renders the gate fallback again.
-- Redirect-versus-webhook race:
-  - Real Checkout flow (test card `4242 4242 4242 4242`): success page renders "finalizing"; the poller's `router.refresh` flips the page to "you're on Pro" within 1-2s. Confirm via DevTools that the poll fires every 500ms.
-  - Disable the webhook handler (comment out the dispatch); rerun the Checkout; the success page sits at "finalizing" for 30 seconds, then renders the fallback ("this is taking longer than expected — check your email"). The fallback is the safety net for actual production webhook lag (or outage).
-- Cross-tenant probe:
-  - As user in org A, hand-craft a `subscription_data.metadata.organization_id` value pointing at org B (via the inspector's "forge metadata" debug). The webhook lands; the handler reads `organizationId` from metadata; UPDATEs org B's entitlement. The lesson names the failure mode: trusting metadata at face value lets a malicious-or-buggy `billing.upgrade` write to the wrong org. The structural defense: the webhook handler cross-checks `metadata.organization_id` against the `organizations` row whose `stripeCustomerId = session.customer`; mismatch → log + 500. Add the cross-check (a small refactor on lesson 5 of chapter 065's resolveOrgIdFromCustomer) and re-run the probe — the mismatched event is rejected.
-  - The lesson notes this hardening was deferred from lesson 5 of chapter 065 to surface it as a concrete watch-out in verify; some students will add it earlier.
-- Lint rule:
-  - Verify the `no-restricted-imports` rule blocks `import Stripe from 'stripe'` anywhere outside `lib/billing/**`. Try the violation in a Server Action and watch the lint fail. Restate the rule from lesson 6 of chapter 064.
-- Gate function exhaustiveness:
-  - Run `/inspector/pro-only` against each entitlement status: trialing (pass), active (pass), past_due (pass — grace), canceled with cancel_at_period_end + future period_end (pass), canceled with past period_end (fail), incomplete (fail), incomplete_expired (fail), unpaid (fail). Use the inspector's "force entitlement status" debug to walk all eight without round-tripping Stripe each time. `hasActiveAccess` lives up to the decision table from lesson 5 of chapter 064.
-- `audit_logs` discipline:
-  - Every transition wrote an `audit_logs` row inside the same transaction. Soft-delete one of the rows and re-run a transition; the audit panel shows the gap; restore. Names the append-only discipline (forward reference to lesson 3 of chapter 081).
-- Forward references the chapter project hands off:
-  - **Unit 12 (background work):** the `onCheckoutCompleted` handler's `subscriptions.retrieve` plus the entitlement upsert is one round trip; heavier post-subscription work (provisioning a customer-specific S3 prefix, sending a welcome email through Resend) lands as a `triggered.task` enqueued from the handler, not inline (lesson 2 of chapter 063's split-work pattern).
-  - **Unit 13 (notifications):** "subscription started," "trial ending in 3 days," "payment failed — please update card," "subscription canceled" all wire through the centralized dispatcher; the email and in-app inbox channels both fire off the entitlement transitions.
-  - **Unit 14 (cache):** `plan_entitlements` reads are `cacheTag('billing', orgId)`-keyed; the webhook handler calls `updateTag('billing', orgId)` after every UPSERT so the next request reads fresh; the Portal-driven `customer.subscription.updated` lands a `revalidateTag` instead (background mutation, not user-driven on this request).
-  - **Unit 16 (security/audit):** the webhook-secret-rotation drill (two active secrets, try-new-fall-back-to-old); the `subscription_data.metadata` cross-check (lifted to a lint rule); the `BillingError` user/operator split.
-  - **Unit 18 (tests):** the projection function (`subscriptionToEntitlement`) is the unit-testable seam — pure, fast; the integration tests cover the full webhook → DB → entitlement flow against real Postgres (Unit chapter 091 ships this as its target).
-- Name the senior calls one more time:
-  - The webhook is the only writer for `plan_entitlements`. Server Actions, the success page, and the Portal return all read.
-  - Verify → claim → mutate → audit all live in one transaction. Partial state is structurally impossible.
-  - The `last_event_at` predicate makes out-of-order delivery a silent no-op, not an incident.
-  - The `billing.*` interface is the only place `stripe` is imported. The lint rule is the structural enforcement.
-  - `hasActiveAccess` and `requirePlan` encode the decision table once; every gate calls them.
-  - The carry channel is `subscription_data.metadata.organization_id`; the safety net is the `stripeCustomerId` reverse lookup; the cross-check is the harness against a malicious-or-buggy upstream.
+### Your mission
 
-Senior calls and watch-outs:
+This is the heart of the project: the derived view.
+The `plan_entitlements` row is computed *from* Stripe's events and read by every request, which is why the webhook is its only writer and why the projection that turns a `Stripe.Subscription` into an `EntitlementPatch` is a pure function — no DB access, no SDK calls — that becomes the unit-test seam in Unit 18.
+The projection's only path from Stripe IDs to app plan slugs is `catalog.planFromLookupKey(sub.items.data[0].price.lookup_key)`; an unrecognized `lookup_key` (a Stripe-side seed drift) returns `null`, and the projection throws `BillingError('UNKNOWN_PLAN')` with the offending key so the handler logs and 500s and Stripe retries.
+The ordering predicate is the subtle constraint: the `last_event_at < event.created` test lives in the UPDATE's `WHERE`, not in a pre-read, because a read-then-write opens the race from lesson 3 of chapter 063 where two concurrent handlers both believe theirs is newer — the atomic `UPDATE ... WHERE lastEventAt < ?` lets Postgres evaluate the condition under row-lock, and a zero-row result is the honest no-op.
+`onCheckoutCompleted` is the one place inside a handler where a single `stripe.subscriptions.retrieve` is allowed (the Checkout event's `subscription` is just an ID); it UPSERTs because the entitlement row might not exist yet, while the other two UPDATE because the row is guaranteed by the time they fire — and `onSubscriptionUpdated` must *not* re-fetch, since its payload is already the full Subscription (re-fetching is the "I copied the Checkout handler" bug).
+The audit-log write lives inside the same transaction as the entitlement write, so a logging failure rolls the change back (the chapter 081 discipline, restated not re-taught).
+Out of scope: resolving `organizationId` defensively against a forged metadata value — this lesson trusts the metadata carry-channel with the `stripeCustomerId` reverse lookup as the safety net, and the cross-check hardening lands in lesson 6; the `seats` column ships but no enforcement does (the gate is Unit 9, the banner Unit 13).
 
-- The verify lesson is the rehearsal of the failure modes — running each one and naming what would break without the disciplines the student just installed. If a verification fails, the lesson points at the owning build lesson, not at "debug it yourself."
-- The metadata cross-check at the resolution step is the chapter's last hardening. Surfacing it in verify (rather than burying it in lesson 5 of chapter 065) frames it as a concrete watch-out the student earns by running the probe.
-- Running every status through `hasActiveAccess` is the lesson that proves the decision table; the inspector's "force status" debug is the only way to walk all eight without manual Stripe test-clock orchestration.
+- Running `drizzle-kit generate` then `db:migrate` adds the full `plan_entitlements` shape (org PK, plan, status, subscriptionId, currentPeriodEnd, cancelAtPeriodEnd, seats, lastEventAt, updatedAt), and the seeded orgs keep their `'free'` row.
+- `stripe trigger checkout.session.completed` flips the panel to `plan: 'pro'`, populates `subscriptionId` and `currentPeriodEnd`, sets `lastEventAt` to the event's `created`, and adds a `billing.subscription.activated` audit row.
+- `stripe trigger customer.subscription.updated` refreshes `status`, `currentPeriodEnd`, and `cancelAtPeriodEnd` on the existing row and adds a `billing.subscription.updated` audit row.
+- `stripe trigger customer.subscription.deleted` reverts the panel to `plan: 'free'`, `status: 'canceled'`, `subscriptionId: null`, and adds a `billing.subscription.canceled` audit row.
+- The inspector's "Force older event" debug replays an update with a `created` 60 seconds in the past and the entitlement does not regress — the handler logs `stale_ordering`.
+- `getEntitlement(orgId)` returns the active org's row (deduped per request) and `hasActiveAccess(e)` returns the decision-table answer for every subscription status.
 
-Codebase state at entry: full webhook + projection + billing interface wired.
-Codebase state at exit: every "Done when" clause verified clause-by-clause; the metadata cross-check landed; the student can articulate every decision (verify before parse, dedup atomically, project purely, `last_event_at` ordering, single-writer entitlement, Portal for user-initiated changes, the three-method interface, the lint rule) and which forward unit will lean on it.
+### Coding time
 
-Estimated student time: 40 to 55 minutes.
+Implement the schema, projection, three handlers, and the two entitlement read helpers against the brief and the tests, then read the reference solution.
+
+[Reference solution `<details>`: the `plan_entitlements` table definition; `subscriptionToEntitlement` reading `lookup_key`, `status`, `current_period_end` (×1000 to a `Date`), `cancel_at_period_end`, and `quantity`; the three handlers with the UPSERT vs UPDATE asymmetry, the `WHERE ... (lastEventAt IS NULL OR lastEventAt < ?)` predicate, the UPDATE-RETURNING no-op detection, and the `logAudit(tx, ...)` calls; `getEntitlement` as a `React.cache`-wrapped `tenantDb` read that throws on a missing row; `hasActiveAccess` encoding the lesson-5-of-chapter-064 decision table (`trialing | active | past_due → true`; `canceled` with `cancelAtPeriodEnd` and a future `currentPeriodEnd → true`; `incomplete | incomplete_expired | unpaid → false`).
+Include one Mermaid sequence diagram: Checkout → event → claim → project → UPSERT → audit → 200 → inspector poll.
+Decision rationale to cover: the single allowed `subscriptions.retrieve` in `onCheckoutCompleted` and why the alternative (waiting for `customer.subscription.created`) introduces a second event; why `onSubscriptionUpdated` does not re-fetch; why the ordering predicate is in the `WHERE` not a pre-read; the UPSERT-vs-UPDATE asymmetry; the `UNKNOWN_PLAN` null-guard trade-off; metadata as the carry-channel with the `stripeCustomerId` reverse lookup as the safety net; why `seats` ships unenforced.
+Link to lesson 5 of chapter 064 (decision table), lesson 3 of chapter 063 (ordering), and chapter 081 (audit-in-transaction) rather than re-explaining.]
 
 ---
 
-> **Note (`revalidateTag` in Next.js 16):** the single-argument form `revalidateTag(tag)` is deprecated — every call must pass a `cacheLife` profile as the second argument (`'max'` is the senior default), e.g. `revalidateTag(tag, 'max')`.
+## Lesson 5 — Ship the three-method billing interface
+
+Implement `upgrade`, `openPortal`, and `requirePlan` behind `lib/billing/`, wire the inspector's Checkout and Portal buttons, and exercise the Stripe-hosted flow end-to-end with a test card.
+
+After this lesson the loop the user touches is closed: clicking Upgrade opens Stripe Checkout, paying with the test card lands on the success page that polls until the entitlement flips to Pro, the Portal opens in a new tab and a cancel-at-period-end picks up on the entitlement panel, and `/inspector/pro-only` renders its gate before the upgrade and its content after.
+A lint rule blocks any stray `stripe` import outside `lib/billing/**`.
+
+### Your mission
+
+This lesson installs the thin interface that is the only seam through which the app speaks to Stripe — `lib/billing/` is the only place `import Stripe from 'stripe'` appears, and every other call site reads the entitlement row or calls one of three exported methods.
+Two of them are `authedAction('admin', ...)` mutations that return the canonical Result and redirect to a Stripe-hosted URL; `requirePlan` is deliberately *not* an action but a Server-Component-callable helper that throws `BillingError`, because actions handle mutations and return Result while gates throw and rely on `error.tsx` — and `requirePlan` is the load-bearing gate every paywalled Server Component calls before any data read (forgetting it is the same audit class as forgetting `authedAction`).
+The one genuine cross-system write is the lazy Customer creation in `upgrade`: the Stripe-side create must happen before the local `stripeCustomerId` UPDATE, because a duplicate-but-orphan Customer on retry is fixable while a local pointer to a non-existent Customer is not — the project ships the simpler retry-with-orphan path for clarity and names the production hardening (check for an existing Customer by metadata first).
+`subscription_data.metadata.organization_id` is set here — the carry-channel that lets the webhook resolve the org without a DB lookup — alongside `trial_period_days`, `payment_method_collection: 'always'` (collect a card at trial start so the trial-end downgrade dance never happens), and `allow_promotion_codes: false` as the conservative default.
+The success URL carries `{CHECKOUT_SESSION_ID}` but the success page never calls `sessions.retrieve` — the webhook owns writes and the page reads-and-polls, which is structurally cleaner than trusting the `session_id`.
+Out of scope: any `billing.cancel` or `billing.changePlan` method — the Portal owns user-initiated mutations (lesson 6 of chapter 064), and wrapping more "for symmetry" is the named failure mode; the interface stays at three methods.
+The Portal opens in a new tab so its `return_url` navigation does not fight the SPA back button, and `STRIPE_PORTAL_RETURN_URL` is a default the action can override via `returnPath`.
+
+- Clicking "Upgrade to Pro" opens Stripe-hosted Checkout; paying with `4242 4242 4242 4242` lands on `/billing/success`, which shows "finalizing" for a beat and then "you're on Pro" as the entitlement panel flips.
+- A first-time upgrade creates the Stripe Customer and persists `stripeCustomerId` on the org; the inspector header shows the id populated where it was null before.
+- Clicking "Manage billing" opens the Customer Portal in a new tab; cancelling there returns to the app and the entitlement panel shows `cancelAtPeriodEnd: true` within a moment.
+- `billing.openPortal` with no Customer yet returns `{ ok: false, error: { code: 'NO_CUSTOMER' } }` and the inspector's Portal button is disabled with its tooltip until a Checkout has run.
+- `/inspector/pro-only` renders the `error.tsx` fallback ("Upgrade to Pro") before the upgrade and the protected content after, and reverts to the fallback once the subscription is deleted.
+- A `stripe` import added anywhere outside `lib/billing/**` fails the `no-restricted-imports` lint rule.
+
+### Coding time
+
+Implement the three methods, the `BillingError` class, the `index.ts` re-exports, and the button wiring against the brief and the tests, then read the reference solution.
+
+[Reference solution `<details>`: `BillingError` with its code union and `error.tsx` discrimination; `upgrade` with the ensure-Customer ordering, the catalog Price lookup, and the `checkout.sessions.create` call; `openPortal` with the `NO_CUSTOMER` Result and the `billingPortal.sessions.create` call; `requirePlan` with the `PLAN_TIER` table and the `NO_ACCESS` / `PLAN_REQUIRED` throws; the `index.ts` barrel; the inline Server-Action `<form>` wiring for both buttons; the `error.tsx` `BillingError` switch; the `no-restricted-imports` rule.
+Decision rationale to cover: the create-on-Stripe-first ordering and the orphan-vs-dangling-pointer trade-off; why `requirePlan` throws instead of returning Result; `payment_method_collection: 'always'` and `allow_promotion_codes: false` as trial-flow defaults; why the success page reads-and-polls instead of trusting `session_id`; why the Portal opens in a new tab; why the interface stays at three methods; the `STRIPE_PORTAL_RETURN_URL`-with-`returnPath`-override shape.
+Link to lesson 6 of chapter 064 (the interface principle and the load-bearing gate), lesson 2 of chapter 064 (Checkout), lesson 3 of chapter 064 (Portal), and chapter 043 (`error.tsx` interop) rather than re-explaining.]
+
+---
+
+## Lesson 6 — Harden the webhook against forged tenancy
+
+Add a cross-check so the webhook cannot be tricked into writing an entitlement to the wrong org: the handler verifies that `subscription_data.metadata.organization_id` matches the org that actually owns the Customer, and rejects a mismatch.
+
+After this lesson the inspector's "Forge metadata" debug — a Checkout event whose metadata points at org B while the Customer belongs to org A — is rejected with a 500 and writes nothing, while a legitimate Checkout still lands cleanly.
+
+### Your mission
+
+The webhook trusts `subscription_data.metadata.organization_id` to route the entitlement, and lesson 4 took that trust at face value with the `stripeCustomerId` reverse lookup only as a fallback — which means a malicious-or-buggy `billing.upgrade` that sets the wrong `organization_id` could write to another tenant's entitlement.
+The structural defense is to make the two sources agree: resolve the org from the Customer (`organizations WHERE stripeCustomerId = session.customer`) and cross-check it against the metadata value, treating a mismatch as a hard failure (log + 500) rather than picking a winner.
+This is a small refactor on the `resolveOrgIdFromCustomer` path from lesson 4, not new surface area, and it is the chapter's last hardening — surfaced as its own lesson because trusting upstream metadata is exactly the trap an inexperienced dev walks into, and the fix deserves to be confirmed against a concrete probe rather than buried in the projection lesson.
+The cross-check belongs only where metadata is read (`onCheckoutCompleted`); the subscription update and delete handlers resolve the org from the entitlement row's own `subscriptionId` and need no metadata trust.
+Out of scope: lifting the cross-check to a lint rule and the webhook-secret-rotation drill — both are forward references to Unit 16.
+
+- The inspector's "Forge metadata" debug fires a Checkout event whose `metadata.organization_id` names a different org than the Customer's owner, and the handler rejects it: no `plan_entitlements` write, no `audit_logs` row, a logged mismatch, and a 500 so Stripe surfaces the failure.
+- A legitimate Checkout — metadata and Customer owner agree — still flips the entitlement to Pro exactly as before.
+- An event for a Stripe Customer the app never created resolves to no org and is rejected the same way, rather than silently creating or mutating a row.
+
+### Coding time
+
+Implement the cross-check against the brief and the tests, then read the reference solution.
+
+[Reference solution `<details>`: the refactored `resolveOrgIdFromCustomer` returning the Customer-owned org, the equality check against `session.subscription_data?.metadata?.organization_id`, and the mismatch rejection path in `onCheckoutCompleted`.
+Decision rationale to cover: why a mismatch is a hard failure rather than preferring one source; why the cross-check lives only in the Checkout handler; the trade-off between 500-to-investigate and log-and-200 for an unknown Customer (the project picks reject-loudly here because a mismatch signals either a bug or an attack).
+Link to lesson 4 of chapter 065 for the original `resolveOrgIdFromCustomer` and note that Unit 16 lifts this defense to a lint rule rather than re-explaining.]

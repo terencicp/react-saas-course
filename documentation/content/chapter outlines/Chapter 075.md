@@ -2,9 +2,41 @@
 
 ## Chapter framing
 
-Chapter 075 cashes in chapter 074 — the public-URL-plus-auth trigger (lesson 1 of chapter 074), the Upstash primitives and sliding-window default (lesson 2 of chapter 074), the three module-scope limiters, dual-keying, `RateLimit-*` headers, user-safe 429 body, fail-open policy, and the Better-Auth-built-in replacement (lesson 3 of chapter 074) — as one runnable surface on the chapter 055 email+password auth flows. The student writes `lib/rate-limit.ts` (three module-scope `Ratelimit` instances), `lib/keys.ts` (`getClientIp`, `normalizeEmail`), `safeLimit(limiter, key)` (fail-open wrapper), `rateLimitHeaders(result)` (IETF-draft headers), and wraps sign-in / sign-up / reset at the action seam — sign-in with per-IP **and** per-email dual gates. Better Auth's built-in limiter is turned off. Each build closes runnable: lesson 3 of chapter 075 ends with limiters declared and the inspector's "Remaining tokens" panel live; lesson 4 of chapter 075 ends with the three endpoints wrapped and 429s firing with correct headers and body; lesson 5 of chapter 075 walks "Done when" against the inspector and the Upstash dashboard.
+Chapter 075 cashes in chapter 074 — the public-URL-plus-auth trigger (lesson 1 of chapter 074), the Upstash primitives and sliding-window default (lesson 2 of chapter 074), the three module-scope limiters, dual-keying, `RateLimit-*` headers, user-safe 429 body, fail-open policy, and the Better-Auth-built-in replacement (lesson 3 of chapter 074) — as one runnable surface on the chapter 055 email+password auth flows. The student writes `lib/rate-limit.ts` (three module-scope `Ratelimit` instances), `lib/keys.ts` (`getClientIp`, `normalizeEmail`), `safeLimit(limiter, key)` (fail-open wrapper), `rateLimitHeaders(result)` (IETF-draft headers), and wraps sign-in / sign-up / reset at the action seam — sign-in with per-IP **and** per-email dual gates. Better Auth's built-in limiter is turned off.
 
-Threads through every lesson: the limiter is a named seam — call sites import from `lib/rate-limit.ts`, never construct inline; module-scope declaration is load-bearing (the in-memory `ephemeralCache` only survives across hot invocations when the instance is reused); sign-in runs two `limit()` calls — `ip:<addr>` and `email:<normalized>`, both must pass, cheaper first; gating runs **before** the password hash and the database lookup; the 429 body is identical regardless of which gate tripped (no information leak); `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` ship on every response, `Retry-After` added on rejection; `pending` analytics handed to `after()` (from `next/server`) so the user response is not blocked; `safeLimit` wraps every `limit()` call so a Redis outage logs a structured event and fail-opens on the auth path; Better Auth's built-in `rateLimit: { enabled: false }` — replacing the in-memory limiter with the application-level limiter is the architectural point; the inspector's "Spam X" buttons hammer endpoints deterministically so the 11th-as-429-with-headers is the on-page reading every verify step uses.
+The build is a UI-and-data-layer project, so every requirement is a behavior the student watches happen on `/inspector` or an operator-observable fact in Redis: a 429 firing on the 11th request with the right headers and an opaque body, the "Remaining tokens" panel counting down, the structured-log tail growing, and the Upstash Data Browser holding the keys with TTLs. Each build closes runnable: lesson 2 ends with limiters declared and the inspector's "Remaining tokens" panel live; lesson 3 ends with sign-in dual-gated, 429s firing with correct headers and body, and Better Auth's built-in off; lessons 4 and 5 add the sign-up and reset gates.
+
+### Project goals (the "Done when" the student is building toward)
+
+The finished surface satisfies every clause below; each Implementation lesson owns the clauses its capability proves, and the lesson's "Moment of truth" is where the student confirms them.
+
+- The 11th sign-in request from the same IP within one minute returns 429; requests 1-10 return 401 (Better Auth, wrong password) with `RateLimit-Remaining` counting 9 → 0.
+- The same email from a different IP is throttled separately on the per-email gate — the 11th cross-IP attempt against one address returns 429 with `key: 'email:alice@example.com'`, proving the per-email gate closes the cross-IP credential-stuffing vector.
+- Every response carries `RateLimit-Limit`, `RateLimit-Remaining`, and `RateLimit-Reset`; 429s also carry `Retry-After`.
+- Every 429 body reads exactly `{"error":"Too many attempts. Please try again later."}`, identical regardless of which gate tripped (no information leak).
+- After a 429, once the window resets (or counters are cleared), the next request returns 401 again with `Remaining: 9` — window resets release tokens.
+- The Upstash dashboard shows the keys: `rl:signin:ip:<addr>` and `rl:signin:email:alice@example.com` present in the Data Browser with TTLs ≤ their window, and the Analytics tab shows the rejection blip.
+- Sign-up is rate-limited per-IP: 6 attempts with random-suffix emails return 429 on the 6th, with five different emails accepted (per-email could not have been the gate).
+- Reset is rate-limited per-IP and per-email: 4 attempts against `eve@example.com` return 429 on the 4th (`limiter: 'reset'`, `key: 'email:eve@example.com'`), and the gate survives an IP switch.
+- The gate runs before the password hash: with "Gate after work" off, the 11th+ requests skip the hash (`verify_ms ≈ 0`); with it on, every request pays the hash even past the budget.
+- Better Auth's built-in limiter is off — the only `rateLimit` entry in `lib/auth.ts` is `{ enabled: false }`.
+- The limiter fails open under an Upstash outage: with "Force Upstash down" on, 15 spammed sign-ins all proceed and the structured-log tail shows 15 `rate_limit_unavailable` rows.
+- Module-scope declaration is load-bearing: the first request after a cold start hits Redis once per `limit()` call; subsequent requests within the cache window hit `ephemeralCache` with zero Redis round-trips, visible in the request-trace panel.
+- `pending` analytics are flushed off-path via `after()` — awaiting `pending` on the response path instead adds 5-10ms per call.
+- Env validation gates Redis usage: commenting out `UPSTASH_REDIS_REST_URL` fails the boot with the Zod error.
+
+### Cross-cutting design rules (thread through every lesson)
+
+- The limiter is a named seam — call sites import from `lib/rate-limit.ts`, never construct inline.
+- Module-scope declaration is load-bearing: the in-memory `ephemeralCache` only survives across hot invocations when the instance is reused.
+- Sign-in runs two `limit()` calls — `ip:<addr>` and `email:<normalized>`, both must pass, cheaper first.
+- Gating runs **before** the password hash and the database lookup.
+- The 429 body is identical regardless of which gate tripped (no information leak).
+- `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` ship on every response; `Retry-After` adds on rejection.
+- `pending` analytics are handed to `after()` (from `next/server`) so the user response is not blocked.
+- `safeLimit` wraps every `limit()` call so a Redis outage logs a structured event and fail-opens on the auth path.
+- Better Auth's built-in `rateLimit: { enabled: false }` — replacing the in-memory limiter with the application-level limiter is the architectural point.
+- The inspector's "Spam X" buttons hammer endpoints deterministically so the 11th-as-429-with-headers is the on-page reading every Moment of truth uses.
 
 ### Dependency carry-in
 
@@ -89,39 +121,17 @@ src/
 
 ### Inspector page spec
 
-Single Server Component at `/inspector`. Reads server-side from Upstash; refreshes via `router.refresh()` and Server Actions.
+Single Server Component at `/inspector`. Reads server-side from Upstash; refreshes via `router.refresh()` and Server Actions. Provided in full — the student writes only `redis.ts`, `rate-limit.ts`, `keys.ts`, `safe-limit.ts`, `rate-limit-headers.ts`, and the three action wrappers. The Project Overview's Starting file tree marks it as a provided focus file; the lessons that light up each panel describe the panel where they first use it.
 
 - **Header:** session-user switcher (`alice` / `bob` / unauthenticated); "Reset Upstash counters" Server Action via a starter-provided `clearLimiterKeys()` helper — the inspector tracks touched keys in a `seen-keys` Redis set because Upstash REST has no `SCAN`.
 - **"Remaining tokens" panel:** live readouts for `rl:signin` (per-IP and per-email for the active identity), `rl:signup` (per-IP), `rl:reset` (per-IP and per-email). Each row shows `prefix`, `key`, `remaining`, `limit`, `reset` countdown. Reads via `limiter.getRemaining(key)` — no budget consumed.
 - **"Spam X" buttons:** "Spam sign-in" runs `signInAction` 11x against `alice` with a wrong password; "Spam sign-up" runs `signUpAction` 6x with random-suffix emails (per-IP is the gate); "Spam reset" runs `resetAction` 4x against `eve@example.com` (4th trips the per-email gate).
-- **"Send one" buttons:** non-spamming single-call versions of each endpoint — used in verify to walk request 1 through 11 and watch `RateLimit-Remaining` decline.
+- **"Send one" buttons:** non-spamming single-call versions of each endpoint — used in Moment of truth to walk request 1 through 11 and watch `RateLimit-Remaining` decline.
 - **Recent-responses log:** last 20 calls — `endpoint`, `status`, the three `RateLimit-*` headers, `Retry-After`, truncated body.
 - **"Force Upstash down" toggle:** when on, `lib/redis.ts` swaps to a mocked client that throws `UpstashConnectionError`. Verifies `safeLimit` fail-open — every call logs `rate_limit_unavailable` and the request proceeds.
 - **Structured-log tail:** Server Component reading the last 20 rows from `rate_limit_log` (`{ event, limiter, key, remaining, reset, firedAt }`). The operator-honest surface from lesson 3 of chapter 074.
 - **Failure-mode toggles:** "Gate after work" (runs `auth.api.signInEmail` **before** `safeLimit`); "Disable per-email gate" (skips the `email:` call — paired with a "Distinct IPs runner" that spoofs `x-forwarded-for`); "Distinct 429 bodies" (rejection body leaks "Email rate-limited" vs. "IP rate-limited").
 - **Upstash dashboard panel:** deep link to the project's Upstash console derived from the REST URL.
-
-The inspector is provided in full; the student writes only `redis.ts`, `rate-limit.ts`, `keys.ts`, `safe-limit.ts`, `rate-limit-headers.ts`, and the three action wrappers.
-
-### Verify recipe mapped to "Done when"
-
-| Done-when clause | Verify step |
-| --- | --- |
-| 11th sign-in request from the same IP in 1 min returns 429 | "Spam sign-in" against `alice`. Log: requests 1-10 return 401 (Better Auth — wrong password) with `RateLimit-Remaining` counting 9 → 0; request 11 returns 429 with `Remaining: 0` and `Retry-After: <≤60>`. |
-| Same email from a different IP is throttled separately on the per-email gate | Spoof `x-forwarded-for`; "Send one" against `alice` ten times from the new IP. The per-IP gate stays fresh; the per-email gate counts down (same `alice@example.com`); the 11th from the new IP returns 429 with `key: 'email:alice@example.com'`. |
-| Response includes `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` | Every log entry shows all three; 429s also show `Retry-After`. |
-| 429 body is user-safe and identical | Every 429 body reads `{"error":"Too many attempts. Please try again later."}`. Toggle "Distinct 429 bodies" on — the leaky variants appear; toggle off. |
-| Window resets release tokens | After the 11th 429, wait until `Retry-After` reaches 0 (or "Reset counters"); send one → 401 again with `Remaining: 9`. |
-| Upstash dashboard shows the keys | Click the dashboard link → Data Browser → filter `rl:signin`; rows for `rl:signin:ip:<addr>` and `rl:signin:email:alice@example.com` present with TTLs ≤ 60s. Analytics tab shows the rejection blip. |
-| Sign-up rate-limited per-IP | "Spam sign-up" with 6 random-suffix emails; request 6 returns 429 — 5 successes used 5 different emails so per-IP is the gate. |
-| Reset rate-limited per-IP and per-email | "Spam reset" against `eve@example.com` 4 times; request 4 returns 429 (`limiter: 'reset'`, `key: 'email:eve@example.com'`). Switch IP; "Send one" → still 429 on the per-email gate. |
-| Gate runs before the password hash | Toggle "Gate after work" on; spam sign-in; the starter-provided `verify_ms` timing shows every request paying the hash even past the budget. Toggle off; the 11th+ requests skip the hash (verify_ms ≈ 0). |
-| Per-email gate closes the cross-IP credential-stuffing vector | Toggle "Disable per-email gate" on; "Distinct IPs runner" hits `alice` 10x from IP-A then 10x from IP-B — all 20 succeed reaching Better Auth. Toggle off; rerun — the 11th attempt overall trips the email gate regardless of source IP. |
-| Better Auth's built-in limiter is off | Grep `lib/auth.ts` — the only `rateLimit` entry is `{ enabled: false }`. |
-| Fail-open under Upstash outage | Toggle "Force Upstash down" on; spam sign-in 15x; every request goes through; structured-log tail shows 15 `rate_limit_unavailable` rows. Toggle off → normal behavior. |
-| Module-scope declaration | First request after cold start hits Redis (one round-trip per `limit()`); subsequent requests in the cache window hit `ephemeralCache` (zero Redis round-trips). Visible in the starter's request-trace panel. |
-| `pending` analytics flushed off-path | "Await pending instead of after()" toggle adds 5-10ms per call to the user-visible timing panel. |
-| Env validation gates Redis usage | Comment out `UPSTASH_REDIS_REST_URL`; restart dev → boot fails with the Zod error. Uncomment → boot succeeds. |
 
 ### Concepts demonstrated → owning lesson
 
@@ -146,174 +156,180 @@ The inspector is provided in full; the student writes only `redis.ts`, `rate-lim
 
 ---
 
-## Lesson 1 — Project brief
+## Lesson 1 — Project Overview
 
-Frames the build: wrap the chapter 055 sign-in, sign-up, and reset actions with three Upstash limiters, swap out Better Auth's built-in limiter, and verify the 11th-request 429 against the inspector and the Upstash dashboard.
+Take the chapter 055 email+password auth surface and instrument sign-in, sign-up, and reset with `@upstash/ratelimit` at the action boundary, then watch every gate fire on `/inspector` and in the Upstash dashboard.
 
-Goals:
+The finished app is the chapter 055 auth flows with three Upstash limiters layered on at the action seam: sign-in dual-gated per-IP and per-email, sign-up and reset per-IP (reset also per-email), every response carrying `RateLimit-*` headers, rejections carrying `Retry-After`, a Redis outage failing open and logging alertable events, and Better Auth's built-in limiter off. The screenshot shows `/inspector` after a finished "Spam sign-in": the recent-responses log with ten 401s counting `RateLimit-Remaining` 9 → 0 and the 11th flipping to 429 with `Retry-After`, alongside the Upstash dashboard showing the keys.
 
-- Frame the build: take the chapter 055 email+password auth surface and instrument sign-in, sign-up, and reset with `@upstash/ratelimit` at the action boundary. Sign-in carries the dual-keying rule. Better Auth's built-in limiter goes off. Every response carries `RateLimit-*` headers; rejections add `Retry-After`. A Redis outage fails open and logs alertable events. Show one screenshot of `/inspector` after a finished "Spam sign-in": the recent-responses log with ten 401s counting `RateLimit-Remaining` 9 → 0 and the 11th flipping to 429 with `Retry-After`.
-- State the "Done when" in one paragraph: hammering sign-in with 11 requests from the same IP in a minute returns the 11th as 429; the same email from a different IP also gets throttled separately on the per-email gate; sign-up and reset gate per-IP (reset additionally per-email); every response carries the three `RateLimit-*` headers; the Upstash dashboard shows the keys with TTLs.
-- Scope cuts: no per-user or per-org limits beyond auth (named, deferred); no Vercel WAF rule configuration (named in lesson 1 of chapter 074, the dashboard wiring is two clicks); no captcha (the next layer past the limiter for human abuse; named, deferred); no `Ratelimit.deny()` blocklist (named in lesson 2 of chapter 074); no multi-region Upstash replication (named); no Playwright assertions on `RateLimit-*` (deferred to chapter 088); no migration from Better Auth `secondary-storage` (named in lesson 3 of chapter 074 as the alternative, not chosen).
-- Senior payoff: this is the canonical limiter shape every other abusable endpoint copies — webhook receivers, file uploads, AI generation. Adding a fourth limiter is one new `Ratelimit` instance plus one action wrap; same headers, same fail-open. `safeLimit` and `rateLimitHeaders` are the seam.
-- Show the end UX: a short capture — 11 sign-ins (the 11th red-bordered as a 429), the Upstash dashboard screenshot showing the keys, "Force Upstash down" producing 15 fail-opens.
-- Link the starter via `degit`.
+### What we'll practice
 
-Senior calls and watch-outs:
+- Wrapping an existing auth surface with an application-level rate limiter at the Server Action seam, without touching the auth core.
+- Designing limiter keys: dual-keying sign-in per-IP and per-email through one limiter with two prefixes; choosing per-IP-only vs. per-IP-plus-per-email per endpoint.
+- Making rejection observable and safe: IETF `RateLimit-*` headers on every response, `Retry-After` on 429, an opaque user-facing body, and an operator-honest structured log.
+- Building for resilience: fail-open on a Redis outage, module-scope limiters with in-memory caching, and `after()` for off-path analytics.
+- Swapping Better Auth's built-in limiter for the application-level pattern as a deliberate architectural decision.
 
-- The starter ships chapter 055 working end-to-end. This project layers limiters on top — no Better Auth core changes, only the action wrappers and the `auth.ts` config flag flip.
-- Better Auth's built-in limiter is on by default in the starter (matching chapter 055). The student turns it off in lesson 4 of chapter 075 as the deliberate architectural swap; the before-and-after is visible in one diff.
-- The Upstash free tier covers the project. The Vercel Marketplace integration is the recommended provisioning path; for local-only, create a free database via the Upstash dashboard and paste the two env vars.
-- The `/api/auth/[...all]` catch-all stays unwrapped — limits land at the action seam that calls `auth.api.*` directly. Direct traffic to the catch-all (a misbehaving client) bypasses the application limiter. The frontend forms all go through the wrapped actions; route-handler-level limits as defense-in-depth are named, deferred.
+This is the canonical limiter shape every other abusable endpoint copies — webhook receivers, file uploads, AI generation. Adding a fourth limiter is one new `Ratelimit` instance plus one action wrap; same headers, same fail-open. `safeLimit` and `rateLimitHeaders` are the seam.
 
-Codebase state at entry: empty repo (student runs `degit`).
-Codebase state at exit: starter cloned, Postgres up, schema migrated, seed loaded, Upstash provisioned, `.env.local` populated, `pnpm dev` shows the chapter 055 auth flows working; `/inspector` loads but "Remaining tokens" reads `n/a` and the "Spam X" buttons throw on use.
+**Out of scope** (named here, deferred): no per-user or per-org limits beyond auth; no Vercel WAF rule configuration (named in lesson 1 of chapter 074, the dashboard wiring is two clicks); no captcha (the next layer past the limiter for human abuse); no `Ratelimit.deny()` blocklist (named in lesson 2 of chapter 074); no multi-region Upstash replication; no Playwright assertions on `RateLimit-*` (deferred to chapter 088); no migration to Better Auth `secondary-storage` (named in lesson 3 of chapter 074 as the alternative, not chosen). The `/api/auth/[...all]` catch-all stays unwrapped — limits land at the action seam that calls `auth.api.*` directly; route-handler-level limits as defense-in-depth are named, deferred.
 
-Estimated student time: 15 to 20 minutes.
+### Architecture
 
----
+Two-layer model carried in from lesson 1 of chapter 074: the edge WAF (out of scope here) and the application limiter (the build). Request flow for a gated action: form post → Server Action → resolve `ip` + normalized `email` → `safeLimit` gate(s) on the shared limiter → on pass, `auth.api.*`; on reject, `Result.err('rate-limited')` with headers attached. `pending` analytics flush via `after()`. Better Auth's built-in limiter is off, so the action wrapper is the single enforcement point. A labeled list or simple diagram of this flow, shape only.
 
-## Lesson 2 — Tour the chapter 055 auth starter and the inspector
+### Starting file tree
 
-Reads the provided file tree, the still-on Better Auth built-in limiter, the empty `lib/` stubs, the seeded `alice` / `bob` / `eve` accounts, the mocked email counter, and every panel and toggle on `/inspector`.
+Use the annotated tree from the Chapter framing's "Starter file tree" section. Comment one line each only on the files lessons touch; mark the six TODO stubs (`env.ts` Upstash entries, `redis.ts`, `rate-limit.ts`, `keys.ts`, `safe-limit.ts`, `rate-limit-headers.ts`) and the three provided-but-to-be-wrapped action files as the highlighted focus. Call out the provided `/inspector` page as the verification surface every Moment of truth uses, the still-on Better Auth built-in limiter in `auth.ts`, the seeded `alice` / `bob` / `eve` accounts, the mocked `email.ts` counter (`MOCK_EMAIL_SENT_COUNT`), and the provided `rate_limit_log` table with its `logRateLimit` helper. Leave the rest uncommented.
 
-Goals:
+### Roadmap
 
-- Walk the file tree, calling out provided vs. stubbed. Linger on `src/lib/redis.ts`, `rate-limit.ts`, `keys.ts`, `safe-limit.ts`, `rate-limit-headers.ts` (all empty — lesson 3 of chapter 075 / lesson 4 of chapter 075) and the three action files (provided shells, no wrapping — lesson 4 of chapter 075).
-- Read `src/lib/auth.ts`: confirm `rateLimit: { enabled: true }` (the chapter 055 default). The lesson 4 of chapter 075 step flips it off once the application-level limiters are wired; the before-and-after is visible in one diff.
-- Read `src/env.ts`: existing entries; the student adds the two Upstash vars in lesson 3 of chapter 075. The Zod validation is the gate that prevents a deploy without the limiter (lesson 2 of chapter 037).
-- Read the inspector end-to-end — every panel, button, toggle. Confirm the "Remaining tokens" panel calls `limiter.getRemaining(key)` (shimmed to `n/a` when undefined); the panel becomes live once the limiters exist. The "Spam X" buttons throw until the actions are wrapped.
-- Read the seed: `alice@example.com` and `bob@example.com` are verified with known passwords (read by the inspector as constants); `eve@example.com` is the password-reset target — a verified user whose mailbox is the deliverability concern the per-email reset gate protects.
-- Read the provided `rate_limit_log` table and the `logRateLimit` helper exported from `src/lib/rate-limit-log.ts` for `safeLimit` to call alongside every rejection / `rate_limit_unavailable`.
-- Read `src/app/api/auth/[...all]/route.ts`: one-liner Better Auth handler. The student does not modify this — all limits land at the action seam that calls `auth.api.*` directly.
-- Run the app: sign in as `alice` (form posts to the unprotected action), redirect to `/dashboard`; sign out; visit `/inspector`; click "Spam sign-in" — throws (the action stub is not yet wrapped).
+One Card per lesson:
 
-Senior calls and watch-outs:
+- **Lesson 2 — Declare the Redis client and three module-scope limiters.** Adds the Redis client and the three `Ratelimit` instances so the inspector's "Remaining tokens" panel reads live.
+- **Lesson 3 — Gate sign-in with dual-keying and swap out Better Auth's built-in.** Adds the helper trio and the per-IP-and-per-email sign-in gate, with the architectural swap, so the 11th request returns a 429 with correct headers and an opaque body.
+- **Lesson 4 — Gate sign-up per-IP.** Adds the per-IP sign-up gate so a single host cannot mass-register.
+- **Lesson 5 — Gate reset per-IP and per-email.** Adds the per-IP-plus-per-email reset gate so a victim's inbox and Resend cost are protected across IPs.
 
-- `lib/rate-limit.ts` will be the only place `new Ratelimit(...)` exists. Constructing inline anywhere else defeats the in-memory cache (lesson 2 of chapter 074) and corrupts the prefix namespace.
-- The starter's `lib/email.ts` is mocked in inspector mode: `sendResetPasswordEmail` bumps `MOCK_EMAIL_SENT_COUNT`. The reset-rate-limit verify reads the counter to confirm successful resets triggered emails and rate-limited ones did not.
-- `auth.api.signInEmail` and friends accept `{ body, headers }` and return a success response or throw — the action wrapper handles both branches.
-- `next/server`'s `after()` is the canonical 2026 way to flush analytics off the response path (introduced in chapter 030).
+### Setup
 
-Codebase state at entry: starter cloned, Postgres running, schema migrated, seed loaded, Upstash provisioned, env populated.
-Codebase state at exit: every provided file read, inspector clicked through, `alice` sign-in tried, "Spam" buttons error as expected. No code written.
+- Link the starter and clone it via `degit`.
+- Provision Upstash: the Vercel Marketplace integration is the recommended path; for local-only, create a free database in the Upstash dashboard and copy the REST URL and token. The free tier covers the project. Env vars: `UPSTASH_REDIS_REST_URL` (Upstash REST endpoint, from the database's REST API panel) and `UPSTASH_REDIS_REST_TOKEN` (the read/write token from the same panel), plus the chapter 055 vars already in `.env.example` (`DATABASE_URL`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `RESEND_API_KEY`, `APP_URL`).
+- Command sequence (Steps): clone via `degit`; install deps with `pnpm install`; start Postgres with `docker compose up -d`; copy `.env.example` to `.env.local` and fill the values; run `pnpm db:migrate`; run `pnpm db:seed`; run `pnpm dev`.
+- Expected result: `pnpm dev` serves the chapter 055 auth flows working end-to-end — signing in as `alice` redirects to `/dashboard`. `/inspector` loads, but the "Remaining tokens" panel reads `n/a` and the "Spam X" buttons throw on use, because the limiters and action wrappers do not exist yet.
 
-Estimated student time: 15 to 25 minutes.
+The student leaves with the starter running locally and the inspector loaded but inert. Building begins in lesson 2.
 
 ---
 
-## Lesson 3 — Declare the Redis client and three module-scope limiters
+## Lesson 2 — Declare the Redis client and three module-scope limiters
 
-Adds the two Upstash env vars, writes `redis.ts` as `Redis.fromEnv()`, declares the sign-in, sign-up, and reset `Ratelimit` instances at module scope with distinct prefixes and per-limiter `ephemeralCache`, and lights up the inspector's "Remaining tokens" panel via `getRemaining`.
+Stand up the Redis client and the three `Ratelimit` instances so the inspector reports each limiter's live remaining budget straight from Redis.
 
-Goals:
+The finished result: `/inspector` shows a green "Upstash up?" badge and a "Remaining tokens" panel reading `signin → ip:<addr> → 10/10`, `signup → ip:<addr> → 5/5`, `reset → ip:<addr> → 3/3`, and `reset → email:<active-email> → 3/3` for the active identity. No endpoint is gated yet — the panel reads state, it does not consume budget.
 
-- Add the two Upstash entries to `src/env.ts` per reference. Restart dev; boot now refuses to start without them. The runtime gate from lesson 2 of chapter 037 covers the limiter prerequisite.
-- Fill `src/lib/redis.ts`: `export const redis = Redis.fromEnv();`. Add a small `redis.ping()` health-check the inspector uses to render the "Upstash up?" badge green.
-- Fill `src/lib/rate-limit.ts`: declare the three `Ratelimit` instances per reference. All three at module scope, `analytics: true`, per-limiter `ephemeralCache: new Map()`. Distinct prefixes (`rl:signin`, `rl:signup`, `rl:reset`). Budgets per lesson 3 of chapter 074: sign-in 10/min, sign-up 5/10m, reset 3/15m.
-- Wire the inspector's "Remaining tokens" panel: the starter calls `limiter.getRemaining(key)` for the active identity. Once the three exports exist, the panel becomes live. Surface what `getRemaining` returns and why the inspector uses it instead of `limit()` for the readout (no budget consumed).
-- Run the app: open `/inspector`; "Upstash up?" green; the panel shows `signin → ip:<addr> → 10/10`, `signup → ip:<addr> → 5/5`, `reset → ip:<addr> → 3/3`, `reset → email:<active-email> → 3/3`. "Spam sign-in" still errors (action stub unwrapped) but the readout is operational.
+### Your mission
 
-Senior calls and watch-outs:
+This lesson stands up the limiter infrastructure without wiring it to any endpoint yet, so the only observable change is the inspector reporting live budgets instead of `n/a`. The limiter is a named seam: `lib/rate-limit.ts` is the one and only place `new Ratelimit(...)` is allowed to appear, because constructing inline anywhere else defeats the in-memory `ephemeralCache` and corrupts the prefix namespace. Module scope is load-bearing — the library caches `pending` writes and counters in process memory, so declaring inside a handler defeats both and makes a sustained hot key hit Redis on every request. Each limiter gets its own `ephemeralCache: new Map()` (sharing one across limiters works but blurs eviction) and a distinct prefix (`rl:signin`, `rl:signup`, `rl:reset`) so two limiters cannot collide on a shared key; cross-app collisions are already prevented by per-database scope. `analytics: true` adds one rolling-counter write per call for the dashboard; its `pending` promise is the deferral seam wired in a later lesson. The inspector reads each budget through `getRemaining(key)`, which does **not** consume budget — using `limit(key)` for a readout would burn a token per render and lock the user out via the panel itself. The budget choices are senior calls carried in from lesson 3 of chapter 074: sign-in tolerates more attempts (legitimate typos) at 10/min, sign-up sits at 5/10m, and reset is tightest at 3/15m because its abuse cost is concrete (inbox noise plus Resend deliverability). The Zod-validated env from lesson 2 of chapter 037 is the prerequisite gate — adding the two Upstash vars makes a missing credential fail the boot rather than surface at the first request. Out of scope: no gating, headers, or fail-open handling yet (those arrive once an action exercises the limiter).
 
-- Module scope is load-bearing. The library caches `pending` writes and counters in process memory; declaring inside the handler defeats both. A sustained hot key would otherwise hit Redis on every request.
-- Each limiter gets its own `ephemeralCache: new Map()`. Sharing one across limiters works but blurs eviction.
-- `analytics: true` adds one extra write per call (the rolling counter for the dashboard). The `pending` promise is the deferral seam — wired in lesson 4 of chapter 075.
-- Prefix discipline: distinct prefixes so two limiters cannot collide on a shared key. Cross-app collisions are prevented by per-database scope (each project gets its own Upstash database).
-- `getRemaining(key)` does **not** consume budget. Using `limit(key)` for the readout would burn one budget per render and lock the user out via the panel itself.
-- Budget choices (10/min, 5/10m, 3/15m) are senior calls from lesson 3 of chapter 074: sign-in tolerates more attempts (legitimate typos); reset is tightest because the abuse cost is concrete (inbox noise + Resend deliverability).
+Requirements checklist:
 
-Codebase state at entry: `redis.ts`, `rate-limit.ts`, the two env entries empty; inspector "Remaining tokens" reads `n/a`.
-Codebase state at exit: env validated, Redis client wired, three limiters declared at module scope; inspector's "Remaining tokens" reads live for the active identity. **Runnable — the limiters exist and the inspector verifies state from Redis; no endpoint is gated yet.**
+- [ ] Restarting the dev server with either Upstash env var missing fails the boot with the Zod error; with both present, it boots.
+- [ ] The inspector's "Upstash up?" badge reads green (a `redis.ping()` health-check succeeds against the live database).
+- [ ] The "Remaining tokens" panel reads live for the active identity: `signin → ip:<addr> → 10/10`, `signup → ip:<addr> → 5/5`, `reset → ip:<addr> → 3/3`, `reset → email:<active-email> → 3/3`.
+- [ ] Re-rendering the inspector (`router.refresh()`) does not decrement any budget — reading the panel never consumes a token.
+- [ ] Each limiter's keys carry its own prefix in Redis (`rl:signin`, `rl:signup`, `rl:reset`), with no collision between limiters.
 
-Estimated student time: 40 to 55 minutes.
+### Coding time
 
----
+Build prompt: implement `src/env.ts` (the two Upstash entries), `src/lib/redis.ts`, and `src/lib/rate-limit.ts` against the brief and the tests; this lesson gates no endpoint, so the inspector's "Remaining tokens" panel is the surface that confirms the work.
 
-## Lesson 4 — Gate the actions: dual-keying, headers, fail-open
+Solution in `<details>`: the `env.ts` extension (`UPSTASH_REDIS_REST_URL: z.string().url()`, `UPSTASH_REDIS_REST_TOKEN: z.string().min(1)`); `redis.ts` as `export const redis = Redis.fromEnv();` plus a small `redis.ping()` health-check the badge reads; `rate-limit.ts` with the three module-scope `Ratelimit` instances per the reference signatures. Rationale to cover: why module scope and per-limiter `ephemeralCache`, why distinct prefixes, why `getRemaining` rather than `limit` for the readout, and the budget choices. Link to lesson 2 of chapter 074 for the `Ratelimit` constructor and `ephemeralCache` rather than re-explaining; link to lesson 2 of chapter 037 for the env pattern.
 
-Fills `keys.ts`, `safe-limit.ts`, and `rate-limit-headers.ts`; wraps sign-in with per-IP-and-per-email gates, sign-up with per-IP, and reset with per-IP-plus-per-email; flips Better Auth's built-in limiter off; and hands each `pending` to `after()`.
+### Moment of truth
 
-Goals:
-
-- Fill `src/lib/keys.ts`: `getClientIp(headers)` and `normalizeEmail(email)` per reference. Two pure functions. Surface the senior call on `+`-alias stripping inline.
-- Fill `src/lib/safe-limit.ts`: `safeLimit(limiter, key)` per reference. The catch logs `{ event: 'rate_limit_unavailable', limiter: limiter.prefix, key }` via `logRateLimit` and returns `{ success: true, ... }` so call sites have one branch. The failure mode is observable in the log, not in user behavior. Real production logging goes through chapter 092's structured logger; the starter's `logRateLimit` writes to the `rate_limit_log` table the inspector tails.
-- Fill `src/lib/rate-limit-headers.ts`: `rateLimitHeaders(result)` (three headers, Reset as delta-seconds) and `rateLimitedResponse(result)` (429, four headers including `Retry-After`, user-safe identical body).
-- Edit `src/app/(auth)/sign-in/actions.ts` per reference: keep the chapter 055 `(state, formData)` `useActionState` callback shape returning `Result<never, 'invalid-credentials' | 'email-not-verified' | 'rate-limited'>`. Zod parse (`z.strictObject({ email: z.email(), password: z.string().min(1), next: z.string().optional() })`); resolve `ip` and `email`; `safeLimit(signInLimiter, 'ip:' + ip)` first, attach `rateLimitHeaders` + `Retry-After` via Next.js 16's server-action `headers()` API and return `Result.err('rate-limited')` on rejection; then `safeLimit(signInLimiter, 'email:' + email)`, same treatment on rejection; call `auth.api.signInEmail`. On success attach `rateLimitHeaders(ipLimit)` and `redirect(sanitizeNext(formData.get('next')) ?? '/dashboard')`. Hand both `pending` promises to `after()`.
-- Edit `src/app/(auth)/sign-up/actions.ts` per reference: one `safeLimit(signUpLimiter, 'ip:' + ip)` gate, then `auth.api.signUpEmail`.
-- Edit `src/app/(auth)/reset/actions.ts` per reference: `safeLimit(resetLimiter, 'ip:' + ip)` then `safeLimit(resetLimiter, 'email:' + email)`, then `auth.api.forgetPassword`.
-- Flip Better Auth's built-in limiter off: `rateLimit: { enabled: false }` in `src/lib/auth.ts`. The application-level limiters are now the one place. Add a one-line comment naming the architectural rule for future readers.
-- Run the app: open `/inspector`; "Spam sign-in" produces 11 log entries — 10 are 401 with `RateLimit-Remaining` counting 9 → 0, the 11th is 429 with `Retry-After`. The 429 body reads exactly the user-safe message. "Remaining tokens" updates after the burst. "Force Upstash down" toggle on → the next 15 sign-in attempts all return 401 (fail-open) and the structured-log tail captures 15 `rate_limit_unavailable` rows.
-
-Senior calls and watch-outs:
-
-- Gate before work. The two `safeLimit` calls run **before** `auth.api.signInEmail`. Putting them after pays the password-hash cost on every request even past the budget — the "Gate after work" inspector toggle is the deliberate failure-mode demo for lesson 5 of chapter 075.
-- Both sign-in gates must pass. Checking `success` on only one leaves the other vector open: per-IP alone misses credential stuffing across IPs; per-email alone is the lockout vector. The two-`if` shape (early return on each `!success`) is the structural enforcement.
-- The 429 body is identical across both gates. Returning `"IP rate-limited"` vs. `"email rate-limited"` leaks which gate tripped, and per-email leaks confirms the email exists. The "Distinct 429 bodies" toggle surfaces the leak; production never ships that variant.
-- The `pending` promise must be handled or the analytics write is lost on cold shutdown. `after()` (from `next/server`) is the 2026 way — let the response flush while analytics continue. `await ipLimit.pending` on the response path adds 5-10ms.
-- `safeLimit` is the one place the fail-open policy lives. Flipping to fail-closed for a higher-stakes future endpoint is a one-line change here — or, more honestly, a second `safeLimitClosed` helper exported alongside so the choice is named per call site.
-- Disabling Better Auth's built-in is the deliberate swap. With it on, two limiters compete (in-memory inside Better Auth, Upstash in the action) — different budgets, different keys, debugging hell. Off, the action wrapper is the one place. The `secondary-storage` adapter (Better Auth 1.5+) that would point the built-in at Upstash is named in lesson 3 of chapter 074 as an alternative; not the chapter's choice (the application-level pattern is the more flexible seam for non-auth endpoints later).
-- Trust boundary on `x-forwarded-for`: Vercel sets it correctly. On self-hosted (Fly, Railway, VPS), trust requires gating at the load balancer. `'unknown'` as the IP fallback means a single key for every unidentifiable request — overly tight in aggregate; rejecting when `x-forwarded-for` is absent in production is the senior call deferred to chapter 081.
-- The `email:` key uses the normalized email. The same normalization runs at the database lookup so limiter and lookup count the same identifier. Tightening to strip `+` is a per-app senior decision: Gmail's `+` aliasing lets a crawler bypass per-email by varying `+rand`; the trade-off is stripping incorrectly on `+`-supporting providers that treat aliases as distinct mailboxes. The chapter's default is trim + lowercase only.
-
-Codebase state at entry: limiters declared, no action wraps, every endpoint unprotected.
-Codebase state at exit: three actions wrapped (sign-in with dual-keying, sign-up + reset documented strategies), Better Auth built-in off, headers on every response, fail-open on Upstash outage, `pending` handed to `after()`, `rate_limit_log` populated. **Runnable — every inspector "Spam" button produces the expected sequence with the expected headers; the architectural swap is complete.**
-
-Estimated student time: 70 to 90 minutes. The chapter's heaviest lesson — dual-keying, header contract, fail-open, Better Auth swap all land together because each depends on the others to be observable.
+Run the lesson's test suite (the command and the expected pass output). Then confirm by hand, ticking each off: restart `dev` with `UPSTASH_REDIS_REST_URL` commented out → boot fails with the Zod error; uncomment → boot succeeds. Open `/inspector` → "Upstash up?" is green; the "Remaining tokens" panel reads the four rows above. Click "Spam sign-in" → it still throws (the action stub is not wrapped yet), confirming this lesson only stood up state, not gating. The request-trace panel shows the first read hitting Redis and subsequent reads in the cache window hitting `ephemeralCache`.
 
 ---
 
-## Lesson 5 — Verify against "Done when"
+## Lesson 3 — Gate sign-in with dual-keying and swap out Better Auth's built-in
 
-Walks every clause: the 11th-request 429 with `Retry-After`, the cross-IP per-email proof, window resets, opaque 429 bodies, gate-before-work timing, the fail-open log, module-scope cache hits, `pending` off-path, and the Upstash dashboard keys with TTLs.
+Gate the sign-in action with per-IP and per-email limits so the 11th rapid attempt is rejected with a 429, and make the application limiter the single enforcement point by turning Better Auth's built-in off.
 
-Goals:
+The finished result: on `/inspector`, "Spam sign-in" against `alice` produces ten 401s with `RateLimit-Remaining` counting 9 → 0, then an 11th response that is a 429 with `Retry-After` and the body `{"error":"Too many attempts. Please try again later."}`. The same email hammered from a different (spoofed) IP is still caught on the per-email gate. With "Force Upstash down" on, sign-ins proceed and the structured-log tail fills with `rate_limit_unavailable` rows.
 
-- Walk every "Done when" clause from the framing's verify recipe in order. The recipe lists the steps; this lesson is the execution and the surrounding senior commentary.
-- **The 11th-request baseline:** "Reset counters"; "Spam sign-in" against `alice` with a wrong password. Log shows 10 entries status 401, `RateLimit-Limit: 10`, `Remaining` declining 9 → 0, `Reset` declining (sliding-window effect). Entry 11 → 429, body `{"error":"Too many attempts. Please try again later."}`, `Remaining: 0`, `Retry-After: <≤60>`. The panel shows `signin → ip:<addr> → 0/10` with countdown.
-- **Cross-IP per-email proof:** spoof `x-forwarded-for`; "Send one" against `alice` (wrong password). 401 with `Remaining: 9` on the `ip:` gate (fresh) but `Remaining: <9-prev>` on the `email:` gate (the inspector renders both header sets). Repeat from the new IP until the email gate hits 0 → next request is 429, log line `key: 'email:alice@example.com'`. The per-email gate caught the across-IPs vector — the chapter's load-bearing proof.
-- **Window reset:** after the 429s, wait until `Retry-After` reaches 0 (or "Reset counters"). Send one → 401 with `Remaining: 9` (fresh window).
-- **Sign-up per-IP only:** "Spam sign-up" with 6 random-suffix emails; request 6 is 429 with `key: 'ip:<addr>'`. Five different emails accepted — per-email could not have been the gate.
-- **Reset per-IP and per-email:** "Spam reset" against `eve@example.com` 4x from one IP; request 4 is 429 with `key: 'email:eve@example.com'`. Switch IP; "Send one" → still 429 (per-email didn't reset). `MOCK_EMAIL_SENT_COUNT` ticked by 3 — the three successes triggered `sendResetPasswordEmail`; the 4th and the cross-IP attempt did not.
-- **Header completeness:** every log entry shows the three `RateLimit-*` headers; 429s also show `Retry-After`. Successful responses include the headers from the per-IP limiter.
-- **Body opacity (the leak demo):** flip "Distinct 429 bodies" on; rerun spam; the rejection body now reads `"Email rate-limited"` or `"IP rate-limited"`. Information leak visible. Flip off → opaque again. The user-safe contract is enforced by the helper, not by the call site.
-- **Gate-before-work (other load-bearing failure):** flip "Gate after work" on; spam sign-in; timing panel shows every request paying ~80-150ms hash cost — even the 11th, 12th, 20th. Flip off; the 11th+ requests skip the hash (timing collapses to ~5-15ms — Upstash round-trip alone).
-- **Per-email-gate-disabled (cross-IP attack reproducer):** flip "Disable per-email gate" on; "Distinct IPs runner" simulates 10 wrong-password attempts against `alice` from IP-A, then 10 from IP-B. All 20 reach `auth.api.signInEmail`; both per-IP gates fresh. Flip off; rerun; the 11th attempt overall trips the `email:` gate. The dual-keying value is the diff between the two runs.
-- **Fail-open under outage:** flip "Force Upstash down" on; spam sign-in 15x; every request 401 (limiter fails open, request reaches Better Auth); structured-log tail shows 15 `rate_limit_unavailable` rows. A sustained run of these is a Upstash incident; alerting lives in chapter 092.
-- **Better Auth built-in disabled:** open `src/lib/auth.ts`; `rateLimit: { enabled: false }` is the only entry. Two limiters competing on the same surface is debugging hell; one place is the rule.
-- **Module-scope cache hits:** request-trace panel shows the first request after cold start hitting Redis (one round-trip per `limit()` call); subsequent requests within the in-memory window hit `ephemeralCache` (zero Redis round-trips).
-- **`pending` off-path:** flip "Await pending instead of after()" on; user-visible response time inflates by 5-10ms per call. Flip off; baseline. The 2026 `after()` pattern (chapter 030) is the off-path flush.
-- **Upstash dashboard:** click the dashboard panel → Data Browser → filter `rl:`; keys present with TTLs ≤ their window. Analytics tab → rejection blips for the spam runs visible per prefix. The dashboard is the operator's incident-review surface; the structured-log tail is the in-app development-time analog.
-- **Env-gates-Redis:** comment out `UPSTASH_REDIS_REST_URL` in `.env.local`; restart → Zod validation fails the boot. Uncomment → boots. The runtime gate from lesson 2 of chapter 037 prevents a deploy without the limiter.
-- Name the senior calls one more time:
-  - Application-level rate limiting is non-negotiable from the public URL onward; Better Auth's built-in is off because the application-level pattern is the one place.
-  - Three limiters at module scope, distinct prefixes, `ephemeralCache` per limiter, `analytics: true`.
-  - Sign-in gates per-IP **and** per-email through one limiter with two key prefixes; both must pass.
-  - The limiter runs before the password hash and the database lookup.
-  - The 429 body is identical across gates; the structured log carries the diagnosis.
-  - `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` ship on every response; `Retry-After` adds on rejection.
-  - `safeLimit` owns the fail-open policy; flipping to fail-closed is a one-place decision.
-  - `pending` handed to `after()` keeps analytics off the response path.
-  - `getClientIp` trusts the platform's `x-forwarded-for`; non-Vercel hosts gate trust at the load balancer.
-  - `normalizeEmail` runs the same normalization the database lookup runs.
-  - Zod-validated env vars gate the limiter — boot fails fast on missing credentials.
-- Forward references:
-  - lesson 4 of chapter 074 chapter quiz — the topics covered here.
-  - chapter 063 / chapter 065 — webhook receivers carry the same shape (per-Stripe-webhook-ID, per-origin keys).
-  - chapter 068 / 23 — file uploads and AI generation endpoints copy the pattern with per-user / per-org keys.
-  - chapter 081 — security baseline audit; the limiter coverage is one of the checkpoints.
-  - chapter 088 — integration tests for `RateLimit-*` and the 429 path.
-  - chapter 092 — structured logs; `rate_limit_log` is the production-dashboard analog.
-  - Unit 21 — the "Upstash earns three more workloads" promise (cache, session-shaped tokens, dispatcher pub/sub) cashes in as triggers fire.
+### Your mission
 
-Senior calls and watch-outs:
+This lesson is where the limiter first meets traffic: sign-in is the dual-keyed endpoint, and wrapping it pulls in the three helper files (`keys.ts`, `safe-limit.ts`, `rate-limit-headers.ts`) plus the deliberate swap of Better Auth's built-in limiter, because none of those become observable until a gated action exercises them. The two `safeLimit` calls — `ip:<addr>` then `email:<normalized>`, cheaper first — must run **before** `auth.api.signInEmail`, because gating after the call pays the password-hash cost on every request even past the budget. Both gates must pass: per-IP alone misses credential stuffing spread across IPs, and per-email alone is a lockout vector, so the structural enforcement is an early return on each `!success`. The rejection body is identical across both gates — returning "IP rate-limited" versus "email rate-limited" leaks which gate tripped, and the per-email variant confirms an email exists — so the user-safe contract lives in the `rateLimitedResponse` helper, not at the call site. `safeLimit` is the one place the fail-open policy lives: a Redis outage logs `rate_limit_unavailable` through `logRateLimit` and returns success so the auth path stays up, and flipping to fail-closed is a one-line change there. Each `pending` promise is handed to `after()` (from `next/server`, chapter 030) so analytics flush off the response path; awaiting on the path adds 5-10ms. Two senior trust calls surface in prose: `getClientIp` trusts the platform's `x-forwarded-for` (correct on Vercel; on self-hosted hosts trust is gated at the load balancer, and the `'unknown'` fallback is deliberately loose, with strict rejection deferred to chapter 081), and `normalizeEmail` is trim + lowercase only — stripping `+` aliases is a per-app decision (it closes a Gmail `+rand` bypass but breaks on providers that treat aliases as distinct mailboxes), and the same normalization must run at the database lookup so limiter and lookup count the same identifier. Finally, Better Auth's built-in limiter goes off (`rateLimit: { enabled: false }` in `auth.ts`) with a one-line comment naming the rule: leaving it on means two limiters with different budgets and keys compete on one surface (debugging hell); the application wrapper is the one place, and the `secondary-storage` adapter that would point the built-in at Upstash is the named-but-not-chosen alternative. Keep the chapter 055 `(state, formData)` `useActionState` shape and the `Result` return type. Out of scope: sign-up and reset gates (later lessons).
 
-- The verify lesson rehearses every failure mode the chapter exists to prevent. If a verification fails, point at the owning build lesson.
-- The cross-IP per-email proof must use the inspector's `x-forwarded-for` spoof, not real network changes — the spoof is the deterministic version of the attack.
-- The fail-open demo runs as its own dedicated step; flipping the toggle mid-verification is confusing.
-- After the chapter, spam-burst keys live in Upstash for up to the window's TTL. Resetting counters before walking away is the cleanup courtesy on a shared free-tier database.
+Requirements checklist:
 
-Codebase state at entry: full limiter wiring, three actions wrapped, Better Auth built-in off, inspector verifying surface live.
-Codebase state at exit: every "Done when" clause verified clause-by-clause; the student can articulate every primitive (`Redis.fromEnv`, three module-scope `Ratelimit` instances, sliding-window default, `prefix` discipline, dual-keying with two prefixes through one limiter, `getClientIp` + `normalizeEmail`, `safeLimit` fail-open, `rateLimitHeaders`, `rateLimitedResponse`, `after()` for `pending`, Better Auth built-in disabled) and which forward unit will lean on each.
+- [ ] The 11th sign-in from the same IP within one minute returns 429; requests 1-10 return 401 with `RateLimit-Remaining` counting 9 → 0.
+- [ ] The same email hammered from a different IP is throttled on the per-email gate — the 11th cross-IP attempt against `alice` returns 429 with `key: 'email:alice@example.com'`, while the per-IP gate for the new IP stays fresh.
+- [ ] Every sign-in response carries `RateLimit-Limit`, `RateLimit-Remaining`, and `RateLimit-Reset`; the 429 also carries `Retry-After`.
+- [ ] The 429 body reads exactly `{"error":"Too many attempts. Please try again later."}`, identical whichever gate tripped; toggling "Distinct 429 bodies" on surfaces the leaky variants and off restores the opaque body.
+- [ ] With "Gate after work" off, the 11th+ requests skip the password hash (`verify_ms ≈ 0`); with it on, every request pays the hash even past the budget.
+- [ ] With "Force Upstash down" on, 15 spammed sign-ins all proceed (fail-open) and the structured-log tail shows 15 `rate_limit_unavailable` rows.
+- [ ] After the window resets (or counters are cleared), the next sign-in returns 401 again with `Remaining: 9`.
+- [ ] `src/lib/auth.ts` carries `rateLimit: { enabled: false }` as its only `rateLimit` entry, and a successful sign-in still redirects to `/dashboard`.
+- [ ] Awaiting `pending` on the response path (the inspector's "Await pending instead of after()" toggle) adds 5-10ms per call versus the `after()` baseline.
 
-Estimated student time: 35 to 50 minutes.
+### Coding time
+
+Build prompt: implement `src/lib/keys.ts`, `src/lib/safe-limit.ts`, `src/lib/rate-limit-headers.ts`, wrap `src/app/(auth)/sign-in/actions.ts`, and flip `src/lib/auth.ts` against the brief and the tests.
+
+Solution in `<details>`: the two pure functions in `keys.ts`; `safeLimit` with the `try/catch` and `logRateLimit` call per the reference; `rateLimitHeaders` and `rateLimitedResponse` per the reference; the sign-in action with the Zod `strictObject` parse, IP/email resolution, the two ordered `safeLimit` gates with header attachment via Next.js 16's server-action `headers()` API and `Result.err('rate-limited')` on rejection, the `auth.api.signInEmail` call, the success-path header attachment and `redirect`, and both `after(pending)` calls; the `auth.ts` flag flip with its naming comment. Rationale to cover: gate-before-work ordering, the two-gate early-return structure, the one-place fail-open decision, why the body is opaque, and the Better Auth swap. Note the `+`-alias and `x-forwarded-for` trust-boundary calls inline. Link to lesson 3 of chapter 074 for dual-keying, gate-before-work, and the `secondary-storage` alternative; link to chapter 030 for `after()`.
+
+### Moment of truth
+
+Run the lesson's test suite (command and expected pass output). Then confirm by hand, ticking each off:
+
+- "Reset counters"; "Spam sign-in" against `alice` with a wrong password → log shows ten 401s with `RateLimit-Limit: 10` and `Remaining` declining 9 → 0, then entry 11 is a 429 with the opaque body, `Remaining: 0`, and `Retry-After: <≤60>`; the panel shows `signin → ip:<addr> → 0/10`.
+- Spoof `x-forwarded-for`; "Send one" against `alice` from the new IP repeatedly → the per-IP gate stays fresh while the per-email gate counts down on the same `alice@example.com`; the 11th overall returns 429 with `key: 'email:alice@example.com'`. This cross-IP per-email proof is the chapter's load-bearing result.
+- Toggle "Gate after work" on; spam sign-in → the timing panel shows every request paying ~80-150ms hash cost even past the budget; toggle off → the 11th+ collapse to ~5-15ms (Upstash round-trip alone).
+- Toggle "Distinct 429 bodies" on → the leaky "Email rate-limited" / "IP rate-limited" variants appear; toggle off → opaque again.
+- Toggle "Force Upstash down" on; spam sign-in 15x → all 401, and the structured-log tail shows 15 `rate_limit_unavailable` rows; toggle off → normal behavior.
+- After a 429, wait until `Retry-After` reaches 0 (or "Reset counters"); "Send one" → 401 with `Remaining: 9`.
+- Toggle "Await pending instead of after()" on → the user-visible timing inflates 5-10ms per call; toggle off → baseline.
+- Open `src/lib/auth.ts` → `rateLimit: { enabled: false }` is the only `rateLimit` entry.
+
+---
+
+## Lesson 4 — Gate sign-up per-IP
+
+Gate the sign-up action with a single per-IP limit so one host cannot mass-register accounts, while each attempt still carries the rate-limit headers.
+
+The finished result: on `/inspector`, "Spam sign-up" with six random-suffix emails returns the 6th as a 429 with `key: 'ip:<addr>'`; the five preceding attempts succeed with different emails, proving the gate is per-IP and not per-email.
+
+### Your mission
+
+Sign-up is the per-IP-only endpoint, and the contrast with sign-in is the whole point: the email on a sign-up request is the attacker's choice, so keying on it would let a single host cycle fresh addresses to defeat the gate — the abusable identity is the originating IP. The single `safeLimit(signUpLimiter, 'ip:' + ip)` gate reuses the helpers and the limiter from earlier lessons; this is the proof that adding an endpoint is one limiter plus one wrap. The same rules carry over: the gate runs before `auth.api.signUpEmail`, the rejection uses the opaque `rateLimitedResponse` body, every response carries the `RateLimit-*` headers (with `Retry-After` on rejection), `safeLimit` keeps the fail-open policy, and `pending` goes to `after()`. Out of scope: any per-email keying on this endpoint (deliberately omitted, and the reason is the requirement below).
+
+Requirements checklist:
+
+- [ ] The 6th sign-up from the same IP within the window returns 429 with `key: 'ip:<addr>'`.
+- [ ] Five sign-ups with five different random-suffix emails are accepted, demonstrating the gate is per-IP — varying the email cannot bypass it.
+- [ ] Every sign-up response carries `RateLimit-Limit`, `RateLimit-Remaining`, and `RateLimit-Reset`; the 429 also carries `Retry-After` and the opaque body.
+- [ ] With "Force Upstash down" on, spammed sign-ups proceed (fail-open) and log `rate_limit_unavailable`.
+
+### Coding time
+
+Build prompt: wrap `src/app/(auth)/sign-up/actions.ts` against the brief and the tests, reusing `signUpLimiter`, `safeLimit`, and the header helpers.
+
+Solution in `<details>`: the sign-up action with the single per-IP `safeLimit` gate before `auth.api.signUpEmail`, header attachment on both branches, and `after(pending)`, per the reference. Rationale to cover: why per-IP only (the email is attacker-controlled) and how little code a new endpoint adds. Link to lesson 3 of chapter 074 for the per-IP-only reasoning.
+
+### Moment of truth
+
+Run the lesson's test suite (command and expected pass output). Then confirm by hand, ticking each off: "Reset counters"; "Spam sign-up" → the log shows five accepted sign-ups (distinct emails) and the 6th as a 429 with `key: 'ip:<addr>'`, the opaque body, and `Retry-After`; the "Remaining tokens" panel shows `signup → ip:<addr> → 0/5`. Toggle "Force Upstash down" on; spam again → all proceed and the structured-log tail shows `rate_limit_unavailable` rows; toggle off.
+
+---
+
+## Lesson 5 — Gate reset per-IP and per-email
+
+Gate the password-reset action with per-IP and per-email limits so neither a single host nor a campaign against one victim's address can flood reset emails, protecting the target's inbox and Resend cost.
+
+The finished result: on `/inspector`, "Spam reset" against `eve@example.com` four times returns the 4th as a 429 (`limiter: 'reset'`, `key: 'email:eve@example.com'`); switching IP and sending one more is still rejected on the per-email gate; `MOCK_EMAIL_SENT_COUNT` ticks up only by the three successful resets.
+
+### Your mission
+
+Reset is the second dual-keyed endpoint, but its per-email gate exists for a different reason than sign-in's: here the cost of abuse is concrete and lands on a third party — every accepted reset sends real mail, so an attacker hammering a victim's address floods that inbox and burns Resend deliverability and budget. The per-IP gate stops a single noisy host; the per-email gate (`email:<normalized>`) protects the targeted address even when the attacker rotates IPs, which is why it must survive an IP switch. The two ordered `safeLimit` calls run before `auth.api.forgetPassword`, reusing `resetLimiter` and the helpers, with the tightest budget in the project (3/15m) because the abuse cost is highest. The same shared rules hold: gate before work, opaque rejection body, `RateLimit-*` headers on every response, fail-open through `safeLimit`, `pending` to `after()`. The mocked `email.ts` makes the protection legible — `sendResetPasswordEmail` bumps `MOCK_EMAIL_SENT_COUNT`, so the student can read that only the successful resets sent mail and the rate-limited ones did not. Out of scope: real email delivery (mocked here; the live path is chapter 050's concern).
+
+Requirements checklist:
+
+- [ ] The 4th reset request against `eve@example.com` from one IP returns 429 with `limiter: 'reset'` and `key: 'email:eve@example.com'`.
+- [ ] After switching IP, one more reset against `eve@example.com` is still rejected on the per-email gate — the gate survives the IP change.
+- [ ] A burst from one IP against distinct addresses is rejected on the per-IP gate once the per-IP budget is spent.
+- [ ] `MOCK_EMAIL_SENT_COUNT` increases only by the number of successful resets; rate-limited attempts send no mail.
+- [ ] Every reset response carries `RateLimit-Limit`, `RateLimit-Remaining`, and `RateLimit-Reset`; the 429 also carries `Retry-After` and the opaque body.
+
+### Coding time
+
+Build prompt: wrap `src/app/(auth)/reset/actions.ts` against the brief and the tests, reusing `resetLimiter`, `safeLimit`, and the header helpers.
+
+Solution in `<details>`: the reset action with the ordered per-IP then per-email `safeLimit` gates before `auth.api.forgetPassword`, header attachment, and `after(pending)`, per the reference. Rationale to cover: why reset carries a per-email gate (inbox + Resend cost on a third party) and why the budget is tightest. Link to lesson 3 of chapter 074 for the per-email reset reasoning and to chapter 050 for the live email path.
+
+### Moment of truth
+
+Run the lesson's test suite (command and expected pass output). Then confirm by hand, ticking each off: "Reset counters"; "Spam reset" against `eve@example.com` 4x from one IP → requests 1-3 succeed and request 4 is a 429 with `limiter: 'reset'`, `key: 'email:eve@example.com'`, the opaque body, and `Retry-After`. Switch IP; "Send one" → still 429 on the per-email gate. Read `MOCK_EMAIL_SENT_COUNT` → ticked by exactly 3. The "Remaining tokens" panel shows `reset → email:eve@example.com → 0/3`. Toggle "Force Upstash down" on; spam again → all proceed and the structured-log tail shows `rate_limit_unavailable` rows; toggle off.
+
+After this lesson the surface is complete: every "Done when" clause in the Chapter framing has an owning lesson and has been confirmed in that lesson's Moment of truth. The same shape carries forward — webhook receivers (chapter 063 / chapter 065), file uploads and AI generation (chapter 068 / unit 22) copy the pattern with per-user / per-org keys; chapter 081's security audit checks limiter coverage; chapter 088 adds integration tests for the `RateLimit-*` and 429 path; chapter 092's structured logger is the production analog of `rate_limit_log`.
