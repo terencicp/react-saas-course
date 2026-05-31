@@ -30,7 +30,7 @@ You should write like a patient experienced web developer teaching new concepts 
 
 Do not use the word "senior" use other synonyms like "experienced engineer", etc.
 
-Students can't see chapter and lesson numbers in the sidebar, just in the lesson header. When referring to another chapter or lesson number always mention its title. Prefer using relative terms like "in the next chapter". If you mention the chapter id remove padding zeroes.
+Students can't see chapter and lesson numbers in the sidebar, just in the lesson header; they can't see units, do not mention them. When referring to another chapter or lesson number always mention its title. Prefer using relative terms like "in the next chapter". If you mention the chapter id remove padding zeroes.
 
 ### 4.2 Component content description
 
