@@ -1,12 +1,12 @@
 # A personalized course built using agentic workflows
 
-A full-depth course on building a production SaaS with the minimum-viable 2026 stack, **designed and built for me — by me, with [Claude Code](https://claude.com/claude-code) (Opus 4.8)**. I'm building it to learn from; the experiment is that I also engineered the agentic system that authors it. Authoring began June 2026.
+A full-depth course on building a production SaaS with the minimum-viable 2026 stack, **designed and built for me — by me**, with Claude Code (Opus 4.8). I'm building it to learn from; the experiment is that I also engineered the agentic system that authors it. Authoring began May 2026.
 
 > **Status: work in progress.** 16 of a planned 108 chapters are published. Built over ~3.5 weeks and ~550 commits so far (first commit 2026-05-08). Not yet deployed publicly.
 
 ---
 
-## What this is
+## The course I couldn't find
 
 I just finished a Data Science degree and I'm moving into web development. I couldn't find a course pitched at the right altitude: everything for beginners assumes you've never written a function, and everything for experts assumes you already know the modern stack cold. So I built the one I wanted — senior-depth, decisions-before-syntax, and covering every layer a production SaaS actually ships: TypeScript, React 19, Next.js 16 (App Router, Server Components, PPR), Postgres + Drizzle, Better Auth, Stripe billing, transactional email, background jobs, file uploads, caching, rate limiting, i18n, testing, observability, CI/CD with zero-downtime migrations, and AI features over your own data.
 
