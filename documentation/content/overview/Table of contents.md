@@ -228,18 +228,18 @@
 - 6 Quiz
 
 ### Chapter 028 — Project: themed product surface
-- 1 Project Overview (Frame the static marketing surface as a SaaS pattern, state the standards bar — no FOUC, Lighthouse a11y 100, keyboard-only traversal, responsive reflow, drawer focus trap and scroll lock — show the final UX at 360/768/1280, set the scope cut, and commit to the from-scratch build that every later project chapter clones forward.)
-- 2 pnpm and the lockfile contract (Install pnpm through mise with `mise use --pin pnpm@10`, write the minimum-viable `package.json` with `packageManager` and `private`/`type: "module"`, add `.npmrc` with `engine-strict` and `auto-install-peers`, commit `pnpm-lock.yaml` as the deterministic resolution record with `--frozen-lockfile` in CI, and guard against mixed package managers with `only-allow pnpm`.)
-- 3 AGENTS.md as the next contributor's briefing (Author a one-screen `AGENTS.md` at the repo root carrying only what earns a place — thesis, pinned stack, directory-level layout, daily commands, and pointers to `biome.json`/`tsconfig.json` — and cut aspirational prose, duplicated rules, and hand-maintained file lists that age out, with the deeper documentation doctrine deferred to Chapter 101.)
-- 4 Configuring tsconfig (Author `tsconfig.json` in two halves — the project-owned strictness floor (`strict`, `noUncheckedIndexedAccess`, `noFallthroughCasesInSwitch`, `noImplicitOverride`, `forceConsistentCasingInFileNames`, the `@/*` path aliases) and the framework-owned compatibility surface (`target`/`lib`, `moduleResolution: "bundler"`, `verbatimModuleSyntax`/`isolatedModules`/`esModuleInterop`, `jsx: "preserve"`, `noEmit`, the `next` plugin) — under the rule that the project owns the first half and Next.js owns the second, with `pnpm tsc --noEmit` clean.)
-- 5 Biome, the single-binary linter and formatter (Adopt Biome over ESLint+Prettier as the 2026 default, install it pinned with `pnpm add -D --save-exact @biomejs/biome`, wire a minimum-viable `biome.json` to the chapter 003 `.editorconfig` with `useEditorconfig` and `organizeImports`, install the four daily `pnpm` scripts (`format`, `lint`, `check`, `check:ci`), lean on the auto-enabling `next`/`react` domains, and frame the safe-versus-`--unsafe` fix distinction.)
-- 6 Site header with desktop navigation (Ship a semantic sticky `<header>` landmark with a `<nav aria-label="Primary">` mapping the `lib/data.ts` links, laid out `flex items-center justify-between` at `container` width, using the `hidden md:flex` desktop nav and `md:hidden` placeholder slot so each navigation surface stays single-source, with keyboard order and focus rings verified.)
-- 7 Hero with a flicker-free theme-aware image (Ship a `<section>` carrying the page's single `<h1>`, supporting copy, and two `<Button asChild><Link>` CTAs, plus a `ThemeAwareImage` that renders both light and dark `<img>` sources toggled by `dark:hidden`/`hidden dark:block` so the server ships both and CSS alone picks the right one — honoring the `.dark` class with no JS branch and no flash.)
-- 8 Feature grid with CVA card variants (Build `feature-card.tsx` driving visual `tone` and `emphasis` from a `cva` table typed with `VariantProps` so invalid states are unrepresentable and the data file decides each card's look, composing shadcn's `Card` building blocks piecewise, then map `features` into a `grid grid-cols-1 md:grid-cols-3` `<section>` under an `<h2>` with colors read only from semantic tokens.)
-- 9 Pricing table with a featured tier (Build `pricing-card.tsx` composing `<Card>` with an `<h3>` tier name, price, `aria-hidden` check rows, and a CTA, where a single data `featured` flag drives the `border-primary` accent and "Most popular" `<Badge>`, then map `pricingTiers` into a responsive grid that lifts the featured tier with `md:scale-105` paired with `motion-reduce:scale-100` and keeps muted text at AA contrast.)
-- 10 Site footer (Ship a `<footer>` landmark with three link-group columns, the brand block, a copyright line, and a row of icon-only social `<Button size="icon" variant="ghost">` controls each carrying an `aria-label` for its destination with the glyph `aria-hidden`, laid out side by side at desktop and stacked below `md`, with keyboard order and focus rings verified.)
-- 11 Flicker-free theme toggle (Ship `theme-toggle.tsx` as a `<Button variant="ghost" size="icon" aria-label="Toggle theme">` calling `setTheme` from `useTheme()` with a `<Sun>`/`<Moon>` swap, gated on a `mounted` flag set in `useEffect` that returns a same-sized placeholder until mounted to kill the `next-themes` hydration mismatch, mounted into the header slot so the choice persists across reload with first paint correct and no FOUC.)
-- 12 Mobile drawer with scroll lock (Ship `mobile-nav.tsx` as a controlled shadcn `<Sheet>` with a labelled `<SheetTrigger>` hamburger and `<SheetContent side="left">` carrying a mandatory `<SheetTitle>` and link list that closes on tap, letting Radix own the focus trap and return-focus while the project's one custom hook `useLockBodyScroll(open)` locks body scroll (iOS Safari included) and restores the prior `overflow` on cleanup — closing the surface and running the full project standards bar.)
+- 1 Project Overview
+- 2 pnpm and the lockfile contract
+- 3 AGENTS.md as the next contributor's briefing
+- 4 Configuring tsconfig
+- 5 Biome, the single-binary linter and formatter
+- 6 Site header with desktop navigation
+- 7 Hero with a flicker-free theme-aware image
+- 8 Feature grid with CVA card variants
+- 9 Pricing table with a featured tier
+- 10 Site footer
+- 11 Flicker-free theme toggle
+- 12 Mobile drawer with scroll lock
 
 ---
 
@@ -299,10 +299,10 @@
 - 9 Quiz
 
 ### Chapter 035 — Project: list-plus-detail with parallel routes
-- 1 Project Overview (Frame the canonical SaaS list-plus-detail workspace — invoices left, selected detail right, a "new invoice" modal with a real URL — clone the first `degit` starter, install dependencies, and confirm `pnpm dev` serves the unstubbed `/invoices` two-slot shell while `pnpm build` type-checks cleanly.)
-- 2 Server-rendered list and detail (Fill the `@list` and `@detail` slots as async Server Components where the list awaits and `safeParse`s `searchParams.status` against `searchParamsSchema` then calls `getInvoices`, the detail awaits `params` and calls `getInvoice` with `notFound()` on null, and each slot ships a `default.tsx` so a direct visit to `/invoices/inv_001` renders the list rather than 404ing — the whole view derived from the URL, not client state.)
-- 3 Modal with a real URL (Build the non-intercepting `new/page.tsx` full-page form twin first, then the intercepting `(.)new/page.tsx` wrapping `<InvoiceForm>` in a shadcn `<Dialog>` that closes via `router.back()`, so soft navigation opens a modal over the list at `/invoices/new` while a direct visit, refresh, or `Cmd+click` resolves to the full page — accepting the by-design underlay drop on refresh.)
-- 4 Independent streaming per slot (Build `ListSkeleton` and `DetailSkeleton` over shadcn's `<Skeleton>` and place a `loading.tsx` in each slot so each gets its own Suspense boundary and streams independently under a throttled network — the artificial 600 ms delay on `getInvoice` making the detail stream observable while the resolved list stays mounted — and verify the no-JavaScript fallback.)
+- 1 Project Overview
+- 2 Server-rendered list and detail
+- 3 Modal with a real URL
+- 4 Independent streaming per slot
 
 ---
 
@@ -355,12 +355,12 @@
 - 4 Quiz
 
 ### Chapter 041 — Project: the org-scoped invoicing data layer
-- 1 Project Overview (Frame org-scoped invoicing as the canonical relational surface every later unit layers on, clone the starter, bring up Docker `postgres:18` with `docker compose up -d`, fill `DATABASE_URL`/`DATABASE_URL_UNPOOLED`/`SEED`, and confirm the provided `/inspector` page renders with empty banners before any table exists.)
-- 2 Type-safe environment variables with @t3-oss/env-nextjs (Wire the project to a typed `env.ts` boundary built on `@t3-oss/env-nextjs` and Zod 4 so a missing `DATABASE_URL` fails `pnpm build` with a named error instead of a runtime 500, route all config reads through `env` rather than `process.env`, and frame the `SKIP_ENV_VALIDATION` escape hatch as `env.ts` becoming Architectural Principle #3's first named boundary.)
-- 3 Authoring the schema and shipping the init migration (Author `db/schema.ts` and `db/relations.ts` for the six tables with UUIDv7 PKs via `$defaultFn`, `timestamptz`/`numeric(12, 2)`/`pgEnum` types, per-edge FK `ON DELETE` (cascade for owned children, restrict for referenced entities), tenant-scoped uniques and the three named composite indexes, `defineRelations` v2 with the named two-role `createdBy` join, and `$inferSelect`/`$inferInsert` exports — then `generate --name init_schema`, read the SQL, and `db:migrate` cleanly.)
-- 4 A deterministic, idempotent seed for two orgs (Write `scripts/seed.ts` as `reset(db, schema)` then `seed(db, schema, { seed }).refine(...)` using `valuesFromArray`, `weightedRandom`, and `with` for two orgs and 30 customers fanning out to 100+ invoices, plus follow-up `db.insert(...)` calls for the overlapping membership and computed `position`/`dueAt` columns — fixed-seed deterministic and idempotent so re-runs yield identical row counts and primary keys.)
-- 5 The tenant-scoped invoice list with cursor pagination (Write `listInvoices` using `db.query.invoices.findMany` with a `where` that AND-combines the `organizationId` tenant guard, the optional status equality, and the composite cursor predicate `or(lt(createdAt, c), and(eq(createdAt, c), lt(id, c)))`, ordered by `(createdAt desc, id desc)` with `limit(pageSize + 1)` and `with: { customer: true }`, then confirm against the plan panel that it uses the matching composite index, never a `Seq Scan`.)
-- 6 The single-round-trip invoice detail read (Write `getInvoiceDetail` using `db.query.invoices.findFirst` with `with: { lines: { orderBy: asc(position) }, customer: true }` and a `where` that AND-includes both the invoice id and `organizationId` so a cross-org id returns the empty state rather than leaking the row, proving against the plan panel that the relational `with` is one outer `Index Scan` rather than an N+1 loop.)
+- 1 Project Overview
+- 2 Type-safe environment variables with @t3-oss/env-nextjs
+- 3 Authoring the schema and shipping the init migration
+- 4 A deterministic, idempotent seed for two orgs
+- 5 The tenant-scoped invoice list with cursor pagination
+- 6 The single-round-trip invoice detail read
 
 ---
 
@@ -410,12 +410,12 @@
 - 5 Quiz
 
 ### Chapter 047 — Project: CRUD via Server Actions
-- 1 Project Overview (Frame a full CRUD surface over the Unit 5 invoicing schema — create, edit, and delete-with-confirmation all flowing through Server Actions that parse with Zod, return the canonical `Result`, and `revalidatePath` — clone the starter, `docker compose up -d`, run `pnpm db:migrate && pnpm db:seed`, and confirm `/invoices` renders the seeded list with the form components still stubbed.)
-- 2 Create an invoice (Derive `createInvoiceInputSchema` from `createInsertSchema(invoices)` with `.omit` of server-owned columns and `z.coerce` overrides for `FormData`, write `createInvoice` in the five-seam shape (`safeParse` → `getActiveContext()` → insert → `revalidatePath` → `Result`, with `redirect` after the try/catch), and wire `NewInvoiceForm` with uncontrolled inputs, Constraint Validation attributes mirroring the schema, and the reusable `<SubmitButton>`/`<FieldError>` so a valid invoice persists even with JavaScript disabled.)
-- 3 Edit an invoice (Extend the schema as `updateInvoiceInputSchema = createInvoiceInputSchema.extend({ id: z.uuid() })`, write `updateInvoice` with the tenant guard `and(eq(invoices.id, id), eq(invoices.organizationId, orgId))` in the `where` to close the IDOR vector, return `ok` without redirecting so `revalidatePath` re-flows fresh `defaultValue`s into the prefilled `EditInvoiceForm`, and surface a duplicate-number `conflict` as a form-level banner.)
-- 4 Delete with confirmation (Add `deleteInvoiceInputSchema` and a `deleteInvoice` action with the tenant id in its `where`, then build `DeleteInvoiceForm` as a shadcn `<Dialog>` whose `<form action={formAction}>` submits a single POST to the action URL with no `/api/*` fetch, plus an inline fallback `<form>` so the delete still fires with JavaScript disabled.)
-- 5 Optimistic create (Fill `OptimisticInvoicesList` with `useOptimistic(initialInvoices, (current, next) => [next, ...current])` exposing an add function via context, generate a client-side UUIDv7 posted as the hidden `id` so the optimistic and revalidated rows reconcile by key, fire the append and `formAction` in one `startTransition` for automatic rollback, and add a `_debug_fail` teaching branch to observe the revert.)
-- 6 Transactional delete (Refactor `deleteInvoice` to wrap a tenant-scoped existence read, the `invoice_lines` delete, and the invoice delete in `db.transaction(async tx => ...)` using `tx` throughout, returning a discriminated not-found value rather than throwing, keeping `revalidatePath`/`redirect` and any external calls outside the callback, and carrying success through a `?deleted=` URL param into a Sonner toast that survives a JS-disabled load.)
+- 1 Project Overview
+- 2 Create an invoice
+- 3 Edit an invoice
+- 4 Delete with confirmation
+- 5 Optimistic create
+- 6 Transactional delete
 
 ---
 
@@ -435,10 +435,10 @@
 - 4 Quiz
 
 ### Chapter 050 — Project: the welcome email send path
-- 1 Project Overview (Frame the welcome send as the canonical transactional surface every later unit reuses — one Server Action calling one template through one wrapper — clone the starter, run Postgres and `pnpm db:seed` (one pre-suppressed row), start `pnpm dev` plus `pnpm email dev --port 3001`, and name the hard prerequisite of a cheap real domain since Resend's sandbox sender can't prove DKIM on the student's domain.)
-- 2 The verified-domain ceremony (Walkthrough: re-run the chapter 048 Resend setup on the student's own registrar — create per-environment sending-only API keys, add the `send.<student>.<tld>` subdomain, publish the SPF/DKIM TXT and apex `_dmarc` `p=none` records, wait for `Verified`, and confirm SPF/DKIM/DMARC all PASS via a Resend test send and `dig` — the unblocking gate before any code is written.)
-- 3 The suppression-gated send wrapper (Add `RESEND_API_KEY`/`EMAIL_FROM`/`EMAIL_REPLY_TO` to the fail-closed `env.ts`, write `isSuppressed(email, { kind })` that normalizes and applies the `bypass_until` and `reason`-aware transactional carve-out, and build `lib/email.ts` as the single seam — a module-scope `Resend` singleton with a required `idempotencyKey`, env-defaulted `from`, suppression short-circuit returning `err('suppressed', ...)` without calling Resend, and a `Result` return — without wrapping Resend in a generic adapter.)
-- 4 The welcome email send path (Write `<WelcomeEmail />` as a pure props-only React Email template wrapped in `<EmailLayout>` with dark-mode head meta, a `<Preview>` preheader, a `<Button>` CTA, and a plain-text fallback, then write `sendWelcomeEmail` in the five-seam shape — `safeParse` first, `getActiveContext()` for the `userId`, a `welcome:${userId}:${recipient}` idempotency key, a placeholder `verifyUrl` deferred to Unit 8 — returning the wrapper's `Result` unchanged so a real DKIM/SPF/DMARC-passing email lands in the student's inbox.)
+- 1 Project Overview
+- 2 The verified-domain ceremony
+- 3 The suppression-gated send wrapper
+- 4 The welcome email send path
 
 ---
 
@@ -477,11 +477,11 @@
 - 5 Quiz
 
 ### Chapter 055 — Project: email+password auth with verification
-- 1 Project Overview (Frame the canonical first auth flow — sign up, verify by email, sign in, land on a protected `/dashboard`, sign out and watch the `session` row disappear — clone the starter, bring up Postgres, generate a `BETTER_AUTH_SECRET` with `openssl rand -base64 32`, run `pnpm db:migrate`, prove the carry-in Resend pipeline with `scripts/smoke-email.ts`, and confirm the empty auth shells render while `/dashboard` 500s.)
-- 2 Sign up lands a session (Configure the `'server-only'` `betterAuth` instance with the Drizzle adapter, the non-negotiable `nextCookies()` plugin, `minPasswordLength: 12`, and `__Host-` cookie defaults (verification off this lesson with a TODO marker), generate and commit the four-table schema via `pnpm auth:generate`, mount the three-line catch-all `toNextJsHandler(auth)`, write `getCurrentUser`/`requireUser`, and ship `signUpAction` calling `auth.api.signUpEmail` so a fresh sign-up creates the rows and lands a `__Host-better-auth.session_token` cookie.)
-- 3 The email verification gate (Build the `WelcomeVerification.tsx` React Email template, flip `requireEmailVerification` to `true`, and add the `emailVerification` block whose `sendVerificationEmail` callback rides the chapter 050 `sendEmail` wrapper with a `verify:${user.id}:${url}` idempotency key, a one-hour `expiresIn`, and `autoSignInAfterVerification: true` so clicking the link flips `emailVerified`, consumes the token row, and signs the user in — redirecting sign-up to `/verify-email?email=` with a resend button.)
-- 4 Sign in, with unverified refusal and safe redirects (Build `signInAction` calling `auth.api.signInEmail` with `SignInSchema` parse, returning one opaque `'invalid-credentials'` message for both wrong email and wrong password to close account enumeration while `'email-not-verified'` stays a distinct safe reason, and run the attacker-controlled `?next=` through a `sanitizeNext` allowlist that rejects `//`-prefixed, colon-containing, and non-`/` values, falling back to `/dashboard`.)
-- 5 Gate the protected surface (Fill `proxy.ts` to read `getSessionCookie(request)` only — never `auth.api.getSession` — for cookie-presence redirects with `?next=` plus the inverse gate bouncing signed-in users off the auth pages, do the validating `requireUser()` read in the protected `layout.tsx` as defense-in-depth, and ship `signOutAction` as a `<form action>` Server Action calling `auth.api.signOut` so the deleted `session` row is the revocation — closing the flow end to end.)
+- 1 Project Overview
+- 2 Sign up lands a session
+- 3 The email verification gate
+- 4 Sign in, with unverified refusal and safe redirects
+- 5 Gate the protected surface
 
 ---
 
@@ -511,12 +511,12 @@
 - 6 Quiz
 
 ### Chapter 059 — Project: org, RBAC, and invitations end-to-end
-- 1 Project Overview (Tour the multi-tenant build that turns the chapter 055 single-user dashboard into an org-scoped SaaS — `activeOrganizationId` on the session, the `tenantDb`/`authedAction` pair, an append-only `audit_logs` table, and a signed invite handshake — verified through a provided `/inspector` and a 2-org/4-user seed.)
-- 2 Organization plugin and the active-org session (Install Better Auth's `organization()` plugin with teams off, a 7-day `invitationExpiresIn`, and `additionalFields` for `tokenHash`/`acceptedAt`; seed `activeOrganizationId` via the single `databaseHooks.session.create.before` hook; regenerate the schema with `pnpm auth:generate`; and ship `Role`, `ROLE_RANK`, `roleAtLeast`, and a `requireOrgUser()` that reads the role from the membership row, not the cookie cache.)
-- 3 Append-only audit_logs with RLS (Define the `auditLogs` table with `inet`/`jsonb` columns and two composite indexes, then enable RLS with four `pgPolicy` rules — per-org SELECT/INSERT keyed on `current_setting('app.org_id', true)::uuid` and deny-everything UPDATE/DELETE — fronted by a `withTenant(orgId, fn)` transaction that runs `SET LOCAL app.org_id` and a `logAudit(tx, event)` writer whose required `tx` argument refuses off-transaction calls.)
-- 4 Scoped data, the action wrapper, and role changes (Build the `tenantDb(orgId)` facade that composes `and(eq(table.organizationId, orgId), ...)` into every read/insert/update and exposes `.transaction` via `withTenant`, the four-step `authedAction(role, schema, fn)` wrapper returning canonical `Result.error` discriminants instead of throwing, and a `changeMemberRoleAction` that refuses owner targets and last-owner demotion and writes the `'member.role-changed'` audit row in the same transaction as the update.)
-- 5 Send an invitation with a signed accept URL (Generate a 32-byte token with `crypto.getRandomValues`, store only `sha256(token)`, HMAC-sign the accept URL with a distinct `INVITATION_SIGNING_SECRET`, call `auth.api.createInvitation` then `tx.update` the `tokenHash` plus the `'invitation.sent'` audit row in one transaction, send the `InviteEmail` React Email only after commit, and translate the `23505` partial-unique-index violation into `Result.error('already-invited')`.)
-- 6 Accept the invitation across four arrival shapes (Build the `/accept-invite` Server Component that verifies signature → row → hash → expiry → status with one generic refusal for the first three and branches on session and email across four arrival shapes, plus an `acceptInvitationAction` that re-verifies independently, calls `auth.api.acceptInvitation` and `setActiveOrganization`, sets `acceptedAt` and auto-`emailVerified`, and writes the `'invitation.accepted'` audit row in one `withTenant` transaction behind an explicit Accept-button consent gate.)
+- 1 Project Overview
+- 2 Organization plugin and the active-org session
+- 3 Append-only audit_logs with RLS
+- 4 Scoped data, the action wrapper, and role changes
+- 5 Send an invitation with a signed accept URL
+- 6 Accept the invitation across four arrival shapes
 
 ---
 
@@ -536,11 +536,11 @@
 - 4 Quiz
 
 ### Chapter 062 — Project: The production list view
-- 1 Project Overview (Tour the build that turns the chapter 047 invoice CRUD into a production list view — URL-state filter/sort/search/cursor through `nuqs`, soft-delete plus archive as distinct lifecycle states with restore, and `version`-column optimistic concurrency that turns silent last-write-wins into a recoverable 409 — verified through a provided `/inspector`.)
-- 2 Move every control to the URL (Lift filter, sort, search, view, and cursor into the URL with five `nuqs` parsers and a `createSearchParamsCache` read in the Server Component, write back through `useQueryStates` setters with `replace` and `{ scroll: false }`, strip defaults, bundle `cursor: null` on every reordering/shrinking change, and keep the search box responsive with `useDeferredValue` + `useTransition` driving a `throttleMs: 200` write.)
-- 3 Scoped reads and the view tabs (Replace the raw `db.select().from(invoices)` read with an `invoiceScope(orgId)` helper layered on `tenantDb` exposing `active()`/`archived()`/`includingDeleted()` builders, route `listInvoices`/`getInvoiceDetail` on the `view` param, and enforce the `view=all` RBAC gate at the read so a member who hand-types `?view=all` is served `active` rows — confirmed against the partial composite index via the inspector's `EXPLAIN ANALYZE` probe.)
-- 4 Archive, restore, and delete (Ship `archiveInvoice` and `restoreInvoice` (member) plus `softDeleteInvoice` (admin) as `authedAction`-wrapped mutations whose UPDATEs carry their lifecycle precondition in the `WHERE` and write a `logAudit(tx, ...)` row in the same `db.transaction`, wire them into the row action menu with `useOptimistic`, and prove the `(orgId, number) WHERE deletedAt IS NULL` partial unique index lets a soft-deleted `INV-0001` and a fresh `INV-0001` coexist.)
-- 5 Two tabs, one winner (Add tenancy + lifecycle + `version` preconditions to `updateInvoice`'s atomic `WHERE` (never a TOCTOU `SELECT`-then-`UPDATE`), return a 409 `Result` carrying the refetched `current` row in one round trip, and render a `<ConflictBanner>` whose "Use latest" resets the form and advances the hidden `version` while the admin-gated "Overwrite" forces past the precondition — with `useOptimistic` rolling back automatically on `{ ok: false }`.)
+- 1 Project Overview
+- 2 Move every control to the URL
+- 3 Scoped reads and the view tabs
+- 4 Archive, restore, and delete
+- 5 Two tabs, one winner
 
 ---
 
@@ -565,12 +565,12 @@
 - 8 Quiz
 
 ### Chapter 065 — Project: From Stripe webhook to plan entitlement
-- 1 Project Overview (Tour the build that stitches the chapter 063 webhook discipline and chapter 064 billing model into one surface — a signature-verified `/api/webhooks/stripe` route that dedups via `processed_events`, projects three subscription events into one webhook-only-written `plan_entitlements` row, and exposes `billing.upgrade`/`openPortal`/`requirePlan` — proven end-to-end with `stripe listen` + `stripe trigger`.)
-- 2 Verify before you parse (Write the `POST` handler's verification skeleton on the Node runtime: read the raw body once with `request.text()`, verify via `stripe.webhooks.constructEvent` discriminating `Stripe.errors.StripeSignatureVerificationError`, answer 400 `application/problem+json` on a tampered or missing signature, and log every disposition (`verified`/`invalid_signature`/`missing_header`) without parsing or logging the body before verification.)
-- 3 Claim the event inside one transaction (Wrap the post-verify path in one `db.transaction` so the `claimEvent(tx, 'stripe', event.id, event.type)` dedup INSERT and the business work commit together, return 200 with `{ duplicate: true }` on a replay rather than a retry-triggering 4xx/5xx, route every handler call through the `tx` handle, and stub an exhaustive dispatch switch whose `default` logs `unhandled` and returns 200.)
-- 4 Project three events into one entitlement row (Complete the `plan_entitlements` schema, write the pure `subscriptionToEntitlement` projection resolving plan via `catalog.planFromLookupKey` (throwing `BillingError('UNKNOWN_PLAN')` on drift), and land `onCheckoutCompleted` (UPSERT after the one allowed `subscriptions.retrieve`), `onSubscriptionUpdated`, and `onSubscriptionDeleted` (UPDATEs carrying the `lastEventAt < event.created` ordering predicate in the `WHERE`) each writing an audit row in-transaction, plus `getEntitlement` and the `hasActiveAccess` decision table.)
-- 5 Ship the three-method billing interface (Implement `upgrade` and `openPortal` as `authedAction('admin', ...)` mutations returning a redirect URL and `requirePlan` as a Server-Component-callable gate that throws `BillingError`, all behind a `lib/billing/` seam guarded by a `no-restricted-imports` lint rule, with lazy Customer creation (Stripe-first then local `stripeCustomerId` UPDATE), the `organization_id` metadata carry-channel, and a `success_url` whose page reads-and-polls rather than trusting `session_id`.)
-- 6 Harden the webhook against forged tenancy (Refactor `resolveOrgIdFromCustomer` to resolve the org from `organizations WHERE stripeCustomerId = session.customer` and cross-check it against `session.subscription_data?.metadata?.organization_id` in `onCheckoutCompleted` only, treating a mismatch or an unknown Customer as a hard log-and-500 that writes no entitlement and no audit row.)
+- 1 Project Overview
+- 2 Verify before you parse
+- 3 Claim the event inside one transaction
+- 4 Project three events into one entitlement row
+- 5 Ship the three-method billing interface
+- 6 Harden the webhook against forged tenancy
 
 ---
 
@@ -587,10 +587,10 @@
 - 8 Quiz
 
 ### Chapter 067 — Project: Durable CSV export with Trigger.dev
-- 1 Project Overview (Tour the build that lands the chapter 066 Trigger.dev v4 primitives as one durable job — a paginated CSV export fired fire-and-forget from a Server Action, serialized per-org via a dynamic queue, made durable by per-page `triggerAndWait` checkpoints with cross-step idempotency keys, streaming progress through `run.metadata`, and ending in an `ExportReadyEmail` — observed through a provided `/inspector` and the Trigger.dev dashboard.)
-- 2 The task boundary: schemaTask and the per-org queue (Write the `exportInvoices` `schemaTask` whose `z.strictObject` payload carries `organizationId`/`requestedBy` validated at the trigger boundary, lands on a dynamic per-org `queue` at `concurrencyLimit: 1` declared in code, plus a `startExport` `authedAction('member', ...)` that fires it via `tasks.trigger` (never `triggerAndWait`) with an `(orgId, userId, dayBucket())` business idempotency key at `idempotencyKeyTTL: '24h'`.)
-- 3 One checkpoint per page (Turn the placeholder body into a real paginated export where each page is its own durable `paginatePage` child spawned through `triggerAndWait` with a `${ctx.run.id}:page:${page}` cross-step idempotency key so a killed worker resumes from the next uncompleted page, driving the progress bar via `metadata.set('pagesTotal'/'pagesDone')` from the parent, reading through cursor-paginated `listInvoices`, and aborting an empty resultset with `AbortTaskRunError` rather than burning retries.)
-- 4 Send the email, write the audit log (Close the run with a `sendExportEmail` child guarded by a `${ctx.run.id}:email` idempotency key so a parent retry sends no second email, reading org and recipient through `tenantDb(organizationId)` and consuming the parent's `metadata.downloadUrl`, then open one `tenantDb` transaction to flip the `exports` row to `completed` and write the `export.invoices.completed` audit row after the email — auditing the outcome, not the intent — with a Resend suppression returning a Result rather than throwing.)
+- 1 Project Overview
+- 2 The task boundary: schemaTask and the per-org queue
+- 3 One checkpoint per page
+- 4 Send the email, write the audit log
 
 ### Chapter 068 — Object storage
 - 1 Defending the no — when object storage earns its weight (Names the three trigger conditions (user uploads, generated assets the app serves back, third-party media) that put R2 on the table, the conditions that do not, and why R2 beats S3 and the upload SaaS wrappers on unit economics for any read-heavy product.)
@@ -601,11 +601,11 @@
 - 6 Quiz
 
 ### Chapter 069 — Project: presigned R2 upload
-- 1 Project Overview (Tour the build that lands the chapter 068 R2 primitives as one upload surface — a direct browser-to-R2 PUT with a `Files` list of fresh-per-render presigned GETs, the two-step sign → upload → finalize-with-HEAD → row-insert write, and a retrofit of the chapter 067 export to a real R2 link — driven by one `lib/r2.ts` powering both a browser PUT and a worker-side server PUT.)
-- 2 Sign the PUT, no DB write (Build the `presignedPut` `authedAction('member', ...)` that validates the client's `fileName`/`contentType`/`claimedSize` against the `ALLOWED_CONTENT_TYPES` allowlist and `MAX_BYTES` cap, constructs a server-side `objectKey` via `buildObjectKey` from the org and a `uuidv7`, and signs a `PutObjectCommand` at `expiresIn: 300` with no DB row written — verified by a `curl` PUT straight to `${bucket}.r2.cloudflarestorage.com`.)
-- 3 Browser PUT, HEAD, then insert (Add the `file_metadata` migration, a `finalizeUpload` action that HEADs the object to read the true `ContentLength`/`ContentType` (rejecting a lying client with `size-mismatch`) and inserts the row plus a `file.uploaded` audit entry in one `tenantDb` transaction, and an `upload-form.tsx` that uses `XMLHttpRequest` (for `xhr.upload.onprogress`) to PUT the exact signed `Content-Type` straight to R2 — so the function never sees the bytes.)
-- 4 Fresh-per-render GETs (Render the un-cached `/files` Server Component that reads through `tenantDb(orgId)` filtered to `isNull(deletedAt)` with a `{ uploadedAt, id }` keyset cursor and mints a fresh `getFileDownloadUrl` per row per render — a `GetObjectCommand` at `expiresIn: 600` carrying an RFC 5987 `ResponseContentDisposition` for the original filename — plus a tenant-free `getSignedGetForKey` worker helper, proving a copied URL dies at 11 minutes while a refresh re-issues a working one.)
-- 5 Real downloadUrl for the export (Retrofit the chapter 067 export to write its in-memory CSV to R2 with a server-side `PutObjectCommand` under an `org/<id>/exports/<runId>.csv` prefix, sign the email's link with `getSignedGetForKey` at `expiresIn: 600`, and place the PUT at the end of the resumed parent so kill-resume idempotency holds — writing no `file_metadata` row, with a 7-day lifecycle rule handling cleanup.)
+- 1 Project Overview
+- 2 Sign the PUT, no DB write
+- 3 Browser PUT, HEAD, then insert
+- 4 Fresh-per-render GETs
+- 5 Real downloadUrl for the export
 
 ---
 
@@ -619,9 +619,9 @@
 - 5 Quiz
 
 ### Chapter 071 — Project: notification dispatcher
-- 1 Project Overview (Tour the build that lands the chapter 070 dispatcher primitives as one runnable seam — a `notifiable_events` registry, a `dispatch(event)` that resolves default-on prefs and 60-second dedup before fanning out to independent `sendEmailChannel`/`writeInboxRow` functions, and fire-after-commit wiring at three real call sites — observed through a provided `/inspector` and `/inbox`.)
-- 2 Registry, dispatcher, and dedup (Define the three `notifiable_events` entries `const`-asserted with `satisfies Record<string, EventDefinition>`, a `claimDedup` check-then-insert helper keyed on `(event_type, dedup_key, recipient_user_id)` within a per-event window, and a `dispatch()` whose body order is registry lookup (throwing `NotificationError('REGISTRY_MISS')`) → stubbed prefs → per-recipient `computeDedupKey`/`claimDedup` → per-channel `try/catch` stubs that only increment the `{ sent, deduped, suppressedByPrefs }` shape.)
-- 3 Channels and preferences live (Replace the stubs with a `writeInboxRow` that renders `event.template.inbox(payload)` once at dispatch time and a `sendEmailChannel` that resolves the address via `getUserEmail` (throwing swallowed `RECIPIENT_NOT_FOUND`), signs an unsubscribe token, and sends with `List-Unsubscribe`/`List-Unsubscribe-Post: One-Click` headers, plus a batched `readPrefsForCategory` and a `resolveChannels` carrying the `?? true` default-on and `|| c === event.criticalChannel` override clauses.)
+- 1 Project Overview
+- 2 Registry, dispatcher, and dedup
+- 3 Channels and preferences live
 - 4 Wire the three call sites (Add `await dispatch(...)` after the transaction commits in `src/lib/invitations/send.ts` (`org.invitation.sent`, no-op on an empty recipient list), the role-change action (`org.member.role_changed`, alongside the unchanged audit write), and the Stripe past-due webhook branch (`org.billing.past_due`, owner IDs read inside the transaction and captured in a closure) — proving rolled-back work notifies nobody and that `sendEmail(`/`db.insert(notifications)` grep zero hits outside `lib/notifications/`.)
 
 ---
@@ -634,10 +634,10 @@
 - 3 Quiz
 
 ### Chapter 073 — Project: caching the invoices list with tag-driven invalidation
-- 1 Project Overview (Layer a tag-driven cache onto the chapter 062 invoices list — `use cache` on the list, per-org summary, and detail reads, a three-helper `tags.ts`, `updateTag` fan-out from the lifecycle actions, and `revalidateTag` from a Trigger.dev task — verified through the `/inspector` `fetchedAt` strip.)
-- 2 Cache the reads (Annotate `listInvoices`, `getOrgInvoiceSummary`, and `getInvoiceDetail` with `'use cache'` + `cacheLife` + `cacheTag`, write the `orgInvoicesTag`/`invoiceTag`/`orgSummaryTag` helpers and the `profiles.ts` map, and emit a frozen `fetchedAt` timestamp as the hit/miss proxy while keeping `auth()` out of cached bodies.)
-- 3 Read-your-writes invalidation (Fan three `updateTag` calls — list, record, summary — out of the four lifecycle actions after commit and before redirect so the submitting user reads their own change, log each via `logCacheInvalidation`, and wire the misuse-`revalidateTag`-from-action branch as the deterministic stale-read demo.)
-- 4 Eventual invalidation (Implement the `summaryRecomputeTask` `schemaTask` with a Zod `strictObject` payload and a code-defined queue that recomputes `org_invoice_summaries` and calls `revalidateTag(orgSummaryTag(orgId), 'max')`, landing the new aggregate on the next visit as stale-while-revalidate because no user is waiting.)
+- 1 Project Overview
+- 2 Cache the reads
+- 3 Read-your-writes invalidation
+- 4 Eventual invalidation
 
 ### Chapter 074 — Rate limiting with Upstash Redis
 - 1 Two layers: edge WAF and application limiter (Teaches the layering of Vercel WAF (per-IP edge controls) and `@upstash/ratelimit` (per-key application controls), the public-URL-with-auth trigger that makes Upstash non-negotiable, why Upstash Redis is the 2026 default, and the fail-open-on-auth policy.)
@@ -646,11 +646,11 @@
 - 4 Quiz
 
 ### Chapter 075 — Project: Upstash rate limits on the auth surface
-- 1 Project Overview (Instrument the chapter 055 email+password sign-in, sign-up, and reset flows with three `@upstash/ratelimit` limiters at the Server Action seam, with `RateLimit-*` headers, opaque 429 bodies, fail-open resilience, and Better Auth's built-in limiter off, all verified on `/inspector` and the Upstash dashboard.)
-- 2 Declare the Redis client and three module-scope limiters (Add the two Zod-validated Upstash env vars, `Redis.fromEnv()` with a `ping()` health-check, and three module-scope `Ratelimit` sliding-window instances — signin 10/1m, signup 5/10m, reset 3/15m — each with its own `ephemeralCache` and distinct prefix, read into the inspector's panel via budget-free `getRemaining`.)
-- 3 Gate sign-in with dual-keying and swap out Better Auth's built-in (Wrap `signInAction` with `keys.ts`, `safeLimit`, and `rate-limit-headers.ts`, running ordered per-IP then per-email `safeLimit` gates before the password hash, returning an opaque 429 on either, flushing `pending` analytics via `after()`, and setting `rateLimit: { enabled: false }` in `auth.ts` so the application limiter is the single enforcement point.)
-- 4 Gate sign-up per-IP (Add a single `safeLimit(signUpLimiter, 'ip:' + ip)` gate before `auth.api.signUpEmail`, keyed per-IP because the email is attacker-controlled, reusing the helpers and fail-open policy to prove a new endpoint is one limiter plus one wrap.)
-- 5 Gate reset per-IP and per-email (Wrap `resetAction` with ordered per-IP then per-email `safeLimit` gates before `auth.api.forgetPassword`, the per-email gate surviving an IP switch to protect a victim's inbox and Resend cost, verified by `MOCK_EMAIL_SENT_COUNT` ticking only for the successful resets.)
+- 1 Project Overview
+- 2 Declare the Redis client and three module-scope limiters
+- 3 Gate sign-in with dual-keying and swap out Better Auth's built-in
+- 4 Gate sign-up per-IP
+- 5 Gate reset per-IP and per-email
 
 ---
 
@@ -664,10 +664,10 @@
 - 5 Quiz
 
 ### Chapter 077 — Project: TanStack Query on optimistic comments
-- 1 Project Overview (Bolt a polling, infinite-scrolling, optimistically-added comment thread onto the chapter 062 invoice detail page with TanStack Query scoped to the leaf — a route handler as the read seam, a Server Action as the write seam, two-system invalidation, and `commentKeys` as the sole key source — verified on `/inspector`.)
-- 2 Provider, per-request factory, and the SSR-hydrated first page (Build `getQueryClient()` branching on `typeof window` with React `cache()` per-request on the server and a client singleton, the `commentKeys` helper, the `'use client'` `<Providers>` with senior defaults and `NODE_ENV`-gated devtools, then prefetch the first page, `dehydrate`, and `<HydrationBoundary>` so the seeded thread paints with no client loading state.)
-- 3 Infinite scroll, polling, and the route handler (Add the `authedRoute`-wrapped `GET /api/invoices/[id]/comments` read seam and the client fetcher branch, then drive the leaf's `useInfiniteQuery` with cursor paging, `maxPages: 10`, and a 10-second `refetchInterval` with `refetchIntervalInBackground: false` so "Load older" pages in and a coworker's comment arrives within the poll window.)
-- 4 Optimistic add and rollback with useMutation (Wire `addCommentAction` (insert + `logAudit` + `revalidateTag`) and the cache-update optimistic `useMutation` — `cancelQueries`, snapshot, `setQueryData` into `pages[0]`, restore in `onError`, `invalidateQueries` in `onSettled` — landing the row instantly, rolling back on the forced 500, and reconciling both caches.)
+- 1 Project Overview
+- 2 Provider, per-request factory, and the SSR-hydrated first page
+- 3 Infinite scroll, polling, and the route handler
+- 4 Optimistic add and rollback with useMutation
 
 ### Chapter 078 — Zustand
 - 1 When Zustand earns its weight (The three triggers that justify reaching for Zustand past the five client-state defaults, the per-feature rule, and the "client-only, never global ambient" framing for SaaS codebases.)
@@ -676,10 +676,10 @@
 - 4 Quiz
 
 ### Chapter 079 — Project: routed customer wizard with Zustand
-- 1 Project Overview (Layer a four-step routed "new customer" wizard onto the chapter 062 customers surface with a per-feature Zustand store, a `useRef`-pinned provider on the shared layout, a typed selector hook, per-slice Zod validation shared client and server, and a Server-Action submit boundary, verified through the `/inspector` snapshot and re-render panels.)
-- 2 Build the store skeleton (Define the four-slice `WizardState`, write the typed `StateCreator` slice factories, compose them through a `createStore`-from-`zustand/vanilla` factory to avoid the per-request leak, mount the `useRef`-pinned `WizardStoreProvider` on the shared `/customers/new` layout, and expose the throw-on-missing `useWizardStore<T>(selector)` hook so state survives navigation across the four segments.)
-- 3 Wire the forms and the Next-gate (Bind every step-1/2/3 field through atomic selectors paired with slice setters, render inline Zod `flattenError` field errors, and derive the footer's primitive `isValid` from a whole-slice `safeParse` so Next gates per validity and a single `onClick` bundles `goNext` with `router.push`, keeping re-renders surgical.)
-- 4 Submit, reset, and guard (Build the `createCustomerAction` that re-parses the composite `createCustomerInput`, inserts and `logAudit`s in one `tenantDb` transaction with `23505`→conflict mapping, read the three slices on step 4 via `useShallow`, and wire the submit button with a `useTransition` double-submit guard, success-only `reset()`-then-`router.push`, and draft-preserving failure handling.)
+- 1 Project Overview
+- 2 Build the store skeleton
+- 3 Wire the forms and the Next-gate
+- 4 Submit, reset, and guard
 
 ---
 
@@ -703,16 +703,16 @@
 - 9 Quiz
 
 ### Chapter 082 — Project: the pre-launch audit pass
-- 1 Project Overview (Run the chapter 080 error-discipline and chapter 081 security-baseline passes against a seeded audit-target repo, producing a committed `findings/` directory of one rule-location-consequence-fix Markdown file per finding, self-graded against the `v1.0-answer-key` tag after commit.)
-- 2 Finding 1: the fail-closed bypass (Document the `try/catch` around `requireRole('owner')` in `lib/admin/transferOwnership.ts` as `001-fail-closed.md`, establishing the grep-driven audit method, the four-section template, the user-visible consequence, and the fix that lets `authedAction` convert the throw to `{ ok: false, error }`.)
-- 3 Finding 2: the XSS HTML sink (Document the `dangerouslySetInnerHTML` on the user note body in `app/(app)/invoices/[id]/notes.tsx` as `002-xss-html-sink.md`, confirmed by markup rendering raw in the running app, with a sanitize-at-write-and-read fix that addresses the historical-data vector and cross-references the CSP finding.)
-- 4 Finding 3: the missing audit-log write (Document the silent `organizations.ownerId` update lacking `logAudit(tx, event)` in `lib/billing/transferOwnership.ts` as `003-audit-log-ownership-transfer.md`, reached by walking the six-category event set against every mutation and fixed by adding `org.ownership.transferred` inside the transaction with a redacted payload.)
-- 5 Finding 4: the CSP header omission (Document the missing Content-Security-Policy as `004-csp-header.md` — located via `curl -I` showing HSTS but no CSP — naming the absent `next.config.ts` policy and `proxy.ts` per-request nonce, with a `'strict-dynamic'`-plus-`x-nonce` fix that backstops the finding-2 sink.)
-- 6 Finding 5: the secret in `NEXT_PUBLIC_*` (Document the `NEXT_PUBLIC_RESEND_API_KEY` shipped to a browser Client Component as `005-secret-next-public.md`, confirmed in the DevTools network tab, with a structural fix that renames to the `server` partition, moves the call to a Server Action, and rotates the already-leaked key Vercel-before-provider.)
-- 7 Finding 6: the missing rate limit on password-reset (Document the unthrottled Resend trigger in `app/api/auth/reset-password/route.ts` as `006-rate-limit-password-reset.md`, found by reading the route list against the coverage matrix, with a dual-keyed per-IP-and-per-email `safeLimit` fix and the matrix attached.)
-- 8 Finding 7: the dep-hygiene gap (Document the `.npmrc` missing `minimumReleaseAge` and `blockExoticSubdeps` plus an outdated pin as `007-dep-hygiene.md`, framing the 24-hour pre-install window against Dependabot and `pnpm audit` as post-install signals, fixed by enabling both settings and gating CI.)
-- 9 Finding 8: the GDPR deletion gap (Document the `lib/account/deleteAccount.ts` that deletes only the `users` row as `008-gdpr-deletion.md`, enumerating every missed table and external service against the retention catalog, with an async-deletion-job fix that anonymizes audit logs rather than hard-deleting them.)
-- 10 Commit and self-grade (Commit the eight findings on the honor system, fill the `SUMMARY.md` coverage scorecard, check out the `v1.0-answer-key` tag, score each finding clause-by-clause under the rule-plus-location-is-the-floor partial-credit rule, tally bonus findings 9 and 10, and fold every miss into a personal grep/curl checklist.)
+- 1 Project Overview
+- 2 Finding 1: the fail-closed bypass
+- 3 Finding 2: the XSS HTML sink
+- 4 Finding 3: the missing audit-log write
+- 5 Finding 4: the CSP header omission
+- 6 Finding 5: the secret in `NEXT_PUBLIC_*`
+- 7 Finding 6: the missing rate limit on password-reset
+- 8 Finding 7: the dep-hygiene gap
+- 9 Finding 8: the GDPR deletion gap
+- 10 Commit and self-grade
 
 ---
 
@@ -736,10 +736,10 @@
 - 7 Quiz
 
 ### Chapter 085 — Project: tri-locale invoices list
-- 1 Project Overview (Lift the chapter 062 invoices list into a tz-aware `en-US`/`en-GB`/`fr-FR` surface where every string flows through `t()`, every number and date through `useFormatter` with the profile `timeZone`, and marketing emits `hreflang`, a per-locale sitemap, and locale-aware OG, verified across the running app and `/inspector`.)
-- 2 Wire next-intl and ship three catalogs (Stand up locale routing end-to-end — `defineRouting` with `localePrefix: 'as-needed'`, `createMiddleware` in `proxy.ts`, `getRequestConfig`, the `[locale]` layout with `setRequestLocale` and `<html lang>`, a scoped `NextIntlClientProvider`, and the `setLocaleAction` writing profile plus `NEXT_LOCALE` cookie — then route every UI string through `t()` and ship the en-GB diff and full fr-FR catalog with a CLDR-correct ICU `plural` counter including French's `many` branch.)
-- 3 Format dates in profile tz and currency from data (Move every render onto the formatting seam: pass the session `timeZone` into each `format.dateTime` call so DST-spanning instants render the right wall-clock, format each amount in the invoice's stored `currency` via `narrowSymbol` per the viewer's locale, and add a `Temporal.Now.plainDateISO(tz).until(...).days` relative-due column through `format.relativeTime`.)
-- 4 Emit hreflang, sitemap alternates, and per-locale OG (Give marketing its SEO shape through a single `generateAlternates` seam: a locale-specific canonical, bidirectional self-referential `hreflang` with `x-default`, per-locale OG images via the underscore `bcp47ToOgLocale` form, `robots: { index: false }` on authed pages, and a root-level `app/sitemap.ts` carrying `xhtml:link` alternates per canonical path.)
+- 1 Project Overview
+- 2 Wire next-intl and ship three catalogs
+- 3 Format dates in profile tz and currency from data
+- 4 Emit hreflang, sitemap alternates, and per-locale OG
 
 ---
 
@@ -786,12 +786,12 @@
 - 4 Quiz
 
 ### Chapter 091 — Project: testing the Stripe webhook and Checkout money path
-- 1 Project Overview (Clone the layered test harness for the Chapter 065 Stripe webhook, bring up the `saas_int_test` and `saas_e2e` Postgres databases on port `55432`, and confirm both empty suites boot via `pnpm test:integration` and `pnpm test:e2e` before any test is written.)
-- 2 Reading the test harness (Walk every provided fixture, helper, and config — `vitest.integration.config.ts` with `pool: 'forks'`, `integration-setup.ts` with MSW `onUnhandledRequest: 'error'`, the `withRollback` async-local transaction shim, `createAdmin`/`createMember`, the `checkoutCompleted` event factory, the `resend` and `stripe` MSW handlers, `postWebhook`, `callAction`, the `playwright.config.ts` `webServer`/`storageState` wiring, and `auth.setup.ts` — then boot both empty suites to confirm the harness is alive.)
-- 3 The happy-path webhook test (Drive a signed `checkout.session.completed` through the real route handler inside `withRollback`, mocking only the Stripe and Resend network boundaries, and assert on the `200` `{ received: true }` response, the `processed_events` claim row, the `plan_entitlements` upsert with `lastEventAt`, the `audit_logs` row, and an empty `resendCalls`.)
-- 4 The replay/idempotency test (Send the same event twice with a pinned `eventId` and prove the second send returns `{ received: true, duplicate: true }` while `processed_events` stays at 1, `plan_entitlements.updatedAt` is unchanged, and `audit_logs` stays at 1 — proving idempotency against Stripe's at-least-once delivery.)
-- 5 The signature-tampered rejection test (Send the event through `postWebhook(event, { tamperSignature: true })` and prove the fail-closed front door: `400` `application/problem+json` with `{ title: 'invalid_signature' }`, zero `processed_events`, the entitlement still `plan: 'free'`, zero `audit_logs`, and `resendCalls.length === 0`.)
-- 6 Driving Checkout end to end (Write the single Playwright test that signs in via `storageState`, clicks Upgrade, fills the Stripe Checkout iframe with `4242 4242 4242 4242` via `frameLocator`, returns to `/billing/success`, and watches the poller flip to Pro — then run the suite-wide mutation drills, refactor-without-breaking checks, the branch-`--coverage` diagnostic, and the trace-artifact walkthrough that prove the suite is behavior-anchored.)
+- 1 Project Overview
+- 2 Reading the test harness
+- 3 The happy-path webhook test
+- 4 The replay/idempotency test
+- 5 The signature-tampered rejection test
+- 6 Driving Checkout end to end
 
 ---
 
@@ -825,13 +825,13 @@
 - 8 Quiz
 
 ### Chapter 095 — Project: wire observability, audit performance
-- 1 Project Overview (Clone the hybrid wire-and-document audit target, paste free-tier `SENTRY_DSN`/`SENTRY_AUTH_TOKEN` and `NEXT_PUBLIC_POSTHOG_KEY` credentials into `.env.local`, boot the app with eight seeded observability and performance findings live, and learn the dual-grade rule that working wiring and a complete `findings/` report are scored independently.)
-- 2 The audit method, modeled on finding 7 (Learn the audit cadence — run the app beside its source, read each finding's fingerprint on its diagnostic surface (DevTools Performance, Network filtered to `posthog`, `/api/test/throw`, the dev console), then write it before moving on — and model it end to end by filling `findings/007-missing-priority.md` with rule, location, consequence, and fix for the LCP hero `<Image>` missing `priority`.)
-- 3 Wire Sentry (Install Sentry across client/server/edge via `sentry.*.config.ts` and `instrumentation.ts`, wrap `next.config.ts` with `withSentryConfig` (`hideSourceMaps`, `widenClientFileUpload`), validate the DSN/auth-token/release env in `lib/env.ts` with `SENTRY_RELEASE` computed from `VERCEL_GIT_COMMIT_SHA`, and prove `/api/test/throw` lands a source-mapped, release-tagged, breadcrumbed event in the dashboard.)
-- 4 The production logger seam (Build one `redact` drop-list reused by both Pino's `redact` config and Sentry's `beforeSend`, and a `proxy.ts` correlation-ID middleware that mints `x-request-id` into an `AsyncLocalStorage` so every log line carries a top-level `requestId` and the matching Sentry event joins on it — closing the `stripe-signature` 3am-leak and the missing-correlation findings.)
-- 5 Gate PostHog behind consent (Flip `instrumentation-client.ts` to `opt_out_capturing_by_default: true`, route the chapter 081 consent banner's accept/reject through a single `lib/analytics/consent.ts` seam calling `posthog.opt_in_capturing()`/`opt_out_capturing()`, add the on-mount continuity re-call, and prove zero pre-consent `posthog` requests with a post-Accept `$pageview` in the dashboard.)
-- 6 Document the performance findings (Write `findings/005-rsc-waterfall.md` (the `Promise.all` fix for the independent read pair) and `findings/008-n-plus-1-invoices.md` (`findMany({ with: { customer: true } })` verified via `db.toSQL()`), fix the `lucide-react` barrel in-place with `optimizePackageImports` to capture the bundle-analyzer before/after in `findings/006-barrel-import.md`, and assemble `SUMMARY.md` with the First Load JS table.)
-- 7 Verify and self-grade (Run the full verify recipe one surface at a time — Sentry throw, redacted-and-correlated logs, the two-half PostHog gate, eight filled finding files with embedded screenshots — commit the work, then diff against the `v1.0-answer-key` tag for partial-credit coverage scoring and write the out-of-scope follow-up backlog.)
+- 1 Project Overview
+- 2 The audit method, modeled on finding 7
+- 3 Wire Sentry
+- 4 The production logger seam
+- 5 Gate PostHog behind consent
+- 6 Document the performance findings
+- 7 Verify and self-grade
 
 ---
 
@@ -868,12 +868,12 @@
 - 4 Quiz
 
 ### Chapter 100 — Project: ship to production, then live-migrate the schema
-- 1 Project Overview (Take the chapter 062 invoices app — URL-state list, soft-delete, `version` concurrency — running locally against docker Postgres, understand the git-push-is-the-deploy and preview-branch-rehearsal threads, and preview the goal: a live `*.vercel.app` URL plus an expand-migrate-contract split of `invoices.total` into `subtotal` and `tax` across three reviewed PRs with no incompatible moment.)
-- 2 From green repo to a live production URL (Wire Vercel and Neon end to end — branch-protect `main`, override the build command to `pnpm db:migrate && next build`, watch the env validator fail then pass, match the function region to the Neon region, install the Neon integration for per-PR branches, turn on preview password protection, `vercel link`/`vercel env pull`, and walk the eight-row launch checklist into `docs/runbooks/launch-checklist.md`.)
-- 3 PR 1 (Expand): add the nullable subtotal and tax columns (Ship an additive-only migration adding `subtotal` and `tax` as nullable `numeric(12, 2)` columns matching `total`'s precision, with no `actions.ts`/`queries.ts` edits, rehearse it on a Neon preview branch by reading the build log line by line, and verify production stays healthy at split-coverage 0% after merge.)
-- 4 PR 2 (Migrate): dual-write, backfill, dual-read (Make `createInvoice`/`updateInvoice` write all three columns in one `set({ subtotal, tax, total: subtotal + tax })`, read through `coalesce(subtotal, total)`/`coalesce(tax, 0)`, run the bounded-idempotent `backfill_subtotal_tax.ts` over `DATABASE_URL_UNPOOLED` only after the dual-write is live, and ship the `SET NOT NULL` promotion as its own PR once split-coverage and the data-integrity diff are green.)
-- 5 PR 3 (Contract): drop the old column, promote the new pair (Ship a single `DROP COLUMN total` migration, strip every `total` reference so the typed Drizzle builder and a scoped `invoices.total`/`invoiceTotal` grep both come back clean, remove the `coalesce` fall-through, and land production on the target `subtotal NOT NULL` + `tax NOT NULL` schema with split-coverage holding at 100%.)
-- 6 Rollback rehearsal and the schema caveat (Promote the post-PR-2 deployment against the contract schema to make the "alias re-point does not undo a forward-only migration" caveat concrete — observing the transient `column total does not exist` error reach Sentry — then re-promote, confirm auto-assignment is off, and write `docs/runbooks/rollback.md` with the four-step gesture and the application-bug-versus-schema-mistake discriminator.)
+- 1 Project Overview
+- 2 From green repo to a live production URL
+- 3 PR 1 (Expand): add the nullable subtotal and tax columns
+- 4 PR 2 (Migrate): dual-write, backfill, dual-read
+- 5 PR 3 (Contract): drop the old column, promote the new pair
+- 6 Rollback rehearsal and the schema caveat
 
 ---
 
@@ -898,10 +898,10 @@
 - 3 Quiz
 
 ### Chapter 104 — Project: Review a PR, write the ADR
-- 1 Project Overview (Clone the seeded-PR starter, run it, check out the `feature/customer-plan-overview` branch holding the ~220-LOC diff, and write the pass-order header `correctness/security → principles → patterns → tests/contracts → style` into `reviews/chapter 104.md` before opening the diff — committing in writing to the review stack over reading top-down.)
-- 2 The auth bypass (Write the modeled first comment — the `updatePlanLabel` action in `app/(app)/plan/actions.ts` hand-rolls `auth()` and drops the role check, `tenantDb` scope, and rate limit — as a `blocking:` finding in the four-part anatomy citing SaaS pattern #2 (`authedAction(role, schema, fn)`) and Principle #3, in the address-the-code-not-the-author voice.)
-- 3 Four more blocking findings (Surface the remaining four `blocking:` findings working in review-stack order — the bare side-effect `import` firing a network call at server render (Principle #6), the `Date`-arithmetic countdown that breaks at DST (SaaS pattern #13, Temporal), the `useState`+`useEffect` derived-state sync (Principle #7, derive-don't-sync), and the missing `logAudit(tx, ...)` on the plan-label mutation — then close the file with the `## Summary` severity totals, the ~220-LOC PR-size note, and a `Verdict: request changes` line.)
-- 4 ADR 0007 (Run the three-test inclusion check to select only the entitlement-cache decision over the column-add and co-location candidates, write `docs/adr/0007-cache-entitlement-reads-with-cacheTag.md` in the Nygard shape with a hedge-free Decision committing to `cacheTag`/`updateTag`, a Consequences list enumerating every mutation seam that must call `updateTag` plus the `revalidateTag(tag, 'max')` background path and the reversal cost, update the ADR index, commit, and self-grade against `v1.0-answer-key`.)
+- 1 Project Overview
+- 2 The auth bypass
+- 3 Four more blocking findings
+- 4 ADR 0007
 
 ---
 
@@ -926,8 +926,8 @@
 - 4 Quiz
 
 ### Chapter 108 — Project: Ask-your-invoices chat with tool calling
-- 1 Project Overview (Run the chapter 062 invoices starter with the unwired right-rail chat shell, tour the eight TODO files behind the `src/lib/llm/` seam and the provided schema/auth/model/seed/inspector, and internalize the threads: tools are the only doorway into app state, the model is untrusted input, the agentic loop is server-owned, and token accounting is first-class.)
-- 2 Streaming route under auth with the agentic loop (Build `POST /api/chat` wrapped in `authedRoute('member')` running `streamText` with `stopWhen(stepCountIs(5))`, the tool-grounding `invoiceQAPrompt`, `convertToModelMessages`, `toUIMessageStreamResponse()`, and an `onFinish` write of one `'llm.finish'` row via `writeLlmFinishEvent`, exercised through a throwaway smoke-test `useChat` client and proving a 401 refusal for anonymous callers.)
-- 3 The org-scoped getInvoiceStats tool (Add the `buildInvoiceTools({ orgId: ctx.orgId })` factory whose `getInvoiceStats` tool closes over `orgId` (never in `inputSchema`), projects an aggregate `outputSchema` via `invoiceScope(ctx.orgId).active()`, returns `{ error: 'stats_unavailable' }` rather than throwing, and wires `onStepFinish` to write one `'llm.step'` row per step — grounding answers in real Drizzle numbers and refusing a forged `orgId`.)
-- 4 The per-user daily token quota (Build `src/lib/llm/quota.ts` with `DAILY_TOKEN_CAP = 100_000`, `reserveQuotaOrRefuse(userId)` running before `streamText` to return a typed `quota_exceeded` 429 at the cap, `addUsage` summing `usage.inputTokens + usage.outputTokens` inside `onStepFinish`, and the `/api/usage` `GET` endpoint reporting today's `{ used, cap, remaining }` keyed by `(userId, day)`.)
-- 5 Typed useChat, tool parts, and the usage panel (Replace the smoke-test client with the typed `useChat<InvoiceUIMessage>` surface — a `messages.map`/`parts.map` switch rendering text bubbles and `tool-getInvoiceStats` parts across all four lifecycle states with a per-tool `InvoiceStatsCard.Skeleton` over a generic spinner, `part.output` typed via `InferUITools`, a local-`useState` input with a `status` double-submit guard, the `onError` quota toast, and the `token-usage-panel.tsx` polling `/api/usage` every 10s.)
+- 1 Project Overview
+- 2 Streaming route under auth with the agentic loop
+- 3 The org-scoped getInvoiceStats tool
+- 4 The per-user daily token quota
+- 5 Typed useChat, tool parts, and the usage panel
