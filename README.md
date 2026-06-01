@@ -1,6 +1,6 @@
-# The Modern SaaS Stack — a course I built for myself, with AI
+# A personalized course built using agentic workflows
 
-A full-depth course on building a production SaaS with the minimum-viable 2026 stack — **designed for me, by me, with the help of AI**. Not a course I'm taking. A course I'm *authoring*, where the authoring itself is the experiment.
+A full-depth course on building a production SaaS with the minimum-viable 2026 stack, **designed and built for me — by me, with [Claude Code](https://claude.com/claude-code) (Opus 4.8)**. I'm building it to learn from; the experiment is that I also engineered the agentic system that authors it. Authoring began June 2026.
 
 > **Status: work in progress.** 16 of a planned 108 chapters are published. Built over ~3.5 weeks and ~550 commits so far (first commit 2026-05-08). Not yet deployed publicly.
 
@@ -8,17 +8,17 @@ A full-depth course on building a production SaaS with the minimum-viable 2026 s
 
 ## What this is
 
-I'm a developer coming back to web from another field, and I couldn't find a course pitched at the right altitude: everything for beginners assumes you've never written a function, and everything for experts assumes you already know the modern stack cold. So I built the one I wanted — senior-depth, decisions-before-syntax, and covering **every layer a production SaaS actually ships**: TypeScript, React 19, Next.js 16 (App Router, Server Components, PPR), Postgres + Drizzle, Better Auth, Stripe billing, transactional email, background jobs, file uploads, caching, rate limiting, i18n, testing, observability, CI/CD with zero-downtime migrations, and AI features over your own data.
+I just finished a Data Science degree and I'm moving into web development. I couldn't find a course pitched at the right altitude: everything for beginners assumes you've never written a function, and everything for experts assumes you already know the modern stack cold. So I built the one I wanted — senior-depth, decisions-before-syntax, and covering **every layer a production SaaS actually ships**: TypeScript, React 19, Next.js 16 (App Router, Server Components, PPR), Postgres + Drizzle, Better Auth, Stripe billing, transactional email, background jobs, file uploads, caching, rate limiting, i18n, testing, observability, CI/CD with zero-downtime migrations, and AI features over your own data.
 
 The learner-facing overview lives on the site's landing page — see [`src/content/docs/index.mdx`](src/content/docs/index.mdx). This README is about the part underneath: **how the course builds itself.**
 
 ## Three experiments
 
-I treated this less like writing a course and more like running three bets at once.
+Building it this way let me explore three things at once.
 
 ### 1. Knowledge extraction
 
-The hard problem in 2026 isn't finding information — it's deciding what *not* to teach. The course is an exercise in compression: distilling the sprawl of web development down to the **minimum viable stack a real SaaS would ship today**, and to the *judgment* behind it — the decisions and trade-offs, not the keystrokes. The curriculum was derived top-down: pick the tech → define the audience and goals → draft the structure → break it into chapters, then lessons. Every paragraph and every code sample has to survive two filters: *does a 2026 SaaS dev actually use this, and does it teach the decision rather than just the syntax?*
+Web development is a sprawling field — countless libraries, frameworks, and competing ways to do everything — and it's easy to drown in tutorial hell. The hard part isn't finding information; it's choosing the small set actually worth learning. The course is an exercise in compression: distilling that sprawl down to the **minimum viable stack a real SaaS would ship today**, and to the *judgment* behind it — the decisions and trade-offs, not the keystrokes. The curriculum was derived top-down: pick the tech → define the audience and goals → draft the structure → break it into chapters, then lessons. Every paragraph and every code sample has to survive two filters: *does a 2026 SaaS dev actually use this, and does it teach the decision rather than just the syntax?*
 
 ### 2. Personalized education
 
@@ -47,7 +47,7 @@ That commit order is visible in the history: `Initial AGENTS and SPEC` → a bur
 
 ## The authoring pipeline
 
-An [orchestrator](documentation/chapter%20orchestrator%20prompts/Orchestrator.md) finds the next unwritten chapter, classifies it as a **teaching chapter** or a **project chapter** (project chapters are a fixed, known set of IDs), routes it to the matching pipeline, builds the chapter end-to-end with no parallelism, commits, and moves on. The work is carried out by **32 specialized subagents** living in [`.claude/agents/`](.claude/agents) — each with a single, sharp responsibility.
+An [orchestrator](documentation/chapter%20orchestrator%20prompts/Orchestrator.md) finds the next unwritten chapter, classifies it as a **teaching chapter** or a **project chapter**, routes it to the matching pipeline, builds the chapter end-to-end with no parallelism, commits, and moves on. The work is carried out by **32 specialized subagents** living in [`.claude/agents/`](.claude/agents) — each with a single, sharp responsibility.
 
 ```mermaid
 flowchart TB
@@ -97,39 +97,64 @@ Concept lessons — prose, diagrams, exercises, and live coding. For each lesson
 
 The chapter's final lesson is a quiz: `quiz-writer` extracts understanding-level questions from every lesson, then `quiz-coder` turns them into an interactive quiz.
 
+**Coherence within the chapter.** Two mechanisms keep the lessons from contradicting or repeating each other:
+
+- **Continuity notes** — `lesson-continuity` keeps a per-chapter ledger of what each lesson taught, cut, promised, and the terminology it fixed. Every later `lesson-outliner` and `lesson-reviewer` reads it.
+- **Reviewer ⇄ corrector gate** — no lesson is finished until `lesson-reviewer` signs off on pedagogy, facts, and cross-lesson coherence, and `lesson-corrector` resolves the findings.
+
 ### Project-chapter pipeline
 
 Hands-on chapters where I build a real feature in a working codebase. Two phases.
 
 **Phase A — build the reference codebase (once):**
-`project-chapter-outline-lessons-aligner` → `project-architect` (writes the plan that serves as the coding contract) → `project-plan-verifier` (compile-tests the plan's load-bearing choices) → `project-scaffolding-coder` → `project-slice-coder` (×n, one feature slice at a time) → `project-screenshotter` → `project-start-coder` (derives the starter with `TODO` stubs) → `project-reviewer` ⇄ `project-corrector` → `project-inspector` ⇄ `project-corrector` → `project-approver` (rejection triggers a full re-plan loop) → `project-summarizer` → `project-chapter-outline-code-aligner`.
+
+| Step | Agent | Does |
+| --- | --- | --- |
+| 1 | `project-chapter-outline-lessons-aligner` | Reconciles the chapter outline with what the preceding teaching lessons actually delivered. |
+| 2 | `project-architect` | Designs the codebase and writes the plan that serves as the coding contract. |
+| 3 | `project-plan-verifier` | Compile-tests the plan's load-bearing choices before any code is written. |
+| 4 | `project-scaffolding-coder` | Scaffolds the app — dependencies, config, boilerplate. |
+| 5 | `project-slice-coder` (×n) | Implements the solution one feature slice at a time. |
+| 6 | `project-screenshotter` | Captures the UI screenshots the lessons reuse. |
+| 7 | `project-start-coder` | Derives my starter repo, with `TODO` stubs to fill in. |
+| 8 | `project-reviewer` ⇄ `project-corrector` | Reviews built code against the plan; corrector fixes the findings. |
+| 9 | `project-inspector` ⇄ `project-corrector` | Render-tests the running app; corrector fixes the defects. |
+| 10 | `project-approver` | Judges whether the project is good enough to learn from — rejection triggers a re-plan loop. |
+| 11 | `project-summarizer` | Produces a navigable codebase summary for the lesson agents. |
+| 12 | `project-chapter-outline-code-aligner` | Realigns the chapter outline to the code that actually got built. |
 
 **Phase B — write the lessons (per lesson):**
-`project-lesson-outliner` → `project-lesson-test-coder` (for build-it-yourself lessons, writes the automated tests the student codes against) → `project-lesson-writer` → `lesson-diagramer` / `project-lesson-screenshotter` → `project-lesson-resourcer` → `project-lesson-formatter` → `project-lesson-reviewer` ⇄ `project-lesson-corrector`.
 
-### Coherence mechanisms
+| Step | Agent | Does |
+| --- | --- | --- |
+| 1 | `project-lesson-outliner` | Outlines the lesson (project overview / walkthrough / implementation). |
+| 2 | `project-lesson-test-coder` | For build-it-yourself lessons, writes the automated tests I code against. |
+| 3 | `project-lesson-writer` | Writes the lesson MDX from the outline and the working code. |
+| 4 | `lesson-diagramer` / `project-lesson-screenshotter` | Adds diagrams and embeds UI screenshots. |
+| 5 | `project-lesson-resourcer` | Adds supporting videos and external resources. |
+| 6 | `project-lesson-formatter` | Wires up components and finalizes formatting. |
+| 7 | `project-lesson-reviewer` ⇄ `project-lesson-corrector` | Reviews the lesson; corrector fixes the findings. |
 
-This is what makes it *engineered* rather than *prompted* — the machinery that keeps 108 chapters from contradicting each other:
+**Coherence across code and lessons.** This pipeline carries more risk — code and prose can drift apart — so it has more gates:
 
-- **Continuity notes** — a living per-chapter ledger of what was taught, cut, promised, and what terminology was fixed. Written by `lesson-continuity`, read by every future outliner and reviewer.
-- **Two outline aligners** — one reconciles a project chapter's outline with what the *preceding lessons actually taught*; the other realigns the outline with the *code that actually got built*. They close the gap between intent and reality on both sides.
-- **Reviewer ⇄ corrector gates** — nothing advances until an independent reviewer signs off and a corrector resolves the findings.
-- **Plan-as-contract** — the architect's plan defines stable selectors, locked decisions, and *falsifiable* rendered checks the built app must pass.
-- **Per-lesson test files** — build-it-yourself lessons ship with real tests, so a lesson's promises are mechanically verified against the student's code.
+- **Two outline aligners** — before coding, `...lessons-aligner` reconciles the outline with what earlier teaching chapters' continuity notes actually delivered; after coding, `...code-aligner` realigns it with the code that got built.
+- **Plan-as-contract** — the architect's plan pins stable selectors, locked decisions, and *falsifiable* rendered checks the app must pass.
+- **Per-lesson test files** — build-it-yourself lessons ship with real tests, so a lesson's promises are mechanically verified against my code.
+- **Layered review gates** — `reviewer ⇄ corrector`, then `inspector ⇄ corrector` on the running app, then a final `approver` that can send the whole chapter back for a re-plan.
 
 ## The interactive stack
 
-The site is an [Astro](https://astro.build) **6** + [Starlight](https://starlight.astro.build) **0.39** documentation app. Lessons are MDX, file-system-routed: every `NNN Chapter name` folder under `src/content/docs/` becomes a sidebar group (the numeric prefix is stripped in the UI). Interactivity ships as [React](https://react.dev) **19** islands.
+The site is an [Astro](https://astro.build) + [Starlight](https://starlight.astro.build) documentation app. Lessons are MDX, file-system-routed: every `NNN Chapter name` folder under `src/content/docs/` becomes a sidebar group. Most components are plain Astro (`.astro`), rendered to static HTML at build time; the genuinely interactive pieces drop down to [React](https://react.dev) islands only where they need client-side state.
 
 The teaching power comes from a custom library of **30+ pre-built components** (catalogued in [`documentation/components/INDEX.md`](documentation/components/INDEX.md)):
 
-- **In-browser code runtimes** — CodeMirror 6 + `esbuild-wasm`, with [PGlite](https://pglite.dev) (Postgres compiled to WASM) so SQL and Drizzle exercises run a real database in the browser. Variants cover SQL, Drizzle, React, Zod, and type-only TypeScript exercises, each auto-graded.
+- **In-browser code runtimes** — CodeMirror + `esbuild-wasm`, with [PGlite](https://pglite.dev) (Postgres compiled to WASM) so SQL and Drizzle exercises run a real database in the browser. Variants cover SQL, Drizzle, React, Zod, and type-only TypeScript exercises, each auto-graded.
 - **Sandboxes & embeds** — StackBlitz, CodeSandbox, and in-page Sandpack for live, editable projects.
-- **Diagrams** — Mermaid and D2, both rendered at build time and themed for light/dark.
+- **Diagrams** — Mermaid and D2, both rendered at build time and themed for light/dark. A set of [diagram-engine guides](documentation/diagrams/INDEX.md) steers the diagram-building agents: which engine to pick for each kind of diagram, and the specific pitfalls of each.
 - **Drills & figures** — predict-the-output, PR-style code review, matching, classification, scrubbable request traces, state-machine walkers, and more.
 - **Code display** — [Expressive Code](https://expressive-code.com) with stepped, annotated walkthroughs and hover-to-define terms.
 
-Open-ended answers and code reviews are graded by a locally-run LLM, so feedback works without a backend.
+Open-ended answers and code reviews are graded by a locally-run LLM via [Ollama](https://ollama.com), so feedback works without a backend.
 
 ## Repository layout
 
@@ -157,11 +182,3 @@ npm run dev      # http://localhost:4321
 npm run build    # static production build
 npm run preview  # preview the production build
 ```
-
-## A note on honesty
-
-The lesson content is **AI-generated with human curation** — written by Claude Opus (4.7 and 4.8), reviewed and steered by me. I'm not hiding that; it's the whole experiment. The interesting question this course tries to answer isn't "can AI write a tutorial," it's "can a well-designed agentic pipeline, with the right contracts and coherence mechanisms, produce a *coherent, senior-grade course* at a scale one person couldn't write alone." This repo is my attempt to find out.
-
----
-
-*Built by Terenci Claramunt. A personal project — work in progress.*
