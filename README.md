@@ -47,7 +47,7 @@ That commit order is visible in the history: `Initial AGENTS and SPEC` → a bur
 
 ## The authoring pipeline
 
-An [orchestrator](documentation/chapter%20orchestrator%20prompts/Orchestrator.md) finds the next unwritten chapter, classifies it as a teaching chapter or a project chapter, routes it to the matching pipeline, builds the chapter end-to-end with no parallelism, commits, and moves on. The work is carried out by **32 specialized subagents** living in [`.claude/agents/`](.claude/agents), each doing one job. The two pipelines are diagrammed below, each at the end of its section.
+An [orchestrator](documentation/chapter%20orchestrator%20prompts/Orchestrator.md) finds the next unwritten chapter, classifies it as a teaching chapter or a project chapter, routes it to the matching pipeline, builds the chapter end-to-end with no parallelism, commits, and moves on. The work is carried out by **32 specialized subagents** living in [`.claude/agents/`](.claude/agents), each doing one job. The two pipelines are diagrammed below, each at the end of its section — in both, a **square is a subagent** and a **rounded green box is a file** it reads or writes.
 
 ### Teaching-chapter pipeline
 
@@ -68,14 +68,32 @@ Concept lessons — prose, diagrams, exercises, and live coding. For each lesson
 The chapter's final lesson is a quiz: `quiz-writer` extracts understanding-level questions from every lesson, then `quiz-coder` turns them into an interactive quiz.
 
 ```mermaid
-flowchart LR
-    Start([teaching<br/>chapter]) --> LESSON
-    subgraph LESSON["each lesson · repeats"]
-        direction LR
-        D["outline<br/>+ write"] --> En["enrich<br/>diagrams ·<br/>exercises ·<br/>resources"] --> R{{"format ·<br/>review ⇄ correct"}} --> C[(continuity<br/>notes)]
-        C -.->|next lesson| D
+flowchart TB
+    subgraph PL [for each lesson in chapter]
+        direction TB
+        subgraph t1 [draft]
+            direction LR
+            CO(chapter outline.md) --> outliner[outliner] --> LO(lesson-outline.md) --> writer[writer] --> MDX(lesson.mdx)
+        end
+        subgraph t2 [enrich and format]
+            direction LR
+            diagramer[diagramer] --> exerciser[exerciser] --> resourcer[resourcer] --> formatter[formatter]
+        end
+        subgraph t3 [review and record]
+            direction LR
+            reviewer[reviewer] --> corrector[corrector] --> continuity[continuity] --> CN(continuity notes.md)
+        end
+        t1 --> t2 --> t3
     end
-    LESSON --> Q[["final<br/>lesson:<br/>quiz"]]
+    subgraph Q [final lesson is a quiz]
+        direction LR
+        qwriter[quiz-writer] --> QO(quiz-outline.md) --> qcoder[quiz-coder]
+    end
+    PL -. last lesson .-> Q
+    classDef agent fill:#e0e7ff,stroke:#6366f1,color:#312e81;
+    classDef file fill:#dcfce7,stroke:#16a34a,color:#14532d;
+    class outliner,writer,diagramer,exerciser,resourcer,formatter,reviewer,corrector,continuity,qwriter,qcoder agent;
+    class CO,LO,MDX,CN,QO file;
 ```
 
 **Coherence within the chapter.** Two mechanisms keep the lessons from contradicting or repeating each other:
@@ -118,19 +136,44 @@ Hands-on chapters where I build a real feature in a working codebase. Two phases
 
 ```mermaid
 flowchart TB
-    Start([project chapter]) --> A
-    subgraph A["Phase A · build the codebase · runs once"]
-        direction LR
-        P["align outline ·<br/>architect plan · verify"] --> Bd["scaffold · code slices ·<br/>screenshots · derive starter"] --> G{{review · inspect · approve}}
-        G -.->|rejected · re-plan| P
+    subgraph A [Phase A: build the codebase, once per chapter]
+        direction TB
+        subgraph pa1 [plan]
+            direction LR
+            CO(chapter outline.md) --> aligner[lessons-aligner] --> architect[architect] --> PLAN(plan.md) --> verifier[plan-verifier]
+        end
+        subgraph pa2 [build]
+            direction LR
+            scaffolder[scaffolding-coder] --> slicer[slice-coder] --> shotter[screenshotter] --> starter[start-coder]
+        end
+        subgraph pa3 [review and approve]
+            direction LR
+            reviewer[reviewer] --> corrector[corrector] --> inspector[inspector] --> approver[approver]
+        end
+        subgraph pa4 [hand off]
+            direction LR
+            summarizer[summarizer] --> SUM(code summary.md) --> codeAligner[code-aligner]
+        end
+        pa1 --> pa2 --> pa3 --> pa4
+        pa3 -. rejected, re-plan .-> pa1
     end
-    A ==>|approved| S[(codebase summary)]
-    S ==> B
-    subgraph B["Phase B · write each lesson · repeats"]
-        direction LR
-        LO[outline] --> LW["test +<br/>write"] --> LE["diagrams ·<br/>screenshots · resources"] --> LF[format] --> LRev{{review ⇄ correct}}
-        LRev -.->|next lesson| LO
+    subgraph B [Phase B: write each lesson]
+        direction TB
+        subgraph pb1 [draft]
+            direction LR
+            loutliner[lesson-outliner] --> LO(lesson-outline.md) --> tcoder[test-coder] --> TEST(Lesson Y.ts) --> lwriter[lesson-writer] --> MDX(lesson.mdx)
+        end
+        subgraph pb2 [enrich and review]
+            direction LR
+            ldiagramer[diagramer] --> lshotter[screenshotter] --> lresourcer[resourcer] --> lformatter[formatter] --> lreviewer[reviewer] --> lcorrector[corrector]
+        end
+        pb1 --> pb2
     end
+    A --> B
+    classDef agent fill:#e0e7ff,stroke:#6366f1,color:#312e81;
+    classDef file fill:#dcfce7,stroke:#16a34a,color:#14532d;
+    class aligner,architect,verifier,scaffolder,slicer,shotter,starter,reviewer,corrector,inspector,approver,summarizer,codeAligner,loutliner,tcoder,lwriter,ldiagramer,lshotter,lresourcer,lformatter,lreviewer,lcorrector agent;
+    class CO,PLAN,SUM,LO,TEST,MDX file;
 ```
 
 **Coherence across code and lessons.** This pipeline carries more risk — code and prose can drift apart — so it has more gates:
