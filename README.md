@@ -47,37 +47,7 @@ That commit order is visible in the history: `Initial AGENTS and SPEC` → a bur
 
 ## The authoring pipeline
 
-An [orchestrator](documentation/chapter%20orchestrator%20prompts/Orchestrator.md) finds the next unwritten chapter, classifies it as a teaching chapter or a project chapter, routes it to the matching pipeline, builds the chapter end-to-end with no parallelism, commits, and moves on. The work is carried out by **32 specialized subagents** living in [`.claude/agents/`](.claude/agents), each doing one job.
-
-```mermaid
-flowchart TB
-    O["Orchestrator<br/>find next unwritten chapter"] --> C{"Teaching or<br/>project chapter?"}
-
-    C -->|teaching| T
-    C -->|project| P
-
-    subgraph T["Teaching pipeline · repeats per lesson"]
-        direction TB
-        T1["outliner → writer → diagramer ×n →<br/>exerciser ×n → resourcer → formatter →<br/>reviewer ⇄ corrector → continuity"]
-        TQ["final lesson:<br/>quiz-writer → quiz-coder"]
-        T1 --> TQ
-    end
-
-    subgraph P["Project pipeline"]
-        direction TB
-        PA["Phase A · build the codebase, once<br/>lessons-aligner → architect → plan-verifier →<br/>scaffolding → slice-coder ×n → screenshotter →<br/>start-coder → reviewer ⇄ corrector →<br/>inspector ⇄ corrector → approver (reject ↺ re-plan) →<br/>summarizer → code-aligner"]
-        PB["Phase B · repeats per lesson<br/>outliner → test-coder → writer →<br/>diagramer / screenshotter → resourcer →<br/>formatter → reviewer ⇄ corrector"]
-        PA --> PB
-    end
-
-    T --> K["commit chapter"]
-    P --> K
-    K --> O
-
-    CN[("Continuity<br/>notes")] -.coherence.-> T
-    PLAN[("Project<br/>plan")] -.contract.-> P
-    SUM[("Codebase<br/>summary")] -.handoff.-> PB
-```
+An [orchestrator](documentation/chapter%20orchestrator%20prompts/Orchestrator.md) finds the next unwritten chapter, classifies it as a teaching chapter or a project chapter, routes it to the matching pipeline, builds the chapter end-to-end with no parallelism, commits, and moves on. The work is carried out by **32 specialized subagents** living in [`.claude/agents/`](.claude/agents), each doing one job. The two pipelines are diagrammed below, each at the end of its section.
 
 ### Teaching-chapter pipeline
 
@@ -96,6 +66,17 @@ Concept lessons — prose, diagrams, exercises, and live coding. For each lesson
 | 9 | `lesson-continuity` | Records what this lesson taught/cut/promised for later lessons. |
 
 The chapter's final lesson is a quiz: `quiz-writer` extracts understanding-level questions from every lesson, then `quiz-coder` turns them into an interactive quiz.
+
+```mermaid
+flowchart LR
+    Start([teaching<br/>chapter]) --> LESSON
+    subgraph LESSON["each lesson · repeats"]
+        direction LR
+        D["outline<br/>+ write"] --> En["enrich<br/>diagrams ·<br/>exercises ·<br/>resources"] --> R{{"format ·<br/>review ⇄ correct"}} --> C[(continuity<br/>notes)]
+        C -.->|next lesson| D
+    end
+    LESSON --> Q[["final<br/>lesson:<br/>quiz"]]
+```
 
 **Coherence within the chapter.** Two mechanisms keep the lessons from contradicting or repeating each other:
 
@@ -134,6 +115,23 @@ Hands-on chapters where I build a real feature in a working codebase. Two phases
 | 5 | `project-lesson-resourcer` | Adds supporting videos and external resources. |
 | 6 | `project-lesson-formatter` | Wires up components and finalizes formatting. |
 | 7 | `project-lesson-reviewer` ⇄ `project-lesson-corrector` | Reviews the lesson; corrector fixes the findings. |
+
+```mermaid
+flowchart TB
+    Start([project chapter]) --> A
+    subgraph A["Phase A · build the codebase · runs once"]
+        direction LR
+        P["align outline ·<br/>architect plan · verify"] --> Bd["scaffold · code slices ·<br/>screenshots · derive starter"] --> G{{review · inspect · approve}}
+        G -.->|rejected · re-plan| P
+    end
+    A ==>|approved| S[(codebase summary)]
+    S ==> B
+    subgraph B["Phase B · write each lesson · repeats"]
+        direction LR
+        LO[outline] --> LW["test +<br/>write"] --> LE["diagrams ·<br/>screenshots · resources"] --> LF[format] --> LRev{{review ⇄ correct}}
+        LRev -.->|next lesson| LO
+    end
+```
 
 **Coherence across code and lessons.** This pipeline carries more risk — code and prose can drift apart — so it has more gates:
 
