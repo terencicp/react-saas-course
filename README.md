@@ -8,9 +8,9 @@ A full-depth course on building a production SaaS with the minimum-viable 2026 s
 
 ## What this is
 
-I just finished a Data Science degree and I'm moving into web development. I couldn't find a course pitched at the right altitude: everything for beginners assumes you've never written a function, and everything for experts assumes you already know the modern stack cold. So I built the one I wanted — senior-depth, decisions-before-syntax, and covering **every layer a production SaaS actually ships**: TypeScript, React 19, Next.js 16 (App Router, Server Components, PPR), Postgres + Drizzle, Better Auth, Stripe billing, transactional email, background jobs, file uploads, caching, rate limiting, i18n, testing, observability, CI/CD with zero-downtime migrations, and AI features over your own data.
+I just finished a Data Science degree and I'm moving into web development. I couldn't find a course pitched at the right altitude: everything for beginners assumes you've never written a function, and everything for experts assumes you already know the modern stack cold. So I built the one I wanted — senior-depth, decisions-before-syntax, and covering every layer a production SaaS actually ships: TypeScript, React 19, Next.js 16 (App Router, Server Components, PPR), Postgres + Drizzle, Better Auth, Stripe billing, transactional email, background jobs, file uploads, caching, rate limiting, i18n, testing, observability, CI/CD with zero-downtime migrations, and AI features over your own data.
 
-The learner-facing overview lives on the site's landing page — see [`src/content/docs/index.mdx`](src/content/docs/index.mdx). This README is about the part underneath: **how the course builds itself.**
+The learner-facing overview lives on the site's landing page ([`src/content/docs/index.mdx`](src/content/docs/index.mdx)). This README is about the part underneath: how the course builds itself.
 
 ## Three experiments
 
@@ -18,21 +18,21 @@ Building it this way let me explore three things at once.
 
 ### 1. Knowledge extraction
 
-Web development is a sprawling field — countless libraries, frameworks, and competing ways to do everything — and it's easy to drown in tutorial hell. The hard part isn't finding information; it's choosing the small set actually worth learning. The course is an exercise in compression: distilling that sprawl down to the **minimum viable stack a real SaaS would ship today**, and to the *judgment* behind it — the decisions and trade-offs, not the keystrokes. The curriculum was derived top-down: pick the tech → define the audience and goals → draft the structure → break it into chapters, then lessons. Every paragraph and every code sample has to survive two filters: *does a 2026 SaaS dev actually use this, and does it teach the decision rather than just the syntax?*
+Web development is a sprawling field — countless libraries, frameworks, and competing ways to do everything. There's no shortage of tutorials; the work is deciding which small slice is actually worth learning. The course is an exercise in compression: distilling that sprawl down to the minimum viable stack a real SaaS ships today, and the reasoning behind each choice. The curriculum was derived top-down: pick the tech → define the audience and goals → draft the structure → break it into chapters, then lessons. Every paragraph and every code sample has to survive two filters: *does a 2026 SaaS dev actually use this, and does it teach the decision rather than just the syntax?*
 
 ### 2. Personalized education
 
-This course has an audience of one, and that's the point. It's tuned to exactly where I am: adult tone, no bootcamp scaffolding, no "what is a variable," skip-ahead self-checks when I already know something. It's also tuned to *how I learn* — instead of static prose it leans on a library of interactive components: in-browser code editors that run and grade my code, predict-the-output drills, PR-style code reviews, hover-to-define terms, and explorable diagrams. The bet: a course built for one learner, with the right interactive surface, beats a generic course built for everyone.
+This course has exactly one student. It's tuned to where I am: adult tone, no bootcamp scaffolding, no "what is a variable," skip-ahead self-checks when I already know something. It's also tuned to *how I learn*. Instead of static prose, it leans on a library of interactive components: in-browser code editors that run and grade my code, predict-the-output drills, PR-style code reviews, hover-to-define terms, and explorable diagrams. I'd rather have that than one more course built for everyone.
 
 ### 3. Agentic engineering
 
-The course **authors itself.** I designed the system; a fleet of AI agents produces the content. My job was to be the architect — define the pipeline, the contracts, and the coherence mechanisms — not to write 108 chapters by hand. The rest of this README documents that system, because it's the part I'm proudest of.
+The content is written by a fleet of agents; I designed the system that writes it. My job was the architecture — the pipeline, the contracts, the mechanisms that keep the agents from drifting. The rest of this README is about that system.
 
 ## How I built it
 
 The method, in order — and the git history backs up that this is really how it went:
 
-1. **Decide the tech.** Lock the minimum-viable 2026 stack as the north star.
+1. **Decide the tech.** Pick the minimum-viable 2026 stack and fix it up front.
 2. **Define the audience and goals.** Who it's for, what "done" means.
 3. **Draft a high-level structure** — 22 units.
 4. **Break it down** — 108 chapters, then individual lessons.
@@ -43,11 +43,11 @@ The method, in order — and the git history backs up that this is really how it
 
 That commit order is visible in the history: `Initial AGENTS and SPEC` → a burst of component work → the authoring subagents → the project pipeline → then chapters landing one per commit (`Chapter 015 — Fetch and live streams`).
 
-**The lesson that shaped the architecture.** Early on I tried running authoring agents *in parallel* to go faster. They collided — the git log from 2026-05-14 is a string of commits like `Remove stray Chapter X outline created by Y subagent` and `Restore outline files reverted by parallel agent`. Two agents writing the course at once couldn't keep it coherent. That failure is exactly why the orchestrator now runs **strictly sequentially, one chapter at a time**: in a course, internal coherence beats throughput every time.
+**The lesson that shaped the architecture.** Early on I tried running authoring agents *in parallel* to go faster. They collided: the git log from 2026-05-14 is a string of commits like `Remove stray Chapter X outline created by Y subagent` and `Restore outline files reverted by parallel agent`. Two agents writing the course at once couldn't keep it coherent. That's why the orchestrator now runs strictly sequentially, one chapter at a time. It's slower, but the course stays consistent.
 
 ## The authoring pipeline
 
-An [orchestrator](documentation/chapter%20orchestrator%20prompts/Orchestrator.md) finds the next unwritten chapter, classifies it as a **teaching chapter** or a **project chapter**, routes it to the matching pipeline, builds the chapter end-to-end with no parallelism, commits, and moves on. The work is carried out by **32 specialized subagents** living in [`.claude/agents/`](.claude/agents) — each with a single, sharp responsibility.
+An [orchestrator](documentation/chapter%20orchestrator%20prompts/Orchestrator.md) finds the next unwritten chapter, classifies it as a teaching chapter or a project chapter, routes it to the matching pipeline, builds the chapter end-to-end with no parallelism, commits, and moves on. The work is carried out by **32 specialized subagents** living in [`.claude/agents/`](.claude/agents), each doing one job.
 
 ```mermaid
 flowchart TB
