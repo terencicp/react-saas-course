@@ -77,7 +77,7 @@ flowchart TB
         end
         subgraph t2 [enrich and format]
             direction LR
-            diagramer[diagramer] --> exerciser[exerciser] --> resourcer[resourcer] --> formatter[formatter]
+            diagramer["diagramer<br/>↻ per diagram"] --> exerciser["exerciser<br/>↻ per exercise"] --> resourcer[resourcer] --> formatter[formatter]
         end
         subgraph t3 [review and record]
             direction LR
@@ -85,15 +85,15 @@ flowchart TB
         end
         t1 --> t2 --> t3
     end
-    subgraph Q [final lesson is a quiz]
+    subgraph Q [chapter quiz]
         direction LR
-        qwriter[quiz-writer] --> QO(quiz-outline.md) --> qcoder[quiz-coder]
+        qwriter[quiz-writer] --> qcoder[quiz-coder] --> QMDX(quiz.mdx)
     end
     PL -. last lesson .-> Q
     classDef agent fill:#e0e7ff,stroke:#6366f1,color:#312e81;
     classDef file fill:#dcfce7,stroke:#16a34a,color:#14532d;
     class outliner,writer,diagramer,exerciser,resourcer,formatter,reviewer,corrector,continuity,qwriter,qcoder agent;
-    class CO,LO,MDX,CN,QO file;
+    class CO,LO,MDX,CN,QMDX file;
 ```
 
 **Coherence within the chapter.** Two mechanisms keep the lessons from contradicting or repeating each other:
@@ -144,7 +144,7 @@ flowchart TB
         end
         subgraph pa2 [build]
             direction LR
-            scaffolder[scaffolding-coder] --> slicer[slice-coder] --> shotter[screenshotter] --> starter[start-coder]
+            scaffolder[scaffolding-coder] --> slicer["slice-coder<br/>↻ per slice"] --> shotter[screenshotter] --> starter[start-coder]
         end
         subgraph pa3 [review and approve]
             direction LR
@@ -161,19 +161,23 @@ flowchart TB
         direction TB
         subgraph pb1 [draft]
             direction LR
-            loutliner[lesson-outliner] --> LO(lesson-outline.md) --> tcoder[test-coder] --> TEST(Lesson Y.ts) --> lwriter[lesson-writer] --> MDX(lesson.mdx)
+            SUMB(code summary.md) --> loutliner[lesson-outliner] --> LO(lesson-outline.md) --> tcoder[test-coder] --> TEST(Lesson Y.ts) --> lwriter[lesson-writer] --> MDX(lesson.mdx)
         end
-        subgraph pb2 [enrich and review]
+        subgraph pb2 [enrich and format]
             direction LR
-            ldiagramer[diagramer] --> lshotter[screenshotter] --> lresourcer[resourcer] --> lformatter[formatter] --> lreviewer[reviewer] --> lcorrector[corrector]
+            ldiagramer["diagramer<br/>↻ per diagram"] --> lshotter[screenshotter] --> lresourcer[resourcer] --> lformatter[formatter]
         end
-        pb1 --> pb2
+        subgraph pb3 [review]
+            direction LR
+            lreviewer[reviewer] --> lcorrector[corrector]
+        end
+        pb1 --> pb2 --> pb3
     end
     A --> B
     classDef agent fill:#e0e7ff,stroke:#6366f1,color:#312e81;
     classDef file fill:#dcfce7,stroke:#16a34a,color:#14532d;
     class aligner,architect,verifier,scaffolder,slicer,shotter,starter,reviewer,corrector,inspector,approver,summarizer,codeAligner,loutliner,tcoder,lwriter,ldiagramer,lshotter,lresourcer,lformatter,lreviewer,lcorrector agent;
-    class CO,PLAN,SUM,LO,TEST,MDX file;
+    class CO,PLAN,SUM,SUMB,LO,TEST,MDX file;
 ```
 
 **Coherence across code and lessons.** This pipeline carries more risk — code and prose can drift apart — so it has more gates:
