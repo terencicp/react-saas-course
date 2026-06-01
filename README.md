@@ -189,17 +189,17 @@ flowchart TB
 
 ## The interactive stack
 
-The site is an [Astro](https://astro.build) + [Starlight](https://starlight.astro.build) documentation app. Lessons are MDX, file-system-routed: every `NNN Chapter name` folder under `src/content/docs/` becomes a sidebar group. Most components are plain Astro (`.astro`), rendered to static HTML at build time; the genuinely interactive pieces drop down to [React](https://react.dev) islands only where they need client-side state.
+The site is an Astro + Starlight documentation app. Lessons are MDX, file-system-routed: every `NNN Chapter name` folder under `src/content/docs/` becomes a sidebar group. Most components are plain Astro (`.astro`), rendered to static HTML at build time; the genuinely interactive pieces drop down to React islands only where they need client-side state.
 
 The teaching power comes from a custom library of **30+ pre-built components** (catalogued in [`documentation/components/INDEX.md`](documentation/components/INDEX.md)):
 
-- **In-browser code runtimes** — CodeMirror + `esbuild-wasm`, with [PGlite](https://pglite.dev) (Postgres compiled to WASM) so SQL and Drizzle exercises run a real database in the browser. Variants cover SQL, Drizzle, React, Zod, and type-only TypeScript exercises, each auto-graded.
+- **In-browser code runtimes** — CodeMirror + `esbuild-wasm`, with PGlite (Postgres compiled to WASM) so SQL and Drizzle exercises run a real database in the browser. Variants cover SQL, Drizzle, React, Zod, and type-only TypeScript exercises, each auto-graded.
 - **Sandboxes & embeds** — StackBlitz, CodeSandbox, and in-page Sandpack for live, editable projects.
 - **Diagrams** — Mermaid and D2, both rendered at build time and themed for light/dark. A set of [diagram-engine guides](documentation/diagrams/INDEX.md) steers the diagram-building agents: which engine to pick for each kind of diagram, and the specific pitfalls of each.
 - **Drills & figures** — predict-the-output, PR-style code review, matching, classification, scrubbable request traces, state-machine walkers, and more.
-- **Code display** — [Expressive Code](https://expressive-code.com) with stepped, annotated walkthroughs and hover-to-define terms.
+- **Code display** — Expressive Code with stepped, annotated walkthroughs and hover-to-define terms.
 
-Open-ended answers and code reviews are graded by a locally-run LLM via [Ollama](https://ollama.com), so feedback works without a backend.
+Open-ended answers and code reviews are graded by a locally-run LLM via Ollama, so feedback works without a backend.
 
 ## Repository layout
 
