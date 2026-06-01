@@ -1,0 +1,124 @@
+sources:
+  15.1: The universal HTTP client
+  15.2: Streaming and live channels
+
+questions:
+  - source: 15.1
+    question: |
+      A call to a third-party API returns `503 Service Unavailable`. The code is written like this:
+
+      ```ts
+      try {
+        const res = await fetch('https://api.vendor.com/charge', init);
+        const data = await res.json();
+        return data;
+      } catch (error) {
+        return { error: 'The request failed.' };
+      }
+      ```
+
+      What does the function actually return on that `503`?
+    choices:
+      - text: |
+          The parsed body of the `503` response — `fetch` *resolves* for any status the server sends, so the `catch` is never entered and the error payload sails through `res.json()` as if it were a success. The `if (!res.ok)` branch is the only thing that would have caught it.
+        correct: true
+      - text: |
+          `{ error: 'The request failed.' }` — a `5xx` status rejects the `fetch` promise, so control lands in the `catch` and the fallback object is returned.
+        correct: false
+      - text: |
+          The `await res.json()` line throws a `SyntaxError` because a `503` body is never valid JSON, so the `catch` fires and returns the fallback.
+        correct: false
+    why: |
+      `fetch` resolves for *every* response the server actually sends — `200`, `404`, `503`, all of them. The promise only rejects when there was no usable response at all (DNS failure, connection refused, abort, timeout, CORS rejection). So a `503` flows straight past the `catch` and its body gets returned as if it were a success. HTTP errors live in the resolved value and are found with `if (!res.ok)`; transport errors live in the `catch`. Lumping the two is the keystone `fetch` bug.
+
+  - source: 15.1
+    question: |
+      You're uploading a file as part of a multipart form and the server keeps rejecting the body as unparseable, even though the upload "looks fine" from the client. The build looks like this:
+
+      ```ts
+      const body = new FormData();
+      body.append('file', file);
+      await fetch('/api/uploads', {
+        method: 'POST',
+        headers: { 'Content-Type': 'multipart/form-data' },
+        body,
+      });
+      ```
+
+      What is the fix?
+    choices:
+      - text: |
+          Remove the `Content-Type` header entirely — for a `FormData` body the browser generates `multipart/form-data; boundary=…` with the boundary marker the server needs, and setting the header by hand overwrites it and strips the boundary.
+        correct: true
+      - text: |
+          Set `Content-Type: application/json` and `JSON.stringify` the `FormData` first, since `fetch` can't send a raw `FormData` object as a body.
+        correct: false
+      - text: |
+          Add an explicit `boundary` value to the header string, e.g. `'multipart/form-data; boundary=----X'`, so the server knows where fields begin and end.
+        correct: false
+    why: |
+      A `FormData` body needs a `Content-Type` of `multipart/form-data` *with* a randomly generated boundary marker that delimits each field. The browser writes that header — boundary and all — automatically. Setting `Content-Type` yourself overwrites it and the boundary goes missing, so the server can't split the fields. This is the one case where "being explicit about the content type" is exactly the bug: omit the header and let the browser fill it in.
+
+  - source: 15.1
+    question: |
+      An outbound `fetch` carries `signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5_000)])`, where `controller` is wired to a user cancel button. In the `catch`, you want the deadline case to show "The request timed out" and the user-cancel case to show "Cancelled". How do you tell them apart?
+    choices:
+      - text: |
+          Narrow on `error.name`: the timeout fires a `TimeoutError`, a `controller.abort()` fires an `AbortError`. They share the `catch` but carry different names on purpose.
+        correct: true
+      - text: |
+          You can't — `AbortSignal.any` collapses both into a single generic `AbortError`, so you have to track which signal fired with a separate boolean flag set in each handler.
+        correct: false
+      - text: |
+          Check `error.message`: a timeout's message contains `"timeout"` and a user abort's is empty, so a substring match on the message string distinguishes them.
+        correct: false
+    why: |
+      `AbortSignal.timeout(ms)` aborts with a `TimeoutError`, while a manual `controller.abort()` aborts with an `AbortError` — distinct `error.name` values, by design, precisely so a caller can tell "the deadline blew" from "the user cancelled." Narrowing on `error.message` is brittle (messages vary across runtimes), and `AbortSignal.any` preserves whichever reason fired first rather than flattening it. The reflex stays the course-wide one: `error instanceof Error` then switch on `error.name`, never `catch (e: any)`.
+
+  - source: 15.2
+    question: |
+      You decode a streamed response chunk by chunk with `new TextDecoder().decode(chunk)` — a fresh decoder each iteration, no options. All your tests pass, but in production some users' names render with a `�` in them. What is wrong?
+    choices:
+      - text: |
+          A multi-byte UTF-8 character (an accented letter, an emoji) can be split across a chunk boundary the network chose. Without `{ stream: true }` on a *reused* decoder, the trailing bytes can't be held back and reassembled, so the split character corrupts to `�`. Tests passed because the test data was pure ASCII, where nothing ever splits.
+        correct: true
+      - text: |
+          A fresh `TextDecoder` per chunk leaks memory until the garbage collector mangles in-flight bytes; reusing one instance fixes the corruption regardless of the `stream` option.
+        correct: false
+      - text: |
+          `TextDecoder` defaults to Latin-1, not UTF-8, so non-ASCII bytes are misread; passing `new TextDecoder('utf-8')` is the fix and `{ stream: true }` is unrelated.
+        correct: false
+    why: |
+      Chunks are network frames whose edges fall wherever the network put them — often mid-character, since UTF-8 uses 2–4 bytes for anything beyond ASCII. `{ stream: true }` tells the decoder to hold back an incomplete trailing sequence and prepend it to the next chunk, which is why you must also *reuse one decoder* so it remembers the held-back bytes (a fresh one each iteration has no memory). A final bare `decoder.decode()` flushes the tail. The bug is invisible until a real multi-byte character lands on a real boundary — which is why ASCII-only tests never catch it.
+
+  - source: 15.2
+    question: |
+      A notifications stream is a `text/event-stream` your own server authenticates with a session **cookie**. A new internal metrics stream must be authenticated with a **bearer token** in an `Authorization` header instead. Which consumer does each need?
+    choices:
+      - text: |
+          Cookie stream → `EventSource` (cookies ride along automatically, and you get auto-reconnect with `Last-Event-ID` replay for free). Bearer stream → consume it with plain `fetch` and reframe events by hand, because `EventSource` can't set custom request headers.
+        correct: true
+      - text: |
+          Both can use `EventSource`: pass the token as `new EventSource(url, { headers: { Authorization: … } })` for the bearer case, which is the whole reason the second argument exists.
+        correct: false
+      - text: |
+          Both must use the plain-`fetch` consumer: `EventSource` can't carry credentials of any kind, so even the cookie stream needs the hand-rolled append-split-keep-tail loop.
+        correct: false
+    why: |
+      `EventSource` is the default for one-way streams — it owns the parsing and gives auto-reconnect with `Last-Event-ID` replay for free — and it carries cookies automatically (with `withCredentials` for the cross-origin case). But it has a hard ceiling: it can only issue a `GET`, can't carry a body, and *can't set custom request headers*. So a bearer-token stream can't use it at all; you drop to plain `fetch`, set the `Authorization` header, read `response.body`, and reframe the SSE events yourself with the append-split-keep-tail loop — giving up the free reconnect, which is exactly why `EventSource` stays the default whenever it can.
+
+  - source: 15.2
+    question: |
+      A feature shows live cursor positions of everyone editing a shared document, and each client both *broadcasts* its own cursor and *receives* the others'. Where does this land on the polling → SSE → WebSocket decision, and why?
+    choices:
+      - text: |
+          WebSockets — the channel is *bidirectional* (each client sends on the same live connection it receives on), which is the one trigger that earns them past SSE. SSE and polling are both server-to-client only and can't carry the upstream cursor pushes.
+        correct: true
+      - text: |
+          SSE — cursor updates are timely server-to-client pushes, and the client's own broadcasts can ride along as normal `fetch` POSTs on the side, so one SSE stream covers it.
+        correct: false
+      - text: |
+          Polling — most "real-time" features ship on a few-seconds poll, and cursors are no different; a tighter channel would be premature optimization.
+        correct: false
+    why: |
+      The decision asks direction first: *can the client only receive, or does it need to send on the live channel too?* Cursors are bidirectional — each client pushes its own position on the same connection it reads others' from — and that is the single trigger that justifies WebSockets over SSE. Splitting the upstream onto side `POST`s defeats the point of a tight live channel for collaborative state. Polling and SSE are both one-way (server→client) and stop short of what this feature needs; the moment a feature must *push* over the live channel, you've crossed the line SSE can't carry.
