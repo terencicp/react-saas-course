@@ -1,0 +1,110 @@
+sources:
+  16.1: Web Crypto — random IDs and HMAC signatures
+  16.2: The Clipboard API
+  16.3: Blob, File, and object URLs
+  16.4: Web Storage — where localStorage earns its weight
+
+questions:
+  - source: 16.2
+    question: |
+      Your Copy button works on `localhost` and in production, but a teammate testing the staging build over a plain `http://` LAN address reports it crashes the whole component instead of just failing quietly. The handler is the canonical shape:
+
+      ```ts
+      const copy = async () => {
+        try {
+          await navigator.clipboard.writeText(value);
+          setCopied(true);
+        } catch (error) {
+          if (error.name === 'SecurityError') showInsecureBanner();
+        }
+      };
+      ```
+
+      Why does the insecure-context case never reach that `catch`?
+    choices:
+      - text: |
+          On plain `http://`, `navigator.clipboard` is `undefined`, so reading `.writeText` off it throws a synchronous `TypeError` *before* any Promise exists to reject — there's nothing for the `catch` to catch. Insecure context is a deployment bug handled by feature-detection, not a rejection branch.
+        correct: true
+      - text: |
+          The call does reject with a `SecurityError`, but `error.name` is actually `'NotAllowedError'` in an insecure context, so the `if` condition never matches and the banner never shows.
+        correct: false
+      - text: |
+          `try/catch` can't catch errors from an `await`ed call unless you also wrap it in `.catch()`, so the rejection escapes to the nearest error boundary and unmounts the component.
+        correct: false
+    why: |
+      Insecure context isn't a rejected Promise you can `catch` — on `http://` the whole `navigator.clipboard` object is `undefined`, so reaching for `.writeText` throws a `TypeError` at access time, before a Promise is ever created. The only rejection `writeText` produces in practice is `NotAllowedError`, when the transient user activation has expired or been denied. So the two gates fail in two different ways: a missing secure context is a `TypeError` you guard with feature-detection (and fix by serving HTTPS), while a spent gesture is the `NotAllowedError` that belongs in the `catch`. `SecurityError` isn't the shape this call rejects with.
+
+  - source: 16.1
+    question: |
+      You're choosing the signature primitive for two features. (A) A Stripe webhook you receive: Stripe and your server share a secret agreed out of band, and your handler must confirm an incoming payload was signed with it. (B) A public "verifiable receipt" anyone — including parties who must never hold your secret — should be able to verify came from you. For which feature is HMAC the right reach?
+    choices:
+      - text: |
+          (A) only. HMAC is symmetric — the *same* secret signs and verifies — which fits the webhook, where both ends already share that secret. (B) needs different signer and verifier actors with no shared secret, which is asymmetric crypto, not HMAC.
+        correct: true
+      - text: |
+          Both. HMAC with SHA-256 is the 2026 default for any signature, and the public-verification case just means publishing the same HMAC secret so verifiers can check it.
+        correct: false
+      - text: |
+          (B) only. HMAC's keyed hash is what lets *anyone* verify, while the webhook in (A) should use a plain `digest` of the body since both ends already trust each other.
+        correct: false
+    why: |
+      The property that decides HMAC's fit is its symmetry: the same secret both signs and verifies. That's exactly the webhook shape in (A) — Stripe holds the secret, you hold the same secret, you both agreed on it out of band. It's also HMAC's boundary: the moment signer and verifier must be *different* actors who don't share a secret — case (B), where verifiers must never hold your key — you've left HMAC's territory for asymmetric crypto (a private key signs, a public key verifies). Publishing an HMAC secret so the public can verify would also let the public *forge*, since the same key does both. And a plain `digest` carries no key at all, so it proves nothing about *who* produced the bytes.
+
+  - source: 16.3
+    question: |
+      A reviewer flags your avatar preview for leaking a `Blob` on every re-pick, so you "add the cleanup" by revoking on the line right after you create the handle:
+
+      ```tsx
+      const url = URL.createObjectURL(file);
+      setPreviewUrl(url);
+      URL.revokeObjectURL(url);
+      ```
+
+      What happens to the preview, and where does the revoke actually belong?
+    choices:
+      - text: |
+          The preview renders blank (broken-image icon): `<img>` reads the bytes asynchronously, a beat after `src` is set, and you've already deleted the map entry by then. The revoke belongs in the effect's cleanup *return* — keyed to the file — so it runs on the next pick or on unmount, after the element has read the bytes.
+        correct: true
+      - text: |
+          It works correctly and leak-free: the synchronous revoke runs after `setPreviewUrl`, so React has already painted the `<img>` with the bytes by the time the handle is released.
+        correct: false
+      - text: |
+          The preview still leaks: revoking the same URL you just created is a no-op, so you have to call `revokeObjectURL` on the *previous* url in a ref to actually release anything.
+        correct: false
+    why: |
+      Setting `<img src>` doesn't read the bytes synchronously — the browser fetches them from the object-URL map a moment later. Revoke on the very next line and the map entry is gone before that read happens, so the preview blanks to the broken-image icon. This is the second-most-common version of the bug: "I added cleanup like the docs said and now my preview is gone." The fix isn't to revoke earlier or never — it's to revoke *later*: put it in the `useEffect` cleanup return keyed to the file, so it fires when the file changes (releasing the old URL before the new preview renders) or on unmount, always after the element has had its chance to read the bytes.
+
+  - source: 16.4
+    question: |
+      A `Coachmark` reads its dismissed flag straight from `localStorage` in the component body and crashes with `ReferenceError: localStorage is not defined`. A teammate suggests adding `'use client'` at the top of the file to fix it. Will that work?
+    choices:
+      - text: |
+          No. A Client Component still pre-renders on the server to produce the initial HTML, and there's no `window`/`localStorage` there — so a read in the component body throws during that pre-render regardless of `'use client'`. The fix is to defer the read into an effect (or `useSyncExternalStore`), so it runs only after the component mounts in the browser.
+        correct: true
+      - text: |
+          Yes. `'use client'` marks the file as browser-only, so its code never runs on the server and the `localStorage` read is safe.
+        correct: false
+      - text: |
+          No, but the real fix is `suppressHydrationWarning` on the element — it tells React to skip the server render for that subtree, which is what actually causes the `ReferenceError`.
+        correct: false
+    why: |
+      "Client" in Next.js does not mean "browser-only." A Client Component still server-pre-renders to produce the initial HTML, then hydrates in the browser — so a `localStorage` read sitting directly in the component body runs during that server pass and throws `ReferenceError` all the same. The "I added `'use client'` and it *still* crashes" moment is one of the most common traps here. The fix is to keep the read out of the render path: render the server default first, then read `localStorage` in a `useEffect` after mount (or bind it through `useSyncExternalStore`). `suppressHydrationWarning` is unrelated — it silences the *second* hazard, the hydration mismatch, and silencing a warning never fixes the underlying `ReferenceError`.
+
+  - source: 16.4
+    question: |
+      Run each piece of state through the five-home decision tree (`useState` → URL → server → cookie → `localStorage`). Which of these correctly belong in `localStorage`? Select all that apply.
+    choices:
+      - text: |
+          A dismissed onboarding banner — cheap to lose, not worth a server round-trip, meaningful only on this one device.
+        correct: true
+      - text: |
+          Recently-viewed product ids on this device, where it's fine if a different device shows a different list.
+        correct: true
+      - text: |
+          The signed-in user's auth session token, so it survives reloads without a server round-trip.
+        correct: false
+      - text: |
+          The active table filter you want a coworker to reproduce by pasting the link.
+        correct: false
+    why: |
+      `localStorage` is the *leaf* of the tree, not a default: state lands there only after it falls through every higher home. A dismissed banner and per-device recently-viewed ids fit — per-device UI scratch that's cheap to lose. The auth token is the canonical footgun: `localStorage` is readable by any script on the page, so one XSS hole exfiltrates the session — it belongs in an `HttpOnly` cookie. The shareable filter is navigation state that should reproduce from a pasted link, which is the URL's job. Each "not for" maps to a higher home, and walking the tree top-to-bottom is exactly what keeps the token out of `localStorage`.

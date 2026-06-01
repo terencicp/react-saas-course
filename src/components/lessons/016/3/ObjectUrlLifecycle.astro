@@ -1,0 +1,556 @@
+---
+// Object-URL lifecycle — one frame of the createObjectURL/revokeObjectURL map,
+// used inside <DiagramSequence>. Scrubbing the four frames is what makes the
+// INVISIBLE in-memory map visible: the left "browser memory" box holds the pinned
+// byte-blocks, the right is the <img> element, and BETWEEN them sits the object-URL
+// handle pill with an arrow = the live mapping (img src -> handle -> bytes). A
+// pinned block with NO incoming arrow is the leak; a revoked handle with the <img>
+// still pointing at it is the broken-image footgun.
+//
+// The geometry is IDENTICAL across all four steps so the stage never reflows: the
+// memory box always reserves TWO block slots (top = A, bottom = B) and there are
+// always two handle lanes (A above, B below). Per step we only toggle each slot's
+// STATE — live / leaked / collected / empty — and which handle the <img> reads:
+//   step 1  pick #1            A live, B empty            img -> A          renders
+//   step 2  re-pick, no revoke A leaked, B live          img -> B          renders (A stranded)
+//   step 3  re-pick + revoke A A collected, B live        img -> B          renders (clean)
+//   step 4  revoke too early   A collected (revoked),     img -> A (dead)   broken image
+//
+// Pure HTML + CSS + inline SVG, matching the chapter's other figures (see
+// ActivationWindow, ConstantTimeCompare): the `not-content` wrapper, theme-gray
+// variables for dim chrome, one saturated accent green (live/correct) and one
+// accent red (leaked/broken), a `margin: 0` reset on every inner element to defeat
+// Starlight's prose-margin selector, height-capped and max-width 600.
+
+interface Props {
+  step: 1 | 2 | 3 | 4;
+}
+
+const { step } = Astro.props;
+
+// ---- per-step state model ----------------------------------------------
+// Each byte-block slot is one of four states. `imgTarget` is which handle the
+// <img src> currently reads ("A" | "B" | null). `imgBroken` flags the footgun
+// frame where the handle the <img> points at has been revoked out from under it.
+type BlockState = "live" | "leaked" | "collected" | "empty";
+
+type Frame = {
+  blockA: BlockState; // top slot — photo-A.png
+  blockB: BlockState; // bottom slot — photo-B.png
+  handleA: "live" | "revoked" | "gone"; // the blob:…/A pill
+  handleB: "live" | "gone"; // the blob:…/B pill
+  imgTarget: "A" | "B" | null; // which handle <img src> reads
+  imgBroken: boolean; // <img> points at a handle whose bytes are gone
+};
+
+const FRAMES: Record<Props["step"], Frame> = {
+  // 1 — pick #1: one block, one handle, a live chain to the <img>.
+  1: {
+    blockA: "live",
+    blockB: "empty",
+    handleA: "live",
+    handleB: "gone",
+    imgTarget: "A",
+    imgBroken: false,
+  },
+  // 2 — re-pick, no revoke: B renders, but A is stranded with no consumer.
+  2: {
+    blockA: "leaked",
+    blockB: "live",
+    handleA: "revoked", // its arrow to the <img> is gone; pill greyed/struck
+    handleB: "live",
+    imgTarget: "B",
+    imgBroken: false,
+  },
+  // 3 — re-pick done right: revoke A first, so only B survives.
+  3: {
+    blockA: "collected",
+    blockB: "live",
+    handleA: "gone",
+    handleB: "live",
+    imgTarget: "B",
+    imgBroken: false,
+  },
+  // 4 — revoke too early: handle A killed before the <img> read the bytes.
+  4: {
+    blockA: "collected",
+    blockB: "empty",
+    handleA: "revoked",
+    handleB: "gone",
+    imgTarget: "A", // still pointing at the dead handle
+    imgBroken: true,
+  },
+};
+
+const F = FRAMES[step];
+
+// ---- palette ------------------------------------------------------------
+
+const GREEN = "#16a34a"; // a live, correct mapping + pinned-and-used bytes
+const RED = "#dc2626"; // the leaked block / the broken-image footgun
+
+const reset = "margin: 0";
+const mono =
+  "font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
+const sans =
+  "font-family: var(--sl-font-system, ui-sans-serif, system-ui, sans-serif)";
+
+// ---- geometry -----------------------------------------------------------
+// The stage is one fixed-size canvas; the three columns (memory · handles · img)
+// are absolutely positioned so the connector SVG can hang exact lines between
+// them. Coordinates are in the SVG's own 600x230 viewBox, mirrored by matching
+// pixel boxes — both share the same numbers so lines meet boxes precisely.
+
+const VW = 600;
+const VH = 230;
+
+// Column x-extents (viewBox units).
+const MEM_X = 8;
+const MEM_W = 196;
+const HANDLE_X = 268;
+const HANDLE_W = 132;
+const IMG_X = 470;
+const IMG_W = 122;
+
+// Block / handle vertical centres. A sits in the top lane, B in the bottom lane.
+const LANE_A_Y = 74;
+const LANE_B_Y = 158;
+const BLOCK_H = 50;
+const HANDLE_H = 38;
+const IMG_Y = 116; // the single <img> sits centred between the two lanes
+const IMG_H = 92;
+
+// ---- styles -------------------------------------------------------------
+
+const root = [
+  reset,
+  "display: flex",
+  "flex-direction: column",
+  "gap: 12px",
+  "width: 100%",
+  "max-width: 600px",
+  "box-sizing: border-box",
+  sans,
+].join("; ");
+
+// The stage keeps its aspect ratio via a padded box so the absolutely-positioned
+// furniture and the SVG overlay always agree on coordinates.
+const stage = [
+  reset,
+  "position: relative",
+  "width: 100%",
+  `aspect-ratio: ${VW} / ${VH}`,
+  "box-sizing: border-box",
+].join("; ");
+
+// Helper: place a box using viewBox units expressed as percentages of the stage,
+// so it scales with the responsive stage exactly like the SVG does.
+const pctX = (u: number) => `${(u / VW) * 100}%`;
+const pctY = (u: number) => `${(u / VH) * 100}%`;
+
+const absBox = (x: number, y: number, w: number, h: number) =>
+  [
+    reset,
+    "position: absolute",
+    `left: ${pctX(x)}`,
+    `top: ${pctY(y)}`,
+    `width: ${pctX(w)}`,
+    `height: ${pctY(h)}`,
+    "box-sizing: border-box",
+  ].join("; ");
+
+// The memory enclosure (dim chrome) that the two block slots live inside.
+const memBox = [
+  absBox(MEM_X, 30, MEM_W, VH - 44),
+  "border: 1.5px solid var(--sl-color-gray-4)",
+  "border-radius: 10px",
+  "background: color-mix(in srgb, var(--sl-color-gray-6) 60%, var(--sl-color-bg))",
+].join("; ");
+
+const memLabel = [
+  reset,
+  sans,
+  "position: absolute",
+  `left: ${pctX(MEM_X + 10)}`,
+  `top: ${pctY(8)}`,
+  "font-size: 10px",
+  "font-weight: 700",
+  "letter-spacing: 0.06em",
+  "text-transform: uppercase",
+  "line-height: 1",
+  "color: var(--sl-color-gray-3)",
+].join("; ");
+
+const imgLabel = [
+  reset,
+  sans,
+  "position: absolute",
+  `left: ${pctX(IMG_X)}`,
+  `top: ${pctY(8)}`,
+  "font-size: 10px",
+  "font-weight: 700",
+  "letter-spacing: 0.06em",
+  "text-transform: uppercase",
+  "line-height: 1",
+  "color: var(--sl-color-gray-3)",
+].join("; ");
+
+const handleLabel = [
+  reset,
+  sans,
+  "position: absolute",
+  `left: ${pctX(HANDLE_X)}`,
+  `top: ${pctY(8)}`,
+  `width: ${pctX(HANDLE_W)}`,
+  "font-size: 10px",
+  "font-weight: 700",
+  "letter-spacing: 0.06em",
+  "text-transform: uppercase",
+  "line-height: 1",
+  "text-align: center",
+  "color: var(--sl-color-gray-3)",
+].join("; ");
+
+// A byte-block. State decides the colour treatment.
+const blockStyle = (state: BlockState, y: number) => {
+  const base = [
+    absBox(MEM_X + 12, y - BLOCK_H / 2, MEM_W - 24, BLOCK_H),
+    "border-radius: 8px",
+    "display: flex",
+    "flex-direction: column",
+    "align-items: flex-start",
+    "justify-content: center",
+    "gap: 3px",
+    "padding: 0 12px",
+  ];
+  if (state === "live") {
+    base.push(
+      `border: 1.5px solid ${GREEN}`,
+      `background: color-mix(in srgb, ${GREEN} 18%, var(--sl-color-bg))`,
+    );
+  } else if (state === "leaked") {
+    base.push(
+      `border: 1.5px dashed ${RED}`,
+      `background: color-mix(in srgb, ${RED} 12%, var(--sl-color-bg))`,
+      "opacity: 0.92",
+    );
+  } else {
+    // collected / empty: a faint dotted ghost slot so the geometry holds.
+    base.push(
+      "border: 1.5px dashed var(--sl-color-gray-5)",
+      "background: transparent",
+    );
+  }
+  return base.join("; ");
+};
+
+const blockName = (state: BlockState) =>
+  [
+    reset,
+    mono,
+    "font-size: 12.5px",
+    "font-weight: 700",
+    "line-height: 1.1",
+    state === "live"
+      ? `color: color-mix(in srgb, ${GREEN} 80%, var(--sl-color-text))`
+      : state === "leaked"
+        ? `color: color-mix(in srgb, ${RED} 78%, var(--sl-color-text))`
+        : "color: var(--sl-color-gray-4)",
+  ].join("; ");
+
+const blockKind = (state: BlockState) =>
+  [
+    reset,
+    sans,
+    "font-size: 9.5px",
+    "font-weight: 600",
+    "line-height: 1",
+    "letter-spacing: 0.02em",
+    state === "leaked"
+      ? `color: color-mix(in srgb, ${RED} 70%, var(--sl-color-text))`
+      : "color: var(--sl-color-gray-3)",
+  ].join("; ");
+
+// A handle pill.
+const handleStyle = (state: "live" | "revoked" | "gone", y: number) => {
+  const base = [
+    absBox(HANDLE_X, y - HANDLE_H / 2, HANDLE_W, HANDLE_H),
+    "border-radius: 999px",
+    "display: flex",
+    "align-items: center",
+    "justify-content: center",
+  ];
+  if (state === "live") {
+    base.push(
+      `border: 1.5px solid ${GREEN}`,
+      `background: color-mix(in srgb, ${GREEN} 14%, var(--sl-color-bg))`,
+    );
+  } else if (state === "revoked") {
+    base.push(
+      "border: 1.5px dashed var(--sl-color-gray-4)",
+      "background: color-mix(in srgb, var(--sl-color-gray-6) 50%, var(--sl-color-bg))",
+    );
+  } else {
+    base.push("border: 0", "background: transparent");
+  }
+  return base.join("; ");
+};
+
+const handleText = (state: "live" | "revoked" | "gone") =>
+  [
+    reset,
+    mono,
+    "font-size: 12px",
+    "font-weight: 700",
+    "line-height: 1",
+    state === "revoked" ? "text-decoration: line-through" : "",
+    state === "live"
+      ? `color: color-mix(in srgb, ${GREEN} 82%, var(--sl-color-text))`
+      : "color: var(--sl-color-gray-3)",
+  ].join("; ");
+
+// The <img> element frame.
+const imgFrame = [
+  absBox(IMG_X, IMG_Y - IMG_H / 2, IMG_W, IMG_H),
+  "border-radius: 10px",
+  "display: flex",
+  "flex-direction: column",
+  "align-items: center",
+  "justify-content: center",
+  "gap: 6px",
+  "overflow: hidden",
+  F.imgBroken
+    ? `border: 1.5px dashed ${RED}; background: color-mix(in srgb, ${RED} 8%, var(--sl-color-bg))`
+    : `border: 1.5px solid ${GREEN}; background: color-mix(in srgb, ${GREEN} 10%, var(--sl-color-bg))`,
+].join("; ");
+
+const imgTag = [
+  reset,
+  mono,
+  "position: absolute",
+  `left: ${pctX(IMG_X)}`,
+  `top: ${pctY(IMG_Y + IMG_H / 2 + 6)}`,
+  `width: ${pctX(IMG_W)}`,
+  "font-size: 11px",
+  "font-weight: 700",
+  "line-height: 1",
+  "text-align: center",
+  F.imgBroken
+    ? `color: color-mix(in srgb, ${RED} 82%, var(--sl-color-text))`
+    : `color: color-mix(in srgb, ${GREEN} 82%, var(--sl-color-text))`,
+].join("; ");
+
+// The "leaked — no consumer" tag pinned beside the stranded block (step 2).
+const leakTag = [
+  reset,
+  sans,
+  "position: absolute",
+  `left: ${pctX(MEM_X + 12)}`,
+  `top: ${pctY(LANE_A_Y + BLOCK_H / 2 + 4)}`,
+  `width: ${pctX(MEM_W - 24)}`,
+  "font-size: 9.5px",
+  "font-weight: 700",
+  "line-height: 1",
+  "text-align: center",
+  `color: color-mix(in srgb, ${RED} 80%, var(--sl-color-text))`,
+].join("; ");
+
+// ---- connector geometry (SVG viewBox units) -----------------------------
+// Arrow run: <img> left edge -> handle right edge, then handle left edge -> block
+// right edge. We draw the img->handle leg and the handle->block leg as one logical
+// "live mapping" when green. The leaked frame keeps the handle->(missing) stub.
+
+const imgLeft = IMG_X;
+const imgCY = IMG_Y;
+const handleRightA = HANDLE_X + HANDLE_W;
+const handleRightB = HANDLE_X + HANDLE_W;
+const handleLeftX = HANDLE_X;
+const blockRight = MEM_X + 12 + (MEM_W - 24);
+
+// Which lane's handle the <img> connects to.
+const targetY = F.imgTarget === "A" ? LANE_A_Y : F.imgTarget === "B" ? LANE_B_Y : null;
+const targetHandleRight = F.imgTarget === "A" ? handleRightA : handleRightB;
+---
+
+<div class="not-content" data-oul-step={step} style={root}>
+  <div style={stage}>
+    {/* ---- column labels ---- */}
+    <span style={memLabel}>browser memory</span>
+    <span style={handleLabel}>object URL</span>
+    <span style={imgLabel}>&lt;img&gt;</span>
+
+    {/* ---- memory enclosure ---- */}
+    <div style={memBox}></div>
+
+    {/* ---- connector overlay: arrows live BEHIND the boxes' text but above the
+            memory enclosure fill, so it reads as wiring between the columns ---- */}
+    <svg
+      viewBox={`0 0 ${VW} ${VH}`}
+      preserveAspectRatio="none"
+      aria-hidden="true"
+      style="position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none;"
+    >
+      <defs>
+        <marker
+          id={`oul-arrow-green-${step}`}
+          markerWidth="7"
+          markerHeight="7"
+          refX="5.5"
+          refY="3"
+          orient="auto"
+          markerUnits="userSpaceOnUse"
+        >
+          <path d="M0 0 L6 3 L0 6 z" fill={GREEN}></path>
+        </marker>
+      </defs>
+
+      {/* LIVE MAPPING — only drawn when the <img> reads a handle whose bytes
+          still exist: img.src -> handle (leg 1), handle -> block (leg 2). */}
+      {
+        !F.imgBroken && targetY !== null && (
+          <>
+            {/* leg 1: <img> left edge -> handle right edge */}
+            <path
+              d={`M ${imgLeft} ${imgCY} H ${(targetHandleRight + imgLeft) / 2} V ${targetY} H ${targetHandleRight + 6}`}
+              fill="none"
+              stroke={GREEN}
+              stroke-width="2.25"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              marker-end={`url(#oul-arrow-green-${step})`}
+            />
+            {/* leg 2: handle left edge -> block right edge */}
+            <path
+              d={`M ${handleLeftX} ${targetY} H ${blockRight + 6}`}
+              fill="none"
+              stroke={GREEN}
+              stroke-width="2.25"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              marker-end={`url(#oul-arrow-green-${step})`}
+            />
+          </>
+        )
+      }
+
+      {/* LEAK STUB (step 2) — A's handle was overwritten, so the block sits pinned
+          with a red dotted dangling stub pointing nowhere. */}
+      {
+        F.blockA === "leaked" && (
+          <path
+            d={`M ${blockRight} ${LANE_A_Y} h 34`}
+            fill="none"
+            stroke={RED}
+            stroke-width="2"
+            stroke-dasharray="2 4"
+            stroke-linecap="round"
+          />
+        )
+      }
+
+      {/* BROKEN-IMG STUB (step 4) — the <img> still points left toward a handle
+          that's been revoked: a red dotted leg that dead-ends at the gap. */}
+      {
+        F.imgBroken && targetY !== null && (
+          <path
+            d={`M ${imgLeft} ${imgCY} H ${(targetHandleRight + imgLeft) / 2} V ${targetY} H ${targetHandleRight + 8}`}
+            fill="none"
+            stroke={RED}
+            stroke-width="2"
+            stroke-dasharray="2 4"
+            stroke-linecap="round"
+          />
+        )
+      }
+    </svg>
+
+    {/* ---- byte-blocks ---- */}
+    <div style={blockStyle(F.blockA, LANE_A_Y)}>
+      {
+        F.blockA === "live" || F.blockA === "leaked" ? (
+          <>
+            <span style={blockName(F.blockA)}>photo-A.png</span>
+            <span style={blockKind(F.blockA)}>
+              {F.blockA === "leaked" ? "pinned · stranded" : "bytes · pinned"}
+            </span>
+          </>
+        ) : (
+          <span style={blockName(F.blockA)}>
+            {step === 3 ? "A collected" : step === 4 ? "(never pinned)" : ""}
+          </span>
+        )
+      }
+    </div>
+    {F.blockA === "leaked" && <span style={leakTag}>leaked &mdash; no consumer</span>}
+
+    <div style={blockStyle(F.blockB, LANE_B_Y)}>
+      {
+        F.blockB === "live" ? (
+          <>
+            <span style={blockName(F.blockB)}>photo-B.png</span>
+            <span style={blockKind(F.blockB)}>bytes &middot; pinned</span>
+          </>
+        ) : (
+          <span style={blockName(F.blockB)}></span>
+        )
+      }
+    </div>
+
+    {/* ---- handle pills ---- */}
+    {
+      F.handleA !== "gone" && (
+        <div style={handleStyle(F.handleA, LANE_A_Y)}>
+          <span style={handleText(F.handleA)}>blob:&hellip;/A</span>
+        </div>
+      )
+    }
+    {
+      F.handleB !== "gone" && (
+        <div style={handleStyle(F.handleB, LANE_B_Y)}>
+          <span style={handleText(F.handleB)}>blob:&hellip;/B</span>
+        </div>
+      )
+    }
+
+    {/* ---- the <img> element ---- */}
+    <div style={imgFrame}>
+      {
+        F.imgBroken ? (
+          <svg
+            width="34"
+            height="34"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke={RED}
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M3 3l18 18" />
+            <path d="M21 15V5a2 2 0 0 0-2-2H9" />
+            <path d="M5 3a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14" />
+            <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L9 18" />
+          </svg>
+        ) : (
+          <svg
+            width="36"
+            height="36"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke={GREEN}
+            stroke-width="1.9"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <rect x="3" y="3" width="18" height="18" rx="2" />
+            <circle cx="9" cy="9" r="2" />
+            <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
+          </svg>
+        )
+      }
+    </div>
+    <span style={imgTag}>{F.imgBroken ? "broken image" : "preview renders"}</span>
+  </div>
+</div>

@@ -1,0 +1,585 @@
+---
+// SSR storage timeline — one frame of the server→client handoff for a localStorage
+// read in a Next.js client island, used inside <DiagramSequence>. Scrubbing the four
+// frames is what makes the INVISIBLE handoff visible: a left "Server" column and a
+// right "Browser" column each carry two stacked rows — a `localStorage` row (what
+// storage holds) and a `renders` row (what the banner currently shows on screen).
+// The pedagogical climax is the moment the two columns' `renders` rows show DIFFERENT
+// values: that disagreement is the hydration mismatch (both rows go red, a "mismatch"
+// marker spans the divergence) — the analogue of L3's "leak = a block with no arrow".
+//
+//   step 1  server render   storage absent (no window) · banner SHOWN (default)
+//                           browser side still empty — nothing has reached it yet
+//   step 2  hydrate         server still SHOWN; browser storage now dismissed=true,
+//                           but the attached DOM still shows SHOWN → renders DISAGREE
+//                           → both red, MISMATCH. the climax frame.
+//   step 3  post-mount read effect/getSnapshot reads storage, state updates, browser
+//                           renders banner HIDDEN (green); server column superseded.
+//                           disagreement resolved — no red.
+//   step 4  cross-tab sync  a second tab writes the key → a `storage` event arrow
+//                           points into this tab's storage row; renders stay HIDDEN.
+//
+// The geometry is IDENTICAL across all four steps so the stage never reflows: both
+// columns always reserve BOTH rows, and every cell keeps its box at every step — only
+// each cell's STATE / value toggles. Pure HTML + CSS + inline SVG, matching the
+// chapter's other figures (see ObjectUrlLifecycle, ActivationWindow): the `not-content`
+// wrapper, theme-gray variables for dim chrome, one saturated accent green (correct /
+// resolved) and one accent red (the mismatch hazard), a `margin: 0` reset on every
+// inner element to defeat Starlight's prose-margin selector, height-capped, max-width 640.
+
+interface Props {
+  step: 1 | 2 | 3 | 4;
+}
+
+const { step } = Astro.props;
+
+// ---- per-step state model ----------------------------------------------
+// Each column has a `localStorage` cell and a `renders` cell. A cell is one of a
+// small set of states that decide its colour and copy. `mismatch` flags the climax
+// frame where the two `renders` cells disagree (both painted red).
+type StoreState = "absent" | "dismissed" | "pending"; // localStorage cell
+type RenderState = "shown" | "hidden" | "empty"; // renders cell
+
+type Frame = {
+  // left (Server) column
+  srvStore: StoreState;
+  srvRender: RenderState;
+  srvDim: boolean; // the server column is superseded once the client takes over
+  // right (Browser) column
+  browStore: StoreState;
+  browRender: RenderState;
+  browEmpty: boolean; // nothing has reached the browser yet (step 1)
+  // cross-cut
+  mismatch: boolean; // the two renders cells disagree → climax, both red
+  storageEvent: boolean; // step 4: a second tab fired a `storage` event
+  caption: string; // the small stage kicker naming the moment
+};
+
+const FRAMES: Record<Props["step"], Frame> = {
+  // 1 — server render: no window, so storage is absent; the safe component renders
+  //     the default (banner shown), which gets baked into the HTML. Browser empty.
+  1: {
+    srvStore: "absent",
+    srvRender: "shown",
+    srvDim: false,
+    browStore: "absent",
+    browRender: "empty",
+    browEmpty: true,
+    mismatch: false,
+    storageEvent: false,
+    caption: "default baked into HTML",
+  },
+  // 2 — hydrate: HTML arrives, React attaches. Browser storage now says dismissed,
+  //     but the attached DOM still shows the server default → the two renders cells
+  //     disagree. The mismatch. Climax frame.
+  2: {
+    srvStore: "absent",
+    srvRender: "shown",
+    srvDim: false,
+    browStore: "dismissed",
+    browRender: "shown",
+    browEmpty: false,
+    mismatch: true,
+    storageEvent: false,
+    caption: "server HTML attached, not yet re-read",
+  },
+  // 3 — post-mount read: the effect / getSnapshot reads storage, state updates, the
+  //     banner correctly hides. Server column is now the superseded initial render.
+  3: {
+    srvStore: "absent",
+    srvRender: "shown",
+    srvDim: true,
+    browStore: "dismissed",
+    browRender: "hidden",
+    browEmpty: false,
+    mismatch: false,
+    storageEvent: false,
+    caption: "client re-read after commit",
+  },
+  // 4 — cross-tab sync: a second tab writes the key, a `storage` event lands in this
+  //     tab's storage row, useSyncExternalStore re-reads, the UI stays correct.
+  4: {
+    srvStore: "absent",
+    srvRender: "shown",
+    srvDim: true,
+    browStore: "dismissed",
+    browRender: "hidden",
+    browEmpty: false,
+    mismatch: false,
+    storageEvent: true,
+    caption: "another tab wrote the key",
+  },
+};
+
+const F = FRAMES[step];
+
+// ---- palette ------------------------------------------------------------
+
+const GREEN = "#16a34a"; // the correct, resolved render
+const RED = "#dc2626"; // the hydration mismatch — the two renders disagree
+
+const reset = "margin: 0";
+const mono =
+  "font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
+const sans =
+  "font-family: var(--sl-font-system, ui-sans-serif, system-ui, sans-serif)";
+
+// ---- copy per cell state ------------------------------------------------
+
+const storeText = (s: StoreState): { code: string; kind: string } => {
+  if (s === "absent") return { code: "localStorage", kind: "absent · no window" };
+  if (s === "dismissed") return { code: "dismissed = true", kind: "stored" };
+  return { code: "localStorage", kind: "—" };
+};
+
+const renderText = (r: RenderState): string => {
+  if (r === "shown") return "banner shown";
+  if (r === "hidden") return "banner hidden";
+  return "—";
+};
+
+// ---- shared styles ------------------------------------------------------
+
+const root = [
+  reset,
+  "display: flex",
+  "flex-direction: column",
+  "gap: 12px",
+  "width: 100%",
+  "max-width: 640px",
+  "box-sizing: border-box",
+  sans,
+].join("; ");
+
+// The two-column stage. A fixed two-track grid with a thin divider rule down the
+// middle; both columns always render both rows so scrubbing never reflows.
+const stage = [
+  reset,
+  "position: relative",
+  "display: grid",
+  "grid-template-columns: 1fr 1fr",
+  "gap: 0",
+  "width: 100%",
+  "box-sizing: border-box",
+  "border: 1.5px solid var(--sl-color-gray-5)",
+  "border-radius: 12px",
+  "background: color-mix(in srgb, var(--sl-color-gray-6) 45%, var(--sl-color-bg))",
+  "overflow: hidden",
+].join("; ");
+
+// A column: a stacked header + two cells. The divider is the right border on the
+// left column.
+const column = (side: "server" | "browser") =>
+  [
+    reset,
+    "display: flex",
+    "flex-direction: column",
+    "gap: 10px",
+    "padding: 14px 16px 16px",
+    "box-sizing: border-box",
+    side === "server" ? "border-right: 1.5px solid var(--sl-color-gray-5)" : "",
+    side === "server" && F.srvDim ? "opacity: 0.5" : "",
+  ].join("; ");
+
+const colHeader = [
+  reset,
+  sans,
+  "display: flex",
+  "align-items: center",
+  "gap: 7px",
+  "font-size: 11px",
+  "font-weight: 700",
+  "letter-spacing: 0.06em",
+  "text-transform: uppercase",
+  "line-height: 1",
+  "color: var(--sl-color-gray-2)",
+].join("; ");
+
+// A row label sitting above each cell ("localStorage" / "renders").
+const rowLabel = [
+  reset,
+  sans,
+  "font-size: 9.5px",
+  "font-weight: 700",
+  "letter-spacing: 0.04em",
+  "text-transform: uppercase",
+  "line-height: 1",
+  "color: var(--sl-color-gray-3)",
+  "margin-bottom: 5px",
+].join("; ");
+
+// A storage cell. Fixed height so both columns' rows align across steps.
+const STORE_H = 52;
+const RENDER_H = 44;
+
+const storeCell = (s: StoreState, dimEmpty: boolean) => {
+  const base = [
+    reset,
+    `height: ${STORE_H}px`,
+    "border-radius: 9px",
+    "display: flex",
+    "flex-direction: column",
+    "align-items: flex-start",
+    "justify-content: center",
+    "gap: 3px",
+    "padding: 0 12px",
+    "box-sizing: border-box",
+  ];
+  if (dimEmpty) {
+    base.push(
+      "border: 1.5px dashed var(--sl-color-gray-5)",
+      "background: transparent",
+    );
+  } else if (s === "absent") {
+    // present on the server but holding nothing — greyed, dashed.
+    base.push(
+      "border: 1.5px dashed var(--sl-color-gray-4)",
+      "background: color-mix(in srgb, var(--sl-color-gray-6) 55%, var(--sl-color-bg))",
+    );
+  } else {
+    // a real stored value lives here.
+    base.push(
+      "border: 1.5px solid var(--sl-color-gray-3)",
+      "background: color-mix(in srgb, var(--sl-color-gray-5) 45%, var(--sl-color-bg))",
+    );
+  }
+  return base.join("; ");
+};
+
+const storeCode = (s: StoreState, dimEmpty: boolean) =>
+  [
+    reset,
+    mono,
+    "font-size: 12.5px",
+    "font-weight: 700",
+    "line-height: 1.1",
+    dimEmpty || s === "absent"
+      ? "color: var(--sl-color-gray-4)"
+      : "color: var(--sl-color-text)",
+  ].join("; ");
+
+const storeKind = [
+  reset,
+  sans,
+  "font-size: 9.5px",
+  "font-weight: 600",
+  "line-height: 1",
+  "letter-spacing: 0.02em",
+  "color: var(--sl-color-gray-3)",
+].join("; ");
+
+// A renders cell. State + mismatch decide the colour: green when correct, red when
+// the two columns disagree, neutral for the server's default, dashed for empty.
+const renderCell = (
+  r: RenderState,
+  opts: { mismatch?: boolean; empty?: boolean; correct?: boolean } = {},
+) => {
+  const base = [
+    reset,
+    `height: ${RENDER_H}px`,
+    "border-radius: 9px",
+    "display: flex",
+    "align-items: center",
+    "gap: 8px",
+    "padding: 0 12px",
+    "box-sizing: border-box",
+  ];
+  if (opts.empty) {
+    base.push(
+      "border: 1.5px dashed var(--sl-color-gray-5)",
+      "background: transparent",
+    );
+  } else if (opts.mismatch) {
+    base.push(
+      `border: 1.5px solid ${RED}`,
+      `background: color-mix(in srgb, ${RED} 13%, var(--sl-color-bg))`,
+    );
+  } else if (opts.correct) {
+    base.push(
+      `border: 1.5px solid ${GREEN}`,
+      `background: color-mix(in srgb, ${GREEN} 13%, var(--sl-color-bg))`,
+    );
+  } else {
+    // the server's neutral default — present and fine, just not yet the truth.
+    base.push(
+      "border: 1.5px solid var(--sl-color-gray-4)",
+      "background: color-mix(in srgb, var(--sl-color-gray-6) 60%, var(--sl-color-bg))",
+    );
+  }
+  return base.join("; ");
+};
+
+const renderTextStyle = (
+  r: RenderState,
+  opts: { mismatch?: boolean; empty?: boolean; correct?: boolean } = {},
+) =>
+  [
+    reset,
+    sans,
+    "font-size: 12.5px",
+    "font-weight: 700",
+    "line-height: 1.1",
+    opts.empty
+      ? "color: var(--sl-color-gray-4)"
+      : opts.mismatch
+        ? `color: color-mix(in srgb, ${RED} 80%, var(--sl-color-text))`
+        : opts.correct
+          ? `color: color-mix(in srgb, ${GREEN} 82%, var(--sl-color-text))`
+          : "color: var(--sl-color-text)",
+  ].join("; ");
+
+// The stage kicker pinned bottom-centre, naming the moment in one phrase.
+const kicker = [
+  reset,
+  sans,
+  "display: flex",
+  "align-items: center",
+  "justify-content: center",
+  "gap: 6px",
+  "font-size: 11px",
+  "font-weight: 600",
+  "line-height: 1.2",
+  "text-align: center",
+  "color: var(--sl-color-gray-2)",
+].join("; ");
+
+const srv = storeText(F.srvStore);
+const brow = storeText(F.browStore);
+---
+
+<div class="not-content" data-sst-step={step} style={root}>
+  <div style={stage}>
+    {/* ============ SERVER COLUMN ============ */}
+    <div style={column("server")}>
+      <span style={colHeader}>
+        {/* server icon */}
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <rect x="2" y="3" width="20" height="8" rx="2"></rect>
+          <rect x="2" y="13" width="20" height="8" rx="2"></rect>
+          <path d="M6 7h.01M6 17h.01"></path>
+        </svg>
+        Server
+      </span>
+
+      <div>
+        <div style={rowLabel}>localStorage</div>
+        <div style={storeCell(F.srvStore, false)}>
+          <span style={storeCode(F.srvStore, false)}>{srv.code}</span>
+          <span style={storeKind}>{srv.kind}</span>
+        </div>
+      </div>
+
+      <div>
+        <div style={rowLabel}>renders</div>
+        <div style={renderCell(F.srvRender, { mismatch: F.mismatch })}>
+          {
+            F.mismatch && (
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke={RED}
+                stroke-width="2.4"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M18 6 6 18M6 6l12 12" />
+              </svg>
+            )
+          }
+          <span style={renderTextStyle(F.srvRender, { mismatch: F.mismatch })}>
+            {renderText(F.srvRender)}
+          </span>
+        </div>
+      </div>
+    </div>
+
+    {/* ============ BROWSER COLUMN ============ */}
+    <div style={column("browser")}>
+      <span style={colHeader}>
+        {/* browser icon */}
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <circle cx="12" cy="12" r="10"></circle>
+          <path d="M2 12h20M12 2a15.3 15.3 0 0 1 0 20M12 2a15.3 15.3 0 0 0 0 20"></path>
+        </svg>
+        Browser
+      </span>
+
+      <div style="position: relative;">
+        <div style={rowLabel}>localStorage</div>
+        <div style={storeCell(F.browStore, F.browEmpty)}>
+          <span style={storeCode(F.browStore, F.browEmpty)}>
+            {F.browEmpty ? "—" : brow.code}
+          </span>
+          <span style={storeKind}>{F.browEmpty ? "nothing yet" : brow.kind}</span>
+        </div>
+
+        {/* step 4: a `storage` event from another tab lands in this row */}
+        {
+          F.storageEvent && (
+            <div
+              style={[
+                reset,
+                sans,
+                "position: absolute",
+                "right: 6px",
+                "top: 50%",
+                "transform: translateY(2px)",
+                "display: flex",
+                "align-items: center",
+                "gap: 5px",
+                "padding: 3px 8px",
+                "border-radius: 999px",
+                `border: 1.5px solid ${GREEN}`,
+                `background: color-mix(in srgb, ${GREEN} 12%, var(--sl-color-bg))`,
+                "font-size: 10px",
+                "font-weight: 700",
+                `color: color-mix(in srgb, ${GREEN} 82%, var(--sl-color-text))`,
+              ].join("; ")}
+            >
+              <svg
+                width="13"
+                height="13"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke={GREEN}
+                stroke-width="2.4"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M4 12h14M12 5l7 7-7 7" />
+              </svg>
+              storage event
+            </div>
+          )
+        }
+      </div>
+
+      <div>
+        <div style={rowLabel}>renders</div>
+        <div
+          style={renderCell(F.browRender, {
+            mismatch: F.mismatch,
+            empty: F.browEmpty,
+            correct: F.browRender === "hidden",
+          })}
+        >
+          {
+            F.mismatch && (
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke={RED}
+                stroke-width="2.4"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M18 6 6 18M6 6l12 12" />
+              </svg>
+            )
+          }
+          {
+            F.browRender === "hidden" && (
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke={GREEN}
+                stroke-width="2.4"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M20 6 9 17l-5-5" />
+              </svg>
+            )
+          }
+          <span
+            style={renderTextStyle(F.browRender, {
+              mismatch: F.mismatch,
+              empty: F.browEmpty,
+              correct: F.browRender === "hidden",
+            })}
+          >
+            {renderText(F.browRender)}
+          </span>
+        </div>
+      </div>
+    </div>
+
+    {/* ============ MISMATCH MARKER — spans the divider at the renders row ============ */}
+    {
+      F.mismatch && (
+        <div
+          style={[
+            reset,
+            sans,
+            "position: absolute",
+            "left: 50%",
+            "bottom: 22px",
+            "transform: translate(-50%, 50%)",
+            "z-index: 2",
+            "display: flex",
+            "align-items: center",
+            "gap: 5px",
+            "padding: 3px 9px",
+            "border-radius: 999px",
+            `border: 1.5px solid ${RED}`,
+            `background: color-mix(in srgb, ${RED} 14%, var(--sl-color-bg))`,
+            "font-size: 10px",
+            "font-weight: 800",
+            "letter-spacing: 0.02em",
+            "white-space: nowrap",
+            `color: color-mix(in srgb, ${RED} 82%, var(--sl-color-text))`,
+          ].join("; ")}
+        >
+          <svg
+            width="13"
+            height="13"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke={RED}
+            stroke-width="2.4"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+            <path d="M12 9v4M12 17h.01" />
+          </svg>
+          hydration mismatch
+        </div>
+      )
+    }
+  </div>
+
+  {/* stage kicker — names the moment */}
+  <div style={kicker}>{F.caption}</div>
+</div>

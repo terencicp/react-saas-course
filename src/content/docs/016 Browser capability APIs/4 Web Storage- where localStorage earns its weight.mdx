@@ -1,0 +1,428 @@
+---
+title: "Web Storage: where localStorage earns its weight"
+description: The localStorage and sessionStorage API behind a decision tree for where a piece of state belongs, plus the two Next.js hazards that make a five-line API non-trivial.
+chapter-id: 16
+sidebar:
+  order: 4
+  label: Web Storage
+---
+
+import { CardGrid } from '@astrojs/starlight/components';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import PredictOutput from '../../../components/exercises/predict-output/PredictOutput.astro';
+import PredictWhy from '../../../components/exercises/predict-output/PredictWhy.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import Term from '../../../components/ui/Term.astro';
+import SsrStorageTimeline from '../../../components/lessons/016/4/SsrStorageTimeline.astro';
+
+Your invoices table has a "drag the column headers to reorder them" coachmark — a small banner that floats over the table the first time someone lands on the page, teaching a feature they'd otherwise never find. It has a dismiss button. The user reads it, clicks the X, and gets on with their work. Then they reload the page, and the coachmark is back. Click it away again, reload again, and there it is again, cheerfully re-teaching a feature they already know. You've turned a helpful hint into an annoyance.
+
+So you reach for the obvious thing: a piece of component state, `useState(false)`, flipped to `true` when they dismiss it. And it works — right up until the reload. Component state lives in memory, tied to the component instance; the moment that component unmounts or the page reloads, it's gone, and the banner resets to its initial `false`. The dismissed bit needs to **outlive the component, outlive the page load, and belong to this one browser** — and component state can't give you any of that.
+
+The reflex at this point is to reach straight for <Term definition={"Per-origin key/value storage in the browser that persists across sessions.\nStrings only; survives reloads, tab closes, and browser restarts."}>localStorage</Term> — and for this specific bit, that reflex is right. But it's worth noticing that it's the *same* reflex that, pointed at the wrong piece of state, stuffs an auth token into `localStorage` and hands an attacker a session on the first cross-site script. **Before you reach for any storage API: of all the places a piece of state can live, which one does this bit belong in — and what makes `localStorage` the right home for some bits and a footgun for others?** That question, not the API, is the lesson. By the end you'll have a decision you can run on any piece of state, plus a dismissed-banner bit that survives reloads without breaking server rendering.
+
+## The five homes a piece of state can live in
+
+`localStorage` is one of five places a piece of state can live, and the entire skill is putting each bit in the right one. The trap juniors fall into is treating `localStorage` as a default — a convenient global box to throw anything in — when it's actually the *last* place state should land, the home it falls into only after every better home has been ruled out. So the way to think about this isn't a menu you pick from; it's a ladder you walk top to bottom, taking the highest match.
+
+Here are the five homes, in priority order, with the one question that picks each:
+
+1. **Component state (`useState`).** The bit is ephemeral — you never need it after the component unmounts, and losing it on reload is *fine*. Whether a dropdown is open, the text in an input before you submit it, which accordion panel is expanded. This is the default home; most state stops here. (You'll learn the hook itself when we get to React — for now it's just "the box that empties when the component goes away.")
+
+2. **URL state (search params).** The bit must be *shareable* — it has to survive a link paste, a bookmark, a page refresh, a "send this exact view to a coworker." It's navigation state. The active filter on a list, the current page number, the selected tab you want someone else to be able to open directly. If the answer to "should pasting this URL reproduce what I'm looking at?" is yes, it belongs in the URL. (A library called `nuqs` makes this ergonomic in React; that's a later chapter.)
+
+3. **Server state.** The bit is account-level — it must be queryable, it must survive a logout, and it must follow the user from their laptop to their phone. A saved notification preference that should be the same everywhere they sign in, the real contents of a cart in a real store, anything another user or another session has to be able to see. This is the database. The defining test: does it need to exist independent of any one device?
+
+4. **Cookie.** The bit must be sent to the server on *every* request — the auth session is the canonical case, because the server needs to know who you are before it renders a single byte — or it must be unreadable to JavaScript (`HttpOnly`) for security. We covered cookies and their trust model earlier; the point here is just that "the server needs this on every request" is what routes a bit to a cookie rather than to `localStorage`.
+
+5. **`localStorage` / `sessionStorage`.** The bit is per-device UI scratch state. A dismissed banner, a draft form value, the last filter you used when you specifically *don't* want it in a shareable URL, a "you've seen this tip" flag, a list of recently-viewed items on this device. The defining test, the one that separates this leaf from every home above it: it's **cheap to lose, not worth a server round-trip, and meaningful only on this one device.** This is the leaf. State lands here when it has fallen through every higher home.
+
+That ordering is the whole reflex: *walk top to bottom, take the highest match.* `localStorage` is where state ends up when it isn't ephemeral, isn't shareable, isn't account-level, and isn't sent on every request — not where it goes by default.
+
+The following walkthrough makes the ladder interactive. Start at the top question and follow your specific piece of state down one branch at a time; each path ends on a recommended home with the reason it won.
+
+<StateMachineWalker kind="decision" title="Where does this piece of state belong?">
+  <Question id="outlive" prompt="Does this bit need to outlive the component and a page reload?" description="Start here. If losing it on unmount or reload is fine, you're already done.">
+    <Branch label="No — it's gone when the component unmounts" to="leaf-usestate" rationale="Ephemeral UI state. Reload can wipe it without anyone caring." />
+    <Branch label="Yes — it has to survive a reload" to="server-need" rationale="It needs a home that persists past the component instance." />
+  </Question>
+
+  <Question id="server-need" prompt="Does the server need it — must it be queryable, survive a logout, or follow the user across devices?" description="This separates account-level state from anything that only ever matters in one browser.">
+    <Branch label="Yes — it's account-level or another session must see it" to="every-request" rationale="The database, the user's phone, or a teammate has a reason to know it." />
+    <Branch label="No — it only matters in this browser" to="shareable" rationale="No round-trip earns its keep. Stay on the client." />
+  </Question>
+
+  <Question id="every-request" prompt="Is it sent to the server on every request, or must JavaScript be unable to read it?" description="Auth is the canonical case: the server needs to know who you are before it renders a byte.">
+    <Branch label="Yes — the server needs it on every request (auth)" to="leaf-cookie" rationale="Travels on every request; can be HttpOnly so a script can't read it." />
+    <Branch label="No — the server just needs to store and query it" to="leaf-server" rationale="Plain account data the database owns." />
+  </Question>
+
+  <Question id="shareable" prompt="Should it be shareable or bookmarkable in a link?" description="The test: should pasting this URL reproduce exactly what you're looking at?">
+    <Branch label="Yes — pasting the URL should reproduce this view" to="leaf-url" rationale="It's navigation state. It belongs in the address bar." />
+    <Branch label="No — it's private to this browser" to="beyond-tab" rationale="Baking it into a URL would be bizarre. Keep it local." />
+  </Question>
+
+  <Question id="beyond-tab" prompt="Is it meaningful beyond this one tab's lifetime?" description="The last fork: persist across tabs and visits, or isolate to this single tab.">
+    <Branch label="Yes — it should still be here next week" to="leaf-localstorage" rationale="Per-device scratch that should survive a close-and-reopen." />
+    <Branch label="No — it's only relevant while this tab is open" to="leaf-sessionstorage" rationale="Wiped the moment this tab closes; never bleeds into a second tab." />
+  </Question>
+
+  <Leaf id="leaf-usestate" verdict="Component state (useState)">
+    Ephemeral UI state; losing it on reload is fine. A dropdown's open/closed bit, the unsent text in an input. This is where most state stops. You'll learn `useState` itself when we reach React — for now it's just "the box that empties when the component goes away."
+  </Leaf>
+
+  <Leaf id="leaf-cookie" verdict="Cookie">
+    The server needs it on *every* request, or it must be `HttpOnly` so a script can't read it. The auth session is the canonical case — and exactly why a token belongs here and never in `localStorage`. You saw the cookie trust model earlier in the course.
+  </Leaf>
+
+  <Leaf id="leaf-server" verdict="Server state (the database)">
+    Account-level: queryable, survives a logout, and follows the user from laptop to phone. A saved notification preference that syncs everywhere they sign in, the real contents of a cart. The defining test — does it need to exist independent of any one device?
+  </Leaf>
+
+  <Leaf id="leaf-url" verdict="URL state (search params)">
+    Shareable, bookmarkable navigation state. The active filter on a list, the current page number, the selected tab you want a coworker to open directly. A library called `nuqs` makes this ergonomic in React — a later chapter.
+  </Leaf>
+
+  <Leaf id="leaf-localstorage" verdict="localStorage">
+    Per-device UI scratch that should still be here next visit. A dismissed banner, a "tip seen" flag, recently-viewed ids. Cheap to lose, not worth a server round-trip, meaningful only on this one device — the bit that fell through every higher home.
+  </Leaf>
+
+  <Leaf id="leaf-sessionstorage" verdict="sessionStorage">
+    The same API as `localStorage`, but scoped to this one tab and wiped when it closes. A multi-step wizard's in-progress draft that shouldn't bleed into a second tab the user opened to copy a figure. Reach for it only when per-tab isolation is the actual requirement.
+  </Leaf>
+</StateMachineWalker>
+
+Run our coachmark through it. Does the dismissed bit need to outlive a reload? Yes — that's the entire problem we started with. Does the server need it? No — whether *this* person on *this* laptop has seen a UI hint is not something the database, or their phone, or another teammate has any reason to know about. Is it shareable in a link? No — it would be bizarre to bake "I dismissed a coachmark" into a URL you send to someone. Is it meaningful beyond this tab? Yes — dismiss it today, it should stay dismissed tomorrow. That path lands on `localStorage`, and now you can say *why*: not because it was the first tool you thought of, but because the bit fell through every higher home.
+
+## The API, now that we know the threshold it crosses
+
+Only now, with the threshold established, is the API worth looking at — and it's almost anticlimactically small. There are two near-identical objects hanging off `window`: `localStorage`, which persists across browser sessions (close the tab, close the browser, come back next week — it's still there) and is scoped per <Term definition={"scheme + host + port, together.\nhttps://app.example.com and http://app.example.com:3000 are three different origins and three separate stores."}>origin</Term>; and `sessionStorage`, which is wiped the moment the tab closes and is scoped per tab *plus* origin. They share the exact same five-method surface, so learn one and you have both.
+
+Those five methods: `setItem(key, value)` writes a value, `getItem(key)` reads it back (returning the string, or `null` if the key was never set), `removeItem(key)` deletes one key, and `clear()` wipes the entire origin's store. There's also a small iteration surface — `length` and `key(i)` — for walking every key, which you'll rarely touch.
+
+Four properties of this API shape how you use it, and the first one is the one that bites everybody on day one:
+
+- **It stores strings, and only strings.** Not numbers, not booleans, not objects — strings. If you hand it anything else, it gets coerced to a string on the way in, silently. `setItem('count', 0)` doesn't store the number `0`; it stores the string `"0"`, and `getItem('count')` hands you back `"0"`, not `0`. To store a boolean or an object, you `JSON.stringify` it on the way in and `JSON.parse` it on the way out — the same serialization dance you already know.
+
+- **It's synchronous.** Every call blocks the main thread until it completes. For the small reads and writes this lesson is about, that's invisible and fine. The rule it implies: never call it inside a hot loop or on every frame of an animation. Read once, hold the value, move on.
+
+- **It has a quota.** Each origin gets somewhere between 5 and 10 MB depending on the browser. That's roomy for flags and drafts and tiny for anything resembling real data — which, as you'll see, is one more reason real data doesn't live here. Assume small, and write as if a write could fail.
+
+- **It's scoped per origin** — scheme, host, *and* port. This one has a sharp edge that'll bite you locally before it ever bites you in production: `localhost:3000` and your deployed URL are completely separate stores, and because the Next.js dev server will happily jump to `localhost:3001` when port 3000 is taken, your keys appear to *vanish* the moment the port changes. They're not gone; you're just looking at a different store. Knowing that saves you a confused debugging session.
+
+Here's the safe round-trip — write a boolean, read it back with an explicit default:
+
+```ts
+// write
+localStorage.setItem('coachmark-dismissed', JSON.stringify(true));
+
+// read with a safe default
+const dismissed = JSON.parse(
+  localStorage.getItem('coachmark-dismissed') ?? 'null',
+) as boolean | null;
+```
+
+The `?? 'null'` is the idiom worth internalizing. `getItem` returns `null` when the key was never written, and you can't hand a raw `null` to `JSON.parse` without thinking — so the `?? 'null'` substitutes the *string* `'null'`, which `JSON.parse` turns back into the value `null`. The effect: a missing key reads as `null` instead of throwing, and the intent — "fall back to null when nothing's stored" — is written down in plain sight rather than relying on a coincidence. The `as boolean | null` cast is doing honest work here too: `JSON.parse` returns `any`, and this is exactly the boundary where you pin down the shape you expect.
+
+Before you write any storage code, the strings-only rule deserves to live in muscle memory, because the way it goes wrong is silent — no error, just a value that's quietly the wrong type three lines later. The following short program looks like it should print a number. Predict what it actually prints.
+
+<PredictOutput expected="11">
+
+The program stores a number, reads it straight back, and adds `1`. Predict the line it logs.
+
+```ts
+localStorage.setItem('count', 1);
+console.log(localStorage.getItem('count') + 1);
+```
+
+<PredictWhy>Web Storage stores strings only. `setItem` coerced the number `1` to the string `"1"` on the way in, `getItem` handed that `"1"` back, and `+` with a string on the left concatenates rather than adds — so `"1" + 1` is `"11"`, not `2`. Convert on the way out to fix it: `Number(localStorage.getItem('count')) + 1` gives `2`. This is the single most common day-one surprise with Web Storage.</PredictWhy>
+
+</PredictOutput>
+
+## The SSR safety dance
+
+The API is small. Using it safely in a Next.js app is not — and this is where the real teaching weight of the lesson sits. The trouble is that `localStorage` is a *browser* object, and Next.js 16 renders a lot of your app on the *server* first.
+
+Recall the correction we made for object URLs in the last lesson: those weren't secure-context gated, they were simply browser-only. Web Storage is the same shape. It is **not** secure-context gated — it works perfectly well on plain `http://`. But it is **browser-only**: on the server, where Next.js renders your Server Components, there is no `window` and no `localStorage` at all. Reach for `localStorage.getItem(...)` at the top level of a module, or inside the body of a Server Component, and you don't get `null` — you get `ReferenceError: localStorage is not defined`, thrown at build or render time, before the page ever reaches a browser.
+
+Here's the part that catches everyone, and it's worth saying plainly because the fix people reach for *doesn't work*: **adding `'use client'` does not make this go away.** It's tempting to assume a Client Component runs only in the browser, but that's not what "client" means in Next.js. A Client Component still *pre-renders on the server* during server-side rendering, producing the initial HTML, and only *then* hydrates and becomes interactive in the browser. So any `localStorage` read sitting directly in the component body — not tucked inside an effect or an event handler — runs during that server pre-render first, and throws exactly the same `ReferenceError`. The "I added `'use client'` and it *still* crashes" moment is one of the most common ways this trips people up.
+
+There's a guardrail worth knowing for the module-level case. Adding `import 'client-only'` at the top of a file that touches browser APIs turns any accidental import of that file from the server into a *build* error with a clear message, instead of a cryptic runtime crash. It's one line, and it converts a confusing failure into an obvious one.
+
+<VideoCallout videoId="Hx2UqlhPmnc" videoTitle="Next.js Error: window is not defined (FIXED)">
+  ByteGrad walks the exact trap in five minutes — why a Client Component still pre-renders on the server, and the `typeof window` guard and post-mount `useEffect` read that fix it.
+</VideoCallout>
+
+:::note
+This is the same boundary that gates object URLs and the clipboard from the last two lessons — browser-only, not the server. Web Storage just adds one wrinkle the others didn't have: even after the server problem is solved, there's a *second*, subtler hazard waiting in how the server and client agree on what to render.
+:::
+
+### Three guarded reads, each for a different reach
+
+There are three ways to read `localStorage` safely, and the right one depends on *where* you're reading from.
+
+The first is the **inline `typeof window` guard**, for a read that lives outside React's render cycle — inside an event handler, or in a utility function called from a click:
+
+```ts
+const stored =
+  typeof window !== 'undefined'
+    ? localStorage.getItem('coachmark-dismissed')
+    : null;
+```
+
+On the server, `typeof window` is the string `'undefined'`, so the read is skipped and you fall back; in the browser, it runs. It's the cheapest option, and it buys you nothing in the way of reactivity — the value doesn't update React when storage changes. For a one-off read in a click handler, that's exactly what you want.
+
+The second is the **deferred read in an effect** — and this is the 2026 default for "read a stored value once on mount and show it." The idea is to render the server's default first, then read `localStorage` *after* the component has mounted in the browser and update local state with what you found. Effects run only in the browser, never during the server pre-render, so the read is automatically safe — and you get React reactivity for free, since updating the state re-renders the component. (We'll cover the effect hook itself when we get to React; here it's the shape that matters, not the mechanics.)
+
+The third is `useSyncExternalStore`, the React-aware subscription built for exactly this: binding a React component to a value that lives *outside* React, like a `localStorage` key. It handles both the server's initial render and live updates — including the cross-tab `storage` event we're about to meet — correctly and in one place. Its signature is `useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot)`: `subscribe` registers a listener and returns its cleanup, `getSnapshot` reads and parses the current value, and `getServerSnapshot` supplies the value to use during server rendering. That last argument is load-bearing — it **must return the same value the first client render produces**, or you get the mismatch described below. This is the API that a library like `next-themes` wraps so you never write it by hand; you'll meet it properly later in the course. For now, recognize the shape and know it exists.
+
+### The hydration mismatch, the second hazard
+
+Solving the `ReferenceError` is only half the dance. There's a subtler hazard hiding behind it, and it produces no crash — just a warning and, sometimes, a flicker.
+
+When Next.js renders on the server it produces HTML, and when that HTML reaches the browser React *hydrates* it: it attaches to the existing markup and expects the first client render to match what the server sent, exactly. If the server rendered "Welcome" and the client's first render produces "Welcome back" — because the client read a name out of `localStorage` that the server couldn't see — React notices the two trees disagree. That's a <Term definition={"When React's first client render produces different markup than the server sent.\nReact warns in the console and may discard the server HTML and re-render from scratch, causing a visible flicker."}>hydration mismatch</Term>: it warns in the console, and it may throw away the server HTML and re-render the whole subtree on the client, which the user sees as a flash of the wrong content.
+
+This is the same class of bug as the attributes-versus-properties mismatch from the DOM chapter — server and client building different trees from what should be the same source — and the fix is the same in spirit: make the first client render agree with the server. Two ways to do it. Render the server's default first and patch the real value in *after* mount inside an effect (the second guarded read above): the first client render matches the server because both show the default, and the real value swaps in a tick later, after hydration is safely done. Or use `useSyncExternalStore` with a `getServerSnapshot` that returns that same default — same outcome, handled by the hook.
+
+The following sequence makes the otherwise-invisible server-to-client handoff visible. Scrub through the four moments and watch the two columns: the one place they disagree is the mismatch, and the step after it is where the disagreement safely resolves.
+
+<DiagramSequence>
+  <DiagramStep>
+    <SsrStorageTimeline step={1} />
+    <Fragment slot="caption">
+      Server render. There's no `window` here, so `localStorage` is absent — a naked read would throw. The safe component renders the default instead: the banner is shown. That default is baked into the HTML sent to the browser.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <SsrStorageTimeline step={2} />
+    <Fragment slot="caption">
+      HTML arrives and React hydrates. Now `localStorage` exists and says *dismissed* — but the DOM still shows the default *shown*, because that's what the server rendered. Read-and-render at this instant and the two columns disagree: a hydration mismatch.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <SsrStorageTimeline step={3} />
+    <Fragment slot="caption">
+      Post-mount read (`useEffect` or `getSnapshot`). After hydration, the client reads `localStorage`, updates state, and the banner correctly hides. The disagreement resolves *after* commit, so there's no mismatch.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <SsrStorageTimeline step={4} />
+    <Fragment slot="caption">
+      Cross-tab `storage` event. Another tab dismisses the banner and writes the key; the `storage` event fires in this tab, `useSyncExternalStore` re-reads, and the UI syncs — the topic of the next section.
+    </Fragment>
+  </DiagramStep>
+</DiagramSequence>
+
+Here's the hazard and its fix as a wrong/right pair. The first tab is the version every first draft writes; the second is the one that survives the server.
+
+<CodeVariants>
+  <CodeVariant label="Reads in render (breaks)">
+    ```tsx del={4-6}
+    'use client';
+
+    export const Coachmark = () => {
+      const dismissed = JSON.parse(
+        localStorage.getItem('coachmark-dismissed') ?? 'null',
+      ) as boolean | null;
+
+      if (dismissed === true) return null;
+      return <aside>Drag the column headers to reorder them.</aside>;
+    };
+    ```
+    **Throws on the server, mismatches on the client.** Reading `localStorage` straight in the component body runs during the server pre-render and throws `ReferenceError` — and even past that, it renders a different value than the server, so it mismatches on hydrate. `'use client'` does not save it.
+  </CodeVariant>
+
+  <CodeVariant label="Deferred read (effect)">
+    ```tsx ins={6-12}
+    'use client';
+
+    export const Coachmark = () => {
+      const [dismissed, setDismissed] = useState<boolean | null>(null);
+
+      useEffect(() => {
+        setDismissed(
+          JSON.parse(
+            localStorage.getItem('coachmark-dismissed') ?? 'null',
+          ) as boolean | null,
+        );
+      }, []);
+
+      if (dismissed === true) return null;
+      return <aside>Drag the column headers to reorder them.</aside>;
+    };
+    ```
+    **Renders the default, patches after mount.** Render the server's default (`null` → banner shown), then read `localStorage` *after* mount inside an effect and update state. The first client render matches the server, so no mismatch; the real value swaps in a tick later. Hook shown as shape only.
+  </CodeVariant>
+
+  <CodeVariant label="useSyncExternalStore (the library path)">
+    ```tsx ins={12}
+    'use client';
+
+    const read = () =>
+      JSON.parse(
+        localStorage.getItem('coachmark-dismissed') ?? 'null',
+      ) as boolean | null;
+
+    const subscribe = (onChange: () => void) => {
+      window.addEventListener('storage', onChange);
+      return () => window.removeEventListener('storage', onChange);
+    };
+
+    export const Coachmark = () => {
+      const dismissed = useSyncExternalStore(subscribe, read, () => null);
+
+      if (dismissed === true) return null;
+      return <aside>Drag the column headers to reorder them.</aside>;
+    };
+    ```
+    **What a library like `next-themes` wraps for you.** `subscribe` listens for changes, `getSnapshot` reads and parses, and `getServerSnapshot` returns the server default so the first client render matches. Recognition only — you won't hand-write this yet.
+  </CodeVariant>
+</CodeVariants>
+
+One more thing you'll see in the wild and should *not* misuse. There's an escape hatch called `suppressHydrationWarning` that tells React "I know this one element will differ between server and client, don't warn." The reason it exists is narrow: `next-themes` puts it on the `<html>` tag because it has to mutate that element's class *before* React hydrates, to avoid a flash of the wrong theme. It is **not** a general "make the storage warning shut up" button — silencing the warning doesn't fix the underlying disagreement, it just hides it. The genuinely correct answer for state that must be right on the *very first* server render — theme-before-paint is the textbook case — is to put it in a **cookie**, so the server reads it and renders the matching value directly and there's nothing to patch. That's exactly why, back in the decision tree, "theme picked before hydration" routes to the cookie leaf and not to `localStorage`.
+
+## Cross-tab sync with the `storage` event
+
+`localStorage` has one more capability that's easy to miss and occasionally exactly what you need: it can tell *other* tabs when it changes.
+
+When a value changes in one tab, the browser fires a <Term definition={"Fires in OTHER same-origin tabs when a localStorage key changes — never in the tab that made the change.\nCarries the key, oldValue, and newValue of what changed."}>`storage` event</Term> in every *other* tab open to the same origin. The catch, and it's the one wrinkle worth memorizing: the event does **not** fire in the tab that made the change. The writer already knows what it wrote; the event exists to inform everyone else. The classic use is a logout — one tab clears the auth flag, the `storage` event fires in the other tabs, and they each notice and redirect to the login page so the user isn't left looking at a stale signed-in view in a second window. A theme change propagating to every open tab works the same way.
+
+You subscribe with `addEventListener('storage', ...)`. The event object hands you `key` and `newValue` as the two fields you'll branch on — which key changed, and what it changed to (a `null` `key` means someone called `clear()` and wiped everything). And subscribing means you've opened a resource, which means you close it:
+
+```tsx
+'use client';
+
+export const useLogoutSync = () => {
+  useEffect(() => {
+    const controller = new AbortController();
+
+    window.addEventListener(
+      'storage',
+      (event) => {
+        if (event.key === 'auth-session' && event.newValue === null) {
+          window.location.assign('/login');
+        }
+      },
+      { signal: controller.signal },
+    );
+
+    return () => controller.abort();
+  }, []);
+};
+```
+
+That `AbortController` is the same cleanup pattern you've now seen four times in this chapter, and naming the lineage is the point: the `storage` listener joins the `AbortController` that cancelled a fetch, the `setTimeout` you cleared, and the `revokeObjectURL` that freed a preview. **Every resource you open in the browser, you close** — a subscription, a timer, a connection, a URL handle. It's been a chapter-wide reflex, and this is its fourth and final payoff.
+
+The one gap to keep in mind: because the writing tab never hears its own `storage` event, if the *same* tab needs to react to a write it just made, the event won't help — that's a case for `useSyncExternalStore`, which re-reads its snapshot on the next React tick regardless of which tab wrote. (There's also a richer cross-tab messaging API called `BroadcastChannel` for when you outgrow the `storage` event's "a key changed" signal and need to send arbitrary messages between tabs — worth knowing the name, out of scope here.)
+
+## `sessionStorage`, when per-tab is the point
+
+`sessionStorage` is the same API, the same five methods, the same strings-only constraint — with one difference: it's scoped to a single tab and wiped the instant that tab closes. The walker already drew the line; this is just the confirmation.
+
+Reach for it when the value is meaningful *only* inside this one tab's lifetime, and specifically when bleeding into a second tab would be wrong. The textbook case is a multi-step wizard — "compose a new invoice," say, spread across several screens. If the user opens a second tab to copy a figure from elsewhere, you don't want that second tab to inherit the half-finished draft from the first; each tab should have its own. A one-time per-session onboarding flag is the same idea. The trigger is per-tab *isolation* as an actual requirement, not an accident.
+
+When you're not sure, default to `localStorage`. Persisting across tabs and reloads is the more common need; reach for `sessionStorage` only when isolating to a single tab is the thing you actually want.
+
+## What `localStorage` is explicitly not for
+
+Now the boundary — and this section closes the loop opened in the intro, where the same reflex that correctly reached for `localStorage` could just as easily, and disastrously, reach for it to hold an auth token. Each thing on this list maps back to a *higher* home in the tree. That's the whole reason the tree matters: it's not bureaucracy, it's the thing that keeps the token out of `localStorage`.
+
+**Auth tokens and session JWTs.** This is the canonical footgun, and it's the hardest non-negotiable in this lesson. `localStorage` is readable by *any* JavaScript running on the page — including a single malicious script that slips in through a cross-site scripting hole. The moment that happens, every token in `localStorage` is exfiltrated and the attacker has the user's session. The session belongs in an `HttpOnly` cookie, which JavaScript cannot read at all, so an injected script can't steal it. You won't even hand-roll this: a later unit's auth library owns the entire session surface for you. Tokens never touch `localStorage`. Ever.
+
+<VideoCallout videoId="HYO8OuLuTFw" videoTitle="Do not Store Auth Tokens in LocalStorage">
+  cdruc lands the point with a live demo (~4 min): a malicious package and an XSS comment quietly exfiltrate a token from `localStorage`, then replay it — and why an `HttpOnly` cookie can't be stolen the same way.
+</VideoCallout>
+
+**Sensitive personal data.** Same exposure, same reasoning — anything an XSS payload could read off `localStorage` is anything you've handed an attacker. Sensitive data stays on the server.
+
+**The real cart, or anything another session must see.** `localStorage` is per-device by definition. A user who adds items on their laptop and opens the site on their phone sees two different, unconnected stores — the laptop's items simply aren't there. Anything that has to be consistent across a user's devices is server state. (A *draft* cart that's fine to lose can live in `localStorage`; a real one that must survive and sync cannot.)
+
+**Large or structured blobs.** The quota is small and the I/O is synchronous, blocking the main thread on every read and write — both of which make `localStorage` the wrong tool for real volumes of data. The platform's answer for large, structured client-side data is `IndexedDB`, an async, queryable, much larger in-browser database. It's overkill for the UI-scratch needs of a typical SaaS, so you'll likely reach for it rarely if ever — but know it's the right home for that shape, not `localStorage`.
+
+The unifying line: token routes to a cookie, PII and the real cart route to the server, big data routes to `IndexedDB`. Every "not for" is just a bit that belongs in a higher home — which is exactly what the decision tree exists to catch.
+
+Now run the tree yourself. The following exercise gives you concrete pieces of SaaS state; drop each into the home it belongs in. The trap item is in there — watch for the one that *looks* like local UI state but isn't.
+
+<Buckets twoCol instructions="Run each piece of state through the decision tree and drop it into the home it belongs in.">
+  <Bucket name="usestate" label="Component state" description="useState — ephemeral, lost on reload is fine" />
+  <Bucket name="url" label="URL state" description="Search params — shareable, bookmarkable" />
+  <Bucket name="server" label="Server / cookie" description="Database or HttpOnly cookie — account-level or sent every request" />
+  <Bucket name="localstorage" label="localStorage" description="Per-device UI scratch — cheap to lose" />
+
+  <Item bucket="usestate">Whether a modal is currently open</Item>
+  <Item bucket="url">The active table filter you want to share by pasting the link</Item>
+  <Item bucket="server">The signed-in user's saved email-notification preference</Item>
+  <Item bucket="server">The auth session token</Item>
+  <Item bucket="localstorage">A dismissed onboarding banner</Item>
+  <Item bucket="localstorage">Recently-viewed product ids on this device</Item>
+</Buckets>
+
+## The defensive write: `try/catch` and schema drift
+
+Two production-honest reflexes that a first draft always omits, and that separate code that works on your machine from code that survives real browsers.
+
+**`setItem` can throw, so wrap it.** When the origin's quota is full, `setItem` throws `QuotaExceededError`. Safari and Firefox in private or incognito mode can throw too — or silently no-op. So every `setItem` that carries non-trivial data goes in a `try/catch` with a graceful fallback: keep the value in an in-memory variable, refetch from the server, or just degrade silently. A coachmark that fails to remember it was dismissed is a minor annoyance, not a crash — so it should never *be* a crash:
+
+```tsx
+const persistDismissed = () => {
+  try {
+    localStorage.setItem('coachmark-dismissed', JSON.stringify(true));
+  } catch {
+    // Quota full or private mode — the banner just reappears next load. No crash.
+  }
+};
+```
+
+Reads are gentler — a locked-down browser usually just gives you `null` — and remember that `getItem` returning `null` is *normal*, the signal for "never written," not an error to handle.
+
+**`clear()` wipes the whole origin.** It deletes every key your app ever stored, not the one you meant. Never call it from feature code. The only place it belongs is an explicit user-initiated "log out" or "reset all settings" flow, where wiping everything is precisely the intent.
+
+**Schema drift is your problem.** Here's the one that surprises people in production. You ship a value shaped `{ collapsed: true }`, and three deploys later you change that shape to `{ collapsed: true, density: 'compact' }`. But the *old* shape is still sitting in your existing users' browsers, and it'll `JSON.parse` into your new code as the wrong shape — a missing field, a type that doesn't match, an object your new code didn't expect. The server-state database gets migrated when its schema changes; `localStorage` does not migrate itself. The senior pattern is to stamp a version into the stored value — `{ v: 1, ... }` — and on read, check the version and either migrate the old shape forward or discard it and start fresh. You don't need a migration framework; you need to remember that the old value is still out there.
+
+## External resources
+
+The API itself is small enough to hold in your head; the references below cover the corners this lesson set aside, the React-aware binding it deferred, and the SSR hazard at its core.
+
+<CardGrid>
+  <ExternalResource
+    title="MDN — Web Storage API"
+    href="https://developer.mozilla.org/en-US/docs/Web/API/Web_Storage_API"
+    icon="simple-icons:mdnwebdocs"
+    description="The full reference for localStorage, sessionStorage, the storage event, and quota behavior across browsers."
+  />
+  <ExternalResource
+    title="React — useSyncExternalStore"
+    href="https://react.dev/reference/react/useSyncExternalStore"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="The React-aware bind this lesson named in shape only — including getServerSnapshot and the SSR story, for when you want the depth."
+  />
+  <ExternalResource
+    title="Avoiding Hydration Mismatches with useSyncExternalStore"
+    href="https://tkdodo.eu/blog/avoiding-hydration-mismatches-with-use-sync-external-store"
+    icon="simple-icons:ghost"
+    iconColor="#15171A"
+    description="TkDodo weighs suppressHydrationWarning vs. the effect-deferred read vs. getServerSnapshot — the exact second-hazard tradeoff this lesson draws."
+  />
+  <ExternalResource
+    title="use-local-storage-state"
+    href="https://github.com/astoilkov/use-local-storage-state"
+    icon="simple-icons:github"
+    iconColor="#181717"
+    description="The production hook that ties it all together: useSyncExternalStore, an SSR default, storage-event cross-tab sync, and an in-memory fallback when a write throws."
+  />
+</CardGrid>
