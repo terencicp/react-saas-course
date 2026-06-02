@@ -16,6 +16,12 @@ export const collections = {
 				// the YAML parser hands us as a `number`. Coerce keeps both shapes
 				// valid and gives the component a `string` to render.
 				'chapter-id': z.coerce.string().optional(),
+
+				// Fraction (0–1) of the whole course completed as of this lesson,
+				// rendered as the fill width of the top progress strip (see
+				// src/components/ui/CourseProgressBar.astro). Optional: lessons
+				// without it render normally, with no bar.
+				'course-progress': z.number().min(0).max(1).optional(),
 			}),
 		}),
 	}),
