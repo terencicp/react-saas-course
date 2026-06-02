@@ -1,0 +1,145 @@
+sources:
+  19.1: How the browser picks a winning rule
+  19.2: What flows down the DOM tree
+  19.3: Preflight, the deliberately blank canvas
+  19.4: Custom properties and the three-tier token model
+
+questions:
+  - source: 19.1
+    question: |
+      A custom `.btn` lives at the top level of `globals.css` (no `@layer`), and a component renders `<button className="btn bg-primary">`. The button paints the `.btn` background, and the caller's `bg-primary` is ignored. Both rules are plain CSS, neither uses `!important`. What does an experienced engineer do first?
+    choices:
+      - text: |
+          Wrap the `.btn` rule in `@layer components`. Unlayered CSS is treated as sitting *above* every Tailwind layer — including `utilities`, where `bg-primary` lives — so it wins the **layer** gate by accident of position. Moving it into a layer drops it below `utilities` and the utility wins cleanly, no `!important` and no specificity change.
+        correct: true
+      - text: |
+          Rewrite the selector as `#app .btn` so it outweighs the single-class utility on specificity and the override lands.
+        correct: false
+      - text: |
+          Put `bg-primary` last in the `className` string so it's emitted later and wins on source order.
+        correct: false
+    why: |
+      This conflict is decided at the **layer** gate, which the browser runs *before* specificity or source order. The cascade treats an unlayered rule as belonging to a layer declared after every named one — in Tailwind v4 that places `.btn` above `utilities`, so it beats `bg-primary` purely by position. The senior fix is to put the rule back in the system: `@layer components { .btn { … } }` drops it below `utilities`, and the utility wins the layer gate with nothing else touched. Raising specificity with `#app .btn` tunes gate 3, which the conflict already skipped; and class-string order has no say in which utility wins — that's fixed by Tailwind's emission order, not your markup. Reaching for `!important` would only make `.btn` win *harder*, the opposite of what's wanted.
+
+  - source: 19.1
+    question: |
+      Score the specificity of each selector as the tuple `(inline, ID, class/attr/pseudo-class, element/pseudo-element)`.
+
+      ```css
+      a:hover             /* selector A */
+      :where(.dark) .btn  /* selector B */
+      ```
+    choices:
+      - text: |
+          A is `(0, 0, 1, 1)` and B is `(0, 0, 1, 0)`. A `:hover` pseudo-class counts in the *class* slot (one class, one element), and everything inside `:where()` scores zero — so only the trailing `.btn` counts in B.
+        correct: true
+      - text: |
+          A is `(0, 0, 0, 2)` and B is `(0, 0, 2, 0)`. `a:hover` is two element-level pieces, and `:where(.dark) .btn` is two classes.
+        correct: false
+      - text: |
+          A is `(0, 0, 1, 1)` and B is `(0, 0, 2, 0)`. `:hover` lands in the class slot, and both `.dark` and `.btn` count as classes in B.
+        correct: false
+    why: |
+      Two traps in one line. `a:hover` is `(0, 0, 1, 1)`: a pseudo-class lands in the *class* slot, not the element slot, so it's one class (`:hover`) plus one element (`a`) — not two elements. And `:where()` is the specificity-zero wrapper: anything inside it contributes exactly nothing, no matter how complex. So `:where(.dark) .btn` scores the same as a bare `.btn` — `(0, 0, 1, 0)` — because the `.dark` is neutralized and only `.btn` counts. Miss the `:where()` rule and you'd read it as `(0, 0, 2, 0)` and expect it to win a tie it actually draws. This is exactly why Tailwind wraps framework selectors in `:where()`: it can match what it needs without inflating specificity, so your utilities still win their ties cleanly.
+
+  - source: 19.2
+    question: |
+      Your `<body className="font-sans text-foreground">` styles every paragraph below it, but a bare `<button>` inside renders in the browser's default font and color. There's no Preflight yet. Why does the button opt out — and what's the actual fix?
+    choices:
+      - text: |
+          The browser's user-agent stylesheet declares `font-family` and `color` *directly on* form controls. An inherited value is the weakest source in the cascade — the mere absence of a declaration — so any real declaration on the element beats it. The fix is Preflight's `button, input, select, textarea { font: inherit; color: inherit }`, which re-opens the controls to inheritance.
+        correct: true
+      - text: |
+          `color` and `font-family` don't actually inherit, so the body's values were never candidates for the button. You set them per element with a utility on the button itself.
+        correct: false
+      - text: |
+          The button is too deep in the DOM tree for inheritance to reach it; inheritance only flows one level down. Forwarding the font through a wrapper component fixes it.
+        correct: false
+    why: |
+      This isn't an exception to inheritance — it's inheritance working exactly as specified. The user-agent stylesheet sets `font-family` and `color` *on* `<button>`, `<input>`, `<textarea>`, and `<select>`, so those elements already carry a declared value. An inherited value is the weakest thing in the cascade, so the body's font reaches the button and loses to the declaration already sitting on it. `color` and `font-family` genuinely *do* inherit (the paragraph proves it), and inheritance reaches every descendant down the DOM tree, not just one level. The fix is the single Preflight rule `font: inherit; color: inherit` on form controls, which re-enables inheritance so the body's typography reaches them again.
+
+  - source: 19.2
+    question: |
+      A few effects *look* like inheritance but aren't. Which of these statements are correct? Select all that apply.
+    choices:
+      - text: |
+          `opacity: 0.5` on a parent fades the whole subtree, but `opacity` does **not** inherit — the subtree flattens into one composited group that's made translucent as a whole, which is why a child can't set `opacity: 1` to become solid again.
+        correct: true
+      - text: |
+          A child with no background shows its parent's color because `background-color` defaults to `transparent` and the child is see-through — not because background inherits.
+        correct: true
+      - text: |
+          Nesting elements that each set `font-size: 1.25em` makes the text compound and run away, because `em` is relative to the parent's *computed* font-size — `rem` avoids this by being relative to the root.
+        correct: true
+      - text: |
+          `visibility: hidden` doesn't inherit, which is why a child can never reappear inside a hidden parent.
+        correct: false
+    why: |
+      Three real mechanisms and one inversion. `opacity` doesn't inherit: the parent and its subtree flatten into a single composited group made translucent at once, so a child can't opt back to solid — the tell that it was never inheritance. A transparent background is visual passthrough, not inheritance — inspect the child and its `background-color` is still `transparent`. And `em` compounds because each level multiplies against the parent's computed size; `rem` is relative to the root and never compounds, which is why Tailwind's `text-*` scale emits `rem`. The false one inverts the facts: `visibility` *does* inherit — and uniquely, a child *can* set `visibility: visible` to reappear (while still occupying layout space), because its own declaration outranks the inherited value. That reversibility is exactly what separates it from `display: none`.
+
+  - source: 19.3
+    question: |
+      You're staring at a fresh Tailwind app with nothing painted yet. Which symptoms are **Preflight doing its job** — flattened on purpose, fixed by adding a utility — rather than an actual bug? Select all that apply.
+    choices:
+      - text: |
+          Your `<h1>` renders at the exact size and weight of the paragraph beneath it.
+        correct: true
+      - text: |
+          Your `<select>` shed its chunky native OS look and now reads in your body font.
+        correct: true
+      - text: |
+          You stripped the `@import "tailwindcss"` line out of your CSS to tidy up, and now a `border` utility draws no line at all.
+        correct: false
+      - text: |
+          A heading is the wrong size, and DevTools shows the class `text-2xI` (capital I) never matched anything.
+        correct: false
+    why: |
+      The two intended cases: `h1`–`h6` are reset to inherit body size and weight (there's no large default for `text-2xl` to fight — you add the utility), and form controls get `font: inherit; color: inherit` so they drop their native typography and read your body font. Both are the reset clearing a browser default; restoring the difference is a utility's job. The other two are real bugs. Removing the import deletes Preflight's `border: 0 solid` reset, so a border's *style* falls back to `none` — the `border` utility only sets width, so it paints nothing without that reset underneath it. And `text-2xI` is a typo: the class never landed, so it's a cascade-trace problem, not a Preflight one. The reusable test: the reset is doing its job; the utility is your job.
+
+  - source: 19.3
+    question: |
+      Your app renders a blob of Markdown-generated HTML — `<h2>`, `<p>`, `<ul>`, `<blockquote>` — and it all comes out flattened: no heading sizes, no bullets. You want real typographic defaults back, but only here. What does an experienced engineer reach for?
+    choices:
+      - text: |
+          Wrap the content in the `prose` class from `@tailwindcss/typography`. It's a scoped, tokenized typographic system for exactly the subtree whose elements you can't reach one by one — not an undoing of Preflight.
+        correct: true
+      - text: |
+          Strip Preflight globally so the browser's heading sizes and list bullets come back across the whole app.
+        correct: false
+      - text: |
+          Add a global `h2, ul { … }` rule in `globals.css` to restore the defaults Preflight removed.
+        correct: false
+    why: |
+      This is the first legitimate carve-out: content you don't author element by element — Markdown, a CMS blob — where you genuinely *want* the typographic defaults back and can't put a utility on each generated element. `prose` (from `@tailwindcss/typography`, added with `@plugin "@tailwindcss/typography"`) applies a scoped, themeable typographic system to exactly that subtree, and it themes through `@theme` tokens so it stays on your design system. Stripping Preflight globally is the move to *reject* — you'd lose `box-sizing`, the border-style reset (borders stop rendering), and form-control inheritance everywhere to fix a local problem. A global `h2/ul` rule re-introduces element rules fighting your utilities — the exact anti-pattern the cascade lesson warned against.
+
+  - source: 19.4
+    question: |
+      In a color picker, `onInput` fires on every drag and runs `document.documentElement.style.setProperty('--color-brand', value)`. The page repaints instantly and every `bg-brand` follows — but a sibling component that reads `brand` from React state doesn't update until release. Why?
+    choices:
+      - text: |
+          `setProperty` writes through the cascade and repaints pixels, but React never finds out — there's no re-render. The custom property is a one-way visual output; a component that needs the value must also have it in React state, which is what the `onChange`-on-release handler commits.
+        correct: true
+      - text: |
+          `setProperty` is asynchronous and batches its writes, so the sibling does get notified but only after the browser flushes the queue on pointer release.
+        correct: false
+      - text: |
+          Writing on `document.documentElement` scopes the change to `<html>` only, so a component mounted deeper in the tree can't see the new value until a full re-render rebroadcasts it.
+        correct: false
+    why: |
+      This is the feature *and* the trap of custom-property writes: a `setProperty` call updates the binding and repaints through the cascade with **no re-render** — React is never told it happened. That's exactly what lets the picker drag smoothly, writing on every pointer move without thrashing the React tree. But it means the property is a one-way visual channel: if a component needs to *read* the value to make a decision, that value must also live in React state. The senior shape wires both — `onInput` paints live for instant feedback, `onChange` on release commits the chosen value to state (and persistence). The write isn't async or batched, and `documentElement` writes to `:root` and reach the *whole* page through inheritance — scope isn't the issue; the missing re-render is.
+
+  - source: 19.4
+    question: |
+      A component needs the primary action color. The chapter's three-tier model (primitive → semantic → component) says one of these is the senior choice and the other is a code smell. Which, and why?
+    choices:
+      - text: |
+          Use `bg-primary` (semantic), never `bg-blue-600` (primitive). Components read the semantic tier so a rebrand re-points one semantic-to-primitive binding in a single place and the whole app follows — hard-coding the primitive turns a rebrand into a never-quite-complete find-and-replace.
+        correct: true
+      - text: |
+          Use `bg-blue-600` (primitive) directly — it's one fewer layer of indirection, so it resolves faster and is easier to read than chasing a semantic token through to its value.
+        correct: false
+      - text: |
+          Either is fine; the tiers are an organizational convention with no runtime or maintenance consequence, so pick whichever reads more clearly in context.
+        correct: false
+    why: |
+      The load-bearing rule is **components reference the semantic tier, never primitives**. A semantic token (`--color-primary`) names a *role* and points at a primitive; that one layer of indirection is the whole payoff. A rebrand becomes re-pointing the semantic-to-primitive binding in one place, and every `bg-primary` in the app follows the binding — the components never know. Hard-code `bg-blue-600` and a rebrand is a find-and-replace across the codebase that's never complete; there's always one stray `bg-blue-600` still blue after everything else turned purple. It's the same reason the dark swap works: `.dark` re-points the semantic token at a *different* primitive, untouched components and all. The indirection is what makes a brand change one line instead of a thousand — not a free-choice convention.
