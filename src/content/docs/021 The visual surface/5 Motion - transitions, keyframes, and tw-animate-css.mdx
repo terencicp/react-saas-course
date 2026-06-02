@@ -1,0 +1,393 @@
+---
+title: "Motion: transitions, keyframes, and tw-animate-css"
+description: How motion lives in CSS while state lives in React — the compositor budget, transitions, keyframe animations, the tw-animate-css data-state choreography, and reduced-motion as discipline.
+chapter-id: 21
+sidebar:
+  order: 5
+  label: Motion and animation
+---
+
+import Figure from '../../../components/figures/Figure.astro';
+import ParamPlayground from '../../../components/figures/param-playground/ParamPlayground.astro';
+import Param from '../../../components/figures/param-playground/Param.astro';
+import Preview from '../../../components/figures/param-playground/Preview.astro';
+import Readout from '../../../components/figures/param-playground/Readout.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import ReactCoding from '../../../components/live-coding/ReactCoding/ReactCoding.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import CompositorBudgetLanes from '../../../components/lessons/021/5/CompositorBudgetLanes.astro';
+import MotionLab from '../../../components/lessons/021/5/MotionLab.astro';
+import DataStateChoreography from '../../../components/lessons/021/5/DataStateChoreography.astro';
+
+The lesson before this one left you with a stack of *instant* state flips. A button goes from `bg-primary` to `bg-accent` the moment your pointer crosses it; a form turns red the instant a field inside it reports invalid. The browser swaps one painted frame for another, and the swap is abrupt — zero frames in between. That abruptness is fine for some things and wrong for others. A modal that *snaps* into existence with no in-between frames reads, to most people, as a glitch — the eye registers the jump as something breaking rather than something arriving.
+
+So you reach for motion. And the first instinct of a lot of developers, the moment they want a dialog to fade and scale into view, is to install an animation library — Framer Motion is the usual one. That instinct is worth pausing on, because it's a sledgehammer for this particular nail. A React animation library means another dependency in your bundle, a second mental model layered on top of the one you already have, and animation work running in JavaScript on the main thread — the same thread that's trying to keep your app responsive. For *one dialog that fades in*, you are paying a great deal to solve a problem the platform already solves.
+
+The 2026 answer is that you don't leave CSS. A shadcn dialog animates in with exactly this on its content element:
+
+```tsx
+"data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95"
+```
+
+No library, no JavaScript animation loop, no second mental model. Those are plain CSS utilities, and they read a `data-state` attribute that the component sets as it opens. That one line is where this whole lesson is heading, and by the time you reach it you'll be able to read every piece.
+
+We'll get there in three tiers, simplest first. **Transitions** come first: the cheapest motion, where a property you already know how to flip (on hover, on press, on a data-state) *tweens* from old value to new instead of jumping. Then **keyframe animations**: motion that runs on its own — spinners, skeletons, pulses — with nothing changing state to trigger it. Then the payoff: **choreographed entrance and exit**, the dialog pattern above, where all the ideas combine on a component you'll ship every week.
+
+Three mental models thread through all three tiers, and they're the part to actually keep:
+
+1. **Some properties are cheap to animate and most are expensive.** This decides which animations are even allowed, so we install it before anything else.
+2. **State lives in React, motion lives in CSS.** The component pushes its open/closed state onto a `data-` attribute; CSS reads that attribute and runs the motion. You write zero animation JavaScript — the exact same move as the previous lesson, where the DOM already knew and React was only the mirror.
+3. **You read motion utilities, you don't reinvent them.** A small library called `tw-animate-css` ships the entrance, exit, and accordion keyframes that shadcn relies on. You install it once and compose its utilities; you never hand-write the keyframes.
+
+And running underneath all of it, treated as discipline and not as a footnote: some of your users have asked their operating system to *reduce* motion, and honoring that is non-negotiable. We'll make it a reflex, not an afterthought.
+
+## What is cheap to animate: the compositor budget
+
+Before a single animation utility, one rule. It's the most load-bearing idea in the lesson, and every later choice — which property to transition, why the dialog fades and scales instead of growing in height — comes back to it. So we install it first and refer back to it for the rest of the lesson.
+
+When a property on an element changes, the browser has to update the screen, and depending on *which* property changed it does a different amount of work. There are three escalating stages.
+
+The first is <Term>layout ((Also called reflow: the browser recomputes the geometry — position and size — of elements on the page.))</Term>. Change something that affects an element's geometry — its `width`, `height`, `top`, `left`, `margin`, `padding` — and the browser has to recompute where that element sits and, often, where everything *around* it sits too, because boxes push on their neighbors. This is the most expensive stage. The second is **paint**: change something purely visual that doesn't move anything — `background-color`, `color`, `box-shadow` — and the browser skips the geometry math but has to re-rasterize the affected pixels, redraw them. The third and cheapest is <Term>compositing ((The GPU combining already-painted layers into the final on-screen frame, moving and blending them without redrawing their pixels.))</Term>: change `transform` or `opacity` and the browser doesn't recompute geometry *or* redraw pixels — the element was already painted onto its own layer, and the GPU just moves, scales, or fades that finished layer into place.
+
+Here's why this matters so much for motion specifically. These stages run *in order* — layout forces paint forces composite — and an animation runs the whole relevant chain not once but roughly sixty times a second, once per frame. So the per-frame cost of the property you picked is the difference between motion that glides and motion that stutters.
+
+The following diagram lays the three stages out as a pipeline. Watch how far down the chain each kind of property change reaches: a geometry change lights the whole strip, a color change skips the first stage, and a `transform` or `opacity` change touches only the last, cheapest stage.
+
+<Figure caption="The rendering pipeline. The further down a property change reaches, the more work each animation frame costs.">
+  <CompositorBudgetLanes />
+</Figure>
+
+That gives you the single reflex that governs every animation you'll write:
+
+**Animate `transform` and `opacity`. Treat everything else as suspect.** `transform` covers movement, scaling, and rotation; `opacity` covers fading. Between them they handle the overwhelming majority of UI motion, and both are composite-only on every modern browser, so both hit a smooth sixty frames per second with no per-frame layout or paint.
+
+Everything outside those two *works* — you can absolutely animate `height` or `top` and the browser will do it — but it's a trap on exactly the surfaces where it shows. On a low-end phone, or a list with a few hundred rows all animating their height at once, the per-frame layout cost piles up and the motion drops frames and stutters. The fix is almost always a substitution the design won't even notice: translate instead of nudging `top`, scale instead of growing `width`. Same visual result, a fraction of the cost. Hold onto this — it's why the dialog you'll build at the end fades and *scales* rather than expanding its box, and why your card-hover effects will lean on `scale` rather than margin.
+
+<VideoCallout videoId="PK4bzxWLOfo" videoTitle="What is reflow and repaint in the browser?">
+  A 4-minute walkthrough of reflow vs repaint — why layout is the expensive stage and why animating `transform` skips it entirely.
+</VideoCallout>
+
+## `transition-*`: tweening a state flip
+
+Now the first and cheapest tier of motion. You already have everything that *triggers* it — every `hover:`, `active:`, and `data-[state=...]:` from the previous lesson. A transition doesn't change *when* a property flips; it only fills in the frames *between* the old value and the new one.
+
+That's the whole model, and it's worth saying precisely because the word gets thrown around loosely. A <Term>transition ((Animation that interpolates a property from its old value to a new value when that value changes.))</Term> watches a named set of properties, and whenever one of those properties changes value, it interpolates from the old value to the new value over a duration instead of jumping. The change still has to be *caused* by something — a hover, a press, a data-state flip. The transition is purely the in-between; remove the trigger and nothing moves. The interpolated frames it generates are the <Term>tween ((The in-between frames a transition or animation generates between two values — short for "in-betweening".))</Term>.
+
+In Tailwind a transition is assembled from four small utility families.
+
+**Which properties to watch.** The base `transition` utility doesn't watch *everything* — and this is a detail worth getting right, because the name misleads. In Tailwind v4, `transition` watches a curated set of the properties that are normally worth animating: color, background-color, border-color, text-decoration-color, opacity, box-shadow, transform, filter, and backdrop-filter. It deliberately leaves out the expensive geometry properties. If you genuinely want to watch *literally* every property, that's the separate `transition-all` utility — and you almost never want it, because it pays the cost of animating any property that happens to change, including ones you didn't mean to. The reflex instead is to **name the property you're animating**: `transition-colors` on a button whose background shifts, `transition-transform` on a card that lifts, `transition-opacity` on something fading. There's also `transition-shadow` for elevation changes and `transition-none` to switch motion off. Reach for `transition-all` only in tiny components where you're certain every animating property is one you intend.
+
+**How long it takes.** `duration-*` sets the time in milliseconds — `duration-150`, `duration-300`. And here's where motion gets a discipline exactly like the elevation scale from the borders-and-shadows lesson: you don't reach for an arbitrary number, you reach from a band.
+
+- **`duration-150`** — snappy state changes: hover, press, focus. Fast enough to feel instant but smooth.
+- **`duration-200` to `duration-300`** — entrances and exits: a dialog opening, a dropdown appearing. Long enough to read as *arriving*, short enough not to make the user wait.
+- **400ms and up** — reserved for long-form, deliberate choreography. Almost nothing in a working interface belongs here.
+
+The trap at the top of the band is sluggishness. A 600ms hover effect doesn't read as *elegant*; it reads as a laggy interface, because the user is already moving on and the motion is still catching up. When in doubt, go shorter.
+
+**The shape of the curve.** `ease-*` sets the <Term>easing ((The timing function mapping elapsed time to animation progress — it controls whether motion starts fast, ends fast, or runs evenly.))</Term> — whether the motion starts slow and speeds up, starts fast and settles, or runs at a constant rate. The four you'll use are `ease-linear`, `ease-in`, `ease-out`, and `ease-in-out`. The reflex: `ease-out` for things *appearing* — it moves fast and then settles, which feels like an object arriving and coming to rest. `ease-in` for things *leaving* — slow then accelerating away. `ease-linear` for anything that spins or shows steady progress, where a constant rate is correct. For ordinary UI, `ease-out` is the default reach.
+
+**Stagger, occasionally.** `delay-*` holds the start of a transition. You'll mostly meet it when revealing a list of items one after another, each with a slightly larger delay, so they cascade in. Worth knowing it exists; not worth dwelling on.
+
+Put it together on the button you've been carrying since the previous lesson. Its full className there was `hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-2 active:scale-[0.98]` — a background flip on hover, a focus ring, a press that shrinks the button to 98%. As written, every one of those snaps. The motion lives in one addition:
+
+```tsx /transition-colors duration-150/
+<button className="bg-primary transition-colors duration-150 hover:bg-accent active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-ring/50">
+  Save changes
+</button>
+```
+
+`transition-colors duration-150` is all it takes for the hover background to glide in over 150ms instead of jumping. The press at the end stays snappy and immediate, which is exactly right — a button press wants instant feedback, not a slow squish. One short addition turns a flip into motion, and it's the single most common transition you'll write.
+
+Numbers on a page don't teach the feel of a duration, though — you have to *move* it. The following playground is a motion lab. Slide the duration to find where motion turns sluggish (somewhere past 400ms it starts to drag) and where it feels crisp (around 150ms), swap the easing curve to feel how `ease-out` settles differently from `ease-in`, and pick which property animates. The chip underneath echoes the resolved `transition` shorthand so you can connect the feel back to the values.
+
+<MotionLab />
+
+Two states a static page genuinely cannot show you are `:hover` and `:active` — a screenshot can't be hovered or pressed. So the way to actually internalize the press-and-lift pattern is to build it live. In the following exercise, the target on the left is a card that lifts when you hover it and dips when you press it; your version on the right starts flat. Add the three utilities — a `transition-transform`, a `hover:scale-105` for the lift, and an `active:scale-95` for the press — until your card matches.
+
+<ReactCoding
+  live
+  instructions="The target card lifts on hover and dips when pressed. Add a transform transition, a hover scale-up, and an active scale-down so your card matches. Hover and press both panels to compare."
+  target={`export function App() {
+  return (
+    <button className="rounded-xl bg-white px-6 py-4 shadow-md transition-transform duration-150 hover:scale-105 active:scale-95">
+      Upgrade plan
+    </button>
+  );
+}`}
+  starter={`export function App() {
+  return (
+    <button className="rounded-xl bg-white px-6 py-4 shadow-md">
+      Upgrade plan
+    </button>
+  );
+}`}
+/>
+
+In your actual project, the card above would use the semantic tokens from earlier in this chapter — `bg-card`, the elevation tokens — rather than the literal `bg-white` and `shadow-md` the exercise uses. The exercise drops to literals only because the in-browser Tailwind it runs on doesn't know your project's custom tokens. The motion utilities, though, are identical to what you'd ship.
+
+## `animate-*`: motion that runs on its own
+
+Everything so far needed a trigger. A transition sits there doing nothing until a property changes — until you hover, press, or flip a data-state. But plenty of motion has no trigger at all. A loading spinner spins from the moment it mounts. A skeleton placeholder pulses while data loads. A notification dot quietly ripples to draw the eye. Nothing about those is *changing state* — they just run.
+
+That's the line to draw, and it's the conceptual work of this tier, because beginners use the two words interchangeably. A **transition** interpolates between an old and a new value *when something changes*. An **animation** plays a timeline — a sequence of <Term>keyframes ((A named timeline of property values at points from 0% to 100% that an animation plays through.))</Term> — *on its own*, looping or running once, independent of any state change. If nothing is flipping a value and the motion still needs to run, you need an animation, not a transition.
+
+Tailwind ships four animations ready to use, and each maps to a specific surface — learn them as reaches, not as a menu:
+
+- **`animate-spin`** — the loader. A continuous rotation, the daily reach for a spinning icon inside a pending button or a loading indicator.
+- **`animate-pulse`** — skeleton placeholders. A soft opacity pulse that signals "content is loading here." When a list or card is loading, the experienced reach is a pulsing skeleton over a spinner, because the skeleton previews the *shape* of what's arriving.
+- **`animate-ping`** — the ripple. An expanding, fading ring, the notification-dot effect that pulls attention to something new.
+- **`animate-bounce`** — the attention nudge. A gentle vertical bounce, used sparingly on something like a "scroll down" arrow on an empty state.
+
+When the four built-ins don't cover what you need, you author your own keyframes — and this is the one genuinely new mechanism in this tier. Say you want an invalid input to *shake* once, the small left-right shudder that tells the user "this field is wrong" — none of the four built-ins do that. In Tailwind v4, animations are defined in CSS, in your `app/globals.css`, with no JavaScript config file involved (the same CSS-first approach from when you set up the theme). It takes two pieces that beginners tend to conflate, so the following walkthrough separates them. The first piece declares the timeline; the second registers it as a theme token, which is what turns it into a usable `animate-*` utility. Notice the timeline only moves `transform` — even your custom keyframes stay in the cheap lane of the budget.
+
+<AnnotatedCode lang="css" code={`
+@import "tailwindcss";
+
+@keyframes shake {
+  0%, 100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-4px);
+  }
+  75% {
+    transform: translateX(4px);
+  }
+}
+
+@theme {
+  --animate-shake: shake 0.3s ease-in-out;
+}
+`}>
+  <AnnotatedStep meta="{3-13}" color="blue">
+    The timeline. `@keyframes shake` declares where `transform` sits at each point from 0% to 100% — centered at the ends, nudged left at 25%, right at 75%. The browser interpolates the frames between. This block alone does nothing yet; it's a definition waiting to be used.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{15-17}" color="blue">
+    The registration. Inside `@theme`, a `--animate-<name>` token ties the keyframes to a duration and an easing (and a run count, if you want it to loop). Registering it as a theme token is exactly what generates the matching utility.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"--animate-shake"`} color="blue">
+    The payoff: because the token is named `--animate-shake`, Tailwind now exposes an `animate-shake` utility. Drop `animate-shake` onto an invalid field and it shudders once — composed like any other utility.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+That `@keyframes`-plus-`@theme` pair is the foundation the next section builds on — it's exactly how the entrance and exit animations for dialogs are defined, except you won't write *those* yourself.
+
+<VideoCallout videoId="40YU73LZgic" videoTitle="Master CSS Animations & Transitions in 6 Minutes">
+  Six minutes from Learndev on the raw CSS underneath the Tailwind utilities — a hover transition first, then building a keyframe animation with `@keyframes`, `scale`, and `rotate`.
+</VideoCallout>
+
+## Choreographing entrance and exit: `tw-animate-css` and data-state
+
+This is the tier the whole lesson has been building toward, and it's where the three mental models converge on a component you'll ship constantly: a dialog that animates in when it opens and animates out before it disappears.
+
+Start with why this is genuinely harder than a hover transition, because the difficulty is the whole reason the pattern exists. An *entrance* is easy enough — the dialog appears, you transition it from faded-and-small to solid-and-full-size. The *exit* is the problem. To animate a dialog leaving, the element has to stay in the DOM long enough for the animation to play — but the natural React instinct is to unmount it the instant `isOpen` flips to false, which yanks it out of the DOM before a single frame of exit animation can run. You *can* solve that by hand: track the open state, hold the unmount, toggle classes, wait for the animation to finish, *then* unmount. That's a tangle of timing logic in JavaScript — and it's precisely the kind of React-state-mirroring-the-DOM machinery the previous lesson taught you to stop writing.
+
+The 2026 solution does the same move that lesson did: it pushes the state down onto a `data-` attribute and lets CSS do the work. Two pieces make it happen.
+
+### The library: `tw-animate-css`
+
+The keyframes for fading, zooming, and sliding aren't ones you should be authoring. A small, CSS-first Tailwind v4 package called <Term>tw-animate-css ((A CSS-first Tailwind v4 utility pack providing enter/exit animation utilities; the maintained successor to the deprecated tailwindcss-animate.))</Term> ships them, and new shadcn projects already depend on it. (If you've seen `tailwindcss-animate` in older code, this is its maintained successor — reach for `tw-animate-css` in new work.) Installing it is a single line in `app/globals.css`, right after the Tailwind import:
+
+```css
+@import "tailwindcss";
+@import "tw-animate-css";
+```
+
+That one import gives you a family of composable utilities:
+
+- **`animate-in` and `animate-out`** — the enter and exit primitives. Everything else modifies these.
+- **Modifiers that stack onto them** — `fade-in-0` / `fade-out-0` (opacity), `zoom-in-95` / `zoom-out-95` (scale from/to 95%), and the slide family `slide-in-from-top-2`, `slide-in-from-bottom`, `slide-in-from-left`, and so on.
+- **The duration and easing utilities** you already know (`duration-200`, `ease-out`), shared with core Tailwind.
+- **The ready-made keyframes shadcn's own components depend on** — including the accordion and caret-blink animations we'll come back to.
+
+The framing to keep is the third mental model: this is a surface you *read*, not one you reimplement. Install it once, compose its utilities, and never hand-roll a fade or a zoom. And notice what those utilities animate — `fade` is opacity, `zoom` is scale. Both are composite-only, both inside the cheap lane of the budget. The library's defaults respect the compositor budget by design, so you inherit smooth-by-default motion for free.
+
+### The pattern: data-state choreography
+
+Here's the seam. The dialog primitive (shadcn builds these on top of <Term>Radix ((The headless component library, providing behavior and accessibility without styling, that shadcn wraps with Tailwind classes.))</Term>) sets a `data-state` attribute on the dialog's content element — `data-state="open"` while it's open, `data-state="closed"` while it's closing. Your CSS targets each state and runs the matching direction:
+
+```tsx
+"data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95
+ data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
+```
+
+Read it as two halves. When the state is `open`, run `animate-in` with a fade and a zoom — the entrance. When the state is `closed`, run `animate-out` with the reverse — the exit. **The state lives in React, the motion lives in CSS, and the `data-state` attribute is the seam between them.** React (through Radix) is responsible for flipping that one attribute; CSS is responsible for everything that happens visually as a result. You write no animation JavaScript at all.
+
+And the exit-timing problem from a moment ago? Radix handles it. When the dialog closes, Radix sets `data-state="closed"` and *keeps the element mounted* until the `animate-out` animation finishes, then removes it. The exit animation gets the frames it needs because Radix delays the unmount for you — that's *why* the pattern works without you writing any timing logic.
+
+The single most important thing to actually *see* here is that seam in motion: one attribute flipping in React, and CSS responding. The following sequence scrubs a dialog through its full lifecycle. The left side of each step shows the DOM — the content element and its current `data-state`. The right side shows the rendered frame at that moment. Step through it and watch the attribute on the left drive the animation on the right.
+
+<DataStateChoreography />
+
+Now the literal className you'll read in a shadcn `DialogContent`, walked through piece by piece. It's a dense string, and the point of the walkthrough is to visually separate the open half from the closed half so the two-direction pattern clicks.
+
+<AnnotatedCode lang="tsx" code={`
+<DialogPrimitive.Content
+  className="fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2
+    rounded-lg border bg-background p-6 shadow-lg duration-200
+    data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95
+    data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
+>
+  {children}
+</DialogPrimitive.Content>
+`}>
+  <AnnotatedStep meta="{2-3}" color="blue">
+    The base layout. Centered with `fixed` plus `left-1/2 top-1/2` and the two `-translate` pulls, raised above the page with `z-50`, and given its surface — rounded corners, a border, `bg-background`, padding, a shadow. None of this is motion; it's the dialog at rest.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{4}" color="green">
+    The entrance — fired *only* while `data-state` is `open`: `animate-in` plus a fade from transparent (`fade-in-0`) and a zoom from 95% (`zoom-in-95`). This is the open half. Both `fade` and `zoom` are composite-cheap by design.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5}" color="orange">
+    The exit — fired *only* while `data-state` is `closed`: `animate-out` plus the reverse fade and zoom. This is the close half, and it's why Radix keeps the element mounted until it finishes playing.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"duration-200"`} color="violet">
+    One duration governs both directions — 200ms, straight from the entrance band: long enough to read as arriving, short enough not to make the user wait.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+### The accordion exception
+
+There's one common component where the cheap-property rule and the choreography pattern collide, and it's worth knowing how shadcn resolves it because the workaround is not obvious. An accordion *grows in height* as it opens — and height is exactly the kind of expensive, layout-triggering property the budget told you to avoid. Worse, the natural target for an opening panel is `height: auto`, and `auto` is a keyword the browser cannot animate *toward*, because there's no number for it to interpolate to. So the obvious approach is doubly blocked.
+
+shadcn sidesteps it with a small, copyable trick. Radix *measures* the panel's real pixel height and writes it into a CSS custom property — `--radix-accordion-content-height` — and the `accordion-down` and `accordion-up` keyframes (which `tw-animate-css` ships, so you don't write them) animate `height` from `0` to that measured variable. Radix supplies the number the browser was missing; the keyframe animates to it. You copy this pattern from shadcn rather than building it, but it's worth knowing what each piece is doing: Radix measures and sets the variable, the keyframe animates the height to it.
+
+:::note
+The platform is closing this gap. A newer CSS feature, `interpolate-size: allow-keywords` (paired with `calc-size()`), lets `height` animate to `auto` directly — no measuring required. As of early 2026 it ships in Chromium only, with no support in Safari or Firefox, so it is **not** a cross-browser baseline yet and not something to rely on in production. The measured-custom-property pattern above remains the answer. Keep an eye on this one; it'll be the clean fix once the other browsers ship it.
+:::
+
+## The transform surface
+
+You've now watched transforms do real work — the `scale` in a zoom, the `translate` in a slide, the `-translate-x-1/2` centering the dialog. So this is the right moment to name the raw material directly, because it's no longer a cold list: it's the set of utilities behind motion you already understand.
+
+There are four transform utilities, and the first thing to know about all four is *why* they're the animation primitives — every one is composite-only, the cheap lane of the budget:
+
+- **`translate-x-*` / `translate-y-*`** — move an element along an axis without disturbing anything around it. This is the one to reach for instead of nudging `top` or `left`.
+- **`scale-*`** — grow or shrink. `scale-105` is a 5% grow; `scale-95` is a 5% shrink.
+- **`rotate-*`** — spin around the center. `rotate-12`, `-rotate-3`.
+- **`skew-*`** — slant. Genuinely rare in product UI; named so you recognize it.
+
+A few of these you'll reach for so often they become reflexes. `hover:scale-105` is *the* card-lift — the subtle grow that signals "this is interactive." `active:scale-95` (or the `active:scale-[0.98]` on your button) is *the* press-feedback — the small dip that makes a click feel physical. `-translate-y-1` on hover is the gentle raise, an alternative to scaling. And `rotate` paired with a data-state — `data-[state=open]:rotate-180` on a chevron — is how dropdown and accordion indicators flip to point the other way when they open, tying the indicator's motion right back to the same data-state seam.
+
+You may occasionally see `transform-gpu`, which explicitly hints the browser to promote the element to its own compositor layer. It's worth recognizing, but it's a rare manual reach — the browser already promotes animating transforms on its own, so you almost never need to ask.
+
+:::caution
+One gotcha that's caught you before in this chapter, and it's the same family every time. `transform` — like `opacity` and `filter` — creates a new <Term>stacking context ((A self-contained layer for z-ordering: descendants stack only relative to each other, sealed off from the rest of the page.))</Term>. A scaled card with a tooltip or menu inside it can suddenly clip its child or stack it wrong, because that child is now trapped inside the card's own stacking context. The fix is to render the floating piece in a portal (a later chapter covers portals for exactly this) or to use `isolation: isolate` deliberately. Just know that reaching for a transform can quietly reshuffle layering, so when a menu vanishes behind a card, this is the first thing to suspect.
+:::
+
+## `prefers-reduced-motion`: motion you can turn off
+
+This section is not an accessibility footnote. The code conventions for this project put it plainly — a reduced-motion escape on every animation that's visible enough to notice, *no exceptions* — and it's a discipline worth holding to that standard, so we treat it as one.
+
+The reason is concrete and human. Some people get genuinely unwell from on-screen motion — vestibular disorders, where the inner-ear balance system is disturbed by movement the body didn't make, are the clearest case, but motion sensitivity and attention needs matter too. For those users, a big sliding panel or a parallax scroll isn't *delightful*; it can be nauseating or disorienting. So their operating system offers a "Reduce motion" setting, and the browser exposes whether it's on through the `prefers-reduced-motion` media query. Tailwind gives you that as the `motion-reduce:` variant.
+
+The reflex is to pair your animations with a `motion-reduce:` escape that switches them off or down:
+
+```tsx
+<div className="animate-in slide-in-from-bottom-4 motion-reduce:animate-none">
+```
+
+`motion-reduce:transition-none` and `motion-reduce:animate-none` are the two you'll write most — they say "for users who asked for less motion, skip the tween, skip the keyframes, just snap to the final state."
+
+Now the nuance that beginners get wrong in *both* directions. Reduced motion does not mean *no* motion. It means cut the **decorative** motion — the parallax, the big slides, the attention-grabbing bounce — while keeping the **functional** motion that actually communicates something. A loading spinner under reduced motion should keep spinning, because the spin *is* the information: it tells the user the app is working. A focus ring, a progress indicator — those stay. What you strip is the motion that's there for flourish, not for meaning. So the move is judgment, element by element, not a blanket `* { animation: none }` that nukes the spinner along with the parallax.
+
+There's a mirror-image variant too: `motion-safe:`, which applies *only* when motion is allowed. It's the opt-in framing — instead of adding motion and subtracting it for sensitive users, you withhold motion by default and add it only when the user hasn't asked to reduce it. Either direction is valid; pick whichever reads more clearly for the animation at hand.
+
+One relief: you don't have to do this for everything yourself. shadcn and Radix components already ship sensible reduced-motion behavior — the dialog you built earlier honors the setting without you touching it. The `motion-reduce:` discipline is *your* job specifically on the **bespoke** motion you author: the custom `shake` keyframe from a moment ago, the hover-lift on a card you styled by hand. (This reflex gets its proper home in the accessibility-baseline chapter later in the course; here you're installing the habit.)
+
+Two quick checks before the horizon. First, sort these properties by what they cost to animate — the foundational rule of the whole lesson. Drag each into the lane it belongs to.
+
+<Buckets twoCol instructions="Sort each property by what it costs the browser to animate.">
+  <Bucket name="cheap" label="Cheap" description="Composite-only — the GPU just moves a finished layer" />
+  <Bucket name="expensive" label="Expensive" description="Forces layout or paint every frame" />
+
+  <Item bucket="cheap">`transform`</Item>
+  <Item bucket="cheap">`opacity`</Item>
+  <Item bucket="cheap">`scale`</Item>
+  <Item bucket="expensive">`width`</Item>
+  <Item bucket="expensive">`height`</Item>
+  <Item bucket="expensive">`top`</Item>
+  <Item bucket="expensive">`margin`</Item>
+  <Item bucket="expensive">`background-color`</Item>
+</Buckets>
+
+Second, the choreography seam. Given a dialog that needs to animate *out* before it leaves the screen, which approach is the 2026 one?
+
+<MultipleChoice>
+  A `closeDialog()` call flips `isOpen` to `false`, and the dialog's content carries an `animate-out fade-out-0 zoom-out-95` exit. On screen, the dialog vanishes instantly — not one frame of the exit plays. What's the 2026 fix?
+
+  <McqChoice correct>Stop unmounting on the boolean. Let the dialog primitive own the close: it flips the content's `data-state` to `closed`, holds the element in the DOM while the exit plays, and unmounts only after it finishes.</McqChoice>
+  <McqChoice>Wrap the unmount in a `setTimeout` whose delay equals the animation's `duration-200`, so the element survives long enough for the exit to finish.</McqChoice>
+  <McqChoice>Move the exit onto the *overlay* instead of the content — the backdrop stays mounted longer, so its `animate-out` always has frames to play.</McqChoice>
+  <McqChoice>Add `motion-safe:animate-out` so the browser knows to defer the unmount until motion is allowed to complete.</McqChoice>
+
+  <McqWhy>Correct answer: hand the close to the primitive. The exit never played because flipping `isOpen` to `false` rips the element out of the DOM before a single frame can render — and that's exactly the unmount-timing problem the data-state pattern retires. The primitive sets `data-state="closed"`, your CSS reads that attribute and runs `animate-out`, and the primitive delays the unmount until the animation ends. State lives in React, motion lives in CSS, and you write no timing JavaScript. The `setTimeout` *works* but is the fragile hand-rolled version this pattern exists to replace — desync it from the real duration and you get a flash or a frozen frame. Moving the exit to the overlay doesn't help: the content is still being unmounted instantly. And `motion-safe:` only gates *whether* an animation runs for reduced-motion users; it has nothing to do with unmount timing.</McqWhy>
+</MultipleChoice>
+
+And the reduced-motion nuance, since it's the part most people get wrong:
+
+<MultipleChoice>
+  A user has turned on "Reduce motion" at the OS level. Three animations are on the screen. Which one is the one you should leave running?
+
+  <McqChoice correct>A button you just clicked shows a spinning icon while its request is in flight.</McqChoice>
+  <McqChoice>An arrow on an empty state hops up and down to draw the eye toward it.</McqChoice>
+  <McqChoice>A settings panel glides the full width of the screen as it opens from the right.</McqChoice>
+
+  <McqWhy>Correct answer: the spinner stays. The test isn't "is it motion?" — it's "does the motion *carry meaning*?" The spin is the only thing telling the user their click landed and the app is busy; kill it and you've removed information, not flourish. The other two are decoration. The hopping arrow is pure attention-grabbing with nothing functional underneath — textbook `motion-reduce:animate-none`. And the full-width sliding panel is exactly the large, sweeping movement that triggers the vestibular discomfort the setting exists to prevent; cut it down to a plain fade or let it snap straight to its open state. Reduced motion means *strip the decorative, keep the functional* — a judgment call element by element, not a blanket switch that nukes the spinner along with the parallax.</McqWhy>
+</MultipleChoice>
+
+## Beyond CSS: when motion gets bigger
+
+Almost everything you'll animate on a SaaS surface lives inside what you just learned — CSS transitions, keyframes, and `tw-animate-css`. But it's worth naming the two things on the horizon so you recognize them and know they're deliberately outside the lane, not gaps in your knowledge.
+
+The first is the <Term>View Transitions API ((A browser API that snapshots the page before and after a DOM change and animates the difference, including across navigations.))</Term>. Everything in this lesson animates a *single element* changing. View Transitions animate *the page changing between two whole states* — including across a route change. You call `document.startViewTransition(() => updateDOM())`, the browser snapshots the before and after, and cross-fades the difference. Next.js 16 integrates it behind an `experimental.viewTransition: true` flag in the config, paired with React 19.2's `<ViewTransition>` component imported from `react`. Support is real but uneven — Chromium and Safari 18 handle same-document transitions; Firefox is behind a flag as of early 2026 — so verify support before you lean on it. You're meeting it by name only; the decision rule is the thing to keep — reach for View Transitions when the animation spans a *navigation* or a large DOM swap that per-element CSS can't choreograph. A later part of the course handles it properly if a project needs it.
+
+The second is **Framer Motion** (now just called **Motion**), the React animation library from the very start of this lesson. It exists, it's genuinely powerful for spring physics and gesture-driven motion, and it is overkill for the surface this course ships — CSS plus `tw-animate-css` covers the cases you'll actually hit. Knowing where the threshold is *is* the experienced engineer's skill: you cross it rarely, for motion CSS truly can't express, and you stay on the platform default the rest of the time. That's the whole verdict the lesson opened with, now earned.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="An Interactive Guide to CSS Transitions"
+    href="https://www.joshwcomeau.com/animation/css-transitions/"
+    icon="simple-icons:css"
+    iconColor="#663399"
+    description="Josh Comeau's hands-on explainer — drag the sliders to feel how duration and easing change a transition, the perfect companion to the motion lab."
+  />
+  <ExternalResource
+    title="web.dev — High-performance CSS animations"
+    href="https://web.dev/articles/animations-guide"
+    icon="simple-icons:googlechrome"
+    iconColor="#4285F4"
+    description="Google's guide to the compositor budget — why transform and opacity are the cheap lane and how to keep motion off the main thread."
+  />
+  <ExternalResource
+    title="tw-animate-css"
+    href="https://github.com/Wombosvideo/tw-animate-css"
+    icon="simple-icons:github"
+    iconColor="#181717"
+    description="The animation utility pack shadcn projects ship — the full list of animate-in / fade / zoom / slide utilities and the accordion keyframes."
+  />
+  <ExternalResource
+    title="Tailwind CSS — Transitions & Animation"
+    href="https://tailwindcss.com/docs/transition-property"
+    icon="simple-icons:tailwindcss"
+    iconColor="#06B6D4"
+    description="The reference for the transition-*, duration-*, ease-*, and animate-* families, plus authoring custom keyframes in the v4 CSS-first theme."
+  />
+</CardGrid>
