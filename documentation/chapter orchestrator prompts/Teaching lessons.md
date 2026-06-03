@@ -12,6 +12,8 @@ Run this sequence for each lesson, one lesson at a time in order, so each lesson
 2 **lesson-writer**: chapter id `<X>`, lesson number `<Y>`, lesson title, lesson outline path, chapter folder path. Returns the lesson MDX path plus the count and unique ids of its diagrams and exercises/sandboxes.
 3 **lesson-continuity**: chapter id `<X>`, lesson number `<Y>`, lesson MDX path, lesson outline path, continuity notes path.
 
+Once every lesson's spine is done, run **lesson-build-fixer** once: chapter id `<X>`, chapter folder path.
+
 ## Phase B — Build-out
 
 After Phase A is done for every lesson, finish the lessons in parallel.
