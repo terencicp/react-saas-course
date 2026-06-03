@@ -1,0 +1,372 @@
+---
+title: The React Compiler
+description: What the React Compiler does, how to enable it in Next.js 16, what it refuses to touch, and how to confirm it's working.
+chapter-id: 26
+sidebar:
+  order: 2
+  label: The React Compiler
+---
+
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import RenderTracking from '../../../components/figures/render-tracking/RenderTracking.astro';
+import TrackedNode from '../../../components/figures/render-tracking/TrackedNode.astro';
+import Trigger from '../../../components/figures/render-tracking/Trigger.astro';
+import Implementation from '../../../components/figures/render-tracking/Implementation.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { Steps, CardGrid } from '@astrojs/starlight/components';
+import CompilerBuildPipeline from '../../../components/lessons/026/2/CompilerBuildPipeline.astro';
+
+Open a React codebase from 2024 and you'll find a recurring texture. Every derived value sits inside a `useMemo`. Every event handler is wrapped in a `useCallback`. Every leaf component is exported through `React.memo`. The developers who wrote it weren't careless — they were defending against exactly the waste you spent the last few chapters learning to see: a parent re-renders, props flow down, `Object.is` says a freshly-built object prop is a new reference, and a whole subtree re-renders for nothing.
+
+And here's the part that stings. After all that wrapping, the app *still* re-renders too much. The memoization has gaps, because doing it perfectly by hand means tracking every dependency of every value across every render — and humans miss some. One stray inline `style={{ padding: 8 }}` on a prop slips through and tanks a subtree the memo was supposed to protect. So the cost is doubled: the engineer writes this defensive wrapping, reviews it in every pull request, maintains it forever as the code changes — and it doesn't even fully work.
+
+The React Compiler is the end of that era. Stable since its 1.0 release in October 2025 and a first-class config option in Next.js 16, it reads your components at build time and inserts that memoization for you, at the boundaries that actually matter, without the gaps. By the end of this lesson you'll be able to turn it on in a Next.js 16 project, say precisely what it does and doesn't do, and confirm in DevTools that it's working. You've spent the chapters on the render model learning *why* renders happen — the three triggers, `Object.is` on props, identity churn from inline literals — and how to defend against waste by hand. This is where that manual defense gets handed off. The shift to internalize is this: **memoization stops being something you write.**
+
+## What the compiler actually does
+
+Start with one sentence and hold onto it: the React Compiler is a build-time tool that analyzes your component and hook bodies and inserts the memoization equivalent to the `useMemo`, `useCallback`, and `memo` you would have written by hand.
+
+The two words doing the most work there are *build-time*. The compiler runs once, when your project is built — the same moment your TypeScript becomes JavaScript and your modules get bundled. It is not a runtime engine that watches your app and makes decisions while users click around. There is no React Compiler library shipping in your production bundle, no scheduler, no extra layer between your components and the screen.
+
+That matters because of what it implies about the output. The compiler rewrites your source into ordinary memoized React — regular code, the same code an expert would have written if they'd tracked every dependency perfectly. When the build finishes, what ships is plain React that happens to be optimally memoized. The runtime behaves exactly as if a careful human had done the wrapping; there's no magic at the other end. This is worth sitting with, because the natural reflex when you hear "a compiler optimizes my code automatically" is distrust — *I don't want some black box rewriting what I wrote.* But the transform isn't a black box. It's deterministic, it's inspectable, and it produces the same kind of code you already know how to read. You opt into it deliberately, and you understand exactly what changed.
+
+How does it decide what to memoize? Through static analysis — it traces, at build time, which values feed which outputs. If a derived value depends only on `items`, then the compiler knows to recompute it when `items` changes and reuse the previous result when it doesn't. You don't need the compiler's internals to use it well; you need its shape, which is the same shape `useMemo` always had: inputs change, recompute; inputs stable, reuse the previous reference.
+
+The following diagram traces one small component through the build. Scrub through the steps to watch where the work happens.
+
+<DiagramSequence>
+  <DiagramStep>
+    <CompilerBuildPipeline step={1} />
+    <Fragment slot="caption">
+      Your source: a plain component with a derived `total` and an inline `onClick` — no memoization written by hand. Beside it, a plain util with no JSX.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <CompilerBuildPipeline step={2} />
+    <Fragment slot="caption">
+      Next.js's SWC pass picks only files with JSX or hooks. The plain util is skipped, so builds stay fast.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <CompilerBuildPipeline step={3} />
+    <Fragment slot="caption">
+      The React Compiler's Babel plugin rewrites the body, inserting memo slots for the derived value and the callback.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <CompilerBuildPipeline step={4} />
+    <Fragment slot="caption">
+      What ships is plain React that's optimally memoized — no compiler runs at runtime.
+    </Fragment>
+  </DiagramStep>
+</DiagramSequence>
+
+Two things to carry forward from that sequence. First, the selection step: Next.js uses its SWC pipeline to pick only the files that contain JSX or hooks, so a plain utility module never gets handed to the compiler and your builds don't pay to analyze code that has nothing to memoize. Second, the transform produces ordinary output. Nothing in step 4 is a runtime engine. That's the whole game.
+
+<VideoCallout videoId="Pw8w2O5Y0no" videoTitle="React Compiler Internals — Lydia Hallie, React Summit 2025">
+  Lydia Hallie walks the same build-time pipeline in depth (21 min) — parsing, AST transformation, and how the compiler decides what to memoize.
+</VideoCallout>
+
+## What gets auto-memoized
+
+The abstract claim — "it inserts the memoization you'd have written" — lands harder once you map it onto the specific footguns you already know. Every item the compiler memoizes is a render-waste pattern you were taught to fear in the chapters on the render model and the built-in hooks. Read this less as a list of new features and more as a list of old anxieties getting neutralized.
+
+- **Derived values computed during render.** The kind of in-render calculation you met under "derive, don't mirror" — a filtered list, a running total, a formatted label. The compiler caches the result keyed on its inputs, so re-deriving on every render stops being a thing you have to worry about.
+- **Object and array literals passed as props.** `<Sidebar config={{ theme, size }} />` is the canonical <Term def="Two objects with identical contents are still different references; `Object.is` reports them as different, so a child treats the prop as changed and re-renders.">referential identity</Term> trap — a fresh object literal every render means the child sees a new reference and re-renders every time. The compiler stabilizes that reference when its contents haven't changed.
+- **Callbacks defined inside the component.** `<Row onClick={() => deleteItem(id)} />` gets a stable identity across renders when the values it captures don't change. The `useCallback` reflex, gone.
+- **Provider values.** `<ThemeContext value={{ user, theme }}>` is the exact re-render storm you saw with context — an unstable provider value re-renders every single consumer on every parent render. The compiler auto-stabilizes that value. The footgun that used to demand a careful manual `useMemo` around every provider value is now handled for you.
+- **JSX subtrees.** A piece of the tree that doesn't depend on what changed gets reused instead of re-rendered.
+
+That last cluster is the point of the whole exercise, and it's easier to *see* than to read. In the following widget, an `App` holds a counter and renders a `Sidebar` that receives an inline `config={{ ... }}` object prop. Switch between the two tabs and bump the counter in each.
+
+<RenderTracking title="Bumping a counter in App">
+  <TrackedNode id="app" label="App">
+    <TrackedNode id="sidebar" label="Sidebar • config={{ theme, size }}" />
+  </TrackedNode>
+
+  <Implementation id="without" label="Without the compiler" default>
+    <Trigger id="bump" label="bump counter in App" renders="app,sidebar" />
+  </Implementation>
+
+  <Implementation id="with" label="With the compiler">
+    <Trigger id="bump" label="bump counter in App" renders="app" />
+  </Implementation>
+</RenderTracking>
+
+The compiler's win is the box that *stops* lighting up. In the first tab, bumping an unrelated counter re-renders `Sidebar` because the inline `config` object is a brand-new reference every render — pure <Term def="Memoization the compiler inserts automatically, as opposed to memoization you write by hand with `useMemo` / `useCallback` / `memo`.">auto-memoization</Term> territory. In the second tab, the compiler has stabilized that reference, so `Sidebar` sees the same `config` it saw last time, `Object.is` agrees, and the subtree is skipped. You didn't write a line of `useMemo` to get there.
+
+## Enabling it in Next.js 16
+
+Turning the compiler on is a deliberate choice you make once, and then you know exactly what changed about your build — which is the posture this course takes toward every piece of "magic." There are two steps.
+
+<Steps>
+
+1. Install the compiler as a dev dependency.
+
+   ```bash
+   pnpm add -D babel-plugin-react-compiler
+   ```
+
+   The name raises an obvious question: why a Babel plugin, when Next.js builds with Rust-based SWC and not Babel? Because the React Compiler itself *is* a Babel plugin — but Next.js doesn't run Babel across your whole project. It wraps the compiler in a custom SWC optimization that hands it only the files containing JSX or hooks. You get the compiler's analysis on exactly the files that need it, and your builds stay fast.
+
+2. Set `reactCompiler: true` in your Next.js config.
+
+   ```ts title="next.config.ts" ins={4}
+   import type { NextConfig } from 'next';
+
+   const nextConfig: NextConfig = {
+     reactCompiler: true,
+   };
+
+   export default nextConfig;
+   ```
+
+</Steps>
+
+That's the entire wiring. There is no per-file annotation, no marking components as "compile this one" — `reactCompiler: true` turns on full coverage across the whole app. And that is the right default for a new project. For a SaaS app started in 2026, you turn the compiler on from day one and let it carry memoization for the entire codebase. The manual reflex — wrapping things in `useMemo` and `useCallback` as you write them — is the thing you're now deleting from your habits.
+
+:::note
+The build cost is small precisely because of that SWC-scoped path: only JSX/hook files get compiled, so the overhead is localized. A raw Babel-on-every-file setup (which is what you'd wire up in a non-Next project) is noticeably slower. Next.js's integration is why turning this on doesn't make you think twice about build time.
+:::
+
+## Incremental adoption for legacy codebases
+
+There's a second mode worth recognizing, even though you won't reach for it on a greenfield project. It exists for one situation: migrating a large, existing codebase onto the compiler gradually instead of all at once.
+
+In the following comparison, the first tab is the default you just wired up. The second is annotation mode — the migration path.
+
+<CodeVariants>
+  <CodeVariant label="Full coverage (greenfield default)">
+    ```ts title="next.config.ts" {4}
+    import type { NextConfig } from 'next';
+
+    const nextConfig: NextConfig = {
+      reactCompiler: true,
+    };
+
+    export default nextConfig;
+    ```
+
+    **A new 2026 project starts here.** `reactCompiler: true` compiles every component and hook in the app — no opt-in per file. This is the senior default; skip the rest of this section unless you're migrating an old codebase.
+  </CodeVariant>
+
+  <CodeVariant label="Annotation (legacy migration)">
+    <div data-mark-color="orange">
+
+    ```ts title="next.config.ts" "compilationMode: 'annotation'"
+    import type { NextConfig } from 'next';
+
+    const nextConfig: NextConfig = {
+      reactCompiler: { compilationMode: 'annotation' },
+    };
+
+    export default nextConfig;
+    ```
+
+    </div>
+
+    **Migrating a large legacy app?** Annotation mode compiles only functions that begin with the `'use memo'` directive, so you validate the compiler on a small, audited subset first, then expand file by file. A component opts in with a `'use memo'` string as the first statement of its body. Once enough of the codebase is verified, flip to full coverage.
+  </CodeVariant>
+</CodeVariants>
+
+The workflow for actually carrying out that file-by-file migration — what order to clean things up in, how to handle the residual hand-written memoization — is its own topic, and it's the subject of the next lesson. Here, you just need to know annotation mode exists and what it's for: it's the on-ramp for an old codebase, not a thing you configure on a new one.
+
+## What the compiler will not do
+
+The compiler has a narrow, well-defined job: memoization. Pinning down its boundaries is what keeps you from over-attributing powers to it — and that misattribution is exactly where a beginner gets confused when something doesn't behave as they imagined.
+
+It does **not** rewrite your effects. `useEffect` and its dependency array are untouched. The effect contract — synchronize with an external system, clean up, list your reactive dependencies — holds in full. The compiler doesn't move logic into or out of effects.
+
+It does **not** change the rules of hooks. Hooks still go at the top level, called in the same order every render. That's still the law, and the two ESLint rules that enforce it stay on. The compiler relies on those rules being followed; it doesn't replace them.
+
+It does **not** eliminate dependency arrays. You still write the dependencies for your effects. The compiler memoizes values inside render — it doesn't infer away the dependency list of a `useEffect`.
+
+It does **not** memoize impure code. This is the hinge into the next section. If the compiler's analysis detects a violation of <Term def="React's purity and hook-ordering contract: render is a pure function of props and state, no mutation during render, hooks called at the top level in a stable order.">the Rules of React</Term> — a component that mutates something during render, a hook called conditionally, an initializer with a side effect — it does not produce wrong output. It *skips* that component and emits a warning.
+
+Two pieces of what you've already learned slot in cleanly here rather than conflicting. `useEffectEvent` carves out the non-reactive seam *inside* an effect — the line you want to run on the latest props without re-subscribing — while the compiler handles memoization everywhere else; together they cover the two halves of the effect problem, no overlap. And refs: React 19 made `ref` a normal prop, so there's no `forwardRef` anymore, and the compiler reads a component that takes `ref` from its props transparently, like any other prop.
+
+Before the most important reframe of the lesson, draw the boundary yourself. Sort each item into the side it belongs to.
+
+<Buckets twoCol instructions="The compiler has one job. Sort each concern by whether the compiler handles it or it stays your responsibility.">
+  <Bucket name="compiler" label="The compiler handles this" description="Auto-memoization" />
+  <Bucket name="you" label="Still your job" description="Contract you uphold" />
+
+  <Item bucket="compiler">Inline object prop stabilization</Item>
+  <Item bucket="compiler">Provider value stability</Item>
+  <Item bucket="compiler">Derived-value memoization</Item>
+  <Item bucket="compiler">Callback prop stability</Item>
+  <Item bucket="you">Effect dependency arrays</Item>
+  <Item bucket="you">Calling hooks in order</Item>
+  <Item bucket="you">Cleanup functions</Item>
+  <Item bucket="you">Not mutating props during render</Item>
+</Buckets>
+
+The four on the right share a theme: they're the contract. The compiler only takes over the memoization once you've held up your end.
+
+## When the compiler skips a component
+
+Here is where a junior and an experienced engineer part ways. When the compiler skips a component and warns, a junior reads it as *the compiler broke my component.* An experienced engineer reads the exact same warning as *the compiler found my bug.* The reframe is this: **the compiler is a messenger, not a magician.**
+
+Think about what a skip actually reveals. A codebase that "worked" before the compiler often only worked because manual memoization happened to paper over an impurity. A component that quietly mutates one of its props, an initializer that pushes a value onto a module-level array, a render that calls a function with a side effect — these are latent bugs. They were always wrong; they just hadn't bitten yet. When the compiler's analysis hits one, it refuses to optimize that component and surfaces a warning. It's not failing. It's pointing at the thing that was already broken.
+
+This connects directly to the purity contract from the render-model chapter, where you were told that keeping render pure is the price of admission to a lot of React's machinery. This is one of the places that bill comes due. The fix is never to silence the message — the fix is the violation. The following before-and-after shows the smallest possible version of this, with a violation you can already recognize as impure.
+
+<CodeVariants>
+  <CodeVariant label="Skipped — mutates during render">
+    <div data-mark-color="red">
+
+    ```tsx {2}
+    const RankedList = ({ items }: { items: Item[] }) => {
+      const sorted = items.sort((a, b) => b.score - a.score);
+      return <ol>{sorted.map((i) => <li key={i.id}>{i.label}</li>)}</ol>;
+    };
+    ```
+
+    </div>
+
+    **The mutation is the bug.** `items.sort()` mutates the array prop in place — a side effect during render, and a Rules-of-React violation. The compiler skips this component and warns. It was wrong before the compiler ever looked at it.
+  </CodeVariant>
+
+  <CodeVariant label="Fixed — copy before sort">
+    <div data-mark-color="green">
+
+    ```tsx {2}
+    const RankedList = ({ items }: { items: Item[] }) => {
+      const sorted = [...items].sort((a, b) => b.score - a.score);
+      return <ol>{sorted.map((i) => <li key={i.id}>{i.label}</li>)}</ol>;
+    };
+    ```
+
+    </div>
+
+    **Spread into a new array first** and the sort touches a copy, not the prop. Render is pure again — the compiler optimizes it, and the `Memo ✨` badge appears. The fix was one character of intent.
+  </CodeVariant>
+</CodeVariants>
+
+Sometimes you genuinely can't fix the violation in the moment — you're mid-migration, or you've hit a confirmed compiler bug. For that, there's an <Term def="A deliberate, documented opt-out of a default. Used sparingly and never as a habit — every use is a decision you can defend.">escape hatch</Term>: the `'use no memo'` directive at the start of a function body tells the compiler to skip that function. Reach for it *only* as a temporary measure while you fix the underlying problem, and never as a permanent waiver. The watch-out is sharp: `'use no memo'` silences the warning but ships the original behavior — which is the unoptimized, possibly still-buggy code. It does not fix anything. Treat it as a `TODO` with a comment linking the issue you're tracking, not as a resolution.
+
+You won't always need to open DevTools to catch these, either. The compiler's diagnostics ship as rules in `eslint-plugin-react-hooks` (version 7), so violations like an in-render mutation or broken manual memoization light up red in your editor as you type — before you ever check the browser.
+
+## Verifying it's working
+
+You turned it on. Now you confirm it. There are two tools, and they play two different roles — knowing which answers which question is the senior workflow.
+
+The first is the **`Memo ✨` badge**, and it's the contract. Open React DevTools, go to the Components panel, and look at a component's name. If the compiler processed it, you'll see a `Memo ✨` badge sitting next to the name. It's the very same badge that a hand-written `React.memo` produces — and the fact that you can't tell compiler-inserted memoization from hand-written memoization is the entire point. Badge present means the compiler processed this component.
+
+Now the nuance that trips up almost everyone, so read it slowly. The badge means *the compiler processed this component.* It does **not** mean *this component never re-renders.* A component can wear the `Memo ✨` badge and still re-render on every single cycle — if an unstable reference is flowing *into* it as a prop from a parent that the compiler didn't, or couldn't, optimize. Picture it through the widget from earlier: the compiler stabilizes the references a component *owns*, the ones created inside its own body. It cannot reach above its own visibility and fix churn that a parent is injecting from the outside. The badge is a statement about the component, not a guarantee about its parent.
+
+<VideoCallout videoId="14MZJtGAiVs" videoTitle="The Problem With the React Compiler — Cosden Solutions">
+  Cosden Solutions debugs a real app where compiled components still re-render (27 min) — exactly the badge-isn't-a-guarantee trap, with a live Profiler walkthrough.
+</VideoCallout>
+
+The second tool is the **<Term def="A React DevTools panel that records a session and reports which components rendered and why. Depth on it comes later in the course.">Profiler</Term>**, and it's the proof. It records an interaction and shows you which components rendered and why. The loop is: record an interaction, look for a component that rendered when its props *didn't* change, and go audit that component. You'll meet the Profiler in full later in the course — flame graphs, render timings, the complete read-and-record workflow. For now, recognize it as the proof tool and know the shape of the loop.
+
+And a missing badge isn't a mystery — it's a signal. If a component you expected the compiler to handle has no `Memo ✨` badge in a compiled build, that file is being skipped, which means a purity violation. You go audit it, exactly as in the previous section.
+
+The following walker encodes the order an experienced engineer asks these questions: badge first, then the Profiler, then locate the boundary. Walk it as if you'd just enabled the compiler and something looks off.
+
+<StateMachineWalker kind="decision" title="I turned on the compiler — is it working?">
+  <Question id="badge" prompt="Do components show the Memo ✨ badge in React DevTools?">
+    <Branch label="No" to="how-many" />
+    <Branch label="Yes" to="child-rerenders" />
+  </Question>
+
+  <Question id="how-many" prompt="Is it just some components missing the badge, or all of them?">
+    <Branch label="Some specific ones" to="leaf-audit-purity" />
+    <Branch label="None at all" to="leaf-check-config" />
+  </Question>
+
+  <Question id="child-rerenders" prompt="Record an interaction in the Profiler. Does a child still re-render when an unrelated parent state changes?">
+    <Branch label="Yes, it re-renders" to="leaf-churn-from-above" />
+    <Branch label="No, renders are clean" to="leaf-working" />
+  </Question>
+
+  <Leaf id="leaf-audit-purity" verdict="Audit those components for purity violations">
+    The compiler skips exactly the components it can't prove are pure — an in-render mutation, a conditional hook call, a side-effectful initializer.
+    Open those files and find the violation; the fix is the violation, not silencing it.
+  </Leaf>
+
+  <Leaf id="leaf-check-config" verdict="Check the config and the install">
+    No badges anywhere means the compiler isn't running.
+    Confirm `reactCompiler: true` is set in `next.config.ts` and that `babel-plugin-react-compiler` is installed as a dev dependency.
+  </Leaf>
+
+  <Leaf id="leaf-churn-from-above" verdict="An unstable reference is flowing in from a parent">
+    The compiler optimizes *within* a component — it can't fix churn injected from a parent above its visibility.
+    Find the parent that builds a fresh prop every render and stabilize it there (or let the compiler handle that parent too).
+  </Leaf>
+
+  <Leaf id="leaf-working" verdict="Working as intended">
+    The badge is the contract, the Profiler is the proof.
+    Both check out — the compiler is carrying your memoization.
+  </Leaf>
+</StateMachineWalker>
+
+## Performance — what to actually expect
+
+One more expectation to set straight, because it's the source of a predictable letdown. You turn the compiler on, you reload the app, and it doesn't feel ten times faster. That's normal, and chasing raw speed is the wrong way to measure the win.
+
+For a typical SaaS app, expect a modest baseline improvement — fewer wasted re-renders, interactions that feel a touch snappier. Something in the range of 5–15% fewer re-renders is a reasonable expectation, though it's a range, not a promise; it depends entirely on how much waste was there to begin with. An app that had a measurable wasted-render problem will see a larger win, because there's more to eliminate. An app that was already meticulously hand-memoized will barely change at runtime — the compiler is just doing what the humans already did.
+
+So if not speed, what's the prize? It's the deletion of the memoization ceremony. The durable, every-day win is fewer lines to write, fewer lines to read in code review, fewer lines to maintain as the code changes — *and* the elimination of the gaps that hand-memoization always leaves, because the compiler doesn't get tired or forget a dependency. Performance is a bonus on top. Less code that's also more correct is the actual reward.
+
+Which leaves one honest question hanging. If the compiler is now the default and carries memoization for the whole app, is there *ever* a moment an engineer still reaches for `useMemo`, `useCallback`, or `memo` by hand? There is — a narrow, specific surface where manual memoization still earns its weight. That surface is the entire subject of the next lesson.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    href="https://playground.react.dev/"
+    title="React Compiler Playground"
+    description="Paste a component and watch the compiler's output update live — proof that the transform is inspectable, not a black box."
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+  />
+
+  <ExternalResource
+    href="https://react.dev/learn/react-compiler"
+    title="React Compiler"
+    description="The official React docs on what the compiler does, how it's configured, and how to debug it."
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+  />
+
+  <ExternalResource
+    href="https://nextjs.org/docs/app/api-reference/config/next-config-js/reactCompiler"
+    title="reactCompiler — Next.js config"
+    description="The Next.js 16 reference for the reactCompiler option, including annotation mode."
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+  />
+
+  <ExternalResource
+    href="https://react.dev/reference/react-compiler/directives"
+    title="Directives — 'use memo' and 'use no memo'"
+    description="The React reference for the compiler's opt-in and opt-out directives."
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+  />
+
+  <ExternalResource
+    href="https://tonyalicea.dev/blog/understanding-react-compiler/"
+    title="Understanding React Compiler"
+    description="Tony Alicea's deep dive into the AST, the intermediate language, and the cache-checking code the compiler emits."
+    icon="lucide:book-open"
+    iconColor="#8B5CF6"
+  />
+</CardGrid>
