@@ -44,7 +44,7 @@ The text may already be properly formatted. If it's not, consider if it needs ma
 
 Verify the lesson renders and works as expected. Fix only errors directly related to the current lesson.
 
-1 `mcp__Claude_Preview__preview_list`. Use the running server or `preview_start`.
+1 `mcp__Claude_Preview__preview_list`. Use the running server matching your assigned preview port (or `preview_start`).
 2 `preview_snapshot` against the lesson URL
 3 `preview_console_logs` filtered by `level: 'error'`
 4 Drive every input in your new code. Use `preview_eval` to locate elements because pre-built components shuffle their choices at hydration.

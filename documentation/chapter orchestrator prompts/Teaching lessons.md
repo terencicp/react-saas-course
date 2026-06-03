@@ -15,18 +15,18 @@ Run this sequence for each lesson, one lesson at a time in order, so each lesson
 ## Phase B — Build-out
 
 After Phase A is done for every lesson, finish the lessons in parallel.
-Ensure a dev server is running so agents reuse it.
-Work in batches of at most 3 lessons to limit dev-server contention.
+Work in batches of at most 3 lessons.
+Start one dev server per lesson in the batch, each on its own port, so batched agents never share a browser tab; pass each agent its lesson's port.
 For each batch run the stages below in order, awaiting each stage before the next, then move on to the next batch.
 Stage 1 is a round-robin; stages 2–5 each launch one agent per lesson in the batch in parallel, in a single message.
 
 1 **Diagrams and exercises**: each round, take from every lesson in the batch its next unbuilt id — diagrams first, then exercises/sandboxes — and run its agent in parallel; await the round and repeat until the batch's lists are exhausted, so each lesson's MDX is edited by one agent at a time.
-  - **lesson-diagramer**: chapter id `<X>`, lesson number `<Y>`, diagram id, lesson MDX path, lesson outline path.
-  - **lesson-exerciser**: chapter id `<X>`, lesson number `<Y>`, exercise/sandbox id, lesson MDX path, lesson outline path.
+  - **lesson-diagramer**: chapter id `<X>`, lesson number `<Y>`, diagram id, lesson MDX path, lesson outline path, preview port.
+  - **lesson-exerciser**: chapter id `<X>`, lesson number `<Y>`, exercise/sandbox id, lesson MDX path, lesson outline path, preview port.
 2 **lesson-resourcer**: lesson MDX path.
-3 **lesson-formatter**: lesson MDX path, lesson outline path.
+3 **lesson-formatter**: lesson MDX path, lesson outline path, preview port.
 4 **lesson-reviewer**: chapter id `<X>`, lesson outline path, lesson MDX path, the continuity notes paths for this chapter and the two preceding chapters. Returns the list of issues.
-5 **lesson-corrector**: chapter id `<X>`, lesson outline path, lesson MDX path, the reviewer's issue list inline. Its goal is to fix the current lesson only, if there's an issue with a previous lesson surface it in the chat, do not share them with the corrector.
+5 **lesson-corrector**: chapter id `<X>`, lesson outline path, lesson MDX path, the reviewer's issue list inline, preview port. Its goal is to fix the current lesson only, if there's an issue with a previous lesson surface it in the chat, do not share them with the corrector.
 
 ## Phase C — Continuity review
 

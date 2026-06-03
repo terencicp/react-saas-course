@@ -34,7 +34,7 @@ Replace the placeholder comment with the diagram. For diagrams that would be len
 
 Verify the diagram renders and works as expected. Fix only errors directly related to your code.
 
-1 `mcp__Claude_Preview__preview_list`. Use the running server or `preview_start`.
+1 `mcp__Claude_Preview__preview_list`. Use the running server matching your assigned preview port (or `preview_start`).
 2 `preview_snapshot` against the lesson URL
 3 `preview_console_logs` filtered by `level: 'error'`
 4 If the diagram is interactive drive every input in your new code. Use `preview_eval` to locate elements because pre-built components shuffle their choices at hydration.
