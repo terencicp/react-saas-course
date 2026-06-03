@@ -1,0 +1,371 @@
+---
+title: The purity contract
+description: Render must be a pure function of props and state — the contract that lets Strict Mode, concurrent rendering, and the React Compiler optimize your app safely.
+chapter-id: 23
+sidebar:
+  order: 3
+  label: The purity contract
+---
+
+import Figure from '../../../components/figures/Figure.astro';
+import ReactRightsPanel from '../../../components/lessons/023/3/ReactRightsPanel.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Term from '../../../components/ui/Term.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import PredictOutput from '../../../components/exercises/predict-output/PredictOutput.astro';
+import PredictWhy from '../../../components/exercises/predict-output/PredictWhy.astro';
+import TrueFalse from '../../../components/exercises/true-false/TrueFalse.astro';
+import Statement from '../../../components/exercises/true-false/Statement.astro';
+import TfWhy from '../../../components/exercises/true-false/TfWhy.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+Here's a function. It counts how many times it has rendered, which sounds like a perfectly reasonable thing to want.
+
+```tsx title="Counter.tsx"
+let renders = 0;
+
+const Counter = ({ count }: { count: number }) => {
+  renders += 1;
+  return <p>Count: {count} (render #{renders})</p>;
+};
+```
+
+It works. You run it on your machine, the number ticks up, you ship it. And then, depending on which corner of React you wander into, it breaks in three completely different ways. In development it counts by two instead of one. After the React Compiler gets hold of it, it stops counting entirely. And the day a second `<Counter>` appears on the page, the two of them start corrupting each other's numbers. Three symptoms, no obvious connection between them, none of which reproduce reliably — the worst kind of bug.
+
+They all have the same cause. That `renders += 1` broke a contract you didn't know you'd signed. The previous lesson trusted that render produces the same tree to diff; the one before it gave you `UI = f(state)` and the phase strip `Trigger → Render → Reconcile → Commit`. Both quietly assumed something neither of them named: that running your component is *safe to do more than once, at any time, in any order*. This lesson names that assumption, turns it into a checklist you run on every component you write, and tells you where the code that *can't* satisfy it is supposed to live instead.
+
+## A component is a pure function of props and state
+
+Here is the contract, stated precisely. A component is **pure** if, given the same props and state, it does two things:
+
+1. It returns the same JSX tree.
+2. It changes nothing outside its own local scope while doing so.
+
+That's a <Term definition="A function whose output depends only on its inputs, with no observable effect on anything outside itself.">pure function</Term> in the math-class sense, and it's exactly what `UI = f(state)` was always claiming. Purity isn't a new topic bolted onto the render model. It's the fine print of the model you already hold: when we wrote `f`, we meant a *pure* `f`. Same inputs, same tree, no mess left behind.
+
+Think of it as React's side of a deal. *You* keep render pure. In exchange, *React* gets to run, skip, pause, restart, and reorder your renders however it likes to make the app fast — and you never have to think about when it does, because a pure function gives the same answer no matter how many times you call it. The whole bargain collapses into two rules, and they're worth holding in one breath:
+
+:::tip[The purity contract]
+1. **Don't mutate props or state during render.** Treat them as readonly.
+2. **Don't perform side effects during render.** Don't write to anything that outlives the render.
+:::
+
+Rule 2 stays abstract until you see what counts as a <Term definition={"A change a function makes to the world outside itself, or a dependence on outside state that can change: writing a global or the DOM, touching storage, making a network call, or reading the clock or a random number."}>side effect</Term>. Inside render, all of these are off-limits: writing a module-level variable, `localStorage.setItem(...)`, a `fetch`, `document.title = 'New title'`, setting a ref's `.current`, firing an analytics event, reading `Math.random()` or `Date.now()`. Each one either leaves a trace the next render will trip over, or makes this render's output depend on something that wasn't an input. The full catalog — with the fix for each — comes later in this lesson; for now, just register the shape.
+
+The contrast is the whole idea, so look at the two versions side by side.
+
+<CodeVariants maxLines={8}>
+  <CodeVariant label="Impure">
+    <div data-mark-color="red">
+
+    ```tsx "Date.now()"
+    const PostedAt = ({ createdAt }: { createdAt: number }) => {
+      const minutesAgo = Math.round((Date.now() - createdAt) / 60_000);
+      return <span>{minutesAgo} min ago</span>;
+    };
+    ```
+
+    </div>
+    **Reads the clock mid-render.** `Date.now()` is a different number every render, so this component returns a different tree from the same `createdAt` prop. Render is no longer a function of its inputs.
+  </CodeVariant>
+
+  <CodeVariant label="Pure">
+    <div data-mark-color="green">
+
+    ```tsx "now"
+    const PostedAt = ({ createdAt, now }: { createdAt: number; now: number }) => {
+      const minutesAgo = Math.round((now - createdAt) / 60_000);
+      return <span>{minutesAgo} min ago</span>;
+    };
+    ```
+
+    </div>
+    **The clock is now an input.** The parent reads `Date.now()` once and passes it down. Same props in, same tree out — and React can render this as many times as it wants without the answer drifting.
+  </CodeVariant>
+</CodeVariants>
+
+The fix wasn't to compute the time difference differently. It was to move the thing that *changes on its own* — the clock — out of render and into a prop. That move, "take the impure dependency and make it an input," is most of what the second half of this lesson is about.
+
+## Why React demands this
+
+You now have the rule. This section is why it isn't optional.
+
+Purity would be a nice-to-have if React called your component exactly once, in a predictable order, every time — the way a template engine renders a page top to bottom. But React reserves the right to do four things that a template engine never would, and every one of them is safe against a pure component and a landmine against an impure one.
+
+<Figure>
+  <ReactRightsPanel />
+</Figure>
+
+Take them one at a time, because each one cashes out a piece of the cliffhanger from the start of the lesson.
+
+**It can call your component twice per render in development.** <Term definition="A development-only wrapper that deliberately double-invokes render to surface impurity before it reaches production.">Strict Mode</Term> double-invokes your render function on purpose, in dev only, as a way of shaking out exactly this class of bug. A pure component called twice returns the same tree twice — no harm done. The `<Counter>` from the start of the lesson, with its `renders += 1`, runs that line twice and counts by two. Strict Mode didn't cause the bug; it *revealed* one that was always there, the moment before production could hide it. (The mechanism behind Strict Mode is its own topic — the next chapter's lesson on effects and Strict Mode owns it. Here it's just the messenger.)
+
+**It can pause a render partway through and start it over.** Under concurrent rendering, React may begin rendering a tree, abandon it because a higher-priority update arrived, and render again from scratch — and the abandoned attempt is *never committed to the screen*. A pure component doesn't care: the discarded render touched nothing, so throwing it away costs nothing. But a side effect that fired during the abandoned attempt already happened. You sent the analytics event, or wrote to `localStorage`, for a render the user never saw — and you're about to do it again on the retry.
+
+**It can skip rendering a component entirely.** When a component's inputs haven't changed, the React Compiler may reuse the tree from last time and simply *not call your function*. For a pure component that's a free win — same inputs would have produced the same tree anyway. But the `<Counter>` that bumped `renders` on every call depended on being called. Skip the call and the side effect that was secretly doing the real work just stops happening. The number freezes, and nothing errors. (The compiler is the next section's whole subject.)
+
+**It can render components in an order you didn't choose, or not render one at all.** Scheduling is React's job, not yours. Any code that assumes "this renders before that," or "this is guaranteed to render," is a bug waiting for the scheduler to disagree.
+
+And the third symptom from the opening — two `<Counter>`s corrupting each other — is the same disease one more time. A module-level `let renders` is *one* variable shared by every instance of the component. Mount the component twice and both copies increment the same counter, so each one's number reflects the other's renders too. State that should belong to "this component" leaked into a scope that outlives any single component. That's the through-line for all of it: you broke the contract, and React exercised a right it always had.
+
+:::note
+Purity is a constraint on the **Render** box specifically. Look back at the phase strip — `Trigger → Render → Reconcile → Commit`. Render is pure computation; it produces a tree and touches nothing else. <Term definition="The phase where React applies the diff to the real DOM.">Commit</Term> is where React is allowed to change the world, and it's where the legitimate homes for side effects live. The contract isn't "never have side effects." It's "don't have them *during render*."
+:::
+
+## The compiler is watching: purity as the 2026 default
+
+This rule matters more in 2026 than it did a few years ago, and it's worth understanding why.
+
+For most of React's history, impurity only bit you if you opted into the features that exercise it — Strict Mode, or concurrent rendering — and plenty of teams used neither. You could write an impure component and never feel it. That era is over. The <Term definition="A build-time tool that reads every component and automatically memoizes the pure ones, so they skip re-rendering when their inputs haven't changed.">React Compiler</Term> now reads *every* component in your codebase and auto-memoizes the ones it can prove are pure. This is the payoff this chapter's opening lesson promised when it told you to stop reaching for `useMemo` and `useCallback` by hand: write natural code, keep it pure, and the compiler does the optimizing for free.
+
+The catch is what happens when you break purity. The compiler doesn't error. It doesn't warn in the build log. It just *silently skips* that component — leaves it un-memoized, rendering the old way, quietly missing out on the optimization the rest of your codebase enjoys. The component keeps working, which is exactly what makes this dangerous: nothing tells you the optimization fell off. The audit signal lives in React DevTools, which puts a badge on each compiler-optimized component. A *missing* badge on a component you expected to be optimized is your purity smoke detector — the compiler skipped it, and a violation is usually why. Glance for it; the badge's mechanics and the compiler's configuration belong to the React Compiler chapter, not here. For now the takeaway is small and sharp: purity is the price of admission for the optimizer that the rest of your stack assumes.
+
+## The violations you'll actually write — and their fixes
+
+Enough principle. Here are the specific impurities a junior ships in real code, each paired with the minimal correct shape. Internalize the *fix*, not just the prohibition — that's what turns this lesson into a checklist you run rather than a rule you memorize.
+
+In real code, impurity rarely shows up alone. It accretes. A component starts clean, then someone needs a "new" badge, then someone wants to count renders for debugging, then someone tags featured products — and each addition quietly breaks the contract a little more. Here's a `<ProductRow>` that has collected three violations the way real components do. Step through it.
+
+<AnnotatedCode lang="tsx" maxLines={14} code={`
+const ProductRow = ({ product, renderCount }: ProductRowProps) => {
+  product.tags.push('featured');
+  renderCount.current += 1;
+  const isNew = Date.now() - product.createdAt < 60_000;
+
+  return (
+    <tr>
+      <td>{product.name}</td>
+      <td>{isNew ? 'New' : ''}</td>
+      <td>{product.tags.join(', ')}</td>
+    </tr>
+  );
+};
+`}>
+  <AnnotatedStep meta="{2}" color="red">
+    **Mutating a prop.** `product.tags` belongs to the parent; pushing onto it changes the parent's data from inside a child's render. Worse, it runs every render, so `'featured'` piles up: `['sale']`, then `['sale', 'featured']`, then `['sale', 'featured', 'featured']`. Never mutate a prop — derive a new array instead, or let the data already carry the tag it needs.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{3}" color="red">
+    **Writing to a ref during render.** A ref outlives the render — `renderCount.current` is the same box on every call — so writing to it is a side effect, and reading it back becomes non-deterministic once React renders more than once. Counting renders belongs in DevTools or an effect, not in the function body. (Refs are the next chapter's subject; here it's enough to recognize the smell.)
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{4} "Date.now()"`} color="red">
+    **Reading the clock in render.** `Date.now()` makes `isNew` depend on *when* React happened to call this function, not on the props. Two renders a second apart can disagree, which breaks reconciliation — and on a server-rendered page it breaks hydration the same way, because the server's clock and the browser's clock won't match. The fix: compute "is this new" in the parent and pass it down as a prop.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Each of those is the same mistake wearing a different hat: render reached out and touched something that outlives it, or depended on something that wasn't an input. The cleaned-up version moves every one of them out. Compare the two:
+
+<CodeVariants maxLines={14}>
+  <CodeVariant label="Impure">
+    <div data-mark-color="red">
+
+    ```tsx {2-4}
+    const ProductRow = ({ product, renderCount }: ProductRowProps) => {
+      product.tags.push('featured');
+      renderCount.current += 1;
+      const isNew = Date.now() - product.createdAt < 60_000;
+
+      return (
+        <tr>
+          <td>{product.name}</td>
+          <td>{isNew ? 'New' : ''}</td>
+          <td>{product.tags.join(', ')}</td>
+        </tr>
+      );
+    };
+    ```
+
+    </div>
+    **Three side effects in four lines.** It mutates a prop, writes a ref, and reads the clock — all before it returns a single element.
+  </CodeVariant>
+
+  <CodeVariant label="Pure">
+    <div data-mark-color="green">
+
+    ```tsx "isNew"
+    const ProductRow = ({ product, isNew }: ProductRowProps) => (
+      <tr>
+        <td>{product.name}</td>
+        <td>{isNew ? 'New' : ''}</td>
+        <td>{product.tags.join(', ')}</td>
+      </tr>
+    );
+    ```
+
+    </div>
+    **Inputs in, tree out.** `isNew` arrives as a prop the parent computed once. The render-count is gone — that's a debugging concern, not a rendering one. `product.tags` is read, never written. Render the same `product` and `isNew` a thousand times and you get the same row a thousand times.
+  </CodeVariant>
+</CodeVariants>
+
+That covers three of the six violations you'll meet most. The other three follow the same logic, and they're quick:
+
+**Mutating state during render.** `state.count++` on a value you got from `useState` is the same crime as mutating a prop — that value is this render's snapshot, not a mutable field. The fix is the setter, `setCount(...)`, which schedules a *new* render rather than scribbling on the current one. (We'll formalize the setter in a moment.)
+
+**Reaching for `Math.random()` to make a key or id.** A random `key` is a fresh identity every render, so — recall reconciliation from the previous lesson — React throws away and remounts every row on every render, losing all their state. The pure fix is a stable id: generate one once when the item is created, or use `useId` for an accessibility id (a tool from the next chapter — named here, not taught).
+
+**`localStorage` writes, `document` writes, or network calls in the body.** All three are side effects that belong outside render — in an event handler if a user action triggers them, or in `useEffect` if they synchronize with something external. A later chapter's effects lesson owns that surface; for now, just recognize that none of them go in the function body.
+
+And one more, written as a reflex rather than a snippet, because it's the shape you'll reach for over and over: when you need a *new* array derived from a prop, don't push onto the original — spread into a fresh one.
+
+```tsx del={1} ins={2}
+props.items.push(newItem);
+const next = [...props.items, newItem];
+```
+
+The first line reaches into the parent's array and changes it; the second leaves the parent's array untouched and hands you a brand-new one to render. That spread is the reflex the next lesson leans on for state updates and that the whole course leans on for immutable data. Build the muscle now: when in doubt, make a new value, don't edit the old one.
+
+:::note
+You may have noticed this lesson uses `console.log` to debug while preaching "no side effects in render." Isn't a log a side effect? Technically, yes — but it's <Term definition="Running it once or a hundred times leaves the same observable result.">idempotent</Term> and it *observes* rather than *mutates*. Nothing in your app depends on a log having happened, and a log written twice looks the same as a log written once. React's own docs sanction `console.log` in render as a debugging move for exactly this reason — and the team built the tooling to match: React DevTools *dims* the duplicate logs from Strict Mode's second render pass, and can suppress them entirely, treating them as expected noise rather than errors. That's the framework signaling that logging in render is fine. Purity is about observable effects on the world that React schedules around, not a rule to follow religiously. Strip noisy logs before production for hygiene — not because they were ever a correctness problem.
+:::
+
+## Local mutation is fine — where the boundary actually is
+
+There's a way to over-learn this lesson, and it's worth heading off now. Juniors who just absorbed "don't mutate" start cloning every object in sight and treating `let` and `.push()` as if they were radioactive. They're not. Mutating a variable you *created during this same render* is perfectly pure, because nothing outside the render can ever observe it.
+
+This is fine:
+
+```tsx title="CategoryList.tsx"
+const CategoryList = ({ categories }: { categories: string[] }) => {
+  const rows = [];
+  for (const name of categories) {
+    rows.push(<li key={name}>{name}</li>);
+  }
+  return <ul>{rows}</ul>;
+};
+```
+
+`rows` is born inside this render, lives entirely inside this render, and dies when the function returns. The `push` mutates it freely — and that's pure, because no other render, no parent, no part of React will ever see that array in its half-built state. It's your scratch paper. You can scribble on it all you want.
+
+So the rule was never "never mutate." Sharpen it: **never mutate something that outlives this render.** The exact same `.push()` call is pure against a local array and a violation against `props.items` — same operation, different target, different verdict. The boundary is ownership and lifetime, not the verb. Writes that cross the render boundary — to props, state, refs, modules, the DOM — are the side effects. Writes that stay inside it are just how you build the tree.
+
+Put it to the test. Sort each of these into the bucket it belongs in.
+
+<Buckets instructions="Each item is something a component might do during render. Sort it by whether it keeps the purity contract or breaks it.">
+  <Bucket name="pure" label="Pure" description="Fine to do during render" />
+  <Bucket name="impure" label="Impure" description="Move it out of render" />
+
+  <Item bucket="pure">`const list = []; list.push(x)`, then return `list`</Item>
+  <Item bucket="impure">`props.user.name = 'Ada'`</Item>
+  <Item bucket="impure">`Math.random()` read inside the returned JSX</Item>
+  <Item bucket="pure">`Date.now()` passed in as a prop and read in render</Item>
+  <Item bucket="impure">`localStorage.setItem('k', v)` in the function body</Item>
+  <Item bucket="pure">Map props to a new array with `.map()`</Item>
+</Buckets>
+
+If the verdict on each one came fast, you've got the contract. The whole lesson reduces to making that judgment quickly: *does this write or read reach outside the current render?* If yes, it doesn't belong here.
+
+## Where side effects belong, and a minimal state primer
+
+The rules opened a question they owe you an answer to. If side effects can't run during render, where *do* they go? There are exactly two legitimate homes, and you'll learn both properly in the chapters ahead — here they're a map, not a destination.
+
+- **Event handlers** are functions React calls in *response to a user action* — a click, a submit, a keypress — not during render. They're the natural home for "do this thing when the user does that thing." Saving a form, firing analytics on a click, writing to `localStorage` when a toggle flips: all handler work. (This chapter's lesson on synthetic events covers them; forms come later.)
+- **`useEffect`** is a function React calls *after* commit, to synchronize with something outside React. It's the home for "after this render lands on screen, go touch the external world" — a subscription, a timer, a non-React widget. (A later chapter's effects lesson owns the API.)
+
+The reflex worth planting now, before you've even seen either API: **reach for a handler first, and reach for an effect only to synchronize with something outside React.** Most of the work newcomers stuff into effects belongs in a handler instead. That instinct will save you from a whole genre of bugs later in the course.
+
+Two of the fixes above used a setter — `setCount(...)` — so here's the minimum you need to read it, and no more. `const [value, setValue] = useState(initial)` declares one piece of local state. Reading `value` gives you **this render's** snapshot of it. Calling `setValue(next)` doesn't change `value` on the spot — it *schedules a re-render* in which `value` will reflect `next`. That's the whole primer for now. The full `useState` story — lazy initialization, the functional-updater form, when to reach for `useReducer` instead — is the next chapter's opening, and the very next lesson digs into what "this render's snapshot" really means.
+
+One last hook, because it's a pure-render violation hiding in the most innocent-looking place. Watch this:
+
+```tsx del={1} ins={2}
+const [tree] = useState(buildHugeTree());
+const [tree] = useState(() => buildHugeTree());
+```
+
+`useState(buildHugeTree())` calls `buildHugeTree()` on *every single render*, even though React keeps only the very first result and throws the rest away. That's expensive work happening during render that has no business being there — the same "don't do work in render" instinct you just spent a whole lesson building. The fix is one character of ceremony: pass a function, `useState(() => buildHugeTree())`, and React calls it only once, on mount. We'll give that its full treatment in the next chapter. For now, just let it sit as proof that the contract you learned today reaches into corners you haven't met yet.
+
+## Check your understanding
+
+Two quick checks before the next lesson takes the snapshot model apart.
+
+First, the visceral one. Here's a tiny program with a module-level counter incremented inside a component, rendered once inside `<StrictMode>`. Predict what it logs.
+
+<PredictOutput
+  instructions="This runs in development, under Strict Mode."
+  expected={`1
+2`}
+>
+
+```tsx
+let count = 0;
+
+const Counter = () => {
+  count += 1;
+  console.log(count);
+  return <p>{count}</p>;
+};
+
+root.render(
+  <StrictMode>
+    <Counter />
+  </StrictMode>,
+);
+```
+
+<PredictWhy>
+Strict Mode deliberately calls render **twice** in development to surface impurity exactly like this — a side effect (`count += 1`) inside render. So the body runs twice and logs `1` then `2`. In production render runs once, it logs `1`, and the off-by-one bug hides until a feature that double-renders exposes it. (In real React DevTools you'd see that second `2` *dimmed* — the team greys out logs from Strict Mode's second pass, and can suppress them entirely, precisely because `console.log` in render is an expected, sanctioned debugging move.)
+</PredictWhy>
+
+</PredictOutput>
+
+Then a round on the contract's edges — the places juniors over-correct and under-correct.
+
+<TrueFalse instructions="Each statement is about the purity contract. Mark it True or False.">
+  <Statement answer="false">
+    Mutating a local array you created in the same render and returning it breaks the purity contract.
+    <TfWhy>False. A value born and discarded inside one render is scratch space — nothing outside the render can observe it. The contract is about mutations that *outlive* the render: props, state, refs, modules, the DOM.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    `console.log` in render violates the purity contract, so you must remove it.
+    <TfWhy>False. Logging is idempotent and observation-only, so React's docs sanction it as a debugging move — DevTools even dims the duplicate logs from Strict Mode's second pass. Strip noisy logs for hygiene before production, not for correctness.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    An impure component fails the build under the React Compiler.
+    <TfWhy>False. The compiler doesn't error or warn — it *silently skips* the component, leaving it un-memoized. A missing optimization badge in React DevTools is the only tell.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    Strict Mode's double-render in development is a bug you should suppress.
+    <TfWhy>False. It's a feature, not a bug — Strict Mode double-invokes render on purpose to surface impurity before production. If double-rendering breaks your component, the component is impure; fix that, don't silence the messenger.</TfWhy>
+  </Statement>
+
+  <Statement answer="true">
+    Reading `Date.now()` inside render makes a component impure.
+    <TfWhy>True. The clock is a different value every render, so the component's output depends on *when* it ran, not only on its props. Pass the time in as a prop instead.</TfWhy>
+  </Statement>
+</TrueFalse>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Keeping Components Pure"
+    href="https://react.dev/learn/keeping-components-pure"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="The canonical source for the contract, with three interactive challenges to fix impure components."
+  />
+  <ExternalResource
+    title="Components and Hooks must be pure"
+    href="https://react.dev/reference/rules/components-and-hooks-must-be-pure"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="The formal rule: idempotent, no side effects in render, no mutation of non-local values."
+  />
+  <ExternalResource
+    title="React Compiler v1.0"
+    href="https://react.dev/blog/2025/10/07/react-compiler-1"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="The release that makes auto-memoization the default — and silently skips the components purity can't prove."
+  />
+</CardGrid>

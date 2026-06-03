@@ -1,0 +1,394 @@
+---
+title: Reconciliation and the key prop
+description: How React diffs the new element tree against the last one, why it matches siblings by position, and how the key prop steers that matching to fix the canonical reorderable-list bug.
+chapter-id: 23
+sidebar:
+  order: 2
+  label: Reconciliation and keys
+---
+
+import Figure from '../../../components/figures/Figure.astro';
+import PositionMatchSequence from '../../../components/lessons/023/2/PositionMatchSequence.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import ReactCoding from '../../../components/live-coding/ReactCoding/ReactCoding.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import TrueFalse from '../../../components/exercises/true-false/TrueFalse.astro';
+import Statement from '../../../components/exercises/true-false/Statement.astro';
+import TfWhy from '../../../components/exercises/true-false/TfWhy.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import TypeMatchTrees from '../../../components/lessons/023/2/TypeMatchTrees.astro';
+
+Picture a `TodoList`. It renders cleanly: every row shows the right text, the right checkbox state, the right half-typed note. Then a user clicks "sort," the rows rearrange — and the checked boxes stay behind on the wrong rows. The note that was typed into the top item is now glued to a completely different todo. Nothing in the data is wrong; if you logged the array you'd see every item in its correct new place. The bug is in how React matched the old rows to the new ones. That matching has a name: <Term definition="React's algorithm for diffing the new element tree against the previous one to compute the minimum set of real DOM changes.">reconciliation</Term>. In the previous lesson you saw that rendering produces a tree of elements — `UI = f(state)`, run the function, get the tree. This lesson is about the box right after: the step where React compares the new tree to the last one and decides what to actually touch in the DOM. Get reconciliation wrong and you get bugs that look impossible, because the data is fine and only the *identity* is broken.
+
+## What reconciliation does
+
+Every render hands React a fresh tree. Re-running your component produces a whole new set of those plain element objects from the previous lesson — new `<div>`s, new `<Row>`s, top to bottom. React could throw away the existing DOM and rebuild it from that tree on every render, but that would be catastrophic: every keystroke would blow away focus, scroll position, and the browser's input state. So it doesn't. Instead it *diffs*. Reconciliation is React taking the new element tree, comparing it against the tree from the last render, and computing the smallest set of real DOM operations — create this node, patch that attribute, move this one, remove that one — to bring the page in line with the new tree.
+
+This sits exactly between the two phases you already know. Render produced the tree. Commit touches the DOM. Reconciliation is the step in the middle that decides *what* commit will do.
+
+<Figure caption="This lesson lives in the Reconcile box.">
+  <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: center; column-gap: 6px; row-gap: 10px; margin: 0;">
+    <div style="display: flex; align-items: center; justify-content: center; min-width: 96px; padding: 10px 16px; border: 1px solid var(--sl-color-gray-5); border-radius: 8px; background: var(--sl-color-bg-sidebar); color: var(--sl-color-gray-2); font-weight: 600; font-size: 0.95rem; margin: 0;">Trigger</div>
+    <div aria-hidden="true" style="color: var(--sl-color-gray-3); font-size: 1.1rem; line-height: 1; margin: 0;">&rarr;</div>
+    <div style="display: flex; align-items: center; justify-content: center; min-width: 96px; padding: 10px 16px; border: 1px solid var(--sl-color-gray-5); border-radius: 8px; background: var(--sl-color-bg-sidebar); color: var(--sl-color-gray-2); font-weight: 600; font-size: 0.95rem; margin: 0;">Render</div>
+    <div aria-hidden="true" style="color: var(--sl-color-gray-3); font-size: 1.1rem; line-height: 1; margin: 0;">&rarr;</div>
+    <div style="display: flex; align-items: center; justify-content: center; min-width: 96px; padding: 10px 16px; border: 2px solid var(--sl-color-accent); border-radius: 8px; background: var(--sl-color-accent); color: #fff; font-weight: 700; font-size: 0.95rem; box-shadow: 0 0 0 3px var(--sl-color-accent-low); margin: 0;">Reconcile</div>
+    <div aria-hidden="true" style="color: var(--sl-color-gray-3); font-size: 1.1rem; line-height: 1; margin: 0;">&rarr;</div>
+    <div style="display: flex; align-items: center; justify-content: center; min-width: 96px; padding: 10px 16px; border: 1px solid var(--sl-color-gray-5); border-radius: 8px; background: var(--sl-color-bg-sidebar); color: var(--sl-color-gray-2); font-weight: 600; font-size: 0.95rem; margin: 0;">Commit</div>
+  </div>
+</Figure>
+
+Here's the part worth slowing down on. A perfect, fully general tree diff — "what's the minimum number of edits to turn this tree into that one?" — is a famously expensive problem. The textbook algorithm runs in roughly O(n³) time for *n* nodes. For a tree of a thousand nodes that's a billion operations, on every render. React flatly refuses to pay that. Instead it commits to two cheap heuristics that drop the diff to roughly O(n) — linear, fast enough to run on every keystroke. The catch, and this is the whole lesson in one sentence: those heuristics are *assumptions*. They're right almost always, and when they're wrong React rebuilds more than it strictly had to. One of those wrong-guess edges is the exact bug from the intro. So let's learn the two assumptions, because once you can see them, you can see the bug coming.
+
+<VideoCallout videoId="thsUZEzL8ts" videoTitle="The Magic of React's Reconciliation">
+  Code Sketched's 5-minute illustrated walkthrough of the reconciliation rules — type heuristics, position matching, and the key prop — covering this whole lesson at a glance.
+</VideoCallout>
+
+## Two heuristics: same type updates, different type rebuilds
+
+The first heuristic is about element *type*, and it's the simpler of the two, so we'll start here.
+
+**Different type means a different tree.** If the element at a given position was a `<div>` last render and is a `<section>` this render, React doesn't try to be clever about it. It tears down the entire old subtree — that node and everything inside it — and builds a fresh one from scratch. Even if the children were byte-for-byte identical, they're gone and rebuilt. Any DOM state under the old node (an input's value, a scroll offset) and any React state inside components under it is discarded.
+
+**Same type means keep and patch.** If the element was a `<div className="a">` last render and is a `<div className="b">` this render, React keeps the existing DOM node and just updates the one attribute that changed. It does not recreate the node. The node survives, and so does everything tied to it: its focus, its scroll position, and the React state of every component nested inside it.
+
+Sit with the takeaway, because it seeds the next three sections:
+
+> Keep the element type stable across renders and React preserves everything underneath it. Change the type and React resets everything underneath it.
+
+That single rule is why a careless conditional can silently wipe out a form's contents, and later it's the lever you'll pull on purpose to reset state. For now, just the picture.
+
+<Figure caption="Same type at a position: the node is reused and only the changed attribute is patched, so the child survives. Different type: the whole subtree is thrown away and rebuilt, child state and all.">
+  <TypeMatchTrees />
+</Figure>
+
+In real code, a type change usually hides inside a conditional that returns two different elements from the same spot:
+
+<div data-mark-color="orange">
+
+```tsx "<section" "<div"
+const Panel = ({ expanded }: { expanded: boolean }) =>
+  expanded
+    ? <section className="panel">{/* … */}</section>
+    : <div className="panel">{/* … */}</div>;
+```
+
+</div>
+
+The two tags sit at the same position but are different types. Flipping `expanded` here doesn't patch a `<div>` into a `<section>` — it throws the old subtree away and mounts a new one. Harmless for a static panel. Not harmless if there was state living inside it.
+
+## Siblings are matched by position
+
+The type heuristic answers "is the thing at this spot the same kind of thing?" But it doesn't answer the harder question: when a parent renders a *list* of same-type children, which old child corresponds to which new one? They're all `<Row>`s. Type can't tell them apart.
+
+Without more information, React falls back to the only signal it has: **position**. The first child of the new render is matched to the first child of the old render, the second to the second, and so on down the list. Slot 0 to slot 0, slot 1 to slot 1.
+
+The consequence is the thing to internalize, because the bug falls straight out of it:
+
+> State and refs belong to the *position*, not to the data. "The component in slot 0" keeps its state across renders. If a different item moves into slot 0, it inherits whatever state slot 0 was holding.
+
+When the list never reorders, this is exactly what you want and you'll never notice it — slot 0 always holds the same item, so position and identity agree. But the moment items move between slots, position and identity disagree, and the state stays with the slot while the item walks away.
+
+This is also why React nags you. When you `.map` a list without keys, the console prints "Each child in a list should have a unique key." React is warning you that for a list that can change, position-matching is fragile — it has no stable way to follow an item as it moves. You'll feel exactly why in the next section.
+
+<PositionMatchSequence />
+
+## The index-as-key trap
+
+So you saw the console warning, and you did the natural thing: you reached for the index.
+
+```tsx
+items.map((item, i) => <Row key={i} item={item} />);
+```
+
+The warning goes away. Problem solved? Look closely at what `key={i}` actually says. Key `0` means "whatever is first right now." Key `1` means "whatever is second right now." The index isn't an identity for the *item* — it's an identity for the *position*. So `key={i}` doesn't give React a way to follow an item as it moves; it pins identity back to the slot, which is precisely what position-matching already did. You haven't fixed anything. You've made it strictly worse, because now the warning is silenced and the bug ships quietly.
+
+Here's the canonical reproduction, and it's worth understanding the exact mechanism. Build a list where each row contains an <Term definition="An input whose value lives in the DOM, not in React state. React doesn't overwrite it on re-render, which is exactly why the index-key bug is visible — the typed text stays put while the label around it changes.">uncontrolled input</Term> — a plain `<input>` whose typed value lives in the DOM, not in React state. Type a note into the first row — say "← grab two". Now reverse the list. Watch what React does: it matched by key, key is the index, the index is the position — so it decides slot 0 is still slot 0. The `<Row>` at slot 0 is the same type as before, so React *keeps the DOM node*, including the input and the text sitting inside it, and merely patches the label text around it to the new item's name. Your "← grab two" never moved. The label changed; the input didn't. The note is now attached to a different item entirely.
+
+This is invisible in prose and invisible in a screenshot. It only bites on interaction. So go feel it.
+
+<ReactCoding
+  instructions={`Type a note into the first row — say "← grab two". Then press Reverse and watch where your note ends up. The labels reorder, but your typed text stays in the same position, now attached to a different item. That's index-as-key matching by slot, not by item.`}
+  starter={`import { useState } from 'react';
+
+export function App() {
+  const [items, setItems] = useState([
+    { id: 'a', label: 'Milk' },
+    { id: 'b', label: 'Eggs' },
+    { id: 'c', label: 'Bread' },
+    { id: 'd', label: 'Coffee' },
+  ]);
+
+  const reverse = () => {
+    // Copy first, then reverse: .reverse() mutates in place, and state must not be mutated.
+    setItems((current) => [...current].reverse());
+  };
+
+  return (
+    <div className="flex flex-col gap-3 p-6">
+      <ul className="flex flex-col gap-2">
+        {items.map((item, i) => (
+          // key={i} pins identity to the slot, not the item — this is the bug.
+          <li key={i} className="flex items-center gap-3">
+            <span className="w-16 font-medium text-slate-900">{item.label}</span>
+            <input
+              defaultValue=""
+              placeholder="note…"
+              className="flex-1 rounded-md border border-slate-300 px-2 py-1"
+            />
+          </li>
+        ))}
+      </ul>
+      <button
+        type="button"
+        onClick={reverse}
+        className="self-start rounded-md bg-indigo-600 px-4 py-2 font-medium text-white hover:bg-indigo-500"
+      >
+        Reverse
+      </button>
+    </div>
+  );
+}`}
+/>
+
+Did you feel it? Your note stayed put while the labels slid past it. Nothing about the data is wrong — the array reversed exactly as asked. The text desynced because React followed the slot, not the item. Now here's the entire fix, side by side. It's one line.
+
+<CodeVariants>
+  <CodeVariant label="Index key (broken)">
+    <div data-mark-color="red">
+
+    ```tsx "key={i}"
+    items.map((item, i) => (
+      <Row key={i} item={item} />
+    ));
+    ```
+
+    </div>
+    **Re-pins identity to the slot.** Key `0` is always 'whatever is first now,' so reordering leaves state stranded on the position while the item moves on.
+  </CodeVariant>
+
+  <CodeVariant label="Stable id key (fixed)">
+    <div data-mark-color="green">
+
+    ```tsx "key={item.id}"
+    items.map((item) => (
+      <Row key={item.id} item={item} />
+    ));
+    ```
+
+    </div>
+    **Identity follows the item.** Key `item.id` travels with the data, so when the row moves React moves its DOM node and state along with it — your note stays on its own row.
+  </CodeVariant>
+</CodeVariants>
+
+With `key={item.id}`, the key travels with the item. When you reverse the list, React sees that the first row's item moved to the bottom, and it *moves that DOM node* there — input, typed note, and all — instead of relabeling whatever happened to slide into slot 0. Identity now follows the data, which is what you wanted all along.
+
+One more thing, because it explains why this bug is so good at hiding. Index keys only break when items change slots. They break on **reorder**, on **filtering** (removing an item shifts everything after it up a slot), and on **inserting anywhere but the end**. The one operation index keys survive is appending: a new item at the end gets a brand-new index, and nothing already in the list shifts. Most lists in early development only ever get appended to — so the demo works, the tests pass, the feature ships. Then someone adds sorting, and the bug surfaces in production on a list that worked fine for months. That's the trap: index keys aren't *visibly* wrong until the day the list reorders.
+
+## Stable keys from data identity
+
+The fix generalizes into a rule you can apply to any `.map` without thinking hard: **give each item a key tied to its data identity** — something stable that travels with the item across renders. For rows backed by a database, that's the primary key: `key={item.id}`. For content, a natural slug: `key={post.slug}`. The key's only job is to let React recognize "this is the same item I saw last render" no matter where it moved, and data identity is exactly that.
+
+When there's no natural id — items created entirely on the client, with nothing from a server to key on — you assign one. The discipline that matters is a single word: **once**. Generate the id at the moment the item is created, store it on the item, and read it back every render thereafter.
+
+```tsx
+const newItem = { id: crypto.randomUUID(), label, note: '' };
+setItems((current) => [...current, newItem]);
+```
+
+`crypto.randomUUID()` is the browser primitive for a unique id; in this course's projects the standard is a sortable <Term definition="A UUID variant whose leading bits encode a timestamp, so the ids sort in creation order — the project's default primary-key shape, generated with a uuidv7() helper.">UUIDv7</Term> from the project's `uuidv7()` helper, matching the database primary-key convention. Either way the point is the same: stamp it at creation, then leave it alone.
+
+Contrast that with the version that looks almost identical and is catastrophic:
+
+<CodeVariants>
+  <CodeVariant label="Generated once at creation">
+    <div data-mark-color="green">
+
+    ```tsx "crypto.randomUUID()" "key={item.id}"
+    const newItem = { id: crypto.randomUUID(), label, note: '' };
+    setItems((current) => [...current, newItem]);
+    // …elsewhere, on every render:
+    items.map((item) => <Row key={item.id} item={item} />);
+    ```
+
+    </div>
+    **Stable.** The id is minted once and persisted, so it's the same value every render — React recognizes the row across reorders.
+  </CodeVariant>
+
+  <CodeVariant label="Generated in render (broken)">
+    <div data-mark-color="red">
+
+    ```tsx "key={crypto.randomUUID()}"
+    items.map((item) => (
+      <Row key={crypto.randomUUID()} item={item} />
+    ));
+    ```
+
+    </div>
+    **A fresh key every render.** Minting the id during the map gives every row a brand-new key on every render, so React thinks every row is a different item and remounts all of them — every render. State lost, inputs blurred mid-typing, a guaranteed performance and UX cliff.
+  </CodeVariant>
+</CodeVariants>
+
+`key={crypto.randomUUID()}` *inside the map* mints a new key for every row on every single render. React compares this render's keys to last render's keys, finds zero matches, and concludes every row is a brand-new item — so it unmounts all of them and mounts fresh ones, every render. State is wiped, focused inputs lose focus mid-keystroke, and you've turned a cheap attribute patch into a full teardown-and-rebuild of the entire list on every state change. This is the interview-classic "what's wrong with this code," and now you can answer it precisely: the key has to be stable across renders, and a value computed *during* render never is.
+
+It cuts the other way too — don't over-correct into "index keys are forbidden." For a list that is genuinely **static** — a fixed navigation bar, a constant menu, anything that never reorders, filters, or inserts mid-list — the index is a perfectly stable key, because the index never changes either. The rule was never "index bad." The rule is "keys must be stable identity," and for reorderable lists the index isn't.
+
+Two precise constraints will trip you up the first time you hit them, so meet them now rather than in a debugger.
+
+The first: **`key` is unique among siblings, not globally.** A `TodoList` and a `UserList` can each render a child with `key="1"` and nothing breaks — they're different parents with different sibling sets, and React only ever matches keys within one set of siblings. You don't need to namespace keys across your app or worry about collisions between unrelated lists. Unique within the one `.map` is the whole requirement.
+
+The second catches nearly everyone: **`key` is not a prop you can read.** It looks like a prop — it sits right there in the JSX next to your real props — but React reserves it and consumes it for reconciliation. Inside the child, `props.key` is `undefined`. If the child component actually needs the id for its own logic, pass it a second time under a different name:
+
+<div data-mark-color="blue">
+
+```tsx "key={item.id}" "id={item.id}"
+<Row key={item.id} id={item.id} item={item} />
+```
+
+</div>
+
+Same value, two jobs. `key` goes to React and vanishes inside the component; `id` is an ordinary prop the child reads like any other. Putting it all together, here's the canonical list-render pattern, walked through one decision at a time:
+
+<AnnotatedCode lang="tsx" code={`
+const InvoiceList = ({ invoices }: { invoices: Invoice[] }) => (
+  <ul>
+    {invoices.map((invoice) => (
+      <InvoiceRow key={invoice.id} id={invoice.id} invoice={invoice} />
+    ))}
+  </ul>
+);
+`}>
+  <AnnotatedStep meta="{1}" color="blue">
+    A list component takes its data as a typed prop — an array of `Invoice` rows. Everything below is a function of this array.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"invoices.map"`} color="blue">
+    Map each data item to one element. This `.map` runs every render and produces a fresh array of `<InvoiceRow>` elements — React will reconcile this array against last render's.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"key={invoice.id}"`} color="blue">
+    The key is the row's data identity. React uses it — and only it — to match rows across renders, so a reordered or filtered list keeps each row's DOM node and state with its item.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"id={invoice.id}"`} color="blue">
+    `key` is consumed by React and unreadable inside the child, so the id is passed again as a normal `id` prop for the row's own logic. Same value, two destinations.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+## Same component, new key, fresh instance — and what else triggers a remount
+
+You've now seen all three ways React can decide "the thing at this position is no longer the same thing." It's worth collapsing them into one rule, because they're the same mechanism wearing three costumes, and that one rule is what you'll reach for in your head every time React seems to "lose" your state.
+
+Start with the new costume. When a component sits at the **same position** across two renders but its **`key` changes** between them, React stops treating it as the same instance. It runs the full unmount-and-mount cycle: the old instance is torn down (its state is gone, its refs detach, and — as you'll see in the chapter on effects — its effect cleanup runs), and a brand-new instance mounts in its place (fresh initial state, effects run clean). It's the *same component type*, but a *different instance* — React deliberately threw the old one away because the key told it to.
+
+Now fold in the two you already know, and the unified rule falls out:
+
+> The state under a position survives a re-render only if the element there keeps the **same type** *and* the **same key** (or, with no key, the **same position**). Change any one of those three — type, key, or position — and React unmounts the subtree and mounts a fresh one. That's a *remount*, and a remount is a full reset.
+
+Three triggers, one outcome. Memorize the outcome, not the three triggers, and "why did React reset my state?" becomes a question you can always answer: something about the element's type, key, or position changed across the render.
+
+The highest-value place this bites is the innocent-looking conditional. Compare these two:
+
+<CodeVariants>
+  <CodeVariant label="Same type — state survives">
+    <div data-mark-color="green">
+
+    ```tsx "<ProfileForm"
+    {showEdit
+      ? <ProfileForm user={user} />
+      : <ProfileForm user={user} disabled />}
+    ```
+
+    </div>
+    **The `<ProfileForm>` instance is kept.** Same component type at the same position across both branches — only props change — so any text the user has typed survives the toggle.
+  </CodeVariant>
+
+  <CodeVariant label="Different type — state resets">
+    <div data-mark-color="red">
+
+    ```tsx "<ProfileForm" "<ProfileCard"
+    {showEdit
+      ? <ProfileForm user={user} />
+      : <ProfileCard user={user} />}
+    ```
+
+    </div>
+    **The form's state vanishes the instant `showEdit` flips.** The *type* at this position changed from `ProfileForm` to `ProfileCard`, so React tears down the form — typed-but-unsaved edits included — and mounts the card fresh.
+  </CodeVariant>
+</CodeVariants>
+
+The takeaway is a design decision you'll make constantly: if you want state to *survive* a conditional, keep the component type stable across both branches and let only the props differ. If you want state to *reset*, that's a job for a key change — and reaching for a key change on purpose, to deliberately reset a component, is a real and deliberate pattern. It's exactly how you'd reset a form when the user switches which record they're editing. That tactic gets its own treatment later in this chapter, in "Remounting with key"; here you only need the mechanism — *key change means remount* — and the knowledge that it's a tool you'll pick up shortly, not an accident to avoid.
+
+A quick note on fragments, since they interact with all this. Fragments (`<>…</>`) are transparent to reconciliation: their children reconcile as if they were direct siblings of the fragment's parent, so wrapping things in a fragment doesn't add a level of identity. The one wrinkle worth filing away: the `<>` shorthand can't take a `key`. When you need a keyed fragment in a list — say each item renders two sibling elements — write the long form, `<Fragment key={id}>…</Fragment>`. You'll recognize it when you need it.
+
+Let's make sure the unified rule fused into one idea rather than three loose facts.
+
+<TrueFalse instructions="Each claim is about whether React preserves or resets the state at a position across a re-render.">
+  <Statement answer="false">
+    Switching an `<input type='text'>` to a `<textarea>` at the same position keeps whatever the user had typed.
+    <TfWhy>The element type changed (`input` → `textarea`), so React tears down the old node and builds the new one — the typed value is gone. A type change at a position is a remount.</TfWhy>
+  </Statement>
+
+  <Statement answer="true">
+    Toggling a `disabled` prop on the same `<Form>` component keeps its local state.
+    <TfWhy>Same component type at the same position — only a prop changed — so React keeps the instance and just patches the prop. Same type, same key, same position: state survives.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    Writing `key={Math.random()}` inside a `.map` preserves each row's state across renders.
+    <TfWhy>A fresh random key every render means no key matches the previous render, so React remounts every row on every render. State is wiped each time — the opposite of preserving it.</TfWhy>
+  </Statement>
+
+  <Statement answer="true">
+    Changing a component's `key` while it stays at the same position unmounts the old instance and mounts a fresh one.
+    <TfWhy>That's the remount mechanism. Same type, same position, but a changed key tells React this is a different instance — the old one is torn down and a new one mounts with initial state.</TfWhy>
+  </Statement>
+</TrueFalse>
+
+## React 19's reconciler: faster, same rules
+
+You'll read posts and release notes about "the React 19 reconciler," and it's worth knowing what changed so you don't go looking for new rules that aren't there.
+
+:::note[The React 19 reconciler is faster, not different]
+React's renderer gained real scheduling power: it can pause low-priority rendering work to handle a high-priority update — your keystroke, your click — right away, so a long render no longer freezes the interface mid-interaction. That's a genuine improvement, and it's about *performance and scheduling*. The **reconciliation semantics are unchanged**: the same two type heuristics, the same position-then-key identity matching, the same remount rule you just learned. Nothing in this lesson is version-specific. When you read "the React 19 reconciler," expect it to be faster — not to behave differently. The rules you just learned are the rules.
+:::
+
+## External resources
+
+The two React documentation pages below are the canonical references for everything here. "Preserving and Resetting State" is the same type-position-key story from React's own angle and is worth a read to hear it explained a second way; "Rendering Lists" is the reference for keys. The other two go deeper: the legacy reconciliation doc is the original write-up of the diffing algorithm and its heuristics, and Dan Abramov's essay rebuilds React's whole model — identity, reconciliation, keys, remounting — from first principles.
+
+<CardGrid>
+  <ExternalResource
+    title="Preserving and Resetting State"
+    href="https://react.dev/learn/preserving-and-resetting-state"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="React's own treatment of how position, type, and key decide whether state survives a render."
+  />
+  <ExternalResource
+    title="Rendering Lists"
+    href="https://react.dev/learn/rendering-lists"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="The reference on .map, keys, and choosing a stable key from data identity."
+  />
+  <ExternalResource
+    title="Reconciliation (React docs)"
+    href="https://legacy.reactjs.org/docs/reconciliation.html"
+    icon="lucide:git-compare"
+    iconColor="#61DAFB"
+    description="The original write-up of the O(n) diffing algorithm, the type heuristic, and why keys exist."
+  />
+  <ExternalResource
+    title="React as a UI Runtime"
+    href="https://overreacted.io/react-as-a-ui-runtime/"
+    icon="lucide:pen-tool"
+    iconColor="#8B5CF6"
+    description="Dan Abramov rebuilds React's model from first principles — identity, reconciliation, keys, and remounting."
+  />
+</CardGrid>

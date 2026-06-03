@@ -1,0 +1,553 @@
+---
+title: Remounting with key
+description: How to throw away a stateful component's local state on purpose by changing its key — the senior fix for the form that shows the previous record's edits — and how to choose it over lifting, deriving, or controlling.
+chapter-id: 23
+sidebar:
+  order: 5
+  label: Remounting with key
+---
+
+import KeyChangeRemountSequence from '../../../components/lessons/023/5/KeyChangeRemountSequence.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import ReactCoding from '../../../components/live-coding/ReactCoding/ReactCoding.astro';
+import PredictOutput from '../../../components/exercises/predict-output/PredictOutput.astro';
+import PredictWhy from '../../../components/exercises/predict-output/PredictWhy.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+Picture a screen you have built a dozen times without thinking about it: a list of users down the left, and on the right a form to edit whichever one you click. You pick Alice, change her email to something new, and — before you save — you click Bob. Bob's name loads into the form. His role loads. But the email field still holds the half-typed address you were writing for Alice. You just leaked Alice's edits onto Bob's record.
+
+That is not a bug in your form. It is a feature you met earlier in this chapter, working exactly as designed. When you learned how reconciliation matches elements across renders, you saw that React keeps the *same component instance* at a slot across renders and just feeds it new props — that is precisely why the form's local state survived the switch from Alice to Bob. The instance never went away, so its state never reset.
+
+The fix is one attribute: `<UserForm key={selectedUser.id} … />`. But the attribute is the easy part. The real skill — the one that separates someone who memorized a trick from someone who knows their tools — is knowing *when* to reach for it, and when three other tools fit better. That is what this lesson is about. The spine, the one idea to hold onto the whole way through: **a `key` is identity, and you get to choose it.**
+
+## A key change is a remount, on purpose
+
+You already know the mechanism. Earlier in this chapter you learned that a component's state and refs belong to its `position + key` in the tree — keep the type, position, and key the same, and React *reuses* the instance across renders, handing it new props; change any one of those three, and React performs a <Term definition="React tears down the existing component instance and builds a fresh one in its place: local state returns to its initial value, refs reset, effects clean up and re-run, and the DOM node is recreated rather than patched.">remount</Term> — it unmounts the old instance and mounts a brand-new one.
+
+Back there, a remount was something that *happened* to you. It was a thing to watch out for, the reason a list with the wrong keys put the typed value on the wrong row. Here we flip it around. We are going to *cause* a remount, deliberately. Same component, same position — but a different `key` tells React, in its own language, "this is a different instance now; throw the old one away." It is reconciliation, used as a state-reset switch.
+
+That switch is not free, and it is worth being precise about what it does the moment you flip it, because every cost is on the table from the start. A remount:
+
+- resets local `useState` back to its initial value,
+- resets any refs,
+- runs the old instance's effect cleanup, then runs the new instance's effects from scratch,
+- and recreates the DOM nodes rather than patching them.
+
+This is the exact same list you saw when a remount bit you by accident. Nothing new is happening — the only thing that changed is your intent. You wanted this.
+
+It is worth placing this on the phase strip you have been carrying through the chapter, `Trigger → Render → Reconcile → Commit`. The key change does its work in **Reconcile**. When React reaches the slot and compares the new element's key against the instance that was there, it finds no match — `bob` is not `alice` — so it has nothing to reuse. It builds a new instance. The reset is not a side effect you arranged; it is the natural consequence of React looking for the old instance and, by your design, not finding it.
+
+Watch one slot across the selection change.
+
+<KeyChangeRemountSequence />
+
+That is the entire mechanism. Everything from here is application — learning to recognize the situations where flipping this switch is the right move, and the situations where it is the wrong one.
+
+## The record-bound form, fixed with one line
+
+Let's build the leaking form for real, because it is the pattern this whole lesson orbits, and seeing the bug, the tempting-but-wrong fix, and the right fix next to each other is the fastest way to internalize all three.
+
+The setup is a minimal <Term definition="A two-pane UI: a list of records on one side (the master) and a form or panel showing the currently selected record's details on the other (the detail). Selecting in the master swaps what the detail shows.">master-detail</Term> screen. A parent component owns which user is selected and renders a child form for it:
+
+```tsx title="UserSettings.tsx"
+const UserSettings = () => {
+  const [selectedId, setSelectedId] = useState(users[0].id);
+  const selectedUser = users.find((u) => u.id === selectedId)!;
+
+  return (
+    <div className="flex gap-6">
+      <ul>
+        {users.map((u) => (
+          <li key={u.id}>
+            <button onClick={() => setSelectedId(u.id)}>{u.name}</button>
+          </li>
+        ))}
+      </ul>
+      <UserForm user={selectedUser} />
+    </div>
+  );
+};
+```
+
+Clicking a name sets `selectedId`, which re-renders the parent with a different `selectedUser` flowing as the `user` prop into the same `<UserForm>` slot.
+
+And here is the child. It keeps the editable fields in local state, seeded from the `user` prop — which is exactly the natural way you would write this, and exactly the shape that creates the leak:
+
+<div data-mark-color="blue">
+
+```tsx title="UserForm.tsx" {2-3}
+const UserForm = ({ user }: { user: User }) => {
+  const [name, setName] = useState(user.name);
+  const [email, setEmail] = useState(user.email);
+
+  return (
+    <form>
+      <input value={name} onChange={(e) => setName(e.currentTarget.value)} />
+      <input value={email} onChange={(e) => setEmail(e.currentTarget.value)} />
+      <button type="submit">Save</button>
+    </form>
+  );
+};
+```
+
+</div>
+
+Read that initialization carefully, because it is the hinge of the whole bug. `useState(user.email)` does not mean "keep `email` in sync with the prop." It means "use `user.email` as the *initial* value, the very first time this instance mounts, and never again." The setter takes over from there. On every later render of the same instance, the `useState` argument is ignored entirely — React already has a value stored for that slot and hands it back to you untouched.
+
+So trace what happens when you switch from Alice to Bob. The parent re-renders with Bob's `user`. React reaches the `<UserForm>` slot, sees the same component type at the same position with no key, and — doing exactly what it promised — reuses the existing instance and feeds it the new prop. But the instance is not new. Its `email` state is still the string you typed for Alice, because nothing told React to start over. The `useState(user.email)` line runs again, sees Bob's email as its argument, and shrugs: that argument only mattered at mount, and mount already happened. **State belongs to the slot, not to the user** — and the slot did not change.
+
+### The fix you'll reach for first, and why to put it down
+
+Here is the move almost everyone makes before they know about `key`: watch the user's id, and when it changes, manually shove the new values into state with an effect.
+
+<div data-mark-color="orange">
+
+```tsx title="UserForm.tsx" {5-8}
+const UserForm = ({ user }: { user: User }) => {
+  const [name, setName] = useState(user.name);
+  const [email, setEmail] = useState(user.email);
+
+  useEffect(() => {
+    setName(user.name);
+    setEmail(user.email);
+  }, [user.id]);
+
+  // …form
+};
+```
+
+</div>
+
+It works, and that is the trap — "works" is not the bar. This fix is brittle in a way that will absolutely bite a future teammate. It is one setter per field, so the day someone adds a `phone` field and forgets to add a fourth line here, `phone` silently leaks across records again — and nobody will know why until a customer complains. It also runs one beat *late*: the effect fires *after* React has already rendered the form once with the stale state, so there is a flash of the wrong data before the correction lands. And it is the textbook shape of an anti-pattern you will meet head-on in the chapter on effects, under the banner "you might not need an effect" — resetting state because a prop changed is the canonical example. You do not need to learn effects to take this on faith right now: a `useEffect` that exists only to copy props into state is almost always the wrong tool.
+
+The right fix deletes all of that and replaces it with one attribute on the parent:
+
+```tsx
+<UserForm key={user.id} user={user} />
+```
+
+When the selection changes, `user.id` changes, so the key changes, so React remounts the form. Local state resets to the new user's data — `useState(user.email)` runs *as a real mount this time*, so it actually uses Bob's email — and it does this for every field at once, with zero per-field bookkeeping. Add a `phone` field tomorrow and it just works; the key does not know or care how many fields live inside. The reset can never go stale, because there is nothing to keep in sync — there is no copy of the prop being maintained, only a fresh instance born from the prop.
+
+Put the three side by side. The first column is the bug, the second is the fix you should resist, the third is the senior default.
+
+<CodeVariants>
+  <CodeVariant label="Stale (buggy)">
+    <div data-mark-color="red">
+
+    ```tsx del={1}
+    <UserForm user={user} />
+    ```
+
+    </div>
+    **The instance is reused across the switch, so the previous user's edits leak onto the next record.** No key means same type, same slot — React keeps the old `<UserForm>` and just feeds it Bob's prop, while `name` and `email` still hold Alice's typing.
+  </CodeVariant>
+
+  <CodeVariant label="Effect re-sync (don't)">
+    <div data-mark-color="orange">
+
+    ```tsx {2-5}
+    const UserForm = ({ user }: { user: User }) => {
+      useEffect(() => {
+        setName(user.name);
+        setEmail(user.email);
+      }, [user.id]);
+      // …
+    };
+    ```
+
+    </div>
+    **It works, but it's brittle and effect-smelly.** One setter per field, an extra render with a flash of stale data before the correction lands, and it silently breaks the moment a teammate adds a field and forgets a line.
+  </CodeVariant>
+
+  <CodeVariant label="key reset (do)">
+    <div data-mark-color="green">
+
+    ```tsx ins="key={user.id}"
+    <UserForm key={user.id} user={user} />
+    ```
+
+    </div>
+    **One attribute, declarative, scales to any number of fields for free.** Changing `user.id` changes the key, so React remounts the form and local state is reborn from the new prop — the default an experienced engineer reaches for.
+  </CodeVariant>
+</CodeVariants>
+
+:::tip
+When a stateful component is bound to a record, key it by that record's identity: `key={record.id}`. Switch records, get a fresh form — automatically, for every field, forever.
+:::
+
+Now make it real with your own hands. The exercise below is the leaking form, live. Type into a field, click a different user, and watch your edits stick around where they do not belong. Then fix it.
+
+<ReactCoding
+  live
+  instructions={`Type a new email for one user, then click a different user — your edits stick around on the wrong record. Add one attribute to <UserForm> so each user gets a fresh form.`}
+  starter={`import { useState } from 'react';
+
+const users = [
+  { id: 'u1', name: 'Alice', email: 'alice@acme.dev' },
+  { id: 'u2', name: 'Bob', email: 'bob@acme.dev' },
+  { id: 'u3', name: 'Carol', email: 'carol@acme.dev' },
+];
+
+const UserForm = ({ user }) => {
+  // Local state, seeded from props at mount — the shape that creates the leak.
+  const [name, setName] = useState(user.name);
+  const [email, setEmail] = useState(user.email);
+
+  return (
+    <form className="flex flex-1 flex-col gap-3">
+      <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
+        Name
+        <input
+          value={name}
+          onChange={(e) => setName(e.currentTarget.value)}
+          className="rounded-md border border-slate-300 px-2 py-1"
+        />
+      </label>
+      <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
+        Email
+        <input
+          value={email}
+          onChange={(e) => setEmail(e.currentTarget.value)}
+          className="rounded-md border border-slate-300 px-2 py-1"
+        />
+      </label>
+      <button
+        type="submit"
+        className="self-start rounded-md bg-indigo-600 px-4 py-2 font-medium text-white hover:bg-indigo-500"
+      >
+        Save
+      </button>
+    </form>
+  );
+};
+
+export function App() {
+  const [selectedId, setSelectedId] = useState(users[0].id);
+  const user = users.find((u) => u.id === selectedId);
+
+  return (
+    <div className="flex gap-6 p-6">
+      <ul className="flex flex-col gap-1">
+        {users.map((u) => (
+          <li key={u.id}>
+            <button
+              type="button"
+              onClick={() => setSelectedId(u.id)}
+              className={
+                'w-28 rounded-md px-3 py-2 text-left font-medium ' +
+                (u.id === selectedId
+                  ? 'bg-indigo-600 text-white'
+                  : 'text-slate-700 hover:bg-slate-100')
+              }
+            >
+              {u.name}
+            </button>
+          </li>
+        ))}
+      </ul>
+      {/* No key here, so React reuses the same UserForm instance across selections. */}
+      <UserForm user={user} />
+    </div>
+  );
+}`}
+/>
+
+<details>
+<summary>Reference solution</summary>
+
+```tsx "key={user.id}"
+<UserForm key={user.id} user={user} />
+```
+
+Keying the form by `user.id` changes its identity on every selection, so React remounts it instead of reusing the instance — each user gets a fresh form, with `useState(user.email)` running as a real mount and seeding the new record's values.
+
+</details>
+
+One thing not to "fix" in that child: seeding state from props is the very thing that makes this pattern work. It looks like the cause of the bug, and in a sense it is — but it is also the reason the keyed version is so clean, because the fresh instance is born already filled with the right data. Do not reach for some cleverer wiring to keep state and props in sync. If anything, the cleaner answer is to not own the state in the child at all — which is the next thing to weigh.
+
+## When the form should be controlled instead
+
+A `key` reset is the right tool for a child that *legitimately owns* local state but needs to wipe it when its identity changes. The word "legitimately" is doing real work there. Before you reach for the key, ask whether the child should be holding that state in the first place.
+
+Because there is a whole class of forms where the answer is no — where the cleaner design is to let the parent own every field. Make the form a <Term definition="A form (or input) whose values live in React state — in the parent here — and flow down as props, with the child writing changes back up through callbacks. The opposite of an uncontrolled input, which keeps its own value in the DOM. Full controlled-input mechanics come later in the course.">controlled component</Term>: the parent holds the values, passes them down, and the child becomes a thin presentational layer that renders what it is given and reports edits back through callbacks. Do that, and there is *no local state in the child to reset*. Switching records just rewrites the props the parent passes, and the form follows along for free. No key needed, because there is nothing to throw away.
+
+Here is the heuristic an experienced engineer carries, stated plainly:
+
+:::note
+If you find yourself bumping a `key` on every prop change to keep a child in line, the state probably wants to live in the parent.
+:::
+
+The `key` reset earns its place when the local state has a *real home* in the child — a working draft the parent has no business tracking keystroke by keystroke — but still needs to reset on an identity change. If the parent is already going to track every keystroke anyway, skip the middleman: own the state up there and let resets fall out of normal prop flow.
+
+Look at the same form built both ways. Neither is universally correct. The whole decision comes down to a single question — *who owns the draft.*
+
+<CodeVariants>
+  <CodeVariant label="Child owns the draft → key reset">
+    ```tsx
+    // Parent: keys the child by identity.
+    <UserForm key={user.id} user={user} />
+
+    // Child: holds its own draft.
+    const UserForm = ({ user }) => {
+      const [name, setName] = useState(user.name);
+      const [email, setEmail] = useState(user.email);
+      // …
+    };
+    ```
+
+    **The child owns the working draft, so resetting on identity change means changing the key.** The parent never sees keystrokes; it only knows which user is selected, and the remount wipes the draft clean.
+  </CodeVariant>
+
+  <CodeVariant label="Parent owns the values → controlled">
+    ```tsx
+    // Parent: holds the values, no key needed.
+    const UserSettings = () => {
+      const [name, setName] = useState(selectedUser.name);
+      const [email, setEmail] = useState(selectedUser.email);
+      return <UserForm name={name} email={email} onName={setName} onEmail={setEmail} />;
+    };
+
+    // Child: presentational — renders props, reports edits up.
+    const UserForm = ({ name, email, onName, onEmail }) => (/* … */);
+    ```
+
+    **The parent is the single source of truth, so the form follows the props and resets come for free.** The trade is that the parent re-renders on every keystroke — fine for small forms, the right call when a sibling also needs the values.
+  </CodeVariant>
+</CodeVariants>
+
+The real, full controlled-form patterns — wiring `value` and `onChange`, validating, submitting — are their own subject later in the course, when you reach forms and server actions. And lifting state into a parent is itself a deliberate move with its own rules, which you will study in the next chapter, on state. For now the point is narrow and important: before you reach for `key`, decide who should own the draft. If the answer is "the parent," you do not have a reset problem at all.
+
+## The same trick, two more faces
+
+The record-bound form is the canonical case, but the mechanism is generic — "new key = fresh instance" applies anywhere a stateful subtree should start over. Once you can see it in the form, you can spot it everywhere. Here are two more places it shows up, wearing different costumes. Do not look for a new mechanism in either; it is the same `key` change, applied to a different kind of state.
+
+### Replaying an animation on content change
+
+Say you have a toast that slides in from the corner with a little entrance animation when it mounts. A new message comes in, you update the toast's text — and the animation does not play. The message just changes in place, silently. Why? Because you never remounted. React kept the same toast instance and patched the text node inside it; the entrance animation runs on *mount*, and there was no mount. It fired once, the first time, and never again.
+
+The not-yet-played mount animation is a kind of state, and the cure is the same cure:
+
+<div data-mark-color="green">
+
+```tsx "key={messageId}"
+<Toast key={messageId} message={message} />
+```
+
+</div>
+
+The entrance is a CSS animation guarded by `motion-reduce:` so it respects a reduced-motion preference — but the styling is beside the point here; the lesson is the key, not the animation.
+
+Each new `messageId` is a key change, which is a fresh mount, which means a new DOM node — and a CSS entrance animation runs every time its node is created. The toast component knows nothing about messages or animations replaying. It just mounts, and mounting is what plays the animation. The *remount* did the work.
+
+### A reset button that bumps the key
+
+Now the other costume. You have a "Start over" button on a multi-step wizard, or a "Clear" on a search panel, and clicking it should wipe the child's state clean without unmounting the surrounding page or threading a reset signal through every field by hand.
+
+There is nothing natural to key by here — no record id changes, no message arrives. So you *manufacture* an identity: hold a counter in the parent, key the child by it, and bump the counter on click. Each bump is a new key, which remounts the child, which gives you a clean slate.
+
+<AnnotatedCode lang="tsx" code={`
+const SearchPanel = () => {
+  const [resetKey, setResetKey] = useState(0);
+
+  return (
+    <section>
+      <SearchForm key={resetKey} />
+      <button onClick={() => setResetKey((k) => k + 1)}>Start over</button>
+    </section>
+  );
+};
+`}>
+  <AnnotatedStep meta="{2}" color="blue">
+    A counter in the parent, starting at `0`. This integer *is* the form's identity — its only job is to change when you want a reset.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{6}" color="blue">
+    The form is keyed by that counter. While `resetKey` holds steady, the form keeps its state across the parent's re-renders, just like any keyed child.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{7} "setResetKey((k) => k + 1)"`} color="blue">
+    Clicking bumps the counter with the updater form (next-depends-on-prev, from the snapshot lesson earlier in this chapter). New value → new key → remount → clean slate, no matter how many fields live inside.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Notice this is the same argument as the record-bound form, just from the other direction. One mechanism resets *all* of the descendant state at once — no per-field clearing, nothing to keep in sync, nothing that drifts as the form grows. The whole moving part is a single integer.
+
+## Choosing the right reset: key, lift, derive, or control
+
+Here is the part that actually makes you good at this. A junior learns "bump the key" and then bumps it everywhere, including a dozen places where a cleaner tool fits. The durable skill is not the trick — it is the *order in which you consider your options*, so the key ends up being your last reach instead of your first.
+
+There are four tools, each with its own trigger:
+
+- **`key` reset** — the child legitimately owns local state (a draft) that must reset when a specific identity it is bound to — a record, a message, a session the parent already tracks — changes.
+- **Lift the state to the parent** — a sibling needs to read this state, or the parent should be the single source of truth. The child becomes controlled, and resets fall out of prop flow. (Its own subject in the next chapter, on state.)
+- **Derive it in render** — the value is *computable* from props or other state, so it is <Term definition="A value computed from existing props or state while rendering, rather than stored in its own state. Storing a copy invites the two from drifting out of sync.">derived state</Term>: don't store a copy of it at all, just compute it while rendering. This is the antidote to "I stored a prop in state and now they're out of sync." (Also covered in the next chapter, and again in the chapter on effects.)
+- **Persist — do nothing** — the state is *supposed* to survive the identity change. Scroll position, which panels the user expanded, an in-progress sub-selection. Resetting it would be the bug, not the fix.
+
+The trap to name out loud: do not reach for `key` when deriving or lifting is cleaner, and do not reset state the user wanted kept. Both are common, and both come from reaching for `key` first instead of last.
+
+So walk the questions in order. The diagram below is interactive — click through it the way an experienced engineer actually thinks, one question at a time, and notice that `key` is the *last* thing you arrive at, not the first.
+
+<StateMachineWalker title="Which reset reach?">
+  <Question
+    id="persist"
+    prompt="Should this state survive when the identity changes?"
+    description="Scroll position, which panels the user expanded, an in-progress sub-selection they opened — anything the user would be surprised to lose."
+  >
+    <Branch label="Yes — losing it would surprise the user" to="leaf-persist" />
+    <Branch label="No — it should start fresh" to="derive" />
+  </Question>
+
+  <Question id="derive" prompt="Can the value be computed from props or other state?">
+    <Branch
+      label="Yes — it's derivable"
+      to="leaf-derive"
+      rationale="You can recompute it during render from data you already have."
+    />
+    <Branch label="No — it's genuinely independent state" to="lift" />
+  </Question>
+
+  <Question id="lift" prompt="Does a sibling need to read it, or should the parent be the single source of truth?">
+    <Branch label="Yes — share it upward" to="leaf-lift" />
+    <Branch label="No — it's the child's own business" to="own" />
+  </Question>
+
+  <Question id="own" prompt="Does the child legitimately own a draft that must reset when a specific identity changes?">
+    <Branch
+      label="Yes — a draft bound to a record, message, or session"
+      to="leaf-key"
+      rationale="The parent already tracks that identity; the child just holds the working copy."
+    />
+    <Branch label="No — nothing actually needs resetting" to="leaf-persist" />
+  </Question>
+
+  <Leaf id="leaf-persist" verdict="Persist — don't reset">
+    Leave the state alone.
+    Resetting a scroll position or an expanded panel the user opened would throw away work they expect to keep — that is the bug, not the fix.
+  </Leaf>
+
+  <Leaf id="leaf-derive" verdict="Derive it in render">
+    Don't store a copy — compute it from props or other state while rendering.
+    This is the antidote to "I stored a prop in state and now they're out of sync." (Covered next chapter, on state.)
+  </Leaf>
+
+  <Leaf id="leaf-lift" verdict="Lift to the parent">
+    Move the state up; the child becomes controlled and resets fall out of prop flow.
+    Reach here when a sibling reads it or the parent should own the truth. (Covered next chapter, on state.)
+  </Leaf>
+
+  <Leaf id="leaf-key" verdict="key reset">
+    Key the owning subtree by the identity it's bound to — `key={record.id}` or a counter you bump on purpose.
+    The right reach, and the *last* one, when the child owns a draft that must reset on an identity change.
+  </Leaf>
+</StateMachineWalker>
+
+Two practical notes once you have landed on `key`. First, the honest cost, so the choice is informed: a remount runs every effect's cleanup and then re-runs the effects (a subscription or socket inside the subtree tears down and re-establishes), refs re-attach, animations replay, and the DOM is recreated. For most components this is imperceptible. For a heavy subtree with expensive mount logic it is measurable — so know that you are paying it, and decide it is worth paying. This is a trade-off to weigh, not a rule against using `key`.
+
+Second, **key the smallest subtree that owns the state you want to reset.** Put the key on the top component of the reset target — not on a deep leaf (you would reset only that leaf and miss the rest) and not on some far-up ancestor (you would nuke far more than you meant to). The key wraps exactly what resets. Choose its scope as deliberately as you choose when it changes.
+
+## Two ways to break a key reset
+
+This tool has two sharp edges, both specific enough to it that they are worth pinning down before you ship anything with a `key` reset in it.
+
+**The first: an unstable key, which loops your component into uselessness.** Watch what happens when the key is computed fresh on every render:
+
+<CodeVariants>
+  <CodeVariant label="Loops (broken)">
+    <div data-mark-color="red">
+
+    ```tsx "key={Math.random()}"
+    <Form key={Math.random()} />
+    ```
+
+    </div>
+    **A new key every render means React remounts every render** — state can never persist, effects thrash, and the input loses focus mid-keystroke. The component is effectively unusable.
+  </CodeVariant>
+
+  <CodeVariant label="Stable">
+    <div data-mark-color="green">
+
+    ```tsx "key={user.id}"
+    <Form key={user.id} />
+    ```
+
+    </div>
+    **The key changes only on the intended identity switch,** so the form persists between switches and resets exactly when you mean it to.
+  </CodeVariant>
+</CodeVariants>
+
+`Math.random()` and `Date.now()` produce a different value every single time render runs. So the key changes on *every* parent render, which means React remounts the form on every parent render. The state can never persist long enough to be useful; effects tear down and rebuild constantly; the input loses focus mid-keystroke. The component is, functionally, broken. The rule that keeps you safe: **the key must change only when the reset is intended.** Derive it from a stable identity (`user.id`) or a counter you bump on purpose — never from a value that is freshly random or time-based each render. This is the same hazard you saw when an array index made a bad key, viewed from the reset angle instead of the list angle.
+
+Let's make the loop visceral, because reading about it is one thing and seeing the output is another. In the drill below, `Child` is rendered with an unstable key, and it logs `mounted` from an effect that runs *on mount* — for now, take "runs once, when the component mounts" as given; effects are a later chapter. The parent re-renders itself exactly three times (it bumps `n` until it hits `2`). Predict what prints.
+
+<PredictOutput
+  instructions="Child logs 'mounted' when it mounts. The parent re-renders itself until n reaches 2 — three renders in all. What does the console print?"
+  expected={`mounted
+mounted
+mounted`}
+>
+
+```tsx
+const Child = () => {
+  useEffect(() => console.log('mounted'), []);
+  return <p>hi</p>;
+};
+
+const Parent = () => {
+  const [n, setN] = useState(0);
+  useEffect(() => {
+    if (n < 2) setN(n + 1);
+  });
+  return <Child key={Math.random()} />;
+};
+```
+
+<PredictWhy>
+An inline `Math.random()` key is a new value on every render, so React unmounts and remounts `Child` each time — re-running its mount effect on all three renders. Give `Child` a stable key (`key="child"`) and React mounts it once: you'd see `mounted` a single time, no matter how often the parent re-renders.
+</PredictWhy>
+
+</PredictOutput>
+
+That repeated `mounted` is the signal to watch for in the wild: if a component you expected to mount once is mounting again and again, suspect an unstable key feeding it a new identity every render.
+
+**The second edge: resetting state the user wanted to keep.** A `key` change is a blunt instrument — it discards *all* local state in the subtree it wraps, indiscriminately. If that subtree also holds a scroll position, an expanded panel the user opened, or a sub-selection they were in the middle of, the key change throws those away too. Be deliberate about both *what* the key wraps and *when* it changes. If only part of the subtree should reset, key only that part — which is the same "key the smallest owning subtree" rule from a moment ago, now as a guard against destroying state the user expected to survive.
+
+One last practical note. A remounted child always starts from `useState`'s *initial* value, so if the fresh instance should come up pre-filled, feed it through props and initialize from them — `useState(user.email)` — which is exactly the record-bound-form shape you started with. (If that initial value is expensive to compute, there is a lazy form, `useState(() => …)`, that you will meet in the next chapter — named here only so you know it exists.)
+
+## Where to go deeper
+
+Two pages from the React docs own this material and make the best follow-up reading.
+
+<CardGrid>
+  <ExternalResource
+    title="Preserving and Resetting State"
+    href="https://react.dev/learn/preserving-and-resetting-state"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="The canonical treatment of position + key identity and the key-reset pattern — the single best follow-up to this lesson."
+  />
+  <ExternalResource
+    title="You Might Not Need an Effect"
+    href="https://react.dev/learn/you-might-not-need-an-effect"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="Why the effect-that-clears-fields fix is the wrong reach — resetting state on a prop change is one of its named anti-patterns."
+  />
+  <ExternalResource
+    title="Why React Needs a key Prop"
+    href="https://www.epicreact.dev/why-react-needs-a-key-prop"
+    icon="lucide:graduation-cap"
+    iconColor="#5B21B6"
+    description="Kent C. Dodds builds intuition for keys by reasoning from React's point of view — the 'why' behind the identity rule this lesson leans on."
+  />
+</CardGrid>
+
+You now have the whole tool. A key is identity, and identity is something you choose: keep it stable and React reuses the instance, change it and React hands you a fresh one. So when a stateful component's identity changes — a new record, a new message, a deliberate reset — change its key, and let the remount do the work. Just reach for it last, after you have ruled out persisting, deriving, and lifting — and only when the state has a real home in the child that the parent is already tracking the identity for.
