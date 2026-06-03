@@ -1,0 +1,639 @@
+---
+title: useReducer when transitions multiply
+description: Model coordinated, invariant-bearing state as a reducer — a pure state machine you write inline.
+chapter-id: 24
+sidebar:
+  order: 4
+  label: useReducer
+---
+
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import AsyncStateTimeline from '../../../components/lessons/024/4/AsyncStateTimeline.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import ReactCoding from '../../../components/live-coding/ReactCoding/ReactCoding.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Term from '../../../components/ui/Term.astro';
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+So far in this chapter `useState` has been the answer to every "where does this value live" question. A counter, a toggle, the selected tab, a single form field — one value, one setter, one or two ways it changes. That's the right reach for most state, and it stays the right reach.
+
+This lesson is about the moment it stops being enough. Not because `useState` breaks, but because a component accumulates *several* state values that must change together to stay correct — and when several values move in lockstep, scattering them across a pile of independent setters is how bugs get in. You already have every piece you need to fix this: immutable updates, the snapshot model, purity, and discriminated unions with exhaustiveness checking. `useReducer` is the hook that cashes all of them in at once. It is not a new primitive to memorize; it is the four things you already know, assembled into one shape.
+
+The framing to hold onto from the first sentence: **a reducer is a state machine you write inline. You reach for it when your `useState`s start coordinating — not before.**
+
+## Five useStates and a stuck spinner
+
+Here is a Client Component that creates a new invoice. It validates the fields, then saves to the server. Nothing exotic — the kind of form you'll write dozens of times.
+
+<div data-mark-color="orange">
+
+```tsx title="new-invoice-form.tsx" {17,21}
+'use client';
+
+const NewInvoiceForm = () => {
+  const [values, setValues] = useState({ client: '', amount: '' });
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [isSaved, setIsSaved] = useState(false);
+
+  const handleSubmit = async () => {
+    setIsSubmitting(true);
+    const nextErrors = validate(values);
+
+    if (Object.keys(nextErrors).length > 0) {
+      setErrors(nextErrors);
+      // Bails out before the spinner is ever turned back off.
+      return;
+    }
+
+    const result = await saveInvoice(values);
+    setIsSubmitting(false);
+    setIsSaved(true);
+  };
+
+  // …the fields, the submit button, the error display
+};
+```
+
+</div>
+
+Walk the bug with me. The user clicks Submit. `setIsSubmitting(true)` fires, the button shows a spinner. Validation fails — a field is empty — so we set the errors and `return` early to let the user fix them. But that early `return` skips right past `setIsSubmitting(false)`. The spinner spins forever. The form is now wedged: the user fixes the field, but the button is still disabled because nothing ever reset `isSubmitting`.
+
+You could patch this. Add `setIsSubmitting(false)` before the early `return`. But notice what the patch is asking of you: *every* handler, on *every* exit path, must remember to leave all five of these values in a consistent state. Nothing stops you from setting `isSubmitting` to `true` while `isSaved` is also `true`. Nothing stops `submitError` from holding a message while the form claims it saved successfully. The compiler is happy with all of these. They're just bugs waiting for the wrong code path.
+
+That is the real diagnosis. These five values are not five independent pieces of state. They are **one machine wearing five hats.** There are only a handful of situations this form can legitimately be in — editing, submitting, saved, failed — but you've encoded those situations across five booleans and strings that any handler can set in any combination. The legal states are a tiny island in a sea of nonsense states, and nothing is holding the boundary.
+
+When several `useState`s must change together to stay correct, you don't have five pieces of state. You have one, and you want one place that owns every legal move from one situation to the next. That place is a reducer, reached through `useReducer`.
+
+The threshold, stated as a rule you can apply without thinking: **switch to a reducer when three or more `useState` calls update together.** Three or more values that move in lockstep, a <Term definition="A move from one state value to the next.">transition</Term> that has to maintain an <Term definition="A rule about which state combinations are legal — for example, never submitting and saved at once.">invariant</Term>, or a single value that gets set from many scattered handlers. Below that threshold, `useState` is correct and a reducer is just ceremony.
+
+:::note
+This is the sibling of the smell from [The four homes for state](/024-hooks-for-holding-state/3-the-four-homes-for-state/). There, the bug was state that should have been *lifted* — duplicated in two components and kept in sync with an effect. Here the state lives in the right component; the bug is that it's *scattered* — too many setters, no single authority over what a legal transition looks like. Same family, different axis: one is about *where* state lives, the other about *how its changes are governed.*
+:::
+
+## The signature: state, dispatch, and a reducer
+
+Now that you want the tool, here's its shape. `useReducer` looks a lot like `useState` on purpose.
+
+```ts
+const [state, dispatch] = useReducer(reducer, initialState);
+```
+
+Four pieces, each one a small idea:
+
+- **`reducer`** — a pure function with the shape `(state, action) => newState`. It takes the current state and a description of something that happened, and returns the next state. You define it *outside* the component, because it depends on nothing but its two arguments. (That also means you can unit-test it without rendering anything — more on that later.)
+- **`state`** — the current snapshot. The same snapshot rule you learned for `useState`'s value: it's frozen for this render, and dispatching doesn't change it mid-render.
+- **<Term definition="The function that sends an action to the reducer.">`dispatch(action)`</Term>** — you call this to make a change. It queues the action; React then calls your reducer with the current state plus that action, and re-renders with whatever the reducer returns. Like `useState`'s setter, **`dispatch` is referentially stable** — the same function across every render.
+- **a third argument, `init`** — an optional lazy initializer. We'll come back to it; ignore it for now.
+
+The parallel to `useState` is the whole point, so let me name it directly. `useState` hands you `[value, setValue]`: one value, one setter dedicated to it. `useReducer` hands you `[state, dispatch]`: one state object, and one dispatcher that accepts a *named vocabulary of changes*. You're trading "a setter per value" for "one dispatcher and a list of the things that can happen." When you only have one or two values, the setter-per-value trade is cheaper. When you have a coordinated cluster, the named-vocabulary trade wins, because the vocabulary becomes the single, enforceable definition of how the state is allowed to move.
+
+Two facts carry over from `useState`, and both matter later, so hold them now.
+
+First: **`dispatch` is stable.** Its identity never changes between renders, which makes it safe to list in effect dependency arrays and safe to pass down to a child as a prop. This is worth pausing on, because in [The four homes for state](/024-hooks-for-holding-state/3-the-four-homes-for-state/) the advice was *not* to prop-drill raw `setState` setters. `dispatch` is the sanctioned exception: its identity is stable, and the action vocabulary — not the setter — is the contract a child is coding against. Passing `dispatch` down is idiomatic. Passing `setIsSubmitting` down is a smell.
+
+Second: **state follows the snapshot rule.** Dispatching an action queues it; the `state` you're holding right now does not mutate. The *next* render sees the next state. If you've internalized why `setCount(count + 1)` twice in a row only adds one, you already understand this.
+
+## Actions as a discriminated union
+
+Before we write the reducer, we write its vocabulary — because the set of actions *is* the component's API for change. Everything that can happen to this form is one of a fixed list of events, and that list is a discriminated union.
+
+```ts "type"
+type Action =
+  | { type: 'editField'; field: keyof Values; value: string }
+  | { type: 'submit' }
+  | { type: 'success' }
+  | { type: 'error'; message: string }
+  | { type: 'reset' };
+```
+
+This is the [discriminated union you already know](/005-typescript-bug-class-moves/1-impossible-states-unrepresentable/), now doing a job. The `type` field is the <Term definition="The literal field TypeScript switches on to narrow a union.">discriminant</Term> — the literal field TypeScript switches on to narrow the union. Everything else on each member is the <Term definition="The data an action carries beyond its type.">payload</Term> — the data the action carries beyond its `type`. An `editField` action carries which field changed and its new value; an `error` action carries a message; `submit`, `success`, and `reset` carry nothing because they don't need to.
+
+The payoff is the same one discriminated unions always give you: **TypeScript narrows per branch.** Inside a `case 'error'`, the compiler knows `action.message` exists. Inside a `case 'submit'`, it knows there's no `message` to read. You get this for free, with zero casts, which is exactly what makes the reducer body type-safe.
+
+There's a naming discipline here that separates a real reducer from `useState` wearing a costume. **Action types name events that happened or commands you're issuing — not setters.** `'submit'`, `'editField'`, `'success'`: these describe *intent*. They say what occurred; the reducer decides the consequence. Contrast a reducer with an action called `'setIsLoading'`. That action has already decided the consequence — flip this boolean — which means the reducer isn't governing anything; it's a switchboard. A reducer whose actions are setter-shaped is `useState` with extra steps and none of the benefit. The whole value of the pattern is that the caller describes *what happened* and the reducer is the single authority on *what that means for the state.*
+
+Let me make that distinction stick before we move on.
+
+<Buckets twoCol instructions="Each of these is a candidate action `type`. Sort them by whether the name describes an event the reducer interprets, or a consequence already decided for it.">
+  <Bucket name="intent" label="Intent (good action)" description="Names what happened; the reducer decides the consequence" />
+  <Bucket name="setter" label="Setter in disguise (smell)" description="The consequence is already baked into the name" />
+
+  <Item bucket="intent">`'submit'`</Item>
+  <Item bucket="intent">`'editField'`</Item>
+  <Item bucket="intent">`'paymentReceived'`</Item>
+  <Item bucket="intent">`'cancelOrder'`</Item>
+  <Item bucket="intent">`'retry'`</Item>
+  <Item bucket="setter">`'setIsLoading'`</Item>
+  <Item bucket="setter">`'setError'`</Item>
+  <Item bucket="setter">`'updateStatusToSaved'`</Item>
+  <Item bucket="setter">`'setSubmitting'`</Item>
+</Buckets>
+
+<details>
+<summary>Answer key — why each lands where it does</summary>
+
+**Intent (good action)** — the name reports an event; the reducer is free to decide what state it produces.
+
+- `'submit'` — describes what the user did; the reducer decides it means `status: 'submitting'`.
+- `'editField'` — a field changed. The reducer decides where the new value goes.
+- `'paymentReceived'` — a thing that happened in the world; the reducer maps it to a state.
+- `'cancelOrder'` — a command the user issued; the reducer decides the resulting status.
+- `'retry'` — the user asked to try again; the reducer decides what resetting-and-resubmitting looks like.
+
+**Setter in disguise (smell)** — the name has already picked the consequence, so the reducer governs nothing. Rename each to the event and let the reducer decide the rest.
+
+- `'setIsLoading'` — just `setIsLoading` renamed. Dispatch `'submit'` and let the reducer set the loading status.
+- `'setError'` — the message is being shoved straight into state. Dispatch `'error'` (the event) instead.
+- `'updateStatusToSaved'` — names the exact field write. The event is `'success'`; the reducer maps it to `status: 'saved'`.
+- `'setSubmitting'` — a setter wearing a verb. The event is `'submit'`.
+
+The tell: if you can rewrite the action as `setX(...)` with no loss, it's a setter in disguise. Real actions survive no such rewrite — there's no setter for "the payment was received."
+
+</details>
+
+## The reducer: one exhaustive switch, no mutation
+
+This is the heart of the lesson. The <Term definition="A pure function that takes the current state and an action and returns the next state.">reducer</Term> takes the state and an action and returns the next state — and it does so as one `switch` over the action's discriminant. Let's read it case by case.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+const reducer = (state: State, action: Action): State => {
+  switch (action.type) {
+    case 'editField':
+      return { ...state, values: { ...state.values, [action.field]: action.value } };
+    case 'submit':
+      return { ...state, status: 'submitting', submitError: null };
+    case 'success':
+      return { ...state, status: 'saved' };
+    case 'error':
+      return { ...state, status: 'idle', submitError: action.message };
+    case 'reset':
+      return initialState;
+    default:
+      return assertNever(action);
+  }
+};
+`}>
+  <AnnotatedStep meta="{1}" color="blue">
+    The signature is `(state, action) => State`, defined outside the component because it needs nothing else.
+    The types live right here — this is what `useReducer` reads to infer the types of `state` and `dispatch`.
+    No generics on the hook call.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{3-4}" color="green">
+    `editField` spreads `...state` first to copy the whole object, then nest-spreads `values`, then overrides the one field.
+    This is the immutable-update reflex from [The useState surface and lazy initialization](/024-hooks-for-holding-state/1-the-usestate-surface-and-lazy-initialization/), one level deeper.
+    The rule that prevents the classic bug: **always spread `...state` first, then override.** Forget it and you return a *partial* state — every other field vanishes.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5-6}" color="green">
+    `submit` is the impossible-state win in one line. It sets `status: 'submitting'` *and* clears `submitError` in the same atomic transition.
+    The two can't drift, because one move owns both. There is no code path where the form is "submitting" but still showing a stale error — the transition made that combination unrepresentable.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{9-10}" color="green">
+    `error` returns the machine to `idle` and stores the message in `submitError` — "failed" isn't a fourth status, it's `idle` plus an error to show, so the form is editable again.
+    Reading `action.message` is only legal because the discriminant narrowed the union: TypeScript knows an `error` action carries a message, so no cast is needed.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{13-14}" color="red">
+    `default: assertNever(action)` is the exhaustiveness guard from [Exhaustiveness, enforced](/005-typescript-bug-class-moves/3-exhaustiveness-enforced/).
+    If every action `type` is handled, `action` narrows to `never` here and `assertNever` is happy. Add a new action and forget its `case`, and **this line fails to compile.**
+    The red doesn't mean "broken" — it means "this is your safety net, catching the missing case at build time, not in production."
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Now the part the whole lesson exists to deliver. Look at the state this reducer governs:
+
+<div data-mark-color="green">
+
+```ts {3}
+type State = {
+  values: Values;
+  status: 'idle' | 'submitting' | 'saved';
+  submitError: string | null;
+};
+```
+
+</div>
+
+There are no `isSubmitting`, `isSaved`, `hasError` booleans here. There is one `status` field that can be exactly one of three strings. That single change is the difference between the wedged form and a form that can't wedge.
+
+Do the counting. Three booleans give you eight combinations — `true`/`false` cubed — and several of them are nonsense: submitting *and* saved, saved *and* errored, all three true at once. The scattered version let any handler produce any of those eight, and trusted you to never produce the bad five. A single `status` field has exactly three values, all of them legal. The illegal states aren't guarded against — they're **unrepresentable.** You cannot construct "submitting and saved" because there is no value of `status` that means both. This is precisely the lesson from [Impossible states, unrepresentable](/005-typescript-bug-class-moves/1-impossible-states-unrepresentable/), now held at runtime by a hook instead of just described by a type.
+
+That is the real argument for reaching past `useState`, and it's the one an experienced engineer leads with. It is not "the reducer is less code" — sometimes it's more. It is "the reducer makes the broken states impossible to reach."
+
+Two watch-outs live with the act of writing reducers, so they belong right here.
+
+The first is the bailout, carried over verbatim from `useState`. If your reducer returns the *same reference* it received — `return state` — React compares with `Object.is`, sees no change, and **skips the re-render entirely.** That's occasionally what you want (deliberately ignoring an action that doesn't apply right now), but far more often it's a bug: you meant to compute a new state and accidentally returned the old one, and now the screen won't update. Prefer the `assertNever` default over a `return state` default, so a forgotten case is a compile error instead of a silent no-op.
+
+:::caution
+React's Strict Mode calls your reducer twice in development to surface impurity — the same double-invocation it applies to render bodies and initializers. If your reducer is pure, double-calling is harmless: same input, same output, no observable difference. If it isn't — if it logs, mutates, or reaches outside itself — the doubled calls will expose it. The mechanism behind this lands in the next chapter; for now, just know it's why a `console.log` inside a reducer appears to fire twice.
+:::
+
+## Wiring dispatch in the component
+
+We've built the vocabulary and the reducer. Now watch the component go from five scattered setters to one dispatcher. This before/after is the payoff, so here are both side by side.
+
+<CodeVariants>
+  <CodeVariant label="Scattered useStates">
+    <div data-mark-color="orange">
+
+    ```tsx {8,9,11,12}
+    const [values, setValues] = useState({ client: '', amount: '' });
+    const [errors, setErrors] = useState<Record<string, string>>({});
+    const [isSubmitting, setIsSubmitting] = useState(false);
+    const [submitError, setSubmitError] = useState<string | null>(null);
+    const [isSaved, setIsSaved] = useState(false);
+
+    const handleSubmit = async () => {
+      setIsSubmitting(true);
+      setSubmitError(null);
+      const result = await saveInvoice(values);
+      setIsSubmitting(false);
+      setIsSaved(true);
+    };
+    ```
+
+    </div>
+    **Five setters, and every handler is on the honor system to keep them consistent.** Nothing stops `isSubmitting` from staying `true` while `isSaved` is also `true`.
+  </CodeVariant>
+
+  <CodeVariant label="One reducer">
+    <div data-mark-color="green">
+
+    ```tsx {4} "dispatch({ type: 'editField', field, value })"
+    'use client';
+
+    const NewInvoiceForm = () => {
+      const [state, dispatch] = useReducer(reducer, initialState);
+
+      const handleChange = (field: keyof Values, value: string) => {
+        dispatch({ type: 'editField', field, value });
+      };
+
+      // handleSubmit dispatches 'submit' / 'success' / 'error' — see the next section
+
+      return (
+        <form>
+          <input
+            value={state.values.client}
+            onChange={(e) => handleChange('client', e.target.value)}
+          />
+          {/* …amount input… */}
+          <button disabled={state.status === 'submitting'}>Save invoice</button>
+          {state.submitError != null && <FieldError message={state.submitError} />}
+        </form>
+      );
+    };
+    ```
+
+    </div>
+    **One dispatcher; the reducer owns every transition.** The handlers shrink to a single `dispatch`, and the illegal combinations are gone — `status` is one of three strings, never a tangle of booleans.
+  </CodeVariant>
+</CodeVariants>
+
+Reading state in the JSX is the mirror image of writing it. The button's `disabled` is driven straight off the machine: `state.status === 'submitting'`. There's no `isSubmitting` boolean to keep in sync with anything — the status *is* the truth. The error renders with `state.submitError != null && <FieldError ... />`. Because `submitError` is `string | null`, the explicit `!= null` check is the convention-correct guard: it renders the error for any non-null string, including the empty string, and it never accidentally renders a stray `0` or `false` the way a bare `&&` on a non-boolean can.
+
+The inputs are controlled exactly as you learned in [The four homes for state](/024-hooks-for-holding-state/3-the-four-homes-for-state/): `value` reads from `state.values`, `onChange` calls a typed handler that dispatches `editField`. Notice that the handler *shape* didn't change at all. It's still a typed callback that takes the field and the new value. The only thing that changed is where the value goes when it gets there — into a `dispatch` instead of a `setState`. The controlled-input contract is identical; you swapped the storage underneath it.
+
+And here's the dispatch-down convenience falling out of the stability guarantee from earlier. If one of these inputs were its own child component, you'd pass `dispatch` straight down as a prop — no `useCallback` wrapper, no worry about a changing identity, because `dispatch` never changes. The child dispatches `{ type: 'editField', ... }` and the parent's reducer handles it. (Sharing one reducer across components that *aren't* in a direct parent-child line is a context job, which is recognition-only here — we'll get to it in the chapter on effects and context.)
+
+<VideoCallout videoId="rgp_iCVS8ys" videoTitle="Learn React Hooks: useReducer - Simply Explained!">
+  Cosden Solutions builds the same `[state, dispatch]` shape from scratch in 14 minutes, then shows the multiple-values-at-once win that justifies reaching past `useState`.
+</VideoCallout>
+
+## Async belongs in the handler, never the reducer
+
+Here is the single most common mistake people make when they first reach for a reducer, and the rule that prevents it: **the reducer is pure, so async cannot live inside it.** No `fetch`, no `await`, no timers. The reducer's only job is to map a current state and an action to the next state, synchronously. The async work — the actual save — lives in the *handler* that calls `dispatch`.
+
+So how do you model "save to the server, then succeed or fail"? You bracket the await with dispatches.
+
+<div data-mark-color="green">
+
+```tsx {2,5,7}
+const handleSubmit = async () => {
+  dispatch({ type: 'submit' });
+  const result = await saveInvoice(state.values);
+  if (result.ok) {
+    dispatch({ type: 'success' });
+  } else {
+    dispatch({ type: 'error', message: result.error });
+  }
+};
+```
+
+</div>
+
+Three dispatches around one `await`. Read them as a sequence: dispatch `submit` to move the machine into `submitting` (the button disables, a spinner shows — *immediately*, before anything is saved). Then `await` the save. When it resolves, dispatch `success` or `error` depending on the result. The reducer never touches the Promise. It only ever sees the three plain actions and maps each to a state.
+
+The `saveInvoice` call returns a `{ ok }` shape — `{ ok: true }` or `{ ok: false; error: string }`. That's the [Result type](/005-typescript-bug-class-moves/1-impossible-states-unrepresentable/) convention from earlier in the course, and it's deliberate here: it keeps the success/failure branch a clean discriminated check instead of wrapping the teaching snippet in `try/catch`. In a real form you'd handle thrown errors too, but the shape of the lesson — start, await, resolve to one of two actions — is the part that matters.
+
+Now the anti-pattern, so you recognize it the instant you're tempted by it:
+
+<div data-mark-color="orange">
+
+```ts {2}
+case 'submit': {
+  const data = await fetch('/api/invoices');
+  return { ...state, status: 'saved', data };
+}
+```
+
+</div>
+
+This is broken on multiple fronts at once. A reducer must be synchronous — it returns the next state *now*, not a Promise of it. It must be pure — a `fetch` is a <Term definition="Work that reaches outside the function: a network call, a DOM change, logging, or randomness. Reducers must have none.">side effect</Term>, and reducers have none. And because Strict Mode double-invokes the reducer in development, an `await fetch` there would fire the request twice. The fix is never to make the reducer async; it's always to move the async up into the handler and let the reducer map the resulting actions. The reducer answers "given this action, what's the next state"; it never answers "go do some work."
+
+The sequence diagram below makes the timing concrete. Scrub through it and watch *when* each render happens relative to the await.
+
+<DiagramSequence>
+  <DiagramStep caption="dispatch('submit') runs the reducer synchronously: idle → submitting. React re-renders right now — the button is disabled and the spinner is on screen. The save hasn't happened yet.">
+    <AsyncStateTimeline step="submit" />
+  </DiagramStep>
+  <DiagramStep caption="The handler is parked on the Promise from saveInvoice(…). No dispatch fires, so no re-render happens — the spinner keeps spinning. This is the gap the scattered version never reset out of.">
+    <AsyncStateTimeline step="await" />
+  </DiagramStep>
+  <DiagramStep>
+    <AsyncStateTimeline step="success" />
+    <Fragment slot="caption">
+      The Promise resolved ok, so the handler dispatches `success`: `submitting → saved`. React re-renders into the success UI.
+    </Fragment>
+  </DiagramStep>
+  <DiagramStep>
+    <AsyncStateTimeline step="error" />
+    <Fragment slot="caption">
+      The Promise resolved with a failure, so the handler dispatches `error`: `submitting → idle`, carrying the message in `submitError`. The button re-enables and the error shows — "failed" is `idle` plus an error, not a fourth status.
+    </Fragment>
+  </DiagramStep>
+</DiagramSequence>
+
+Two forward pointers, recognition only. When this submit is a *real* form, React packages exactly this start-await-resolve shape for you with `useActionState` and Server Actions — that's the forms unit later in the course, and it's the production pattern; the handler here is the teaching version of it. And if you ever need to mark a `dispatch` as non-urgent so React can interrupt it for higher-priority updates, you wrap it in `useTransition` — that's in the next chapter. Neither is something you need now.
+
+## Lazy initialization with init
+
+Remember the third argument we set aside. `useReducer` takes an optional `init` function, and it works just like the lazy initializer for `useState`.
+
+```ts {7}
+const init = (invoice: Invoice): State => ({
+  values: { client: invoice.client, amount: String(invoice.amount) },
+  status: 'idle',
+  submitError: null,
+});
+
+const [state, dispatch] = useReducer(reducer, invoice, init);
+```
+
+The middle argument is the *input*, and `init` runs **once on mount** to turn it into the reducer's `State` shape. Here an incoming `invoice` record — say, a server row the user is editing — gets mapped into the form's state: copy the fields across, start at `idle`, no error yet.
+
+Reach for `init` under the same threshold as the lazy `useState` form from [The useState surface and lazy initialization](/024-hooks-for-holding-state/1-the-usestate-surface-and-lazy-initialization/): when computing the initial state takes real work — parsing a saved draft from storage, deriving structure from a prop, mapping a server record into a form shape. For a plain literal, skip it and pass the object directly.
+
+There's a small symmetry worth naming. `useState`'s lazy form is a *thunk* — `useState(() => compute())` — a function taking no arguments. `useReducer`'s form passes the input *into* `init` — `useReducer(reducer, invoice, init)` — so `init` is a named, reusable, separately testable function rather than an inline closure. Same idea, slightly more composable shape.
+
+And the same caveat from the lazy-`useState` lesson applies, because it's the same mechanism: **`init` runs at mount only.** If the `invoice` prop later changes — the user picks a *different* record to edit — `init` does not re-run, and the form keeps the values it started with. That's the frozen-prop behavior from earlier in the chapter. When the form genuinely needs to reset to a new record, you don't re-initialize — you remount it with a [`key` reset](/023-the-render-model/5-remounting-with-key/), giving the component a fresh start. Re-initializing on prop change is not a thing reducers do.
+
+## Choosing useReducer over useState
+
+You now know how a reducer works. The harder skill is knowing *when* it's worth reaching for — because the answer is "less often than you'd think." A reducer is a threshold tool, not a default. Walk the decision below in the order an experienced engineer would ask it.
+
+<StateMachineWalker title="Which state tool does this component need?">
+  <Question
+    id="cardinality"
+    prompt="How many state values must change together to stay correct?"
+    description="Not how many values the component has — how many move in lockstep, where setting one wrong leaves the others inconsistent.">
+    <Branch label="One — a counter, a toggle, a single field" to="leaf-usestate" />
+    <Branch label="Several that move together" to="illegal" />
+  </Question>
+
+  <Question
+    id="illegal"
+    prompt="Are some combinations of those values illegal?"
+    description="The litmus test: can the component be loading and saved at the same time, or errored and successful — combinations that should never exist?">
+    <Branch
+      label="Yes — some combinations are impossible"
+      to="leaf-reducer-machine"
+      rationale="submitting and saved can't both be true." />
+    <Branch
+      label="No — just several independent values"
+      to="authority" />
+  </Question>
+
+  <Question
+    id="authority"
+    prompt="Is the same value set from many distant handlers, or is the update logic complex enough to deserve a name?"
+    description="A value touched from a dozen scattered places, or a transition with enough branching that it reads better with a name on it.">
+    <Branch label="Yes — scattered setters or gnarly logic" to="leaf-reducer-authority" />
+    <Branch label="No — the updates are simple and local" to="leaf-grouped" />
+  </Question>
+
+  <Leaf id="leaf-usestate" verdict="useState">
+    One value, one or two transitions. A reducer here is pure ceremony — reach for `useState` and move on.
+  </Leaf>
+
+  <Leaf id="leaf-reducer-machine" verdict="useReducer — model the status machine">
+    Collapse the booleans into one discriminated `status` field. The reducer makes the illegal states **unrepresentable**, not just discouraged — you can't construct "submitting and saved" because no value of `status` means both.
+  </Leaf>
+
+  <Leaf id="leaf-reducer-authority" verdict="useReducer — one transition authority">
+    Name the transitions and centralize the logic in one pure, testable function instead of scattering setters across handlers. The action vocabulary becomes the single definition of how the state may move.
+  </Leaf>
+
+  <Leaf id="leaf-grouped" verdict="Grouped useState">
+    A single `useState({ ... })` object updated with spreads is enough — the middle ground between scattered setters and a full reducer. Revisit if the transitions multiply.
+  </Leaf>
+</StateMachineWalker>
+
+Notice the "No, independent" branch lands on **grouped `useState`** — a single `useState({ ... })` holding the related values, updated with spreads. That's the middle ground between scattered separate setters and a full reducer: when several values belong together but their changes are simple and local, one state object is plenty. (This is the separate-vs-grouped decision that [The useState surface and lazy initialization](/024-hooks-for-holding-state/1-the-usestate-surface-and-lazy-initialization/) pointed forward to — here's where it lands.)
+
+Compressed to a checklist you can carry — **`useReducer` earns its weight when:**
+
+- several values move together and must stay consistent;
+- some combinations of them are illegal and you want them unrepresentable;
+- the update logic is complex enough to deserve a name;
+- you want to unit-test the transitions without rendering React.
+
+And the inverse — **`useState` wins when** the value is a counter, a toggle, or a single field with one or two ways it changes. The slogan: *reach for the reducer when the ceremony pays for itself.*
+
+There's one signal that's louder than all of these. If you find yourself writing the tenth, eleventh, twelfth `useState` in a single component, stop. You don't have twelve pieces of state — you have a machine you haven't modeled yet. That's the unmissable cue to consolidate.
+
+## Practice: complete the state machine
+
+Time to write a transition yourself and feel the safety net catch you. Below is a small download button driven by a reducer — a four-state machine: `idle → loading → done | error`. The `'start'` and `'success'` cases are written, the `Action` union is complete, and `assertNever` is in place at the `default`. But the `'error'` case is missing — which means the file won't compile *and* the failure path doesn't work.
+
+<ReactCoding
+  hidePreview
+  instructions="This download button is a four-state machine: idle → loading → done | error. The 'start' and 'success' cases are written; the Action union is complete; assertNever guards the default. But the 'error' case is missing — so a failed download has nowhere to land. Add the 'error' case so it sets status to 'error' and stores action.message in error. Spread ...state first. The assertNever line stops complaining the moment every action is handled."
+  starter={`import { useReducer } from 'react';
+
+function assertNever(value: never): never {
+  throw new Error(\`Unhandled action: \${JSON.stringify(value)}\`);
+}
+
+type State = {
+  status: 'idle' | 'loading' | 'done' | 'error';
+  error: string | null;
+};
+
+type Action =
+  | { type: 'start' }
+  | { type: 'success' }
+  | { type: 'error'; message: string };
+
+const initialState: State = { status: 'idle', error: null };
+
+const reducer = (state: State, action: Action): State => {
+  switch (action.type) {
+    case 'start':
+      return { ...state, status: 'loading', error: null };
+    case 'success':
+      return { ...state, status: 'done' };
+    // TODO: add the 'error' case so a failed download lands in the error
+    // state with its message. Spread ...state first, then override.
+    default:
+      return assertNever(action);
+  }
+};
+
+// A stand-in for a network request. This one always fails, so the only
+// path the UI can take is start → error. Don't edit it.
+const requestDownload = (): Promise<{ ok: false; error: string }> =>
+  Promise.resolve({ ok: false, error: 'Download failed: file not found' });
+
+export function App() {
+  const [state, dispatch] = useReducer(reducer, initialState);
+
+  const handleDownload = async () => {
+    dispatch({ type: 'start' });
+    const result = await requestDownload();
+    if (result.ok) {
+      dispatch({ type: 'success' });
+    } else {
+      dispatch({ type: 'error', message: result.error });
+    }
+  };
+
+  return (
+    <div className="space-y-3 p-4">
+      <button
+        className="rounded bg-indigo-600 px-3 py-1.5 text-white disabled:opacity-50"
+        disabled={state.status === 'loading'}
+        onClick={handleDownload}
+      >
+        Download
+      </button>
+      {state.error != null && (
+        <p role="alert" className="text-sm text-red-600">
+          {state.error}
+        </p>
+      )}
+    </div>
+  );
+}`}
+  tests={`
+const getButton = () => document.querySelector('button');
+const getAlert = () => document.querySelector('[role="alert"]');
+
+// Click the button, then yield a macrotask so the resolved request's handler
+// continuation runs and dispatches the follow-up action ('success' or
+// 'error'). A final flushSync commits that update so the next assertion reads
+// the settled DOM.
+async function clickAndSettle() {
+  getButton()?.click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  flushSync(() => {});
+}
+
+test('the error message is shown after a failed download', async () => {
+  await clickAndSettle();
+  expect(getAlert()?.textContent).toContain('Download failed: file not found');
+});
+
+test('the button is re-enabled after an error', async () => {
+  await clickAndSettle();
+  expect(getButton()?.disabled).toBe(false);
+});
+`}
+/>
+
+<details>
+<summary>Reference solution</summary>
+
+```tsx
+case 'error':
+  return { ...state, status: 'error', error: action.message };
+```
+
+Drop it above the `default`. It spreads `...state` first so the rest of the state survives, flips `status` to `'error'`, and copies the payload — `action.message`, which TypeScript knows exists here because the discriminant narrowed the union — into `error`. With every action `type` now handled, `action` at the `default` narrows to `never`, so `assertNever(action)` type-checks and the compile error is gone.
+
+</details>
+
+When you add the case, watch the `assertNever` error disappear. That's the exhaustiveness guard doing its job: it refused to compile while a possible action had no home, and it went quiet the moment you gave the last one a destination. That guarantee — *every action is handled, enforced by the compiler* — is a large part of why a reducer with a discriminated-union action is worth the ceremony.
+
+## State machines, libraries, and the names you'll meet
+
+A reducer is a small, library-free version of a pattern with a lot of names attached to it. You don't need any of these to build with `useReducer` — but you'll hear them, and knowing what they refer to keeps you oriented.
+
+<CardGrid>
+  <Card title="It's a state machine" icon="lucide:workflow">
+    `idle → loading → done | error` is a four-state machine, and a reducer is the inline, dependency-free way to model one. When transitions get *guarded* or *nested* and the machine is genuinely complex, the dedicated library is **XState** — overkill for most components, the right call when the machine truly warrants it.
+  </Card>
+  <Card title="Redux vocabulary transfers" icon="simple-icons:redux">
+    Actions, reducers, dispatch — `useReducer` is essentially "single-component Redux." This course doesn't teach Redux, but the mental model you just built carries directly to any reducer-based store you meet.
+  </Card>
+  <Card title="Immer for deep nesting" icon="lucide:layers">
+    When spreads pile up on deeply nested state, Immer's `produce` lets you write mutating-*style* code that yields an immutable result. The course default stays explicit spreads — shallow updates dominate, and the spreads keep the intent visible.
+  </Card>
+  <Card title="Sharing a reducer across components" icon="lucide:share-2">
+    Done through context, since `dispatch` is stable and passes cleanly. Context carries a re-render cost, usually mitigated by splitting state and dispatch into separate contexts — covered in the chapter on effects and context.
+  </Card>
+</CardGrid>
+
+For the reference you'll actually open, the React docs entry on `useReducer` is the canonical one — collected with a few other resources at the end of this lesson.
+
+The shape to leave with: **state shape is a design decision.** When several values move together and some of their combinations are illegal, stop scattering `useState` and model the transitions as a reducer — a pure function over `(state, action)` whose action is a discriminated union, whose body is an exhaustive switch, and whose async lives in the caller. That single move turns a form that can wedge into a machine that can't.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="useReducer — API reference"
+    href="https://react.dev/reference/react/useReducer"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="The canonical reference: every argument, the bailout rule, and the lazy init you set aside here."
+  />
+  <ExternalResource
+    title="Extracting State Logic into a Reducer"
+    href="https://react.dev/learn/extracting-state-logic-into-a-reducer"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="The official interactive guide that walks the exact useState-to-reducer migration, in editable sandboxes."
+  />
+  <ExternalResource
+    title="Should I useState or useReducer?"
+    href="https://kentcdodds.com/blog/should-i-usestate-or-usereducer"
+    icon="lucide:git-fork"
+    iconColor="#E5532D"
+    description="Kent C. Dodds on the same threshold call this lesson's decision tree makes — when one value's update depends on another."
+  />
+  <ExternalResource
+    title="XState — state machines, visualized"
+    href="https://stately.ai/docs/xstate"
+    icon="lucide:workflow"
+    iconColor="#2C3454"
+    description="When transitions get guarded or nested past a reducer, this is the dedicated library the vocabulary cards named."
+  />
+</CardGrid>
