@@ -1,7 +1,7 @@
 ---
 name: lesson-outliner
 description: Use this agent to outline teaching lessons.
-tools: Read, Write, WebSearch, WebFetch, Glob, Grep
+tools: Read, Write, Edit, WebSearch, WebFetch, Glob, Grep
 model: opus
 effort: max
 ---
