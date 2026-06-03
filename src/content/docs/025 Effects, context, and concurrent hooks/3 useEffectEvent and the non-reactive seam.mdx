@@ -1,0 +1,647 @@
+---
+title: useEffectEvent and the non-reactive seam
+description: Effect dependencies are a list of reactive values; useEffectEvent carves out the non-reactive seam — a callback that reads the freshest props and state but never appears in a dependency array.
+chapter-id: 25
+sidebar:
+  order: 3
+  label: useEffectEvent
+---
+
+import { CardGrid, Steps } from '@astrojs/starlight/components';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import ReconnectStorm from '../../../components/lessons/025/3/ReconnectStorm.astro';
+import TabbedContent from '../../../components/figures/tabbed-content/TabbedContent.astro';
+import TabbedItem from '../../../components/figures/tabbed-content/TabbedItem.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import ReactCoding from '../../../components/live-coding/ReactCoding/ReactCoding.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+
+In the [previous lesson](/025-effects-context-and-concurrent-hooks/2-useeffect-as-synchronization/) we left a wound open on purpose. The dependency array, we said, is an exact contract: every reactive value the effect reads belongs in it, and the lint rule that enforces this is an ally, not an obstacle. Then we hit a case where obeying the contract produced *wrong behavior* — the chat socket reconnecting on every keystroke — and named it the **non-reactive trap**. The fix, we promised, was one lesson away. This is that lesson.
+
+It's a narrow one. One hook, one idea. By the end you'll hold a single distinction sharply enough to apply it on sight: some values an effect reads should make it re-synchronize when they change, and some should not, and the dependency array is only ever a list of the first kind. `useEffectEvent` is the tool that lets the effect read the second kind — always at their freshest — without dragging them into the deps. Let's earn it by finishing the bug we started.
+
+## Resuming the chat room
+
+Quick refresher, because the whole lesson stands on it. A chat component connects to a room over a <Term definition="A persistent two-way connection between browser and server that stays open so the server can push messages without the client asking.">WebSocket</Term>, keyed by `roomId`: the setup connects, the cleanup disconnects, and a `roomId` change re-syncs — disconnect the old room, connect the new one. That part is correct, and it's correct *because* `roomId` is reactive: a new room genuinely means "rebuild the connection."
+
+Now extend it the way real chat features grow. Every time a message arrives, the effect should hand it up to the parent and tag it with who's currently logged in:
+
+```tsx
+'use client';
+
+export const ChatRoom = ({ roomId, onMessage }: ChatRoomProps) => {
+  const currentUser = useCurrentUser();
+
+  useEffect(() => {
+    const connection = connectToRoom(roomId);
+    connection.on('message', (message) => {
+      onMessage(message, currentUser);
+    });
+    connection.connect();
+    return () => connection.disconnect();
+  }, [roomId, onMessage, currentUser]);
+
+  // ...render the message list
+};
+```
+
+Look at that dependency array: `[roomId, onMessage, currentUser]`. By the contract from last lesson, it's *correct* — the lint rule would demand exactly these three, because the setup reads all three. `onMessage` is a prop the parent hands down. `currentUser` comes from context. The exhaustive-deps oracle is satisfied. And yet this code is broken.
+
+Here's the conflict, stated flat. The contract says those values belong in the array. But putting them there means the effect re-runs whenever any of them changes — and *changing them is not a reason to reconnect the socket*. `onMessage` is a fresh function the parent creates on every one of its renders, so its identity changes constantly. `currentUser` changes when the profile loads an avatar, or the display name is edited. None of that has anything to do with the chat connection. But because they're in the deps, every one of those changes tears the socket down and builds it back up.
+
+Watch the damage unfold. The following sequence steps through four things that happen to a mounted chat component. Scrub through it and notice which reconnects you actually asked for.
+
+<ReconnectStorm />
+
+Three of those four reconnects were noise. In a real app they're not just wasteful — they're a class of visible bug: dropped messages mid-reconnect, reconnect storms hammering the server every time the parent re-renders, the message list flickering as the socket cycles. And the cruel part is that the "obvious" fix — delete `onMessage` and `currentUser` from the array to stop the churn — is the lie the last lesson warned you against. Do that and the lint screams, correctly, because the moment the effect stops re-running on those values, the closure goes stale: the socket keeps calling yesterday's `onMessage` with yesterday's `currentUser`.
+
+So we're stuck between two bad options. Two of those three values must be *read at their latest* inside the effect, but must *not* be in the deps. That gap — read fresh, don't re-sync — is the **non-reactive seam**. The next section gives it a precise definition before we reach for any new syntax.
+
+## What the dependency array is actually a list of
+
+Here's the reframe the whole lesson turns on. You've been picturing the dependency array as "every variable the effect touches." That's not what it is. The dependency array is **the list of reactive values** — and a value is reactive only if *a change to it should cause the effect to re-synchronize*. A value the effect reads but whose change should **not** trigger a re-sync is non-reactive, even though the effect reads it. Reading and re-syncing are two different relationships, and only the second one earns a slot in the array.
+
+That's the bright line. Run it on each value in the chat effect, one at a time, and the right answer falls out every time.
+
+- **`roomId` is reactive.** What does a change to it mean? Disconnect this room, connect that room. The change *is* the re-sync. It belongs in the deps.
+- **`currentUser` is non-reactive** here. The effect needs the *latest* user when a message arrives, so it can attribute the message correctly. But the user object changing is not a reason to drop and rebuild the socket. Read it fresh; don't re-sync on it.
+- **`onMessage` is non-reactive.** It's a new function the parent hands down on each render. The *connection* has no reason to care that the parent re-rendered. Read the latest one when a message comes in; don't re-sync because its identity moved.
+
+Notice what the test is *not* asking. It isn't "does this value change often?" — `roomId` might change rarely and it's still reactive. It isn't "is this a function or an object?" The only question is about consequence: **when this value changes, do I want the effect to tear down and rebuild?** Yes means deps. No means non-reactive.
+
+Before we name the tool, drill the distinction on values that aren't the chat example, so you're applying the rule and not pattern-matching the prose. Sort each value an effect might read into the bucket that fits.
+
+<Buckets twoCol instructions="An effect reads each of these values at run time. Sort each by whether its change should re-run the effect.">
+  <Bucket name="reactive" label="Reactive" description="Its change should re-run the effect — it goes in the deps." />
+  <Bucket name="nonreactive" label="Non-reactive" description="Read its latest value, but its change must not re-sync." />
+
+  <Item bucket="reactive">The `url` an effect subscribes to for server-sent events</Item>
+  <Item bucket="reactive">The `serverUrl` a subscription connects to</Item>
+  <Item bucket="reactive">The `theme` an effect applies to a third-party chart</Item>
+  <Item bucket="reactive">The `roomId` a socket connects to</Item>
+  <Item bucket="nonreactive">The `currentUser` logged alongside each tracked event</Item>
+  <Item bucket="nonreactive">An `onComplete` prop called when an animation finishes</Item>
+  <Item bucket="nonreactive">The current `filters` read inside each polling tick</Item>
+  <Item bucket="nonreactive">An analytics `onEvent` callback passed down from props</Item>
+</Buckets>
+
+So the need is now precise. We want to read `currentUser` and `onMessage` at their *latest* from inside the effect, while telling React — and the lint — "these are not reactive; keep them out of the deps." React 19.2 gives that capability a name.
+
+## useEffectEvent: a callback that reads latest and stays out of deps
+
+`useEffectEvent` — imported straight from `'react'` since React 19.2 — lets you carve a piece of logic out of an effect into a callback that always reads the freshest props and state, but is **invisible to the dependency array**. You declare it next to the effect; the effect calls it; the values it reads no longer count as dependencies. That's the entire idea. Let's apply it to the chat room and see what shrinks.
+
+The two tabs below are the same component before and after. The first is the reconnect storm you just watched. The second routes the non-reactive reads through an <Term definition="A non-reactive callback created by useEffectEvent. It reads the latest props and state when called, but is excluded from effect dependency arrays.">Effect Event</Term>.
+
+<CodeVariants syncKey="chat-fix">
+  <CodeVariant label="Everything in deps (reconnect storm)">
+    <div data-mark-color="orange">
+
+    ```tsx {13}
+    'use client';
+
+    export const ChatRoom = ({ roomId, onMessage }: ChatRoomProps) => {
+      const currentUser = useCurrentUser();
+
+      useEffect(() => {
+        const connection = connectToRoom(roomId);
+        connection.on('message', (message) => {
+          onMessage(message, currentUser);
+        });
+        connection.connect();
+        return () => connection.disconnect();
+      }, [roomId, onMessage, currentUser]);
+      // ...
+    };
+    ```
+
+    </div>
+    **The whole array is reactive — and that's the bug.** Both panes are identical except for the seam; here all three values sit in the deps. `onMessage` and `currentUser` belong there by the contract, but their changes have nothing to do with the connection, so every parent re-render and every profile tweak runs that `disconnect`/reconnect cycle.
+  </CodeVariant>
+
+  <CodeVariant label="Effect Event (the seam)">
+    <div data-mark-color="green">
+
+    ```tsx {6-8,15}
+    'use client';
+
+    export const ChatRoom = ({ roomId, onMessage }: ChatRoomProps) => {
+      const currentUser = useCurrentUser();
+
+      const onReceiveMessage = useEffectEvent((message: Message) => {
+        onMessage(message, currentUser);
+      });
+
+      useEffect(() => {
+        const connection = connectToRoom(roomId);
+        connection.on('message', onReceiveMessage);
+        connection.connect();
+        return () => connection.disconnect();
+      }, [roomId]);
+      // ...
+    };
+    ```
+
+    </div>
+    **The non-reactive reads moved into the Effect Event.** `onReceiveMessage` always sees the latest `onMessage` and `currentUser` when it runs, but it never appears in the deps. The array shrinks to `[roomId]` — the one genuinely reactive value — so the socket re-syncs only on a real room change.
+  </CodeVariant>
+</CodeVariants>
+
+That's the fix in full. The connection lifecycle and the message-handling logic used to be tangled together in one dependency array; now they're cleanly separated by reactivity. Walk the after-version one piece at a time so each move is explicit.
+
+<AnnotatedCode lang="tsx" code={`
+const onReceiveMessage = useEffectEvent((message: Message) => {
+  onMessage(message, currentUser);
+});
+
+useEffect(() => {
+  const connection = connectToRoom(roomId);
+  connection.on('message', onReceiveMessage);
+  connection.connect();
+  return () => connection.disconnect();
+}, [roomId]);
+`}>
+  <AnnotatedStep meta={`{1-3} "onMessage" "currentUser"`} color="blue">
+    `useEffectEvent` returns a function. Every time that function is *called*, it reads the current `onMessage` and `currentUser` — never a snapshot from some earlier render. This is where the "read latest" half of the seam lives.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{10}" color="green">
+    `onMessage` and `currentUser` are deliberately *absent* from the deps, and the lint is fine with it — the rule understands Effect Events and excludes them on purpose. Only the genuinely reactive `roomId` remains, so this is the one thing that re-syncs the socket.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{7} "onReceiveMessage"`} color="blue">
+    The effect wires the Effect Event up as the message handler. When a message arrives — possibly long after setup ran — the Event fires and reads whatever `onMessage` and `currentUser` are current *at that moment*. Connection lifecycle and message handling, finally separated.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+There's the contract in one line, worth pinning:
+
+:::tip
+An Effect Event reads the freshest props and state every time it runs — but it is **not** a reactive dependency. It never appears in a dependency array.
+:::
+
+That's the happy path, complete. It's deliberately small because the idea is small: a callback that reads latest and stays out of deps. The rest of the lesson is about recognizing where this shape shows up, and the guardrails that keep it from going wrong — but the core is already in your hands.
+
+## The three places you'll actually reach for it
+
+The chat socket is one instance of a pattern that recurs. Once you've seen the shape a few times you'll spot it without the chat scaffolding. Here are the three canonical reaches, each the same reactive/non-reactive split wearing different clothes.
+
+**Event-shaped callbacks from a third-party widget.** You hand a charting or mapping library a DOM node and a handler — `onPointClick`, `onMove` — and tear it down when its config changes. The config is reactive: a new config means re-instantiate the widget. But the *handler* is just a function the parent re-creates each render. Put it in the effect's deps and the widget gets destroyed and rebuilt every time the parent re-renders, which is constantly. Wrap the handler in an Effect Event and the widget is built only when the config genuinely changes.
+
+```tsx
+const onPointClick = useEffectEvent((point: DataPoint) => {
+  onSelect(point, currentRange);
+});
+
+useEffect(() => {
+  const chart = createChart(node, { onPointClick });
+  return () => chart.destroy();
+}, [chartConfig]);
+```
+
+**Logging fired from inside an effect.** An effect runs on a reactive change — a route becomes visible, a panel opens — and inside it you log the event with some context. The *trigger* is reactive; the logged *context* is not. The classic shape is a page-view log:
+
+```tsx
+const logVisit = useEffectEvent(() => {
+  track('page_view', { url, referrer, userId: currentUser.id });
+});
+
+useEffect(() => {
+  logVisit();
+}, [url]);
+```
+
+`url` stays the lone reactive dependency, so a visit is logged once per page. But `logVisit` still reads `currentUser` and `referrer` at their freshest. If `currentUser` had been a dependency, a profile change would have logged a *second*, bogus page view to the same URL. The Effect Event keeps "what triggers the log" and "what the log records" cleanly apart.
+
+**Reading mutable state inside an interval.** This is the one that bites hardest, so it gets the practice. You set up a poll once on mount with `setInterval`, and each tick needs the *latest* value of some state — a set of `filters`, a `pageSize`, a `step`. The naive instinct is to list that state in the effect's deps. But then every change to it clears the interval and creates a new one — which *resets the timer*. A user adjusting a filter would restart the polling clock on every keystroke.
+
+```tsx
+const onTick = useEffectEvent(() => {
+  refetch(filters);
+});
+
+useEffect(() => {
+  const id = setInterval(onTick, 5000);
+  return () => clearInterval(id);
+}, []);
+```
+
+The interval is created exactly once — empty deps — yet every tick reads the current `filters` through the Effect Event. The timer never resets; the data always reflects the latest filters. Try it yourself. The exercise below hands you a polling component written the naive way, where changing a value visibly restarts the clock. Move the latest-value read into an Effect Event so the timer survives.
+
+<ReactCoding
+  hidePreview
+  instructions="This counter ticks up by step every second, but step sits in the interval effect's deps — so every time you press the button, the interval is torn down and recreated and the 1-second clock restarts. Move the latest-step read into a useEffectEvent (imported from 'react') and change the deps to [], so the interval is created exactly once yet every tick still adds the current step. Press the button a few times: the interval should set up just once."
+  starter={`import { useEffect, useState } from 'react';
+
+export function App() {
+  const [count, setCount] = useState(0);
+  const [step, setStep] = useState(1);
+
+  // The interval depends on step, so bumping step recreates it — and the
+  // 1-second clock restarts on every press. Read the latest step through a
+  // useEffectEvent instead, and make the deps array empty.
+  useEffect(() => {
+    const id = setInterval(() => {
+      setCount((c) => c + step);
+    }, 1000);
+    return () => clearInterval(id);
+  }, [step]);
+
+  return (
+    <div className="space-y-2 p-4">
+      <p>Count: <span data-testid="count">{count}</span></p>
+      <p>Step: <span data-testid="step">{step}</span></p>
+      <button data-testid="bump" onClick={() => setStep((s) => s + 1)}>
+        Increase step
+      </button>
+    </div>
+  );
+}`}
+  tests={`
+// act() flushes passive effects deterministically, so each mount runs the
+// effect's setup before we measure.
+(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+// Mount App into our own host with setInterval/clearInterval wrapped so we can
+// count how many timers the effect creates. A correct solution sets up the
+// interval once and never again — the naive [step] version sets up a fresh one
+// on every bump. Installing the probes before render and restoring them after
+// keeps the measurement isolated per test.
+const withMountedApp = async (
+  run: (ctx: {
+    host: HTMLElement;
+    intervals: { created: number };
+    bump: () => Promise<void>;
+    step: () => string | null | undefined;
+    count: () => string | null | undefined;
+  }) => Promise<void>,
+) => {
+  const intervals = { created: 0 };
+  const realSet = globalThis.setInterval;
+  (globalThis as any).setInterval = (...args: any[]) => {
+    intervals.created += 1;
+    return (realSet as any)(...args);
+  };
+
+  const host = document.createElement('div');
+  document.body.appendChild(host);
+  const root = createRoot(host);
+
+  const q = (sel: string) => host.querySelector(sel)?.textContent;
+  const bump = async () => {
+    const btn = host.querySelector('[data-testid="bump"]') as HTMLButtonElement;
+    await act(async () => {
+      btn.click();
+    });
+  };
+
+  try {
+    await act(async () => {
+      root.render(<App />);
+    });
+    await run({
+      host,
+      intervals,
+      bump,
+      step: () => q('[data-testid="step"]'),
+      count: () => q('[data-testid="count"]'),
+    });
+  } finally {
+    await act(async () => {
+      root.unmount();
+    });
+    host.remove();
+    (globalThis as any).setInterval = realSet;
+  }
+};
+
+test('Bumping the step updates the displayed step', async () => {
+  await withMountedApp(async ({ bump, step }) => {
+    expect(step()).toBe('1');
+    await bump();
+    await bump();
+    expect(step()).toBe('3');
+  });
+});
+
+test('The interval is recreated when the step changes', async () => {
+  await withMountedApp(async ({ bump, intervals }) => {
+    // One setup on mount — and bumping step must NOT create more.
+    expect(intervals.created).toBe(1);
+    for (let i = 0; i < 3; i += 1) {
+      await bump();
+    }
+    expect(intervals.created).toBe(1);
+  });
+});
+
+test('Each tick adds the latest step, not a stale one', async () => {
+  await withMountedApp(async ({ bump, count, intervals }) => {
+    // Bump to 3 before any tick fires, then let one real 1s tick land.
+    await bump();
+    await bump();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1150));
+    });
+    // A single tick with the current step of 3 lands the count on 3.
+    expect(count()).toBe('3');
+    // And it stayed a single interval the whole time.
+    expect(intervals.created).toBe(1);
+  });
+});
+`}
+/>
+
+<details>
+<summary>Reference solution</summary>
+
+```tsx
+import { useEffect, useEffectEvent, useState } from 'react';
+
+export function App() {
+  const [count, setCount] = useState(0);
+  const [step, setStep] = useState(1);
+
+  const onTick = useEffectEvent(() => {
+    setCount((c) => c + step);
+  });
+
+  useEffect(() => {
+    const id = setInterval(onTick, 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // ...render the count, the step, and the button
+}
+```
+
+The tick reads the latest `step` through `onTick`, so the interval no longer depends on it. The deps array is empty, the timer is created exactly once, and every tick still adds the current `step`.
+
+</details>
+
+## The rules that keep it safe
+
+Now that the happy path is yours, the guardrails. There are four, and the first is the one people actually break.
+
+<Steps>
+
+1. **Call it only from inside an Effect or another Effect Event — never from render, never from a regular event handler.** This is the hard rule. Calling it during render would read the latest mutable state *while rendering*, which is exactly the impurity the [render model](/023-the-render-model/3-the-purity-contract/) forbids and the React Compiler will reject — render must stay a pure function of its snapshot. And a regular event handler doesn't *need* it: handlers already run on a fresh render and close over the latest props and state by default, so reaching for the seam there is redundant, and the lint flags it as a misuse.
+
+2. **Never pass it as a prop or return it out of a hook.** Its identity is intentionally unstable, so anything downstream that keys off that identity — a memoized child, a dependency array two levels up — breaks loudly. If a child needs the behavior, the child declares its *own* Effect Event. (One nuance for later: you *may* create an Effect Event inside a custom hook and call it within that hook's own effect — what you must never do is hand the Effect Event itself back to the hook's callers.)
+
+3. **It's excluded from dependency arrays — by design, and the lint knows.** You've already seen this. The exhaustive-deps rule ignores Effect Events when checking deps, and separately flags any call made outside an allowed context. The tool that demands every reactive value also knows this one isn't reactive.
+
+4. **Keep the body event-shaped.** Read the latest values and perform an action — fire a callback, log an event, kick off a request. Don't declare hooks inside it, and don't compute values meant to drive a re-render. It's an event handler that happens to live next to an effect, not a hiding place for reactive logic.
+
+</Steps>
+
+The first rule is worth seeing as code, because the wrong version looks so reasonable. The two variants below are the canonical mistake and its fix.
+
+<CodeVariants syncKey="call-site">
+  <CodeVariant label="Wrong — called from a handler">
+    <div data-mark-color="red">
+
+    ```tsx {6}
+    const onVisit = useEffectEvent(() => {
+      track('open', { url, userId: currentUser.id });
+    });
+
+    const handleClick = () => {
+      onVisit();
+    };
+    ```
+
+    </div>
+    **Calling an Effect Event from an ordinary handler is a misuse the lint will flag.** `handleClick` already runs on a fresh render — it can read `url` and `currentUser` directly. There's nothing for the seam to do here, and routing through it only obscures the logic.
+  </CodeVariant>
+
+  <CodeVariant label="Right — called from an effect">
+    <div data-mark-color="green">
+
+    ```tsx {6}
+    const onVisit = useEffectEvent(() => {
+      track('open', { url, userId: currentUser.id });
+    });
+
+    useEffect(() => {
+      onVisit();
+    }, [url]);
+    ```
+
+    </div>
+    **An Effect Event belongs inside an effect (or another Effect Event).** Here it bridges a reactive trigger — `url` changing — to a non-reactive read of `currentUser`. That bridge is the only job it has.
+  </CodeVariant>
+</CodeVariants>
+
+That leaves one genuinely strange thing to explain: *why is the Effect Event's identity unstable on purpose?* It's the non-obvious bit, and understanding it is what makes the rules feel inevitable rather than arbitrary.
+
+Think back to the values the deps array lets you *omit* — the `set` function from `useState`, the `dispatch` from `useReducer`, a ref's `current`. You can leave those out of deps because React guarantees they keep the **same identity for the component's whole life**. They're omittable because they're *stable*. An Effect Event is omittable for the opposite reason. Its identity changes on *every* render, deliberately, and it's excluded from deps not because it never changes but because it's explicitly declared non-reactive.
+
+That instability is a feature — it's a runtime assertion. If you ever wrongly wire an Effect Event's identity into a real dependency (passing it as a prop into a memoized child, say, or listing it where it doesn't belong), the unstable identity makes the effect re-run on *every single render*, and the mistake becomes immediately, loudly visible. A stable function would have let the same mistake hide silently. React makes the identity churn so that misusing the seam can't fail quietly.
+
+## What this replaces: the ref mirror and the useCallback wrap
+
+The hook is new — it landed in React 19.2, with no `experimental_` prefix to worry about. Before it existed, engineers still hit the non-reactive trap constantly and reached for one of two workarounds. You'll meet both in existing codebases and in AI-generated code, so it's worth knowing what they were and why this hook retires them.
+
+The first is the **ref mirror**: stash the latest callback in a ref, keep `ref.current` updated in its own effect, then read `ref.current()` from inside the effect that needs it.
+
+```tsx
+const onMessageRef = useRef(onMessage);
+useEffect(() => {
+  onMessageRef.current = onMessage;
+});
+
+useEffect(() => {
+  const connection = connectToRoom(roomId);
+  connection.on('message', (message) => onMessageRef.current(message));
+  connection.connect();
+  return () => connection.disconnect();
+}, [roomId]);
+```
+
+It works — the ref always holds the newest callback, and `roomId` stays the only dependency. But it has two real problems. The ref updates *after* commit, in an effect, so a read that happens to fire before that update can be one render behind. And nothing enforces it: the lint has no idea this ref is meant to mirror `onMessage`, so when you get the pattern subtly wrong, nothing tells you. `useEffectEvent` is precisely this pattern, blessed with correct timing and first-class lint support.
+
+The second workaround is the **`useCallback` wrap**: stabilize the callback's identity so it can sit in the deps array without firing constantly.
+
+```tsx
+const handleMessage = useCallback(
+  (message: Message) => onMessage(message, currentUser),
+  [onMessage, currentUser],
+);
+
+useEffect(() => {
+  const connection = connectToRoom(roomId);
+  connection.on('message', handleMessage);
+  connection.connect();
+  return () => connection.disconnect();
+}, [roomId, handleMessage]);
+```
+
+This looks like it solves the problem, and it's the tempting one. But it doesn't. `useCallback` hands back a *stable* function whose body still closes over the render it was created in — so its own dependency array has to be correct, and if it isn't, you're right back to a stale closure. Worse, when its deps *do* legitimately change — `currentUser` updates — `handleMessage` gets a new identity, which re-runs the effect, which reconnects the socket. The exact bug you were trying to kill.
+
+That's the crisp contrast, and it's worth memorizing:
+
+:::note
+**`useCallback` gives you a stable function over a fixed snapshot. `useEffectEvent` gives you an unstable function over the latest values.** The trade for the Effect Event is the restricted call site — and that restriction is the price of always-fresh reads.
+:::
+
+Here are all three side by side — same chat fix, three eras — so the difference is glanceable.
+
+<TabbedContent syncKey="three-eras">
+  <TabbedItem label="Ref mirror" icon="simple-icons:react">
+    ```tsx
+    const onMessageRef = useRef(onMessage);
+    useEffect(() => {
+      onMessageRef.current = onMessage;
+    });
+
+    useEffect(() => {
+      const connection = connectToRoom(roomId);
+      connection.on('message', (m) => onMessageRef.current(m));
+      connection.connect();
+      return () => connection.disconnect();
+    }, [roomId]);
+    ```
+
+    <span slot="caption">Works, but `onMessageRef.current` updates *after* commit — one beat behind — and the lint can't enforce that the ref mirrors `onMessage`.</span>
+  </TabbedItem>
+
+  <TabbedItem label="useCallback" icon="simple-icons:react">
+    ```tsx
+    const handleMessage = useCallback(
+      (m: Message) => onMessage(m, currentUser),
+      [onMessage, currentUser],
+    );
+
+    useEffect(() => {
+      const connection = connectToRoom(roomId);
+      connection.on('message', handleMessage);
+      connection.connect();
+      return () => connection.disconnect();
+    }, [roomId, handleMessage]);
+    ```
+
+    <span slot="caption">Stable identity, but a real change to `currentUser` still gives `handleMessage` a new identity and reconnects — and a wrong dep here still goes stale.</span>
+  </TabbedItem>
+
+  <TabbedItem label="useEffectEvent" icon="simple-icons:react">
+    ```tsx
+    const onReceiveMessage = useEffectEvent((m: Message) => {
+      onMessage(m, currentUser);
+    });
+
+    useEffect(() => {
+      const connection = connectToRoom(roomId);
+      connection.on('message', onReceiveMessage);
+      connection.connect();
+      return () => connection.disconnect();
+    }, [roomId]);
+    ```
+
+    <span slot="caption">Always-fresh reads, kept out of the deps — `[roomId]` is the lone reactive value. The 2026 default for the non-reactive seam.</span>
+  </TabbedItem>
+</TabbedContent>
+
+Settle the contrast with a quick check. The point is to choose between the tool that *looks* right and the one that *is*.
+
+<MultipleChoice>
+  A parent passes a fresh `onMessage` function to your `ChatRoom` on every render, and `ChatRoom` reads `currentUser` from context. The socket must reconnect when `roomId` changes — and only then. Which approach keeps the connection stable while still calling the newest `onMessage` and `currentUser`?
+
+  <McqChoice>Memoize `onMessage` with `useCallback` so its identity is stable, then list it in the effect's deps.</McqChoice>
+  <McqChoice correct>Move the call to `onMessage(message, currentUser)` into a `useEffectEvent`, call it from the socket's message handler, and keep `[roomId]` as the only dependency.</McqChoice>
+  <McqChoice>Drop `onMessage` and `currentUser` from the deps array and disable the exhaustive-deps lint rule for that line.</McqChoice>
+  <McqChoice>Store `roomId` in an Effect Event so the effect never has to list it as a dependency.</McqChoice>
+
+  <McqWhy>The Effect Event is the non-reactive seam: it reads the latest `onMessage` and `currentUser` each time a message arrives, while staying out of the deps, so `roomId` is the only thing that re-syncs the socket. `useCallback` only stabilizes identity — a genuine change to `currentUser` still produces a new function and reconnects, and a wrong dep there still goes stale. Disabling the lint just hides a real stale-closure bug. Burying `roomId` in an Effect Event is the opposite mistake — it makes a value that *should* re-sync non-reactive, so the socket stops reconnecting on a real room change.</McqWhy>
+</MultipleChoice>
+
+## Reach for the seam last, not first
+
+One closing discipline, because this hook has a failure mode that's the mirror image of the bug we fixed. Once you've seen how cleanly `useEffectEvent` silences a noisy dependency, the temptation is to wrap *everything* in it so you never have to think about deps again. Don't. That converts genuinely reactive logic into non-reactive logic and silently breaks synchronization — bury `roomId` in an Effect Event and the socket that *should* reconnect on a room change no longer does. You'd have traded a loud bug for a quiet one.
+
+So make it the last move, not the first. The reflex runs in this order:
+
+1. **First ask whether you need the effect at all.** Most "I need to read the latest state in an effect" instincts dissolve once you notice the effect shouldn't exist — the value is derived and belongs in render, the logic belongs in an event handler, or the data belongs in a Server Component. A later lesson, "You probably don't need an effect," is the full audit. This hook is only for the *residual* cases where an effect is genuinely warranted.
+2. **Then, value by value, ask which reads are reactive.** Only the non-reactive reads move into an Effect Event. The reactive ones stay in the deps, where they belong. `useEffectEvent` is a scalpel for specific non-reactive reads — not a blanket exemption from the dependency contract.
+
+Hold onto the one sentence this whole lesson compresses to:
+
+:::tip
+The dependency array is the list of values whose change should re-sync the effect. `useEffectEvent` is for the values you must read fresh but whose change must *not*.
+:::
+
+One last check, on a scenario you haven't seen. Below is a typing-indicator effect that reads four values. Decide which belong in the deps and which belong in an Effect Event — run the bright line one more time.
+
+<MultipleChoice>
+  A presence feature opens a connection with `openPresence(channelId, region)`, and on each keypress in the composer it broadcasts who's typing by calling the parent's `onTyping(currentUser)`. The effect reads four values:
+
+  ```tsx
+  useEffect(() => {
+    const channel = openPresence(channelId, region);
+    channel.onKeypress(() => onTyping(currentUser));
+    return () => channel.close();
+  }, [/* ? */]);
+  ```
+
+  Run the bright line on each: **which values are reactive — a change should close the open channel and reopen a fresh one?** Select all that apply.
+
+  <McqChoice correct>The data-center `region` passed into `openPresence` alongside the channel</McqChoice>
+  <McqChoice>The user object handed to `onTyping` so the broadcast says who's typing</McqChoice>
+  <McqChoice correct>The `channelId` argument that picks which presence channel `openPresence` joins</McqChoice>
+  <McqChoice>The parent's keypress callback the effect invokes on every keystroke</McqChoice>
+
+  <McqWhy>The two reactive values are the ones that define *which* connection to open — `channelId` and `region` are both arguments to `openPresence`, so changing either means "this is a different channel; close the old one and open the new one." They earn their slot in the deps. The other two are read only when a keypress fires: the parent re-creating its callback, or the user's profile gaining an avatar, is no reason to drop a healthy connection. Those move into an Effect Event so each keypress reads them fresh, leaving `[channelId, region]` as the dependency array.</McqWhy>
+</MultipleChoice>
+
+## Going further
+
+The React docs treat reactive-versus-non-reactive in exactly the framing this lesson used — the "Separating Events from Effects" page is the long-form source of the bright line, and the reference page is where the rules live in full.
+
+If you'd like to see the whole arc — the dependency-array pain, the stale-closure trap, and the fix — worked live in an editor, this walkthrough covers the same ground from a different angle.
+
+<VideoCallout videoId="uQpky6ygfk0" videoTitle="This New React Hook Finally Fixes useEffect — Cosden Solutions">
+  Cosden Solutions builds up the exact dependency-array problem from this lesson and fixes it with the stable, unprefixed `useEffectEvent` (20 min).
+</VideoCallout>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title='React docs — useEffectEvent reference'
+    href="https://react.dev/reference/react/useEffectEvent"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="The full API reference and the call-site rules, for React 19.2's stable hook."
+  />
+  <ExternalResource
+    title='React docs — Separating Events from Effects'
+    href="https://react.dev/learn/separating-events-from-effects"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="The conceptual long-form on reactive vs. non-reactive values — the source of this lesson's bright line."
+  />
+  <ExternalResource
+    title='React docs — Removing Effect Dependencies'
+    href="https://react.dev/learn/removing-effect-dependencies"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="Where the deps-as-a-contract and the legitimate ways to shrink a dependency array live."
+  />
+  <ExternalResource
+    title="React 19.2 release post"
+    href="https://react.dev/blog/2025/10/01/react-19-2"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="The release that shipped useEffectEvent unprefixed, importable from 'react'."
+  />
+</CardGrid>

@@ -1,0 +1,505 @@
+---
+title: Marking updates as non-urgent
+description: Concurrent rendering lets you mark an update non-urgent so a heavy re-render never blocks a keystroke — useTransition, useDeferredValue, and the one decision that separates them.
+chapter-id: 25
+sidebar:
+  order: 6
+  label: Non-urgent updates
+---
+
+import { Aside, CardGrid } from '@astrojs/starlight/components';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import ReactCoding from '../../../components/live-coding/ReactCoding/ReactCoding.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import InterruptResumeFrame from '../../../components/lessons/025/6/InterruptResumeFrame.astro';
+
+You've built a search box. The user types, and on each keystroke you filter a list of results below it. It works fine with twenty rows. Then the list grows to five thousand, and the box turns to mud — you press a key, and there's a beat before the letter shows up. Type fast and the input falls behind your fingers, painting characters in stutters.
+
+You've seen this exact feel in three disguises. A tab bar where clicking a tab freezes the page mid-animation because switching tabs triggers a heavy render. A data table with a filter dropdown that locks for a third of a second every time you change it. A search input that lags. Different screens, same bug.
+
+Here's the instinct most developers have when they hit this: *the render is too slow, I need to make it faster.* So they reach for a debounce, or memoize harder, or start virtualizing the list. Sometimes that helps. But it misdiagnoses the problem, and the misdiagnosis is the interesting part.
+
+The real issue isn't speed. It's **priority**. When the user presses a key, two things need to happen: the input must show the new character *right now*, and the list must re-filter. Those two updates have wildly different urgency. The keystroke must land instantly, or the input feels broken. The list re-filtering can wait a beat; nobody minds if results refresh a fraction of a second after they stop typing. The bug is that React, by default, treats both as equally urgent and does them together in one blocking pass. The slow list re-render holds the main thread hostage, and the fast keystroke gets stuck behind it.
+
+By the end of this lesson you'll be able to keep an interface responsive under a heavy render by telling React which updates are allowed to wait — and you'll know exactly which of two tools to reach for in any given situation. You already watched React *skip* work it didn't need to do, back in ["State is a snapshot"](/023-the-render-model/4-state-is-a-snapshot/), where the `Object.is` bailout let it skip a re-render whose state reference hadn't changed. This lesson is the other half of that idea: not React skipping work, but React **reordering** it.
+
+## Urgency, not speed
+
+Before any API, the model — because if you install the wrong one here, everything downstream goes sideways.
+
+React 19's renderer is <Term definition="React renders the UI in small interruptible chunks instead of one blocking pass, so it can pause a low-priority render, handle an urgent one, then resume.">concurrent</Term>. That word carries one specific power: React can start rendering an update, pause partway through if something more urgent comes in, deal with the urgent thing, and then come back to finish — or throw away the half-done work and start over. A render is no longer one all-or-nothing blocking pass. It's interruptible.
+
+That capability is useless on its own, because React doesn't know which of your updates are urgent. It can't guess that the input is precious and the list can wait. So you tell it. You mark certain state updates as a <Term definition="A state update you've marked as non-urgent. React is allowed to render it in the background and interrupt it for anything more urgent.">transition</Term> — React's word for "this update is low-priority, render it in the background, and interrupt it freely if something urgent shows up." Everything you don't mark stays urgent and renders first.
+
+Now read this next sentence twice, because it's the whole lesson and the single most common thing people get wrong:
+
+<Aside type="caution" title="The one thing to remember">
+These hooks are **priority markers, not speed boosts.** Marking the list update as a transition does not make filtering five thousand rows any faster — that render costs exactly what it cost before. What changes is that it no longer blocks the keystroke. The expensive work still happens; it just stops standing in the urgent update's way.
+</Aside>
+
+Internalize that and the rest is mechanics. Miss it, and you'll sprinkle these hooks around like performance pixie dust, wonder why nothing got faster, and ship slower code with more moving parts.
+
+So what does "interrupt and resume" actually look like as the user types? This is the one mechanic that prose can't quite carry, because the surprising part is that React will *abandon work it already started*. Step through the following diagram one frame at a time. Watch what happens at step four, when a second keystroke arrives before the first one's background render has finished.
+
+<DiagramSequence>
+  <DiagramStep caption="The user types `a`. Two updates queue: an urgent one (set the input's value) and a transition (re-filter the list). Nothing has run yet — both are just sitting in line.">
+    <InterruptResumeFrame step={1} />
+  </DiagramStep>
+
+  <DiagramStep caption="React commits the urgent update immediately. The input shows `a`. Only now does the background render for the list begin — the striped block is work in flight, not yet on screen.">
+    <InterruptResumeFrame step={2} />
+  </DiagramStep>
+
+  <DiagramStep caption="Before that background render finishes, the user types `b`. A new urgent update arrives and joins the queue while the list is still rendering for `a`.">
+    <InterruptResumeFrame step={3} />
+  </DiagramStep>
+
+  <DiagramStep>
+    <InterruptResumeFrame step={4} />
+    <Fragment slot="caption">
+      **React interrupts.** It throws away the half-finished list render for `a`, commits `b` to the input instantly, and restarts the list render for `ab`. The discarded work was about to be wrong anyway — it was filtering for a query the user already moved past.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep caption="Typing stops. The background render for `ab` runs to completion and the list updates. Through all of it, the input never stuttered once.">
+    <InterruptResumeFrame step={5} />
+  </DiagramStep>
+</DiagramSequence>
+
+That abandon-and-restart in step four is the part worth sitting with. A transition can be interrupted, and that's not a glitch — it's correct. The half-rendered list for `a` was already stale; the user had typed `b`. Throwing it out and restarting for `ab` is exactly what you'd want. React's bet is that a transition's output might be obsolete before it's done, so it never lets that work block anything urgent, and never hesitates to discard it.
+
+That's the entire model. Two priorities; urgent commits first; transitions render in the background and yield. Now the two ways to put an update in that background lane.
+
+<VideoCallout videoId="edN42P_vfCI" videoTitle="The Story of Concurrent Rendering in React">
+ui.dev (react.gg) traces the five-year road to concurrent rendering and lands on the exact input-versus-heavy-list priority model above (14 min).
+</VideoCallout>
+
+## useTransition: marking the setter
+
+The first tool. Reach for it when **you own the setter** — when you're the one writing the code that calls `setSomething`, so you get to decide, right there, that this particular update is non-urgent.
+
+It's a hook:
+
+<div data-mark-color="blue">
+
+```tsx
+const [isPending, startTransition] = useTransition();
+```
+
+</div>
+
+It hands you back two things. `startTransition` is a function: anything you call inside the callback you pass it gets marked as a transition. And `isPending` is a boolean — `true` from the instant a transition starts until its background render commits. That flag is your hook into the UI; it's how you dim a stale list or show a spinner while the slow render catches up.
+
+Let's wire up the search box properly. The key move — and this is the insight the entire lesson rests on — is that one `onChange` fires **two** state updates with two different priorities. Walk through the following component step by step.
+
+<AnnotatedCode lang="tsx" code={`
+'use client';
+
+export function ProductSearch() {
+  const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState('');
+  const [isPending, startTransition] = useTransition();
+
+  const handleChange = (event: ChangeEvent<HTMLInputElement>) => {
+    setQuery(event.target.value);
+    startTransition(() => {
+      setFilter(event.target.value);
+    });
+  };
+
+  return (
+    <div>
+      <input value={query} onChange={handleChange} />
+      {isPending && <Spinner />}
+      <SlowList query={filter} />
+    </div>
+  );
+}
+`}>
+  <AnnotatedStep meta="{6}" color="blue">
+    The hook returns the pending flag and the marker. No arguments — `useTransition` takes none.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{9}" color="blue">
+    The **urgent** update. `query` drives the controlled `<input>`, so this is what paints the keystroke. It runs outside the transition — at normal, can't-wait priority — because the input must never lag behind the user's fingers.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{10-12}" color="violet">
+    The **non-urgent** update. `filter` drives the expensive `<SlowList>`. Wrapped in `startTransition`, it's marked as a transition: React renders it in the background and interrupts it for any keystroke. Note we *call* `setFilter` inside the callback — that's what makes the difference.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{18}" color="violet">
+    While the background render is in flight, `isPending` is `true`, so a spinner shows. The same boolean could instead add an `opacity-50` class to the list to dim the stale results. One flag, your choice of affordance.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+See the split? Two pieces of state from one event. `query` and `filter` start out holding the same string, but they update on different priority lanes. `setQuery` is bare — urgent — so the input repaints instantly. `setFilter` is wrapped — non-urgent — so the heavy list re-render happens in the background, where it can be interrupted by the next keystroke instead of blocking it. The input is bound to `query`, never to `filter`, which is exactly why the input stays crisp while the list lags a beat behind.
+
+A few things trip people up here, and they're worth naming at the exact spot they bite.
+
+The first is a tempting shortcut that quietly does nothing:
+
+```tsx del={1} ins={2}
+startTransition(setFilter);
+startTransition(() => setFilter(value));
+```
+
+`startTransition` marks whatever state updates happen *while its callback runs*. Pass it `setFilter` directly — the first line — and you've handed it a function it never calls; no setter fires inside the transition, so nothing gets marked. You have to actually *call* the setter inside the callback, as the second line does. This is the single most common first mistake; if your transition seems to have no effect, check this first.
+
+The second is a mental model worth correcting before it calcifies. It's tempting to think of a transition as a `setTimeout` that delays the update. It isn't. `setFilter(value)` still queues its commit immediately — the update is not postponed, not debounced, not deferred in time. Only its *priority* changes. React still does the work right away; it just does it in a lane that yields to urgent updates. A transition reorders work. It does not delay it.
+
+And one convenience worth knowing: `isPending` stays `true` not just for the transition's render but also for any asynchronous resource that render kicks off. So if your background render triggers a data fetch (you'll see that shape shortly), the same single flag keeps your spinner up through the whole thing. You don't manage two loading states; `isPending` covers both.
+
+## useDeferredValue: marking the value
+
+Now the mirror image. `useTransition` works when you own the setter. But sometimes you don't — the value just *arrives*. A third-party combobox calls you back with a query string. A router hook hands you the current URL search params. A parent passes a prop down. In all of these, there's no `setQuery` of yours to wrap, because you're not the one calling it. You only *receive* the value.
+
+For that, you mark the value instead of the setter:
+
+<div data-mark-color="violet">
+
+```tsx "useDeferredValue(query)" "deferredQuery"
+const deferredQuery = useDeferredValue(query);
+
+return <SlowList query={deferredQuery} />;
+```
+
+</div>
+
+`useDeferredValue` takes a value and gives you back a version of it that **lags**. When `query` changes, `deferredQuery` doesn't change with it — not at first. The urgent render runs with `deferredQuery` still holding the *previous* value, so whatever depends on it (your slow list) stays put for that pass. Then, in the background, React re-renders with `deferredQuery` caught up to the new value. The lag is the whole point: it's how the cheap parts of your UI race ahead while the expensive part trails behind.
+
+Picture the search box again, but this time the input's value comes from somewhere you can't wrap — say a router hook. You can't intercept the setter. So you wrap at the **consumer**: the input stays bound to the live `query` (urgent, instant), and only `SlowList` reads `deferredQuery`. The input updates the moment the user types; the list catches up a beat later. Same outcome as the transition, reached from the other end of the data flow.
+
+There's a compounding win when the deferred value feeds a memoized computation. If `SlowList` does its filtering inside a `useMemo` keyed on the query, that expensive filter only re-runs when the *deferred* value changes — once per settle, not once per keystroke. Worth knowing that React's compiler does this memoization automatically for pure computation, so you often get the win for free; `useMemo` is the manual fallback for the cases it can't infer. We won't dwell on memoization here (a later chapter owns it) — just note that deferring a value and memoizing on it stack neatly.
+
+One trap, and it's the classic one, so let it land:
+
+<Aside type="danger" title="Never defer the value the input is bound to">
+The mistake everyone makes once: wrapping the input's *own* value in `useDeferredValue`. If the `<input>` reads `deferredQuery` instead of `query`, the input itself lags behind the user's typing — you've moved the slowness onto the one element that must stay instant. Defer the **consumer** of the value (the slow list), never the source of truth the input is controlled by.
+</Aside>
+
+A smaller footgun for later: an effect that reads a deferred value sees the *deferred* (lagging) value, not the live one. That's usually what you want — the effect tracks the settled state — but occasionally it surprises someone. Note it and move on.
+
+## Setter or value: choosing between them
+
+Two hooks, one decision. This is the senior skill the lesson is really teaching, so here it is at its sharpest:
+
+> **Own the setter → `useTransition`. Only receive the value → `useDeferredValue`.**
+
+That's it. Both produce the same downstream behavior — the expensive render runs at low priority while the urgent path stays responsive. They differ only in *which side of the data flow* you grab. If you control the code that calls `setX`, mark the update right there where it happens. If a value is simply handed to you and you can't touch how it's set, lag it at the point you read it.
+
+Here's the same search box solved both ways. The only thing that changes is where you intervene.
+
+<CodeVariants>
+  <CodeVariant label="Wrap the setter (useTransition)">
+    <div data-mark-color="blue">
+
+    ```tsx {7}
+    const [query, setQuery] = useState('');
+    const [filter, setFilter] = useState('');
+    const [isPending, startTransition] = useTransition();
+
+    const handleChange = (event: ChangeEvent<HTMLInputElement>) => {
+      setQuery(event.target.value);
+      startTransition(() => setFilter(event.target.value));
+    };
+
+    return (
+      <>
+        <input value={query} onChange={handleChange} />
+        <SlowList query={filter} />
+      </>
+    );
+    ```
+
+    </div>
+    **You control the state update — mark it where it happens.** You own the `onChange`, so you split the update into urgent (`setQuery`) and non-urgent (`setFilter`) right at the source. `isPending` comes free for a spinner.
+  </CodeVariant>
+
+  <CodeVariant label="Wrap the value (useDeferredValue)">
+    <div data-mark-color="violet">
+
+    ```tsx "useDeferredValue(query)" "query={deferredQuery}"
+    const [query, setQuery] = useState('');
+    const deferredQuery = useDeferredValue(query);
+
+    return (
+      <>
+        <input value={query} onChange={(event) => setQuery(event.target.value)} />
+        <SlowList query={deferredQuery} />
+      </>
+    );
+    ```
+
+    </div>
+    **You only receive the value — lag it where it's read.** Here imagine `query` arrives from a place you don't control (a router hook, a library). You can't wrap a setter, so you defer the value at the consumer. The input stays on the live `query`; only the list reads the lagging one.
+  </CodeVariant>
+</CodeVariants>
+
+Notice both tabs keep the input bound to the live `query`. That's not a coincidence — it's the rule that survives both approaches. The thing the user is directly manipulating always rides the urgent lane. The only question is whether you express that by wrapping a setter or by deferring a value, and that's decided entirely by whether the setter is yours to wrap.
+
+<Aside type="tip">
+The heuristic to commit to memory: **own the update, transition the setter; only receive the value, defer the value.**
+</Aside>
+
+Try sorting a few scenarios with the following question.
+
+<MultipleChoice>
+  In which of these would you reach for `useDeferredValue` rather than `useTransition`? Select all that apply.
+
+  <McqChoice correct>A third-party `<Combobox>` fires `onValueChange` with the new query; a heavy results panel below it renders from that query.</McqChoice>
+  <McqChoice>Your own `<input>`'s `onChange` calls `setFilter` with the typed text, and a big list renders from `filter`.</McqChoice>
+  <McqChoice correct>A `useSearchParams`-style router hook returns the live `?q=` value, and a slow table renders straight from what the hook hands back.</McqChoice>
+  <McqChoice>A button's `onClick` calls `setSelectedTab`, and switching tabs kicks off an expensive re-render.</McqChoice>
+
+  <McqWhy>The cut is about *which side of the data flow you can touch*, not about the words. In the combobox and the router-hook cases the value simply arrives — there's no `setX` of yours to wrap — so you lag it at the point you read it with `useDeferredValue`. In the `<input>` and the tab-button cases you wrote the `setX` call yourself, so you mark it right there with `useTransition`. Same downstream behavior either way; the only question is whether the setter is yours.</McqWhy>
+</MultipleChoice>
+
+## Async transitions and the pending state
+
+Transitions aren't limited to synchronous state updates. React 19 lets you put `async` work inside one, and this turns out to be the foundation a large chunk of the modern React data story is built on.
+
+The shape: pass `startTransition` an async callback, and any work you `await` inside it stays part of the transition. Crucially, `isPending` remains `true` until the *whole* asynchronous flow settles — so a single flag drives your loading affordance across the entire round trip, fetch and re-render alike.
+
+There's one sharp edge here that you have to get right, because the wrong shape silently drops the transition:
+
+<div data-mark-color="orange">
+
+```tsx {3-5}
+startTransition(async () => {
+  const data = await fetchSomething(query);
+  startTransition(() => {
+    setResults(data);
+  });
+});
+```
+
+</div>
+
+Look at the inner `startTransition`. Why is it there? Because of how `await` works: once execution resumes *after* an `await`, it's no longer synchronously inside the original `startTransition` call. React only marks updates that happen synchronously within the callback as transitions — so a bare `setResults(data)` after the `await` would run at normal urgent priority, defeating the point. Wrapping the post-await setter in a fresh `startTransition` puts it back on the transition lane. React's own docs flag this as a current limitation they intend to smooth over later; until then, re-wrap any setter that lives after an `await`.
+
+Here's why this matters beyond the search box. Every Server Action you'll write — every `<form action={...}>` submission — is *implicitly wrapped in a transition* under the hood. That's the entire reason those forms can expose a pending state: the submission is a transition, so React knows when it's in flight. You don't learn Server Actions here (a later unit owns them, along with the hooks that read their pending and optimistic state), but when you meet them, you'll recognize the machinery — it's this.
+
+The `isPending` flag is where all of this pays off in the UI. From that one boolean you can dim the stale list, show an inline spinner, or disable a submit button while the work runs. It's the same affordance whether the transition is a synchronous filter or an async round trip.
+
+<Aside type="caution">
+Don't read this as "the way to fetch data." Async transitions are about the *priority* of an update that happens to be async — not about how you load server data in general. The default tools for that (the `use()` primitive you'll meet next, Server Components, and a server-state library in a later unit) are a different story. Reach for an async transition when you have a specific update you want kept non-urgent, not as your data-fetching pattern.
+</Aside>
+
+## Keeping the old UI on screen during a transition
+
+There's one more reason transitions feel as good as they do, and it shows up the moment a transition's render isn't ready immediately — when it has to wait on something asynchronous.
+
+Here's the situation. A transition starts rendering the new UI, but that render needs data that hasn't arrived yet — it hits a <Term definition="A wrapper that shows a fallback (like a spinner) while the UI inside it is still loading. Its full mechanics come in a later chapter.">Suspense boundary</Term>. Without a transition, React would tear down the current UI and drop in the fallback spinner — a jarring flash to nothing. *With* a transition, React does something better: it keeps the **previously committed UI on screen**, exactly as it was, until the new content is ready. The old results stay visible (you can dim them with `isPending` to signal they're stale), and they swap to the fresh ones in one clean step. No flash to a spinner.
+
+The distinction worth carving into memory is *when* each one is for:
+
+<Aside type="note" title="Suspense fallbacks vs. transitions">
+A `<Suspense>` fallback is for the **first** render of a region — there's nothing on screen yet, so you show a placeholder. A transition is for **updating** something already on screen — there's perfectly good content there, so you keep it visible while the new version loads. First load versus update. Different moments, different tools, and a transition is what lets an update avoid the fallback flicker.
+</Aside>
+
+You haven't formally met `<Suspense>`, `use()`, or streaming yet — those land in the next lesson and a later chapter. For now you only need to hold one fact: a transition *cooperates* with Suspense to keep already-rendered UI on screen instead of flashing a fallback. That cooperation is a big part of why these feel smooth and not just technically correct.
+
+## Practice: making a type-ahead responsive
+
+Reading about jank disappearing is nothing like feeling it. The following exercise gives you a real, genuinely laggy type-ahead — the slowness is not faked with a `setTimeout`, it's a deliberate pile of work the browser actually has to grind through on every render. Right now the input itself stutters, because the same state drives both the input and the heavy list. Your job is to split that update so the input stays instant while the list lags behind.
+
+<ReactCoding
+  live
+  instructions="This type-ahead lags on every keystroke because one piece of state drives both the input and a heavy list. Keep the input updating instantly while letting the list fall a beat behind. Reach for the hook that fits — you own the input here, but either tool can work; pick one and split the update so the input never waits on the list. The tests pass the moment the input rides ahead of the list."
+  starter={`import { useState } from 'react';
+
+// A big synthetic dataset, built once at module scope.
+const ITEMS = Array.from({ length: 5000 }, (_, i) => \`item-\${i}\`);
+
+function SlowList({ query }: { query: string }) {
+  // DELIBERATE SLOWDOWN — a teaching device to make the jank real in-browser, not production code.
+  const start = performance.now();
+  while (performance.now() - start < 8) {}
+
+  const matches = ITEMS.filter((item) => item.includes(query));
+
+  return (
+    <div data-rendered-query={query} className="mt-3">
+      <p className="text-sm text-gray-500">{matches.length} matches</p>
+      <ul className="mt-2 max-h-48 overflow-auto text-sm tabular-nums">
+        {matches.slice(0, 100).map((item) => (
+          <li key={item} className="py-0.5">{item}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export function App() {
+  const [query, setQuery] = useState('');
+
+  return (
+    <div className="p-4">
+      <input
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder="Filter 5,000 items…"
+        className="w-full rounded border px-3 py-2"
+      />
+      <SlowList query={query} />
+    </div>
+  );
+}`}
+  tests={`
+const getInput = () => document.querySelector('input');
+// The query the slow list actually committed with — read straight off its root.
+const renderedQuery = () =>
+  document.querySelector('[data-rendered-query]')?.getAttribute('data-rendered-query');
+
+// Set a controlled input's value the way React's onChange notices, dispatch the
+// input event the controlled pattern listens to, then flush the URGENT update so
+// the next assertion reads synchronously-committed DOM. A priority hook makes the
+// slow list trail this commit by one render — that lag is what the tests look for.
+function typeInto(input, value) {
+  const setter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    'value',
+  ).set;
+  setter.call(input, value);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  flushSync(() => {});
+}
+
+test('input reflects the latest keystroke without waiting on the list', () => {
+  typeInto(getInput(), 'sneakers');
+  expect(getInput()?.value).toBe('sneakers');
+});
+
+test('the input stays bound to the live query, not the deferred value', async () => {
+  typeInto(getInput(), 'ab');
+  await act(async () => {});
+  typeInto(getInput(), 'abc');
+  // Synchronously after the urgent commit the input must already show 'abc'.
+  // If it were bound to the lagging value, it would still read 'ab' here.
+  expect(getInput()?.value).toBe('abc');
+});
+
+test('the list lags behind the live query (a priority hook is in use)', async () => {
+  typeInto(getInput(), 'ab');
+  await act(async () => {});
+  typeInto(getInput(), 'abz');
+  // The input rode the urgent lane; the slow list has not re-rendered yet.
+  expect(getInput()?.value).toBe('abz');
+  expect(renderedQuery()).toBe('ab');
+  await act(async () => {});
+});
+`}
+/>
+
+The canonical solution here is `useDeferredValue` — it's the fewest moving parts when a single value drives the slow component:
+
+<details>
+<summary>Reference solution</summary>
+
+One value drives the slow component, so `useDeferredValue` is the leanest fix. Keep the input on the live `query`; hand `SlowList` the lagging copy.
+
+```tsx
+import { useDeferredValue, useState } from 'react';
+
+export function App() {
+  const [query, setQuery] = useState('');
+  const deferredQuery = useDeferredValue(query);
+
+  return (
+    <div className="p-4">
+      <input
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder="Filter 5,000 items…"
+        className="w-full rounded border px-3 py-2"
+      />
+      <SlowList query={deferredQuery} />
+    </div>
+  );
+}
+```
+
+Since you own the `onChange` here, `useTransition` works just as well: add a second `filter` state and call `startTransition(() => setFilter(event.target.value))` alongside the urgent `setQuery`, then render `<SlowList query={filter} />`. That route hands you `isPending` for a spinner, at the cost of one more piece of state. Both are correct — the deferred-value version is just fewer moving parts when a single value feeds the slow render.
+
+</details>
+
+If you did it right, the transformation is visceral: the input that stuttered now keeps pace with your fastest typing, and the list quietly catches up the instant you pause. Nothing got *faster* — the list render still costs exactly what it did. You just stopped letting it block the keystroke.
+
+## When these earn their weight
+
+You now have the tools, so here's the part that separates using them well from using them everywhere: **the default is no transition.** Reaching for one of these on an update that doesn't need it adds indirection — an extra state, a pending flag, a mental note that this value lags — for zero payoff. Blanket-wrapping every state update is a real anti-pattern, not a safety measure. These are conditional tools, and three conditions have to hold together before you reach:
+
+1. **There's measurable jank.** The user actually feels the stutter. A render that blocks the main thread past roughly 50 milliseconds is the rough threshold where it starts to read as lag. If the interaction is already smooth, you have nothing to fix — do nothing.
+2. **The work is genuinely large.** Filtering thousands of rows, sorting a big dataset, a heavy visualization. A twenty-item list re-renders in well under a millisecond; wrapping it does nothing but add ceremony.
+3. **The compiler hasn't already erased it.** React's compiler memoizes pure computation automatically, so the "expensive" render you're worried about may already be cheap. Measure the real thing before you assume there's a problem to solve — a later chapter covers the compiler and the profiler you'd use to confirm it.
+
+And because the API practically invites four specific misreadings, here's what these hooks are explicitly *not*:
+
+- **Not a debounce.** A debounce delays *when the work runs* — it waits for a pause, then does the work. A transition runs the work *immediately*, just at low priority. Different mechanism entirely; you'll meet debounce and throttle in a later chapter.
+- **Not a way to make slow code fast.** Say it one more time: they reorder priority, full stop. The render costs what it costs.
+- **Not a replacement for `<Suspense>`.** Suspense fallbacks are for the first load of a region; transitions are for updating something already on screen.
+- **Not relevant to non-React work.** A slow network request or a blocking `setTimeout` isn't reordered by these — they only govern the priority of React renders. If your bottleneck is outside React, this isn't your tool.
+
+One last shape to recognize. Everything so far used the `useTransition` hook, which is great inside a component because it also hands you `isPending`. But occasionally you need to mark an update as a transition from somewhere you *can't* call a hook — module scope, a utility function outside any component. For that, React exports `startTransition` as a standalone function:
+
+<div data-mark-color="blue">
+
+```tsx {1}
+import { startTransition } from 'react';
+
+startTransition(() => {
+  setFilter(value);
+});
+```
+
+</div>
+
+Same priority marking, no `isPending`. Reach for it only when you're outside a component and the hook isn't available; inside a component, `useTransition` is the default because the pending flag is almost always worth having.
+
+This isn't a niche optimization you'll use once. It's the machinery under every responsive search box, every snappy tab switch, every filter that doesn't lock the table — and it's the same priority model that Server Action forms and a production URL-driven search input (a later unit rebuilds exactly that) are quietly built on. You'll meet it constantly. Now you know what it's actually doing: not making anything faster, but telling React what to render first.
+
+## External resources
+
+The React reference docs go deeper on the edge cases this lesson skipped — the full signatures, the SSR `initialValue` argument, and a gallery of patterns for each hook.
+
+<CardGrid>
+  <ExternalResource
+    title="React docs — useTransition"
+    href="https://react.dev/reference/react/useTransition"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="Full reference, including async transitions and the pending-state patterns."
+  />
+  <ExternalResource
+    title="React docs — useDeferredValue"
+    href="https://react.dev/reference/react/useDeferredValue"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="Full reference, including the optional initialValue argument for SSR."
+  />
+  <ExternalResource
+    title="useTransition: performance game changer or…?"
+    href="https://www.developerway.com/posts/use-transition"
+    icon="lucide:square-pen"
+    iconColor="#00C2A8"
+    description="Nadia Makarevich pokes hard at the hook — when it actually helps, and the traps that make it do nothing."
+  />
+  <ExternalResource
+    title="useTransition() vs useDeferredValue()"
+    href="https://academind.com/articles/react-usetransition-vs-usedeferredvalue"
+    icon="lucide:graduation-cap"
+    iconColor="#E8364F"
+    description="Academind's side-by-side on the one decision that splits the two — which side of the data flow you can touch."
+  />
+</CardGrid>

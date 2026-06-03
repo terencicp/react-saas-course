@@ -1,0 +1,542 @@
+---
+title: Rules of hooks and the lint that enforces them
+description: The indexed-slot mechanic behind every hook, the two rules that fall out of it, and the lint that catches violations before they ship.
+chapter-id: 025
+sidebar:
+  order: 8
+  label: Rules of hooks
+---
+
+import SlotPointerWalk from '../../../components/lessons/025/8/SlotPointerWalk.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import ReactCoding from '../../../components/live-coding/ReactCoding/ReactCoding.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import Term from '../../../components/ui/Term.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+A component renders fine. Then a user opens a side panel, and the counter sitting next to it snaps back to a stale value — one it held three interactions ago. Nothing throws. There's no red overlay, no stack trace, no failed assertion. The state is just *wrong*, and it's wrong in a component the user never touched.
+
+The cause is one line: a `useState` call tucked inside an `if`. That's the whole bug. And it's a bug not because React forbids the shape out of fussiness, but because of how React tells your hooks apart in the first place — a mechanism that, once you see it, makes the failure feel less like a mystery and more like arithmetic.
+
+Every hook you've used across this chapter and the last — `useState`, `useRef`, `useReducer`, `useEffect`, `useEffectEvent`, `useContext`, `useTransition`, `useDeferredValue` — rests on two rules. They are simple to state, trivial to break by accident, and fully enforceable by a linter that's already running in your project. This lesson is the contract underneath all of them.
+
+We'll go in this order: first the one mechanic that makes the rules *necessary* — not arbitrary, necessary. Then the two rules themselves, which fall straight out of that mechanic. Then the single deliberate exception (`use()`, the loose end from the last lesson) and why it's allowed to break the pattern without breaking anything. And finally the two ESLint rules that catch all of this before it ever reaches a browser.
+
+The goal here isn't to memorize a list of "don'ts." It's to hold one model in your head and *re-derive* every rule from it on demand — so the day you hit a hook in a `try`, a hook in a `.map`, a hook after a `return`, you don't reach for a memorized verdict. You reason it out from the mechanic.
+
+## How React tells your hooks apart
+
+Here's the thing that surprises people: React has no idea what your hooks are called.
+
+When you write `const [count, setCount] = useState(0)`, you might imagine React filing that value away under the name `"count"` — a little dictionary somewhere mapping `"count"` to `0`, `"isOpen"` to `false`, and so on. It doesn't. There is no such map. React never sees the variable name; `count` is a label *you* chose, and it evaporates the moment your code is bundled. React couldn't read it if it wanted to.
+
+So how does the second render know which stored value belongs to which `useState` call? By **counting.**
+
+Every time React <Term definition="React calling your component function to produce UI. It happens many times over a component's life, not just once.">renders</Term> your component, it walks the function body from top to bottom and keeps an internal pointer. The pointer starts at zero. Each <Term definition="A function that lets a component tap into React features like state and effects, and remember them across renders.">hook</Term> call advances it by one. The first hook call lands on slot 0, the second on slot 1, the third on slot 2. **The position in the call sequence is the hook's entire identity.** Not its name, not its variable — its *ordinal*. First, second, third.
+
+When React renders the component again, it replays the exact same walk: pointer back to zero, advancing by one per call. It expects the first call to land on slot 0 again, the second on slot 1 again — and that's the trick. The second time `useState` runs, React looks at where the pointer is, finds slot 0, and hands back the value the *first* render stored there. The call doesn't remember anything itself. The slot does. The call just has to show up in the same place to find it.
+
+Let me make that pointer visible. The diagram below walks a tiny, well-behaved component through two renders. The component is deliberately boring — two pieces of state and an effect — because the lesson here is the *call structure*, not the feature. Scrub through it and watch the pointer advance:
+
+<SlotPointerWalk />
+
+Now the payoff — and it's the entire reason the rules exist. The whole scheme depends on one fragile assumption: **the same calls happen in the same order on every render.** Counting only works if you count the same things in the same sequence each time.
+
+So picture what happens if the *number* or *order* of calls changes between renders. Suppose the second render skips the first `useState` and jumps straight to the second. The pointer still starts at zero — it has no idea a call went missing. So the call that used to be the second one now lands on slot 0. It reads back `count`'s value when it expected `draft`'s. Every call downstream is shifted by one, each one reading the slot belonging to its neighbor. `useState` hands you another hook's state. An effect fires with the wrong dependencies.
+
+And here's the cruel part: React has no way to *notice*. The slots are positional. There's no name to compare against, no checksum, nothing that says "wait, this value was supposed to be `draft`, not `count`." React trusts the count. When the count drifts, React confidently returns the wrong thing, and your UI corrupts somewhere far from the line that actually caused it.
+
+That's why this can't be a soft suggestion. A human reviewer can't reliably eyeball whether every render reaches every hook in the same order — the drift hides inside an innocent-looking `if`. So the requirement is mechanical, and the enforcement is automated. The whole system stands on one promise:
+
+> The rules aren't React being fussy — they're the only way positional slots can work.
+
+<VideoCallout videoId="1VVfMVQabx0" videoTitle="How Do React Hooks Actually Work? React.js Deep Dive #3">
+  Philip Fabianek reverse-engineers `useState` and `useEffect` in ~14 min, building the exact array-and-index slot machinery this section describes from scratch.
+</VideoCallout>
+
+Two rules keep that promise. Each is just a different way of saying "don't let the count drift." Let's take them one at a time.
+
+## Rule 1 — call hooks at the top level, every render
+
+Call your hooks at the top level of the function body. Never inside a conditional, never inside a loop, never inside a nested function, never after an early `return`. Every render must reach every hook call, in the same order, top to bottom.
+
+That's the rule. Stated abstractly it sounds like a style preference. Tied to the slot pointer, it's the literal definition of "don't make the count drift" — each forbidden location is just a different way the pointer can come up short.
+
+Walk through the shapes. The two you'll meet most often are real before/after refactors, so look at each as a pair — the broken version and the fix side by side. Switch between the tabs:
+
+<CodeVariants>
+  <CodeVariant label="Hook in a condition">
+    <div data-mark-color="red">
+
+    ```tsx del={2-3}
+    const Panel = ({ showCount }: { showCount: boolean }) => {
+      if (showCount) {
+        const [count, setCount] = useState(0);
+        return <Counter value={count} onInc={() => setCount(count + 1)} />;
+      }
+      return <Placeholder />;
+    };
+    ```
+
+    </div>
+    **Slot drift.** The `useState` call only happens when `showCount` is true. On the renders where it's false the call never runs, so the next hook below it slides up into slot 0. Flip `showCount` and the call reappears, shoving every slot back down. The pointer is now counting a different set of hooks than last render.
+  </CodeVariant>
+
+  <CodeVariant label="Branch on the value">
+    <div data-mark-color="green">
+
+    ```tsx ins={2}
+    const Panel = ({ showCount }: { showCount: boolean }) => {
+      const [count, setCount] = useState(0);
+      if (showCount) {
+        return <Counter value={count} onInc={() => setCount(count + 1)} />;
+      }
+      return <Placeholder />;
+    };
+    ```
+
+    </div>
+    **Unconditional call.** The call moves to the top, where every render reaches it. The condition stays — but now it branches on the *value*, not on whether the hook runs. Slot 0 is always `count`, render after render. Calling `useState` when you might not render the counter costs nothing; an unused state value is free.
+  </CodeVariant>
+</CodeVariants>
+
+The second shape is the one you will actually trip over — not because it's exotic, but because it disguises itself as clean code. It's the early `return`.
+
+You guard a component against missing data: if the data hasn't loaded, show a spinner and bail. It reads beautifully. The problem is that an <Term definition="Returning JSX before the function reaches its end, short-circuiting the rest of the body — including every hook call below it.">early return</Term> makes every hook beneath it conditional on the data being present. Loading renders run fewer hooks than loaded renders. The count drifts the instant the data arrives:
+
+<CodeVariants>
+  <CodeVariant label="Hook after early return">
+    <div data-mark-color="red">
+
+    ```tsx del={4}
+    const Profile = ({ userId }: { userId: string }) => {
+      const user = useUser(userId);
+      if (!user) return <Spinner />;
+      const [isEditing, setIsEditing] = useState(false);
+      return <ProfileCard user={user} editing={isEditing} onEdit={setIsEditing} />;
+    };
+    ```
+
+    </div>
+    **Conditional on the data.** While `user` is null, render stops at the spinner and the `useState` below never runs. The moment `user` loads, the early return is skipped and `useState` fires for the first time — a hook appears that wasn't there last render. React expected the same count and gets one more. This is the single most common way the rule gets broken, because the guard *feels* like good hygiene.
+  </CodeVariant>
+
+  <CodeVariant label="Hooks above every return">
+    <div data-mark-color="green">
+
+    ```tsx ins={3}
+    const Profile = ({ userId }: { userId: string }) => {
+      const user = useUser(userId);
+      const [isEditing, setIsEditing] = useState(false);
+      if (!user) return <Spinner />;
+      return <ProfileCard user={user} editing={isEditing} onEdit={setIsEditing} />;
+    };
+    ```
+
+    </div>
+    **Hooks first, returns second.** Every hook moves above every early return. Now the loading render and the loaded render reach the exact same hooks in the exact same order — the spinner just short-circuits the JSX *after* the hooks have all run. The discipline is blunt and worth memorizing: hooks first, returns second, no exceptions.
+  </CodeVariant>
+</CodeVariants>
+
+The remaining two shapes are rarer, so I'll just name them and the fix. Same disease, same cure.
+
+**A hook in a loop.** `items.map(() => useEffect(...))` calls the effect once per item — so the call count changes the moment the array grows or shrinks, and the pointer can never find a stable position. The fix isn't to remove the effect; it's to give each item its own component. Render `<Row key={item.id} item={item} />` and let each `Row` call its one effect at *its* top level. One row, one stable hook.
+
+**A hook in a nested function.** Not an event handler — that's Rule 2's territory — but a function you define *during* render and call inline: the factory you pass to `useMemo`, a little helper declared inside the body. A hook called from there isn't on the top-level path either, so it runs only when that inner function runs. Pull the hook out to the body where the render walk reaches it directly.
+
+Step back and notice the single move that fixes all four:
+
+> The fix is almost never to remove the hook. It's to make the *call* unconditional and push the *condition* onto the value — or into a child component.
+
+Hold that and you never have to memorize the four shapes. A conditional decides what to *do* with a hook's result. It must never decide whether the hook *runs*. That one sentence regenerates the whole rule.
+
+## Rule 2 — call hooks only from components or other hooks
+
+The second rule is about *who* is allowed to call a hook, and there are exactly two callers: the body of a React function component, or another hook. That's it. Not an event handler. Not a plain utility function. Not a class method, not a top-level module statement.
+
+Reason it back to the pointer and it's obvious why. The slot array only exists *while React is rendering a component.* That's the only moment there's a pointer to advance and slots to claim. Call a hook from a click handler and ask yourself: which render is in progress? None. The click happened long after the component finished rendering. There's no pointer, no slot array, nothing to index into. The hook has nowhere to store its value. The same is true of a standalone utility function you call from anywhere — outside a render, the machinery the hook depends on simply isn't there.
+
+So far this is a rule about humans. The interesting question is how a *machine* enforces it — how the linter, which can't run your code, decides whether a given function is "allowed" to call hooks. The answer is delightfully blunt: **it goes by the name.**
+
+React and the lint both use one convention as the entire signal. A function whose name starts with `use` followed by a capital letter — `useUser`, `useToggle`, `useCartTotal` — is treated as a hook, and a hook is allowed to call other hooks. Any other name is treated as an ordinary function, and ordinary functions may not call hooks. There's no analysis of what the function *does*. There's just the prefix.
+
+That makes the prefix load-bearing. It isn't decoration or a naming fashion — it's the contract that tells React and the linter "this function plays by the rules of hooks." Watch how literally it's enforced:
+
+<div data-mark-color="red">
+
+```tsx {2, 6}
+function handleClick() {
+  const [count, setCount] = useState(0);
+}
+
+function getUser(id: string) {
+  return useContext(UserContext);
+}
+```
+
+</div>
+
+`handleClick` runs on a click, long after render; `getUser` is a plain function the lint refuses by name alone. The fixes follow the rule, not a workaround. For `handleClick`: the hook belongs in the component body, and the handler reads or sets the *result*. You call `useState` once at the top, and the click handler calls `setCount` — `setCount` is just a function, safe to call from anywhere. For `getUser`: decide what it actually is. If it genuinely needs render-time React features, it's a hook — rename it `useUser` and the lint accepts it. If it doesn't, it's a plain function and shouldn't be calling a hook at all; remove the call.
+
+That `useUser` rename hides the trap that separates understanding this from cargo-culting it, so let me make it sharp:
+
+> The naming convention is a contract the lint *trusts* — not one it *verifies.*
+
+Rename a rule-breaking utility to `useThing` and the linter goes quiet. The warning disappears. But nothing about the function changed — it still runs outside any render, it still has no slot array to write into, it still breaks. The prefix doesn't make a function obey the rules; it only *promises* that it does. You've muted the smoke detector, not put out the fire.
+
+So treat the `use` prefix as reserved for functions that genuinely *are* hooks — functions that call other hooks and run during render. Never as a trick to silence a warning on a function that breaks the rules. The moment you rename to dodge a lint error instead of to describe what the function is, you've shipped the bug and hidden the only signal that would have caught it.
+
+Writing your own `use*` functions to share stateful logic across components — that's the real reason this naming contract exists, and it's the subject of the next chapter. For now the only thing that matters is that such a function is a *legitimate* place to call hooks, and the `use*` name is precisely what makes it legitimate.
+
+<VideoCallout videoId="YdJPtx-ovWM" videoTitle="React 19 Tutorial - Rules of Hooks">
+  Codevolution walks both rules end to end on React 19 — the slot/queue model, conditional and early-return breakages, and the ESLint plugin that flags them — in a 9-min recap of everything above.
+</VideoCallout>
+
+## The one exception: `use()`
+
+In the last lesson — reading promises with `use()` — you met a claim that probably felt like it broke everything you'd just learned: `use()` may be called conditionally. Inside an `if`, after an early return, in a loop. It's the one React API that's allowed to. I told you then it was a deliberate exception and promised an explanation later. You now hold the model that makes the explanation land, so here it is.
+
+Every regular hook needs call-order stability because it's tracked by *positional slot* — the whole story above. `use()` isn't tracked that way at all. When you write `use(promise)`, React identifies that value by its <Term definition="Which exact object a value is in memory — the same notion Object.is compares, the one you met when reasoning about why two arrays with identical contents aren't equal.">referential identity</Term>, not by what number call it was. When you write `use(context)`, React resolves it by the component's *position in the tree*, walking up to find the nearest provider. Neither path assigns a slot.
+
+And that's the entire reason for the exemption. There's no slot being claimed, so there's no slot to misalign when the call moves around. The fragile thing the other rules exist to protect — the count — simply isn't in play for `use()`. The rule didn't get relaxed; the mechanism it guards just doesn't apply here.
+
+Put the two side by side. Same syntactic shape, opposite verdict — and now you can say *why* rather than memorize two disconnected facts:
+
+<CodeVariants>
+  <CodeVariant label="Conditional useState — illegal">
+    <div data-mark-color="red">
+
+    ```tsx {3}
+    const Widget = ({ ready }: { ready: boolean }) => {
+      if (!ready) return null;
+      const [value, setValue] = useState(0);
+      return <Display value={value} />;
+    };
+    ```
+
+    </div>
+    **Slot claimed.** `useState` claims a slot. Skipping it on the not-ready renders and claiming it on the ready ones makes the count drift — a real bug. Illegal, exactly as Rule 1 says.
+  </CodeVariant>
+
+  <CodeVariant label="Conditional use() — legal">
+    <div data-mark-color="green">
+
+    ```tsx {3}
+    const Widget = ({ ready }: { ready: boolean }) => {
+      if (!ready) return null;
+      const theme = use(ThemeContext);
+      return <Display theme={theme} />;
+    };
+    ```
+
+    </div>
+    **No slot to lose.** `use(ThemeContext)` claims no slot — context is resolved by tree position, not call order. There's nothing to misalign whether this render reaches the call or not. Legal, and not as a special favor: there's simply no slot here to lose.
+  </CodeVariant>
+</CodeVariants>
+
+Now the part of this section that matters more than the rest. This exception is dangerous in exactly one way: it tempts you to over-generalize it. A student who walks away thinking "ah, so conditional hooks are *sometimes* fine" is one careless edit from wrapping a `useState` in an `if` and shipping a slot bug.
+
+So firewall it, hard:
+
+> `use()` is exempt because it has no slot to lose — not because the rules got softer.
+
+This is precisely one exception, and it generalizes to *nothing*. Not to `useState`, not to `useMemo`, not to any hook you'll write yourself. The exemption is a property of how `use()` is tracked, full stop. And the linter encodes exactly this distinction — it permits a conditional `use()` and flags a conditional everything-else. When in doubt, the lint draws the line for you, and it draws it in the same place this reasoning does.
+
+## The lint that enforces this: `eslint-plugin-react-hooks`
+
+Here's the good news after all that mechanism: you will essentially never have to *spot* a violation by eye.
+
+A linter watches for these violations, it runs every time you save and again in <Term definition="Continuous integration — the automated checks that run on every push, before code can merge.">CI</Term>, and — this is the part that matters for your day-to-day — it's already in your project. `eslint-plugin-react-hooks` ships in the default Next.js ESLint config. You inherited it when you scaffolded the app; you didn't wire it up and you won't here. <Term definition="The linter that flags problematic code patterns statically, before the code ever runs.">ESLint</Term> does the watching so you don't.
+
+The plugin gives you two rules, and they map cleanly onto the two halves of this lesson.
+
+**`react-hooks/rules-of-hooks`** enforces Rules 1 and 2 — top-level calls only, `use*`-named callers only. It's purely structural, and it catches the whole catalogue: a hook in an `if`, a hook after a `return`, a hook in a `.map`, a hook in a handler, a hook in a function that isn't named `use*`. The crucial thing to internalize about this rule is how you should treat its warnings:
+
+This rule is never disabled. Ever. Not "rarely," not "with a good reason in a comment" — never. A `rules-of-hooks` violation is a real bug *by construction*: the slot mechanic isn't negotiable, so there is no such thing as a false positive here and no "I know better than the linter" case. If this rule fires, the code is broken. Full stop. You fix the structure; you do not silence the rule.
+
+**`react-hooks/exhaustive-deps`** is the other one, and you've already met it — back in the `useEffect` lessons it was your "correctness oracle" for dependency arrays. Quick re-anchor, not a re-teach: it watches the reactive values you read inside a `useEffect`, `useMemo`, or `useCallback`, and flags any you read but forgot to list in the dependency array. When it fires, the fix is almost always the boring one — add the dependency it's pointing at.
+
+What earns this rule its trust is that it's also *smart about what to leave alone*, so you don't end up fighting it. It won't demand you add:
+
+- A callback wrapped in `useEffectEvent` — that's the whole point of `useEffectEvent`, to read the latest value without becoming a dependency, and the lint knows it.
+- A ref. `ref.current` is mutable and identity-stable; listing it would do nothing, and the lint won't ask.
+- The setter from `useState` or the dispatch from `useReducer`. React guarantees those are stable for the life of the component, so they never belong in a dependency array, and the lint knows that too.
+
+If `exhaustive-deps` *isn't* complaining about one of those, it's not missing them — it's correctly leaving them out.
+
+In your config the two rules look like this. You're reading it for recognition — so you know what you're looking at if you open the file — not so you hand-author it:
+
+<div data-mark-color="blue">
+
+```js title="eslint.config.mjs" {7-8}
+import reactHooks from 'eslint-plugin-react-hooks';
+
+export default [
+  {
+    plugins: { 'react-hooks': reactHooks },
+    rules: {
+      'react-hooks/rules-of-hooks': 'error',
+      'react-hooks/exhaustive-deps': 'warn',
+    },
+  },
+];
+```
+
+</div>
+
+The two highlighted lines are the whole subject of this section. The Next.js default config already wires both up — you'd typically extend its preset rather than write this block yourself, but this is the shape underneath.
+
+Now the one genuinely senior beat in this section: *when* would you ever override the lint, and why is reaching for the override a warning sign in itself?
+
+For `rules-of-hooks`, you already know the answer — never. For `exhaustive-deps`, be honest: there are rare, legitimate overrides. A library hook with non-standard dependency semantics the lint can't model. A genuinely one-time effect where adding the flagged dependency would cause unwanted re-runs *and* `useEffectEvent` somehow doesn't fit — which, in 2026, is nearly always a sign you reached for the disable before you reached for `useEffectEvent`, the tool built for exactly this. These cases exist. They're just much rarer than the urge to use them.
+
+:::caution
+A bare `// eslint-disable-next-line react-hooks/exhaustive-deps` with no explanation is a code-review red flag. Disabling the rule silences a correctness signal — you're telling the oracle to stop checking. If you genuinely need to disable it, the comment must say *why*, in words a reviewer can evaluate. "To make the warning go away" is not a why. And `rules-of-hooks` is never the rule you disable.
+:::
+
+The shape of the discipline is: trust the lint by default, disable `exhaustive-deps` only with a written reason that would survive review, and never touch `rules-of-hooks`. A disable comment is a thing your reviewer is allowed to push back on — treat every one as a claim you have to defend.
+
+## Why the rules still hold under the React Compiler
+
+There's an objection forming, and it's a reasonable one. Your project runs the React Compiler — it auto-memoizes, which is why you've stopped hand-writing `useMemo` and `useCallback`. So the natural thought is: *doesn't the compiler just handle all of this now? Why do I need to carry the slot model around in my head?*
+
+The honest answer splits cleanly down the middle of the two rules.
+
+The compiler **reduces how much `exhaustive-deps` matters** — but only for *manual* memoization. Because you no longer hand-write `useMemo` and `useCallback`, there are simply fewer dependency arrays in your code for you to get wrong, and the compiler generates correct dependencies for the memoization it inserts on your behalf. So `exhaustive-deps` becomes a less frequent visitor. That part of the objection is right.
+
+The compiler **does not touch `rules-of-hooks`** — and if anything it makes that rule *more* important, not less. To analyze your component and decide what to memoize, the compiler reads it *assuming the rules hold*. It assumes your hooks run unconditionally, in order, every render — the exact stable-call-order property Rule 1 guarantees. Break Rule 1 and you haven't just produced a runtime bug; you've fed the compiler a false premise, and every conclusion it draws about your component is now built on sand. The tool that's supposed to optimize your code can't reason about code whose hooks don't run in a fixed order.
+
+So:
+
+> Keep both rules on. The compiler makes one of them a less frequent worry. It makes the other one non-negotiable.
+
+The misconception to retire is "the compiler means I don't need to understand the rules of hooks." The opposite is true: the compiler is a *consumer* of those rules. It depends on you holding up your end. (How the compiler actually performs its analysis is a topic for the next chapter — you don't need its internals to know that it leans on call-order stability.)
+
+## When it slips past the lint
+
+The lint is excellent, but it's a static analyzer, and a static analyzer can occasionally be fooled — a hot-reload edge case mid-edit, a dynamically-shaped call it couldn't trace, a third-party function that breaks the rules but happens to be named `use*` so the lint waved it through. In those cases the violation reaches the browser, and React catches it at render time with an error you should learn to read on sight:
+
+<div data-mark-color="red">
+
+```tsx {3}
+const Profile = ({ user }: { user: User | null }) => {
+  if (!user) return <Spinner />;
+  const [isEditing, setIsEditing] = useState(false);
+  //    ^ React: "Rendered more hooks than during the previous render."
+  return <ProfileCard user={user} editing={isEditing} />;
+};
+```
+
+</div>
+
+Read that error literally and it's the slot mechanic complaining out loud. "Rendered more hooks than during the previous render" (or its twin, "Rendered fewer hooks than expected") means exactly one thing: *this render reached a different number of hook calls than the last one did.* The count drifted — the same misalignment we started the lesson with, now caught one layer later than the linter would have caught it. React names the component in the error. Your job is to open that component and hunt for the conditional or early-returned hook that changes the count between renders. It's always there.
+
+## Check your understanding
+
+Three quick drills and one hands-on. The point of all of them is the same: confirm you can *derive* the right answer from the slot model, not just recall a sentence.
+
+First, the diagnostic. Read this component and decide what actually goes wrong:
+
+<MultipleChoice>
+  This component throws the first time `invoice` finishes loading and the card renders. What is the underlying cause?
+
+  ```tsx
+  const Invoice = ({ invoiceId }: { invoiceId: string }) => {
+    const invoice = useInvoice(invoiceId);
+    if (!invoice) return <Spinner />;
+    const [showLines, setShowLines] = useState(true);
+    return (
+      <InvoiceCard
+        invoice={invoice}
+        showLines={showLines}
+        onToggle={setShowLines}
+      />
+    );
+  };
+  ```
+
+  <McqChoice correct>The early return sits above `useState`, so the spinner renders run one hook and the card renders run two — the call count React expects to repeat is no longer the same from one render to the next.</McqChoice>
+  <McqChoice>`setShowLines` closes over the `invoice` from the render that defined it, so toggling the lines reads a stale copy of the invoice data.</McqChoice>
+  <McqChoice>`useInvoice` never lists `invoiceId` in its dependency array, so it skips re-fetching and hands the card a value it can't render.</McqChoice>
+  <McqChoice>Each toggle schedules another render, and React aborts the component to stop a runaway re-render loop.</McqChoice>
+
+  <McqWhy>While the spinner shows, the `useState` underneath the `return` is never reached, so the loading render claims one slot and the loaded render claims two. The moment `invoice` arrives, the count React tracks per render jumps — and a mismatched count is exactly the slot-drift failure this lesson opened with. It's structural, not a stale closure or a missing dependency: move *both* hooks above the `if (!invoice) return` and every render reaches the same hooks in the same order again.</McqWhy>
+</MultipleChoice>
+
+Next, the exception. Which of these calls are actually allowed to sit inside an `if`?
+
+<MultipleChoice>
+  Which of these calls may sit inside an `if`, after an early `return`, or in a loop without breaking the rules of hooks? Select all that apply.
+
+  <McqChoice>`useState(0)`</McqChoice>
+  <McqChoice>`useEffect(() => { ... })`</McqChoice>
+  <McqChoice correct>`use(somePromise)`</McqChoice>
+  <McqChoice correct>`use(SomeContext)`</McqChoice>
+  <McqChoice>`useRef(null)`</McqChoice>
+
+  <McqWhy>Only the two `use()` calls. Neither reserves a numbered slot — React finds the promise by which object it is and the context by where the component sits in the tree — so shifting the call to a new spot lines up against nothing. The other three each grab a slot on every render, so calling one only sometimes leaves the pointer counting a different set of hooks than last time. The exemption belongs to `use()` alone; it transfers to no other hook.</McqWhy>
+</MultipleChoice>
+
+Now sort the whole rule surface in one pass. Drop each call site into the bucket that matches the verdict:
+
+<Buckets twoCol instructions="Sort each call site by whether the rules of hooks allow it.">
+  <Bucket name="ok" label="Allowed here" description="The rules of hooks permit this call site" />
+  <Bucket name="bad" label="Rules-of-hooks violation" description="The call would drift the slot count" />
+
+  <Item bucket="ok">A `useState` call at the top of a component body</Item>
+  <Item bucket="ok">`use(theme)` after an early `return null`</Item>
+  <Item bucket="ok">`use(dataPromise)` inside an `if` branch</Item>
+  <Item bucket="ok">A `useEffect` called inside a `use*`-named custom hook</Item>
+  <Item bucket="bad">A `useState` call inside an `if` block</Item>
+  <Item bucket="bad">A `useEffect` called inside `items.map(...)`</Item>
+  <Item bucket="bad">A `useState` call inside a `handleClick` event handler</Item>
+  <Item bucket="bad">A `useContext` call inside a function named `getTheme()`</Item>
+</Buckets>
+
+Finally, the hands-on. This component is a live `rules-of-hooks` violation — it renders a spinner via an early return that sits *above* a `useState`. Restructure it so every render reaches every hook in the same order, while keeping the loading short-circuit intact:
+
+<ReactCoding
+  hidePreview
+  instructions="This component calls a hook after an early return, so the loading render and the loaded render run a different number of hooks — it crashes the moment you click Load. Move the hooks so every render reaches them in the same order, keeping the loading short-circuit (the spinner) in place. The tests click Load and then Like; make all three pass."
+  starter={`import { useState } from 'react';
+
+export function App() {
+  const [user, setUser] = useState<{ name: string } | null>(null);
+
+  if (!user) {
+    return (
+      <div className="space-y-3 p-4">
+        <p role="status">Loading…</p>
+        <button
+          className="rounded bg-indigo-600 px-3 py-1.5 text-white"
+          onClick={() => setUser({ name: 'Ada' })}
+        >
+          Load
+        </button>
+      </div>
+    );
+  }
+
+  const [likes, setLikes] = useState(0);
+
+  return (
+    <div className="space-y-3 p-4">
+      <p className="font-medium">{user.name}</p>
+      <p data-testid="likes" className="text-3xl tabular-nums">{likes}</p>
+      <button
+        className="rounded bg-indigo-600 px-3 py-1.5 text-white"
+        onClick={() => setLikes(likes + 1)}
+      >
+        Like
+      </button>
+    </div>
+  );
+}`}
+  tests={`
+const root = () => document.getElementById('root');
+const btnByText = (label) =>
+  Array.from(root().querySelectorAll('button')).find(
+    (b) => b.textContent?.trim() === label
+  );
+
+test('all hooks run before the early return (loaded state renders without crashing)', () => {
+  // First render shows the spinner; clicking Load reaches the second hook.
+  // If that hook sits below the early return, this render throws here.
+  btnByText('Load').click();
+  expect(root().textContent).toContain('Ada');
+  expect(root().querySelector('[data-testid="likes"]')).not.toBeNull();
+});
+
+test('the counter keeps its value after toggling — no slot drift', () => {
+  btnByText('Load').click();
+  btnByText('Like').click();
+  // A misordered hook table hands this slot the wrong state; a correct
+  // table reads back exactly the one increment.
+  expect(root().querySelector('[data-testid="likes"]')?.textContent).toBe('1');
+});
+
+test('the loading state still short-circuits to the spinner', () => {
+  // Initial render, before any click: the spinner shows and there is no Like button.
+  expect(root().querySelector('[role="status"]')?.textContent).toBe('Loading…');
+  expect(btnByText('Like')).toBeUndefined();
+});
+`}
+/>
+
+<details>
+<summary>Reference solution</summary>
+
+Hoist *both* `useState` calls above the `if (!user) return …`. The early return stays exactly where it was — it just runs *after* every hook has claimed its slot, so the loading render and the loaded render walk the same two hooks in the same order. The spinner short-circuit is untouched; only the call placement changed.
+
+```tsx
+export function App() {
+  const [user, setUser] = useState<{ name: string } | null>(null);
+  const [likes, setLikes] = useState(0);
+
+  if (!user) {
+    return (
+      <div className="space-y-3 p-4">
+        <p role="status">Loading…</p>
+        <button onClick={() => setUser({ name: 'Ada' })}>Load</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3 p-4">
+      <p className="font-medium">{user.name}</p>
+      <p data-testid="likes" className="text-3xl tabular-nums">{likes}</p>
+      <button onClick={() => setLikes(likes + 1)}>Like</button>
+    </div>
+  );
+}
+```
+
+The discipline in one line: hooks first, returns second. `likes` is computed on every render even while the spinner shows — an unused state value costs nothing, and paying that cost is exactly what keeps the slot count from drifting.
+
+</details>
+
+If you can articulate, for each drill, *why* the slot count holds or drifts, you've got the model — and the model is the whole point. The rules were never the thing to memorize. The counting underneath them was.
+
+## External resources
+
+The React docs are the canonical reference for both the rules themselves and the lint that enforces them. The first is worth a slow read; the second is the page to keep bookmarked for the day a `react-hooks` warning surprises you.
+
+<CardGrid>
+  <ExternalResource
+    title="React docs — Rules of Hooks"
+    href="https://react.dev/reference/rules/rules-of-hooks"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="The canonical statement of both rules, with the valid/invalid examples worth a slow read."
+  />
+  <ExternalResource
+    title="eslint-plugin-react-hooks"
+    href="https://react.dev/reference/eslint-plugin-react-hooks"
+    icon="simple-icons:eslint"
+    iconColor="#4B32C3"
+    description="The plugin that ships in the Next.js default config — rules-of-hooks and exhaustive-deps documented at the source."
+  />
+  <ExternalResource
+    title="Deep dive: how do React hooks really work?"
+    href="https://www.netlify.com/blog/2019/03/11/deep-dive-how-do-react-hooks-really-work/"
+    icon="simple-icons:netlify"
+    iconColor="#00C7B7"
+    description="Builds a minimal hooks clone — the array-and-index slot mechanic of this lesson, in prose you can re-read."
+  />
+  <ExternalResource
+    title="React docs — Render and Commit"
+    href="https://react.dev/learn/render-and-commit"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="The render-as-a-repeated-call model the slot pointer relies on: rendering is React calling your component again."
+  />
+</CardGrid>

@@ -1,0 +1,479 @@
+---
+title: useContext without the re-render storm
+description: Context propagates cross-cutting values to a whole subtree without prop-drilling, but every consumer re-renders when the value changes — so you learn the footgun and the three mitigations that contain it.
+chapter-id: 25
+sidebar:
+  order: 5
+  label: useContext
+---
+
+import { CardGrid, FileTree } from '@astrojs/starlight/components';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import RenderTracking from '../../../components/figures/render-tracking/RenderTracking.astro';
+import TrackedNode from '../../../components/figures/render-tracking/TrackedNode.astro';
+import Trigger from '../../../components/figures/render-tracking/Trigger.astro';
+import Implementation from '../../../components/figures/render-tracking/Implementation.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+
+Picture the SaaS app you're building. There's a signed-in user. There's a color theme the user picked. There's a locale that decides whether dates read `06/03` or `3 June`. There's a map of feature flags gating which buttons exist. None of these live in one place — a `<Sidebar>` fifteen layers deep needs the user, a `<DateLabel>` buried in a table needs the locale, a `<ThemeToggle>` in the header needs the theme. These are values the *whole tree* reaches for, and no single component owns them.
+
+In ["The four homes for state"](/024-hooks-for-holding-state/3-the-four-homes-for-state/) you felt the pain of getting a value from where it lives to where it's read: threading it as a prop through every component in between, each one accepting a `user` it never touches just to hand it one layer down. That chapter named the pain — prop-drilling — and deliberately left one question open: *isn't there a tool that just makes a value available to a whole subtree?* There is. It's called context, and this lesson is where you learn it.
+
+But context comes with a sharp edge, and the title of this lesson names it. The naive version — bundle everything into one provider, read it anywhere — ships a performance bug that stays invisible until the app is large and janky. So this lesson does two jobs at once. It installs context as your tool for propagating cross-cutting values, and it teaches the re-render cost that makes a careless context a liability. By the end you'll be able to decide when context is the right tool, write one that fails loudly when misused, explain exactly why a bundled context re-renders the whole tree, and apply the three disciplines that keep it fast.
+
+## What context is actually for
+
+Start with the right mental model, because it's the thing that keeps you out of trouble: **context is propagation, not a store.** A <Term definition="A React mechanism for passing a value down to every component in a subtree without threading it through props.">context</Term> doesn't manage state, slice it, or do anything clever with it. It takes one value you hand it and broadcasts that value to every descendant that asks. A <Term definition="The component that sets a context's value for everything rendered beneath it.">provider</Term> sits high in the tree; any component below it can read the value directly, skipping every layer in between. That's the entire job. It removes the drilling; it does not remove the need to manage the value yourself.
+
+Hold onto that "propagation, not a store" line, because the whole rest of the lesson — the footgun and all three fixes — falls out of it. A store would let you subscribe to one slice of a value. Context can't; it broadcasts the whole thing. We'll see exactly what that costs in a moment.
+
+Because context is propagation, it earns its weight for a specific kind of value: cross-cutting **infrastructure** that lots of regions read and that changes rarely. Think about what that excludes, because the boundary is where the mistakes live.
+
+Context is *for*:
+
+- The **authenticated user** and the **active organization** — read everywhere, changed only on login or an org switch.
+- The **theme** and the **locale** — read by anything that renders text or color, changed when the user flips a setting.
+- The **feature-flag map** and the **router instance** — ambient facts every region consults.
+
+These share a shape: every part of the app reads them, nobody wants to drill them, and they sit still most of the time.
+
+Context is *not for*:
+
+- **A shortcut around three layers of prop-drilling.** If a value travels two or three components, just pass the prop, or restructure so the consumer is passed in as `children` — the composition move from ["Children and compound components"](/022-components-and-composition/2-children-and-compound-components/). Context is for *cross-cutting* concerns, not for skipping a couple of intermediate components. Reaching for it the moment a prop annoys you is the most common misuse.
+- **Server state** — data you fetch from your backend. That belongs to Server Components or TanStack Query, which you'll meet later.
+- **Form state** — the text in a field as the user types. The form component owns that locally.
+- **High-frequency updates** — a value that changes on every keystroke or every scroll frame. You're about to learn exactly why context punishes this.
+
+That first item under "not for" is the one to internalize, because it's the misuse you'll be most tempted by: moving state into context is *not* the cure for prop-drilling that's only a few layers deep. Context earns its keep for genuinely cross-cutting concerns. Drilling a prop two components down is cheaper than it feels, and a context you reached for too early is more expensive than it looks.
+
+Before any syntax, make that cut yourself. Drag each value into the bucket where it belongs.
+
+<Buckets twoCol instructions="Decide whether each value is cross-cutting infrastructure that earns a context, or something that belongs elsewhere.">
+  <Bucket name="context" label="Belongs in context" description="Cross-cutting infrastructure, read everywhere, changes rarely" />
+  <Bucket name="local" label="Does not belong in context" description="Local, server, form, or high-frequency state" />
+
+  <Item bucket="context">The signed-in account</Item>
+  <Item bucket="context">The app's color theme</Item>
+  <Item bucket="context">The user's current locale</Item>
+  <Item bucket="local">Text in a search box before the user submits</Item>
+  <Item bucket="local">Whether one dropdown is open or closed</Item>
+  <Item bucket="local">The team's saved invoices loaded from the server</Item>
+  <Item bucket="local">The position of a slider while the user is dragging it</Item>
+</Buckets>
+
+## Creating and reading a context
+
+The mechanism is three pieces: create the context, provide a value, read it. Let's walk them with the running example of a current user.
+
+You create a context once, at module scope, with `createContext`:
+
+```ts
+const UserContext = createContext<User | null>(null);
+```
+
+Read the type carefully, because it tells the truth about how context behaves. The value is `User | null`, and the default you pass is `null`. Why admit `null` at all, when in a running app there's always a logged-in user? Because a component that calls `useContext` *outside* any provider doesn't get an error — it silently gets the default. The type has to admit that a reader might be rendered with no provider above it, and the honest default for "no user available" is `null`. We're about to turn that loose end into a feature.
+
+To make a value available to a subtree, you render the provider with a `value`. In React 19 the provider *is* the context:
+
+```tsx
+<UserContext value={currentUser}>
+  <App />
+</UserContext>
+```
+
+Every component rendered inside `<App />`, at any depth, can now read `currentUser` from `UserContext`. You may also see `<UserContext.Provider value={currentUser}>` — that's the older, longer form, still valid and still what most library code and tutorials show. Recognize it when you see it; write the short form. (The `.Provider` form is on a deprecation path, with an automatic codemod to migrate, so the bare `<Context value>` is the 2026 default.)
+
+Reading is one call:
+
+```ts
+const user = useContext(UserContext);
+```
+
+The value flows in from the nearest provider above this component. If there's no provider, you get the `createContext` default — here, `null`.
+
+And that's the problem with reading context raw. `useContext(UserContext)` hands back `User | null`, so every single call site has to deal with the `null` — `user?.name`, `user?.email`, a guard on every read. That's a lot of ceremony to handle a case that, in a correctly-wired app, never happens: your user context is *always* set inside the app shell. You don't want a thousand optional-chains defending against a state that's really a programming error.
+
+The fix is the pattern this section is actually about — a **fail-fast consumer hook.** Instead of letting components call `useContext` directly, you wrap it once:
+
+```ts
+const useCurrentUser = () => {
+  const user = useContext(UserContext);
+  if (user === null) {
+    throw new Error('useCurrentUser must be used inside <UserProvider>');
+  }
+  return user;
+};
+```
+
+Now the rest of your codebase imports `useCurrentUser()` and gets back a plain, non-nullable `User`. The `null` is gone from every call site. And the case you were defending against — a component rendered with no provider above it — now fails loudly, immediately, with a message that tells you exactly what's wrong, instead of leaking a silent `null` that surfaces three components later as "cannot read property `name` of null". This is the same instinct as the `requireUser`-style helpers you'll write on the server: don't return a maybe-missing value for something that must be present — demand it, and throw a clear error if it's absent. The `use` prefix isn't decoration, either; it marks this as a hook, which is a contract React's tooling enforces — the subject of this chapter's final lesson on the rules of hooks.
+
+<VideoCallout videoId="HYKDUF8X3qI" videoTitle="Learn React Hooks: useContext — Simply Explained!">
+  Cosden Solutions walks the same path in 16 minutes — `createContext`, the provider, and the exact fail-fast custom hook that throws instead of handing back an undefined value.
+</VideoCallout>
+
+Here's the canonical shape, the one every later section builds on — the context, its provider, and the consumer hook, together in one small file.
+
+<AnnotatedCode lang="tsx" code={`
+import { createContext, useContext } from 'react';
+import type { ReactNode } from 'react';
+
+const UserContext = createContext<User | null>(null);
+
+export const UserProvider = ({ user, children }: { user: User; children: ReactNode }) => {
+  return <UserContext value={user}>{children}</UserContext>;
+};
+
+export const useCurrentUser = () => {
+  const user = useContext(UserContext);
+  if (user === null) {
+    throw new Error('useCurrentUser must be used inside <UserProvider>');
+  }
+  return user;
+};
+`}>
+  <AnnotatedStep meta="{4}" color="blue">
+    The context is declared once, at module scope. The default is `null` and the type is `User | null` because a reader rendered outside any provider falls back to this default — the type has to admit that case.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{6-8}" color="blue">
+    The provider component wraps `children` and sets the value with the bare React 19 form. Its `user` prop is typed `User`, non-null — the app shell only renders this once it has a real signed-in user.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{10-14}" color="blue">
+    The fail-fast hook reads the raw context, and if it's `null` — no provider above — throws a precise error instead of handing back `null` that breaks three components later.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{15}" color="blue">
+    Past the guard, the value is narrowed to `User`. Every call site imports `useCurrentUser` and reads a non-nullable `User`, with no optional chaining anywhere.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+One more practical note. Each context owns its own provider component, and you compose them at the root by nesting: `<AuthProvider><ThemeProvider><LocaleProvider>…`. The nesting can get deep and a little ugly, but each provider is cheap, and you can flatten the pyramid later with a small `composeProviders` helper if it bothers you. Worth knowing it exists; not worth building today.
+
+## Why one value change re-renders every consumer
+
+Here's the rule that makes context dangerous, stated plainly: **when a provider's `value` changes, every component that reads that context re-renders — every one, regardless of which field it actually uses.** Context subscription is all-or-nothing. There is no "subscribe to just `value.theme`." Read the context, and you've subscribed to *every* change of the whole value.
+
+If that feels arbitrary, it isn't — you already know the machinery. In ["What triggers a render"](/023-the-render-model/1-what-triggers-a-render/) you learned that React decides whether to re-render by comparing the new value to the old one with <Term definition="JavaScript's strict equality check. For objects, it compares identity — two different objects are never equal, even with identical contents.">`Object.is`</Term>: equal means bail out, not-equal means render. Context is that exact comparison, applied to the provided `value`. When the provider's `value` is `Object.is`-different from last render, React walks the tree and re-renders every <Term definition="A consumer is any component that reads a context with useContext. Reading the context subscribes the component to every change of its value.">consumer</Term> of that context. It can't be more surgical, because it has no idea which fields each consumer read — it only knows the value reference changed.
+
+Watch it bite. Suppose you took the "obvious" path and bundled everything into one context:
+
+```tsx
+const value = { user, theme, locale };
+
+<AppContext value={value}>
+  <ThemeButton />
+  <UserBadge />
+  <LocaleLabel />
+</AppContext>
+```
+
+The user toggles the theme. `theme` changes, so you build a new `value` object, so its reference changes, so *every* consumer re-renders — including `<UserBadge />`, which only ever reads `user` and doesn't care about the theme at all. On a three-box page you'd never notice. In a real product with hundreds of components reading the context, a single theme toggle re-renders the entire subscribed tree, and the user feels the jank.
+
+Don't take the rule on faith. The widget below is a small tree — an `App` with a `ThemeButton`, a `UserBadge`, and a `LocaleLabel`, all reading one bundled context. Each button changes one field. Click any of them and watch which boxes light up.
+
+<RenderTracking title="One bundled context">
+  <TrackedNode id="app" label="App">
+    <TrackedNode id="theme" label="ThemeButton" />
+    <TrackedNode id="user" label="UserBadge" />
+    <TrackedNode id="locale" label="LocaleLabel" />
+  </TrackedNode>
+
+  <Trigger id="toggle-theme" label="toggle theme" renders="app,theme,user,locale" />
+  <Trigger id="rename-user" label="rename user" renders="app,theme,user,locale" />
+  <Trigger id="change-locale" label="change locale" renders="app,theme,user,locale" />
+</RenderTracking>
+
+Every action lights every box. Toggle the theme and `UserBadge` flashes; rename the user and `LocaleLabel` flashes. Nobody read the field that changed, and they all re-rendered anyway. That's the all-or-nothing rule made visible.
+
+It's worth being precise about *why* the boxes light up, because the misconception here is seductive.
+
+<MultipleChoice>
+  A single `AppContext` provides `{ user, theme, locale }`. A `<UserBadge>` reads only `user` from it. The user toggles the theme, which rebuilds the context value. What happens to `<UserBadge>`, and why?
+
+  <McqChoice correct>It re-renders. The provider handed out a brand-new value object, and a context wakes up every reader whenever its value's reference changes.</McqChoice>
+  <McqChoice>Nothing — `<UserBadge>` never touches `theme`, and only the components that read the field that changed get re-rendered.</McqChoice>
+  <McqChoice>It re-renders, because any state update anywhere in the app re-renders the whole component tree.</McqChoice>
+  <McqChoice>Nothing — React diffs the context value field by field, and only `theme` differs from last time.</McqChoice>
+
+  <McqWhy>Context subscription is all-or-nothing. React compares the whole `value` with `Object.is`; a rebuilt `{ user, theme, locale }` is a new reference, so *every* consumer is notified. There's no per-field diff and no "only readers of the changed field re-render" rule — `<UserBadge>` re-renders even though `user` never changed.</McqWhy>
+</MultipleChoice>
+
+So the storm has two independent causes, and naming them sets up the fixes. One is **too much in one context** — bundling unrelated concerns so a change to any of them notifies all of them. The other is **a fresh value reference every render** — handing out a new object even when nothing inside it changed. The next three sections take these apart: the first splits the context so unrelated changes stop colliding, the second stops bundling read with write, and the third keeps the reference stable. Each one is the same realization from a different angle.
+
+<VideoCallout videoId="16yMmAJSGek" videoTitle="This Context API Mistake Ruins Your Whole React App (All Components Re-Render)">
+  ByteGrad reproduces the storm live in 5 minutes — a console log on a component that reads nothing still fires on every state change, and the fix lands in real code.
+</VideoCallout>
+
+## Mitigation 1: split the context by concern
+
+The first fix is the most important, and it's structural: **one context per cohesive concern.** Instead of a single `AppContext` carrying `{ user, theme, locale }`, declare three contexts that change independently — `UserContext`, `ThemeContext`, `LocaleContext` — each with its own provider. A component calls `useContext` only on the contexts it actually reads.
+
+Now trace the theme toggle again. `ThemeContext`'s value changes; `UserContext`'s and `LocaleContext`'s values are untouched, same references as before. React notifies the theme consumers and *only* the theme consumers. `<UserBadge>`, reading `UserContext`, never hears about it and doesn't re-render. The storm is gone — not because you optimized anything, but because you stopped wiring unrelated things to the same wire.
+
+The same tree, now with a toggle between the two designs. Switch to "split contexts" and run the identical buttons — watch the blast radius collapse from the whole tree to the one box that changed.
+
+<RenderTracking title="Bundled vs split contexts">
+  <TrackedNode id="app" label="App">
+    <TrackedNode id="theme" label="ThemeButton" />
+    <TrackedNode id="user" label="UserBadge" />
+    <TrackedNode id="locale" label="LocaleLabel" />
+  </TrackedNode>
+
+  <Implementation id="bundled" label="one bundled context" default>
+    <Trigger id="toggle-theme" label="toggle theme" renders="app,theme,user,locale" />
+    <Trigger id="rename-user" label="rename user" renders="app,theme,user,locale" />
+    <Trigger id="change-locale" label="change locale" renders="app,theme,user,locale" />
+  </Implementation>
+
+  <Implementation id="split" label="split contexts">
+    <Trigger id="toggle-theme" label="toggle theme" renders="theme" />
+    <Trigger id="rename-user" label="rename user" renders="user" />
+    <Trigger id="change-locale" label="change locale" renders="locale" />
+  </Implementation>
+</RenderTracking>
+
+Make this your default posture, not a fix you reach for once profiling flags a problem. Split first, before the storm is ever measurable. The cost of an extra context is near zero — a `createContext` call and one more provider in the root nest — while *retrofitting* a split onto a context that's already bundled means touching every consumer that reads it. Cheap to do up front; expensive to undo later. That asymmetry is the whole argument.
+
+One guardrail so you don't overcorrect: split by **concern**, not by individual variable. Everything theme-related — the current theme, the setter, the available themes — belongs in *one* `ThemeContext` together, because they change as a unit and the same components read them. Don't shatter a concern into a context-per-field; that's ceremony with no payoff. The cohesion unit is the concern, and the test is simple: things that change together and are read together stay together.
+
+## Mitigation 2: separate state from dispatch
+
+Now the cohesion rule meets a wrinkle, and it's the one ["useReducer when transitions multiply"](/024-hooks-for-holding-state/4-usereducer-when-transitions-multiply/) warned you was coming.
+
+Take a real shared concern — a notifications queue: toasts that get added, dismissed, cleared. It's backed by a `useReducer` (the natural fit for a queue with several action types), and you want to share it across the app through context. The obvious move is to put the reducer's `state` and `dispatch` into one context together — they're the same concern, after all:
+
+```tsx
+<NotificationsContext value={{ state, dispatch }}>
+```
+
+But look at who reads this. Some components *display* notifications — they read `state` and absolutely should re-render when the queue changes. Others only *act*: a "Clear all" button calls `dispatch({ type: 'clearAll' })` and never reads `state` at all. With one bundled context, every state change rebuilds `{ state, dispatch }`, so that button re-renders on every single notification that comes and goes — despite displaying nothing that ever changes. You bundled the read with the write, and the write-only consumers pay for every read.
+
+The fix is to split state from dispatch into **two contexts**:
+
+- `NotificationsStateContext` holds `state` — the queue. Components that display notifications read this and re-render when the queue changes, exactly as they should.
+- `NotificationsDispatchContext` holds `dispatch` — the action sender. Components that only act read this.
+
+Here's why the split is free, and it's the payoff from the reducer lesson: **`dispatch` is reference-stable across renders.** React guarantees you the *same* `dispatch` function on every render, forever. So the dispatch context's value never changes — its reference is constant — and a component that reads only dispatch subscribes to something that never updates. The "Clear all" button now re-renders *never* on notification activity. The display components re-render only when the actual queue state changes. Read and write, cleanly separated.
+
+The two shapes side by side. The first bundles; the second splits.
+
+<CodeVariants>
+  <CodeVariant label="One context">
+    <div data-mark-color="red">
+
+    ```tsx {4}
+    export const NotificationsProvider = ({ children }: { children: ReactNode }) => {
+      const [state, dispatch] = useReducer(notificationsReducer, []);
+      return (
+        <NotificationsContext value={{ state, dispatch }}>
+          {children}
+        </NotificationsContext>
+      );
+    };
+    ```
+
+    </div>
+    **Bundles read and write.** Every consumer re-renders on any dispatch — including action-only components like a "Clear all" button that never reads `state` — because the `{ state, dispatch }` object is rebuilt on every state change.
+  </CodeVariant>
+
+  <CodeVariant label="Split (state + dispatch)">
+    <div data-mark-color="green">
+
+    ```tsx {4,5}
+    export const NotificationsProvider = ({ children }: { children: ReactNode }) => {
+      const [state, dispatch] = useReducer(notificationsReducer, []);
+      return (
+        <NotificationsStateContext value={state}>
+          <NotificationsDispatchContext value={dispatch}>
+            {children}
+          </NotificationsDispatchContext>
+        </NotificationsStateContext>
+      );
+    };
+    ```
+
+    </div>
+    **Splits read from write.** Action-only consumers read `dispatch` from its own context — and because `dispatch` is reference-stable, that context's value never changes, so those consumers stop re-rendering entirely. Display consumers read `state` and re-render only when the queue actually changes.
+  </CodeVariant>
+</CodeVariants>
+
+Each context gets its own fail-fast consumer hook, exactly as in the previous section — `useNotifications()` for the state, `useNotificationsDispatch()` for the sender — so a missing provider throws a clear error at the call site instead of a silent `null`. This pairing — a reducer shared via context, split into state and dispatch contexts — is a named, canonical React pattern; the official docs call it "Scaling Up with Reducer and Context," and it's worth recognizing by name when you see it in a codebase.
+
+## Mitigation 3: keep the provider value reference-stable
+
+The last cause of the storm is the subtlest, and it's pure object identity — the same reference rule from ["What triggers a render"](/023-the-render-model/1-what-triggers-a-render/), now biting through context. Recall the line from there: two object literals with byte-for-byte identical contents are *different values* to `Object.is`, because they're different objects in memory. Look closely at this provider:
+
+```tsx
+<UserContext value={{ user, role }}>
+```
+
+That object literal in the JSX is constructed *fresh on every render* of the provider's parent. Even when `user` and `role` haven't changed at all, each render produces a brand-new `{ user, role }` — a new reference. `Object.is` compares it to last render's object, sees two different objects, says "changed," and every consumer re-renders. This is the storm with nobody touching any state: the parent re-renders for any reason, a new value object is born, and the whole subscribed subtree re-renders along with it.
+
+To *see* the mechanism, here's the manual fix. Wrap the value so its reference stays stable as long as its contents do:
+
+```tsx
+const value = useMemo(() => ({ user, role }), [user, role]);
+
+<UserContext value={value}>
+```
+
+`useMemo` returns the *same* object across renders until `user` or `role` actually changes, so the reference is stable, so consumers re-render only on a real change. (When the value is *already* a stable reference — a single primitive, or the reducer `state` object from the last section — you don't need this at all; pass it directly.)
+
+Now the important part, the part that governs how you'll actually write this. **You don't write that `useMemo` in 2026.** The project ships with the React Compiler on, and on this stack manual `useMemo` and `useCallback` aren't the default reach — the compiler auto-memoizes for you. When the provider component is pure, the compiler stabilizes the value object automatically, so the plain literal and the `useMemo` version compile to the *same* behavior. The ceremony disappears. So the senior posture is: write the provider plainly, and let the compiler keep the value stable. Reach for a manual `useMemo` only as a *fallback* — when React DevTools shows the compiler skipped this component (an impure body, an opt-out, a shape it couldn't infer). The `useMemo` here is a *teaching* shape that makes the identity mechanism visible, and the documented escape hatch — not code you sprinkle by hand.
+
+Here are all three, in the order that tells the real story.
+
+<CodeVariants>
+  <CodeVariant label="Object literal">
+    <div data-mark-color="red">
+
+    ```tsx "value={{ user, role }}"
+    export const UserProvider = ({ user, role, children }: UserProviderProps) => {
+      return <UserContext value={{ user, role }}>{children}</UserContext>;
+    };
+    ```
+
+    </div>
+    **A fresh object every render.** The `{ user, role }` literal is a new reference on every parent render, so `Object.is` always sees a change and every consumer re-renders — even when `user` and `role` are identical.
+  </CodeVariant>
+
+  <CodeVariant label="useMemo (teaching / fallback)">
+    <div data-mark-color="orange">
+
+    ```tsx {2}
+    export const UserProvider = ({ user, role, children }: UserProviderProps) => {
+      const value = useMemo(() => ({ user, role }), [user, role]);
+      return <UserContext value={value}>{children}</UserContext>;
+    };
+    ```
+
+    </div>
+    **Stable by hand.** `useMemo` reuses the same object until `user` or `role` changes, so the reference is stable. This makes the mechanism visible and is the documented fallback — but it's ceremony the compiler usually removes, not code you write by default.
+  </CodeVariant>
+
+  <CodeVariant label="Compiler-on (the 2026 default)">
+    <div data-mark-color="green">
+
+    ```tsx "value={{ user, role }}"
+    export const UserProvider = ({ user, role, children }: UserProviderProps) => {
+      return <UserContext value={{ user, role }}>{children}</UserContext>;
+    };
+    ```
+
+    </div>
+    **Plain, and stable anyway.** With the React Compiler on and a pure provider, the compiler memoizes this value object for you — so this compiles to the same behavior as the `useMemo` tab. This is what you actually write; the memo is implicit.
+  </CodeVariant>
+</CodeVariants>
+
+One precise caveat so you don't over-credit the compiler. It stabilizes the *provider's value object* — it fixes this identity trap and nothing more. It does **not** change the all-consumers-re-render-on-value-change rule from earlier: when the value genuinely changes, every consumer still re-renders, and the compiler does *not* narrow a consumer's subscription to only the field it reads. You may run into a blog post claiming it does — it doesn't, and that claim isn't in the React docs. Which is exactly why splitting the context (mitigation 1) stays necessary: the compiler handles identity, but cohesion is still your job.
+
+Step back and the three mitigations collapse into one idea. Split the context (don't put unrelated things on the same wire), split state from dispatch (don't bundle read with write), keep the value reference-stable (don't hand out a fresh object for unchanged contents) — three angles on a single rule: **a context re-renders its consumers exactly when its value reference changes.** Every discipline here is just a way of making that reference change *only* when something a consumer actually cares about has changed. Learn the rule and the three fixes stop being a list to memorize.
+
+## Where context meets the server boundary
+
+One constraint to know before you wire context into a real Next.js app, so it doesn't ambush you later. **React Context is a client-runtime mechanism, and Server Components can't call `useContext`** — they have no hooks. A Server Component can *render* a provider, but it cannot *consume* one.
+
+The pattern Next.js apps use to handle this is worth recognizing now, even though you'll learn the boundary mechanics properly when we get to the App Router. You put your context providers inside a single `'use client'` component — conventionally `app/_components/providers.tsx` — and mount it high in the root layout. Server Components above that island fetch data and pass it **as props** down into the Client Components that read context below. The server gathers; the client provides and consumes.
+
+<FileTree>
+- app/
+  - layout.tsx Server Component — mounts `<Providers>` high in the tree
+  - _components/
+    - **providers.tsx** `'use client'` — holds the context providers
+  - dashboard/
+    - page.tsx Server Component — fetches data, passes it down as props
+    - sidebar.tsx Client Component — reads context with `useContext`
+</FileTree>
+
+:::note
+This is the same `_components/providers.tsx` island where other client-side providers live too — the TanStack Query provider you'll add later sits right here. One client boundary near the root, holding everything that needs hooks. The `'use client'` rules and the full Server/Client boundary are the subject of the App Router chapters; for now, just hold the shape: a client `<Providers>` island near the root, data flowing down as props.
+:::
+
+One forward note. There's a second way to read a context — `use(Context)` — that does everything `useContext` does and adds one capability `useContext` lacks: it can be called conditionally, even after an early `return`. That's the subject of the upcoming `use()` lesson in this chapter; for now, `useContext` is the tool.
+
+## When context is the wrong tool
+
+Now that you understand the cost model, you can place context precisely, and just as importantly, know when to graduate off it. Context is for low-frequency cross-cutting **infrastructure**. The instant the shared value becomes **application state** — mutated from many places, sliced into many independent subscribers, updated often — context's all-consumers-re-render model turns from a convenience into a fight. That's the signal to reach for an external store like Zustand or Jotai, which is built to let each component subscribe to just the slice it reads. You'll meet those stores later in the course; for now, just know the upgrade path exists and what triggers it.
+
+The other tools that aren't context, one line each, so you reach for context *deliberately* rather than by reflex:
+
+- **Server state** — data from your backend → Server Components or TanStack Query.
+- **URL state** — filters, sort, the current tab → the URL itself, via `nuqs`.
+- **A value that travels two or three layers** → just pass the prop, or compose with `children`.
+
+And the line to carry out of this lesson, the senior reflex distilled: **context is propagation, not a store.** Reach for it for infrastructure, split it by concern, keep its value reference stable — and when the value turns into high-churn application state, graduate to a store. The React docs below are the canonical references for the pattern; the second one is the official write-up of the reducer-and-context split from mitigation 2.
+
+<CardGrid>
+  <ExternalResource
+    title="Passing Data Deeply with Context"
+    href="https://react.dev/learn/passing-data-deeply-with-context"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="The official guide to createContext, providers, and useContext, including when not to reach for context."
+  />
+  <ExternalResource
+    title="Scaling Up with Reducer and Context"
+    href="https://react.dev/learn/scaling-up-with-reducer-and-context"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="The canonical state/dispatch-split pattern: a reducer shared through two contexts."
+  />
+</CardGrid>
+
+One last check. The trap here is reaching for context when the shape of the value has quietly outgrown it.
+
+<MultipleChoice>
+  You're building a multi-step customer wizard. Dozens of fields live in one shared object, the value changes on nearly every keystroke, and dozens of small inputs each read one or two fields — each should re-render *only* when its own fields change. Which tool fits, and why?
+
+  <McqChoice correct>Reach for an external store like Zustand: the wizard object is high-churn application state, and a store lets each input subscribe to just the field it reads, so a keystroke re-renders only the inputs that field touches.</McqChoice>
+  <McqChoice>One context holding the whole wizard object — the data is shared across the entire wizard, and sharing data down a subtree is exactly the job context exists for.</McqChoice>
+  <McqChoice>One context, but declare a separate context per field, so editing a field re-renders only that field's consumers and nothing else.</McqChoice>
+  <McqChoice>A single context, leaning on the React Compiler — it stabilizes the provider value and narrows each consumer to re-render only on the fields it actually reads.</McqChoice>
+
+  <McqWhy>This is application state — mutated on every keystroke, sliced per-field — which is precisely where context's all-consumers-re-render model turns into a fight: one keystroke rebuilds the shared value and wakes *every* consumer. A store is built for this, letting each input select just its slice. A context-per-field is unworkable ceremony for dozens of fields, and the compiler only stabilizes the provider value's *reference* — it does **not** narrow a consumer's subscription to the fields it reads. High-churn, finely-sliced state is the signal to graduate off context.</McqWhy>
+</MultipleChoice>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="A Visual Guide to React Rendering — Context"
+    href="https://alexsidorenko.com/blog/react-render-context"
+    icon="lucide:eye"
+    iconColor="#8B5CF6"
+    description="Alex Sidorenko animates exactly this lesson's mechanism — why a provider value change re-renders every consumer, and how reference stability contains it."
+  />
+  <ExternalResource
+    title="React re-renders guide: everything, all at once"
+    href="https://www.developerway.com/posts/react-re-renders-guide"
+    icon="lucide:book-open"
+    iconColor="#0EA5E9"
+    description="Nadia Makarevich's deep dive into what triggers re-renders, including the context anti-patterns and the split-and-memoize fixes."
+  />
+  <ExternalResource
+    title="React Compiler — Introduction"
+    href="https://react.dev/learn/react-compiler/introduction"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="The official write-up of the automatic memoization that stabilizes your provider value, so you write the plain literal and skip the manual useMemo."
+  />
+  <ExternalResource
+    title="Zustand"
+    href="https://zustand.docs.pmnd.rs/"
+    icon="lucide:package"
+    iconColor="#443E38"
+    description="The store you graduate to when a shared value becomes high-churn application state — each component subscribes to just the slice it reads."
+  />
+</CardGrid>

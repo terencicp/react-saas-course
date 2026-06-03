@@ -1,0 +1,501 @@
+---
+title: Reading promises with use()
+description: How use() lets a Client Component read a server-streamed promise during render and suspend, replacing effect-based fetching.
+chapter-id: 025
+sidebar:
+  order: 7
+  label: Reading promises with use()
+---
+
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import ReactCoding from '../../../components/live-coding/ReactCoding/ReactCoding.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import UseSuspendLifecycle from '../../../components/lessons/025/7/UseSuspendLifecycle.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+Picture a dashboard route. It's a Server Component, and on the way in it fires a slow read — `getActivity(orgId)`, a few hundred milliseconds against the database to load the team's recent activity. That data feeds an activity panel that has to be *interactive*: you can filter it, mark items as read. Interactive means it has to be a Client Component. So you have a slow read on the server and an interactive component on the client, and you need to get the data from one to the other.
+
+You already know the three ways that *don't* work. The Client Component can't `await` the read itself — Client Components can't be `async`. It shouldn't `useEffect(() => getActivity().then(setData), [])` — that's the fetch-on-mount anti-pattern this whole chapter has been dismantling, and effects don't run during server rendering, so the server-rendered HTML ships with no data in it. And it shouldn't hand-roll `useState` plus a spinner plus an error flag — that's the manual orchestration we've spent the chapter retiring.
+
+Here's the move that closes all three dead ends at once. The Server parent starts the read and passes the *unresolved* promise down as a prop. The Client child **reads** that promise with `use()` and lets React handle the waiting. By the end of this lesson you'll be able to stream a server read into a Client Component with a single line, and you'll know exactly when to reach for TanStack Query instead.
+
+## The shape of use()
+
+Before any of the machinery, the signature and the one idea you need to hold:
+
+```ts frame="none"
+import { use } from 'react';
+
+const value = use(resource);
+```
+
+`resource` is a `Promise<T>` **or** a `Context<T>`, and `use()` hands you back the `T`. That's the whole surface. The mental model to commit to memory is one sentence: **`use()` reads a resource during render and either hands back its value or pauses the component until the value is ready.** A synchronous-looking read that's allowed to interrupt — that's the entire concept. Everything else in this lesson is just *where the pause goes* and *what keeps it safe*.
+
+There are four outcomes, depending on what you hand it:
+
+- The promise is still pending → the component <Term definition="A component pausing its render until an awaited resource is ready, handing control to the nearest Suspense boundary.">suspends</Term> — it stops rendering and waits.
+- The promise has resolved → `use()` returns the resolved value.
+- The promise rejected → `use()` throws, and the nearest error boundary catches it.
+- You passed a Context → `use()` returns its current value (and, unlike `useContext`, you can read it conditionally — more on that later).
+
+One detail worth planting now: `use()` is imported from `react` right alongside the hooks, but React deliberately calls it an **API, not a hook**. That distinction isn't pedantry. It's the reason `use()` gets to break a rule every other hook obeys — you can call it conditionally, inside an `if`, inside a loop. We'll come back to *why* that's safe at the end of the lesson. For now, just file it away.
+
+## Streaming a server read into a Client Component
+
+This is the use case the lesson is built around, so let's see the whole pattern. It's two files: a Server Component that starts the read, and a Client Component that reads it.
+
+<CodeVariants>
+  <CodeVariant label="page.tsx (Server)" icon="lucide:server">
+    ```tsx title="app/dashboard/page.tsx" {7}
+    import { Suspense } from 'react';
+    import { getActivity } from '@/lib/activity';
+    import { ActivityPanel } from './activity-panel';
+    import { ActivitySkeleton } from './activity-skeleton';
+
+    export default async function DashboardPage({ orgId }: { orgId: string }) {
+      const activityPromise = getActivity(orgId);
+
+      return (
+        <Suspense fallback={<ActivitySkeleton />}>
+          <ActivityPanel activityPromise={activityPromise} />
+        </Suspense>
+      );
+    }
+    ```
+    **The server starts the read but never awaits it.** `getActivity(orgId)` returns a promise; that unresolved promise crosses into the Client child as a plain prop. Awaiting it here would block the whole page on the slow query — the point is to *not* wait. (`orgId` is a plain prop here just to keep the example focused — a real App Router page receives `params` and `searchParams` instead, which a later chapter covers.)
+  </CodeVariant>
+
+  <CodeVariant label="activity-panel.tsx (Client)" icon="lucide:monitor">
+    <div data-mark-color="green">
+
+    ```tsx title="app/dashboard/activity-panel.tsx" {1} "use(activityPromise)"
+    'use client';
+
+    import { use } from 'react';
+    import type { Activity } from '@/lib/activity';
+
+    export const ActivityPanel = ({
+      activityPromise,
+    }: {
+      activityPromise: Promise<Activity[]>;
+    }) => {
+      const activity = use(activityPromise);
+
+      return (
+        <ul>
+          {activity.map((item) => (
+            <li key={item.id}>{item.title}</li>
+          ))}
+        </ul>
+      );
+    };
+    ```
+
+    </div>
+    **The child reads the promise and renders as if the data is already there.** No effect, no `useState`, no `if (!data) return <Spinner/>`. `use(activityPromise)` either returns the array or suspends — and because the child only commits once the data has arrived, the `.map` can assume `activity` is a real array every time.
+  </CodeVariant>
+</CodeVariants>
+
+Look at what crosses the boundary: an *unresolved* promise. That's one of the React extensions the <Term definition="The serialization channel that carries values, and promises, from Server Components to Client Components.">RSC wire</Term> knows how to carry — a Server Component can hand a Client Component a promise, and React streams the resolved value across when it settles. (The resolved value still has to be serializable, which is why `getActivity` returns plain objects, never class instances. The full set of rules for what crosses that wire is the next chapter's job; for now, "promises are allowed across" is all you need.)
+
+The part that trips people up the first time is *why this doesn't block the page*. The Server Component didn't await, so it returns immediately. The <Term definition="A <Suspense> wrapper that renders its fallback while any descendant is suspended.">Suspense boundary</Term> renders its `fallback` while the child is suspended. Then the promise resolves and the child re-renders with real data. Scrub through it:
+
+<UseSuspendLifecycle />
+
+That's the payoff, and it lands hardest when you put it next to the shape it replaces. Here's the 2020 version of this same component beside the 2026 one:
+
+<CodeVariants>
+  <CodeVariant label="Before — effect + state">
+    <div data-mark-color="red">
+
+    ```tsx {4} {6-8} {10}
+    'use client';
+
+    export const ActivityPanel = ({ orgId }: { orgId: string }) => {
+      const [activity, setActivity] = useState<Activity[] | null>(null);
+
+      useEffect(() => {
+        getActivity(orgId).then(setActivity);
+      }, [orgId]);
+
+      if (!activity) return <ActivitySkeleton />;
+
+      return (
+        <ul>
+          {activity.map((item) => (
+            <li key={item.id}>{item.title}</li>
+          ))}
+        </ul>
+      );
+    };
+    ```
+
+    </div>
+    **Every cost is manual.** Two renders, empty then filled. You wire the loading branch by hand, and there's no `catch`, so an error just vanishes. Worst of all, the effect can't run during server rendering, so the server-rendered HTML ships with no data — even though the server could have had it ready.
+  </CodeVariant>
+
+  <CodeVariant label="After — use()">
+    <div data-mark-color="green">
+
+    ```tsx "use(activityPromise)"
+    'use client';
+
+    export const ActivityPanel = ({
+      activityPromise,
+    }: {
+      activityPromise: Promise<Activity[]>;
+    }) => {
+      const activity = use(activityPromise);
+
+      return (
+        <ul>
+          {activity.map((item) => (
+            <li key={item.id}>{item.title}</li>
+          ))}
+        </ul>
+      );
+    };
+    ```
+
+    </div>
+    **The orchestration is gone.** One render with real data. Loading is the `<Suspense>` boundary's job, errors are the error boundary's job, and because the server started the read, the markup streams down already filled in. The component shrank to its actual responsibility: render the list.
+  </CodeVariant>
+</CodeVariants>
+
+Notice the deletions, because that's the whole point. The `useState` is gone. The `useEffect` is gone. The `if (!activity)` loading branch is gone. What's left is the rendering logic, nothing else — the same lesson as "delete the effect, derive in render" from earlier in this chapter, except this is its async sibling: *delete the effect, read the promise.*
+
+One question you might already be forming: *where* does the `<Suspense>` boundary go, and how many should there be? One around the panel is plenty here. Boundary placement — how granular to make them, how to nest them, how this drives streaming — is a UX decision owned by a later chapter on Suspense and streaming. For this lesson, "one boundary shows a fallback while the thing inside it loads" is the entire contract you need.
+
+<VideoCallout videoId="ViVa5JPGrf4" videoTitle="Must Know App Router Secret: Promises For Props">
+  Jack Herrington walks the whole pattern end to end (16 min) — promise-as-prop, error handling, streaming with Suspense, and handing off to a query library.
+</VideoCallout>
+
+:::note
+Loading has a home — the `<Suspense>` boundary. Errors have one too: the <Term definition="A component that catches errors thrown by its descendants and renders a fallback instead of crashing the tree.">error boundary</Term>. When the promise you pass to `use()` rejects, the rejection throws out of render and the nearest error boundary catches it and shows a fallback. You'll wire real error boundaries — and the App Router's file-based version of them — in a later unit; here, just know that a rejected `use()` is *caught*, not silently swallowed.
+:::
+
+## The stable-promise rule
+
+There's exactly one mistake that turns `use()` from a one-liner into a component that spins forever, and a junior hits it on day one. It deserves a name, not a footnote. Here it is:
+
+<div data-mark-color="red">
+
+```tsx frame="none" {4}
+'use client';
+
+export const ActivityPanel = () => {
+  const activity = use(fetch('/api/activity').then((r) => r.json()));
+
+  return <ActivityList activity={activity} />;
+};
+```
+
+</div>
+
+Walk the death spiral. The component renders, and the render call creates a *brand-new* promise from `fetch(...)`. `use()` sees a pending promise and suspends. The promise resolves. React re-renders the component — and the render runs `fetch(...)` again, creating *another* brand-new promise. `use()` sees a pending promise and suspends again. Resolve, re-render, new promise, suspend. It never settles.
+
+You'll recognize this bug by its two tells before you ever read the code: **a component stuck on its fallback forever**, and **the Network tab firing the same request on a loop.** Once you've seen that pair once, you'll diagnose it instantly.
+
+The rule that prevents it: **the promise you pass to `use()` must be <Term definition="The same object reference across renders, compared by Object.is.">referentially stable</Term> across renders for the same logical resource.** `use()` tracks the promise *by reference* — the same `Object.is` identity trap from the previous chapter on hooks. A new promise object on every render reads as a new resource on every render, so React keeps starting over.
+
+So where does a stable promise come from? Two sanctioned sources:
+
+1. **Created in a Server Component.** A Server Component runs once per request, so `getActivity(orgId)` produces one promise, which streams down once. That's precisely the headline pattern — the stability is *free*, you didn't have to do anything for it. This is why the pattern leads with the server parent.
+2. **Held in a stable reference**, for promises that genuinely originate on the client. The right tool for client-owned, cacheable async is TanStack Query, which is the next section. On the server, `cache()` (below) gives you stable, deduplicated reads.
+
+You might be tempted to reach for `useMemo(() => fetch(...), [])` to pin the promise. Resist it. Manual memoization is a fragile last resort the conventions steer away from — and for client-side data that needs caching or refetching, it doesn't solve the real problem anyway. The honest answer for "client data I want to read and cache" is TanStack Query, not a memo around a `fetch`.
+
+While we're here: React's server-only **`cache()`** is worth recognizing. It deduplicates calls to the same function with the same arguments *within a single request* — so if two components both call `getActivity(orgId)`, they share one database round-trip instead of two. A subtle point that matters: `use()` itself does **not** deduplicate. Two children calling `use(samePromise)` on the *same* promise reference is fine — same reference, one resource. But two children each *creating* their own promise for the same data will suspend independently. `cache()` is the thing that collapses the duplicate *function calls*; `use()` only reads whatever promise you hand it. The full data-caching path is a later chapter — for now, just recognize the name.
+
+<VideoCallout videoId="t6MeFVF3V9I" videoTitle="React 19's use Hook Can Impact App Performance">
+  Jack Herrington opens on the exact infinite-loop trap above, shows why hoisting the promise fixes it, then digs into the subtler gotchas (13 min).
+</VideoCallout>
+
+Now test the diagnosis. One of these three components suspends forever. Which one?
+
+<MultipleChoice>
+  One of these activity panels never escapes its loading fallback. Which one — and why?
+
+  <McqChoice correct>
+    ```tsx
+    const Panel = ({ orgId }: { orgId: string }) => {
+      const activity = use(loadActivity(orgId));
+      return <List activity={activity} />;
+    };
+    ```
+  </McqChoice>
+  <McqChoice>
+    ```tsx
+    const Panel = ({ activityPromise }: { activityPromise: Promise<Activity[]> }) => {
+      const activity = use(activityPromise);
+      return <List activity={activity} />;
+    };
+    ```
+  </McqChoice>
+  <McqChoice>
+    ```tsx
+    const Page = async ({ orgId }: { orgId: string }) => {
+      const activityPromise = loadActivity(orgId);
+      return <Panel activityPromise={activityPromise} />;
+    };
+    ```
+  </McqChoice>
+
+  <McqWhy>The first panel calls `loadActivity(orgId)` *inside the render body*, so every render builds a brand-new promise. `use()` tracks promises by reference, sees a different one each time, and suspends forever — fallback stuck, the same request looping in the Network tab. The other two pass a promise created *outside* the re-rendering component (as a prop, or once in a Server parent), so the reference stays stable across renders and `use()` resolves once.</McqWhy>
+</MultipleChoice>
+
+## use() vs. TanStack Query
+
+`use()` is not the only way to read async data on the client, and knowing which one to reach for is the skill that actually matters here. Make the cut a reflex.
+
+**Initial, server-rendered read — "fetch it once on the server and show it" — is `use()` plus Server Components.** The moment you need *interactive* client data — polling for fresh values, caching it across views, optimistic updates with rollback, or infinite scroll — that's TanStack Query. Four triggers, named; cross any one of them and you graduate.
+
+The reason is that they sit at different levels. `use()` is the lower-level primitive — closer to the metal, no cache, no automatic refetch, no mutation story. It reads a promise and suspends; that's it. TanStack Query is the batteries-included layer for client-owned server state — it *is* a cache, with refetching, polling, and mutations built in. Here's the decision in one glance:
+
+<Figure caption="The platform default for initial reads, and the upgrade when a trigger crosses.">
+  <table>
+    <thead>
+      <tr>
+        <th>Situation</th>
+        <th>Reach for</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Initial server-rendered read; fetch once and show it</td>
+        <td><code>use()</code> + Server Components</td>
+      </tr>
+      <tr>
+        <td>Client data that polls, caches across views, does optimistic updates, or scrolls infinitely</td>
+        <td>TanStack Query</td>
+      </tr>
+    </tbody>
+  </table>
+</Figure>
+
+And they compose rather than compete. TanStack Query's suspense-flavored query hook suspends through the *same* `<Suspense>` machinery `use()` taps into — same fallback, same boundary. So this isn't a fork in the road where you pick one forever; it's the same "platform default before the power tool" shape you've seen in every lesson this chapter. Start with `use()` for the server read, reach for the heavier tool the moment a named trigger crosses. The full TanStack Query API is a later chapter — here it's the decision boundary, not a thing to learn yet.
+
+:::caution
+`use()` is for *resources* — promises that resolve to data, and contexts. It is **not** the tool for coordinating browser-only async with your UI, like a `setTimeout` or a `setInterval`. Those are still `useEffect` plus state (or `useDeferredValue` for derived urgency). Don't reach for `use()` just because the word "async" appears.
+:::
+
+## Reading context conditionally with use()
+
+The promise story is the headline. There's a second, much smaller thing `use()` can do, and it's worth keeping cleanly separated in your head so you don't conflate the two.
+
+Recall the rule from the lesson on `useContext`: hooks must run at the top level, before any early return. That means `useContext` can't sit after an `if`, inside a branch, or inside a loop. `use(Context)` *can*. It returns the exact same value `useContext` would — it just relaxes *where* you're allowed to call it.
+
+Here's the one situation that actually wants it. A component bails out early for a disabled or empty state, and only needs the context value on the live path:
+
+<div data-mark-color="blue">
+
+```tsx frame="none" {4} {6}
+'use client';
+
+export const ActivityPanel = ({ isEnabled }: { isEnabled: boolean }) => {
+  if (!isEnabled) return null;
+
+  const theme = use(ThemeContext);
+
+  return <ul className={theme.listClass}>{/* … */}</ul>;
+};
+```
+
+</div>
+
+Reading the context unconditionally at the top would be wasted work on the disabled path — or it would force you to restructure the component awkwardly just to satisfy the top-level rule. `use(ThemeContext)` lets the call sit exactly where the value is actually needed.
+
+Be precise about what this does *not* change, because it's an easy wrong inference. `use(Context)` is **not** a different subscription model. It does not give you per-field subscriptions, and it does not change the rule from that earlier lesson that *every consumer re-renders when the context value changes*. The re-render storm is exactly the same storm; `use()` only moves *where the call is allowed to sit*, not *what it subscribes to*. Treat this as "the one thing `useContext` can't do," reached for rarely — not as a fix for context's re-render cost.
+
+## Why use() can be called conditionally
+
+Time to pay off the flag from the start of the lesson. Every other hook you've met must be called at the top level, in the same order every render. `use()` alone may be called conditionally — after early returns, inside branches, inside loops. That's not an inconsistency React forgot to fix. It falls out of *how* `use()` finds the thing it's reading.
+
+Regular hooks like `useState` and `useEffect` are tracked by **call order.** React keeps an internal list of slots and advances an index every time you call one; the next render has to hit the exact same sequence of calls so each `useState` lands on the slot that holds its value. Skip one behind an `if`, and every hook after it reads the wrong slot. That's why the order has to be fixed — it's the next lesson's whole subject.
+
+`use()` doesn't play that game. A promise is tracked by its **reference**, and a context by its **position in the component tree** — neither needs the indexed-slot bookkeeping that call-order tracking depends on. There's no slot to desync, so calling `use()` conditionally can't break anything. The lint knows this too: `react-hooks/rules-of-hooks` ships a built-in exemption for `use()` and won't flag a conditional call.
+
+:::caution
+This is the **one** deliberate exception in the entire React API. Every other hook still obeys top-level-only, in-order, every render. If you walk away from this lesson thinking "hooks can be conditional now," you've misread it — the exemption is `use()`'s alone, and it exists because reference-and-tree lookup doesn't depend on call order the way every real hook does.
+:::
+
+## Practice: replace the effect-and-spinner with use()
+
+Time to feel the deletion yourself. Below is the component you've been reading about in its 2020 form: it fetches on mount with `useEffect`, holds `useState` for the data, and renders a spinner until the data lands. Your job is to convert it to the `use()` shape.
+
+It receives a **stable promise prop** — created once at module scope, outside the re-rendering component, so you don't trip the infinite-loop trap mid-exercise. That's not a contrivance; it's the stable-promise rule made literal, standing in for the Server parent you'd have in production. Rewrite the body to read that promise with `use()`, then delete the `useEffect`, the `useState`, and the loading branch. The component is already wrapped in a `<Suspense>` boundary, so the pending phase is covered for you.
+
+<ReactCoding
+  hidePreview
+  instructions="Rewrite ActivityPanel to read activityPromise with use(), then delete the effect, the state, and the loading branch. The promise is created outside the component so it stays stable across renders — that's the stable-promise rule in practice. The panel is already wrapped in a Suspense boundary."
+  starter={`import { Suspense, use, useEffect, useState } from 'react';
+
+type Activity = { id: string; title: string };
+
+// Created once, at module scope — outside the component — so the reference
+// stays stable across renders. This is the stable-promise rule, made literal.
+export const activityPromise: Promise<Activity[]> = new Promise((resolve) =>
+  setTimeout(
+    () =>
+      resolve([
+        { id: '1', title: 'Invited a teammate' },
+        { id: '2', title: 'Created an invoice' },
+        { id: '3', title: 'Archived a project' },
+      ]),
+    50,
+  ),
+);
+
+// 👇 Your job: rewrite this body to read the promise with use(),
+//    then delete the useEffect, the useState, and the loading branch.
+export const ActivityPanel = ({
+  activityPromise,
+}: {
+  activityPromise: Promise<Activity[]>;
+}) => {
+  const [activity, setActivity] = useState<Activity[] | null>(null);
+
+  useEffect(() => {
+    activityPromise.then(setActivity);
+  }, [activityPromise]);
+
+  if (!activity) return <p>Loading…</p>;
+
+  return (
+    <ul>
+      {activity.map((item) => (
+        <li key={item.id}>{item.title}</li>
+      ))}
+    </ul>
+  );
+};
+
+export function App() {
+  return (
+    <Suspense fallback={<p>Loading…</p>}>
+      <ActivityPanel activityPromise={activityPromise} />
+    </Suspense>
+  );
+}`}
+  tests={`
+// Both grading checks read ActivityPanel's source, so we import it. The point
+// of this exercise is *deleting* the orchestration — so we assert the effect
+// and the state are gone, not merely that something new was added.
+import { ActivityPanel } from './App';
+
+test('Delete the useEffect from ActivityPanel — the read should happen with use(), not an effect', () => {
+  expect(ActivityPanel.toString()).not.toContain('useEffect');
+});
+
+test('Delete the useState from ActivityPanel — render reads the promise directly, no held data', () => {
+  expect(ActivityPanel.toString()).not.toContain('useState');
+});
+`}
+/>
+
+<details>
+<summary>Reference solution</summary>
+
+The promise scaffolding and `App` are unchanged from the starter — only `ActivityPanel` changes. Its body collapses to the single `use()` read (highlighted): no effect, no state, no loading branch.
+
+<div data-mark-color="green">
+
+```tsx "const activity = use(activityPromise);"
+import { Suspense, use } from 'react';
+
+type Activity = { id: string; title: string };
+
+export const activityPromise: Promise<Activity[]> = new Promise((resolve) =>
+  setTimeout(
+    () =>
+      resolve([
+        { id: '1', title: 'Invited a teammate' },
+        { id: '2', title: 'Created an invoice' },
+        { id: '3', title: 'Archived a project' },
+      ]),
+    50,
+  ),
+);
+
+export const ActivityPanel = ({
+  activityPromise,
+}: {
+  activityPromise: Promise<Activity[]>;
+}) => {
+  const activity = use(activityPromise);
+
+  return (
+    <ul>
+      {activity.map((item) => (
+        <li key={item.id}>{item.title}</li>
+      ))}
+    </ul>
+  );
+};
+
+export function App() {
+  return (
+    <Suspense fallback={<p>Loading…</p>}>
+      <ActivityPanel activityPromise={activityPromise} />
+    </Suspense>
+  );
+}
+```
+
+</div>
+
+</details>
+
+## Keep going
+
+<CardGrid>
+  <ExternalResource
+    title="React use reference"
+    href="https://react.dev/reference/react/use"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="The official API reference, including the context-reading form."
+  />
+  <ExternalResource
+    title="React cache reference"
+    href="https://react.dev/reference/react/cache"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="Request-scoped deduplication for server reads."
+  />
+  <ExternalResource
+    title="TanStack Query"
+    href="https://tanstack.com/query/latest"
+    icon="simple-icons:reactquery"
+    iconColor="#FF4154"
+    description="The named graduation path when client data needs caching, polling, or mutations."
+  />
+</CardGrid>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="React 19 and Suspense — A Drama in 3 Acts"
+    href="https://tkdodo.eu/blog/react-19-and-suspense-a-drama-in-3-acts"
+    icon="lucide:drama"
+    iconColor="#0EA5E9"
+    description="TanStack Query's maintainer on how use(), Suspense, and stable promises interact — and the waterfall to avoid."
+  />
+  <ExternalResource
+    title="How React Suspense Works Under the Hood"
+    href="https://www.epicreact.dev/how-react-suspense-works-under-the-hood-throwing-promises-and-declarative-async-ui-plbrh"
+    icon="lucide:graduation-cap"
+    iconColor="#E8590C"
+    description="Kent C. Dodds unpacks the throwing-promises mechanism that makes use() and Suspense suspend a render."
+  />
+</CardGrid>
