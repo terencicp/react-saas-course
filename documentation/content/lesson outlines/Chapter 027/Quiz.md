@@ -1,0 +1,90 @@
+sources:
+  27.1: Own the source, not the dependency
+  27.2: The four commitments
+  27.3: No ARIA is better than bad ARIA
+  27.4: Where focus belongs
+  27.5: Four states, not one
+
+questions:
+  - source: 27.1
+    question: |
+      Your product's primary button needs a brand-coloured `variant="brand"` you'll reuse on dozens of screens, and your `Select` needs a custom anchor-positioning behaviour its current API can't express at all. Where does each change belong?
+    choices:
+      - text: |
+          The `brand` button is a new `cva` variant added to the existing `button.tsx`; the `Select` is the one that justifies a fork — edit `select.tsx` in `components/ui/` directly and comment why.
+        correct: true
+      - text: |
+          Both are forks — once you're editing shadcn output at all, you've left the upgrade path, so fork both files in `components/ui/` and move on.
+        correct: false
+      - text: |
+          Both are `className` overrides at the call site — `cn()` puts your classes last, so you never need to touch the component files for either one.
+        correct: false
+    why: |
+      Climb the ladder least-invasive first. A *repeated* visual variation is a new `cva` variant on the existing file — you extend, you stay upgradeable. A fork is reserved for the case where the primitive's *API itself* can't express the state you need, which is exactly the custom-positioned `Select`. Forking the button too would needlessly cut it off from upstream accessibility fixes, and a `className` override can't add a reusable named variant or restructure a component's anchoring.
+
+  - source: 27.2
+    question: |
+      A touch-primary `size="icon"` button on a mobile screen holds a 16px Lucide glyph and fails the WCAG 2.2 target-size floor. What's the correct fix?
+    choices:
+      - text: |
+          Grow the *hit area* with padding to at least 44×44 (`min-h-11 min-w-11`) and leave the 16px glyph as-is — visual size and tappable area are different things.
+        correct: true
+      - text: |
+          Scale the icon itself up to 44px so the whole target reaches the size floor.
+        correct: false
+      - text: |
+          Add `aria-label` to the button — the target-size rule is satisfied once a screen reader can announce the control.
+        correct: false
+    why: |
+      Target size is about the tappable region, not the glyph. You reach the 44px comfortable default by padding the button out, keeping the icon small and crisp inside a thumb-sized hit area. Scaling the icon to 44px just produces a clumsy giant glyph, and an `aria-label` fixes naming, a different commitment entirely.
+
+  - source: 27.3
+    question: |
+      You write `{error && <div role="alert">{error}</div>}`. Sighted users see the error appear, but screen-reader users hear nothing. Why, and what's the fix?
+    choices:
+      - text: |
+          The region only enters the DOM *with its text already inside*, so assistive tech never registered it to watch. Render `<div role="alert">{error}</div>` unconditionally and toggle only its contents.
+        correct: true
+      - text: |
+          `role="alert"` is polite by default and waits for the user to be idle; switch it to `aria-live="assertive"` so it announces immediately.
+        correct: false
+      - text: |
+          A `role="alert"` region must also carry `aria-atomic="true"` to announce; add that attribute and the existing conditional render will announce correctly.
+        correct: false
+    why: |
+      This is the live-region pre-mount bug. Assistive tech announces a *mutation inside a region it is already watching* — not a region that pops into existence with content already in it. The fix is to always render the region and toggle only its contents. `role="alert"` is already assertive-and-atomic, so neither swapping the attribute nor adding `aria-atomic` addresses the timing problem.
+
+  - source: 27.4
+    question: |
+      A `RouteFocus` component focuses the new page's `<h1>` on every navigation, because Next.js moves focus nowhere on a soft navigation. Which details are load-bearing for it to actually work? Select all that apply.
+    choices:
+      - text: |
+          The heading carries `tabindex="-1"` so a non-interactive `<h1>` is a legal focus target without entering anyone's Tab order.
+        correct: true
+      - text: |
+          The focus call uses `{ preventScroll: true }` so moving focus doesn't fight the framework's scroll restoration.
+        correct: true
+      - text: |
+          The heading is given a positive `tabindex` so it sits first in the page's focus order.
+        correct: false
+      - text: |
+          The component focuses a ref captured from the previous route, reused across navigations.
+        correct: false
+    why: |
+      A bare `<h1>` isn't focusable, so `tabindex="-1"` makes it a script-only target, and `preventScroll: true` keeps the focus move from yanking the viewport away from the framework's scroll position. A positive `tabindex` is the global-order anti-pattern, and you must query the heading fresh after the new route paints — a ref to the *previous* route's node points at something already unmounted.
+
+  - source: 27.5
+    question: |
+      Why is modelling a data panel with three booleans (`isLoading`, `error`, `data`) considered the canonical bug, versus a single `status` discriminated union?
+    choices:
+      - text: |
+          Three booleans can express eight combinations for four real states — the extra four (like loading *and* errored *and* full) are impossible states the booleans permit; the union makes only the four valid shapes writable.
+        correct: true
+      - text: |
+          Booleans render more slowly than a `switch` over a union, so the union is the performance fix.
+        correct: false
+      - text: |
+          The union is only a style preference — both express the same set of states, so the choice doesn't change which states are reachable.
+        correct: false
+    why: |
+      The union's value is that it makes impossible states unrepresentable. Three independent booleans allow 2³ = 8 combinations for four real states; the surplus four are bugs waiting to be hit, and the render ladder's correctness also depends on check order. Each union variant carries only its own data, so the contradictory shapes can't be written, and the compiler narrows each `case`. It's not about render speed, and it's not a wash — the reachable state space genuinely differs.
