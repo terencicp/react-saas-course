@@ -19,8 +19,8 @@ Once every lesson's spine is done, run **lesson-build-fixer** once: chapter id `
 After Phase A is done for every lesson, finish the lessons in parallel.
 Work in batches of at most 3 lessons.
 Start one dev server per lesson in the batch, each on its own port, so batched agents never share a browser tab; pass each agent its lesson's port.
-For each batch run the stages below in order, awaiting each stage before the next, then move on to the next batch.
-Stage 1 is a round-robin; stages 2–5 each launch one agent per lesson in the batch in parallel, in a single message.
+For each lesson in the batch run the step below in order, then move on to the next batch.
+Step 1 is a round-robin; steps 2–5 each launch one agent per lesson.
 
 1 **Diagrams and exercises**: each round, take from every lesson in the batch its next unbuilt id — diagrams first, then exercises/sandboxes — and run its agent in parallel; await the round and repeat until the batch's lists are exhausted, so each lesson's MDX is edited by one agent at a time.
   - **lesson-diagramer**: chapter id `<X>`, lesson number `<Y>`, diagram id, lesson MDX path, lesson outline path, preview port.
