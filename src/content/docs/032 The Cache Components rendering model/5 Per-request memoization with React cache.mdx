@@ -1,0 +1,319 @@
+---
+title: Per-request memoization with React cache()
+tagline: React's cache function, the per-request memoizer that lets every Server Component read the session on its own yet runs the work once per render, and the rule for choosing it over use cache.
+chapter-id: 32
+course-progress: 0.00005
+sidebar:
+  order: 5
+  label: React cache()
+---
+
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import Dropdowns from '../../../components/exercises/dropdowns/Dropdowns.astro';
+import DropdownChoice from '../../../components/exercises/dropdowns/DropdownChoice.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import TwoCacheLayers from '../../../components/lessons/032/5/two-cache-layers.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+A dashboard renders. The layout reaches for the current user to show the avatar in the corner. The page reaches for the current user to scope its query to the right org. A `<Nav>` buried three levels deep reaches for the current user to highlight the active workspace. Each of those reads runs the same line — resolve the session, hit the database, get back the user. Three database round-trips, one page, the exact same answer every time.
+
+None of those three components is wrong. You learned in [Server Components as the default](/030-the-server---client-boundary/1-server-components-as-the-default/) that Server Components compose freely: each one fetches what it needs on its own, rather than waiting for some ancestor to fetch the data and thread it all the way down. That independence is the whole point, and it is also exactly what produces three identical reads. The fix is React's `cache()`: wrap a function with it and the function runs **once per render**, with every caller in that render sharing the one result. By the end of this lesson you'll be able to build the <Term definition="Lives only for one server render of one request, then is discarded.">request-scoped</Term> data layer the entire authenticated app leans on — and, more importantly, you'll know precisely when to reach for `cache()` versus the `'use cache'` you learned in [The use cache directive](/032-the-cache-components-rendering-model/3-the-use-cache-directive/).
+
+## The duplicate-read problem
+
+Before naming the tool, see the pain first. Here is the naive shape: an un-memoized reader, imported and called in three places across one render.
+
+```ts title="lib/auth.ts"
+export const getCurrentUser = async () => {
+  const session = await auth.api.getSession({ headers: await headers() });
+  return session?.user ?? null;
+};
+```
+
+That reader is correct on its own. The problem only shows up when three components each call it in the same render.
+
+```tsx title="app/(app)/layout.tsx"
+const user = await getCurrentUser(); // for the avatar
+```
+
+```tsx title="app/(app)/dashboard/page.tsx"
+const user = await getCurrentUser(); // to scope the query
+```
+
+```tsx title="components/nav.tsx (three levels down)"
+const user = await getCurrentUser(); // to highlight the workspace
+```
+
+When React renders this tree, each `await getCurrentUser()` fires on its own. There is no shared state between them, so each one resolves the session and hits the database independently. Three round-trips for a value that is identical across all three.
+
+The instinct from earlier component work is to read the user once at the top and pass it down as a prop. That works for the layout and the page, but the nav is three levels deep, and threading the user through every intermediate component that doesn't itself use it is exactly the kind of prop-drilling this course steers away from. It is also not a job for React Context — Context is a client-side mechanism, and these are Server Components running on the server.
+
+So sit with the real shape of the problem: the duplication is not a bug in any one component. Each component is correct on its own; it asks for the data it needs, which is what a well-behaved component should do. The duplication is **structural**. And a structural problem can't be fixed at the call sites — it has to be fixed at the **function**. That is the hook for `cache()`.
+
+## What cache() does
+
+`cache` is a named import from `react` itself. That is worth pausing on, because after the last two lessons your reflex is to import anything cache-related from `next/cache`. This one is different: it's a React primitive, not a Next.js one.
+
+It does one thing. You hand it a function, and it hands you back a memoized version of that function. <Term definition="Store a function's result the first time it runs, and return that stored result on a later call with the same input instead of running the function again.">Memoization</Term> is the whole idea — run once, reuse the answer. Here is the canonical shape. Notice where it lives: at **module scope**, not inside a component.
+
+<CodeTooltips tooltips={{
+  cache: 'React primitive: memoizes a function for the duration of one server render. Call it more than once in that render and the body runs once.',
+  'headers()': "A per-request API; you'll learn its full syntax in the async request APIs lesson. Reading it is what makes this function depend on the request, which is exactly why it can't be 'use cache' — and why it needs cache() instead.",
+}}>
+```ts title="lib/auth.ts"
+import { cache } from 'react';
+
+export const getCurrentUser = cache(async () => {
+  const session = await auth.api.getSession({ headers: await headers() }); // resolved once per request
+  return session?.user ?? null;
+});
+```
+</CodeTooltips>
+
+The semantics are small enough to state in one breath. Call the wrapped function more than once **with the same arguments during a single render**, and its body runs **once**. Every caller gets the same returned value back — in fact the same Promise, resolved a single time. When that render finishes, the memo is thrown away. The next request starts with a clean slate.
+
+That last detail about *where* the wrapper lives is not a style preference, it's load-bearing, so let me draw a line under it now and return to it at the end. The `cache(...)` call must sit at module scope, evaluated once when the module loads. Move it inside a component and you create a **brand-new memoizer on every render** — each caller ends up holding a different memoized function, so nothing is shared and nothing is deduplicated. The worst part: there is no error. The code runs, the page works, and you simply never get the benefit. Hold onto that one; it's the first of two failures that cost you nothing visible and everything in practice.
+
+## Two cache layers: per-request and cross-request
+
+Here is the sentence the rest of this lesson hangs on, and the one to carry forward into every future caching decision:
+
+> `cache()` deduplicates within one render and then forgets. `'use cache'` persists across renders and across users.
+
+They are not two strategies competing for the same job. They live at two different layers with two different lifetimes. The following diagram draws both — study it before reading the walkthrough, because every other point in this lesson is just an annotation on it.
+
+<TwoCacheLayers />
+
+Walk the two lifetimes, top lane first.
+
+The **cross-request layer** is `'use cache'`, which you already know. An entry is keyed by the function's arguments, its captured variables, and its source; it's stored in the server's cache backend and served to *any* request whose key matches, until it's invalidated or expires. Request A renders it, writes the entry; Request B — a different user, seconds later — reads the same entry without re-running the work. Sharing across users is the entire reason it exists.
+
+The **per-request layer** is `cache()`, and its life is much shorter. The memo is created when a render begins, lives only as long as that render, and is discarded the moment it completes. User B hitting the same route in the same second gets their own fresh memo; nothing whatsoever is shared between the two requests. There is no persistence here, and so there is nothing to evict, nothing to invalidate, and no `cacheLife` or `cacheTag` — those are the cross-request controls from [Lifetimes and tags](/032-the-cache-components-rendering-model/4-lifetimes-and-tags/), and they have no meaning at this layer. Saying that out loud now saves you from reaching for them later.
+
+So the decision, in one line you'll formalize in a moment: request-dependent work goes to `cache()`; request-independent work goes to `'use cache'`.
+
+## Argument identity decides what dedupes
+
+There's a mechanic inside `cache()` that isn't obvious from the outside, and it's where the second silent failure hides. The memo is keyed by **argument identity**, and identity means two different things depending on the type:
+
+- For **primitives** — a string, a number — identity is value equality. The same `userId` string passed twice is the same key. One entry, one run.
+- For **objects** — including arrays — identity is **reference equality**. Two objects with byte-for-byte identical contents are still two different references if they were constructed separately. Two keys. Two runs.
+
+That second case is the trap, because it fails the same way the module-scope mistake does: silently. The code runs, the result is correct, you just quietly do the work twice. Compare the two shapes directly.
+
+<CodeVariants>
+  <CodeVariant label="Dedupes">
+    <div data-mark-color="green">
+
+    ```ts "orgId: string" "'org_42'"
+    export const getMembership = cache(async (orgId: string) => {
+      const user = await getCurrentUser();
+      return findMembership(user?.id, orgId);
+    });
+
+    // Two components, same org id:
+    await getMembership('org_42');
+    await getMembership('org_42'); // same key — served from the first call
+    ```
+
+    </div>
+    **Deduplicates — the same string is the same key, so the body runs once.** Primitive arguments are compared by value, which is why passing an id string is the safe default.
+  </CodeVariant>
+
+  <CodeVariant label="Silently doesn't">
+    <div data-mark-color="red">
+
+    ```ts "{ orgId: 'org_42' }"
+    export const getMembership = cache(async (scope: { orgId: string }) => {
+      const user = await getCurrentUser();
+      return findMembership(user?.id, scope.orgId);
+    });
+
+    // Two components, two freshly built objects:
+    await getMembership({ orgId: 'org_42' });
+    await getMembership({ orgId: 'org_42' }); // new object, new key — runs again
+    ```
+
+    </div>
+    **Runs twice — two object literals are two different references, so they miss each other entirely.** No error appears; you just resolved the membership twice with no warning.
+  </CodeVariant>
+</CodeVariants>
+
+The practical rule falls straight out of this: **prefer primitive arguments**. Pass a `userId` or an `orgId` string and deduplication is automatic and bulletproof. If you genuinely need to pass an object, make sure it's a stable reference resolved once per render and threaded down, not rebuilt at each call site. There is one shape that sidesteps the whole question — a function that takes no arguments at all and reads what it needs itself. That is exactly how the session reader from earlier is built: it takes nothing and reads `headers()` internally, so there is no argument to get wrong. You'll see why that matters when we assemble the production layer.
+
+## When to reach for cache() vs 'use cache'
+
+You now hold two caching tools, and the practical question is the one this whole lesson exists to answer: given a function, which one do you put on it?
+
+There is a single hinge, and everything turns on it: **does the work depend on request data?**
+
+If the function reads `cookies()`, `headers()`, the resolved session or current user, a value derived from `params` or `searchParams` — anything that differs per request — then it's `cache()`. And here the choice isn't merely *better*, it's the *only* option: as you saw in [The use cache directive](/032-the-cache-components-rendering-model/3-the-use-cache-directive/), reading a request API inside a `'use cache'` boundary is a build error. You couldn't cache this work across requests if you wanted to, because its answer is different for every request. `cache()` is the per-request equivalent for exactly this work — dedup within the render, forget at the end.
+
+If the function is request-independent — a CMS post fetched by slug, the product catalog, an expensive pure computation over <Term definition="Convertible to a stable string the cache can use as a key — plain objects, arrays, and primitives; not functions, class instances, or Promises.">serializable</Term> inputs, a response from a third-party API — then it's `'use cache'`. It persists and is shared across users; reaching for `cache()` here would re-do the work on every single request and throw away the cross-request reuse you could have had for free.
+
+One honest footnote: putting *both* directives on a single function is legal and not harmful, just redundant — `cache()` runs as an isolated per-render scope even inside a `'use cache'` boundary. They're not rivals and they don't exclude each other; they're different layers. So don't agonize over it. Answer the one question — does this touch the request? — and the layer picks itself.
+
+The following decision walker is the same question, made clickable. Run a function through it.
+
+<StateMachineWalker kind="decision" title="Which caching layer does this function belong to?">
+  <Question
+    id="reads-request"
+    prompt="Does this function read request data?"
+    description="cookies(), headers(), the resolved session or current user, a value derived from params or searchParams — anything that differs per request.">
+    <Branch
+      label="Yes, it touches the request"
+      to="leaf-cache-request"
+      rationale="Its answer is different for every request." />
+    <Branch
+      label="No, the result is the same for every user"
+      to="want-shared"
+      rationale="Pure, request-independent work." />
+  </Question>
+
+  <Question
+    id="want-shared"
+    prompt="Do you want the result shared across requests and users?"
+    description="The work is request-independent, so it can be persisted. The only question left is whether you want that persistence.">
+    <Branch
+      label="Yes, persist and share it"
+      to="leaf-use-cache"
+      rationale="One render fills the store; every later request reads it." />
+    <Branch
+      label="No, just dedupe within this one render"
+      to="leaf-cache-dedupe"
+      rationale="Rare, but real." />
+  </Question>
+
+  <Leaf id="leaf-cache-request" verdict="cache()">
+    The work is request-scoped, so it **can't** be cached across requests — a `'use cache'` boundary that reads a request API is a build error. `cache()` is the only option: it dedupes the repeated reads within one render and forgets at the end. The canonical example is the session-read ladder you'll build next.
+  </Leaf>
+
+  <Leaf id="leaf-use-cache" verdict="'use cache'">
+    A cross-request store keyed by arguments, shared across users. Add `cacheLife` and `cacheTag` to control freshness and invalidation. Think a CMS post fetched by slug, or the product catalog.
+  </Leaf>
+
+  <Leaf id="leaf-cache-dedupe" verdict="cache()">
+    The work is pure, but you only want in-render deduplication and don't want it persisted — an expensive computation you'd rather not store across requests. Rare, but real, and it keeps the decision honest rather than forcing a false binary.
+  </Leaf>
+</StateMachineWalker>
+
+That one decision — which layer does this work belong to — is the whole job. Drill it now by sorting real functions into the right bucket.
+
+<Buckets twoCol instructions="Sort each function by the one question that decides it: does its work depend on request data?">
+  <Bucket name="per-request" label="cache()" description="Per-request — touches the request, dedupe within one render" />
+  <Bucket name="cross-request" label="'use cache'" description="Cross-request — request-independent, shared across users" />
+
+  <Item bucket="per-request">Reads the current user's session</Item>
+  <Item bucket="per-request">Derives a value from `cookies()`</Item>
+  <Item bucket="per-request">Scopes a database query by an org id read from `await params`</Item>
+  <Item bucket="cross-request">Fetches the marketing CMS post by its slug</Item>
+  <Item bucket="cross-request">Returns the product catalog</Item>
+  <Item bucket="cross-request">An expensive pure sort of a serializable list you want every user to share</Item>
+</Buckets>
+
+## The request-scoped data layer
+
+Now assemble the production shape this all builds toward. Across the authenticated app, the canonical use of `cache()` is the session-read ladder that lives in `lib/auth.ts`: a small set of cached readers, each the right tool for a different reflex.
+
+<AnnotatedCode lang="ts" code={`
+import { cache } from 'react';
+
+const getSession = cache(async () => {
+  return auth.api.getSession({ headers: await headers() });
+});
+
+export const getCurrentUser = async () => {
+  const session = await getSession();
+  return session?.user ?? null;
+};
+
+export const requireUser = async (next?: string) => {
+  // Unit 8 — returns the user or redirects to /sign-in
+};
+
+export const requireOrgUser = async (role?: string) => {
+  // Unit 8 — returns { user, orgId, role } or redirects
+};
+`}>
+  <AnnotatedStep meta="{3-5}" color="violet">
+    The single cached read. Everything in the ladder funnels through this one `cache()`-wrapped `getSession`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{7-10}" color="violet">
+    `getCurrentUser` builds on that cached read, returning the user or `null` — the reader for surfaces that render differently signed in versus out.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{12-17}" color="violet">
+    `requireUser` and `requireOrgUser` are siblings on the same cached read — the reflexes for protected pages, built out fully in the auth unit later in the course.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{4}" color="violet">
+    Because that one call is cached, it runs exactly once per render — no matter how many of the three helpers fire across the tree.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Look at what this buys you, because it's the structural answer to the problem we opened with. Every Server Component imports the reader it needs and calls it freely — the layout calls `getCurrentUser`, the page calls `requireOrgUser`, the deep nav calls `getCurrentUser` again. No prop-drilling. No "fetch once at the top and thread it down." No Context. The three helpers all resolve through one cached `getSession`, so the session is read from the database **exactly once per render**, and the framework guarantees it. The duplication we started with doesn't get patched at three call sites; it stops existing, at the function.
+
+This is the request layer doing precisely its job. And the two layers compose cleanly: these request-scoped readers sit at the top, and the request-independent fetchers they feed into — a `getProductCatalog()`, a marketing page — are `'use cache'` underneath. Request-scoped readers above, cross-request fetchers below.
+
+## What cache() will not do
+
+A few doors to close, because each is a confusion waiting to happen. These qualify what you just learned, so keep them next to it.
+
+It **does not persist across requests.** A second user gets their own memo, full stop. If you reached for `cache()` hoping for cross-request reuse, the tool you actually wanted is `'use cache'`. This is the single most common mix-up carried over from older mental models.
+
+It **does not invalidate.** No `cacheTag`, no `cacheLife`, nothing to revalidate. The memo is born and destroyed inside one render, so invalidation is meaningless — there's never an old entry to clear. Don't bring the post-mutation tools from later in this chapter to this layer.
+
+It **does not cross the server/client boundary.** It's a server-render primitive, period. Client Components share values through Context or props, not through `cache()`.
+
+:::note
+`cache()` is not `useMemo`. `useMemo` is a client-side hook that lives in the React fiber and exists for client-render work — and as you saw when you met the React Compiler earlier, it handles that memoization for you, so you rarely write `useMemo` by hand anyway. `cache()` is a server-side, module-scope primitive for deduplicating server work. Different layer, different problem. Don't reach for `useMemo` to dedupe a server fetch.
+:::
+
+One last reinforcement of the silent failure from earlier, now that you've seen the real ladder. Notice the `cache()` wrapper on `getSession` sits at module scope, evaluated once when `lib/auth.ts` loads. That placement is what makes the whole thing work.
+
+<Dropdowns instructions="Fill the two blanks so the wrapper actually deduplicates.">
+  `cache` is imported from <DropdownChoice answer="react" options={['react', 'next/cache']} />, and the wrapper must sit <DropdownChoice answer="at module scope" options={['at module scope', 'inside the component']} /> so it's created only once.
+</Dropdowns>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="React reference — cache()"
+    href="https://react.dev/reference/react/cache"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="The official primitive: memoization scoped to one server render, with the caveats that matter."
+  />
+  <ExternalResource
+    title="Build UI — React Cache"
+    href="https://buildui.com/posts/react-cache"
+    icon="lucide:square-pen"
+    iconColor="#F97316"
+    description="A short, worked explainer of why RSCs need cache() and how one fetch ends up shared across components."
+  />
+  <ExternalResource
+    title="Next.js docs — Caching"
+    href="https://nextjs.org/docs/app/getting-started/caching"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The cross-request side of the story: 'use cache', and how to pass per-request values into a cached function."
+  />
+</CardGrid>

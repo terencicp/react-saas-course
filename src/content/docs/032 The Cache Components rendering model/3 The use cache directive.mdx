@@ -1,0 +1,613 @@
+---
+title: The use cache directive
+tagline: The full anatomy of the 'use cache' directive, the one explicit tool Next.js gives you to store a result and reuse it across requests, from its three placements to the cache key, the serialization contract, and how a cached shell wraps a dynamic child.
+chapter-id: 32
+course-progress: 0.00005
+sidebar:
+  order: 3
+  label: The use cache directive
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import KeyComposition from '../../../components/lessons/032/3/KeyComposition.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import Dropdowns from '../../../components/exercises/dropdowns/Dropdowns.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import CodeReview from '../../../components/exercises/code-review/CodeReview.astro';
+import ReviewFile from '../../../components/exercises/code-review/ReviewFile.astro';
+import ReviewIssue from '../../../components/exercises/code-review/ReviewIssue.astro';
+import ReviewWhy from '../../../components/exercises/code-review/ReviewWhy.astro';
+import TrueFalse from '../../../components/exercises/true-false/TrueFalse.astro';
+import Statement from '../../../components/exercises/true-false/Statement.astro';
+import TfWhy from '../../../components/exercises/true-false/TfWhy.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Here is a Server Component you already know how to write. It fetches one marketing post from your CMS and renders it.
+
+```tsx title="app/(marketing)/[slug]/post.tsx"
+export async function MarketingPost({ slug }: { slug: string }) {
+  const post = await getPost(slug);
+
+  return (
+    <article>
+      <h1>{post.title}</h1>
+      <p>{post.body}</p>
+    </article>
+  );
+}
+```
+
+This is the most cacheable thing in your whole app. The `/pricing` page reads the same row for every visitor. It changes only when an editor publishes an edit, which might be once a week. And yet, under the dynamic-by-default model from earlier in this chapter, this component re-renders on every single request: every visitor pays for a fresh CMS read of content that hasn't moved.
+
+You can already *write* this component and the `getPost` fetcher behind it. What you can't yet do is tell Next.js to **store that result and reuse it across requests** instead of recomputing it for everyone. That is what `'use cache'` is for. The first lesson of this chapter named the directive and promised you its anatomy two lessons later; the lesson on shells and holes leaned on it as an opaque "this belongs in the shell" marker. This is the lesson that opens the box. By the end you'll be able to add `'use cache'` to a page, a component, or a plain function; predict the exact key your result is stored under; and know which values are allowed to cross into and out of a cached scope.
+
+## One directive, three placements
+
+The first thing to internalize is structural, and it's smaller than it looks: `'use cache'` is **one directive with three placements**, and the placement you pick decides **what gets stored**. There is no separate "page cache" and "function cache" with different rules to learn. It's the same directive, and the scope it sits at is the scope it caches.
+
+This puts it in the same family as the two directives you already know. `'use client'` at the top of a module changes that module's environment; `'use server'` at the top of a function marks it as a Server Action; `'use cache'` at the top of a scope makes that scope's output cacheable. A string literal at the start of a scope that changes the scope's semantics — same shape, three members.
+
+The following three tabs show the three placements. Read them as variations on one idea, not three separate features.
+
+<CodeVariants>
+  <CodeVariant label="File">
+    <div data-mark-color="blue">
+
+    ```tsx title="app/blog/page.tsx" {1}
+    'use cache';
+
+    export default async function Page() {
+      const posts = await listPosts();
+
+      return <PostList posts={posts} />;
+    }
+    ```
+
+    </div>
+    **At the top of a module**, `'use cache'` caches every export — a whole route segment from a `page.tsx`, or a whole data-layer module of fetchers. One constraint: every export of the file must be an async function.
+  </CodeVariant>
+
+  <CodeVariant label="Component">
+    <div data-mark-color="blue">
+
+    ```tsx title="app/billing/pricing-table.tsx" {2}
+    export async function PricingTable() {
+      'use cache';
+      const plans = await listPlans();
+
+      return <Plans plans={plans} />;
+    }
+    ```
+
+    </div>
+    **As the first line of an async component body**, `'use cache'` caches that component's render output; the component's serialized props become part of the key.
+  </CodeVariant>
+
+  <CodeVariant label="Function">
+    <div data-mark-color="blue">
+
+    ```tsx title="lib/posts.ts" {2}
+    export async function getPost(slug: string) {
+      'use cache';
+      const post = await db.query.posts.findFirst({
+        where: eq(posts.slug, slug),
+      });
+
+      return post;
+    }
+    ```
+
+    </div>
+    **As the first line of a plain async function**, `'use cache'` caches that function's return value — the data-fetcher case, the workhorse you'll reach for most.
+  </CodeVariant>
+</CodeVariants>
+
+You'll sometimes see the official docs frame this as *two* uses rather than three: "data-level" caching (cache a fetcher) and "UI-level" caching (cache a component or page). That's the same thing seen by intent. The function placement is data-level; the component and file placements are UI-level. The three placements are the syntactic reality — that's what you type — and the data-versus-UI split is just the reason you'd reach for each one.
+
+A real cached function usually declares two more things: how long the entry lives, and a tag the system uses to invalidate it. Those are the next lesson; leave them off for now. Everything in this lesson works without them — there's a sensible default lifetime, and you'll learn to set your own next.
+
+<VideoCallout videoId="iRGc8KQDyQ8" videoTitle="Composition, Caching, and Architecture in modern Next.js">
+  Aurora Scharff's Next.js Conf 2025 talk (30 min) walks the dynamic-by-default model and the same three `'use cache'` placements — page, component, function — as composable caching.
+</VideoCallout>
+
+Before going deeper, lock in *where the directive physically goes*. The next exercise gives you a fetcher and a component with the directive missing. Pick the line it belongs on.
+
+<Dropdowns
+  instructions="The directive is the first statement inside the scope you want cached — the first line of a fetcher's body, and the first line of a component's body, never before export. Pick the exact token for each blank."
+  answers={[
+    { answer: "'use cache'", options: ["'use cache'", "'use server'", "await cache()", "cache: true"] },
+    { answer: "'use cache'", options: ["'use cache'", "'use server'", "'use client'"] },
+  ]}
+>
+
+```tsx
+// lib/invoices.ts — the fetcher
+export async function getInvoiceSummary(orgId: string) {
+  ___
+  const rows = await db.query.invoices.findMany({
+    where: eq(invoices.orgId, orgId),
+  });
+
+  return summarize(rows);
+}
+
+// app/billing/summary.tsx — the component
+export async function InvoiceSummary({ orgId }: { orgId: string }) {
+  ___
+  const summary = await getInvoiceSummary(orgId);
+
+  return <SummaryCard data={summary} />;
+}
+```
+
+</Dropdowns>
+
+## The cache key: what makes two calls share an entry
+
+This is the conceptual heart of the lesson. A cache is only useful if you know *when two calls hit the same stored value and when they don't*. That answer is the <Term definition="The identity a cached result is stored and looked up under; two calls that compute the same key share one stored value.">**cache key**</Term>. You never write a key by hand. The compiler builds it for you. But you have to be able to predict it, because a wrong prediction is how you ship a bug where every user sees the same dashboard, or where nothing ever caches at all.
+
+Let's build the key up one piece at a time.
+
+**Start with the simplest case: a cached function that takes no arguments.**
+
+```tsx
+export async function getFeaturedPlan() {
+  'use cache';
+  return db.query.plans.findFirst({ where: eq(plans.featured, true) });
+}
+```
+
+This produces exactly one entry. The first call anywhere — any request, any user — computes the result and stores it. Every later call serves the stored value. That's the whole baseline: cached output is computed once and reused. No per-request work after the first.
+
+**Now add an argument.** Go back to `getPost(slug)`. The moment a cached function takes a parameter, the compiler keys the entry by the **serialized arguments**.
+
+```tsx
+export async function getPost(slug: string) {
+  'use cache';
+  return db.query.posts.findFirst({ where: eq(posts.slug, slug) });
+}
+```
+
+`getPost('pricing')` and `getPost('about')` are now two separate entries — two stored values, computed independently. But two different callers that both pass `'pricing'` share one entry: the second one serves what the first one stored. You wrote no key, no map, no `if`. **Distinct arguments produce distinct entries, automatically.** This is the property that makes a single cached fetcher safe to call from twelve different components — every caller passing the same slug collapses onto one stored result.
+
+**Now the full key.** The argument is the part you control most directly, but it's not the whole story. The key the compiler hashes is built from four ingredients:
+
+1. **The build ID** — a value that changes on every deploy. This is why a new deployment wipes every entry: the build ID is different, so no old key can match. You get a clean cache on every ship, for free.
+2. **The function ID** — a hash of the function's location and signature. Edit the function's code, and its ID changes, so its old entries no longer match. Fixing a bug in a cached function automatically invalidates the values that bug produced.
+3. **The serializable arguments** — the function's arguments, or a component's props.
+4. A dev-only hot-reload hash, so editing during development doesn't serve you stale results. Not something you'll ever think about in production.
+
+So far the key is "code identity plus the arguments you pass." Here is the part that trips people up, and the part where you should ignore most blog posts you'll find on this topic.
+
+**Closures are captured into the key, not forbidden.** When a cached function references a variable from an outer scope, Next.js automatically captures that variable and binds it as if it were an argument. It becomes part of the cache key, exactly like a real argument would. A lot of writing on `'use cache'` claims that cached functions "can't use closures" or "can't capture outer variables." That is wrong, and following it will make you write more awkward code than you need to. The truth is the opposite: the closure variable is *folded into the key for you*.
+
+The next walkthrough shows the canonical case. An outer component receives a `userId`; an inner cached function takes a `filter` argument and also reaches out to use `userId` from the closure. Watch what ends up in the key.
+
+<AnnotatedCode lang="tsx" maxLines={10} code={`
+export async function Dashboard({ userId }: { userId: string }) {
+  async function getData(filter: string) {
+    'use cache';
+    return db.query.events.findMany({
+      where: and(eq(events.userId, userId), eq(events.kind, filter)),
+    });
+  }
+
+  return <Events rows={await getData('errors')} />;
+}
+`}>
+  <AnnotatedStep meta="{1}" color="blue">
+    The outer `Dashboard` component receives `userId`. This is ordinary — a Server Component taking a prop. It is *not* cached itself.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{2}" color="blue">
+    Inside it, a cached fetcher takes a `filter` argument. Nothing surprising yet — `filter` will be part of the key, as you've already seen.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{3}" color="blue">
+    Here's the directive. From this point, `getData` is cached across requests.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5}" color="blue">
+    `getData` uses `userId` — which it never received as an argument; it grabbed it from the enclosing scope. Next.js captures `userId` and folds it into the key, right alongside `filter`. So the key for this entry includes *both* values: the one passed in and the one captured. Two users with the same `filter` get two different entries because their `userId` differs — exactly what you want.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+This gives you the mental model that matters for the whole topic. Stop thinking of the key as "the arguments." Think of it as **the function's code identity plus every serializable input it touches** — whether you handed that input in as an argument or the function reached out and grabbed it from the surrounding scope. Both count. The compiler doesn't care how the value got there; if the cached body depends on it, it's in the key.
+
+The following figure draws that whole model in one picture: the ingredients on the left compose into a single key, and two different argument values fan out to two distinct stored entries.
+
+<KeyComposition />
+
+That model also explains a sharp edge you need to handle on purpose. A cached function is computed once and frozen under its key. So anything *non-deterministic* inside a cached scope gets frozen too. `Date.now()`, `Math.random()`, `crypto.randomUUID()` — each runs **once**, at build or on the first call, and every later request gets that same frozen value. The timestamp you thought was "now" is actually "whenever this entry was first computed."
+
+This isn't a footgun the framework left lying around; it's the model working as designed. Closure capture is a feature right up until you accidentally capture something that was supposed to change. When that happens, you have exactly two choices:
+
+- **You want a fresh value per request.** Then it doesn't belong in the cached scope. Defer it: `await connection()` (from the first lesson of this chapter) before the non-deterministic work, and wrap that component in `<Suspense>` so it streams as a dynamic hole. The fresh value now lives outside the cache.
+- **A shared, occasionally-refreshed value is fine.** Then leave it in the cached scope and accept that everyone sees the same value until the entry is refreshed. A "trending this week" timestamp doesn't need to be per-request.
+
+Either choice is legitimate. The point is that Cache Components makes you *make* the choice instead of guessing.
+
+<MultipleChoice>
+  Two different users in the same org each load a dashboard in their own request. Both renders call the cached `listInvoices(orgId)` with the *same* `orgId`. How many times does the database query inside that fetcher actually run?
+
+  <McqChoice correct>Once, then it stays put until the entry is refreshed — whichever request arrives first computes and stores the rows, and the other reads that stored value.</McqChoice>
+  <McqChoice>Twice: a cache is scoped to a single render pass, so a second request always recomputes from scratch.</McqChoice>
+  <McqChoice>Twice: two separate requests are fully isolated and can never read each other's cached data.</McqChoice>
+  <McqChoice>Zero: the rows are only ever produced during the build, never on a live request.</McqChoice>
+
+  <McqWhy>Same `orgId` means the same key, and a `'use cache'` entry is shared *across* requests and users — so the second render serves what the first one stored, and the query runs once until the entry is refreshed. The two "twice" answers are the trap: per-render isolation describes React's `cache()`, a different tool you'll meet two lessons from now, and cross-request reuse is the entire reason `'use cache'` exists, so isolation is exactly backwards. "Zero" is wrong too — an entry that wasn't prerendered is computed on its first live use, then reused.</McqWhy>
+</MultipleChoice>
+
+## What can cross the boundary: the serialization contract
+
+You now know the key is built from a function's inputs. The next question is which inputs are even *allowed*. The cache has to store your arguments and your return value somewhere, and reload them later — possibly in a different process, possibly days later. Anything that crosses that boundary has to be <Term definition="Able to be encoded into a transferable form and reconstructed later; the requirement for crossing the cache boundary.">**serializable**</Term>.
+
+You've met this exact rule before. The server/client boundary from the chapter on Server and Client Components had the same requirement: props passed from a Server Component to a Client Component had to serialize to cross the wire. The cache boundary is the same kind of boundary — a value leaving one process to be reconstructed in another — so it enforces the same kind of contract. If you internalized the wire rules there, you already know most of this.
+
+There's one twist, and it's the part worth slowing down for. The contract is **asymmetric**:
+
+- **Arguments** use the stricter serialization — the same one the server uses to send a React tree to the client.
+- **Return values** use the looser client serialization.
+- The practical consequence: **you can *return* JSX, but you cannot *accept* JSX as an argument.** A cached component can hand back a rendered tree. It cannot take one in through a normal parameter.
+
+Here's what's allowed in both directions: primitives (`string`, `number`, `boolean`, `null`, `undefined`), plain objects, arrays, `Date`, `Map`, `Set`, and typed arrays / `ArrayBuffer`. Return values get one bonus: JSX elements.
+
+And here's what's rejected: class instances, functions, `Symbol`, `WeakMap` and `WeakSet`, and — the one that surprises everyone — **`URL` instances**. A `URL` looks like plain data, but it's a class instance, so it doesn't serialize. Pass the string and rebuild the `URL` inside. The same goes for `Temporal` values, which you'll use throughout this course: they don't cross the boundary, so the convention is to encode them as ISO strings at the edge and parse them back on the other side. That's the same boundary discipline the project's code conventions apply to the server/client wire.
+
+The next signature glosses each parameter type with whether it can cross. Hover each one.
+
+<CodeTooltips tooltips={{
+  'string': 'Serializable — primitives cross the cache boundary freely.',
+  'Date': 'Serializable — Date is one of the built-ins that crosses.',
+  '{ sku: string; qty: number }[]': 'Serializable — plain objects and arrays cross.',
+  'URL': "Rejected — a URL is a class instance, so it doesn't serialize. Pass the string instead.",
+  'Database': "Rejected — an SDK/client instance is a class instance; it can't be part of the cache key. Pass the plain data the query needs.",
+}}>
+```tsx title="lib/invoices.ts"
+export async function buildInvoice(
+  customerId: string,
+  issuedAt: Date,
+  lineItems: { sku: string; qty: number }[],
+  source: URL,
+  db: Database,
+) {
+  'use cache';
+  // ...
+}
+```
+</CodeTooltips>
+
+When you do pass something unserializable as an argument, this isn't a runtime surprise — it's a **build error**. The compiler catches it before the code ever runs. The next two tabs show the canonical mistake and its fix.
+
+<CodeVariants>
+  <CodeVariant label="Rejected">
+    <div data-mark-color="red">
+
+    ```tsx title="app/customers/customer-card.tsx" {1}
+    export async function CustomerCard({ customer }: { customer: Customer }) {
+      'use cache';
+      return (
+        <div>
+          <h3>{customer.name}</h3>
+          <p>{customer.email}</p>
+        </div>
+      );
+    }
+    ```
+
+    </div>
+    **Build error** — a class instance isn't serializable, so the cache can't store this argument or fold it into the key.
+  </CodeVariant>
+
+  <CodeVariant label="Fixed">
+    <div data-mark-color="green">
+
+    ```tsx title="app/customers/customer-card.tsx" {2-4}
+    export async function CustomerCard({
+      id,
+      name,
+      email,
+    }: {
+      id: string;
+      name: string;
+      email: string;
+    }) {
+      'use cache';
+      return (
+        <div>
+          <h3>{name}</h3>
+          <p>{email}</p>
+        </div>
+      );
+    }
+    ```
+
+    </div>
+    **Pass the plain data** the component actually renders. The key is built from serializable values only, and that's all this component needs.
+  </CodeVariant>
+</CodeVariants>
+
+This serializable-or-not judgment is the single thing people get wrong most often in real cached code, so it's worth a drill. Sort each item into the bucket it belongs in.
+
+<Buckets
+  twoCol
+  instructions="Can it cross the cache boundary as an argument to a 'use cache' function? Sort each value into the right bucket. Allowed types serialize and can join the key; rejected types are class instances or functions and fail the build."
+>
+  <Bucket name="ok" label="Serializable (allowed)" description="Crosses the boundary and joins the key" />
+  <Bucket name="no" label="Rejected (build error)" description="Class instance or function — fails the build" />
+
+  <Item bucket="ok">`string`</Item>
+  <Item bucket="ok">`{ id, total }` (plain object)</Item>
+  <Item bucket="ok">`Date`</Item>
+  <Item bucket="ok">`Map`</Item>
+  <Item bucket="ok">an array of plain rows</Item>
+  <Item bucket="no">a Drizzle `db` client</Item>
+  <Item bucket="no">a `logger` instance</Item>
+  <Item bucket="no">`URL`</Item>
+  <Item bucket="no">a `() => void` callback</Item>
+</Buckets>
+
+## Pass-through: how a cached shell wraps dynamic children
+
+If you read the last section carefully, something should be bothering you. The lesson on shells and holes showed a cached shell wrapping a *dynamic* child — a cached `Header` and chrome around a dynamic `<OrgInvoices />` table. But JSX isn't a valid argument to a cached component. So how did a cached shell receive a dynamic child at all?
+
+The answer is <Term definition="A non-serializable value — children, a slot, a Server Action — that a cached component receives but never inspects, so it isn't part of the key and isn't cached.">**pass-through**</Term>. A cached component is allowed to *receive* non-serializable values — JSX `children`, compositional slots, even a Server Action — on one condition: it must **never look inside them**. It just drops them into the tree it returns. Because the cached body never reads them, they can't affect its output, so they're not part of the key and they're not cached. They flow straight through, untouched, and stay as dynamic as they already were.
+
+The distinction is "receive" versus "introspect." Placing `{children}` in your returned JSX is fine — you're not reading it, just positioning it. Reading `children.props`, or calling a Server Action you were handed, *inside* the cached body would break the pattern, because now the cached output depends on something the key doesn't capture.
+
+The next walkthrough is the shell-with-a-hole from the earlier lesson, finally shown as code.
+
+<AnnotatedCode lang="tsx" maxLines={14} code={`
+// app/dashboard/dashboard-shell.tsx
+export async function DashboardShell({
+  header,
+  children,
+}: {
+  header: ReactNode;
+  children: ReactNode;
+}) {
+  'use cache';
+  const nav = await listNavLinks();
+
+  return (
+    <div className="dashboard">
+      <Sidebar links={nav} />
+      <header>{header}</header>
+      <main>{children}</main>
+    </div>
+  );
+}
+
+// app/dashboard/page.tsx
+export default function Page() {
+  return (
+    <DashboardShell header={<OrgSwitcher />}>
+      <Suspense fallback={<TableSkeleton />}>
+        <OrgInvoices />
+      </Suspense>
+    </DashboardShell>
+  );
+}
+`}>
+  <AnnotatedStep meta="{9}" color="blue">
+    The shell itself is cached. Its chrome — sidebar, layout — is the same for everyone and ships from the cache.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{3-4, 6-7}" color="blue">
+    These slots are non-serializable JSX. The shell receives them but never reads them — it only places them in the tree. That's pass-through: they aren't in the key and they aren't cached.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{10}" color="blue">
+    This is the shell's *own* cached work — the read whose result is actually stored under the key. The slots play no part in it.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{26}" color="blue">
+    The call site passes a dynamic table as `children`. It stays dynamic, wrapped in its own `<Suspense>`, streaming in as a hole. The shell stays cached.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+This is exactly the shell-with-a-hole from the earlier lesson, now visible as code. The cached shell carries `'use cache'`; the dynamic child lives in its own `<Suspense>` and is handed in as a slot. And it resolves the rule from the first lesson of this chapter — that dynamic content can't nest inside a cached scope. It doesn't, here. The dynamic child is passed *through* the cached shell, not rendered *inside* it. The shell never touches it; it just positions a sealed box that React fills in later. That's the whole trick that lets one page be part-cached and part-dynamic.
+
+## Where the cached value actually lives
+
+It's worth grounding all of this for a moment: caching is real storage, with real limits. You write a directive; the runtime supplies the store. By default that store is an <Term definition="Least-recently-used — the eviction policy: when the cache fills, the entries used least recently are dropped first.">**in-memory LRU**</Term> on the server. Entries live in memory, and when memory pressure hits, the oldest-unused entries are evicted to make room.
+
+"In memory on the server" has one consequence you need to know before it confuses you, because it depends on *how you deploy*:
+
+:::note
+On a **serverless** platform (Vercel's default functions, for instance), each request can land on a fresh function instance with an empty memory cache. Build-time caching still works — prerendered entries ship with the deployment — but in-memory *runtime* reuse is per-instance, so an entry computed on one request often won't be there for the next. On a **self-hosted or persistent** runtime, the process stays alive between requests, so entries do persist. If you add `'use cache'` and it *still* seems to recompute every request, that's usually a serverless-instance reality, not a bug.
+:::
+
+There are two ways to get cross-instance persistence, and you should know the names without learning them yet. `'use cache: remote'` routes entries to a dedicated cross-instance store like Redis or a KV service, so every instance shares one cache; self-hosting it is configured through a cache handler. These are pointers, not curriculum — reach for them only when the in-memory default genuinely isn't enough.
+
+There's also a variant worth naming precisely so you don't reach for it by mistake. `'use cache: private'` is the one variant that *is* allowed to read request APIs like `cookies()` — and in exchange, it caches **per user, in the browser's memory only**. It's never stored on the server and never prerendered. It exists for genuinely personalized content you can't refactor into argument-passing, and it's still flagged experimental in Next.js 16 — not something to lean on in production yet. The default discipline in this course is the opposite: pass request data in as arguments, and let personalized-but-fresh content stream as a dynamic hole. Treat `'use cache: private'` as the rarely-needed escape hatch, not a tool you reach for often.
+
+The takeaway under all of this: caching is storage, storage has a budget, and the move is to **cache the smallest useful slice** — not the whole page reflexively, but the parts whose freshness you can afford to trade.
+
+## Composing a cached data layer
+
+Now the part that matters most in practice: what should you actually *do* with this? The pattern experienced teams settle on is simple and worth adopting wholesale.
+
+**Every read is a small `'use cache'` function in your data layer.** Components that need data import the fetcher and call it. The cache is automatic and shared: every caller passing the same arguments collapses onto one stored entry, no coordination required. A cached component can call cached functions, and the entries compose — the shell caches its chrome, the fetcher caches its rows, each under its own key.
+
+If you've seen older Next.js code, this is a deliberate inversion of how it used to work. Before version 16, a bare `fetch()` was cached by default, and you opted *out* with `{ cache: 'no-store' }` when you wanted fresh data. Under Cache Components that implicit behavior is gone, in line with the explicit-by-default story from the first lesson of this chapter. Now the way you cache a read is to **wrap it in a `'use cache'` function**. The durable rule is exactly that: wrap to cache. Nothing is cached behind your back; nothing is fresh behind your back.
+
+The two tabs below show the refactor you'll do constantly: a component doing an inline fetch that re-runs every render, turned into an imported cached fetcher.
+
+<CodeVariants>
+  <CodeVariant label="Inline, uncached">
+    ```tsx title="app/blog/[slug]/page.tsx" del={2-3}
+    export async function PostPage({ slug }: { slug: string }) {
+      const res = await fetch(`https://cms.example.com/posts/${slug}`);
+      const post = await res.json();
+
+      return <Article post={post} />;
+    }
+    ```
+    **The fetch lives inside the component**, so it re-runs on every render — nothing is stored.
+  </CodeVariant>
+
+  <CodeVariant label="Extracted, cached">
+    ```tsx ins={2-7}
+    // lib/posts.ts
+    export async function getPost(slug: string) {
+      'use cache';
+      // cacheLife + cacheTag → next lesson
+      const res = await fetch(`https://cms.example.com/posts/${slug}`);
+      return res.json();
+    }
+
+    // app/blog/[slug]/page.tsx
+    export async function PostPage({ slug }: { slug: string }) {
+      const post = await getPost(slug);
+
+      return <Article post={post} />;
+    }
+    ```
+    **Move the read into a `'use cache'` fetcher and import it.** Now every caller passing the same `slug` shares one stored result.
+  </CodeVariant>
+</CodeVariants>
+
+Notice the single commented line inside the fetcher: `cacheLife + cacheTag → next lesson`. That's where these fetchers grow up. Every real cached read in your codebase will carry a lifetime and a tag; you'll add both in the next lesson. For now the fetcher is complete enough to work.
+
+To close this section, review a real pull request. The next exercise is a PR that adds caching to an invoices fetcher, and it contains the two mistakes this whole lesson exists to prevent. Leave a comment on each.
+
+<CodeReview instructions="A teammate opened this PR to cache the invoices list per organization. The query itself is correct — review it against the two rules from this lesson and comment on every line that breaks one.">
+  <ReviewFile name="lib/invoices.ts">
+    ```tsx
+    import { cookies } from 'next/headers';
+
+    export async function listOrgInvoices(db: Database) {
+      'use cache';
+      const orgId = (await cookies()).get('org')?.value;
+
+      return db.query.invoices.findMany({
+        where: eq(invoices.orgId, orgId),
+      });
+    }
+    ```
+  </ReviewFile>
+
+  <ReviewIssue
+    file="lib/invoices.ts"
+    line={5}
+    kernel="a request-time API like cookies() is forbidden inside a cached scope — read the org outside the function and pass it in as an argument"
+  >
+    `cookies()` is a request-time API, and reading it inside a `'use cache'` scope is a **build error** — `await`-ing it doesn't help. A cached entry is shared across every request and user, so it cannot depend on one request's cookies. Read the org *outside* the cached function and pass it in, so it joins the key as a plain argument:
+
+    ```tsx
+    // app/invoices/page.tsx
+    const orgId = (await cookies()).get('org')?.value;
+    const rows = await listOrgInvoices(orgId);
+
+    // lib/invoices.ts
+    export async function listOrgInvoices(orgId: string) {
+      'use cache';
+      // ...
+    }
+    ```
+  </ReviewIssue>
+
+  <ReviewIssue
+    file="lib/invoices.ts"
+    line={3}
+    kernel="db is a non-serializable class/SDK instance and can't be a cached function argument — import the db client inside the function instead of passing it"
+  >
+    The `db` client is a class/SDK instance, and arguments to a cached function must be **serializable** so they can join the key — a class instance can't, so this also fails the build. Don't thread the client through the signature; import it inside the function, and pass only the plain `orgId` it actually needs:
+
+    ```tsx
+    import { db } from '@/lib/db';
+
+    export async function listOrgInvoices(orgId: string) {
+      'use cache';
+      return db.query.invoices.findMany({
+        where: eq(invoices.orgId, orgId),
+      });
+    }
+    ```
+  </ReviewIssue>
+
+  <ReviewWhy>
+    Both defects are the same lesson from two angles: **only serializable, non-request data crosses into a cached scope.** `cookies()` is request-time data (it belongs outside, passed in), and the `db` client is a non-serializable instance (it belongs inside, imported). The fixed fetcher takes one `string` argument — exactly the shape the cache key wants.
+  </ReviewWhy>
+</CodeReview>
+
+## What `'use cache'` is not
+
+The fastest way to use this directive well is to be clear about what it isn't. Five boundaries, each of which prevents a common mistake or sets up a later lesson.
+
+**It's not request-scoped.** `'use cache'` persists *across* requests and users — that's its whole purpose. There's a different tool for deduplicating work *within a single request*, the kind you need when the work has to read request data (think `getCurrentUser()`, which must read the session every request but shouldn't run five times in one render). That tool is React's `cache()`, two lessons from now. Keep the two straight: `'use cache'` is cross-request storage; `cache()` is per-request memoization. Confusing them is the single most common mistake in this area.
+
+**It's not a hint.** It's a contract the framework enforces at build. Break a rule — capture something non-serializable, read a request API inside it — and you get a build error, not a silently slower path. Same theme as the build-error enforcement from the first two lessons of this chapter: the compiler tells you, up front.
+
+**It's not free.** Every entry costs storage and can be evicted. Caching the whole world is not the goal; caching the smallest useful slice is.
+
+**It's not for client code.** `'use cache'` is server-only. It has no meaning inside a `'use client'` module — that code runs in the browser, where there's no shared server cache to write to.
+
+**It's not the personalized or remote variants.** `'use cache: private'` and `'use cache: remote'`, named earlier, are not the default and not what this lesson taught. Plain `'use cache'` is server-side, cross-request, shared.
+
+Run the following round to check the boundaries you just drew.
+
+<TrueFalse instructions="Each claim tests one of the five boundaries just drawn.">
+  <Statement answer="false">
+    `'use cache'` deduplicates two calls within the same request but forgets them across requests.
+    <TfWhy>Backwards — `'use cache'` persists *across* requests and users; that's its whole purpose. The within-a-request dedup tool is React's `cache()`, two lessons from now.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    A cached function can read `cookies()` as long as it awaits it.
+    <TfWhy>Request-time APIs are forbidden inside any cached scope, awaited or not — it's a build error. Read them *outside* the cached function and pass the value in as an argument.</TfWhy>
+  </Statement>
+
+  <Statement answer="true">
+    A cached component is allowed to return JSX.
+    <TfWhy>Return values use the looser client serialization, which includes JSX. The asymmetry: you can *return* JSX, but you still can't *accept* it as a normal argument.</TfWhy>
+  </Statement>
+
+  <Statement answer="true">
+    Editing a cached function's body invalidates its existing cache entries.
+    <TfWhy>The function ID — a hash of the function's code and location — is part of the key, so changing the code changes the key, and the old entries can no longer match.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    A `URL` instance is a valid argument to a cached function.
+    <TfWhy>A `URL` is a class instance, so it doesn't serialize — it fails the build. Pass the string and rebuild the `URL` inside the function.</TfWhy>
+  </Statement>
+</TrueFalse>
+
+## What's next
+
+You now have the full anatomy: the three placements, the cache key and what composes it, the serialization contract and its asymmetry, pass-through for the values that can't serialize, and where the entries actually live. The next lesson adds the two pieces every real cached function carries — **how long it lives** (`cacheLife`) and **the name the system uses to invalidate it** (`cacheTag`) — and after that comes per-request `cache()`, then invalidating a cache after a mutation.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="use cache directive reference"
+    href="https://nextjs.org/docs/app/api-reference/directives/use-cache"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The full reference: cache keys, closure capture, the serialization contract, and pass-through — the same model this lesson teaches."
+  />
+  <ExternalResource
+    title="Caching with Cache Components"
+    href="https://nextjs.org/docs/app/getting-started/caching"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The getting-started guide: data-level vs UI-level caching, and how cached and dynamic parts compose on one page."
+  />
+</CardGrid>

@@ -1,0 +1,423 @@
+---
+title: How a route declares itself dynamic
+tagline: How a Next.js 16 route signals it renders at request time, through async request APIs and connection, and how to migrate the legacy route segment config exports they replace.
+chapter-id: 32
+course-progress: 0.00005
+sidebar:
+  order: 7
+  label: Request APIs and segment config
+---
+
+import Figure from '../../../components/figures/Figure.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import Matching from '../../../components/exercises/matching/Matching.astro';
+import Pair from '../../../components/exercises/matching/Pair.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import Term from '../../../components/ui/Term.astro';
+import MigrationTable from '../../../components/lessons/032/7/MigrationTable.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Picture your first week on a new team. You open a `page.tsx` and the very first thing you see, before any component, is four lines of configuration declaring how this route is supposed to render. In the same sprint you have to ship a new page that reads a `?status=` filter from the URL, the user's session cookie, and a freshly generated request ID for logging. Two tasks that look unrelated, but they turn on the same question: what makes this route render at request time instead of at build, and how is that decision *declared* in the source?
+
+The model we built at the start of this chapter, dynamic by default, answered most of the questions, but it left this one piece implicit. We said a route is dynamic by default and you carve out cached subtrees with `'use cache'` — but we never said how a route announces "I'm doing request-time work" in the first place. This lesson closes that loop. It has two halves, and the trick is seeing that they are the same question viewed from two eras: the legacy config exports that *used* to declare a route's disposition and are now going away, and the async request APIs that replace them as the real signal. You will leave able to read and migrate any older route you inherit, and write the new request-reading shape correctly on both sides of the server/client boundary.
+
+## The config exports that used to color a route
+
+Before Next.js 16, a route's render disposition came from two sources mixed together. Some of it was *inferred*: read `cookies()` in a Server Component, or run a `fetch` without caching it, and Next.js quietly flipped the whole route to dynamic. The rest was *declared*: you exported a handful of special constants at the top of the module to override the inference. Think of those exports as a per-route flag panel — a small control board, sitting above your component, that colored how the entire route below it rendered.
+
+There are four you will actually run into in the wild. You do not need to learn to write these; you need to recognize them.
+
+```ts title="app/invoices/page.tsx"
+export const dynamic = 'force-dynamic';
+export const revalidate = 60;
+export const fetchCache = 'force-cache';
+export const runtime = 'edge';
+```
+
+Reading top to bottom: <Term def="The family name for the special `export const` constants — `dynamic`, `revalidate`, `fetchCache`, `runtime` — that Next.js 13 through 15 read at module scope to set a route's render disposition.">route segment config</Term> is what this family is called. `dynamic` (`'auto' | 'force-dynamic' | 'force-static' | 'error'`) forced the route's rendering mode directly. `revalidate`, a number of seconds, set the window for <Term def="Incremental Static Regeneration — the Next.js 13 to 15 model where a statically rendered page is re-generated in the background after a fixed time window elapses.">ISR</Term>, re-generating the page on a timer. `fetchCache` set the caching policy for every `fetch` in the segment. And `runtime` (`'nodejs' | 'edge'`) picked which runtime the route executed on.
+
+Here is why the whole panel is being retired, and it is the same thread that has run through this entire chapter. The panel was **implicit and route-global**. One export at the top changed the disposition of the entire subtree below it, and a component nested five levels deep could reach for a dynamic API and silently contradict the flag its ancestor had set. There was no way to look at the deep child and know what render mode it was actually in. Cache Components throws the panel out and replaces it with two things you read and write at the exact spot they apply: a per-component `'use cache'` directive, and a per-read `await`. Explicit beats implicit.
+
+So the rule is blunt, and it is not a soft deprecation you can leave in place and ignore. Under `cacheComponents: true`, the `dynamic`, `revalidate`, and `fetchCache` exports are **rejected** — Next.js raises a build error pointing you at the migration. You cannot ship a route that still declares them.
+
+## Reading legacy routes: the migration table
+
+You will inherit routes that still carry these exports, and a build error that says "remove this" is only half an instruction. The other half is *what to replace it with*, and that is the single most useful thing you can carry out of this lesson. The mapping below is the official one from the Next.js 16 migration guide. Keep it; you will come back to it every time you open an older codebase.
+
+<Figure caption="Each legacy route segment config export and its Cache Components replacement. Most simply evaporate — only the two that carry a real value translate into a 'use cache' scope.">
+  <MigrationTable />
+</Figure>
+
+A few of these reward a closer look. `dynamic = 'force-dynamic'` and `fetchCache = 'force-cache'` simply evaporate, because Cache Components already makes those decisions structurally — dynamic is the default, and caching follows the `'use cache'` boundary rather than a fetch-level policy. `runtime = 'edge'` has no equivalent under Cache Components at all; Node is the runtime, and it is also the right default for a 2026 SaaS app. When you genuinely need edge behavior — running logic before the request reaches your route — that moves to `proxy.ts`, which gets its own lesson in the next chapter.
+
+That `fetchCache` row points at a deeper change worth making explicit, because the old habit is muscle memory for a lot of developers. Before 16, `fetch()` cached its result by default and you opted *out* with `{ cache: 'no-store' }`. In 16 that default is flipped: `fetch()` is no-store by default, and you opt *in* by wrapping the call inside a `'use cache'` function. Same explicit-by-default story as everything else in the chapter — caching is something you reach for on purpose, not something you trip over.
+
+<CodeVariants>
+  <CodeVariant label="Next.js 15 — opt out">
+    ```ts
+    const res = await fetch('https://api.example.com/rates', {
+      cache: 'no-store',
+    });
+    ```
+    `fetch()` cached by default, so you reached for `{ cache: 'no-store' }` to force a fresh call.
+  </CodeVariant>
+
+  <CodeVariant label="Next.js 16 — opt in">
+    <div data-mark-color="green">
+
+    ```ts {2}
+    async function getRates() {
+      'use cache';
+      const res = await fetch('https://api.example.com/rates');
+      return res.json();
+    }
+    ```
+
+    </div>
+    `fetch()` is no-store by default. To cache, wrap the call in a `'use cache'` scope — the directive is where the opt-in now lives.
+  </CodeVariant>
+</CodeVariants>
+
+The one row that is not a clean delete is `revalidate`, because it carries a real value you have to translate rather than discard. This is also the row people get wrong most often, so look at it on its own.
+
+<CodeVariants>
+  <CodeVariant label="Legacy (15)">
+    ```ts title="app/blog/page.tsx" del={1}
+    export const revalidate = 3600;
+
+    export default async function BlogPage() {
+      const posts = await getPosts();
+      return <PostList posts={posts} />;
+    }
+    ```
+    The old route revalidated the whole page on a one-hour timer via a module-scope export.
+  </CodeVariant>
+
+  <CodeVariant label="Cache Components (16)">
+    ```ts title="app/blog/page.tsx" ins={2-3}
+    async function getPosts() {
+      'use cache';
+      cacheLife('hours');
+      const posts = await db.posts.findPublished();
+      return posts;
+    }
+
+    export default async function BlogPage() {
+      const posts = await getPosts();
+      return <PostList posts={posts} />;
+    }
+    ```
+    The timer moves to the data read. Reach for the `cacheLife` preset closest to the interval — `'hours'` here — not a hand-rolled `{ revalidate: 3600 }` profile. Matching presets to the data's shape, not to a second count, is the convention from the earlier lesson on cache lifetimes and tags.
+  </CodeVariant>
+</CodeVariants>
+
+You will not do most of this by hand. Running `npx @next/codemod@canary upgrade latest` performs the bulk of the migration mechanically — it strips the dead exports, renames `middleware.ts` to `proxy.ts`, removes the old `experimental_ppr` flag. But the codemod cannot read intent, and it will leave you with the result above to understand and finish. That is exactly why the table matters: the tool does the typing, you do the judgment.
+
+Before moving on, lock the mapping in. In the exercise below, match each legacy export on the left to its correct migration action on the right.
+
+<Matching instructions="Match each legacy route segment config export to the correct migration under Cache Components.">
+  <Pair>
+    <Fragment slot="left">`export const dynamic = 'force-dynamic'`</Fragment>
+    <Fragment slot="right">Remove it — dynamic is already the default.</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">`export const revalidate = 60`</Fragment>
+    <Fragment slot="right">`'use cache'` + `cacheLife('minutes')` at the data read.</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">`export const fetchCache = 'force-cache'`</Fragment>
+    <Fragment slot="right">Remove it — wrap the fetches in `'use cache'` instead.</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">`export const runtime = 'edge'`</Fragment>
+    <Fragment slot="right">Remove it — Node is the default; use `proxy.ts` for edge logic.</Fragment>
+  </Pair>
+</Matching>
+
+## Request data arrives as a Promise
+
+That is the half that looks backward — at code you inherit. Now the half that looks forward, to the code you write. If the config panel is gone, what actually signals that a route is doing request-time work? The answer is a single contract that covers every piece of request data, and it is worth memorizing as one sentence:
+
+**`params`, `searchParams`, `cookies()`, `headers()`, and `draftMode()` all return Promises in Next.js 16. You `await` them in a Server Component, and you unwrap them with `React.use()` in a Client Component. Synchronous access is gone — a sync read is a build error.**
+
+That is the whole shape. Five APIs, one access pattern. But the *why* is the part that ties this back to the chapter's spine. In Next.js 15, reading `cookies()` synchronously was the implicit magic that silently flipped a route to dynamic — the disposition changed and nothing in the source showed it. Making these APIs async makes the dynamic moment visible: the `await` is the signal. And under Cache Components, where dynamic is already the default, that `await` does not *flip* anything anymore — it simply confirms the route is doing request-time work, and it marks the one thing a `'use cache'` scope is forbidden to contain. "Async is annoying" becomes "async is the explicit signal the whole model is built on." That reframe is the point of this section.
+
+<VideoCallout videoId="WJn1rXesTtg" videoTitle="Next.js 16: Master Partial Pre-rendering & Cache Components in 24 Minutes">
+  Clerk walks the same arc as this lesson in 24 minutes — the old segment-config way, async request APIs as the dynamic signal, and where `Suspense` and `'use cache'` each apply.
+</VideoCallout>
+
+Let's ground it on the two you have already met. Back in the chapter on file-system routing, a <Term def="A route folder named in square brackets, like `[id]`, whose value is filled in from the URL at request time and arrives in the route's `params`.">dynamic segment</Term> like `[id]` delivered its value through `props.params`, and the query string arrived through `props.searchParams`. In 16, both are Promises you await.
+
+<AnnotatedCode lang="tsx" title="app/invoices/[id]/page.tsx" code={`
+export default async function InvoicePage(props: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ tab?: string }>;
+}) {
+  const { id } = await props.params;
+  const { tab } = await props.searchParams;
+
+  return <InvoiceDetail invoiceId={id} activeTab={tab ?? 'summary'} />;
+}
+`}>
+  <AnnotatedStep meta={`"async" {2-3}`} color="orange">
+    The page is `async`, and both props are typed as Promises. That type *is* the contract — there is no synchronous version of these to reach for.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"await props.params"`} color="orange">
+    Awaiting `params` unwraps the route's dynamic segments. This `await` is the dynamic signal — it tells the framework this render reads request-time data. Validate constrained params right here at the read site with a Zod `safeParse` (for example `z.coerce.number()` or `z.uuid()`); the full pattern lands later in the course.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"await props.searchParams"`} color="orange">
+    `searchParams` is the URL query, and its shape will catch you: each value is `string`, `string[]` (for a repeated key like `?tag=a&tag=b`), or `undefined` when the key is absent. The `tab ?? 'summary'` fallback handles the missing case. This is the canonical URL-state read; the filter and pagination patterns built on it come in the next chapter.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{8}" color="orange">
+    Once awaited, the values are plain data you pass into the tree like any other prop. Nothing exotic happens after the unwrap.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The two pieces from `next/headers` — `cookies()` and `headers()` — wear the exact same shape, you just import and call them instead of reading them off props: `const cookieStore = await cookies();` then `cookieStore.get('session')?.value`. That `await` is the same dynamic signal. We are deliberately teaching only the await-and-access mechanics here; the real SaaS usage of cookies and headers — session reads, trust boundaries on proxied headers, the read-once-at-the-top pattern — is covered in depth in the next chapter.
+
+<CodeTooltips tooltips={{
+  await: 'In 16 these APIs are async — the await is the dynamic signal that this code reads request-time data.',
+  cookies: 'From next/headers. Async, and read-only inside a Server Component — you read cookies here, you set them in a Server Action.',
+  headers: 'Same shape as cookies() — async, from next/headers, returns a read-only store you call .get() on.',
+}}>
+```tsx
+import { cookies, headers } from 'next/headers';
+
+const readContext = async () => {
+  const cookieStore = await cookies();
+  const session = cookieStore.get('session')?.value;
+  const userAgent = (await headers()).get('user-agent');
+  return { session, userAgent };
+};
+```
+</CodeTooltips>
+
+That leaves `draftMode()` to round out the set. It returns a Promise that resolves to `{ isEnabled, enable, disable }` — the toggle a CMS preview uses to show unpublished content. You will reach for it when you wire up a content source; naming it here just confirms the list of request APIs is closed at five. There is no hidden sixth channel.
+
+:::note
+"Request-time" means resolved per request, not frozen at build. It is the opposite of the build-time prerender pass — the value can be different for every visitor and every reload.
+:::
+
+## Reading request data in a Client Component with `React.use()`
+
+Everything so far assumed a Server Component, where `await` is available. But Client Components cannot be `async` — React will not let a component that runs on the client return a Promise. So how does a Client Component read `searchParams`, when it cannot await it?
+
+You have already solved this exact problem. Back in the chapter on the server/client boundary, the pattern was: a Server Component starts an async read but does *not* await it, passes the unresolved Promise down as a prop, and the Client Component unwraps it with <Term def="A React API that reads a Promise (or context) during render and suspends the component until it resolves — the client-side counterpart to `await`.">`React.use()`</Term>. This is the same primitive, not a new one. The parent server page passes the still-unresolved `searchParams` Promise down, and the client does `const { status } = use(searchParams)`.
+
+Because `use()` suspends the component until the Promise resolves, whoever consumes it — or an ancestor — has to sit inside a `<Suspense>` boundary. That is the same seam this whole chapter leans on, and the same one that drives streaming from the previous chapter: the boundary's fallback shows while the Promise is pending, then swaps to the resolved content.
+
+Now the judgment call, because this is where the tool gets overused. Your *default* should be to await on the server and pass the resolved plain value down. Reach for passing the Promise plus `use()` only when a Client Component genuinely owns that read — for instance, it needs to re-read on a client-side interaction. Trigger before tool: most of the time the server already has the value, so hand it down resolved.
+
+<CodeVariants maxLines={0}>
+  <CodeVariant label="Server reads, passes resolved value (default)">
+    <div data-mark-color="orange">
+
+    ```tsx title="app/invoices/page.tsx" "await props.searchParams"
+    export default async function InvoicesPage(props: {
+      searchParams: Promise<{ status?: string }>;
+    }) {
+      const { status } = await props.searchParams;
+      return <StatusBadge status={status ?? 'all'} />;
+    }
+    ```
+
+    </div>
+    The page awaits `searchParams` on the server and hands the child a plain `string`. The child stays a simple, synchronous component. This is the reach for almost every case.
+  </CodeVariant>
+
+  <CodeVariant label="Client unwraps the Promise">
+    <div data-mark-color="orange">
+
+    ```tsx title="app/invoices/page.tsx"
+    import { Suspense } from 'react';
+
+    export default async function InvoicesPage(props: {
+      searchParams: Promise<{ status?: string }>;
+    }) {
+      return (
+        <Suspense fallback={<StatusSkeleton />}>
+          <StatusFilter searchParams={props.searchParams} />
+        </Suspense>
+      );
+    }
+    ```
+
+    ```tsx title="app/invoices/status-filter.tsx" "use(props.searchParams)"
+    'use client';
+    import { use } from 'react';
+
+    export const StatusFilter = (props: {
+      searchParams: Promise<{ status?: string }>;
+    }) => {
+      const { status } = use(props.searchParams);
+      return <StatusBadge status={status ?? 'all'} />;
+    };
+    ```
+
+    </div>
+    When the read belongs to a Client Component, pass the unresolved Promise down and unwrap it with `use()`. The component must sit under a `<Suspense>` boundary, since `use()` suspends until the Promise resolves.
+  </CodeVariant>
+</CodeVariants>
+
+## `connection()`: declaring dynamic when the framework can't see it
+
+There is a gap in everything we just described. The framework infers "this is dynamic" from that closed set of awaited request APIs. But some work genuinely must run per request while touching *none* of them — and the framework's static analysis, seeing no signal, will happily try to prerender it at build and bake in whatever value it computed there. You need a way to plant a flag that says: stop, everything below this point is dynamic.
+
+That flag is `await connection()`, imported from `next/server`. It marks the current render dynamic with no other dependency. Place it *before* the work that must run per request, and you have guaranteed that work runs at request time.
+
+Three situations are the canonical ones — learn the *shape* of the problem so you recognize it, not just the API:
+
+1. **Reading `process.env` at runtime.** Next.js 16 removed the old `serverRuntimeConfig` / `publicRuntimeConfig` mechanism, so runtime configuration is now read straight from `process.env`. But inside a prerenderable scope, that read could be frozen at build. Calling `await connection()` before `process.env.RUNTIME_FLAG` forces a genuine runtime read.
+2. **Non-determinism.** `Date.now()` for a freshness stamp, `Math.random()` or `crypto.randomUUID()` for a per-request ID. These are exactly the values the earlier `'use cache'` lesson warned would *freeze* if you put them inside a cached scope. `connection()` is the mirror image: it forces them to re-evaluate on every request.
+3. **Third-party SDK calls** that read ambient state lazily and leave no awaited-API footprint for the framework to detect.
+
+<div data-mark-color="orange">
+
+```tsx title="app/config-banner/page.tsx" {4}
+import { connection } from 'next/server';
+
+export default async function ConfigBanner() {
+  await connection();
+  const flag = process.env.RUNTIME_FLAG;
+  return <Banner enabled={flag === 'on'} />;
+}
+```
+
+</div>
+
+<CodeTooltips tooltips={{
+  connection: "Marks this render dynamic — nothing below this line is prerendered at build. The explicit signal for work the framework can't otherwise see.",
+  "'next/server'": 'Note the import source — connection comes from next/server, not next/headers where cookies/headers live.',
+}}>
+```tsx
+import { connection } from 'next/server';
+
+export default async function ConfigBanner() {
+  await connection();
+  const flag = process.env.RUNTIME_FLAG;
+  return <Banner enabled={flag === 'on'} />;
+}
+```
+</CodeTooltips>
+
+Two things to file away. First, the same rule that governs request APIs governs this one: `connection()` inside a `'use cache'` function is a build error. Request-time work and cached output are mutually exclusive — you cannot cache something whose whole purpose is to differ per request. Second, and more important for your judgment: this is a *rare, precise* tool. Most routes never need it, because they already await a real request API and are dynamic for that reason. Reaching for `connection()` should make you pause and confirm there is genuinely no other signal — that you are not just papering over a value that should have been an argument or a real request read.
+
+:::caution
+The `Date.now()` and `crypto.randomUUID()` cases above are here strictly as examples of *non-determinism that needs a dynamic marker* — a freshness stamp at a third-party seam, say. They are not an endorsement of reaching for `Date` in your domain logic; the course handles time with `Temporal` everywhere that actually matters.
+:::
+
+## Typed props without the boilerplate
+
+Look back at the page signatures in this lesson and you will notice a recurring chore: `props: { params: Promise<{ id: string }> }`, hand-written on every page. That annotation is boilerplate, and worse, it *drifts*. Rename the `[id]` folder to `[invoiceId]` and the type still says `id` — it now lies, and TypeScript believes the lie.
+
+Next.js solves this by generating the types for you, from your actual route folders. It exposes **globally available** helpers — `PageProps<'/route'>`, `LayoutProps<'/route'>`, and `RouteContext<'/route'>` — with **no import needed**. `PageProps<'/blog/[slug]'>` hands you `params: Promise<{ slug: string }>` and the matching `searchParams` shape, derived from the route's real structure. Rename the folder and the type follows.
+
+<CodeTooltips tooltips={{
+  "PageProps<'/invoices/[id]'>": 'Globally available — no import. Typed from your actual route folders. Rename the [id] folder and this type updates instead of going stale.',
+  'await props.params': 'Now typed { id: string } for free, with no hand-written Promise annotation.',
+}}>
+```tsx title="app/invoices/[id]/page.tsx"
+export default async function InvoicePage(props: PageProps<'/invoices/[id]'>) {
+  const { id } = await props.params;
+  return <InvoiceDetail invoiceId={id} />;
+}
+```
+</CodeTooltips>
+
+These types are generated by <Term def="The Next.js command that generates the route-typed `PageProps` / `LayoutProps` helpers from your `app/` folder structure. Runs automatically as part of `dev` and `build`, or on demand.">`next typegen`</Term>, which also runs as part of `dev` and `build` — so most of the time the types are simply *there* while you work. The one thing to internalize: they are only as fresh as the last run. Right after you add or rename a route, a stale type or a "route not found" error from `PageProps` means one thing — re-run `npx next typegen` (or just let the dev server pick it up). That is the normal loop, not a bug. Knowing this helper is what separates a signature you write correctly on the first try from one that drifts out from under you a month later.
+
+## Putting it together
+
+Step back and the lesson is really one question asked in a deliberate order. An experienced engineer does not memorize five APIs; they run a short decision the moment a component needs a value. Walk it below — pick the branch that matches your situation and see where it lands.
+
+<StateMachineWalker title="A component needs a value. How does it get it?">
+  <Question
+    id="source"
+    prompt="Where does this value come from?"
+    description="Start here every time a route or component reaches for data. The answer determines whether you're even dynamic, and how you declare it."
+  >
+    <Branch label="Request data — a URL param, query, cookie, or header" to="side" />
+    <Branch label="Runtime-only work with no request-API footprint" to="leaf-connection" rationale="process.env, Date.now(), a random id, a lazy SDK call" />
+    <Branch label="The same value for everyone, refreshed on a schedule or event" to="leaf-cache" />
+    <Branch label="I'm reading an old codebase with export const dynamic / revalidate / fetchCache / runtime" to="leaf-migrate" />
+  </Question>
+
+  <Question
+    id="side"
+    prompt="Server or Client Component?"
+    description="Both unwrap the same Promise — the question is only which side of the boundary owns the read."
+  >
+    <Branch label="Server Component" to="leaf-await" />
+    <Branch label="Client Component" to="leaf-use" />
+  </Question>
+
+  <Leaf id="leaf-await" verdict="await the request API on the server">
+    `const { id } = await props.params;`. The `await` is the dynamic signal — it confirms the render reads request-time data. This is the default for almost every read.
+  </Leaf>
+
+  <Leaf id="leaf-use" verdict="Receive the Promise as a prop, unwrap with React.use() inside a Suspense boundary">
+    The parent server component passes the unresolved Promise down; the client does `use(promise)`. Reach for this only when the Client Component genuinely owns the read — otherwise await on the server and pass the resolved value.
+  </Leaf>
+
+  <Leaf id="leaf-connection" verdict="await connection() before the work">
+    The explicit dynamic marker for request-time work the framework can't otherwise detect. Rare and precise — confirm there's truly no other signal first. A build error if placed inside a `'use cache'` scope.
+  </Leaf>
+
+  <Leaf id="leaf-cache" verdict="'use cache' + cacheLife — this isn't dynamic at all">
+    A value shared across requests belongs in a cached scope, not a dynamic read. Pick the `cacheLife` preset that matches the data's shape, and tag it for invalidation. This is the other half of the chapter, not this lesson.
+  </Leaf>
+
+  <Leaf id="leaf-migrate" verdict="Migrate via the table">
+    Remove `dynamic` / `fetchCache`; translate `revalidate` to `'use cache'` + the closest `cacheLife` preset; `runtime = 'edge'` comes out — Node is the default, and edge logic moves to `proxy.ts`.
+  </Leaf>
+</StateMachineWalker>
+
+That order is the reflex worth building: is this even dynamic, is it request data or ambient work, and which side of the boundary owns it. The legacy config and the async APIs were never two topics — they are two answers to that same first question, one from the era that's ending and one from the era you're building in.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    href="https://nextjs.org/docs/app/guides/upgrading/version-16"
+    title="Upgrading to Version 16"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The official upgrade guide, including the async request APIs and the removed segment-config exports."
+  />
+  <ExternalResource
+    href="https://nextjs.org/docs/app/guides/migrating-to-cache-components"
+    title="Migrating to Cache Components"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The canonical source for the legacy-to-new migration table this lesson is built on."
+  />
+  <ExternalResource
+    href="https://nextjs.org/docs/app/api-reference/functions/connection"
+    title="connection() — API reference"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The explicit dynamic marker for request-time work the framework can't otherwise detect."
+  />
+  <ExternalResource
+    href="https://nextjs.org/docs/app/api-reference/file-conventions/page"
+    title="PageProps, LayoutProps, and next typegen"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The globally available, route-typed props helpers and the command that generates them."
+  />
+</CardGrid>

@@ -324,7 +324,7 @@ Next.js 16 with `cacheComponents: true`. Dynamic by default; cache by opt-in.
   - **Client-only refresh after navigation:** `router.refresh()`.
 - React `cache()` for request-scoped memoization of work that depends on request data (e.g., `getCurrentUser()`). `'use cache'` for cross-request persistence. They are different tools.
 - Async request APIs are Promises in Next.js 16: `await params`, `await searchParams`, `await cookies()`, `await headers()`. Client Components use `React.use()` on them. `connection()` is the explicit dynamic opt-in.
-- Cached functions: closures are forbidden. All data must come through arguments. Arguments must be serializable.
+- Cached functions: outer-scope variables are automatically captured and folded into the cache key, so both arguments and captured values must be serializable. Never capture request-scoped data (it would be baked into a shared cross-request entry) — pass it as an argument or, for request-scoped work, reach for React `cache()` instead.
 
 ## Error handling
 
