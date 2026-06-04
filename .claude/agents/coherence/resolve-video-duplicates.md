@@ -15,6 +15,7 @@ Make surgical edits, touching only what each change requires.
 
 Read each listed lesson.
 Decide which single lesson the video fits best: the one where it most directly supplements the topic being taught at that spot.
+Teaching lessons should also have priority over project lessons (chapters 028, 035, 041, 047, 050, 055, 059, 062, 065, 067, 069, 071, 073, 075, 077, 079, 082, 085, 091, 095, 100, 104, 108)
 Leave that lesson's VideoCallout untouched.
 
 ## 2 Decide replace or delete for each other lesson
