@@ -1,0 +1,315 @@
+---
+title: Hydration and its mismatch failure modes
+tagline: Hydration, the browser-side second render where React adopts the App Router's server HTML, and the small closed set of mismatch failures it throws when the two renders disagree, plus the fixes for each.
+chapter-id: 30
+course-progress: 0.00005
+sidebar:
+  order: 5
+  label: Hydration mismatches
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Term from '../../../components/ui/Term.astro';
+import RequestTrace from '../../../components/figures/request-trace/RequestTrace.astro';
+import TraceNode from '../../../components/figures/request-trace/TraceNode.astro';
+import Phase from '../../../components/figures/request-trace/Phase.astro';
+import MismatchTwoStrings from '../../../components/lessons/030/5/MismatchTwoStrings.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import Dropdowns from '../../../components/exercises/dropdowns/Dropdowns.astro';
+import DropdownChoice from '../../../components/exercises/dropdowns/DropdownChoice.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The invoice page renders perfectly on first paint. The total is right, the status badge is right, and at the bottom your `MarkPaidButton` shows "Paid 3 minutes ago" — a relative timestamp, a nice touch. Then the console lights up red: **"Hydration failed because the server rendered HTML didn't match the client."** It worked locally, it worked yesterday, and now React is refusing to take over a chunk of your page. By the end of this lesson you can read that error, name its cause from a short list, and apply the right fix. The durable payoff is sharper still: you will be able to tell a hydration bug from a server bug at a glance. In the lesson on Client Components you learned that a Client Component runs twice and that both renders must agree. This lesson is what happens when they don't — and what an experienced engineer does about it.
+
+## The two renders have to agree
+
+Here is the model you already have, compressed to two sentences. The server runs your Client Component to produce the initial HTML, ships that HTML alongside the RSC payload, and the browser paints it instantly; then React in the browser re-runs the *same* component over that existing HTML to attach event listeners and take control of the DOM. That second pass is <Term definition="The browser-side second render that re-runs a Client Component over server-sent HTML to attach event listeners and adopt the existing DOM, rather than redrawing it.">hydration</Term>.
+
+The detail that turns into today's whole lesson: hydration *adopts* the existing HTML, it does not redraw it. React assumes the markup the server sent is exactly what it would have produced itself, so it walks the DOM and wires up listeners in place. This is the <Term definition="React's diff of what it would render against the HTML that is already in the DOM. During hydration, React expects them to match so it can adopt the existing nodes instead of replacing them.">reconciliation</Term> step, and during hydration the comparison is strict: if the browser render computes different output than the server baked into the HTML, React can't line the two up, gives up on that subtree, and throws the warning you just saw.
+
+So why pay this price at all? Because hydration is **the cost of <Term definition="Server-side rendering: the server runs your components to produce finished HTML for the first paint, instead of shipping a blank page the browser fills in with JavaScript.">server-side rendering (SSR)</Term>**. A purely client-rendered app ships a blank page and fills it in once JavaScript loads — no hydration, but a bad first paint. A purely static page interacts with nothing — no hydration, but no interactivity either. The App Router hands you instant server HTML *and* client interactivity, and hydration is the bill for getting both. The fine print on that bill is one rule: your render has to be reproducible on two different machines.
+
+Before we break it, let's see exactly which part of the page hydrates. The following trace follows one request for the invoice page through to the browser. Scrub it from the server render to the hydrate phase and watch which node wakes up.
+
+<RequestTrace title="Which node hydrates?" url="/invoices/inv_204"
+              phases="request,server-render,wire,hydrate">
+  <TraceNode id="page" label="InvoicePage" kind="server">
+    <TraceNode id="list" label="InvoiceList" kind="server" await="db: invoices" />
+    <TraceNode id="button" label="MarkPaidButton" kind="client" />
+  </TraceNode>
+
+  <Phase id="server-render">
+    Every component runs on the server first to produce HTML — the `MarkPaidButton`
+    client leaf included. `"use client"` does not mean "skip the server"; it marks
+    where **hydration** will later attach.
+  </Phase>
+  <Phase id="hydrate">
+    Only `MarkPaidButton` wakes up here and attaches its click listener.
+    `InvoiceList` shipped zero client JS and never hydrates — there is nothing to wake.
+  </Phase>
+</RequestTrace>
+
+The warm leaf — `MarkPaidButton` — is the only node that hydrates. Hold onto that picture: it is also the answer to the diagnostic question we close the lesson with.
+
+<VideoCallout videoId="87i0pejrULw" videoTitle="What Exactly is REACT HYDRATION? And why does it matter?">
+  Dillion Megida walks the same dry-HTML-then-attach-listeners model with a live disable-JavaScript demo (7 min).
+</VideoCallout>
+
+## Why the two renders diverge
+
+Strip the problem to one sentence: **a mismatch means the two renders saw different inputs.** Your component code is byte-for-byte identical in both places — that is not where the divergence lives. The *environment* is what differs. The server is one machine, at one instant, in one timezone, with no DOM. The browser is a different machine, a few hundred milliseconds later, in the user's timezone, with a DOM that browser extensions may already have touched. Any value your render reads that depends on *which machine* or *which instant* it runs on will come out different — and that difference gets frozen into the HTML on the server, then contradicted on the client.
+
+That sounds open-ended, but the set of things that can differ is small and closed. It splits cleanly into two buckets, and the split matters because the *fix* is different for each.
+
+The first bucket is **your non-determinism**: your code asked for a value that cannot be identical in both places.
+
+- **Time.** `Date.now()`, `new Date().toLocaleTimeString()`, and every "3 minutes ago" relative label. The clock has moved between the server render and the browser render, so the strings disagree.
+- **Randomness.** `Math.random()`, and any ID or `key` derived from it. Two evaluations, two numbers.
+- **Locale and timezone formatting.** The server formats a date as `1/6/2026` in UTC; the browser formats the same date as `06/01/2026` in the user's locale and zone. Same instant, different rendering.
+- **Reading a browser-only source during render.** `typeof window !== 'undefined' ? a : b`, `localStorage.getItem(...)`, `navigator.language`. On the server the `window` branch is impossible, so it renders one thing; in the browser it renders another. They differ *by construction*.
+
+You own this bucket. Every item in it is a real bug in your render, and the rest of the lesson is about fixing them.
+
+The second bucket is **the browser's noise**: you didn't write it, the user's environment injected it. Browser extensions mutate the DOM *before* React gets a chance to hydrate. Grammarly adds `data-gr-*` attributes to editable text. Password managers add `data-1p-*` or `data-lpignore`. Colorzilla adds `cz-shortcut-listen`. The HTML the server sent never had those attributes; the DOM React finds in the browser does. This is not your bug — but it throws the exact same error, so you need to recognize it on sight or you will spend an afternoon hunting a phantom in your own code.
+
+So: the first bucket you *fix*, the second bucket you *acknowledge and suppress narrowly*. For now, just learn to tell them apart — the fixes come next, one per cause.
+
+:::note
+There is one more cause worth naming so the closed set isn't misleading, though it belongs to neither bucket: **invalid HTML nesting**. Put a `<div>` inside a `<p>`, or a `<p>` inside a `<p>`, and the browser's HTML parser silently *repairs* the malformed markup into a different DOM than the one your server render described — and that, too, throws a hydration mismatch. It is neither your non-determinism nor the browser's noise; it's a structural bug in your JSX, and none of this lesson's three fixes apply. The fix is to correct the markup.
+:::
+
+Here is the whole problem in one picture. The same `<span>Paid {when}</span>` runs on two machines and produces two different strings.
+
+<MismatchTwoStrings />
+
+Now drill the skill the rest of the lesson rests on: looking at a render expression and predicting whether the two machines will agree. Sort each expression into the right column.
+
+<Buckets twoCol instructions="Sort each render expression by whether the server and the browser compute the same output for it.">
+  <Bucket name="same" label="Same on server and client" description="Both renders produce identical output" />
+  <Bucket name="differs" label="Differs between server and client" description="The two renders disagree — a mismatch" />
+
+  <Item bucket="same">`<p>{invoice.total}</p>`</Item>
+  <Item bucket="differs">`<p>Updated {Date.now()}</p>`</Item>
+  <Item bucket="same">`useId()`</Item>
+  <Item bucket="differs">`<p>{Math.random()}</p>`</Item>
+  <Item bucket="same">`<p>{user.name}</p>`</Item>
+  <Item bucket="differs">`new Intl.NumberFormat().format(total)`</Item>
+  <Item bucket="same">`<time>{isoString}</time>`</Item>
+</Buckets>
+
+The two items that look like traps — `useId()` and the `Intl` formatter — are about to earn their explanations. What every "differs" item has in common is that its value is <Term definition="A value that can differ between two evaluations of the same code, because it depends on something outside the code: the clock, a random source, the machine's locale or timezone, or a browser-only API.">non-deterministic</Term> — it depends on something outside the code, so two evaluations can disagree. That is exactly what breaks the handshake, and React gives the failure a name in its error string: a <Term definition="React's term for the two-render disagreement during hydration — the server-rendered HTML and the browser's render of the same component produce different output.">hydration mismatch</Term>.
+
+## Fix it after mount: the useEffect deferral
+
+Reach for this one first, because it's the right answer most of the time. The principle is blunt: if a value can't be the same on both machines, **don't render it during the first render at all.** Render a deterministic placeholder instead, then swap in the real value *after* hydration, inside a `useEffect`.
+
+This works because of *when* `useEffect` runs. It never runs on the server, and in the browser it runs only after the component has mounted — which means after hydration is already done. So a value an effect sets is never part of the server HTML and never part of the strict hydration comparison. Both renders agree on the placeholder, React adopts the DOM cleanly, and *then* a client-only re-render paints the real value a tick later.
+
+Here it is on the invoice's `"Paid {relative time}"` leaf that sits beside `MarkPaidButton`, before and after.
+
+<CodeVariants>
+  <CodeVariant label="Mismatch">
+    <div data-mark-color="red">
+
+    ```tsx title="app/invoices/_components/paid-label.tsx" del={4}
+    'use client';
+
+    export const PaidLabel = ({ paidAt }: { paidAt: Date }) => {
+      return <span>Paid {formatRelative(paidAt)}</span>;
+    };
+    ```
+
+    </div>
+    **Throws on hydration** — the relative string is computed at render time, so it differs by the round-trip latency between the two renders. This is the anti-pattern, not code to ship.
+  </CodeVariant>
+
+  <CodeVariant label="Deferred">
+    <div data-mark-color="green">
+
+    ```tsx title="app/invoices/_components/paid-label.tsx" ins={6-8} ins="label ?? formatAbsolute(paidAt)"
+    'use client';
+
+    export const PaidLabel = ({ paidAt }: { paidAt: Date }) => {
+      const [label, setLabel] = useState<string | null>(null);
+
+      useEffect(() => {
+        setLabel(formatRelative(paidAt));
+      }, [paidAt]);
+
+      return <span>Paid {label ?? formatAbsolute(paidAt)}</span>;
+    };
+    ```
+
+    </div>
+    **Server and first client render both produce the stable absolute fallback**; the relative label appears a beat later, client-side only — so the two renders never disagree.
+  </CodeVariant>
+
+  <CodeVariant label="Mounted gate">
+    <div data-mark-color="blue">
+
+    ```tsx title="app/invoices/_components/saved-filter.tsx" {4} {6-8} {10}
+    'use client';
+
+    export const SavedFilter = () => {
+      const [isMounted, setIsMounted] = useState(false);
+
+      useEffect(() => {
+        setIsMounted(true);
+      }, []);
+
+      if (!isMounted) return <FilterSkeleton />;
+      return <FilterBar initial={localStorage.getItem('invoice-filter')} />;
+    };
+    ```
+
+    </div>
+    **The same fix, generalized** — when an entire subtree has to wait for the browser (here it reads `localStorage` for a saved filter), gate it behind an `isMounted` flag and render a skeleton until the effect flips it.
+  </CodeVariant>
+</CodeVariants>
+
+Notice what `useEffect` is doing here, because it's the legitimate use you already know: synchronizing with something *outside* React — wall-clock time, the browser's locale. That's its actual job. This is not the deriving-state-in-an-effect or fetching-data-in-an-effect misuse you were warned off earlier; reading the wall clock genuinely is an external system.
+
+One caution, because the first paint shows the fallback: pick a fallback that reads fine on its own. An absolute timestamp, a skeleton, or a dash all work. Never ship a fallback that looks broken — the user sees it for a real moment before the effect swaps in the live value.
+
+The reflex to walk away with: *non-deterministic value → defer it to `useEffect`, and render a stable placeholder first.*
+
+## Stable IDs across renders: useId
+
+The second fix is narrower — it exists for exactly one cause. Sometimes you need a unique ID string to wire two elements together: a `<label htmlFor>` pointing at an `<input id>`, or an `aria-describedby` pointing at a hint element. The tempting ways to generate that ID are all non-deterministic. `Math.random()` gives a different number on each machine. A module-level counter increments in a different order on the server than in the browser. `crypto.randomUUID()` is random by definition. Every one of them produces a different ID on the server than in the browser, and a different `id` attribute in the HTML is a mismatch.
+
+`useId` is React's purpose-built answer. It derives a stable, unique string from the component's *position in the render tree*, not from any random source — so the server and the browser, walking the same tree, compute the **same** ID for the same element.
+
+<div data-mark-color="blue">
+
+```tsx title="app/invoices/_components/amount-field.tsx" "useId()" /\{id\}/ /\$\{id\}/
+'use client';
+
+export const AmountField = () => {
+  const id = useId();
+
+  return (
+    <div>
+      <label htmlFor={id}>Amount</label>
+      <input id={id} aria-describedby={`${id}-hint`} />
+      <p id={`${id}-hint`}>Whole dollars, no symbol.</p>
+    </div>
+  );
+};
+```
+
+</div>
+
+You will meet <Term definition="A React hook that returns a stable, unique string identical on the server and the client, derived from the component's position in the tree. The hydration-safe way to generate an id for label/input or ARIA wiring.">`useId`</Term> again for forms and accessibility in more depth later in the course; here it earns its place purely as the hydration-safe source of IDs. The rule is short: never reach for a random number or a counter to make an ID inside a Client Component subtree. That reflex is the exact trap `useId` was built to remove.
+
+## When you can't defer: suppressHydrationWarning, narrowly
+
+The last fix is an escape hatch, and it's last on purpose, with a fence around it, because misusing it is the predictable junior mistake. `suppressHydrationWarning` is a boolean prop you put on a single element. It tells React to skip the mismatch check for *that element's own text content and attributes only* — not its children, not the rest of the tree. One element, one level deep.
+
+There are exactly two times you should reach for it.
+
+The first is a value that is *correctly* different by design and that you don't want to defer for UX reasons — a timestamp that must paint immediately and is allowed to be a second off. Put `suppressHydrationWarning` on that one `<time>`, let the post-hydration render correct it, and the user never sees a flash.
+
+The second is the browser's noise from the second bucket — those extension-injected attributes. Since extensions mutate the document `<body>`, that's where the suppression goes, so a stray `data-gr-*` or `cz-shortcut-listen` doesn't trip the warning for your whole app.
+
+There's a landmine here you need to defuse, and you've already seen one half of it. Back in the theme-switching lesson you put `suppressHydrationWarning` on `<html>`, because the theme script sets a `class` there *before* React hydrates and that intentional difference would otherwise trip the warning. The browser-extension case you just learned puts the same prop on `<body>` instead. Same prop, two different elements, two unrelated reasons. So when you see `<html suppressHydrationWarning>` in a root layout, read it as the theme script — not the extension noise.
+
+```tsx title="app/layout.tsx" "suppressHydrationWarning"
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    // The theme script sets `class` on <html> before React hydrates.
+    <html lang="en" suppressHydrationWarning>
+      {/* Browser extensions inject attributes onto <body> before hydration. */}
+      <body suppressHydrationWarning>{children}</body>
+    </html>
+  );
+}
+```
+
+Now the fence. `suppressHydrationWarning` silences *only that element*, one level deep — every child below it still hydrates strictly. So it is **not** a way to quiet a mismatch you don't understand. If you find yourself adding it to make a bug disappear that you could have fixed with `useEffect`, you are hiding a real divergence, and it will resurface somewhere worse. The discipline: reach for `useEffect` or `useId` first; <Term definition="A boolean prop that opts a single element out of React's hydration mismatch check, for that element's own text and attributes only — one level deep, not its children.">`suppressHydrationWarning`</Term> is for values that are correctly different by design, plus the body-level extension noise. Nothing else.
+
+You now have all three fixes. Match each scenario below to the right one.
+
+<Dropdowns instructions="Pick the right fix for each hydration mismatch.">
+  An invoice card shows a relative `Date.now()`-based "Paid N minutes ago" label that disagrees by the round-trip latency. Fix: <DropdownChoice answer="useEffect deferral" options={['useEffect deferral', 'useId', 'suppressHydrationWarning on <body>', 'stable key, not random']} />.
+
+  A form field generates a fresh `htmlFor` / `id` pair to wire its label to its input, and the two machines mint different strings. Fix: <DropdownChoice answer="useId" options={['useEffect deferral', 'useId', 'suppressHydrationWarning on <body>', 'stable key, not random']} />.
+
+  Grammarly injects `data-gr-*` attributes onto the page before React hydrates, and the server HTML never had them. Fix: <DropdownChoice answer="suppressHydrationWarning on <body>" options={['useEffect deferral', 'useId', 'suppressHydrationWarning on <body>', 'stable key, not random']} />.
+
+  A list uses `Math.random()` as each item's `key`, so every render computes a different one. Fix: <DropdownChoice answer="stable key, not random" options={['useEffect deferral', 'useId', 'suppressHydrationWarning on <body>', 'stable key, not random']} />.
+</Dropdowns>
+
+<VideoCallout videoId="KAjemAivU24" videoTitle="Next.js Hydration failed because the initial UI does not match what was rendered on the server (FIX)">
+  ByteGrad runs through the same causes hands-on — invalid nesting, extensions, dates, the `useEffect` deferral, and `suppressHydrationWarning` (9 min).
+</VideoCallout>
+
+## Two diagnostics before you debug
+
+Close on the two checks that save the most time — both things to confirm *before* you start changing render code.
+
+**Is it even a hydration bug?** Only Client Components hydrate. A Server Component ships HTML plus reconciliation data and never runs a second time in the browser, so it *cannot* throw a hydration mismatch. That gives you a one-glance diagnostic: open the file the error points at and look for `"use client"` at the top — either directly, or because it's imported from a file that has it. If there's no client boundary anywhere above it, the bug is in your *server* render — wrong data, a thrown error, a bad `await` — and none of this lesson's fixes apply. This is exactly the picture from the trace at the top: the warm leaf hydrates, the cool tree doesn't, so the cool tree can't be the source of a hydration mismatch.
+
+**The stale `.next` cache.** Sometimes the error points at HTML you genuinely cannot find anywhere in your source. Before you doubt your own eyes: the dev build cache (`.next`) sometimes serves stale HTML from before your last edit, and the mismatch is against markup you already deleted. The reflex when the error makes no sense against the current code is to clear it.
+
+```bash
+rm -rf .next
+pnpm dev
+```
+
+This is a tooling wart, not a concept — but naming it spares you an hour of chasing a bug that was never in your code.
+
+Step back. Hydration is the seam where the server and client halves of the App Router meet, and its failure modes are a small, closed, recognizable set. Every one of them resolves to one of two moves. Either you make the first render deterministic — your bucket, fixed with `useEffect` or `useId` — or you acknowledge an environment difference you don't control, the browser's bucket, handled with a narrow `suppressHydrationWarning`. Read the error, classify the cause, pick the fix. That seam is the price the App Router pays to give you instant HTML *and* interactivity, and you now know how to keep it from breaking.
+
+<MultipleChoice>
+  A teammate adds `suppressHydrationWarning` to the root `<html>` to silence a "Paid 2 minutes ago" mismatch coming from deep inside an invoice card. What's wrong with this fix?
+
+  <McqChoice correct>The prop guards only one element's own content, one level deep, so on `<html>` it can't reach a mismatch buried in a card — and even where it lands, a deferrable timestamp shouldn't be suppressed at all.</McqChoice>
+  <McqChoice>Nothing — putting `suppressHydrationWarning` on `<html>` is the standard way to silence any timestamp mismatch.</McqChoice>
+  <McqChoice>It will break the dark-mode theme script, which also relies on that same prop on `<html>`.</McqChoice>
+  <McqChoice>`suppressHydrationWarning` cascades to every descendant, so it will also hide genuine bugs elsewhere on the page.</McqChoice>
+
+  <McqWhy>`suppressHydrationWarning` covers a single element's own text and attributes, one level deep — on `<html>` it does nothing for a mismatch several levels down in a card, and even if it landed on the right element, suppressing is the wrong tool for a value you can simply defer. The correct fix is to move the relative timestamp into a `useEffect` and render a stable fallback (an absolute date or a dash) until it mounts. Note it does **not** cascade to children — that's the misconception in the last option.</McqWhy>
+</MultipleChoice>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Next.js — Hydration error"
+    href="https://nextjs.org/docs/messages/react-hydration-error"
+    icon="simple-icons:nextdotjs"
+    description="The canonical error message, its common causes, and the official fixes."
+  />
+  <ExternalResource
+    title="The Perils of Rehydration — Josh W. Comeau"
+    href="https://www.joshwcomeau.com/react/the-perils-of-rehydration/"
+    icon="lucide:droplets"
+    iconColor="#6E56CF"
+    description="A diagram-driven deep dive on why the two passes diverge and the two-pass fix."
+  />
+  <ExternalResource
+    title="React — useId"
+    href="https://react.dev/reference/react/useId"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="Why useId produces a stable id across server and client."
+  />
+  <ExternalResource
+    title="React — hydrateRoot"
+    href="https://react.dev/reference/react-dom/client/hydrateRoot"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="The official reference for suppressHydrationWarning and unavoidable mismatches."
+  />
+</CardGrid>

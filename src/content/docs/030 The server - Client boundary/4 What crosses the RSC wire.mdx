@@ -1,0 +1,397 @@
+---
+title: What crosses the RSC wire
+tagline: The serialization contract for the RSC payload, which prop values cross from a Server Component to a Client Component and which ones either fail loudly or leak silently.
+chapter-id: 30
+course-progress: 0.00005
+sidebar:
+  order: 4
+  label: What crosses the wire
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import Matching from '../../../components/exercises/matching/Matching.astro';
+import Pair from '../../../components/exercises/matching/Pair.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Term from '../../../components/ui/Term.astro';
+import RscLanes from '../../../components/lessons/030/4/RscLanes.astro';
+import LeakedPayload from '../../../components/lessons/030/4/LeakedPayload.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+You have a server-rendered invoice page. It reads the invoice on the server, renders the details, and at the bottom sits a `MarkPaidButton` — a Client Component, because it has to respond to a click. The page has the click handler. The button needs it. So you do the obvious thing:
+
+```tsx title="app/invoices/[id]/page.tsx"
+export default async function InvoicePage({ params }: PageProps<'/invoices/[id]'>) {
+  const invoice = await getInvoice((await params).id);
+  const handleClick = () => console.log('marking paid', invoice.id);
+
+  return <MarkPaidButton onClick={handleClick} />;
+}
+```
+
+The build refuses. Something like *Functions cannot be passed directly to Client Components unless you explicitly expose them.* You wrote idiomatic React, and the framework drew a line through it.
+
+You already know *where* that line is. In the earlier lessons of this chapter you learned that `'use client'` marks the entry into the browser-side subgraph, and `server-only` slams the door on anything that must never ship to the client. What you don't yet know is the contract on the line itself — *what is allowed to pass through it.* That's this lesson.
+
+Two facts about that contract are worth the whole lesson on their own. The first is the error you just hit: passing a function as a prop fails instantly, and once you can read the message, the fix is two short moves. The second is quieter and more dangerous: an over-wide object — say, a full invoice row with a customer's private notes on it — crosses **silently**, with no error at all, and lands in plain text in the browser where anyone can read it. The wire rejects a function loudly. It accepts a leak without a word.
+
+Underneath both is one model, and it's a model you've met before. Back in the first chapter you learned `structuredClone` — the algorithm that deep-copies an object, dropping functions and DOM nodes along the way. That algorithm is back. It is, very nearly, the rule for what crosses the boundary, plus a short list of React-specific additions. You're not learning a new rule today. You're recognizing an old one in a new place.
+
+## What the RSC payload actually is
+
+You've heard the term <Term definition={"React Server Components payload.\nThe serialized React tree the server sends to the browser alongside the HTML, used to reconcile what React renders."}>RSC payload</Term> named in passing. Before any rules land, it helps to know what the thing physically is, because serialization rules feel arbitrary until you can see what they describe.
+
+When the server renders your Server Component tree, it produces two things, not one. The first is HTML — the actual markup the browser paints immediately, so the user sees the invoice before any JavaScript runs. The second is the <Term definition={"React Server Components payload.\nThe serialized React tree the server sends to the browser alongside the HTML, used to reconcile what React renders."}>RSC payload</Term>: a serialized stream of instructions that the React runtime in the browser uses to rebuild the component tree. It's not HTML. It's closer to a recording of what the server rendered, written in a format React can replay.
+
+That stream says things like: "here is some resolved JSX," "render the Client Component with ID 42 here," "resolve this Promise with this value." And crucially — when it points to a Client Component, it carries **that component's props, serialized into the payload format**. That serialization step is the entire subject of this lesson. A prop sitting on a Client Component has to be turned into something that can travel down a network connection and be rebuilt, faithfully, on the other side.
+
+One fact to lock in now, because a later section depends on it: the payload is an ordinary network response. It arrives over HTTP, right next to the HTML, and like any network response, **you can open it in your browser's DevTools and read it.** Hold onto that.
+
+<RscLanes />
+
+So when this lesson talks about "what crosses the wire," picture lane two: that payload, with your props baked into it. The rules below are the rules for what's allowed in lane two.
+
+<VideoCallout videoId="aZAMP-4Szgg" videoTitle="RSC Rendering Lifecycle (Codevolution)">
+  Codevolution walks the full RSC lifecycle in 3 minutes — where the payload comes from, how it streams next to the HTML, and where you spot it in the Network tab.
+</VideoCallout>
+
+## Structured clone: the baseline you already know
+
+Here is the headline, and it's deliberately anticlimactic: the set of values that cross the wire is **`structuredClone` plus a handful of React extensions.**
+
+You met <Term definition={"The algorithm that deep-copies a value across a boundary, dropping functions and DOM nodes.\nFirst seen in chapter 1; it powers postMessage, IndexedDB, and now the RSC wire."}>structured clone</Term> in the first chapter, where it was a way to deep-copy an object — and you saw there that it copies the data but quietly drops functions and DOM nodes, because those can't be meaningfully recreated. That same algorithm is the spine of the RSC wire. The job is identical: take a value, turn it into something that survives a trip across a boundary, and rebuild it on the far side. In the first chapter the boundary was a copy in memory. Here it's a network connection. The rules barely change.
+
+So most of "what crosses" is already in your head. These values cross because structured clone can carry them:
+
+- **Primitives** — `string`, `number`, `boolean`, `null`, `undefined`, `bigint`, and `symbol` (with one catch, below).
+- **Built-in collections of serializable values** — `Array`, `Map`, `Set`, `TypedArray`, `ArrayBuffer`.
+- **`Date`** — a first-class built-in. A `Date` crosses untouched.
+- **Plain objects** — object-literal shapes, `{ ... }`, whose properties are themselves serializable.
+
+Two of these trip people up, so they're worth a sentence each.
+
+**`Map` and `Set` cross directly.** You may have seen older guidance that you must convert a `Map` to an array before passing it across — that's stale. Current React serializes both natively. That said, if the component on the other side only iterates the values and never touches the `Map` or `Set` API, prefer a plain array or object anyway. It's one fewer moving part, and it matches the project's habit of reaching for the plainest shape that does the job.
+
+**The word "plain" in "plain object" is load-bearing.** It means an object-literal shape — the kind you'd write with `{}`. This matters more than it looks. A row you read from your database with Drizzle is a plain object, so it crosses without complaint. But the instant an object carries a *custom prototype* — the moment it's an instance of a class — it falls out of the structured-clone set entirely. That single distinction is the whole of the next section, so park it; it's about to do a lot of work.
+
+There's one genuinely new wrinkle, the symbol catch. A `symbol` only crosses if it was registered in the global symbol registry with `Symbol.for('x')`. A bare `Symbol('x')` does not cross — each call to `Symbol()` makes a brand-new, unique symbol with no global identity, so there's nothing for the other side to look up and reconstruct. `Symbol.for('x')` is different: it's a *lookup* by key into a shared registry, so the far side can ask for the same key and get the same symbol back. That's the line: a symbol crosses only if both sides can name it.
+
+When you pass legal props, it looks like this — nothing exotic, just the values above flowing into a Client Component:
+
+<CodeTooltips tooltips={{
+  issuedAt: 'A Date — crosses untouched.\nDate is a structured-clone built-in, no conversion needed.',
+  labels: 'A Set — crosses natively.\nOlder RSC made you convert it to an array first; current React serializes it directly.',
+  id: 'A string primitive — the simplest thing the wire carries.',
+}}>
+```tsx title="app/invoices/[id]/page.tsx"
+export default async function InvoicePage({ params }: PageProps<'/invoices/[id]'>) {
+  const invoice = await getInvoice((await params).id); // data layer: Unit 5
+
+  return (
+    <MarkPaidButton
+      id={invoice.id}
+      issuedAt={invoice.issuedAt}
+      labels={new Set(invoice.labels)}
+    />
+  );
+}
+```
+</CodeTooltips>
+
+The fastest way to make this stick is to sort values yourself. The drill below mixes the values that cross with a few that don't — some of which you haven't formally met yet, but you can reason your way to most of them with the structured-clone instinct (does this have data the other side can rebuild, or does it carry behaviour and identity that only exist here?). Drag each into the right bucket.
+
+<Buckets instructions="Sort each value by whether it can be passed as a prop from a Server Component to a Client Component.">
+  <Bucket name="crosses" label="Crosses the wire" description="Serializable — survives the trip and rebuilds" />
+  <Bucket name="rejected" label="Does not cross" description="The build errors, or the value can't be rebuilt" />
+
+  <Item bucket="crosses">`'paid'` — a string</Item>
+  <Item bucket="crosses">`new Date()`</Item>
+  <Item bucket="crosses">`new Map([['x', 1]])`</Item>
+  <Item bucket="crosses">`new Uint8Array([1, 2, 3])`</Item>
+  <Item bucket="crosses">`{ id, total }` — a plain object literal</Item>
+  <Item bucket="crosses">`42n` — a bigint</Item>
+  <Item bucket="crosses">`Symbol.for('invoice')`</Item>
+  <Item bucket="crosses">A Drizzle invoice row</Item>
+  <Item bucket="rejected">`() => markPaid(id)` — a function</Item>
+  <Item bucket="rejected">`new Invoice()` — a class instance</Item>
+  <Item bucket="rejected">`Symbol('invoice')`</Item>
+  <Item bucket="rejected">`document.body` — a DOM node</Item>
+</Buckets>
+
+## React's four extensions on top
+
+Structured clone covers the data. But React renders trees, kicks off work, and wires up server behaviour — and none of that is plain data. So the wire adds four things structured clone never had to handle. Each gets a full treatment elsewhere in the course; here, the job is just to know they cross and what they are.
+
+**Promises cross.** A Server Component can pass a `Promise<T>` straight down as a prop. This unlocks a pattern you'll lean on constantly: kick off a slow fetch on the server, hand the still-pending Promise to a Client Component, render the page shell *now*, and let the value resolve and stream in later instead of blocking the whole page on it. The client reads the Promise with `React.use()` paired with Suspense — but that consumption side is the whole point of the next chapter, so leave it. For today: Promises cross.
+
+**JSX crosses.** Already-rendered Server output can be handed to a Client Component as a prop or as `children`, and the Client Component renders it without ever seeing where it came from. This is the "wrap, don't import" pattern from earlier in the chapter, viewed from the wire's side: the server-rendered tree travels inside the payload as serialized JSX, and the Client Component drops it into place sight unseen. The Client Component is the frame; the server-rendered picture slots into it.
+
+**Client and Server Component references cross — not the components themselves.** When the payload needs a Client Component, it doesn't ship that component's code. The code was already bundled for the browser separately. The payload just carries a *reference* — effectively "mount component number 42 right here." This is exactly the mechanism behind the illustration two sections back: lane two doesn't carry your button's source, it carries a pointer to it.
+
+**Server Action references cross.** A `'use server'` function does cross the wire — but as an **opaque ID**, never as a function body. The client receives a handle it can call; calling it fires a request back to the server, where the real function runs. This is the one function-shaped value the wire carries, and it's the bridge to the next section, where you'll hit functions that *don't* cross. The full Server Action surface — how you declare them, validate input, wire them to forms — is a whole later chapter; here it's just "the action reference crosses."
+
+Here's all four in one Server Component. Read it in steps.
+
+Here `InvoicePanel` is the `'use client'` shell, `InvoiceHeader` is a Server Component, and `markPaidAction` comes from a `'use server'` actions file.
+
+<AnnotatedCode lang="tsx" maxLines={14} code={`
+export default async function InvoicePage({ params }: PageProps<'/invoices/[id]'>) {
+  const { id } = await params;
+
+  return (
+    <InvoicePanel
+      invoice={getInvoice(id)}
+      header={<InvoiceHeader id={id} />}
+      onMarkPaid={markPaidAction}
+    />
+  );
+}
+`}>
+  <AnnotatedStep meta={`"invoice={getInvoice(id)}"`} color="blue">
+    A **Promise** prop. `getInvoice(id)` is *not* awaited here — the un-awaited Promise crosses, and the client resolves it with `React.use()` (next chapter). The server doesn't wait; the shell renders now.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"header={<InvoiceHeader id={id} />}"`} color="blue">
+    A **JSX** prop. `InvoiceHeader` rendered on the server; its output crosses as serialized JSX and `InvoicePanel` drops it in without importing it. "Wrap, don't import" from the wire's side.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"onMarkPaid={markPaidAction}"`} color="green">
+    A **Server Action reference**. The function body never crosses — only an opaque ID. The client calls it; the work runs back on the server. The single function-shaped value the wire carries.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+That completes the model. Structured clone for the data; four React extensions for the trees, the deferred work, and the references. Everything that legitimately crosses the wire is on one of those two lists.
+
+## What gets rejected, and the two ways to pass a function
+
+Now the other side of the contract — the values the wire turns away. The list is the mirror image of "plain data with no behaviour":
+
+- **Functions and closures.** A function defined on the server closes over server-side memory and can't meaningfully run in the browser. (The one exception is the Server Action reference from the last section — and that crosses precisely because it *isn't* shipping the body.)
+- **Class instances, and any object with a custom or null prototype.** The class definition lives on the server; the wire has no constructor on the other side to rebuild the instance against. A `{}` has a known prototype both sides agree on; a `new Invoice()` does not.
+- **DOM nodes** — they belong to one document and can't be serialized.
+- **Symbols not registered with `Symbol.for`** — no shared identity, as you saw.
+- **`WeakMap` and `WeakSet`** — by design, you can't even enumerate their contents.
+
+Errors are a partial case worth one sentence: an `Error`'s message survives the trip, but the full object — stack and all — does not. How errors actually flow across the boundary is its own topic later in the course; just know it's not a clean round-trip.
+
+You will not memorize this list. You'll *read it off the error message*, because React tells you exactly what went wrong and points at the offending prop. Two messages cover almost everything you'll hit.
+
+When you pass a plain function, the message is along these lines:
+
+> Functions cannot be passed directly to Client Components unless you explicitly expose it by marking it with `"use server"`. Or maybe you meant to call this function rather than return it.
+
+When you pass a class instance, it's this, near-verbatim:
+
+> Only plain objects, and a few built-ins, can be passed to Client Components from Server Components. Classes or null prototypes are not supported.
+
+One detail, because it bites: the wording shifts with the direction of travel. The message above is the *Server Component → Client Component prop* form — the one you're learning here. When the same kind of value goes the other way, as an *argument to a Server Action*, the text says "...passed to Server Actions..." instead. Same rule, two phrasings. Don't let the second one confuse you; read what it names.
+
+:::tip
+The exact strings drift between React releases — they've been reworded before and will be again. The skill that survives every rewrite is reading the message instead of pattern-matching it: it always names the value and tells you which side of the boundary complained. Read it, find the prop, fix that prop.
+:::
+
+### The two ways to pass a function
+
+Back to the page from the introduction. You wanted to pass a click handler down to a button, and the wire said no. The fix is a decision with two branches, and the order matters because most people reach for the heavier branch first.
+
+**The wrong version** is the one you started with: a function defined in the Server Component, handed down as `onClick`. It can't cross, so the build fails. Don't patch it — replace it.
+
+**The first right move, and usually the correct one: put the handler in the Client Component.** If the behaviour is pure browser interaction — toggling something open, marking a row in local state, showing a confirmation — then nothing needs to cross at all. The handler belongs *inside* the `'use client'` leaf, written there with `useState` and a local function, where it was always going to run anyway. This is the answer far more often than people expect, and reaching past it for a Server Action when no server work is happening is the most common over-correction. Try this branch first.
+
+**The second right move: make it a Server Action.** If the function genuinely has to run on the server — it's a mutation, it touches the database, it reads a secret — then it isn't a click handler, it's a Server Action. You define it with `'use server'` and pass its *reference* down. The opaque ID crosses; the body stays on the server; the client invokes it through a generated request. The full mechanics are a later chapter — for now, recognize that "this work must happen on the server" is the signal that pushes you to this branch instead of the first.
+
+Here's the same intent in all three forms.
+
+<CodeVariants maxLines={14}>
+  <CodeVariant label="Pass a callback (fails)">
+    <div data-mark-color="red">
+
+    ```tsx title="app/invoices/[id]/page.tsx" del={3,5}
+    export default async function InvoicePage({ params }: PageProps<'/invoices/[id]'>) {
+      const invoice = await getInvoice((await params).id);
+      const handleClick = () => console.log('paid', invoice.id);
+
+      return <MarkPaidButton onClick={handleClick} />;
+    }
+    ```
+
+    </div>
+    **Build error.** `handleClick` is a plain function — it can't cross the wire. React names it in the serialization error. This is the starting point, not a fix.
+  </CodeVariant>
+
+  <CodeVariant label="Handler in the client leaf">
+    <div data-mark-color="green">
+
+    ```tsx title="app/invoices/_components/mark-paid-button.tsx" ins={4}
+    'use client';
+
+    export const MarkPaidButton = ({ id }: { id: string }) => {
+      const handleClick = () => console.log('paid', id);
+
+      return <button onClick={handleClick}>Mark paid</button>;
+    };
+    ```
+
+    </div>
+    **The common answer.** Pure browser interaction — define the handler inside the client leaf. Nothing crosses the wire; only `id` (a string) does. Reach for this first.
+  </CodeVariant>
+
+  <CodeVariant label="Server Action reference">
+    <div data-mark-color="green">
+
+    ```tsx title="app/invoices/[id]/page.tsx" ins={4}
+    export default async function InvoicePage({ params }: PageProps<'/invoices/[id]'>) {
+      const invoice = await getInvoice((await params).id);
+
+      return <MarkPaidButton id={invoice.id} onMarkPaid={markPaidAction} />;
+    }
+    ```
+
+    </div>
+    **For server-side work.** `markPaidAction` is a `'use server'` function — its *reference* crosses, the body runs on the server. Use this only when the work truly belongs there (the full pattern is a later chapter).
+  </CodeVariant>
+</CodeVariants>
+
+The class-instance rejection has a twin in your data, and it's the one that surprises people. A Drizzle invoice row is a plain object, so it crosses fine. A `new Date(...)` is a built-in, so it crosses fine. But the moment you reach for a date *library* — a `dayjs()` value, a `Temporal.PlainDate` — you're holding a class instance, and it will not cross. The durable habit, and the one experienced engineers reach for without thinking, is to **shape data into plain values at the edge where it leaves the server**: turn that `Temporal` value into an ISO string or an epoch number *before* it becomes a prop, and keep the rich object on the server where it was created. Don't pass behaviour across the wire; pass the data the UI needs and rebuild meaning on the far side. (The full story on handling dates and times across the boundary is a later chapter; for now, the rule is: `Date` crosses, library date objects don't, encode them as strings.)
+
+So, a quick check before the last and most important section. Read the scenario and pick the diagnosis plus the fix.
+
+<MultipleChoice>
+  A Server Component renders `<InvoiceRow format={formatCurrency} />`. `formatCurrency` is a helper defined right there in the Server Component, and `InvoiceRow` is a `'use client'` leaf that calls it only to format a label for display. Which option correctly states what happens and lands on the lighter of the two valid fixes?
+
+  <McqChoice correct>The build refuses to compile, because a plain function isn't serializable. No server work is involved here, so define `formatCurrency` inside `InvoiceRow` and drop the prop entirely.</McqChoice>
+  <McqChoice>The build refuses to compile, so the fix is to tag `formatCurrency` with `'use server'` and pass the action reference down instead.</McqChoice>
+  <McqChoice>It compiles and runs fine — a function is allowed across as long as it isn't `async` and doesn't close over server-only data.</McqChoice>
+  <McqChoice>It compiles, but the first time `InvoiceRow` calls `format` in the browser it throws, because the function body never made the trip.</McqChoice>
+
+  <McqWhy>A plain function fails the serialization check at build time — it never reaches the browser at all, so both "it compiles" answers are out. That leaves the two fixes, and the deciding question is *where the work runs*. Here it's display-only with no database, secret, or mutation in sight, so the handler belongs in the client leaf and nothing has to cross. Wrapping it in `'use server'` would ship the formatting to the server and back for no reason — the classic over-correction.</McqWhy>
+</MultipleChoice>
+
+## Props are a postcard: the silent leak
+
+This is the part to slow down for. Everything above was about values the wire *rejects* — and it rejects them loudly, at build time, with a message that names the prop. This section is about the value the wire *accepts*, silently, that you didn't mean to send.
+
+Recall the one fact planted back in the first section: the RSC payload is an ordinary network response, and you can open it in DevTools and read it. Now connect that to props. **Every prop you put on a Client Component is sitting in that response, in plain text, readable by anyone who opens the Network tab.** The framework guards the *type* contract — it'll stop you passing a function. It does not guard the *contents*. It has no opinion on whether the object you passed is wider than the UI needs.
+
+Here's the asymmetry stated plainly, because it's the whole reason this lesson exists and not just the function-error: the wire **rejects a function loudly** and **accepts an over-wide object silently**. One is a build error you can't miss. The other is a security incident with no symptoms.
+
+Make it concrete. The `MarkPaidButton` needs an invoice ID — that's it, one string, so it can tell the server which invoice to mark. But the page already has the *whole row* in hand, so the path of least resistance is to pass the whole row:
+
+<CodeVariants maxLines={12}>
+  <CodeVariant label="Leaks the row">
+    <div data-mark-color="red">
+
+    ```tsx title="app/invoices/[id]/page.tsx" "invoice={invoice}"
+    export default async function InvoicePage({ params }: PageProps<'/invoices/[id]'>) {
+      const invoice = await getInvoice((await params).id); // full row: id, status, internalNotes, customer…
+
+      return <MarkPaidButton invoice={invoice} />;
+    }
+    ```
+
+    </div>
+    **The whole row is now in the browser.** Every field — `internalNotes`, the joined customer record, anything on that row — is serialized into the RSC response and readable in DevTools. The button reads exactly one of them. No error warns you.
+  </CodeVariant>
+
+  <CodeVariant label="Pass the slice">
+    <div data-mark-color="green">
+
+    ```tsx title="app/invoices/[id]/page.tsx" "id={invoice.id}"
+    export default async function InvoicePage({ params }: PageProps<'/invoices/[id]'>) {
+      const invoice = await getInvoice((await params).id);
+
+      return <MarkPaidButton id={invoice.id} />;
+    }
+    ```
+
+    </div>
+    **Only the id crosses.** One string, the single field the button needs. Everything else stays on the server, out of the payload entirely. Narrow the prop to the fields the UI actually reads.
+  </CodeVariant>
+</CodeVariants>
+
+To see why this matters more than "it's a bit wasteful," look at what the leak actually looks like on the wire. The payload below is the kind of thing you'd find in the Network tab — and the field that should never have left the server is sitting right there in it.
+
+<LeakedPayload />
+
+That widens from a single careless prop into a rule with no exceptions: **never put a secret in props.** Database connection strings, API tokens, password hashes, a user's full record — none of it goes on a Client Component, ever, because *anything reachable from a Client Component is reachable from the browser*. This is the same boundary you met in the first lesson of the chapter, where secrets live on the server and the only environment variables that reach the browser are the ones you deliberately prefixed with `NEXT_PUBLIC_`. Passing a secret as a prop is that exact rule broken by the back door — the wire ships it to the browser just the same, prefix or no prefix.
+
+:::danger
+A secret in a Client Component prop is a secret in your public JavaScript. It is not hidden, not obfuscated, not "probably fine" — it's a network response one DevTools click away. Treat it as published the moment you write the prop.
+:::
+
+The fix is the same move every time, and it's the durable senior habit of this whole lesson: **pick the slice.** Pass `{ id }`, or `{ id, status }` — the exact fields the UI reads — never the row. There are two payoffs and both are the kind a reviewer cares about. Security: nothing private can leak if nothing private crosses. Performance: a narrower prop is a smaller payload, and a smaller payload reaches the browser faster. "Narrow the boundary," the reflex from earlier in the chapter, now has its security teeth showing.
+
+One more sort to make the slice instinct automatic. For each value, decide: safe to pass as a prop, or keep it on the server?
+
+<Matching instructions="Match each value to the verdict on passing it as a prop to the MarkPaidButton client leaf.">
+  <Pair>
+    <Fragment slot="left">`invoice.id`</Fragment>
+    <Fragment slot="right">Safe — one non-sensitive field the button actually reads.</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">`{ id, status }` — a hand-picked slice</Fragment>
+    <Fragment slot="right">Safe — exactly the fields the component renders, nothing wider.</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">The full `customer` record</Fragment>
+    <Fragment slot="right">Keep on the server — a wide object full of personal fields the UI never touches.</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">`process.env.STRIPE_SECRET_KEY`</Fragment>
+    <Fragment slot="right">Keep on the server — a secret in a prop is a secret in the browser's Network tab.</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">A Drizzle row with an `internalNotes` column</Fragment>
+    <Fragment slot="right">Keep on the server — slice it down to the public fields before it becomes a prop.</Fragment>
+  </Pair>
+</Matching>
+
+## What you can now do
+
+The wire's contract, in one line: **structured clone plus four React extensions cross; functions and class instances are rejected; secrets and over-wide objects leak silently.** That's the model. Three concrete capabilities come out of it:
+
+- **Sort any value** into crosses or doesn't-cross, by asking the structured-clone question — is this plain data the other side can rebuild, or behaviour and identity that only exist on the server?
+- **Read the two boundary errors** and pick the fix without guessing: a function rejected as a prop means either move the handler into the client leaf (usually) or make it a Server Action (when the work belongs on the server); a class instance rejected means shape it into a plain object at the boundary.
+- **Catch a leak before it ships** by slicing the object to the exact fields the UI reads — for both security and payload size.
+
+You've now seen that the server sends the browser *two* things over one request: the HTML and the payload. They travel together and they have to agree. The next lesson is what happens when the browser takes that HTML, re-runs your Client Components on top of it, and the two versions don't line up — the moment React calls hydration, and the bug it produces when they diverge.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="'use client' — serializable types"
+    href="https://react.dev/reference/rsc/use-client"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="React's official reference, with the exact list of prop types that cross the boundary and the ones that are rejected."
+  />
+  <ExternalResource
+    title="Server and Client Components"
+    href="https://nextjs.org/docs/app/getting-started/server-and-client-components"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="Next.js docs on what the RSC payload carries, passing data via props, and keeping secrets off the client."
+  />
+  <ExternalResource
+    title="The structured clone algorithm"
+    href="https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Structured_clone_algorithm"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="MDN's reference for the algorithm the RSC wire is built on — the supported types, and why functions and DOM nodes are dropped."
+  />
+</CardGrid>
