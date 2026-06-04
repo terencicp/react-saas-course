@@ -20,7 +20,7 @@ After Phase A is done for every lesson, finish the lessons in parallel.
 Work in batches of at most 3 lessons.
 Start one dev server per lesson in the batch, each on its own port, so batched agents never share a browser tab; pass each agent its lesson's port.
 For each lesson in the batch run the step below in order, then move on to the next batch.
-Step 1 is a round-robin; steps 2–5 each launch one agent per lesson.
+Step 1 is a round-robin; steps 2–6 each launch one agent per lesson.
 
 1 **Diagrams and exercises**: each round, take from every lesson in the batch its next unbuilt id — diagrams first, then exercises/sandboxes — and run its agent in parallel; await the round and repeat until the batch's lists are exhausted, so each lesson's MDX is edited by one agent at a time.
   - **lesson-diagramer**: chapter id `<X>`, lesson number `<Y>`, diagram id, lesson MDX path, lesson outline path, preview port.
@@ -29,6 +29,7 @@ Step 1 is a round-robin; steps 2–5 each launch one agent per lesson.
 3 **lesson-formatter**: lesson MDX path, lesson outline path, preview port.
 4 **lesson-reviewer**: chapter id `<X>`, lesson outline path, lesson MDX path, the continuity notes paths for this chapter and the two preceding chapters. Returns the list of issues.
 5 **lesson-corrector**: chapter id `<X>`, lesson outline path, lesson MDX path, the reviewer's issue list inline, preview port. Its goal is to fix the current lesson only, if there's an issue with a previous lesson surface it in the chat, do not share them with the corrector.
+6 **lesson-tagliner**: chapter id `<X>`, lesson number `<Y>`, lesson MDX path, lesson outline path. Frames the now-final lesson with a one-sentence tagline.
 
 ## Phase C — Continuity review
 

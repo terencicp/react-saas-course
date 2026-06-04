@@ -22,6 +22,13 @@ export const collections = {
 				// src/components/ui/CourseProgressBar.astro). Optional: lessons
 				// without it render normally, with no bar.
 				'course-progress': z.number().min(0).max(1).optional(),
+
+				// One-sentence high-level framing of the lesson, rendered as a
+				// subtitle below the H1 (see
+				// src/components/overrides/PageTitle.astro). Lessons dive straight
+				// into their topic, so this orients the student before the first
+				// paragraph. Plain text, no markdown. Optional.
+				tagline: z.string().optional(),
 			}),
 		}),
 	}),
