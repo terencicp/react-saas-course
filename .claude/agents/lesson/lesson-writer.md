@@ -61,7 +61,6 @@ EC code blocks support highlighting part of the code and the project supports gr
 ```yaml
 ---
 title: <lesson title>
-description: <one sentence summary>
 chapter-id: <X>
 course-progress: 0.00005
 sidebar:

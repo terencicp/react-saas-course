@@ -79,7 +79,6 @@ Close per the contract for the lesson's type:
 ```yaml
 ---
 title: <lesson title>
-description: <one sentence summary>
 chapter-id: <X>
 course-progress: 0.00005
 sidebar:
