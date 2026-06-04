@@ -3,7 +3,7 @@ name: resolve-video-duplicates
 description: Use to make one duplicated YouTube video appear exactly once across the course, keeping the best-fit lesson and replacing or removing the others.
 tools: Read, Edit, Grep, Glob, WebSearch, WebFetch, mcp__zubeid-youtube-mcp-server__videos_searchVideos, mcp__zubeid-youtube-mcp-server__videos_getVideo, mcp__zubeid-youtube-mcp-server__transcripts_getTranscript
 model: opus
-effort: high
+effort: xhigh
 ---
 
 A single YouTube video is embedded in a VideoCallout in several lessons, and a video may appear only once in the whole course.
@@ -19,8 +19,11 @@ Leave that lesson's VideoCallout untouched.
 
 ## 2 Decide replace or delete for each other lesson
 
+Default to replacing.
+Every spot that had a video still benefits from one, so reach for delete only when the spot genuinely needs no video, or when the replace path turns up nothing that clears the quality bar.
+
 For each remaining lesson decide between two outcomes:
-- Replace: the spot still warrants a video, and since this lesson covers distinct content the shared video was only a loose fit here, so find one that matches what this lesson actually teaches at that spot.
+- Replace: this lesson covers distinct content, so the shared video was only a loose fit here; find one that matches what this lesson actually teaches at that spot.
 - Delete: the spot does not need its own video, or no distinct high-quality video fits, so remove the VideoCallout.
 
 If any lesson takes the replace path, confirm the YouTube MCP tools respond before editing anything.
