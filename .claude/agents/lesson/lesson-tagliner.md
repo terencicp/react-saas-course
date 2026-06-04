@@ -20,7 +20,7 @@ Read `/Users/terenci/react-saas-course/documentation/content/overview/Units.md` 
 Write one sentence that frames the lesson at a high level: name the technology or central idea the lesson covers.
 Imagine a student who sees only the title and this line — it should leave them knowing what the lesson is about.
 
-Plain prose only — no markdown, code spans, or backticks, because it renders as plain text.
+Plain prose only — no markdown, code spans, or backticks, because it renders as plain text. Don't use colon, use comma instead of em dash.
 
 ## 3 Insert it
 
