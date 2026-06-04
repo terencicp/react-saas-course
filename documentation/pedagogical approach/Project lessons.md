@@ -28,7 +28,7 @@ The first project lesson, always titled "Project Overview". No feature is built.
 3. **Architecture.** Diagram or labeled list. Shape only.
 4. **Starting file tree.** Annotated top-level layout — comment one line each only on files changed from the previous project or that lessons will touch, leaving the rest uncommented; mark the files containing TODOs as the highlighted focus.
 5. **Roadmap.** One Card in CardGrid for each lesson with lesson number and title and one sentence naming what it adds.
-6. **Setup.** Command sequence (Steps component), env var list (omit if irrelevant), dev server command, expected result. Reference the definitive repo path: `https://github.com/terencicp/react-saas-course-projects/Chapter <XXX>/start/`.
+6. **Setup.** Command sequence (Steps component), env var list (omit if irrelevant), dev server command, expected result. First step: "1. Get the starter codebase from the [project repository](https://github.com/terencicp/react-saas-course-projects), under `Chapter <XXX>/start/`."
 
 The lesson ends when the starter runs locally. Technology rationale belongs in regular lessons, not here.
 
