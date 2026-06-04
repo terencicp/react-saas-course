@@ -28,7 +28,17 @@ The text may already be properly formatted. If it's not, consider whether it nee
 
 Make sure components in the page are not more than 800 pixels in height, which would make them too hard to view in laptop screens. For a code walkthrough that runs tall, read `documentation/components/code/annotated-code.md` and follow its height guidance.
 
-## 4 Final test
+## 4 Add progress bar
+
+Add this component at the top of the file:
+
+```
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+```
+
+## 5 Final test
 
 Verify the lesson renders and works as expected. Fix only errors directly related to the current lesson.
 
@@ -38,6 +48,6 @@ Verify the lesson renders and works as expected. Fix only errors directly relate
 4 `preview_screenshot` to confirm the layout is correct and all text is readable.
 5 If any step surfaces an error in the lesson's code, fix it in source once. Do not re-run the verification. If the failure isn't clearly caused by the lesson, or you can't identify a fix, stop and include the diagnostic verbatim in your final message.
 
-## 5 Final message
+## 6 Final message
 
 After finishing respond with "Lesson formatted". If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.

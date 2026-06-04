@@ -81,6 +81,7 @@ Close per the contract for the lesson's type:
 title: <lesson title>
 description: <one sentence summary>
 chapter-id: <X>
+course-progress: 0.00005
 sidebar:
   order: <Y>
   label: <short title>

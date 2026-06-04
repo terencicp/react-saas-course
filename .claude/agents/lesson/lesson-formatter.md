@@ -40,7 +40,17 @@ Look for expressions like "HTML ((Hypertext Markup Language))" and replace them 
 
 The text may already be properly formatted. If it's not, consider if it needs markdown headings, emphasis markers, lists, code blocks, horizontal rules, etc. Make only the minimal changes necessary.
 
-## 5 Final test
+## 5 Add progress bar
+
+Add this component at the top of the file:
+
+```
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+```
+
+## 6 Final test
 
 Verify the lesson renders and works as expected. Fix only errors directly related to the current lesson.
 
@@ -51,6 +61,6 @@ Verify the lesson renders and works as expected. Fix only errors directly relate
 5 `preview_screenshot` to make sure the layout is correct and all text is readable.
 6 If any step surfaces an error in the lesson's code, fix it in source once. Do not re-run the verification. If the failure isn't clearly caused by the lesson's, or you can't identify a fix, stop and include the diagnostic verbatim in your final message.
 
-## 6 Final message
+## 7 Final message
 
 After finishing respond with "Lesson formatted". If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
