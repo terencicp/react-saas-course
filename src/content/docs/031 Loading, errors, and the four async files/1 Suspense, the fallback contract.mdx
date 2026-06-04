@@ -1,0 +1,587 @@
+---
+title: Suspense, the fallback contract
+tagline: React's Suspense component, the declarative boundary that replaces the loading flag in the App Router, and the senior skill of deciding where to draw it so each piece of UI reveals as its own unit.
+chapter-id: 31
+course-progress: 0.00005
+sidebar:
+  order: 1
+  label: Suspense
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import Term from '../../../components/ui/Term.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import ReactCoding from '../../../components/live-coding/ReactCoding/ReactCoding.astro';
+import SuspenseContractStates from '../../../components/lessons/031/1/SuspenseContractStates.astro';
+import BoundaryCountGranularity from '../../../components/lessons/031/1/BoundaryCountGranularity.astro';
+import NestedRevealCascade from '../../../components/lessons/031/1/NestedRevealCascade.astro';
+import SpinnerVsSkeletonFallback from '../../../components/lessons/031/1/SpinnerVsSkeletonFallback.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import TrueFalse from '../../../components/exercises/true-false/TrueFalse.astro';
+import Statement from '../../../components/exercises/true-false/Statement.astro';
+import TfWhy from '../../../components/exercises/true-false/TfWhy.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+A dashboard page reads its data on the server. The component is `async`, and somewhere in its body sits a line like this:
+
+```tsx title="app/dashboard/page.tsx"
+const invoices = await listInvoices(); // data layer: Unit 5
+```
+
+That query takes around 800 milliseconds. Not catastrophic, not instant — long enough to notice. So here is the question this lesson exists to answer, and it is a question about the user, not about the code: for those 800 milliseconds, **what fills the screen?**
+
+If you have written React before this course, you already have an answer, and it is the wrong one for the App Router. The answer you carry is a loading flag. You reach for a `useState(false)` called `isLoading`, flip it to `true`, kick off a `fetch` inside a `useEffect`, and flip it back to `false` when the data lands. Somewhere in your JSX you write `if (isLoading) return <Skeleton />`. It works. It also costs you more than it looks.
+
+That flag lives in a Client Component, because `useState` and `useEffect` only run on the client. It has to be threaded down to wherever the spinner actually shows. And it does not scale: the moment your page loads two independent things — a profile and an activity feed, say — you need two flags, or one flag that conflates them, and every new piece of data is another small state machine you own and can get wrong. Loading state ends up scattered across the tree, manually wired, easy to forget.
+
+React's answer is a single declarative primitive, and it is a component you have never been told to use this way: `<Suspense>`. It replaces the entire flag-and-effect dance. But the syntax is the easy part. The real skill — the one that separates an experienced engineer from someone who merely knows the API — is not *how* to write it. It is knowing *where to draw it*. That decision is the spine of this lesson.
+
+## Suspense is a contract, not a hook
+
+Start with what Suspense actually is, because almost everyone gets the category wrong on first contact. It is not a hook. It is not a config flag you set in `next.config`. It is not a data-fetching library. It is a built-in React component, used in JSX like any other, with exactly one job.
+
+Here is the job, stated as a contract: **while any descendant is still loading, render the `fallback`; when every descendant has resolved, render the `children`.** That is the whole of it. The component sits in your tree and watches the subtree beneath it for a single signal.
+
+Three properties of that contract kill the three misconceptions people arrive with. Hold onto all three:
+
+- It is a **component**. You place it in JSX, you give it a `fallback` prop and some `children`. There is no `useSuspense()`, no setup call.
+- It reacts to a signal a child *throws*. When a component beneath the boundary is not ready, it emits a <Term definition={"The signal a component emits when it is not yet ready to render.\nReact treats it as 'wait', not as an error."}>suspend signal</Term> — and `<Suspense>` catches it the way a `try/catch` catches a throw. Crucially, this means **the boundary does not need to know what its children are loading or how.** A child reading from a database, a child reading a streamed promise, a lazily-loaded component — the boundary treats them identically. It only knows: something below me said "not yet."
+- The rule is **all-or-nothing per boundary**. The fallback shows while *any* single child is still suspending, and the children show only when *every* one of them has resolved. One boundary has exactly two visual states, and it is in the fallback state until the last holdout settles.
+
+That last property is the one that drives the placement decision later, so let it land now: a boundary is a unit. Everything inside it appears together or not at all.
+
+<SuspenseContractStates />
+
+Now the literal shape, so you see it before any nuance. A `fallback`, and the thing it is guarding:
+
+```tsx title="app/dashboard/page.tsx"
+<Suspense fallback={<InvoiceSkeleton />}>
+  <InvoiceList />
+</Suspense>
+```
+
+`InvoiceList` here is an `async` Server Component — its body does that 800ms `await`. Until the await settles, `InvoiceList` has produced no output, so it suspends, and the nearest `<Suspense>` above it shows `<InvoiceSkeleton />` in its place. When the data arrives, React swaps the skeleton out for the list. You wrote no flag. You flipped no boolean. The boundary did it.
+
+The piece you supply is the <Term definition="The UI a boundary renders while its children are suspended.">`fallback`</Term> — the UI shown during the wait. The next section shows the two kinds of children that can sit inside the boundary and trigger it.
+
+## Declarative beats the loading flag
+
+Before going further, it is worth seeing the old way and the new way side by side, because the old way is the thing being *replaced*, and naming the replacement explicitly is the highest-leverage move in this whole lesson. The shapes are different in kind, not just in line count.
+
+<CodeVariants maxLines={16}>
+  <CodeVariant label="Loading flag (client)">
+    <div data-mark-color="orange">
+
+    ```tsx title="invoice-list.tsx" {5,12,16}
+    'use client';
+
+    export function InvoiceList() {
+      const [invoices, setInvoices] = useState(null);
+      const [isLoading, setIsLoading] = useState(true);
+
+      useEffect(() => {
+        fetch('/api/invoices')
+          .then((res) => res.json())
+          .then((data) => {
+            setInvoices(data);
+            setIsLoading(false);
+          });
+      }, []);
+
+      if (isLoading) return <InvoiceSkeleton />;
+
+      return <ul>{invoices.map(/* … */)}</ul>;
+    }
+    ```
+
+    </div>
+    **Imperative — you own the loading state machine and have to thread it everywhere.** The loading concern is spread across three places: the flag, the effect that flips it, and the branch that reads it. Every independent piece of data needs its own flag, and forgetting to flip one is a whole class of bug.
+  </CodeVariant>
+
+  <CodeVariant label="Suspense (server)">
+    <div data-mark-color="green">
+
+    ```tsx title="app/dashboard/page.tsx" {2,9}
+    async function InvoiceList() {
+      const invoices = await listInvoices(); // data layer: Unit 5
+
+      return <ul>{invoices.map(/* … */)}</ul>;
+    }
+
+    function DashboardPage() {
+      return (
+        <Suspense fallback={<InvoiceSkeleton />}>
+          <InvoiceList />
+        </Suspense>
+      );
+    }
+    ```
+
+    </div>
+    **Declarative — the boundary owns the loading state; the component just awaits.** `InvoiceList` contains zero loading logic: no flag, no effect, no `'use client'`. The `<Suspense>` boundary, placed by whoever composes the component, is the single place loading is expressed.
+  </CodeVariant>
+</CodeVariants>
+
+Look at what moved. In the first variant, the loading state is the component's problem — declared with `useState`, advanced inside an effect, read in a branch, and repeated for every new query. In the second, the component does not mention loading at all. It awaits its data and returns its UI; the boundary, placed by whoever composes the component, is the single place the loading state is expressed. There is no flag to forget to flip, because there is no flag.
+
+## The two shapes that suspend
+
+So a child throws a suspend signal and the boundary catches it. But which children actually do that? In 2026 App Router code there are two shapes you will author, and recognizing them is the practical core of using Suspense. Both throw the *same* signal, which is why a single `<Suspense>` can sit above either one without caring which it got.
+
+The first is the one you have already seen.
+
+<AnnotatedCode lang="tsx" code={`
+async function InvoiceList() {
+  const invoices = await listInvoices(); // data layer: Unit 5
+
+  return (
+    <ul>
+      {invoices.map((invoice) => (
+        <li key={invoice.id}>
+          {invoice.number} — {invoice.total}
+        </li>
+      ))}
+    </ul>
+  );
+}
+`}>
+  <AnnotatedStep meta="{1}" color="blue">
+    The component is `async`. That alone is a signal to React: this component may not produce its output synchronously.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{2}" color="blue">
+    It awaits its data in the body. Until this promise settles, the function has not returned any JSX — there is nothing to render. So the component suspends, and the nearest `<Suspense>` ancestor shows its fallback in the meantime.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{4-13}" color="blue">
+    Once the data is in, the component returns its UI exactly as a synchronous component would. React swaps the fallback for this output.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The second shape is one you met when you learned that a Server Component can hand a promise to a Client Component. Now you get to see its loading behavior. The setup: a Server Component starts a query but does *not* await it — it passes the unsettled promise down as a prop. A Client Component receives that promise and reads it with `use()`.
+
+<AnnotatedCode lang="tsx" code={`
+// app/dashboard/page.tsx — Server Component
+function DashboardPage() {
+  const invoicesPromise = listInvoices(); // data layer: Unit 5
+
+  return (
+    <Suspense fallback={<InvoiceSkeleton />}>
+      <InvoiceTable invoicesPromise={invoicesPromise} />
+    </Suspense>
+  );
+}
+
+// invoice-table.tsx — Client Component
+'use client';
+
+type InvoiceTableProps = { invoicesPromise: Promise<Invoice[]> };
+
+export function InvoiceTable({ invoicesPromise }: InvoiceTableProps) {
+  const invoices = use(invoicesPromise);
+
+  return <SortableTable rows={invoices} />;
+}
+`}>
+  <AnnotatedStep meta="{3}" color="blue">
+    On the server, start the query but don't `await` it. You now hold a promise, not data.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{7}" color="blue">
+    Pass the unsettled promise down as a prop. The server doesn't block here — it hands the pending work to the client.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{17-18}" color="blue">
+    In the Client Component, `use()` reads the promise. While it's pending, `use()` suspends the component — the same signal the async Server Component threw.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{6}" color="blue">
+    The boundary sits above the Client Component and catches that signal. The fallback shows until the promise resolves, then the interactive table renders with its data.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Why would you ever reach for the second shape when the first is simpler? Because the table is *interactive* — it sorts, it filters, it needs to be a Client Component. This pattern lets the interactive shell be a Client Component while the data it displays is still streaming in from the server. The shell and the data have different homes, and <Term definition={"A React hook that reads a promise or context.\nGiven a pending promise it suspends the component until that promise resolves."}>`use()`</Term> is the seam between them: it suspends the Client Component on a pending promise and hands back the value the moment it resolves.
+
+:::caution
+There is a sharp edge here, and it is worth flagging now even though its full fix lives a few chapters away. The promise must be **created on the server and passed down** — or otherwise kept stable across renders. If you create the promise *inside* a Client Component that re-renders, you mint a brand-new promise on every render, the boundary sees a fresh pending promise every time, and it never settles. The rules for keeping a promise stable (request memoization with `cache()`) are covered when we reach rendering and caching; for now, the rule is simply: create on the server, pass down.
+:::
+
+Those are the two shapes you will write. For completeness — and so you know the universe without dwelling on it — two other things can also suspend: `React.lazy()`, used to code-split a component so its code loads on demand, and Suspense-aware hooks from some data libraries. Neither is the 2026 default for fetching data, so they get this mention and no more.
+
+## A good fallback mirrors the resolved layout
+
+You write the fallback. Suspense does not generate one for you from the children — it has no idea what the resolved content will look like. So the quality of the loading experience is entirely on you, and there are two rules that separate a fallback that helps from one that hurts.
+
+The first is a hard constraint, not a preference. **The `fallback` is rendered synchronously and must not itself suspend.** Think about why: the fallback is what you show *while* something is loading. If the fallback also has to load — if it awaits, or reads a pending promise — then there is nothing to show during the wait, and the boundary has no purpose. A fallback that suspends is a contradiction. Keep fallbacks dumb and instant: static markup, no data reads.
+
+The second rule is where the experienced reach shows. **Prefer a skeleton that mirrors the final layout** — the same heights, the same number of rows, the same rough shape as the content it stands in for. A spinner or a line of "Loading…" text is acceptable, and you will see it everywhere, but it is lower-quality, and the reason is concrete: a spinner occupies a tiny box, and when the real content arrives it is much larger, so everything below it lurches down the page. The content does not fade in; it *shoves*. A skeleton that already occupies the content's eventual footprint swaps in place, and nothing moves.
+
+<SpinnerVsSkeletonFallback />
+
+That jump is not a cosmetic nitpick. Layout shift on data load is a measurable UX defect — it reads as jank, it is jarring on a surface the user hits dozens of times a day, and it is exactly why teams invest in skeletons that match the resolved shape. Reserving the space the content will occupy is the whole game.
+
+## Drawing the boundary at the unit of UX
+
+This is the section the rest of the lesson was building toward. You know what Suspense is, what suspends, and what a good fallback looks like. The senior decision — the one that is genuinely hard and genuinely matters — is *where the boundary goes*.
+
+There is one diagnostic question, and internalizing it is most of the skill: **"What should the user see resolve as a single unit?"** Not "where is the code," not "which component is async." Ask what the user perceives as one thing arriving, and put a boundary around that.
+
+To see why it matters, take a page with two independent reads. A user-profile read that returns in 10 milliseconds, and an activity-feed read that takes 800. Watch what one boundary does to them.
+
+<CodeVariants maxLines={14}>
+  <CodeVariant label="One boundary">
+    <div data-mark-color="orange">
+
+    ```tsx title="app/dashboard/page.tsx" {3}
+    function DashboardPage() {
+      return (
+        <Suspense fallback={<DashboardSkeleton />}>
+          <UserProfile />
+          <ActivityFeed />
+        </Suspense>
+      );
+    }
+    ```
+
+    </div>
+    **The user waits the full 800ms to see the 10ms profile too — the slow read holds the fast one hostage.** Because a boundary is all-or-nothing, the profile cannot appear until the activity feed also resolves; the fast widget is stuck behind the slow one.
+  </CodeVariant>
+
+  <CodeVariant label="Two boundaries">
+    <div data-mark-color="green">
+
+    ```tsx title="app/dashboard/page.tsx" {4,7}
+    function DashboardPage() {
+      return (
+        <>
+          <Suspense fallback={<ProfileSkeleton />}>
+            <UserProfile />
+          </Suspense>
+          <Suspense fallback={<FeedSkeleton />}>
+            <ActivityFeed />
+          </Suspense>
+        </>
+      );
+    }
+    ```
+
+    </div>
+    **Each read resolves and reveals on its own; the profile paints almost immediately.** Two boundaries means two independent units: the profile shows at 10ms with the feed's skeleton still beside it, and the feed fills in when it's ready.
+  </CodeVariant>
+</CodeVariants>
+
+The diagram makes the relationship between boundary count and reveal granularity literal.
+
+<BoundaryCountGranularity />
+
+So here is the rule, stated cleanly: **draw the boundary around the smallest piece of UI that loads as a single concept** — a widget, a list, a sidebar card. Two things that resolve independently belong in two boundaries, so each reveals the moment it is ready. Two things that only make sense together — a chart and the legend that explains it, a total and the rows it sums — belong in one boundary, because revealing half of a single idea is worse than revealing none of it.
+
+One honest caveat, so you are not misled: *why* two parallel boundaries each reveal separately — the mechanism that lets the server send the fast one first and the slow one later — is the subject of the next lesson, on streaming. Here you are learning only the *placement decision*, framed as a question about the user. The transport that makes it pay off comes next.
+
+Walk the decision yourself. The drill below forces the questions in the order an experienced engineer asks them — and the order is the lesson, more than any single answer.
+
+<StateMachineWalker kind="decision" title="Where does the boundary go?">
+  <Question
+    id="combined-or-independent"
+    prompt="Do these pieces of data resolve into one combined view, or several independent views?"
+    description="Start here — ask about meaning before you ask about speed.">
+    <Branch
+      label="One combined view"
+      to="leaf-one-boundary"
+      rationale="e.g. a summary that aggregates them, or a total and the rows it sums" />
+    <Branch
+      label="Several independent views"
+      to="latency"
+      rationale="e.g. a profile card and an unrelated activity feed" />
+  </Question>
+
+  <Question
+    id="latency"
+    prompt="Do they finish at similar speeds, or is one much slower than the rest?">
+    <Branch label="Similar speeds" to="leaf-separate-fine" />
+    <Branch label="One much slower" to="leaf-wrap-slow" />
+  </Question>
+
+  <Leaf id="leaf-one-boundary" verdict="One boundary around the whole unit">
+    The view has no meaning until all the data is in, so reveal it as one unit — revealing half of a single idea is worse than revealing none of it. (The data-side counterpart, fetching them together with `Promise.all` in a single component, is the next lesson's job.)
+  </Leaf>
+  <Leaf id="leaf-separate-fine" verdict="Separate boundaries — the cost is low">
+    They're independent, so give each its own boundary. Even at similar speeds the cost is small and the reveal stays granular.
+  </Leaf>
+  <Leaf id="leaf-wrap-slow" verdict="Separate boundaries — wrap the slow one">
+    Put the slow read behind its own boundary so the fast widgets paint immediately instead of waiting on it. This is the most common real-world case.
+  </Leaf>
+</StateMachineWalker>
+
+## Nested boundaries compose into a reveal cascade
+
+Boundaries are components, and components nest, so boundaries nest. This turns out to be more powerful than it sounds: nesting gives you a content-first reveal — shell, then partial, then full — without writing a single line of coordinating state.
+
+The model is simple once you hold the all-or-nothing rule in mind. An outer boundary's fallback covers everything beneath it until its *directly-awaited* content is ready. Once that outer content renders, an inner boundary takes over for its own, slower subtree — showing the inner fallback while everything around it is already on screen. Each boundary minds only its own children.
+
+Watch it unfold.
+
+<NestedRevealCascade />
+
+In code, that cascade is just one boundary inside another, with some synchronous content in between:
+
+```tsx title="app/dashboard/page.tsx"
+<Suspense fallback={<PageSkeleton />}>
+  <DashboardHeader />
+  <Suspense fallback={<FeedSkeleton />}>
+    <ActivityFeed />
+  </Suspense>
+</Suspense>
+```
+
+The outer fallback shows until `DashboardHeader` is ready. Once it is, the header paints and the inner boundary takes over, showing `<FeedSkeleton />` while `ActivityFeed` finishes its slow read. Three visual states, zero state variables.
+
+One watch-out, because the tool cuts both ways: nesting *too* deeply produces a distracting flash-cascade of skeletons popping in one after another, which feels busier and slower than it is. Nest at meaningful UX seams — the shell, then a slow region inside it — not at every component that happens to be async.
+
+## Re-suspending on input change with `key`
+
+There is a trap here that surprises every developer the first time, and the fix is one prop. The setup is ordinary: a detail view that re-renders with new props. The user is looking at invoice `inv_001`, clicks invoice `inv_002`, and the component re-renders with a new `invoiceId`.
+
+You would expect the fallback to return while the new invoice loads. It does not. React sees the same component type in the same position in the tree, concludes it is the same instance, reuses the already-resolved subtree, and **skips the fallback entirely**. So the user stares at invoice `inv_001`'s data — stale, wrong — for the full duration of the new load, with no loading indication at all. It looks like nothing happened, and then the content silently changes underneath them.
+
+The fix tells React the truth: this is a *different* thing. Put a <Term definition={"React's identity hint.\nA node with a new key is treated as a new instance, so React remounts it rather than reusing the old one."}>`key`</Term> on the suspending subtree that changes with the input.
+
+<CodeVariants maxLines={10}>
+  <CodeVariant label="Without key">
+    ```tsx title="app/invoices/[id]/page.tsx"
+    <Suspense fallback={<InvoiceSkeleton />}>
+      <InvoiceDetail invoiceId={invoiceId} />
+    </Suspense>
+    ```
+    **React reuses the resolved tree on a prop change — no fallback, stale content.** When `invoiceId` changes, React keeps the old resolved subtree mounted and shows the previous invoice until the new data quietly arrives.
+  </CodeVariant>
+
+  <CodeVariant label="With key">
+    <div data-mark-color="green">
+
+    ```tsx title="app/invoices/[id]/page.tsx" "key={invoiceId}"
+    <Suspense fallback={<InvoiceSkeleton />}>
+      <InvoiceDetail key={invoiceId} invoiceId={invoiceId} />
+    </Suspense>
+    ```
+
+    </div>
+    **A changed key is a fresh mount, so the boundary suspends again and the fallback returns.** The new key tells React this is a different instance; it remounts, re-suspends, and shows the skeleton until the new invoice resolves.
+  </CodeVariant>
+</CodeVariants>
+
+A changed `key` means a fresh mount, a fresh mount means a fresh suspend, and a fresh suspend means the fallback comes back. This is the clean way to say "show a loading state when the route parameter changes" — no `isLoading` flag reintroduced, no effect, just an identity hint.
+
+There is a deliberate opposite, named once so you know it exists. Sometimes you *don't* want the fallback on a change — search-as-you-type, switching tabs — because flashing a skeleton on every keystroke is jarring. For that, you wrap the update in `startTransition`, which keeps the old content visible and gives you an `isPending` flag instead of swapping in the fallback. That is the inverse of the `key` move: `key` says "this is new, show the loading state"; a transition says "keep the old, this is not urgent." The transition hooks are covered in their own React lesson; here, just know the two pull in opposite directions on purpose.
+
+## What Suspense does not do
+
+Every misconception in this list is a real bug someone ships, so it is worth drawing the boundary of responsibility explicitly. Suspense has one job, and these are the jobs it does *not* have:
+
+- **It does not catch errors.** If a component below the boundary *throws an error* — not a suspend signal, an actual error — that error sails straight past Suspense and crashes the tree. Catching it is the job of an Error Boundary, which the App Router exposes through an `error.tsx` file. We cover that, and the "this resource doesn't exist" case, two lessons from now. Suspense catches *suspend*, not *error* — they are different signals.
+- **It does not retry, and the `fallback` is not an error state.** The fallback is "still loading," full stop. It is not "something went wrong," and Suspense will not re-attempt a failed load for you.
+- **It does not deduplicate fetches.** Two children that read the same data fire two requests. Making the second one cheap — request memoization with `cache()` — is a separate mechanism, covered when we reach caching.
+- **It does not auto-skeleton.** As you saw, you write the `fallback`. Suspense has no view into the children's shape and cannot generate a placeholder from them.
+
+The first one is the one that bites hardest: "I wrapped it in Suspense, why did the error still crash the page?" Now you know — wrong tool for that signal. The error story has its own lesson.
+
+## Practice: place the boundary
+
+You have read the unit-of-UX decision; now make it. Below are two simulated-async widgets sharing a single boundary. Give the slow one its own.
+
+This runs entirely in the browser — no server, no database. So suspending is faked with a `setTimeout`-backed promise read by `use()`, standing in for the `async` Server Component or streamed promise you'd write in real App Router code. Read it as "this widget takes 50ms / 1500ms to be ready," and don't carry the `setTimeout` shape into production.
+
+Right now `App` wraps both widgets in **one** shared `<Suspense>`. That single boundary is all-or-nothing, so its fallback covers everything until the 1500ms slow read finishes — the fast widget is held hostage. Split it: give the slow widget its own boundary so the fast one reveals on its own.
+
+<ReactCoding
+  instructions="Both widgets share one Suspense boundary, so the fast widget is stuck waiting on the slow one. Give the slow widget its own <Suspense> with its own skeleton fallback (SlowSkeleton), and keep the fast widget behind its own boundary with FastSkeleton, so each reveals the moment it's ready."
+  starter={`import { Suspense, use } from 'react';
+
+// A setTimeout-backed promise: a stand-in for an async Server Component or a
+// streamed promise. Created once at module scope, so the reference is stable.
+const delay = <T,>(value: T, ms: number): Promise<T> =>
+  new Promise((resolve) => setTimeout(() => resolve(value), ms));
+
+const profilePromise = delay({ name: 'Ada Lovelace' }, 50); // fast read
+const feedPromise = delay(['Shipped v2', 'Closed 3 issues'], 1500); // slow read
+
+function FastSkeleton() {
+  return <p data-testid="fast-skeleton">Loading profile…</p>;
+}
+function SlowSkeleton() {
+  return <p data-testid="slow-skeleton">Loading activity…</p>;
+}
+function SharedSkeleton() {
+  return <p data-testid="shared-skeleton">Loading dashboard…</p>;
+}
+
+function UserProfile() {
+  const profile = use(profilePromise);
+  return <p data-testid="profile">{profile.name}</p>;
+}
+function ActivityFeed() {
+  const feed = use(feedPromise);
+  return (
+    <ul data-testid="feed">
+      {feed.map((item) => (
+        <li key={item}>{item}</li>
+      ))}
+    </ul>
+  );
+}
+
+// 👇 Your job: give the slow ActivityFeed its own <Suspense> so UserProfile
+//    paints without waiting for it. One shared boundary is the wrong shape.
+export function App() {
+  return (
+    <Suspense fallback={<SharedSkeleton />}>
+      <UserProfile />
+      <ActivityFeed />
+    </Suspense>
+  );
+}`}
+  tests={`
+// act() flushes React's synchronous render deterministically before we measure.
+(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+// Both promises are still pending at first paint (their setTimeouts can't fire
+// during a synchronous render), so every boundary is showing its fallback.
+// That makes the boundary *shape* observable without depending on timing: a
+// single shared boundary renders one fallback; two boundaries render two.
+
+test('Give the fast widget its own boundary — its FastSkeleton should show at first paint, not the shared one', () => {
+  expect(document.querySelector('[data-testid="fast-skeleton"]')).not.toBeNull();
+});
+
+test('Give the slow widget its own boundary — its SlowSkeleton should show at first paint', () => {
+  expect(document.querySelector('[data-testid="slow-skeleton"]')).not.toBeNull();
+});
+
+test('Drop the single shared boundary — its combined SharedSkeleton should no longer render', () => {
+  expect(document.querySelector('[data-testid="shared-skeleton"]')).toBeNull();
+});
+`}
+/>
+
+<details>
+<summary>Reference solution</summary>
+
+Each widget gets its own `<Suspense>` with its own skeleton, so the two reads are independent units. The profile's boundary resolves at ~50ms and paints while the feed's boundary is still showing `SlowSkeleton`; the feed fills in at ~1500ms. Only `App` changes — the widgets, skeletons, and promises are untouched.
+
+```tsx "<Suspense fallback={<FastSkeleton />}>" "<Suspense fallback={<SlowSkeleton />}>"
+export function App() {
+  return (
+    <>
+      <Suspense fallback={<FastSkeleton />}>
+        <UserProfile />
+      </Suspense>
+      <Suspense fallback={<SlowSkeleton />}>
+        <ActivityFeed />
+      </Suspense>
+    </>
+  );
+}
+```
+
+`SharedSkeleton` is now unused — the single combined fallback is exactly the shape you removed.
+
+</details>
+
+## Recall check
+
+Check the model against the misconceptions it was built to replace.
+
+<MultipleChoice>
+  An `async` Server Component is still awaiting its data. What is on screen during that wait, and what flips it to the real content?
+
+  <McqChoice correct>The closest enclosing `<Suspense>` shows its `fallback`; the moment the component's `await` settles it stops suspending, and React replaces the fallback with the component's output.</McqChoice>
+  <McqChoice>Nothing paints until you set a loading flag back to `false` from inside a `useEffect`.</McqChoice>
+  <McqChoice>The fallback stays up until you call a function that dismisses it once the data is in hand.</McqChoice>
+  <McqChoice>The entire page stays blank until every component on it has finished loading.</McqChoice>
+
+  <McqWhy>The boundary holds the fallback for exactly as long as the child is suspended, then renders the child once it resolves. The transition is driven by the child settling, not by a flag you flip or a function you call — and it is scoped to that boundary, not the whole page.</McqWhy>
+</MultipleChoice>
+
+<MultipleChoice>
+  A dashboard runs two independent reads: a profile that comes back in 10ms and an activity feed that takes 800ms. You want the profile on screen the instant it's ready, not 800ms later. Which arrangement does that?
+
+  <McqChoice correct>Put each read inside its own `<Suspense>`, each with its own fallback.</McqChoice>
+  <McqChoice>Put both reads inside a single `<Suspense>` that shares one fallback.</McqChoice>
+  <McqChoice>Keep one `<Suspense>` around the page and add an `isLoading` flag to the profile.</McqChoice>
+  <McqChoice>Drop the boundary entirely and let both reads render whenever the page loads.</McqChoice>
+
+  <McqWhy>A boundary reveals all-or-nothing, so one shared boundary pins the 10ms profile to the 800ms feed. Two boundaries are two separate units, each free to reveal the moment its own read settles. The `isLoading` flag is the imperative pattern Suspense exists to replace, and removing the boundary leaves no fallback to show during the wait.</McqWhy>
+</MultipleChoice>
+
+<MultipleChoice>
+  An invoice detail view sits behind a `<Suspense>`. The user clicks from `inv_001` to `inv_002`, the component re-renders with the new `invoiceId`, and `inv_001`'s data stays on screen for the full new load — no skeleton in between. Why does the fallback skip, and which one-line change brings it back?
+
+  <McqChoice correct>React sees the same component in the same slot and reuses its resolved subtree; giving that subtree a `key` tied to `invoiceId` marks it as a new instance, forcing a remount that suspends afresh.</McqChoice>
+  <McqChoice>The boundary lost track of the load; reintroducing an `isLoading` flag in a `useEffect` that watches `invoiceId` is what re-shows the skeleton.</McqChoice>
+  <McqChoice>The stale render is an uncaught failure; wrapping the view in `try/catch` lets you replace the old data while the new invoice loads.</McqChoice>
+  <McqChoice>One boundary can only suspend once, so nesting a second `<Suspense>` around the same component restores the fallback on later changes.</McqChoice>
+
+  <McqWhy>Same component, same position — React treats it as one instance and keeps the already-resolved tree, so no descendant re-suspends. A `key` that changes with `invoiceId` is an identity hint: it remounts the subtree, the remount suspends, and the fallback returns. An `isLoading` flag is exactly the imperative bookkeeping Suspense exists to delete, `try/catch` is for thrown errors rather than a still-loading state, and a boundary can suspend any number of times — it just never sees a *new* instance to suspend on here.</McqWhy>
+</MultipleChoice>
+
+<TrueFalse instructions="Each claim is about the boundary of responsibility you just drew — what Suspense does and, more often, what it does not.">
+  <Statement answer="false">
+    If a component below a `<Suspense>` boundary throws an error, the boundary catches it and shows the `fallback`.
+    <TfWhy>Suspense catches a *suspend* signal — "not ready yet" — not an error. A thrown error sails straight past it and crashes the tree; catching it is the job of an Error Boundary, which the App Router exposes as `error.tsx` (two lessons from now). The `fallback` means "still loading," never "something went wrong."</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    A `fallback` can itself `await` data or read a pending promise.
+    <TfWhy>The `fallback` is rendered synchronously and must not suspend. It is what you show *while* something loads — if it had to load too, there would be nothing to show during the wait and the boundary would have no purpose. Keep fallbacks dumb and instant: static markup, no data reads.</TfWhy>
+  </Statement>
+
+  <Statement answer="true">
+    A single `<Suspense>` boundary is all-or-nothing: it shows its `fallback` while *any* one child is still suspending, and reveals its `children` only once *every* child has resolved.
+    <TfWhy>One boundary has exactly two visual states and stays in the fallback state until the last holdout settles. That is precisely why a slow read can hold a fast one hostage under a shared boundary — and why two independent reads usually want two boundaries.</TfWhy>
+  </Statement>
+</TrueFalse>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="React docs — <Suspense>"
+    href="https://react.dev/reference/react/Suspense"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="The canonical reference: props, nesting, and the reveal-coordination behavior this lesson builds on."
+  />
+  <ExternalResource
+    title="React docs — use()"
+    href="https://react.dev/reference/react/use"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="How use() reads a promise and suspends the component — the seam in the second shape you saw."
+  />
+  <ExternalResource
+    title="Next.js docs — Streaming"
+    href="https://nextjs.org/docs/app/guides/streaming"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="Granular boundaries, the server-promise to use() pattern, and the CLS-aware skeleton guidance, in App Router terms."
+  />
+  <ExternalResource
+    title="How React Suspense works under the hood"
+    href="https://www.epicreact.dev/how-react-suspense-works-under-the-hood-throwing-promises-and-declarative-async-ui-plbrh"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="Kent C. Dodds on the throw-a-promise mechanism behind the suspend signal — the level below the contract."
+  />
+</CardGrid>

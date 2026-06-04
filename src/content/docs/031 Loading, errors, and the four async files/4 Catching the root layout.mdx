@@ -1,0 +1,262 @@
+---
+title: Catching the root layout
+tagline: The App Router's global-error.tsx convention, the outermost Error Boundary that catches a throw in the root layout itself, the one failure no other error.tsx can reach.
+chapter-id: 31
+course-progress: 0.00005
+sidebar:
+  order: 4
+  label: Global error
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import TrueFalse from '../../../components/exercises/true-false/TrueFalse.astro';
+import Statement from '../../../components/exercises/true-false/Statement.astro';
+import TfWhy from '../../../components/exercises/true-false/TfWhy.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import RootLayoutEscapes from '../../../components/lessons/031/4/RootLayoutEscapes.astro';
+import { FileTree, CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+You have `app/error.tsx` wired. After the last lesson it feels like the whole app is covered — any segment can throw, and the user lands on a friendly failure screen instead of a crash. Then one day a deploy goes out with a bad environment variable, and the first thing `app/layout.tsx` does at request time is read it. The root layout throws — a misconfigured provider, a missing env var, an auth call that blows up before a single page renders, it doesn't matter which. And the user does **not** get your `error.tsx`. They get the browser's stark default error page — no branding, no "Try again", no message you wrote. The entire site, gone to a blank screen on one bad deploy.
+
+This is the thread the last lesson left hanging on purpose — the deliberate handoff promised at the end of `error.tsx`. The job here is small and exact: name the one file that catches a throw in the root layout, understand why it is shaped the way it is, and learn what must never go inside it. By the end you will ship `app/global-error.tsx` as your site's last line of defense. It is a short lesson — the chapter's resilience capstone — and it rides almost entirely on what you already know. There is one new file, two hard rules, and one discipline. That is the whole budget.
+
+## Why your `error.tsx` lets the root layout through
+
+The last lesson taught the rule that explains this, so here it is in one sentence: an Error Boundary catches throws from its *descendants*, but the layout it sits beside is its *parent*, so a render error in that layout happens before the boundary exists to catch it.
+
+Now walk that one level up. `app/error.tsx` is a boundary *inside* `app/layout.tsx` — the framework places it in the layout's subtree, not around it. So `app/error.tsx` cannot catch a throw in `app/layout.tsx`, for exactly the reason you just recited. And the root layout is the top of the application tree: there is no `error.tsx` above it. A throw there has nowhere to bubble up to. It escapes every boundary you have written and lands on the framework's bare fallback.
+
+That is the precise shape of the gap. The segment files from the last lesson cover everything *under* the root layout. Nothing covers the root layout *itself*. Scrub through the failing render below and watch the throw walk straight out of the tree:
+
+<RootLayoutEscapes />
+
+The picture is the argument: the boundary is the layout's child, so a throw in the layout is born outside it, and with nothing above the root to catch it, the throw runs clear off the top of the tree. The *need* for a boundary above the root layout is now something you can see, not just read.
+
+## `global-error.tsx`: the boundary above the root layout
+
+The file that fills the gap is `global-error.tsx`, at `app/global-error.tsx`. It is the one Error Boundary the framework wires *above* the root layout — the absolute outermost boundary in the entire App Router tree. Errors that escape every `error.tsx`, errors in the root layout itself, even errors in the framework's own root render: they all surface here.
+
+Hold this one line, because it is the whole mental model: every other `error.tsx` is a boundary *inside* the app shell; `global-error.tsx` is the boundary *around* the shell — the last net before the browser default. In the diagram you just scrubbed, the throw ran clear off the top of the tree; `global-error.tsx` is the box that now sits there to catch it. It wraps `app/layout.tsx` itself.
+
+Here is the whole file. It is short on purpose:
+
+<div data-mark-color="green">
+
+```tsx title="app/global-error.tsx" {11-12} {16-17}
+'use client';
+
+export default function GlobalError({
+  error,
+  unstable_retry,
+}: {
+  error: Error & { digest?: string };
+  unstable_retry: () => void;
+}) {
+  return (
+    <html lang="en">
+      <body>
+        <h2>Something went wrong</h2>
+        {error.digest != null && <p>Reference: {error.digest}</p>}
+        <button onClick={() => unstable_retry()}>Try again</button>
+      </body>
+    </html>
+  );
+}
+```
+
+</div>
+
+Almost all of this you have seen. The `'use client'` directive, the `error` and `unstable_retry` props, the `error.digest` shown so a user can paste a reference into a support ticket, the "Try again" button wired to `unstable_retry()` — that is the exact contract from `error.tsx`. The props are *identical*, so there is nothing new to learn about how the file receives its data. (As before, the default export is the sanctioned exception to the named-exports rule — the framework finds these convention files by their default export.)
+
+The one new thing is highlighted: this file returns `<html>` and `<body>`. No other component you have written does that. Why this file must — and why it must also start with `'use client'` — are the two non-negotiables, and the next two sections explain each.
+
+### `'use client'` — the same reason as `error.tsx`
+
+`global-error.tsx`, like `error.tsx`, must start with `'use client'`. The reason is the one you already have: React Error Boundaries are class-component machinery — `getDerivedStateFromError`, `componentDidCatch` — and they hold state, both of which are client-only. Omit the directive and the build fails. There is nothing to re-derive here; it is the same rule, one level up.
+
+One precise consequence, worth a single sentence: because the file must be a Client Component, the `metadata` and `generateMetadata` exports are **not** supported in `global-error.tsx`. If your catastrophe screen needs a tab title, render a `<title>` element inside the returned JSX instead.
+
+### Why it must render its own `<html>` and `<body>`
+
+This is the heart of the lesson, and it is worth slowing down for, because the *why* makes the rule impossible to forget.
+
+Normally, `app/layout.tsx` renders the `<html>` and `<body>` that wrap your whole app, and every page renders *inside* that shell. That is the arrangement you have relied on since you first wrote a layout. But `global-error.tsx` fires precisely *because the root layout crashed*. By the time it renders, the root layout — and therefore the `<html>` and `<body>` it would have produced — is gone. There is no parent document for `global-error.tsx` to render into. The shell it would normally slot inside is the exact thing that just failed.
+
+So `global-error.tsx` does not render *inside* the root layout. It **replaces** it. When it is active, it is rendered as the entire document — which means it has to reconstruct the document skeleton itself. That is what the `<html>` and `<body>` in the file are for. The official framework docs put it in one line: this file replaces the root layout when active.
+
+The contrast makes the swap concrete. On the left, the normal arrangement — the layout owns the document, the page lives inside it. On the right, the global-error case — the layout is gone, and `global-error.tsx` *is* the document:
+
+<CodeVariants>
+  <CodeVariant label="Normal: the layout is the document">
+    <div data-mark-color="green">
+
+    ```tsx title="app/layout.tsx" {3-4}
+    export default function RootLayout({ children }: { children: ReactNode }) {
+      return (
+        <html lang="en">
+          <body>{children}</body>
+        </html>
+      );
+    }
+    ```
+
+    </div>
+    `app/layout.tsx` renders the document shell, and your page renders inside it — the arrangement you have always had.
+  </CodeVariant>
+
+  <CodeVariant label="Crashed: global-error is the document">
+    <div data-mark-color="green">
+
+    ```tsx title="app/global-error.tsx" {3-4}
+    export default function GlobalError(/* props */) {
+      return (
+        <html lang="en">
+          <body>{/* the catastrophe screen */}</body>
+        </html>
+      );
+    }
+    ```
+
+    </div>
+    The root layout crashed, so it is gone — `global-error.tsx` is rendered as the whole document and must produce the shell itself.
+  </CodeVariant>
+</CodeVariants>
+
+Now the failure mode, so the stakes are unmistakable. Omit the tags and you ship a document with no `<html>` and no `<body>` — a broken, blank page in production, which is the single worst outcome for the one file whose entire job is the catastrophe screen. The tags are not boilerplate ceremony you copy because the docs told you to. They are the reason the page renders at all. Understand the chain — *the root layout is what crashed, so no shell is left, so you are the shell now* — and you will never reach for `global-error.tsx` and forget them.
+
+## Verify it in a production build — the dev trap
+
+You met this trap last lesson with `error.tsx`. It comes back here with more force, because what is at stake is the whole site rather than one segment.
+
+In `next dev`, when the root layout throws, the Next.js error overlay slams up on top — full message, full stack, the developer's diagnostic. The current versions of Next.js *do* render `global-error.tsx` underneath the overlay in development, a deliberate change so you can preview it. But the overlay sits in front. So in dev you are still looking at the developer experience, not the user's.
+
+The rule is identical to the one you already have: **never sign off on `global-error.tsx` from `next dev` alone.** Build the app and run the production build locally to see the real thing — no overlay, the generic message, the `digest`, your actual layout. The overlay covering the file in development is precisely *why* people ship a broken `global-error.tsx` and never notice until a real user hits it.
+
+:::caution
+The dev overlay covers `global-error.tsx`, so what you see in `next dev` is not what the user sees. This is the same "verify error UX in a production build" rule you learned for `error.tsx` — and it bites harder here, because a broken `global-error.tsx` means the *entire site*, not one segment, has no recoverable screen. Always confirm it in a production build before you ship.
+:::
+
+## A page that must not fail
+
+Now the discipline — the most transferable idea in this lesson, and the one that outlives the specific file.
+
+`global-error.tsx` is the last line of defense. There is no boundary below it. If it throws while rendering, the user gets nothing recoverable — the catastrophe screen has itself become the catastrophe. So this must be the single most defensive file in your codebase. Its one job is to render a page that *cannot itself fail*.
+
+What belongs in it: the catastrophe UI, and nothing more. A calm message. The `error.digest` for support correlation. A "Try again" wired to `unstable_retry()`. A stripped-down, brand-aligned shell and a path to contact support. And the one piece of logic this file is the canonical home for — the report to your error-tracking service. When `global-error.tsx` fires, your most serious failure just happened, so this is exactly where you reach out to monitoring. The same `useEffect`-reports-the-error pattern you saw in `error.tsx` belongs here too; the full integration comes much later in the course, so for now just know the report lives here. Fleshed out, the file looks like this:
+
+<div data-mark-color="blue">
+
+```tsx title="app/global-error.tsx" {3} {12-14}
+'use client';
+
+import { useEffect } from 'react';
+
+export default function GlobalError({
+  error,
+  unstable_retry,
+}: {
+  error: Error & { digest?: string };
+  unstable_retry: () => void;
+}) {
+  useEffect(() => {
+    reportToMonitoring(error);
+  }, [error]);
+
+  return (
+    <html lang="en">
+      <body>
+        <h2>Something went wrong</h2>
+        {error.digest != null && <p>Reference: {error.digest}</p>}
+        <button onClick={() => unstable_retry()}>Try again</button>
+        <a href="mailto:support@example.com">Contact support</a>
+      </body>
+    </html>
+  );
+}
+```
+
+</div>
+
+What must **never** go in: business logic, data fetching, anything that can throw. Spell out the bitter irony to yourself once and it will stick — an error page that itself errors is unrecoverable. The fetch you add to render a "richer" error screen is the fetch that, on a bad day, fails and leaves the user staring at the browser default after all.
+
+Two concrete constraints follow, and they are not two separate gotchas to memorize — they are the same instinct wearing two hats.
+
+The first is **styling**. When `global-error.tsx` renders, the global CSS, the fonts, and the design-system providers imported by the *crashed* root layout may not be in effect — the layout that loaded them is the thing that is gone. So keep the page simple: minimal inline styles or a small set of Tailwind utility classes (the framework's Tailwind layer is still available), no design-system providers, no dependency on a custom font, no client-only context providers. Whatever the dead layout used to set up, you cannot assume is there.
+
+The second is **internationalization**. Locale-aware copy needs the i18n setup to have loaded *before* the crash — and for a failure at the top of the layout, it usually has not. So keep `global-error.tsx` to a single default-locale string ("Something went wrong" and the digest), not a translated message. Doing i18n properly is a later chapter; here, the only rule is don't depend on it.
+
+Now see why those are one rule, not two. The styling you reach for and the locale you reach for are both things set up *above* you in the tree — and the things above you in the tree are exactly the things that just failed. So depend on none of them. *Assume nothing above you survived.* That sentence is the senior takeaway of the whole lesson; it generalizes far past this one file.
+
+## The complete error surface
+
+Step back and place the pieces together, because you now hold the whole map.
+
+`app/error.tsx` catches errors in `app/page.tsx` and in any nested segment that has no `error.tsx` of its own. `app/global-error.tsx` catches errors in `app/layout.tsx` *plus* anything that escapes `app/error.tsx`. They are complementary, not redundant — different scopes, different jobs — and the experienced default ships **both** at the app root.
+
+Set against the last lesson's frame: there you learned the four states of a *segment* — populated, in-flight, missing, failed — and the four files that ship them. This lesson adds the one boundary that sits *above the whole app*, for the case where the shell itself fails. Put together, that is the complete error surface of an App Router application. Nothing on a route, and nothing around the route, is left without a screen you wrote.
+
+So this is the configuration to leave with — both files at the root, each with one clear job:
+
+<FileTree>
+- app
+  - layout.tsx the app shell
+  - error.tsx catches everything under the shell
+  - global-error.tsx catches the shell itself
+  - page.tsx
+</FileTree>
+
+Add segment-level `error.tsx` files wherever a feature deserves a failure message tailored to it. That is the shippable recommendation: `app/error.tsx` and `app/global-error.tsx` at the root, segment `error.tsx` where the UX earns one.
+
+## Check your understanding
+
+A quick round on the things this lesson most wants to stick — the two non-negotiables, the dev trap, and the discipline. Mark each claim true or false; the review at the end explains every one.
+
+<TrueFalse instructions="Each claim is about global-error.tsx and the app's error surface.">
+  <Statement answer="true">
+    `global-error.tsx` must render its own `<html>` and `<body>` tags.
+    <TfWhy>It replaces the crashed root layout, which is what normally renders them. With no parent shell left, `global-error.tsx` *is* the document — so it has to reconstruct the skeleton itself. Omit the tags and you ship a blank page.</TfWhy>
+  </Statement>
+
+  <Statement answer="true">
+    `global-error.tsx` must start with `'use client'`.
+    <TfWhy>Same reason as `error.tsx`: Error Boundaries are stateful, client-only class machinery. Omit the directive and the build fails.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    You can verify your `global-error.tsx` UI by triggering the error in `next dev`.
+    <TfWhy>The dev overlay covers it. Current Next.js *renders* the file in development, but the overlay sits on top — so you see the developer experience, not the user's. Verify it in a production build.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    `global-error.tsx` is a good place to fetch the data you need to render a richer error page.
+    <TfWhy>It is the last line of defense — any throw, including a failed fetch, leaves the user with nothing recoverable. No data fetching, no logic that can fail.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    `app/global-error.tsx` makes `app/error.tsx` redundant; you only need one.
+    <TfWhy>They cover different scopes — `error.tsx` catches under the shell, `global-error.tsx` catches the shell itself and anything that escapes `error.tsx`. Ship both at the root.</TfWhy>
+  </Statement>
+</TrueFalse>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="error.js file-convention reference"
+    href="https://nextjs.org/docs/app/api-reference/file-conventions/error"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The official prop table and the global-error shape — the unstable_retry API, the error.digest, and the <html>/<body> requirement."
+  />
+  <ExternalResource
+    title="Error Handling guide"
+    href="https://nextjs.org/docs/app/getting-started/error-handling"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="Places global-error.tsx in the full picture — expected errors, nested error boundaries, and the root-layout case side by side."
+  />
+</CardGrid>
