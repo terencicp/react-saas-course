@@ -1,0 +1,481 @@
+---
+title: Dynamic and catch-all segments
+tagline: The Next.js App Router's bracketed folders, which let one page serve a whole family of URLs by capturing parts of the path as typed route parameters.
+chapter-id: 29
+course-progress: 0.00005
+sidebar:
+  order: 3
+  label: Dynamic segments
+---
+
+import { FileTree } from '@astrojs/starlight/components';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import { Code } from '@astrojs/starlight/components';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import TabbedContent from '../../../components/figures/tabbed-content/TabbedContent.astro';
+import TabbedItem from '../../../components/figures/tabbed-content/TabbedItem.astro';
+import RouteParamsTableSingle from '../../../components/lessons/029/3/RouteParamsTableSingle.astro';
+import CatchAllParamsTable from '../../../components/lessons/029/3/CatchAllParamsTable.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Dropdowns from '../../../components/exercises/dropdowns/Dropdowns.astro';
+import Matching from '../../../components/exercises/matching/Matching.astro';
+import Pair from '../../../components/exercises/matching/Pair.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Every invoice in your app needs a detail page. There are forty of them today and a thousand by next quarter, and you are not going to write a `page.tsx` for each id. For two lessons the file system has been a *static* route table — one folder, one URL. This lesson is the move that makes one folder stand in for an unbounded set of URLs: by the end you can build `/invoices/[id]`, nest it under a tenant so it reads `/orgs/[orgSlug]/invoices/[id]`, handle a docs-style URL whose depth you don't know in advance, and — the part that separates a working page from a shippable one — you'll have the reflex that keeps the id from the address bar out of your database until you've checked it. One warning up front: the catch-all tools at the end look powerful, so people reach for them constantly. They're a narrow instrument. You'll use a plain `[id]` ninety percent of the time.
+
+## A folder in brackets is a parameter
+
+You already know that `app/invoices/page.tsx` produces the URL `/invoices`. Wrap the folder name in square brackets — `app/invoices/[id]/page.tsx` — and you've created a <Term term="dynamic segment">dynamic segment</Term>: a single folder that matches *any* value in that position of the URL. `/invoices/inv_42`, `/invoices/inv_99`, `/invoices/anything` all resolve to that one `page.tsx`.
+
+<FileTree>
+- src/
+  - app/
+    - invoices/
+      - **`[id]/`** the bracketed folder — matches any value
+        - page.tsx
+</FileTree>
+
+The framework captures whatever filled that slot and hands it to your page as a <Term term="route parameter">route parameter</Term>. The rule for the name is mechanical: **the text inside the brackets becomes the property name**. `[id]` gives you `params.id`; rename the folder to `[invoiceId]` and you read `params.invoiceId`. And the captured value is **always a string** — there is no such thing as a number in a URL, only characters a user can type.
+
+That last point is worth making concrete before any code. Here is what lands in `params` for a few different URLs hitting `app/invoices/[id]/page.tsx`:
+
+<Figure caption="One `page.tsx`, three URLs. The bracketed folder captures whatever fills its slot — and the captured value is just a string, so a SQL-injection probe lands in `params.id` exactly like a friendly id does.">
+  <RouteParamsTableSingle />
+</Figure>
+
+The third row is not a typo. That folder matches *that* too. Hold onto it — it's the whole reason for the last section of this lesson.
+
+Now the page itself. We're going to build this file in three passes across the next few sections, because two important things — the `await` and the validation — each deserve their own beat. Here is pass one: capture the id and render it, nothing more.
+
+```tsx title="src/app/invoices/[id]/page.tsx"
+export default function InvoicePage({ params }) {
+  return <h1>Invoice {params.id}</h1>;
+}
+```
+
+A few things to read off that, calling back to last lesson. It's a Server Component — that's the default, no directive needed. It's a `default` export, because `page.tsx` is one of the handful of framework files where the framework demands a default export. And the component is named `InvoicePage`, but that name is doing **nothing** — the routing is decided entirely by the *folder* path, not by what you call the function. You could name it `Banana` and the route would be identical. If you're carrying a habit from elsewhere that "the filename or the export name matters," drop it here: for App Router pages, the folder is the route and the export is just the thing that renders.
+
+One build-time trap to know now, because it produces a confusing error the first time you hit it. **Two dynamic folders with the same name on one path crash the build.** You can't have `app/invoices/[id]/comments/[id]/page.tsx` — two `[id]` segments would both want to write `params.id`, and Next.js refuses to compile rather than guess. The names have to be unique along any single route. (A `[id]` folder sitting next to a `[...id]` folder at the same level is the same kind of conflict; more on that when we get to catch-alls.)
+
+## Why `params` is a Promise, and how to type it
+
+Here's where the first real surprise lives, and it's the single most common thing people get wrong on first contact, so we're going to slow down. In Next.js 16, `params` is **not** the plain object the table above implied. It's a **Promise** of that object. Your page has to `await` it.
+
+Why would the framework hand you a Promise instead of just the values? Because `params` is a *request-time* value — it doesn't exist until a real request for a real URL comes in. Making it a Promise lets Next.js start rendering the static parts of your page — the parts that are identical for every invoice — *before* the request-specific data is resolved, and stream the dynamic parts in as they become ready. That's the Cache Components rendering model, and it's the entire subject of a later chapter on rendering and caching; you do not need to understand it to use dynamic routes today. The whole rule reduces to four words: **`params` is a Promise, await it.** (It's not alone — `searchParams`, and the request functions `cookies()`, `headers()`, and `draftMode()`, are all Promises in Next.js 16 for the same reason. You'll meet those later; the await reflex is identical.)
+
+So how do you type that Promise? You *could* write the shape by hand. But the modern way — the course's default — is a helper Next.js generates for you. Compare the two:
+
+<CodeVariants>
+  <CodeVariant label="PageProps helper">
+    <div data-mark-color="blue">
+
+    ```tsx "PageProps<'/invoices/[id]'>"
+    export default async function InvoicePage({
+      params,
+    }: PageProps<'/invoices/[id]'>) {
+      const { id } = await params;
+      return <h1>Invoice {id}</h1>;
+    }
+    ```
+
+    </div>
+    **Derived from the route, autocompletes the param names, and can't drift when you rename the folder — this is the default.** No import: Next.js generates the type and makes it globally available.
+  </CodeVariant>
+
+  <CodeVariant label="Hand-written">
+    <div data-mark-color="orange">
+
+    ```tsx "Promise<{ id: string }>"
+    export default async function InvoicePage({
+      params,
+    }: {
+      params: Promise<{ id: string }>;
+    }) {
+      const { id } = await params;
+      return <h1>Invoice {id}</h1>;
+    }
+    ```
+
+    </div>
+    **This is what the helper expands to — fine, but you restate the shape by hand and it silently rots the day someone renames the `[id]` folder.** The Promise that the helper hides is right there in the annotation.
+  </CodeVariant>
+</CodeVariants>
+
+:::note[What `PageProps` is]
+A global type Next.js generates from your routes — **no import**. `PageProps<'/route'>` maps a route literal to that page's props, including a correctly-typed `params`. It's produced by `next dev` / `next build` (and `next typegen`), so it can never disagree with the folders on disk.
+:::
+
+Read the hand-written version once and then forget it — it's there only so you can *see* the Promise in the type, because the helper hides it. `PageProps<'/invoices/[id]'>` takes the route literal as a string and gives you back the exact props for that page, with the param names autocompleted from the folder structure. You write less, it can't disagree with the folder name, and the day you rename `[id]` to `[invoiceId]` the type updates with it while the hand-written annotation quietly keeps claiming `id`. Reach for `PageProps` every time.
+
+Now the same file as a complete (but still unvalidated) page, walked one piece at a time so the mechanics are unmissable:
+
+<AnnotatedCode lang="tsx" code={`
+export default async function InvoicePage({
+  params,
+}: PageProps<'/invoices/[id]'>) {
+  const { id } = await params;
+
+  return <h1>Invoice {id}</h1>;
+}
+`}>
+  <AnnotatedStep meta={`"async" "PageProps<'/invoices/[id]'>"`} color="blue">
+    This is `src/app/invoices/[id]/page.tsx`. The page is `async` and typed with the generated `PageProps` helper, derived from the route literal. Because it's a Server Component, awaiting inside the render is allowed and normal — no `useEffect`, no fetch-on-mount.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{4} "await"`} color="orange">
+    The line everyone forgets. `params` is a *Promise*, so `await` unwraps it into the plain object before destructuring pulls `id` out. Drop the `await` and `id` is itself a Promise: TypeScript flags `params.id` because that property doesn't exist on a Promise, and at runtime you'd render `[object Promise]`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{6} /\\{id\\}/`} color="green">
+    With `id` resolved to a string, the render uses it like any other value. From here on `id` is the captured URL part — the text that filled the `[id]` slot — ready to be checked and used.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The orange step is the one to burn in. **Reading `params.id` without `await` is the dynamic-routes equivalent of forgetting a key on a list** — it'll bite you the first time, TypeScript will catch it now, and once you've internalized "await it" it never bites again.
+
+### Reading params in a Client Component
+
+The whole story above assumes a Server Component, which is where your pages should live by default. But occasionally the page (or a piece of it) has to be a Client Component — it needs state, an event handler, a browser API. A Client Component **can't be `async`**, so it can't `await`. It reads the very same Promise with React's `use` hook instead:
+
+<div data-mark-color="blue">
+<CodeTooltips tooltips={{
+  'use(': 'React 19. Unwraps a Promise (or reads a context) inside a Client Component’s render — the client-side counterpart to await.',
+}}>
+
+```tsx title="src/app/invoices/[id]/page.tsx" {1} {6}
+'use client';
+
+import { use } from 'react';
+
+export default function InvoicePage({ params }: PageProps<'/invoices/[id]'>) {
+  const { id } = use(params);
+  return <h1>Invoice {id}</h1>;
+}
+```
+
+</CodeTooltips>
+</div>
+
+That's the same `use(promise)` pattern from the Server/Client lesson: a Client Component takes the Promise as a prop and unwraps it with `use()` where a Server Component would `await`. (There's also a `useParams()` hook for grabbing params without threading the prop down, but reach for it sparingly.) The server path is the spine of this lesson; this is the escape hatch when a page genuinely has to run on the client.
+
+<VideoCallout videoId="qPsY4AKFlnM" videoTitle="Next.js 15 Tutorial - params and searchParams">
+  Codevolution builds a dynamic page and shows both reflexes side by side — `await params` in a Server Component, the `use` hook in a Client one (6 min).
+</VideoCallout>
+
+Quick check before moving on, because this is the concept that has to stick:
+
+<MultipleChoice>
+  This page reads like it should work, yet TypeScript rejects the marked line. On the line `const id = params.id`, what is `params.id` actually reaching for?
+
+  ```tsx
+  export default async function InvoicePage({ params }: PageProps<'/invoices/[id]'>) {
+    const id = params.id;
+    return <h1>Invoice {id}</h1>;
+  }
+  ```
+
+  <McqChoice correct>A property the `Promise` wrapper simply doesn't have — so it resolves to nothing, and the type checker flags exactly that.</McqChoice>
+  <McqChoice>The captured id string, identical to what you'd get one line later after unwrapping it.</McqChoice>
+  <McqChoice>Leftover data from whichever request populated `params` most recently.</McqChoice>
+
+  <McqWhy>In Next.js 16 `params` is a Promise, not the plain object. A Promise has no `id` property, so `params.id` is `undefined` at runtime and a type error at compile time. Unwrap it first — `const { id } = await params` in a Server Component, or `use(params)` in a Client Component.</McqWhy>
+</MultipleChoice>
+
+## Scoping a route with multiple dynamic segments
+
+One unknown is the common case, but real SaaS URLs usually carry two. An invoice doesn't just have an id — it belongs to an organization, and the org is part of the path: `/orgs/acme/invoices/inv_42`. That's the multi-tenant shape you'll see for the rest of the course — the tenant in the URL, the resource within it — and it's nothing new mechanically. You just nest bracketed folders:
+
+<FileTree>
+- src/
+  - app/
+    - orgs/
+      - **`[orgSlug]/`** captures `params.orgSlug`
+        - invoices/
+          - **`[id]/`** captures `params.id`
+            - page.tsx
+</FileTree>
+
+That tree produces `/orgs/:orgSlug/invoices/:id`, and `params` now carries both names: `{ orgSlug: string; id: string }`. The rule that each segment name must be unique along the route is exactly why you couldn't write two `[id]`s — here the two segments have distinct names, so they coexist cleanly. One `await` still unwraps the whole object:
+
+<div data-mark-color="blue">
+
+```tsx title="src/app/orgs/[orgSlug]/invoices/[id]/page.tsx" "PageProps<'/orgs/[orgSlug]/invoices/[id]'>" "{ orgSlug, id }"
+export default async function InvoicePage({
+  params,
+}: PageProps<'/orgs/[orgSlug]/invoices/[id]'>) {
+  const { orgSlug, id } = await params;
+
+  return <h1>Invoice {id} in {orgSlug}</h1>;
+}
+```
+
+</div>
+
+This is where the `PageProps` helper earns its keep. Feed it the full route literal and it autocompletes *both* `orgSlug` and `id` — and if you ever restructure the path, the type follows. Hand-writing `Promise<{ orgSlug: string; id: string }>` for every nested page is the kind of busywork that drifts the moment the folders change. Beyond the extra name, there's no new idea here: it's the single-segment page with one more value in the same object.
+
+## Variable-depth URLs: catch-all and optional catch-all
+
+Everything so far had a *known* shape — one segment, or two, and you knew exactly how many. Some URLs don't work that way. A documentation site has `/docs/getting-started`, `/docs/guides/routing`, `/docs/guides/routing/dynamic-segments` — the same kind of page at one, two, or three levels deep, and you can't predict the depth. A CMS path or an editorial slug is the same. So the examples below switch domains, from invoices to **docs** — when the depth is unknown, brackets grow an ellipsis.
+
+A folder named `app/docs/[...slug]/page.tsx` is a <Term term="catch-all segment">catch-all segment</Term>. The three dots mean "match this segment *and every segment after it*." `/docs/a`, `/docs/a/b`, `/docs/a/b/c` — any depth — all resolve here, and `params.slug` is no longer a string but a **`string[]`**, one entry per segment. There's one sharp edge, and it's the thing people get wrong: a catch-all does **not** match the parent on its own. `/docs` alone is a 404, because there's nothing for the catch-all to capture.
+
+An optional catch-all closes that gap. Double the brackets — `app/docs/[[...slug]]/page.tsx` — and it's a <Term term="optional catch-all segment">optional catch-all segment</Term>: everything the catch-all matches, *plus* the bare parent. At `/docs`, `params.slug` is `undefined` (the type widens to `string[] | undefined`); at `/docs/a` it's `['a']` exactly as before. You reach for this when **one page serves both the index and its depth-N children** — a docs home that renders a landing page when there's no slug and an article when there is.
+
+The single row that differs between the two is the whole distinction, so put them side by side:
+
+<TabbedContent syncKey="catchall-variant">
+  <TabbedItem label="Catch-all [...slug]">
+    <CatchAllParamsTable variant="catchall" />
+    <Fragment slot="caption">
+      `[...slug]` captures one or more trailing segments into a `string[]`. The bare `/docs` has nothing to capture, so it **doesn't match — a 404**. Flip the tab: every row below stays identical.
+    </Fragment>
+  </TabbedItem>
+
+  <TabbedItem label="Optional catch-all [[...slug]]">
+    <CatchAllParamsTable variant="optional" />
+    <Fragment slot="caption">
+      Double the brackets and the bare `/docs` now matches too, with `params.slug` as `undefined`. **Only the top row changed** — from one segment down, the two variants are the same.
+    </Fragment>
+  </TabbedItem>
+</TabbedContent>
+
+The code barely changes between the two. The catch-all page iterates the array; the optional catch-all branches on whether the array is there at all:
+
+<CodeVariants>
+  <CodeVariant label="Catch-all">
+
+    ```tsx title="src/app/docs/[...slug]/page.tsx"
+    export default async function DocsPage({
+      params,
+    }: PageProps<'/docs/[...slug]'>) {
+      const { slug } = await params;
+
+      return <Article path={slug.join('/')} />;
+    }
+    ```
+
+    **`slug` is always an array — iterate it.** There's no index page to handle, because `/docs` never reaches this file. `slug.join('/')` rebuilds the path from `['guides', 'routing']` back into `guides/routing`.
+  </CodeVariant>
+
+  <CodeVariant label="Optional catch-all">
+
+    ```tsx title="src/app/docs/[[...slug]]/page.tsx" ins={6}
+    export default async function DocsPage({
+      params,
+    }: PageProps<'/docs/[[...slug]]'>) {
+      const { slug } = await params;
+
+      if (slug === undefined) return <DocsIndex />;
+      return <Article path={slug.join('/')} />;
+    }
+    ```
+
+    **Same page, but `slug` can be `undefined` at `/docs` — branch on it to render the index.** Past that one added line, the article path is built exactly as on the left.
+  </CodeVariant>
+</CodeVariants>
+
+Two edges to file away. First: **a catch-all value is always an array, even for a single segment.** `/docs/intro` gives you `['intro']`, not `'intro'` — if you reach for `slug` expecting a string you'll get type errors and surprising joins, and if you want the first piece it's `slug[0]`. Second: a catch-all and a plain `[id]` can't be siblings at the same level — `app/docs/[...slug]` next to `app/docs/[id]` is the same build-time conflict as two `[id]`s, because the framework can't decide which one owns `/docs/intro`. One dynamic shape per level.
+
+<VideoCallout videoId="d46hLIg1B3Q" videoTitle="Next.js 15 Tutorial - Catch all Segments">
+  Codevolution collapses a 400-route docs site into one `[...slug]` file, reads the `string[]`, and shows the optional `[[...slug]]` variant covering the bare parent (6 min).
+</VideoCallout>
+
+## Picking the right bracket shape
+
+You now have four bracket shapes, and the actual skill here is not remembering their syntax — it's choosing the right one. That choice is a short series of questions, asked in a fixed order, and the order *is* the lesson. Walk it:
+
+<StateMachineWalker kind="decision" title="Which bracket shape?">
+  <Question id="depth" prompt="Is the depth of the URL known and fixed?">
+    <Branch label="Yes — I know exactly how many segments" to="count" />
+    <Branch label="No — it varies (a docs path, a CMS slug)" to="parent" />
+  </Question>
+
+  <Question id="count" prompt="How many unknown segments?">
+    <Branch
+      label="It's a small, known set of values"
+      to="leaf-literal"
+      rationale="e.g. /settings/billing, /settings/team — only a handful ever exist"
+    />
+    <Branch label="One unknown segment" to="leaf-single" />
+    <Branch label="Several nested unknowns" to="leaf-nested" />
+  </Question>
+
+  <Question id="parent" prompt="Should the parent URL (with no extra segments) also render this page?">
+    <Branch label="No — the parent is a separate route or a 404" to="leaf-catchall" />
+    <Branch label="Yes — one page serves the index and the children" to="leaf-optional" />
+  </Question>
+
+  <Leaf id="leaf-literal" verdict="Literal folders — no dynamic segment">
+    When the values are a fixed, enumerable set, just make a folder per value (`settings/billing/`, `settings/team/`). No `params` to validate, fully type-safe routes. Don't introduce a `[segment]` for three known pages.
+  </Leaf>
+
+  <Leaf id="leaf-single" verdict="Single dynamic — [id]">
+    The canonical detail page: `app/invoices/[id]/page.tsx`. `params.id` is a string. The ninety-percent case.
+  </Leaf>
+
+  <Leaf id="leaf-nested" verdict="Nested dynamic — [a]/[b]">
+    Multi-axis identity — the tenant-scoped resource: `app/orgs/[orgSlug]/invoices/[id]/page.tsx`. One `await`, two values, names must be unique.
+  </Leaf>
+
+  <Leaf id="leaf-catchall" verdict="Catch-all — [...slug]">
+    Variable depth where the bare parent is *not* this page. `params.slug` is `string[]`, and `/docs` 404s. Reach for it for nested content trees that have a separate index route.
+  </Leaf>
+
+  <Leaf id="leaf-optional" verdict="Optional catch-all — [[...slug]]">
+    Variable depth where the bare parent *is* this page. `params.slug` is `string[] | undefined`, and `/docs` renders the index. One page for both the landing and the depth-N article.
+  </Leaf>
+</StateMachineWalker>
+
+The order matters more than any single answer: a real engineer settles *known-versus-variable* depth before anything else, and only inside "variable" do they ask the parent question. Once you've walked it a couple of times it collapses into a sentence you can keep in your head:
+
+:::note
+Known single segment → `[id]`. Known multi-axis → nested `[a]/[b]`. Variable depth, parent is a different route → `[...slug]`. Variable depth, parent is this page → `[[...slug]]`. A small fixed set → literal folders, no brackets at all.
+:::
+
+## The URL is untrusted input: validate before you query
+
+Back to that third table row from the start — `/invoices/' OR 1=1 --`. This is the part of the lesson that matters most, and it's the part a working tutorial usually skips. `params.id` is **whatever the user typed in the address bar.** The URL bar is an input field, every bit as untrusted as a `<textarea>`, and the value arrives with zero guarantees: the id might be the wrong shape entirely, it might silently become `NaN` after a careless `Number()`, it might be a hostile string probing for a hole, or it might be a perfectly-shaped id for a record that simply doesn't exist. Handing any of those straight to a query is the same class of mistake as trusting a raw form field.
+
+The reflex — and it's three beats, in order — is **capture → validate → query.** You already have capture. Validate means: before the id touches anything, run it through a schema that says what a valid id actually looks like, and bail out cleanly if it doesn't fit. You've met Zod earlier in the course, so this is just applying it at a new boundary. The course standardizes on UUIDv7 for entity ids, so the realistic check is `z.uuid()`; the bail-out is `notFound()`, imported from `next/navigation`. Watch it walk through one file:
+
+This is `src/app/invoices/[id]/page.tsx` in its shippable form. The imports are elided so the eye stays on the gate — `z` from `zod`, `notFound` from `next/navigation`, and `getInvoice` from your data layer. Walk it one beat at a time:
+
+<AnnotatedCode lang="tsx" code={`
+const paramsSchema = z.object({ id: z.uuid() });
+
+export default async function InvoicePage({
+  params,
+}: PageProps<'/invoices/[id]'>) {
+  const parsed = paramsSchema.safeParse(await params);
+  if (!parsed.success) notFound();
+
+  const invoice = await getInvoice(parsed.data.id);
+
+  return <InvoiceDetail invoice={invoice} />;
+}
+`}>
+  <AnnotatedStep meta={`{3-5} "await params"`} color="blue">
+    The recap from the last two passes: the `async` page, typed with `PageProps<'/invoices/[id]'>`, and `await params` to unwrap the Promise. Nothing new — except that the `id` coming out of that `await` is an **untrusted string**, exactly what the user typed in the address bar.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{1} {6} "safeParse"`} color="orange">
+    The validation gate. The schema on line 1 says what a valid id *is* — a UUID. `safeParse` runs the awaited value against it and **returns** a result object instead of throwing. This is the single doorway the untrusted string has to pass through before it can touch anything.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{7} "notFound()"`} color="red">
+    The miss path. If the id isn't a valid UUID, `notFound()` *throws* a signal the framework catches to render the nearest `not-found.tsx` — an HTTP 404. Because it throws, nothing after this line runs, so the bad value never reaches the query. Don't wrap it in a `try/catch`; you'd swallow the very signal you want.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{9} "parsed.data.id"`} color="green">
+    Only past the gate does the value reach the query. `parsed.data` is the narrowed, validated shape, so `parsed.data.id` is a real UUID — safe to hand to `getInvoice`. The query is a stub here; the boundary is the point, not the SQL.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+A few things to nail down from that file. The validation happens **before** the query, never after — checking the id once it's already hit the database defeats the purpose. `safeParse` is the right Zod call for untrusted input because it *returns* a `{ success, data } | { success, error }` result instead of throwing, which lets you decide what a failure means; here it means a 404. And `notFound()` is the right failure — a missing or garbage resource id should resolve to "this invoice doesn't exist" (404), not crash the request with a 500. The full `notFound()` and `not-found.tsx` story — custom 404 pages, error boundaries — is the subject of the next chapter on async UI; here you're only *calling* it.
+
+A small but real trap on the coercion front: `Number(params.id)` on a non-numeric string gives you `NaN`, not an error — it fails silently and your query gets garbage. If your ids were numeric (they aren't, in this course, but you'll meet codebases where they are), you'd reach for `z.coerce.number().int().positive()`, which turns the URL string into a number *and* rejects the ones that don't convert, in one step. Let the schema do the coercing; never trust a bare `Number()`.
+
+One lighter-weight variant worth recognizing: when the param is a *small fixed set* — a locale like `en` / `es` / `fr`, say — the official docs often skip Zod and use a plain type guard that calls `notFound()` when the value isn't in the allowed set (something like an `assertValidLocale(slug)` that narrows the type or 404s). That's a fine, lean choice for enumerable params. Zod stays the default the moment the value has a *shape* to parse — a UUID, a coerced number, anything with structure.
+
+Now wire the boundary yourself:
+
+<Dropdowns
+  instructions="Complete the validation gate so an invalid id resolves to a 404, not a crash."
+  answers={[
+    { answer: 'safeParse', options: ['safeParse', 'parse'] },
+    { answer: 'notFound', options: ['notFound', 'redirect'] },
+    { answer: 'data', options: ['data', 'error'] },
+  ]}
+>
+
+```tsx
+const paramsSchema = z.object({ id: z.uuid() });
+
+export default async function InvoicePage({ params }: PageProps<'/invoices/[id]'>) {
+  const parsed = paramsSchema.___(await params);
+  if (!parsed.success) ___();
+
+  const invoice = await getInvoice(parsed.___.id);
+  return <InvoiceDetail invoice={invoice} />;
+}
+```
+
+</Dropdowns>
+
+## `generateStaticParams`, in one breath
+
+You'll see one more export on real dynamic pages, and it's worth recognizing now so it doesn't confuse you later — but it isn't this lesson's job to teach it. A dynamic route can be **pre-rendered at build time** by exporting a `generateStaticParams()` function that returns an array of `params` objects — `[{ id: '1' }, { id: '2' }]` — and the framework generates a static HTML file per entry ahead of time, with any unlisted id rendered on demand. It's how content catalogs and docs sites turn known slugs into static pages. The full treatment, and how it interacts with the rendering and caching model, lands in a later chapter on static generation; for now, when you spot `generateStaticParams` in a `[slug]` page, you know what it's for.
+
+## Putting it together
+
+The load-bearing skill from this lesson is small and you'll use it on every route you ever write: **read the brackets, know the `params` type.** Prove it to yourself — match each folder shape to the exact shape it produces:
+
+<Matching instructions="Match each route folder to the shape of the `params` it hands the page.">
+  <Pair>
+    <Fragment slot="left">`[id]`</Fragment>
+    <Fragment slot="right">`{ id: string }`</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">`[orgSlug]/[id]`</Fragment>
+    <Fragment slot="right">`{ orgSlug: string; id: string }`</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">`[...slug]`</Fragment>
+    <Fragment slot="right">`{ slug: string[] }`</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">`[[...slug]]`</Fragment>
+    <Fragment slot="right">`{ slug?: string[] }`</Fragment>
+  </Pair>
+</Matching>
+
+That's dynamic routing. A bracketed folder is a typed hole in the URL: the framework fills `params` for you the way it fills `children`, but unlike `children`, the contents are text an attacker can type — so the trained reflex is always capture, validate, query, with the bracket shape chosen by how much of the URL you don't know in advance. Keep the one-line decision summary handy: known single → `[id]`; known multi-axis → nested; variable without a parent → `[...slug]`; variable with a parent → `[[...slug]]`; enumerable → literal folders.
+
+You can now *build* these routes. The next thing you'll want is to *navigate* to them — typed links to `/invoices/[id]`, programmatic redirects, the rest of the `<Link>` and router story — which is exactly the next lesson.
+
+## External resources
+
+<CardGrid>
+
+<ExternalResource
+  title="Next.js — Dynamic Route Segments"
+  href="https://nextjs.org/docs/app/api-reference/file-conventions/dynamic-routes"
+  icon="simple-icons:nextdotjs"
+  iconColor="#000000"
+  description="The canonical route → params tables for [slug], [...slug], and [[...slug]], straight from the source."
+/>
+
+<ExternalResource
+  title="Next.js — Page Props helper"
+  href="https://nextjs.org/docs/app/api-reference/file-conventions/page#page-props-helper"
+  icon="simple-icons:nextdotjs"
+  iconColor="#000000"
+  description="How the global PageProps helper types params and searchParams from a route literal — no import, can't drift."
+/>
+
+<ExternalResource
+  title="Zod — Basic usage"
+  href="https://zod.dev/basics"
+  icon="simple-icons:zod"
+  iconColor="#3E67B1"
+  description="parse vs safeParse for untrusted input: why safeParse returns a result object instead of throwing — the validation gate from this lesson."
+/>
+
+</CardGrid>
