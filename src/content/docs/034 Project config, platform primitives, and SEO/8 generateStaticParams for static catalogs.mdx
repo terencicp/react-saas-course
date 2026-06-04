@@ -1,0 +1,473 @@
+---
+title: generateStaticParams for static catalogs
+tagline: Next.js generateStaticParams, the build-time hook that turns a dynamic route segment into a prerendered static catalog under Cache Components.
+chapter-id: 34
+course-progress: 0.00005
+sidebar:
+  order: 8
+  label: generateStaticParams
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Term from '../../../components/ui/Term.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import Dropdowns from '../../../components/exercises/dropdowns/Dropdowns.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Acme's marketing blog lives at `/blog/[slug]` — about thirty posts. The help center lives at `/help/[slug]` — roughly eighty articles. The editorial team touches them maybe once a week. And under `cacheComponents: true` — the flag you turned on in [The typed next.config.ts](/034-project-config-platform-primitives-and-seo/1-the-typed-nextconfigts/), which opted you into the Cache Components rendering model — each of those `[slug]` segments is **dynamic by default**: its render function runs on *every* request.
+
+So a help article that changes monthly re-renders itself for every single visitor. The content is a fixed, knowable list that almost never moves — why is it paying a per-request tax? There is one export that answers this: `generateStaticParams`, the build-time hook that turns a dynamic segment into a **static catalog**. Hand Next the full list of slugs at build, and each article becomes HTML generated once and served from the CDN. By the end of this lesson you'll wire the production shape for a content page — build-materialized, cached, and surgically invalidated on edit — and you'll be able to state the rule for exactly when it applies.
+
+This chapter has been about the project surface that sits *outside* the route tree: config, images, fonts, the metadata files. This last lesson reaches back *into* the route tree for the one build-time hook that lives there.
+
+## A dynamic segment is runtime data by default
+
+You already know the Cache Components rule: everything is dynamic by default, and a route goes static only by opting in. Here's the new fact for *this* lesson. A `[slug]` page is dynamic for a specific reason — **Next cannot know the slug at build time.** The slug is, by definition, runtime data: it arrives in the URL of a request that hasn't happened yet. So the platform's safe default is to treat reading that param as runtime work and stream it.
+
+Here's the same help-article page two ways. The first tab is the naive shape — it awaits `params`, reads the article, renders it, with no `generateStaticParams`. The second adds the one export that flips the segment to static. Glance between them:
+
+<CodeVariants maxLines={14}>
+  <CodeVariant label="Dynamic by default">
+    ```tsx
+    // app/(marketing)/help/[slug]/page.tsx
+    export default async function Page({
+      params,
+    }: {
+      params: Promise<{ slug: string }>;
+    }) {
+      const { slug } = await params;
+      const article = await getHelpArticle(slug);
+      return <HelpArticle article={article} />;
+    }
+    ```
+    **Works, but the render function runs on every request — the slug is runtime data Next can't predict.** Next ships a static shell and the article content streams in behind Suspense on every hit — correct, just paying a per-request cost for a catalog that barely changes.
+  </CodeVariant>
+
+  <CodeVariant label="Static catalog">
+    ```tsx ins={1-4}
+    export async function generateStaticParams() {
+      const slugs = await listPublicHelpSlugs();
+      return slugs.map((slug) => ({ slug }));
+    }
+
+    export default async function Page({
+      params,
+    }: {
+      params: Promise<{ slug: string }>;
+    }) {
+      const { slug } = await params;
+      const article = await getHelpArticle(slug);
+      return <HelpArticle article={article} />;
+    }
+    ```
+    **The export hands Next the full slug list at build — each URL becomes static HTML served from the CDN.** Same page, same data read; the only change is the promise to the build.
+  </CodeVariant>
+</CodeVariants>
+
+The first tab works. It just pays a per-request cost for a catalog that barely changes. The lever is one line of intent: provide the list of slugs at build time, and Next switches the segment to <Term definition="Building a page's HTML once at build time and serving it without running the render function per request — the page is prerendered.">static generation</Term> — it generates the concrete HTML for each URL up front and serves it without ever running your render function per request. The word for producing the HTML of one specific URL is to <Term definition="To generate the concrete HTML for one specific URL at build time.">materialize</Term> it. That single export is the difference between *render-on-every-request* and *render-once-at-build, serve-from-CDN*.
+
+The next section opens up that export and kills the misconception almost everyone arrives with.
+
+## Returning the catalog, not the data
+
+Here is the mistake to get in front of immediately: people assume `generateStaticParams` *fetches the page*. It does not. It returns **only the list of param values** — the catalog of URLs to build. The page still does its own data fetching, exactly as it did before. Hold those two jobs apart and the rest of the lesson is easy.
+
+The contract is small. `generateStaticParams` returns an array of objects — one object per route you want materialized — and each property is keyed by the dynamic segment's name. Your folder is `[slug]`, so each object has a `slug` property:
+
+```ts
+return [{ slug: 'getting-started' }, { slug: 'billing-faq' }];
+```
+
+That tells Next to build two URLs: `/help/getting-started` and `/help/billing-faq`. That's the whole output — a list of *URLs to build*, expressed as params. No titles, no bodies, no article content.
+
+It's an `async` function, and it runs in the <Term definition="The Node process that runs once at next build, before any user request exists. The database, the filesystem, and upstream APIs are all reachable there.">build environment</Term> — the Node process that executes once at `next build`, before any user request exists. The database, the filesystem, your upstream APIs are all reachable there. So the canonical body queries the catalog once and reshapes it:
+
+<AnnotatedCode lang="ts" maxLines={10} code={`
+export async function generateStaticParams() {
+  const slugs = await listPublicHelpSlugs();
+  return slugs.map((slug) => ({ slug }));
+}
+`}>
+  <AnnotatedStep meta="{1}" color="blue">
+    The signature. A **named** export Next discovers by its name — contrast the page, which is default-exported. It runs at build, in the Node environment, never per request.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{2}" color="blue">
+    The read helper fetches the *catalog* — the slug list, once. This is a thin `db/queries/` helper that returns only the slug column, because the list of URLs is all this function needs. (Don't worry about double-fetching: this read is automatically deduplicated with the page's own reads at build — there's a short section near the end on that.)
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{3} "({ slug })"`} color="blue">
+    Shape each slug into a param object. The key **must** match the folder name: the folder is `[slug]`, so the property is `slug`. Name it `id` and Next can't map it to the segment.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{3}" color="blue">
+    This is the list of URLs to build, and nothing more. `generateStaticParams` answers *which URLs exist*; the page answers *what's on each URL*.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+That division of labor is the whole mental model, so let me state it as a rule you can carry: **`generateStaticParams` answers "which URLs exist"; the page answers "what's on each URL."** They run at the same phase — build — but they do different jobs. Reading the article body inside `generateStaticParams` is a category error. The body doesn't go there.
+
+<VideoCallout videoId="09aGB_Q6cqE" videoTitle="generateStaticParams in Next.js — Codevolution">
+  Codevolution walks the same build-vs-request story end to end in 5 minutes — watch a dynamic `[id]` page flip to pre-rendered HTML once the export is added, then the multi-segment shape.
+</VideoCallout>
+
+The key always matches the segment name, which is why the multi-segment shapes fall out naturally. You won't need these often on a SaaS, but recognizing the shape is worth a glance:
+
+| Route | Return type |
+| --- | --- |
+| `/help/[slug]` | `{ slug: string }[]` |
+| `/[category]/[product]` | `{ category: string, product: string }[]` |
+| `/help/[...slug]` (catch-all) | `{ slug: string[] }[]` |
+
+One object per URL, one property per dynamic segment, each property named after its folder. (Generating params for *nested* parent-child segments has its own bottom-up rules, but that's a niche you can reach for the docs on if you ever hit it.)
+
+Now wire the catalog yourself. The page below lives at `help/[slug]`. Fill the three blanks so the build-time catalog is correct:
+
+<Dropdowns
+  instructions="Complete the build-time catalog. The page lives at `help/[slug]`."
+  answers={[
+    { answer: 'async', options: ['async', 'sync', 'static'] },
+    { answer: 'listPublicHelpSlugs', options: ['listPublicHelpSlugs', 'getHelpArticle', 'listPublicHelpArticles'] },
+    { answer: 'slug', options: ['slug', 'id', 'params'] },
+  ]}
+>
+```ts
+export ___ function generateStaticParams() {
+  const slugs = await ___();
+  return slugs.map((slug) => ({ ___: slug }));
+}
+```
+</Dropdowns>
+
+The two decisions that actually carry weight there are *key-matches-folder* and *list-not-record*. Get those right and the catalog is correct.
+
+## When a static catalog is the right call
+
+Knowing how to write `generateStaticParams` is the easy half. The durable skill is knowing *when* to reach for it — and the answer is a rule with two conditions, both required:
+
+1. **The catalog is enumerable at build.** You can produce the complete list of URLs from data you already have at build time — a database table, a content directory, a CMS export.
+2. **The content is stable between deploys.** It changes on an editorial or release cadence, not per request and not per user.
+
+Both must hold. One without the other and the segment belongs back in the dynamic-by-default bucket.
+
+The **yes** column is most of a SaaS's public surface: marketing pages, blog posts, public help articles, public profile slugs, changelog entries, docs. The discriminator is simple — anything a logged-out visitor and a logged-in visitor would see *identically*.
+
+The **no** column, with the reason each one fails:
+
+- **Per-user dashboards** — not enumerable. The "list of URLs" is keyed on identity, and you don't have the user at build.
+- **Search-results pages** — the catalog is the query space, which is effectively infinite.
+- **Anything keyed on session or auth state** — it can't become a single shared static artifact, because there's a different correct answer per viewer.
+- **Anything driven by `searchParams`** — a route that reads `searchParams` is dynamic regardless of `generateStaticParams`; that's its own rule, the one you met when the course covered the request surface. Not a catalog.
+
+The one-line version to keep: *if you can write down every URL ahead of time and they'd look the same to everyone, it's a catalog.*
+
+There's one more honest cost to name. The function runs once at build, and Next renders one HTML file per returned param. A few thousand pages is fine. Tens of thousands and the build slows noticeably — at that point you don't materialize the whole list, you materialize the hot subset and let the rest render on demand (the next section). Don't pre-optimize for it; just know where the threshold sits.
+
+Walk the senior's question order. The lesson is in the *order* — enumerable, then stable, then size — not in any single verdict:
+
+<StateMachineWalker title="Should this segment be a static catalog?">
+  <Question id="enumerable" prompt="Can you list every URL at build time?">
+    <Branch
+      label="No — it's per-user, search, or session-keyed"
+      to="dynamic-not-enumerable"
+    />
+    <Branch
+      label="Yes — it comes from a table, CMS, or content dir"
+      to="stable"
+    />
+  </Question>
+
+  <Question id="stable" prompt="Does the content change per request or per user?">
+    <Branch
+      label="Yes — session or searchParams drive it"
+      to="dynamic-per-request"
+    />
+    <Branch
+      label="No — editorial or release cadence"
+      to="size"
+    />
+  </Question>
+
+  <Question id="size" prompt="How big is the catalog?">
+    <Branch
+      label="Up to a few thousand URLs"
+      to="full-catalog"
+    />
+    <Branch
+      label="Tens of thousands or more"
+      to="partial-catalog"
+    />
+  </Question>
+
+  <Leaf id="dynamic-not-enumerable" verdict="Keep it dynamic — stream it">
+    Not enumerable means no `generateStaticParams`. Leave it the dynamic-by-default `[slug]` page with `<Suspense>` around the param-dependent content, exactly as chapter 32 taught.
+  </Leaf>
+
+  <Leaf id="dynamic-per-request" verdict="Keep it dynamic">
+    Content that depends on the session or `searchParams` can't be one shared static artifact — there's a different right answer per viewer. (The `searchParams` case is the request-surface material.)
+  </Leaf>
+
+  <Leaf id="full-catalog" verdict="generateStaticParams for the whole list">
+    The production content-page shape, full materialization — every URL built at deploy. The next section wires it.
+  </Leaf>
+
+  <Leaf id="partial-catalog" verdict="generateStaticParams for the hot subset, rest on demand">
+    Building tens of thousands of pages slows the deploy. Materialize the head of traffic and let the long tail render on first request. Covered two sections down.
+  </Leaf>
+</StateMachineWalker>
+
+## The production content-page shape
+
+This is the payoff. You already own the caching primitives from chapter 32 — `'use cache'`, `cacheLife`, `cacheTag`, `revalidateTag`. The new export *composes* with them into the canonical shape you'll actually ship for a content page. Three coordinated parts, all on one `[slug]` page:
+
+1. **`generateStaticParams`** materializes the catalog at build.
+2. The page reads its data through a **`'use cache'` read helper** that takes `slug` as an argument, tags itself with `cacheTag(helpArticleTags.record(slug))`, and sets a freshness window with `cacheLife('days')`. Each article's HTML is now cached cross-request and tagged for precise invalidation.
+3. A publish webhook (or an editorial Server Action) calls `revalidateTag(helpArticleTags.record(slug), 'max')` to bust *only the edited article*.
+
+Why this exact composition, and not just `generateStaticParams` on its own? Each part earns its place:
+
+- `generateStaticParams` gives you the **build-time set** — the known articles, pre-rendered.
+- `'use cache'` + `cacheLife` make even a *runtime-rendered* slug — one not in the build set — cheap on its second visit, and gives every page a freshness window.
+- `cacheTag` + `revalidateTag` make a single edit invalidate exactly one page, instead of redeploying the whole site.
+
+Said as one line: **build-time static for the known set, cheap-and-fresh for the long tail, surgical invalidation on edit.** That's the entire value proposition.
+
+One placement detail matters, and it's the part people get backwards. The `'use cache'` directive goes on the **`getHelpArticle(slug)` read helper**, not at the top of the page component. The page runs `generateStaticParams` and may branch on the slug; what you want cached is the *data read*, keyed on `slug` — so the directive belongs on the function that reads the article. The page body stays a thin async server component: await the params, call the cached helper, render. This is the shape Next's own docs use, with `'use cache'` sitting on the `getPost(slug)` read.
+
+Here's the shape across its three files:
+
+<CodeVariants maxLines={0}>
+  <CodeVariant label="help/[slug]/page.tsx">
+    ```tsx
+    export async function generateStaticParams() {
+      const slugs = await listPublicHelpSlugs();
+      return slugs.map((slug) => ({ slug }));
+    }
+
+    export default async function Page({
+      params,
+    }: {
+      params: Promise<{ slug: string }>;
+    }) {
+      const { slug } = await params;
+      const article = await getHelpArticle(slug);
+      return <HelpArticle article={article} />;
+    }
+    ```
+    **Build the catalog, then render each article through the cached read helper.** The page never reaches for caching directives itself — it just awaits params and calls the helper.
+  </CodeVariant>
+
+  <CodeVariant label="db/queries/help-articles.ts">
+    ```ts {14-16}
+    import { cacheLife, cacheTag } from 'next/cache';
+
+    import { helpArticleTags } from '@/lib/tags';
+
+    export async function listPublicHelpSlugs(): Promise<string[]> {
+      const rows = await db
+        .select({ slug: helpArticles.slug })
+        .from(helpArticles)
+        .where(eq(helpArticles.visibility, 'public'));
+      return rows.map((row) => row.slug);
+    }
+
+    export async function getHelpArticle(slug: string) {
+      'use cache';
+      cacheTag(helpArticleTags.record(slug));
+      cacheLife('days');
+      return db.query.helpArticles.findFirst({
+        where: eq(helpArticles.slug, slug),
+      });
+    }
+    ```
+    **`'use cache'` lives on the data read, keyed and tagged by slug — never captures the request.** `listPublicHelpSlugs` lives in the same `db/queries/help-articles.ts` file as `listPublicHelpArticles()`, the full-row helper the sitemap from the previous lesson calls — one queries file owns every read of this table.
+  </CodeVariant>
+
+  <CodeVariant label="app/api/cms/route.ts">
+    ```ts {3}
+    export async function POST(request: Request) {
+      const { slug } = await readPublishEvent(request);
+      revalidateTag(helpArticleTags.record(slug), 'max');
+      return Response.json({ revalidated: true });
+    }
+    ```
+    **One edit busts exactly one article — no redeploy.** The publish webhook fires on save in the CMS and the next request rebuilds just that page.
+  </CodeVariant>
+</CodeVariants>
+
+A few things to read off that — the one-line refresher only, since the Cache Components chapter owns the depth:
+
+- `'use cache'` is **cross-request persistence** — the result survives between visitors, not just within one render.
+- `cacheLife('days')` is the documented preset for editorial content like blog posts and articles; it sets the stale/refresh/expire window so you don't hand-pick numbers.
+- `cacheTag` comes from your `tags.ts` helper — `helpArticleTags.record(slug)`, never an inline string. That's the same `tags.ts` file you built in chapter 32, so tag names stay typed and consistent across the codebase.
+- `revalidateTag(tag, 'max')` takes the cache-profile argument as its **second** parameter. In Next 16 that argument is mandatory — the single-argument form is a type error.
+
+And notice the signature: `getHelpArticle(slug: string)`. A `'use cache'` boundary **must not capture request-scoped values** from its surrounding scope, which is precisely why `slug` is passed *in* as an argument rather than read from `params` inside the helper. The argument *is* the cache key.
+
+:::note
+This stale-then-refresh behavior — serve the cached page, refresh it in the background on the `'days'` cadence, bust it immediately when the publish webhook calls `revalidateTag` — is what older material calls <Term definition="Incremental Static Regeneration — the legacy name for serve-cached-then-refresh. Under Cache Components it is expressed through cacheLife and tags.">ISR</Term>. Under Cache Components you express it through `cacheLife` and tags; the word ISR is worth knowing only so you recognize it in the wild.
+:::
+
+The technique of busting *one record's* cache by its tag, instead of rebuilding the whole site, is <Term definition="Busting one record's cache by its tag instead of rebuilding everything.">surgical invalidation</Term> — and it's the reason the `cacheTag`/`revalidateTag` pair is worth wiring even on pages you've already materialized at build.
+
+## Materializing only the hot paths
+
+`generateStaticParams` doesn't have to return *every* URL. It can return a **subset**. Return the hot hundred — the articles driving most of your traffic — and let the long tail render on first request. An unlisted slug renders on demand the first time someone asks for it, and Next saves that HTML to disk after a successful response, so the *second* visitor to a cold article also gets static HTML. Same machinery as full materialization, just lazier about the cold set.
+
+Reach for this when the catalog is large enough that building all of it slows the deploy, but a small head drives the traffic. It's the deliberate middle ground between the two clean ends — the plain dynamic page with Suspense, and the fully materialized catalog.
+
+Now the correction that matters, because you *will* read the opposite in older blog posts. Before Cache Components, returning an empty array `[]` from `generateStaticParams` meant "materialize nothing, render every URL at runtime." That intuition is now wrong:
+
+<CodeVariants maxLines={10}>
+  <CodeVariant label="Legacy intuition (now a build error)">
+    ```ts del={2}
+    export async function generateStaticParams() {
+      return [];
+    }
+    ```
+    **Pre-Cache-Components this meant "render everything at runtime." Under `cacheComponents` it fails the build.** The error is `empty-generate-static-params`.
+  </CodeVariant>
+
+  <CodeVariant label="Subset at build, tail on demand">
+    ```ts ins={3}
+    export async function generateStaticParams() {
+      const slugs = await listPopularHelpSlugs();
+      return slugs.slice(0, 100).map((slug) => ({ slug }));
+    }
+    ```
+    **Materialize the hot set; unlisted slugs render once on first request, then serve from disk.**
+  </CodeVariant>
+</CodeVariants>
+
+Under `cacheComponents: true`, an empty array is a **build error** (`empty-generate-static-params`). The reason, stated plainly: Cache Components validates at build that the route doesn't accidentally touch `cookies()`, `headers()`, or `searchParams` at runtime — and it needs *at least one* sample param to run that validation against. No params, nothing to validate, build fails.
+
+So the practical rule is a clean either/or:
+
+- If a route has `generateStaticParams`, give it **at least one real slug**.
+- If you genuinely want *every* slug rendered at runtime, you don't want `generateStaticParams` at all — you want the plain dynamic `[slug]` page with Suspense from the first section.
+
+There's a `'__placeholder__'` hack floating around that returns a fake param to satisfy the check. Don't. It defeats the validation it pretends to pass and invites the exact runtime error the validation exists to catch. The two honest shapes are *catalog with real samples* and *plain dynamic page* — nothing in between.
+
+That <Term definition="Rendering a URL the first time it is requested, then caching the result — versus rendering it at build.">on-demand rendering</Term> behavior — render the first time a URL is requested, then cache the result, versus rendering it at build — is the same mechanism whether you materialize a subset or none of a route's siblings. It's worth understanding on its own, because it's what makes partial materialization safe.
+
+## What the build can and can't see
+
+Here's the production failure a careful reviewer catches and a careless one ships. It follows directly from *how* that build-time validation works.
+
+At build, Next runs the route **once per returned param** and checks that nothing reaches a request-time API — `cookies()`, `headers()`, `searchParams` — outside a Suspense or `'use cache'` boundary. The catch: it can only validate the **branches the sample params actually execute**. A code path no sample slug reaches is a path the build never runs, and therefore never checks.
+
+Watch the trap form:
+
+<AnnotatedCode lang="tsx" maxLines={14} code={`
+export async function generateStaticParams() {
+  const slugs = await listPublicHelpSlugs();
+  return slugs.map((slug) => ({ slug }));
+}
+
+export default async function Page({
+  params,
+}: {
+  params: Promise<{ slug: string }>;
+}) {
+  const { slug } = await params;
+  if (slug.startsWith('internal-')) {
+    const role = (await cookies()).get('staff_role')?.value;
+    return <InternalNote slug={slug} role={role} />;
+  }
+  return <HelpArticle article={await getHelpArticle(slug)} />;
+}
+`}>
+  <AnnotatedStep meta="{1-4}" color="blue">
+    The samples. `listPublicHelpSlugs()` returns only *public* slugs — none of them start with `internal-`. So at build, the `internal-` branch is never executed.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{12-15} "cookies()"`} color="red">
+    The unvalidated branch. Because no sample slug hits it, the build never runs this code — so it never sees the `cookies()` read. The build is green. Then a real request for `/help/internal-x` enters this branch, touches `cookies()` outside any boundary, and **500s in production**. Green build, red production — the exact failure that erodes "it builds, ship it."
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{12-15}" color="green">
+    The fix is to not be here. A route you've promised the build is a static catalog shouldn't secretly read the request for *some* slugs. Either drop the request-time branch entirely (keep it a pure catalog), or — if it truly must read `cookies()` — wrap that branch in `<Suspense>` so the runtime read is explicitly allowed.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The fix is one of two moves. Either wrap the request-API read in a `<Suspense>` boundary, so it's *allowed* to be runtime — or, better for something you're trying to keep static, don't branch into request-time data on that page at all.
+
+This is exactly what condition #2 of the decision rule — *content stable, not per-request or per-user* — protects you from. If you find yourself tempted to read `cookies()` for *some* slugs of a "catalog," that route probably isn't a pure catalog, and you've drifted out of the territory `generateStaticParams` is safe in.
+
+Test your read of the validation model:
+
+<MultipleChoice>
+  A `/help/[slug]` page has `generateStaticParams` returning `[{ slug: 'pricing' }, { slug: 'faq' }]`, plus a branch that reads `cookies()` only when `slug === 'admin-preview'`. `next build` succeeds. What happens at runtime?
+
+  <McqChoice>The build should have failed — `cookies()` is banned on any route that exports `generateStaticParams`.</McqChoice>
+  <McqChoice correct>The build passes because no sample slug enters that branch; a request to `/help/admin-preview` then errors at runtime.</McqChoice>
+  <McqChoice>The `admin-preview` branch is silently rendered as static HTML at build, alongside `pricing` and `faq`.</McqChoice>
+  <McqChoice>`cookies()` resolves to an empty value at build, so every slug — including `admin-preview` — renders fine.</McqChoice>
+
+  <McqWhy>Build-time validation runs the route only against the **sample params** you return. `'pricing'` and `'faq'` never enter the `admin-preview` branch, so the `cookies()` read is never exercised — and never flagged. The unvalidated path only runs when a real request for `/help/admin-preview` arrives, and that's where it breaks.</McqWhy>
+</MultipleChoice>
+
+## One read, shared across the build
+
+Back in the walkthrough I told you not to worry about double-fetching. Here's why. When Next materializes `/help/getting-started`, three functions can read that article: `generateStaticParams` reads the slug list, the page reads the article, and `generateMetadata` reads it again for the title and OG card. They run at the same build, against the same slug — and Next **deduplicates** those reads automatically across `generate*`, the page, and metadata. The article is read once per build, not three times. (`generateMetadata` from the [previous lesson](/034-project-config-platform-primitives-and-seo/6-metadata-and-dynamic-og-cards/) is part of this — it runs at build for every materialized param, sharing the same read.)
+
+That automatic dedup covers `fetch`-based reads out of the box. If you ever need it for a non-`fetch` read — a raw DB call shared across `generateStaticParams`, the page, and `generateMetadata` — the explicit tool is React's `cache()` from chapter 32. The common case needs nothing.
+
+## Reading older code: the getStaticPaths rename
+
+You'll open a tutorial or an old codebase and see two functions that look like a different mechanism. They aren't — they're the Pages Router ancestor of what you just learned, and recognizing them saves you a confused afternoon.
+
+The Pages Router split this job across two exports: <Term definition="Legacy Pages-Router function that declared which URLs to build. The App Router replaced it with generateStaticParams.">getStaticPaths</Term> declared *which URLs to build* (the same job as `generateStaticParams`), and <Term definition="Legacy Pages-Router function that supplied the data for each prerendered page. The App Router replaced it with the page's own async body.">getStaticProps</Term> supplied *the data for each one*. The App Router collapses both. `generateStaticParams` replaces `getStaticPaths`, and the page's own `async` body plus its cached read helper replace `getStaticProps` — the data fetch moved *into* the page, which is exactly why `generateStaticParams` returns only params. The old `fallback: 'blocking' | true | false` option maps roughly onto today's on-demand behavior for unlisted slugs. Recognize the old shape, reach for the modern one, move on — no archaeology.
+
+:::caution
+You may also see `dynamicParams = false` — the toggle that makes any slug *not* in `generateStaticParams` return a 404 instead of rendering on demand. It still exists for genuinely closed lists, but under Cache Components it has sharp edges around nesting and inheritance. Treat it as a recognition-level power tool, not a default. The clean either/or — catalog with real samples, or plain dynamic page — covers what you actually need.
+:::
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="generateStaticParams — API reference"
+    href="https://nextjs.org/docs/app/api-reference/functions/generate-static-params"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The official return-shape contract, multi-segment forms, and the dynamicParams options."
+  />
+  <ExternalResource
+    title="Caching with Cache Components"
+    href="https://nextjs.org/docs/app/getting-started/caching"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="How sampled params validation works — the source for the green-build / red-production trap — alongside 'use cache' and tags."
+  />
+  <ExternalResource
+    title="CSR vs SSR vs SSG vs ISR vs PPR"
+    href="https://www.youtube.com/watch?v=S5tjBqzs31w"
+    icon="simple-icons:youtube"
+    iconColor="#FF0000"
+    description="ByteGrad's 34-minute tour of every Next.js rendering mode, building from npm run build to generateStaticParams, ISR, and PPR."
+  />
+  <ExternalResource
+    title="Incremental Static Regeneration (ISR)"
+    href="https://vercel.com/docs/incremental-static-regeneration"
+    icon="simple-icons:vercel"
+    iconColor="#000000"
+    description="Vercel's deployment-side view of the stale-while-revalidate model the lesson's cacheLife and revalidateTag express."
+  />
+</CardGrid>
+
+That closes the chapter. You now have the whole map of the project surface outside the route tree — the typed config, the image/font/script pipelines, the metadata and SEO files — and the one build-time hook that reaches back into it. The reflex to leave with: under Cache Components a route is dynamic until you prove it's a catalog, and `generateStaticParams` is how you make the promise — paired with `'use cache'`, a tag, and a freshness window so the known set is static, the long tail is cheap, and a single edit busts a single page.
