@@ -1,0 +1,382 @@
+---
+title: Server-rendered list and detail
+chapter-id: 035
+course-progress: 0.00005
+sidebar:
+  order: 2
+  label: List and detail
+---
+
+import { CardGrid } from '@astrojs/starlight/components';
+import Figure from '../../../components/figures/Figure.astro';
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Your job in this lesson is to make the invoices list and the selected invoice's detail both render on the server, with the active filter and the selected invoice derived entirely from the URL. By the end, `/invoices` shows the list beside a "pick an invoice" empty state, `/invoices/inv_001` shows that same list beside the chosen invoice's detail, and `?status=paid` narrows the list — server-side, so it survives a hard reload.
+
+<Figure caption="The finished surface — the list on the left, the selected invoice's detail on the right, both rendered server-side from the URL; the status filter pills narrow the list against `?status=`, and the right column falls back to an empty state when no invoice is selected.">
+  <Screenshot viewport="desktop">
+    <img
+      src="/screenshots/035/l2-desktop-1280-detail.png"
+      alt="The invoices surface at /invoices/inv_017: the full list of invoices on the left and the selected invoice INV-2026-017 (Massive Dynamic, paid, $7,436.00, due 2026-02-11) rendered on the right."
+    />
+  </Screenshot>
+</Figure>
+
+## Your mission
+
+This is the spine of the whole surface. The layout you were handed already wires the two parallel slots — `@list` and `@detail` — into a two-column grid alongside the page's `children`; what it renders into each column is up to the slot pages, and those are still placeholders. Your work is to fill them so the entire view state lives in the address bar rather than in client `useState`: the active status filter and the currently-selected invoice are both read from the URL on the server. That single decision is what makes the surface shareable, refreshable, and bookmarkable without you writing a line of code to persist anything — the URL *is* the persistence.
+
+The list slot is an async Server Component that awaits `searchParams`, validates the `status` value at the boundary with the project's `searchParamsSchema`, and hands the result to the provided pure `<InvoiceList>` and to the `<StatusFilter>` client component. Validate at the edge for a reason: a query string is untrusted input, exactly like a form payload, so it passes through Zod before it touches your data layer — the same seam that will validate `FormData` once Server Actions arrive in a later unit. And validate *gracefully*: an invalid `?status=banana` must degrade to the full list, never throw, so the schema's job here is to either hand you a clean status or quietly fall back to "all". The detail slot is the mirror image: it awaits `params`, loads one invoice by id, and renders it — or reaches for `notFound()` when the id matches nothing, letting the framework's 404 boundary own the missing case instead of an application error.
+
+The constraint that earns this lesson its place is the `default.tsx` contract on a parallel slot. When the URL is `/invoices/inv_001`, the `@detail/[id]` segment matches, but `@list` has no segment to match — and a parallel slot with no match and no `default.tsx` makes the *entire route* respond 404. So `@list` needs a `default.tsx` of its own that renders the full list, or a direct visit to any detail URL breaks. Treat `@detail/default.tsx` differently: having no invoice selected is a perfectly valid, expected state, so its default is an empty-state prompt, not an error. Keep every data fetch inside the Server Component pages and leave the render components pure — they receive data and draw it, nothing more. Out of scope here: the modal, the per-slot skeletons, and any mutation. The "New invoice" link lands in the list header and, for now, simply navigates to the full page at `/invoices/new`; the form renders but does not submit yet.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">`/invoices` renders the filtered list and a "pick an invoice" empty state.</ChecklistItem>
+  <ChecklistItem chip="tested">`/invoices/inv_001` renders the list alongside that invoice's detail.</ChecklistItem>
+  <ChecklistItem chip="tested">`?status=paid` filters the list server-side, and the filtered list holds across a hard reload at `/invoices?status=paid`.</ChecklistItem>
+  <ChecklistItem chip="tested">`?status=banana` (an invalid status) falls back to the full "all" list without crashing.</ChecklistItem>
+  <ChecklistItem chip="tested">A direct visit to `/invoices/inv_001` still renders the list on the left rather than 404ing.</ChecklistItem>
+  <ChecklistItem chip="tested">A missing invoice id renders the 404 surface rather than throwing.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Implement the four slot pages against the brief above and the lesson's test suite before you read on. When you have something running — or you are stuck — open the walkthrough.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+Four files, all under `src/app/invoices/`. Two of them carry the real weight (`@list/page.tsx` and `@detail/[id]/page.tsx`); the other two exist to handle the "no match" cases that parallel routes force you to think about.
+
+### The list slot reads the filter
+
+Start with `@list/page.tsx`. It does three things: read and validate the `status` from the URL, fetch the matching invoices, and render the header, the filter pills, and the list.
+
+<AnnotatedCode lang="tsx" maxLines={18} code={`
+// src/app/invoices/@list/page.tsx
+import Link from 'next/link';
+
+import { InvoiceList } from '@/components/invoice-list';
+import { StatusFilter } from '@/components/status-filter';
+import { Button } from '@/components/ui/button';
+import { listInvoices } from '@/lib/invoices/queries';
+import { searchParamsSchema } from '@/lib/invoices/schema';
+
+const ListPage = async ({ searchParams }: PageProps<'/invoices'>) => {
+  const parsed = searchParamsSchema.safeParse(await searchParams);
+  const status = parsed.success ? parsed.data.status : undefined;
+  const invoices = await listInvoices({ status });
+
+  return (
+    <section className="flex flex-col border-border border-e">
+      <header className="flex items-center justify-between gap-2 p-2">
+        <span className="px-1 text-sm font-semibold">Invoices</span>
+        <Button asChild size="sm">
+          <Link href="/invoices/new" data-testid="new-invoice-link">
+            New invoice
+          </Link>
+        </Button>
+      </header>
+      <StatusFilter current={status} />
+      <InvoiceList invoices={invoices} />
+    </section>
+  );
+};
+
+export default ListPage;
+`}>
+  <AnnotatedStep meta="{11-12}" color="blue">
+    The boundary. `searchParams` arrives as a Promise — await it, then run it through `searchParamsSchema.safeParse`. `safeParse` never throws; it returns a `{ success, data }` result. On success take the parsed `status` (a clean `InvoiceStatus | undefined`); on failure fall back to `undefined`, which means "all" — the graceful-degradation path requirement 4 depends on.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{13}" color="green">
+    The fetch. Data fetching lives here in the Server Component, not in a client effect; `listInvoices` filters by status when given one and returns every record when `status` is `undefined`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{15-28}" color="violet">
+    The render. A `<section>` with a header holding the "Invoices" label and the "New invoice" `<Link>`, then `<StatusFilter current={status} />` (the pills, told which one is active) and `<InvoiceList invoices={invoices} />` (the pure list). The `current={status}` prop keeps the active pill in sync with the URL on every server render.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+A couple of things worth slowing down on.
+
+The prop types — `PageProps<'/invoices'>` — are generated, not hand-written. When you ran `pnpm verify` (or any dev build), Next ran `next typegen` and emitted typed `PageProps`/`LayoutProps` helpers keyed by route. `searchParams` arrives as a `Promise` you have to `await`; that is the modern App Router shape, and it is what makes the read an explicit asynchronous, dynamic operation rather than a hidden global. You read all about awaiting `searchParams` in a Server Component back in the App Router chapters — here you are just applying it.
+
+Why `safeParse` and not `parse`? Because `parse` *throws* on invalid input, and a thrown error in a Server Component renders the error boundary — which is the wrong outcome for someone who fat-fingered a query string. `safeParse` hands you a discriminated result instead: `parsed.success` is `true` with clean `parsed.data`, or `false`, and on `false` you fall back to `undefined`, which `listInvoices` reads as "no filter, return everything". That one line is the entire graceful-degradation story for requirement 4: `?status=banana` produces the full list, no crash.
+
+One more thing about *where* `searchParamsSchema` lives. It is defined in `src/lib/invoices/schema.ts`, not in this page, so the exact same schema that validates the URL today will validate a form's payload tomorrow. Keeping validation in `/lib` rather than inline in the route is a deliberate architectural call — a pure, framework-agnostic core that any caller can reuse — and it is the reason one Zod definition serves both the read path and, later, the write path.
+
+### The list slot's default keeps the route alive
+
+Now `@list/default.tsx`. It renders almost exactly what the page renders — same header, same pills, same list — with one difference: it does not read the filter. Compare them side by side and the difference is the whole point.
+
+<CodeVariants maxLines={18}>
+  <CodeVariant label="page — reads the filter">
+    ```tsx
+    // src/app/invoices/@list/page.tsx
+    import Link from 'next/link';
+
+    import { InvoiceList } from '@/components/invoice-list';
+    import { StatusFilter } from '@/components/status-filter';
+    import { Button } from '@/components/ui/button';
+    import { listInvoices } from '@/lib/invoices/queries';
+    import { searchParamsSchema } from '@/lib/invoices/schema';
+
+    const ListPage = async ({ searchParams }: PageProps<'/invoices'>) => {
+      const parsed = searchParamsSchema.safeParse(await searchParams);
+      const status = parsed.success ? parsed.data.status : undefined;
+      const invoices = await listInvoices({ status });
+
+      return (
+        <section className="flex flex-col border-border border-e">
+          <header className="flex items-center justify-between gap-2 p-2">
+            <span className="px-1 text-sm font-semibold">Invoices</span>
+            <Button asChild size="sm">
+              <Link href="/invoices/new" data-testid="new-invoice-link">
+                New invoice
+              </Link>
+            </Button>
+          </header>
+          <StatusFilter current={status} />
+          <InvoiceList invoices={invoices} />
+        </section>
+      );
+    };
+
+    export default ListPage;
+    ```
+
+    **Reads the filter.** The slot Next picks when the URL has a list segment — `/invoices` itself, including `/invoices?status=paid` — so it reads `searchParams` and can filter.
+  </CodeVariant>
+
+  <CodeVariant label="default — no filter">
+    ```tsx
+    // src/app/invoices/@list/default.tsx
+    import Link from 'next/link';
+
+    import { InvoiceList } from '@/components/invoice-list';
+    import { StatusFilter } from '@/components/status-filter';
+    import { Button } from '@/components/ui/button';
+    import { listInvoices } from '@/lib/invoices/queries';
+
+    const ListDefault = async () => {
+      const invoices = await listInvoices({});
+
+      return (
+        <section className="flex flex-col border-border border-e">
+          <header className="flex items-center justify-between gap-2 p-2">
+            <span className="px-1 text-sm font-semibold">Invoices</span>
+            <Button asChild size="sm">
+              <Link href="/invoices/new" data-testid="new-invoice-link">
+                New invoice
+              </Link>
+            </Button>
+          </header>
+          <StatusFilter />
+          <InvoiceList invoices={invoices} />
+        </section>
+      );
+    };
+
+    export default ListDefault;
+    ```
+
+    **No filter.** The slot Next picks when no list segment matched, exactly what happens on a direct visit to `/invoices/inv_001` where `@detail/[id]` matched but `@list` did not. A default receives no `searchParams` and no `params`, so it cannot read a filter; it calls `listInvoices({})` and renders `<StatusFilter />` with no `current`. It exists for one job: without it, an unmatched `@list` would 404 the whole route.
+  </CodeVariant>
+</CodeVariants>
+
+This is the decision the lesson exists to teach, so it is worth stating plainly. A parallel slot renders its `default.tsx` whenever the current URL provides no segment for that slot to match. Visit `/invoices/inv_001` directly and the router matches `@detail/[id]/page.tsx` for the detail column — but nothing in `@list` matches that URL, so the router looks for `@list/default.tsx`. If it is not there, the slot is unresolved and Next renders the not-found surface for the *entire route*, list and all. With the default present, the left column paints the full unfiltered list while the right column paints the selected invoice, and the direct visit works. That is requirement 5, and it is the single most common thing junior devs miss about parallel routes.
+
+A `default.tsx` receives no `searchParams` and no `params`, because by definition it is the fallback for "the URL didn't match here". That is why it calls `listInvoices({})` and renders `<StatusFilter />` bare — there is no filter to read, so it shows everything and highlights the "All" pill. Yes, the render body is duplicated between `page.tsx` and `default.tsx`; that is the honest shape of the two cases, and factoring the shared markup into a small component is a fine refactor if the duplication ever grows, but at this size the two files reading clearly on their own is worth more than the abstraction.
+
+<VideoCallout videoId="M836RZxReHU" videoTitle="NextJS Parallel Routes Explained with a Simple Example">
+  Dave Gray walks the `@slot` model and spends the back half on exactly this `default.tsx` trap — why a missing default 404s the whole route on a hard reload (14 min).
+</VideoCallout>
+
+### The detail slot's default is an empty state
+
+`@detail/default.tsx` is the fallback the detail column renders when no invoice is selected — at `/invoices` with nothing chosen yet.
+
+```tsx
+// src/app/invoices/@detail/default.tsx
+const DetailDefault = () => (
+  <section
+    data-testid="detail-empty"
+    className="sticky top-0 grid h-dvh place-items-center p-6 text-sm text-muted-foreground"
+  >
+    Pick an invoice to see its details
+  </section>
+);
+
+export default DetailDefault;
+```
+
+Note what this is *not*: it is not a 404. A user landing on `/invoices` with no invoice picked is in a normal, expected state, so the detail column prompts them to pick one rather than treating the empty selection as an error. That distinction — empty state versus error surface — is a small one to write but an easy one to get wrong, and getting it wrong means showing a scary "not found" page on the home screen of your own feature. The `sticky top-0 grid h-dvh place-items-center` styling just keeps the prompt centered in the column and pinned as the list scrolls beside it.
+
+### The detail slot loads one invoice
+
+Last file, `@detail/[id]/page.tsx` — the one that actually fetches a single invoice.
+
+```tsx
+// src/app/invoices/@detail/[id]/page.tsx
+import { notFound } from 'next/navigation';
+
+import { InvoiceDetail } from '@/components/invoice-detail';
+import { getInvoice } from '@/lib/invoices/queries';
+
+const DetailPage = async ({ params }: PageProps<'/invoices/[id]'>) => {
+  const { id } = await params;
+  const invoice = await getInvoice(id);
+
+  if (!invoice) {
+    notFound();
+  }
+
+  return <InvoiceDetail invoice={invoice} />;
+};
+
+export default DetailPage;
+```
+
+`params` is a `Promise` here too — await it to pull the `id` out of the dynamic segment, then ask the data layer for that invoice. `getInvoice` returns `Invoice | null`, so the `if (!invoice)` guard is the missing-invoice case, and you hand it to `notFound()` rather than throwing your own error. `notFound()` is special: it throws an error Next recognizes and turns into the framework's 404 surface, which is the right owner for "this id doesn't exist" — that case belongs to the not-found boundary, not the error boundary. This project accepts Next's default not-found page for now; wiring a custom `not-found.tsx` is a later refinement. That is requirement 6.
+
+There is also a TypeScript payoff hiding in that guard. `notFound()` never returns — its type is `never` — so after the `if (!invoice) { notFound(); }` block, TypeScript narrows `invoice` from `Invoice | null` down to `Invoice`, and `<InvoiceDetail invoice={invoice} />` type-checks without a non-null assertion. The control-flow guard doubles as the type guard.
+
+### The data layer you just plugged into
+
+This is the first lesson that opens the provided `src/lib/invoices/` files, so it is worth a quick look at what those two functions and the schema actually do — you have been calling them blind.
+
+```ts
+// src/lib/invoices/queries.ts
+import { invoices } from '@/lib/invoices/data';
+import type { Invoice, InvoiceStatus } from '@/lib/invoices/schema';
+
+export const listInvoices = async (filters: {
+  status?: InvoiceStatus;
+}): Promise<Invoice[]> => {
+  const matched = filters.status
+    ? invoices.filter((invoice) => invoice.status === filters.status)
+    : invoices;
+
+  return [...matched].sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+};
+
+export const getInvoice = async (id: string): Promise<Invoice | null> => {
+  // Intentional streaming seam: the artificial delay makes the @detail slot
+  // visibly stream behind its own Suspense boundary (Lesson 4).
+  await new Promise((resolve) => setTimeout(resolve, 600));
+
+  return invoices.find((invoice) => invoice.id === id) ?? null;
+};
+```
+
+`listInvoices` filters by status when you pass one and returns the lot when you don't, then sorts ascending by `dueDate`. `getInvoice` finds one record by id and returns `null` for a miss — and it carries a deliberate 600 ms `setTimeout`. That delay is not laziness; it is a planted seam. The detail data is artificially slow so that, once each slot gets its own skeleton in the *Independent streaming per slot* lesson, you can actually *watch* the detail column stream in behind its Suspense boundary while the already-resolved list sits still. Right now it just means the detail takes a beat to appear, which is fine.
+
+Both functions are async and return `Promise<Invoice[] | null>`, even though the data is an in-memory array that could be read synchronously. That is intentional: this is the exact shape a real database query has, so when Postgres and Drizzle replace this fixture in a later unit, the call sites — your two pages — do not change at all. The `Invoice` type and the schemas come from the file next door:
+
+```ts
+// src/lib/invoices/schema.ts
+import { z } from 'zod';
+
+export const statusSchema = z.enum(['draft', 'sent', 'paid', 'overdue']);
+
+export type InvoiceStatus = z.infer<typeof statusSchema>;
+
+export const searchParamsSchema = z.object({
+  status: statusSchema.optional(),
+});
+
+export type Invoice = {
+  id: string;
+  number: string;
+  customer: string;
+  status: InvoiceStatus;
+  amount: number;
+  dueDate: string;
+};
+```
+
+`statusSchema` is the single source of truth for the four valid statuses; `InvoiceStatus` is its inferred type, so the enum and the type can never drift apart. `searchParamsSchema` wraps an optional `status` — optional because a bare `/invoices` is valid — and it is the schema your list page calls `safeParse` on. The `Invoice` shape keeps `amount` in integer cents (never floats for money) and `dueDate` as a `YYYY-MM-DD` string. That hand-written `type` is the one piece the database unit will delete: Drizzle infers the row type straight from the table definition, so `Invoice` becomes `typeof invoices.$inferSelect`. For now, the literal type does the job.
+
+One component you wired but did not build: `<StatusFilter>`. It is the only `'use client'` piece in this slot — clicking a pill is a browser event, and an event handler forces a Client Component — and it drives the filter by calling `router.replace('/invoices?status=…')`, pushing the new status into the URL rather than holding it in state. That round-trip — click pill, URL changes, server re-renders the list filtered — is the URL-as-source-of-truth loop in action. The component itself is provided; how the server/client boundary and `router.replace` work was covered in the App Router chapters, so reach back there rather than re-deriving it here.
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="default.js"
+    href="https://nextjs.org/docs/app/api-reference/file-conventions/default"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The exact convention this lesson turns on: the fallback an unmatched slot renders so the route doesn't 404 on a hard load."
+  />
+  <ExternalResource
+    title="Parallel Routes"
+    href="https://nextjs.org/docs/app/api-reference/file-conventions/parallel-routes"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="How the @list and @detail slots map to layout props, and how soft vs. hard navigation resolves each one."
+  />
+  <ExternalResource
+    title="notFound()"
+    href="https://nextjs.org/docs/app/api-reference/functions/not-found"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The function the detail page reaches for on a missing id — and why its never return type narrows the guard."
+  />
+  <ExternalResource
+    title="Zod — handling errors"
+    href="https://zod.dev/basics?id=handling-errors"
+    icon="simple-icons:zod"
+    iconColor="#3068B7"
+    description="parse vs. safeParse — the discriminated result that lets ?status=banana degrade to the full list instead of throwing."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's test suite:
+
+```bash
+pnpm test:lesson 2
+```
+
+The suite renders each slot page in isolation and asserts on the markup it produces: that the list page fetches and renders one row per invoice plus the "New invoice" link, that `status=paid` narrows the rows to only paid invoices and reproduces the same list on a second render, that `status=banana` degrades to the full list instead of throwing, that `@list/default` renders every invoice, that the detail page renders the matching invoice for `inv_001`, and that a missing id triggers `notFound()`'s 404 rather than a plain error. Every requirement is covered, and the suite should report green:
+
+```
+ ✓ tests/lessons/Lesson 2.test.ts (8 tests)
+
+ Test Files  1 passed (1)
+      Tests  8 passed (8)
+```
+
+Then run the full gate before you call it done:
+
+```bash
+pnpm verify
+```
+
+Biome CI, `next typegen`, `tsc --noEmit`, and a production build should all complete clean — the same gate CI runs on every pull request.
+
+The tests render the slots one at a time in a Node environment; they cannot boot the router, compose the two columns together, or exercise a real browser reload. So confirm the behaviors the tests can't reach yourself, in the browser, with `pnpm dev` running:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">`/invoices` shows the list in the left column and the "pick an invoice" empty state in the right column.</ChecklistItem>
+  <ChecklistItem chip="untested">`/invoices/inv_001` shows the list on the left and that invoice's detail on the right.</ChecklistItem>
+  <ChecklistItem chip="untested">Clicking the "Paid" filter pill narrows the list to paid invoices and sets the URL to `/invoices?status=paid`; a hard reload (Cmd/Ctrl+R) keeps the same filtered list.</ChecklistItem>
+  <ChecklistItem chip="untested">Visiting `/invoices?status=banana` directly renders the full list without crashing.</ChecklistItem>
+  <ChecklistItem chip="untested">Opening `/invoices/inv_001` directly in a fresh tab renders the list on the left rather than a 404 page.</ChecklistItem>
+</Checklist>
+
+With those ticked, the surface has its spine: every view derives from the URL, and the list and detail both render on the server. Next you will make the "New invoice" link open as a modal with its own real URL.

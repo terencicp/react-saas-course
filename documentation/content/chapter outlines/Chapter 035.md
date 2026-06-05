@@ -26,53 +26,70 @@ The finished surface, stated as the behaviors the student can confirm in the bro
 - **From chapter 031 (async UI):** `<Suspense>` as the streaming seam, `loading.tsx` at the segment, sibling-independent streaming.
 - **From chapter 032 (cache):** Under Cache Components every route is dynamic by default; `searchParams` is an explicit dynamic signal.
 - **From chapter 033 (server-side reads):** `await searchParams` in Server Components, Zod validation at the boundary.
-- **From chapter 027 (shadcn):** `<Dialog>` for the modal shell (assumed installed in starter); `<Skeleton>` for skeleton primitives.
+- **From chapter 027 (shadcn):** `<Dialog>` for the modal shell (shipped in the starter's `components/ui/`); `<Skeleton>` for skeleton primitives.
 - **From chapter 004 / chapter 005 (TypeScript):** Zod schemas, `z.infer`, narrowed enum types.
-- **From chapter 028 (themed surface):** the project's toolchain decisions — pnpm, `AGENTS.md`, `tsconfig`, Biome — carried forward in the starter rather than rebuilt.
+- **From chapter 028 (themed surface):** the project's toolchain decisions — pnpm, `AGENTS.md`, `tsconfig`, Biome, `next-themes` `<Providers>` — carried forward in the starter rather than rebuilt. (No build-time env validation here; the in-memory fixture needs no env, so `@t3-oss/env-nextjs` waits for Unit 5.)
 
-### Starter file tree (stubs marked with TODO)
+### Starter file tree (stubs carry a `TODO(L<n>)` comment)
+
+Each stub renders a placeholder (a text node or empty `data-testid` div) so the app builds and runs from the first clone; the `TODO(L<n>)` comment names the lesson that fleshes it out. Everything else is provided and shared with the solution.
 
 ```
 src/
   app/
+    globals.css                  # provided: Tailwind v4 CSS-first theme, light/dark oklch vars
+    layout.tsx                   # provided: root html/body shell + <Providers>, metadata export
+    page.tsx                     # provided: redirect('/invoices')
+    _components/
+      providers.tsx              # provided: 'use client' next-themes ThemeProvider
     invoices/
-      layout.tsx                 # provided: two-slot layout with @list and @detail
+      layout.tsx                 # provided: two-slot shell, receives {children, list, detail}
+      default.tsx                # provided: segment default (renders null)
+      loading.tsx                # provided: segment loading (two-column Skeleton grid)
       @list/
-        default.tsx              # TODO student
-        page.tsx                 # TODO student (reads searchParams.status)
-        loading.tsx              # TODO student (list skeleton)
+        page.tsx                 # TODO(L2) (reads searchParams.status)
+        default.tsx              # TODO(L2) (same render as page, no filter)
+        loading.tsx              # TODO(L4) (renders <ListSkeleton>)
       @detail/
-        default.tsx              # TODO student (empty-state)
+        default.tsx              # TODO(L2) (empty-state)
         [id]/
-          page.tsx               # TODO student (loads one invoice)
-          loading.tsx            # TODO student (detail skeleton)
-      (.)new/
-        page.tsx                 # TODO student (intercepted modal)
+          page.tsx               # TODO(L2) (loads one invoice, notFound() on null)
+          loading.tsx            # TODO(L4) (renders <DetailSkeleton>)
       new/
-        page.tsx                 # TODO student (paired full page)
-    layout.tsx                   # provided: root shell, fonts, Tailwind
-  lib/
-    invoices/
-      data.ts                    # provided: in-memory fixture (30 records)
-      queries.ts                 # provided: getInvoices(filters), getInvoice(id)
-      schema.ts                  # provided: Invoice type, statusSchema
+        page.tsx                 # TODO(L3) (paired full page)
+      (.)new/
+        page.tsx                 # TODO(L3) (intercepted modal)
   components/
     invoice-list.tsx             # provided: pure render component
     invoice-detail.tsx           # provided: pure render component
     invoice-form.tsx             # provided: pure render component, no submit yet
-    status-filter.tsx            # provided: client component, useRouter-driven
-    skeletons.tsx                # TODO student exports ListSkeleton, DetailSkeleton
+    status-filter.tsx            # provided: client component, router.replace-driven
+    new-invoice-dialog.tsx       # TODO(L3) ('use client' Dialog wrapper, router.back() on close)
+    skeletons.tsx                # TODO(L4) exports ListSkeleton, DetailSkeleton
+    ui/                          # provided: shadcn primitives (badge, button, card, dialog, separator, sheet, skeleton)
+  lib/
+    utils.ts                     # provided: cn()
+    invoices/
+      schema.ts                  # provided: Invoice type, statusSchema, searchParamsSchema
+      data.ts                    # provided: in-memory fixture (30 records, inv_001–inv_030)
+      queries.ts                 # provided: listInvoices(filters), getInvoice(id)
+tests/
+  lessons/
+    Lesson 2.test.ts             # provided: describe.todo placeholder
+    Lesson 3.test.ts             # provided: describe.todo placeholder
+    Lesson 4.test.ts             # provided: describe.todo placeholder
 ```
 
 ### Reference solution signatures lessons display
 
-- `getInvoices(filters: { status?: InvoiceStatus }): Promise<Invoice[]>`
+- `listInvoices(filters: { status?: InvoiceStatus }): Promise<Invoice[]>` (sorts ascending by `dueDate`)
 - `getInvoice(id: string): Promise<Invoice | null>` (with artificial 600 ms delay)
 - `statusSchema = z.enum(['draft', 'sent', 'paid', 'overdue'])`
 - `searchParamsSchema = z.object({ status: statusSchema.optional() })`
-- `Invoice = { id: string; number: string; customer: string; status: InvoiceStatus; amount: number; dueDate: string }`
-- Page signature: `async function ListPage({ searchParams }: { searchParams: Promise<{ status?: string }> })`
-- Detail page signature: `async function DetailPage({ params }: { params: Promise<{ id: string }> })`
+- `Invoice = { id: string; number: string; customer: string; status: InvoiceStatus; amount: number; dueDate: string }` (`amount` in cents, `dueDate` as `YYYY-MM-DD`)
+- List slot uses the generated route type: `async function ListPage({ searchParams }: PageProps<'/invoices'>)` (`next typegen` emits `PageProps`; `searchParams` is a `Promise` to await).
+- Detail slot: `async function DetailPage({ params }: PageProps<'/invoices/[id]'>)`.
+- Layout: `({ children, list, detail }: LayoutProps<'/invoices'>)` — the parallel slots arrive as named props.
 - Env: no entries (in-memory fixture; Drizzle/Postgres land in Unit 5).
 
 ### Concepts demonstrated → owning lesson
@@ -91,7 +108,7 @@ src/
 
 ## Lesson 1 — Project Overview
 
-No feature is built. The student leaves with the starter cloned, dependencies installed, and `pnpm dev` serving the unstubbed `/invoices` shell (empty slots) on `localhost:3000`.
+No feature is built. The student leaves with the starter cloned, dependencies installed, and `pnpm dev` serving the `/invoices` shell with placeholder slots on `localhost:3000`.
 
 ### What we're building
 
@@ -108,12 +125,12 @@ Show the final UX as three screenshots or a short animation: list with the `?sta
 
 ### Architecture
 
-Labeled list or diagram, shape only: the `invoices/layout.tsx` two-slot shell renders `@list` and `@detail` alongside `children`; `@list` reads `?status=` and renders the filtered list; `@detail/[id]` loads one invoice; `(.)new` intercepts soft navigation into a dialog while `new/` is the full-page twin; each slot owns a `loading.tsx` skeleton.
+Labeled list or diagram, shape only: the `invoices/layout.tsx` two-slot shell renders `@list` and `@detail` alongside `children`; `@list` reads `?status=` and renders the filtered list; `@detail/[id]` loads one invoice; `(.)new` intercepts soft navigation into a dialog while `new/` is the full-page twin; the provided segment-level `invoices/loading.tsx` covers the first paint, and each slot adds its own `loading.tsx` skeleton in lesson 4.
 
 ### Starting file tree
 
-Render the "Starter file tree" from the Chapter framing, annotated: comment the files changed from the previous project or that lessons will touch, leave the rest uncommented, and mark the TODO-bearing stubs (`@list/page.tsx`, `@list/default.tsx`, `@list/loading.tsx`, `@detail/default.tsx`, `@detail/[id]/page.tsx`, `@detail/[id]/loading.tsx`, `(.)new/page.tsx`, `new/page.tsx`, `components/skeletons.tsx`) as the highlighted focus.
-One sentence per provided file on what it is and why it earns a seat; deep per-file explanation lands in the lesson that first touches the file. Name the senior call behind the starter itself: chapter 028 taught the from-scratch toolchain decisions (pnpm, `AGENTS.md`, `tsconfig`, Biome, env validation), and every project chapter after carries them forward via a `degit`'d snapshot rather than rebuilding them.
+Render the "Starter file tree" from the Chapter framing, annotated: comment the files changed from the previous project or that lessons will touch, leave the rest uncommented, and mark the `TODO(L<n>)` stubs (`@list/page.tsx`, `@list/default.tsx`, `@list/loading.tsx`, `@detail/default.tsx`, `@detail/[id]/page.tsx`, `@detail/[id]/loading.tsx`, `new/page.tsx`, `(.)new/page.tsx`, `components/new-invoice-dialog.tsx`, `components/skeletons.tsx`) as the highlighted focus.
+One sentence per provided file on what it is and why it earns a seat; deep per-file explanation lands in the lesson that first touches the file. Name the senior call behind the starter itself: chapter 028 taught the from-scratch toolchain decisions (pnpm, `AGENTS.md`, `tsconfig`, Biome), and every project chapter after carries them forward via a `degit`'d snapshot rather than rebuilding them.
 
 ### Roadmap
 
@@ -127,13 +144,13 @@ One Card per implementation lesson in a CardGrid:
 
 `Steps` block with the exact command sequence and the expected outcome on success:
 
-1. `pnpm dlx degit react-saas-course-projects/list-plus-detail-starter project-name` — fetches the starter folder contents without git history. (`pnpm dlx` runs a package without installing it — the pnpm equivalent of `npx`.) One line on the projects monorepo layout: one folder per project, with `starter/` and `solution/` siblings.
-2. `pnpm install` — installs against the pinned `pnpm-lock.yaml` from the starter; the student sees the install run and the symlinks appear.
-3. `pnpm dev` — starts the Next.js dev server on `localhost:3000` with Turbopack (the Next.js 16 default, named only so the student recognizes the bundler in dev banners and error messages); the unstubbed `/invoices` shell renders with empty slots because the `page.tsx` files are still TODO.
-4. `pnpm build` — confirms the production path type-checks and builds; this is what CI runs on every PR and the first proof the project is shippable.
+1. `pnpm dlx degit <starter-repo> list-plus-detail` — fetches the starter folder contents without git history. (`pnpm dlx` runs a package without installing it — the pnpm equivalent of `npx`.) One line on the projects monorepo layout: one folder per chapter project, with `start/` and `solution/` siblings.
+2. `pnpm install` — installs the pinned dependencies (pnpm 11, Node ≥ 24); the student sees the install run and the symlinks appear.
+3. `pnpm dev` — starts the Next.js dev server on `localhost:3000` with Turbopack (the Next.js 16 default, named only so the student recognizes the bundler in dev banners and error messages); the root path redirects to `/invoices`, whose two-slot shell renders with placeholder slots because `@list/page.tsx`, `@detail/[id]/page.tsx`, and friends are still `TODO(L<n>)` stubs.
+4. `pnpm verify` — Biome CI + `next typegen` + `tsc --noEmit` + production build; this is the gate CI runs on every PR and the first proof the project is shippable. (`pnpm build` alone runs only the build step.)
 
 No env vars (in-memory fixture; `DATABASE_URL` and friends land in Unit 5).
-Expected result: `pnpm dev` serves the empty `/invoices` shell and `pnpm build` completes cleanly — the starter is the new project's floor, ready to commit as the first milestone.
+Expected result: `pnpm dev` serves the placeholder `/invoices` shell and `pnpm verify` completes cleanly — the starter is the new project's floor, ready to commit as the first milestone.
 
 ---
 
@@ -163,14 +180,15 @@ Out of scope: the modal, skeletons, and any mutation — the form does not submi
 
 ### Coding time
 
-Build prompt directing the student to implement against the brief and the tests, then the hidden solution `<details>`: `@list/page.tsx` (async, awaits and `safeParse`s `searchParams`, calls `getInvoices({ status })`, renders `<InvoiceList>` + `<StatusFilter>`), `@list/default.tsx` (returns the same content as `page.tsx`), `@detail/default.tsx` (empty-state prompt), `@detail/[id]/page.tsx` (awaits `params`, calls `getInvoice(id)`, `notFound()` on null, renders `<InvoiceDetail>`).
-This lesson is the first to open the provided `lib/invoices/queries.ts` and `schema.ts` — walk `getInvoices` accepting `{ status?: InvoiceStatus }` and returning sorted records, `getInvoice(id)`'s artificial 600 ms delay (the seam that makes streaming visible in lesson 4), and the `statusSchema`/`Invoice` shape Unit 5 will replace with Drizzle's `$inferSelect`.
+Build prompt directing the student to implement against the brief and the tests, then the hidden solution `<details>`: `@list/page.tsx` (async, awaits and `safeParse`s `searchParams`, calls `listInvoices({ status })`, renders a header with a "New invoice" `<Link href="/invoices/new">` plus `<StatusFilter current={status} />` and `<InvoiceList>`), `@list/default.tsx` (the same render as `page.tsx` but with no status filter, since the default has no `searchParams`), `@detail/default.tsx` (empty-state prompt, `data-testid="detail-empty"`), `@detail/[id]/page.tsx` (awaits `params`, calls `getInvoice(id)`, `notFound()` on null, renders `<InvoiceDetail invoice={invoice} />`).
+The "New invoice" link lands here in the list header (it lives in the list slot, not a separate component); lesson 3 makes it open a modal — for now it just navigates to the full page at `/invoices/new`.
+This lesson is the first to open the provided `lib/invoices/queries.ts` and `schema.ts` — walk `listInvoices` accepting `{ status?: InvoiceStatus }` and returning sorted records, `getInvoice(id)`'s artificial 600 ms delay (the seam that makes streaming visible in lesson 4), and the `statusSchema`/`Invoice` shape Unit 5 will replace with Drizzle's `$inferSelect`.
 Note `searchParamsSchema` living in `/lib` so one Zod schema validates the URL now and a form payload later — Architectural Principle #3 (pure `/lib`), formalized in lesson 4 of chapter 043.
 Decision rationale: `default.tsx` on `@list` (name the direct-visit 404 it prevents), `notFound()` over a thrown error (the 404 boundary owns the case, not `error.tsx` — wire `not-found.tsx` later or accept the default), and the empty-state-vs-404 distinction on `@detail/default.tsx`.
 
 ### Moment of truth
 
-Run the lesson's test suite (command + expected pass output). By hand, tick off each requirement the tests don't cover:
+Run `pnpm test:lesson 2` and `pnpm verify` (the `Lesson 2.test.ts` file is a `describe.todo` placeholder; the by-hand checklist plus `pnpm verify` is the real gate). By hand, tick off each requirement:
 
 - [ ] `/invoices` shows the list and the empty state.
 - [ ] `/invoices/inv_001` shows the list and the detail.
@@ -192,7 +210,8 @@ Show the modal open over the list and the same URL rendering full-page in a fres
 ### Your mission
 
 This is the modal-with-real-URL pattern, the production default for any "form that could also be a page": the URL is the source of truth, so the form gets shareability, refreshability, and `Cmd+click` for free instead of trapping its state in `useState`.
-Build the non-intercepting twin at `new/page.tsx` first — a full-page `<InvoiceForm>` with a "Cancel" link back to `/invoices` — because that is what direct visits, refreshes, and `Cmd+click` resolve to; then build the intercepting `(.)new/page.tsx` that wraps the form in a shadcn `<Dialog>` whose close action navigates back rather than toggling state.
+The "New invoice" link already exists from lesson 2 (it navigates to the full page); this lesson makes that same URL open as a modal on soft navigation.
+Build the non-intercepting twin at `new/page.tsx` first — a full-page `<InvoiceForm>` with a "Cancel" link back to `/invoices` — because that is what direct visits, refreshes, and `Cmd+click` resolve to; then build the `NewInvoiceDialog` client component (a shadcn `<Dialog open>` whose `onOpenChange` calls `router.back()` on close) and the intercepting `(.)new/page.tsx` that composes `<NewInvoiceDialog><InvoiceForm /></NewInvoiceDialog>`.
 The constraint that shapes the solution is that an intercepting route is always paired with its non-intercepting twin: skip the twin and direct visits, refreshes, and `Cmd+click` all break.
 Closing the modal is a navigation (`router.back()`), not a state toggle, so history stays clean; the shadcn `<Dialog>` portal-renders to `<body>`, escaping ancestor stacking contexts (cross-reference lesson 9 of chapter 020).
 Name the trade rather than fight it: refreshing the modal URL renders the full page and drops the underlay — that is by design in 2026 Next.js, and the "modal preserved across refresh" shape (a parallel `@modal` slot) is out of scope here.
@@ -205,13 +224,14 @@ Name the trade rather than fight it: refreshing the modal URL renders the full p
 
 ### Coding time
 
-Build prompt, then the hidden solution `<details>`: `new/page.tsx` (full-page `<InvoiceForm>` + "Cancel" `<Link>`), `(.)new/page.tsx` (`<InvoiceForm>` inside a shadcn `<Dialog open>` that closes via `router.back()` on a small Client Component close button or the dialog's `onOpenChange`), and the "New invoice" `<Link href="/invoices/new">` added to the list header.
-Decision rationale: building the twin first (it is what every non-soft entry resolves to), close-as-navigation over close-as-state, and the `<Dialog>` portal target.
+Build prompt, then the hidden solution `<details>`: `new/page.tsx` (full-page `<InvoiceForm>` + "Cancel" `<Link href="/invoices">`), `components/new-invoice-dialog.tsx` (the `'use client'` `NewInvoiceDialog` — a shadcn `<Dialog open>` rendering `children` in `<DialogContent>`, closing via `router.back()` on `onOpenChange`), and `(.)new/page.tsx` (composes `<NewInvoiceDialog><InvoiceForm /></NewInvoiceDialog>`).
+The "New invoice" `<Link href="/invoices/new">` is already in the list header from lesson 2 — no change needed here; the interception is what makes it open a modal.
+Decision rationale: building the twin first (it is what every non-soft entry resolves to), close-as-navigation over close-as-state, factoring the dialog into a Client Component so `(.)new/page.tsx` stays a thin Server Component, and the `<Dialog>` portal target.
 Callout: the `(.)` prefix matches a same-level segment — `(..)` and `(...)` exist for cross-level interception (referenced to lesson 6 of chapter 029, not re-explained).
 
 ### Moment of truth
 
-Run the lesson's test suite (command + expected pass output). By hand, tick off each requirement the tests don't cover:
+Run `pnpm test:lesson 3` and `pnpm verify` (the `Lesson 3.test.ts` file is a `describe.todo` placeholder; the by-hand checklist plus `pnpm verify` is the real gate). By hand, tick off each requirement:
 
 - [ ] Soft navigation from `/invoices` opens the modal with the list underneath and the URL at `/invoices/new`.
 - [ ] A direct visit to `/invoices/new` renders the full page.
@@ -234,7 +254,7 @@ Show the two slots streaming independently, each under its own skeleton.
 
 This lesson makes the surface feel right under real network conditions by giving each slot its own segment-level loading UI, so the seam where streaming kicks in is owned by the file convention rather than a hand-written `<Suspense>` tag.
 Build the shared skeleton components against shadcn's `<Skeleton>` primitive — a row-count `ListSkeleton` and a header-plus-body `DetailSkeleton` — then place a `loading.tsx` in each slot that renders the matching skeleton; because each slot has its own `loading.tsx`, each gets its own Suspense boundary and they stream independently without any extra wiring.
-The best practice that keeps the student clear of the common trap: throttle the network in DevTools to verify, because that is what exposes "I'm waterfalling, not streaming," and shape each skeleton to mirror its final content (a square skeleton beside a circular avatar is the smell).
+The best practice that keeps the student clear of the common trap: throttle the network in DevTools to verify, because that is what exposes "I'm waterfalling, not streaming," and shape each skeleton to mirror its final content (the `DetailSkeleton`'s heading-plus-body blocks should track the real detail's number heading, status badge, and amount/due-date rows, not a generic gray box).
 The artificial 600 ms delay on `getInvoice` from lesson 2 is what makes the detail stream observable; the list's data has already resolved, so it stays put.
 Out of scope: per-sub-section streaming inside a page — name the explicit-`<Suspense>` reach (a slow related-invoices panel, pointing to lesson 2 of chapter 031) but do not build it.
 
@@ -245,13 +265,13 @@ Out of scope: per-sub-section streaming inside a page — name the explicit-`<Su
 
 ### Coding time
 
-Build prompt, then the hidden solution `<details>`: `components/skeletons.tsx` exporting `<ListSkeleton>` and `<DetailSkeleton>` over shadcn `<Skeleton>`, `@list/loading.tsx` rendering `<ListSkeleton>`, and `@detail/[id]/loading.tsx` rendering `<DetailSkeleton>`.
+Build prompt, then the hidden solution `<details>`: `components/skeletons.tsx` exporting `<ListSkeleton>` (six `h-12` `<Skeleton>` rows, stable string keys) and `<DetailSkeleton>` (heading + subtitle + `<Separator>` + body `<Skeleton>` blocks) over shadcn `<Skeleton>`, `@list/loading.tsx` rendering `<ListSkeleton>`, and `@detail/[id]/loading.tsx` rendering `<DetailSkeleton>`.
 Decision rationale: `loading.tsx` is the segment-level skeleton and an explicit `<Suspense>` is the sub-segment-level one — senior code reaches for the file convention first and the explicit boundary only when granularity inside the segment matters.
 Callout: the optional reach is an explicit `<Suspense>` around a slow sub-section inside `@detail/[id]/page.tsx`; name the pattern and link lesson 2 of chapter 031 rather than implement it.
 
 ### Moment of truth
 
-Run the lesson's test suite (command + expected pass output). By hand, throttle the network in DevTools to "Slow 3G" and tick off each requirement the tests don't cover:
+Run `pnpm test:lesson 4` and `pnpm verify` (the `Lesson 4.test.ts` file is a `describe.todo` placeholder; the by-hand checklist plus `pnpm verify` is the real gate). By hand, throttle the network in DevTools to "Slow 3G" and tick off each requirement:
 
 - [ ] Navigating to a detail URL shows `DetailSkeleton`, then the content, while the list stays mounted.
 - [ ] Navigating between two invoices re-streams only the detail slot.
