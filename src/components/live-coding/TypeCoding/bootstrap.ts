@@ -7,7 +7,16 @@ import { createEditor } from '../_shared/editor';
 import { getCardRefs } from '../_shared/refs';
 import { wireReset } from '../_shared/reset';
 import { wireFeedback } from '../_shared/feedback-loop';
+import { DRIZZLE_SHIM_DTS } from '../_shared/drizzle-shim';
 import type { Diagnostic, TypeQuery } from '../_shared/types';
+import type { CreateTsEnvOpts } from '../_shared/ts-env';
+
+// Maps a card's `data-ambient` value to the .d.ts files seeded into the vfs so
+// the starter can import a library the vfs has no node_modules for. Plain-TS
+// cards omit `data-ambient` and seed nothing.
+const AMBIENT_FILES: Record<string, CreateTsEnvOpts['ambientFiles']> = {
+    drizzle: { '/drizzle.d.ts': DRIZZLE_SHIM_DTS },
+};
 
 const DEBOUNCE_MS = 300;
 
@@ -19,6 +28,7 @@ document.querySelectorAll<HTMLElement>('.lc-type').forEach((card) => {
     const criteriaEl = card.querySelector<HTMLElement>('.lc-criteria');
 
     const starter = card.dataset.starter ?? '';
+    const ambient = card.dataset.ambient ?? '';
 
     // Latest type-checker output — kept around so the feedback prompt can
     // include the same errors/queries the student is looking at without re-
@@ -79,10 +89,10 @@ document.querySelectorAll<HTMLElement>('.lc-type').forEach((card) => {
         const code = view.state.doc.toString();
         try {
             const { createTsEnv } = await import('../_shared/ts-env');
-            // Each card gets its own env, but the lib map is cached in
-            // localStorage by @typescript/vfs so subsequent cards on the
-            // page are near-instant.
-            const env = getEnv(createTsEnv);
+            // Cards sharing the same ambient setup share one env; the lib map
+            // is cached in localStorage by @typescript/vfs so subsequent cards
+            // on the page are near-instant.
+            const env = getEnv(createTsEnv, ambient);
             const { diagnostics, queries } = await env.check(code);
             latestDiagnostics = diagnostics;
             latestQueries = queries;
@@ -195,15 +205,24 @@ document.querySelectorAll<HTMLElement>('.lc-type').forEach((card) => {
     scheduleCheck();
 });
 
-// One env per page — `getEnv` memoizes the factory so multiple TypeCoding
-// cards on the same page share one TS LanguageService.
-let sharedEnv: ReturnType<typeof import('../_shared/ts-env').createTsEnv> | null =
-    null;
+// One env per page *per ambient setup* — `getEnv` memoizes the factory keyed
+// by `data-ambient` so multiple TypeCoding cards on the same page share a TS
+// LanguageService, while a page that mixes plain and (e.g.) Drizzle cards keeps
+// their differing ambient files in separate envs.
+const sharedEnvs = new Map<
+    string,
+    ReturnType<typeof import('../_shared/ts-env').createTsEnv>
+>();
 function getEnv(
     factory: typeof import('../_shared/ts-env').createTsEnv,
+    ambient: string,
 ): ReturnType<typeof factory> {
-    if (!sharedEnv) sharedEnv = factory();
-    return sharedEnv;
+    let env = sharedEnvs.get(ambient);
+    if (!env) {
+        env = factory({ ambientFiles: AMBIENT_FILES[ambient] });
+        sharedEnvs.set(ambient, env);
+    }
+    return env;
 }
 
 function collectDiagnostics(latest: Diagnostic[]): string {
