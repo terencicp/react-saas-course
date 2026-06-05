@@ -1,0 +1,734 @@
+---
+title: Subqueries and CTEs
+tagline: Composing two-pass Drizzle reads from subqueries, CTEs, and window functions, and choosing where the intermediate result should live for readability.
+chapter-id: 38
+course-progress: 0.00005
+sidebar:
+  order: 7
+  label: Subqueries & CTEs
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import DrizzleCoding from '../../../components/live-coding/DrizzleCoding/DrizzleCoding.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import WhereTheResultLives from '../../../components/lessons/038/7/where-the-result-lives.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Two questions a SaaS dashboard asks all the time still have no answer in the tools you've collected so far.
+
+"List the organizations that have at least one overdue invoice." That's not a count and it's not a list of invoices — it's a yes/no asked once per org.
+
+"Rank each organization's top three tags by how often they're used." That one keeps *three* rows per org, which is exactly the thing `groupBy` was built to destroy.
+
+Both queries share a shape you haven't had to write yet: the answer depends on a *prior* computed set of rows. You compute one thing first, then ask your real question against it. Every query in the last six lessons made a single pass — select, filter, group, return. These need two. The intermediate result is the new idea, and once it exists, the only real question is *where it should live*.
+
+That "where" is the whole lesson, and it's a decision, not a keyword. The intermediate result can live in three places, and you'll learn to pick between them on real criteria rather than reaching for the fanciest one. None of this is a new query engine — it's still `db.select` from [CRUD and the four chain methods](/038-querying-and-mutating/1-crud-and-the-four-chain-methods/), still the joins from [Joining tables](/038-querying-and-mutating/2-joining-tables/), still the aggregates from [Aggregations and grouping](/038-querying-and-mutating/4-aggregations-and-grouping/). The new move is composing one query out of another.
+
+One sentence carries the entire lesson, so hold onto it before any code: **name the intermediate result only when naming earns its keep.** The three places that intermediate result can live, ranked by how often you'll reach for them:
+
+1. **Inline subquery** — the intermediate is used once, and the query reads better with it written right where it's used.
+2. **CTE** (a named subquery introduced with `WITH`) — the intermediate is used more than once, *or* giving it a name turns an inside-out query into a top-to-bottom read.
+3. **App code** — two short queries, where the intermediate is small and the round-trip is cheap, and two straight reads beat one clever one.
+
+By the end you'll pick between these three on sight, write each in Drizzle, use a dedicated shape for the existence question, and assemble that "top three tags" report out of a CTE feeding a window function. Let's install the mental model first.
+
+## The intermediate result, and where it can live
+
+Start with the simplest version of the shape, in plain words. Say you want "all invoices belonging to organizations on a paid plan." You can't get there in one filter, because the thing you want to filter invoices *by* — "is this org on a paid plan?" — isn't a column on `invoices`. It lives on `organizations`. So the work splits in two: first compute the set of paid-plan org ids, then return the invoices whose `organizationId` is in that set.
+
+That first set — the paid-plan org ids — is the <Term term="intermediate result">A set of rows or values that a query computes first, then uses to answer the real question.</Term>. It's real, it's required, and the only thing left undecided is *where you put it*. The same set of paid-plan org ids could live in three different homes, and the query would return identical rows from all three. The following figure shows that: one intermediate result, three placements.
+
+<WhereTheResultLives />
+
+Three names get attached to the panels in that figure, and they're worth pinning down now because the rest of the lesson uses them precisely. A <Term term="subquery">A SELECT statement nested inside another statement.</Term> is just a `SELECT` written inside another statement — panel two. A <Term term="common table expression (CTE)">A named subquery introduced with WITH, referenced by the main query like a table.</Term> is that same subquery given a name with `WITH`, then referenced by the main query as if it were a table — panel three. And when a subquery sits in the `FROM` clause and the main query selects *from* it like a table, that's a <Term term="derived table">A subquery used in the FROM clause, queried as if it were a table.</Term> — a shape you'll meet shortly.
+
+Now the load-bearing fact, the one that keeps you from cargo-culting the fancy option. For an intermediate result used *exactly once*, an inline subquery and a CTE almost always compile to the **same plan**. Postgres inlines a CTE that's used once — it folds the named subquery straight back into the main query, as if you'd written it inline to begin with. So when the choice is "inline subquery versus single-use CTE," it is *not* a performance choice. The database does the same work either way. The only thing that differs is the human reading it.
+
+That reframes the entire lesson. You are not choosing these shapes to make queries fast. You are choosing them to make queries *readable*, and the readability call has a clear ladder: used once and reads better inline → inline it; used more than once, or naming it untangles the query → name it with a CTE; small enough that two short reads are simpler than one composed one → just write two queries. Speed enters in exactly two narrow spots, both flagged honestly when we reach them. Everywhere else, this is a decision about the next person to open the file — which, often enough, is you.
+
+:::note
+This whole lesson is about writing layered queries that are *correct and readable*. Whether a given layered query is actually *fast* — whether a subquery that re-runs per row is a problem on your data, whether a column wants an index — is a measurement question, and it has its own chapter. You won't find benchmarks here; you'll find them in the performance chapter that follows this one. When a shape has a known cost trap, this lesson names it and points forward. It does not profile it.
+:::
+
+## Inline subqueries in `where`
+
+The lowest-ceremony shape is a subquery dropped straight into a `where`, used once. You met `inArray` back in the first lesson, comparing a column against a list of literal values. The move here is to feed `inArray` a *query* instead of a list.
+
+Take the paid-plan example made concrete. You want invoices whose `organizationId` is in the set of orgs matching some condition — say, orgs created this year:
+
+```ts
+const recentOrgInvoices = await db
+  .select()
+  .from(invoices)
+  .where(
+    inArray(
+      invoices.organizationId,
+      db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(gte(organizations.createdAt, startOfYear)),
+    ),
+  );
+```
+
+The boundary between the outer query and the inner one is exactly where this gets confusing the first few times, so let's walk it deliberately.
+
+<AnnotatedCode lang="ts" maxLines={14} code={`
+const recentOrgInvoices = await db
+  .select()
+  .from(invoices)
+  .where(
+    inArray(
+      invoices.organizationId,
+      db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(gte(organizations.createdAt, startOfYear)),
+    ),
+  );
+`}>
+  <AnnotatedStep meta={`{1-4} {12}`} color="blue">
+    Start at the outside. This is an ordinary read: every invoice, filtered by a `where`. Nothing new yet — the only difference from the first lesson is *what* goes inside the `where`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{7-10}`} color="blue">
+    This is a complete query on its own — it would run perfectly well by itself and return a column of org ids. Here it isn't run on its own; it's handed to the outer query as a *value*. A query used as a value is a subquery. Note the projection — `{ id: organizations.id }` narrows it to a single column, which is what makes it usable as a set of ids.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{5-6}`} color="blue">
+    `inArray` reads as the English sentence it is: keep invoices whose `organizationId` is *in* that set. The first argument is the outer column; the second is the subquery that produces the set. One pass for you to read, one statement for Postgres to plan.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"{ id: organizations.id }"`} color="blue">
+    The projection isn't decoration. `inArray` compares `organizationId` against whatever single column the subquery selects, so the subquery *must* select exactly one column — here, `id`. Select two and the types stop lining up; the projection is the contract between inner and outer.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+There's a second inline shape, for when the subquery returns not a *set* but a single value. A subquery that selects one column and returns one row acts as a **scalar** — a plain value you can compare against. "Invoices above this org's average amount" is the canonical case:
+
+```ts
+const aboveAverage = await db
+  .select()
+  .from(invoices)
+  .where(
+    and(
+      eq(invoices.organizationId, orgId),
+      gt(
+        invoices.amountDue,
+        db
+          .select({ avg: avg(invoices.amountDue) })
+          .from(invoices)
+          .where(eq(invoices.organizationId, orgId)),
+      ),
+    ),
+  );
+```
+
+The inner query collapses to one number — the org's average — and `gt` compares each invoice's `amountDue` against it. Single column, single row, used as a scalar; that's the rule that makes it legal.
+
+One reassurance, because nesting a query inside a `where` can *feel* like it opens a door. It doesn't. Every value inside that subquery — `startOfYear`, `orgId` — is still a `$1` placeholder bound by the driver, exactly as it was when you wrote a flat `where` in the first lesson. Nesting a `select` changes the structure of the query, not the safety of the values in it. There's no new injection surface here; this is the same parameterization guarantee, one level deeper.
+
+So when does the inline subquery stay the right call? When it's used **once** and the sentence "rows whose X is in (this set)" still reads cleanly with the set written right there. The moment you catch yourself having to read the subquery *twice* — once to understand it, again because it appears again later in the same query — that's the signal to give it a name. We'll cash that in two sections from now.
+
+One cost watch-out, scoped honestly. `inArray` with a subquery that returns a handful of ids is fine. `inArray` with a subquery that returns *thousands* of ids is slower than the equivalent join — Postgres has to materialize that big list and check membership against it, when a join would have streamed the match. The shape should fit the data size. Proving exactly where that line sits is the performance chapter's job; here, just register that a subquery returning a huge id set is the wrong shape, and a join is the right one.
+
+## Asking whether a related row exists
+
+Back to the first forcing problem from the intro: "organizations that have at least one overdue invoice." With only the tools from earlier lessons, you'd reach for a join plus a group plus a `having`:
+
+```ts
+await db
+  .select({ id: organizations.id, name: organizations.name })
+  .from(organizations)
+  .innerJoin(invoices, eq(invoices.organizationId, organizations.id))
+  .where(and(lt(invoices.dueDate, today), ne(invoices.status, 'paid')))
+  .groupBy(organizations.id, organizations.name)
+  .having(gt(count(invoices.id), 0));
+```
+
+That's *correct*. It's also doing far more work than the question needs. To answer a yes/no, it builds every matched org-invoice pair, then collapses all those pairs back down with a group, then checks whether each group's count cleared zero. You asked "does even one exist?" and Postgres assembled the whole pile to find out. For an org with two hundred overdue invoices, it pairs up all two hundred — then throws them away.
+
+The existence question deserves a shape built for it, and Postgres has one: `exists`. In Drizzle, `exists` and `notExists` import from `drizzle-orm` and wrap a subquery. The subquery is **correlated** — it points back at the outer row:
+
+```ts
+const overdueOrgs = await db
+  .select({ id: organizations.id, name: organizations.name })
+  .from(organizations)
+  .where(
+    exists(
+      db
+        .select()
+        .from(invoices)
+        .where(
+          and(
+            eq(invoices.organizationId, organizations.id),
+            lt(invoices.dueDate, today),
+            ne(invoices.status, 'paid'),
+          ),
+        ),
+    ),
+  );
+```
+
+The phrase that makes `exists` special is `eq(invoices.organizationId, organizations.id)` inside the subquery. That references `organizations.id` — a column from the *outer* query. A subquery that reaches out and references an outer column like this is a <Term term="correlated subquery">A subquery that references a column from the outer query, so it conceptually re-runs once per outer row.</Term>, and it's the reason `exists` is the right tool. For each org, Postgres runs the subquery looking for an overdue invoice — and the instant it finds the *first* one, it stops. It doesn't count, it doesn't collect, it doesn't pair up all two hundred. First hit, true, move to the next org. That short-circuit is why `exists` is the fastest way to ask an existence question.
+
+The mirror image answers the opposite question. "Organizations with no invoices at all" is `notExists` — same correlated subquery, negated:
+
+```ts
+const emptyOrgs = await db
+  .select({ id: organizations.id, name: organizations.name })
+  .from(organizations)
+  .where(
+    notExists(
+      db
+        .select()
+        .from(invoices)
+        .where(eq(invoices.organizationId, organizations.id)),
+    ),
+  );
+```
+
+Here are the two shapes side by side, so the preference is unmissable.
+
+<CodeVariants>
+  <CodeVariant label="Join + group + having">
+    <div data-mark-color="orange">
+
+    ```ts {4-6}
+    await db
+      .select({ id: organizations.id, name: organizations.name })
+      .from(organizations)
+      .innerJoin(invoices, eq(invoices.organizationId, organizations.id))
+      .where(and(lt(invoices.dueDate, today), ne(invoices.status, 'paid')))
+      .groupBy(organizations.id, organizations.name)
+      .having(gt(count(invoices.id), 0));
+    ```
+
+    </div>
+    **Correct, but it builds every matched org-invoice pair and then collapses them with a group — all to answer a yes/no it didn't need the pairs for.** Two hundred overdue invoices on one org means two hundred pairs assembled, grouped, and counted, just to learn the count cleared zero.
+  </CodeVariant>
+
+  <CodeVariant label="exists">
+    <div data-mark-color="green">
+
+    ```ts "exists"
+    await db
+      .select({ id: organizations.id, name: organizations.name })
+      .from(organizations)
+      .where(
+        exists(
+          db
+            .select()
+            .from(invoices)
+            .where(
+              and(
+                eq(invoices.organizationId, organizations.id),
+                lt(invoices.dueDate, today),
+                ne(invoices.status, 'paid'),
+              ),
+            ),
+        ),
+      );
+    ```
+
+    </div>
+    **Asks the question directly and stops at the very first matching invoice per org.** No pairs built, nothing to collapse — the correlated subquery short-circuits on the first hit. This is the default for an existence yes/no.
+  </CodeVariant>
+</CodeVariants>
+
+There's a cost note here too, and it's the one genuine trap in the section — flagged now, measured later. Because the correlated subquery conceptually re-runs per outer row, `exists` is excellent when the outer set is small or medium, and it can get expensive when the outer set is very large. That tradeoff is real, but seeing exactly where it bites is an `EXPLAIN` exercise that belongs to the performance chapter. The takeaway you carry from here: `exists` / `notExists` is the **default** for an existence yes/no. Reach for the join-plus-group only when you also need the matched rows or a real count — when the answer is data, not a boolean.
+
+One callback. Back in [Nested reads with the relational API](/038-querying-and-mutating/3-nested-reads-with-the-relational-api/), you saw that the relational query builder can filter parents by a predicate on their children — "orgs that have an overdue invoice" expressed through the relational API's own filter position. That's the ergonomic form for tree-shaped reads. `db.select(...).where(exists(...))` is the SQL-builder form of the same idea, and it's what you reach for when the predicate gets gnarly — spans several tables, mixes conditions irregularly, or needs to sit alongside other raw `where` logic. Same question, two doors; pick the one that fits the surrounding query.
+
+## Subqueries in `from` — the derived table
+
+So far the intermediate result has been a set of *ids* (for `inArray`) or a single *value* (for the scalar comparison) or a yes/no (for `exists`). Sometimes it's a set of *rows* — usually an aggregate — and the main query needs to *join against* it.
+
+Here's the forcing case. In the aggregations lesson you computed per-org invoice totals. Now suppose you want to attach each org's name to its total and filter on the total — show only orgs that owe more than some threshold, with their names. You hit a wall: you can't put an aggregate like `sum(...)` directly into a `where`. An aggregate doesn't exist until rows have collapsed, and `where` runs before the collapse. So you compute the aggregate first, as its own little table, and then treat that table as something to select from and join against. That's a derived table: a subquery in the `FROM` clause, named with `.as(...)`.
+
+```ts
+const orgTotals = db
+  .select({
+    orgId: invoices.organizationId,
+    total: sum(invoices.amountDue).as('total'),
+  })
+  .from(invoices)
+  .groupBy(invoices.organizationId)
+  .as('org_totals');
+
+const bigDebtors = await db
+  .select({ name: organizations.name, total: orgTotals.total })
+  .from(orgTotals)
+  .innerJoin(organizations, eq(orgTotals.orgId, organizations.id))
+  .orderBy(desc(orgTotals.total));
+```
+
+Two things to notice. First, `orgTotals` is just a `db.select` with `.as('org_totals')` tacked on the end — that final `.as` is what turns a query into a named table you can put in `from`. Second, once it's named, you reference its columns *through the alias*: `orgTotals.total`, `orgTotals.orgId`. The derived table behaves like any other table in the outer query — you join it, you order by its columns, you select from it.
+
+The money detail rides along quietly. `sum(invoices.amountDue)` returns a `string`, because `amountDue` is `numeric` and `numeric` arrives in TypeScript as a string to keep every cent exact — the same money reflex from the schema chapter and the aggregations lesson. The `total` column stays a string through the derived table and out the other side. Format it for display; never `parseFloat` it for math.
+
+The trigger for reaching here is specific: an **aggregated or windowed** sub-result that needs to participate in a join or an outer filter. That's the case a plain `where` subquery simply can't express — `where` can hold a set of ids or a scalar, but not a multi-column grouped result you want to join. When you find yourself wanting to join *against* a `groupBy`, you want a derived table.
+
+And the bridge to the next section: a derived table used **once** and a CTE are interchangeable — same plan, the inlining rule from earlier applies. The moment the same derived set is needed *twice*, or the `from` clause starts to read inside-out, you promote it to a named CTE. That's exactly what's next.
+
+## Naming the result with a CTE
+
+You've now seen the intermediate result tucked into a `where`, used as a scalar, wrapped in `exists`, and named in `from`. The CTE is the same idea with one new affordance: you give the intermediate result a name *up front*, at the top of the statement, and then the main query reads top-to-bottom — name it, then use it — instead of inside-out.
+
+The Drizzle shape has two halves. `$with(name).as(query)` *defines* the CTE. `db.with(cte)` makes that definition available to the statement that follows. Then you reference the CTE by its variable, like a table:
+
+```ts
+const recentInvoices = db.$with('recent_invoices').as(
+  db
+    .select({
+      id: invoices.id,
+      organizationId: invoices.organizationId,
+      amountDue: invoices.amountDue,
+    })
+    .from(invoices)
+    .where(gte(invoices.createdAt, startOfMonth)),
+);
+
+const result = await db
+  .with(recentInvoices)
+  .select({ name: organizations.name, amountDue: recentInvoices.amountDue })
+  .from(recentInvoices)
+  .innerJoin(organizations, eq(recentInvoices.organizationId, organizations.id));
+```
+
+Read it the way Postgres does. First the `WITH` clause defines `recent_invoices` — "here's a named set of rows." Then the main `select` uses it as if it were a table, joining it to `organizations`. The query flows downhill: define the intermediate, then build on it. That top-to-bottom flow is the entire reason CTEs exist.
+
+You can name as many intermediates as a query needs. Multiple CTEs chain through one `db.with(...)`, and each can reference the ones named before it:
+
+```ts
+db.with(cteA, cteB).select(/* ... */).from(cteB);
+```
+
+`cteB` can be defined in terms of `cteA`. That's the chaining the capstone leans on hard — one CTE feeding the next — so file the shape away; you'll assemble a real two-stage chain shortly.
+
+Now the decision rule, sharpened, because this section owns the payoff of the whole lesson's spine. **Reach for a CTE when (a) the sub-result is used more than once, or (b) naming it turns a nested, inside-out query into a top-to-bottom read.** That's it. Those are the two things that make naming earn its keep. And the inverse matters just as much: do *not* reach for a CTE to look professional. A CTE that nobody needs — a single-use intermediate named for the sake of naming — is a *worse* read than the inline subquery it replaced, because now there's an extra name to track and a forward reference to hold in your head, for no gain. A name you don't need is noise.
+
+The clearest way to feel the rule is to watch a sub-result that's used twice. Inline, the duplication shows up immediately; named, it vanishes.
+
+<CodeVariants>
+  <CodeVariant label="Inline subquery">
+    <div data-mark-color="orange">
+
+    ```ts {2-6} {12-16}
+    // orgs whose outstanding total is above the average org total
+    const perOrgTotal = db
+      .select({ orgId: invoices.organizationId, total: sum(invoices.amountDue).as('total') })
+      .from(invoices)
+      .groupBy(invoices.organizationId)
+      .as('per_org_total');
+
+    const aboveAverage = await db
+      .select({ orgId: perOrgTotal.orgId, total: perOrgTotal.total })
+      .from(perOrgTotal)
+      .where(
+        gt(
+          perOrgTotal.total,
+          db
+            .select({ avg: avg(sql<string>`t.total`) })
+            .from(
+              db
+                .select({ total: sum(invoices.amountDue).as('total') })
+                .from(invoices)
+                .groupBy(invoices.organizationId)
+                .as('t'),
+            ),
+        ),
+      );
+    ```
+
+    </div>
+    **The same per-org total has to appear in two spots, so the subquery is written out twice.** Now a reader has to verify the two copies are identical — and keep them in sync forever, because the day one drifts from the other, the query is silently wrong.
+  </CodeVariant>
+
+  <CodeVariant label="CTE">
+    <div data-mark-color="green">
+
+    ```ts "orgTotals = db.$with('org_totals')"
+    // orgs whose outstanding total is above the average org total
+    const orgTotals = db.$with('org_totals').as(
+      db
+        .select({ orgId: invoices.organizationId, total: sum(invoices.amountDue).as('total') })
+        .from(invoices)
+        .groupBy(invoices.organizationId),
+    );
+
+    const aboveAverage = await db
+      .with(orgTotals)
+      .select({ orgId: orgTotals.orgId, total: orgTotals.total })
+      .from(orgTotals)
+      .where(
+        gt(
+          orgTotals.total,
+          db.select({ avg: avg(orgTotals.total) }).from(orgTotals),
+        ),
+      );
+    ```
+
+    </div>
+    **Used twice — so naming it removes the duplication and the query reads top-down:** define `org_totals` once, then reference it wherever it's needed — here in the `from` and again inside the average. One definition, no copies to keep in sync, and Postgres computes the grouped result a single time instead of twice.
+  </CodeVariant>
+</CodeVariants>
+
+One nuance about what Postgres does under the hood, stated precisely because the loose version of it is a common myth. Postgres **inlines** a CTE that is non-recursive, side-effect-free, and **used exactly once** — it folds the CTE back into the main query, so a single-use CTE costs the same as writing it inline. That's the fact from the lesson's opening, now with its exact conditions: *used once*. A CTE that's used **more than once** is a different story — Postgres computes it a single time and reuses the stored result, which is part of why naming a *reused* sub-result is a real win and not just cosmetic. The work happens once instead of twice.
+
+<VideoCallout videoId="LJC8277LONg" videoTitle="SQL WITH Clause | Clearly Explained | CTEs vs Subqueries vs Temp Tables | Recursive CTEs">
+  Maven Analytics' Alice Zhao (SQL Pocket Guide author) builds the same CTE-vs-subquery decision in 13 minutes — including multiple CTEs chained in one `WITH` and a quick look at `WITH RECURSIVE`.
+</VideoCallout>
+
+There's a power-tool variant worth recognizing but not reaching for. Writing `WITH ... AS MATERIALIZED` forces Postgres to <Term term="materialized">Postgres computes the CTE's rows once and stores them for the statement, instead of inlining the query.</Term> the CTE — compute it once, store it, and *block* the planner from inlining it even when it's used once. That's occasionally the right call, but only when a measurement tells you the planner's default choice is wrong for a specific query. It's a scalpel for the performance chapter, not a default. Name it so you recognize it in someone else's query; don't reach for it on instinct.
+
+## Window functions: ranking within groups
+
+The second forcing problem from the intro — "top three tags per organization" — needs one SQL feature this lesson hasn't touched, and it's the one feature here with no dedicated Drizzle builder. You write it inside a `sql` template. Before the syntax, the idea, because the idea is what makes the rest click.
+
+`groupBy` collapses. Feed it three invoices and a status, and it hands back one row — the group, plus whatever you aggregated. That's perfect for "how many invoices per status," and exactly wrong for "the top *three* tags," because the top three is three rows, and `groupBy` only ever returns one row per group. The collapse destroys the very rows you wanted to keep.
+
+A <Term term="window function">A function that computes a value across a set of related rows — the window — without collapsing them into one row.</Term> solves this by doing something `groupBy` can't: it computes a value *per row* while still being able to see all the other rows around it. State the contrast as sharply as you can, because it's the whole point — **`groupBy` collapses many rows into one; a window function annotates each row without collapsing any of them.** Every input row survives, and each one gets a new computed column.
+
+The window function this lesson needs is `row_number()`, which numbers rows. Here's the shape, written in a `sql` template:
+
+```ts
+sql<number>`row_number() over (partition by ${tagCounts.orgId} order by ${tagCounts.count} desc)`;
+```
+
+Two clauses inside the `over (...)` do all the work:
+
+- `partition by ${tagCounts.orgId}` — restart the numbering for each org. Org 3's tags get numbered 1, 2, 3, …; then the counter resets and org 7's tags get numbered 1, 2, 3, … again. "Partition" is the window-function word for "group," except nothing collapses — the rows stay, they just get numbered within their partition.
+- `order by ${tagCounts.count} desc` — decide what "first" means. Highest count gets number 1. This is the ranking criterion.
+
+Put together: "within each org, number the tags from most-used to least-used." Number 1 is the org's top tag, number 2 its runner-up, and so on. To get the top three, you keep the rows numbered 1 through 3 — which is the capstone, one section away.
+
+Two reassurances carry over verbatim from the aggregations lesson, so this isn't a re-teach. First, parameterization still holds inside a `sql` template: `${tagCounts.orgId}` interpolates as a quoted column identifier because Drizzle knows it's a column, and any plain *value* you dropped in would still bind as a `$1` placeholder. Dropping into `sql` doesn't drop your safety. Second, the `sql<number>` is a *claim*, not a check — you're telling TypeScript "this expression comes back as a number," and Drizzle can't verify it, exactly like the `sql<number>` you wrote for filtered aggregates. Keep the claim honest; a wrong one surfaces at runtime, not compile time.
+
+`row_number()` has a family — `rank()`, `dense_rank()`, `lag()`, `lead()`, `sum() over (...)` — each computing a different per-row value over its window. You'll recognize them in the wild; the course teaches the *shape*, not the catalog, so we'll use `row_number()` and leave the rest named. That's deliberate: the shape transfers, and the shape is what's worth your memory.
+
+<VideoCallout videoId="rIcB4zMYMas" videoTitle="SQL Window Functions | Clearly Explained | PARTITION BY, ORDER BY, ROW_NUMBER, RANK, DENSE_RANK">
+  Alice Zhao breaks `over (partition by ... order by ...)` into its two pieces in 8 minutes, then ends on the exact "top three per group" filter this lesson's capstone builds.
+</VideoCallout>
+
+## Putting it together: top three tags per organization
+
+Here's where the three placements stop being alternatives and start being *parts*. The "top three tags per org" report is a CTE feeding a window function feeding an outer filter — assembled, not chosen between. Build it in stages, because watching the assembly is the whole lesson landing at once.
+
+The plan: count tags per org (stage one), rank those counts within each org (stage two), then keep only ranks one through three (the final select). Each stage is a CTE; each builds on the last.
+
+**Stage one — `tag_counts`.** How many invoices carry each tag, per org. This is the many-to-many shape from the joins lesson: `invoices` join `invoice_tags` join `tags`, grouped by org and tag, counting invoices.
+
+```ts
+const tagCounts = db.$with('tag_counts').as(
+  db
+    .select({
+      orgId: invoices.organizationId,
+      tagId: tags.id,
+      tagName: tags.name,
+      count: count(invoices.id).as('count'),
+    })
+    .from(invoices)
+    .innerJoin(invoiceTags, eq(invoiceTags.invoiceId, invoices.id))
+    .innerJoin(tags, eq(tags.id, invoiceTags.tagId))
+    .groupBy(invoices.organizationId, tags.id, tags.name),
+);
+```
+
+**Stage two — `ranked`.** Select from `tag_counts` and add the rank as a new column with `row_number()`. This CTE references the first one — the chaining from the last section, now load-bearing.
+
+```ts
+const ranked = db.$with('ranked').as(
+  db
+    .select({
+      orgId: tagCounts.orgId,
+      tagName: tagCounts.tagName,
+      count: tagCounts.count,
+      rank: sql<number>`row_number() over (
+        partition by ${tagCounts.orgId}
+        order by ${tagCounts.count} desc, ${tagCounts.tagId}
+      )`.as('rank'),
+    })
+    .from(tagCounts),
+);
+```
+
+**Final select — keep the top three.** Wire both CTEs in with `db.with(...)`, select from `ranked`, and filter to ranks one through three.
+
+```ts
+const topTags = await db
+  .with(tagCounts, ranked)
+  .select({
+    orgId: ranked.orgId,
+    tagName: ranked.tagName,
+    count: ranked.count,
+    rank: ranked.rank,
+  })
+  .from(ranked)
+  .where(lte(ranked.rank, 3))
+  .orderBy(ranked.orgId, ranked.rank);
+```
+
+Now the question that explains *why this needs two layers* — why you couldn't do it in one. The rank has to exist as a real column before you can filter on it, and SQL evaluates window functions *after* `where`. So a `where` clause cannot reference `row_number()` directly — at the moment `where` runs, the rank doesn't exist yet. The fix is structural: compute the rank in one layer (the `ranked` CTE), then filter it in the next (the final `where`). That ordering — windows run after `where` — is precisely why CTEs and window functions travel together. Whenever you want to *filter on* a ranking, you'll be reaching for both, for this exact reason.
+
+The walkthrough below steps through the assembled query one stage at a time.
+
+First the two CTE definitions — count, then rank.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+const tagCounts = db.$with('tag_counts').as(
+  db
+    .select({
+      orgId: invoices.organizationId,
+      tagId: tags.id,
+      tagName: tags.name,
+      count: count(invoices.id).as('count'),
+    })
+    .from(invoices)
+    .innerJoin(invoiceTags, eq(invoiceTags.invoiceId, invoices.id))
+    .innerJoin(tags, eq(tags.id, invoiceTags.tagId))
+    .groupBy(invoices.organizationId, tags.id, tags.name),
+);
+
+const ranked = db.$with('ranked').as(
+  db
+    .select({
+      orgId: tagCounts.orgId,
+      tagName: tagCounts.tagName,
+      count: tagCounts.count,
+      rank: sql<number>\`row_number() over (
+        partition by \${tagCounts.orgId}
+        order by \${tagCounts.count} desc, \${tagCounts.tagId}
+      )\`.as('rank'),
+    })
+    .from(tagCounts),
+);
+`}>
+  <AnnotatedStep meta={`{12} "count(invoices.id)"`} color="violet">
+    Stage one is an aggregate you already know: count invoices per org-and-tag. Two joins walk invoices → invoice_tags → tags, then `groupBy` collapses to one row per (org, tag) with its count. Nothing new — this is the aggregations lesson, named `tag_counts` for the next stage to build on.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{21-24}" color="violet">
+    Stage two adds the rank. `partition by` org restarts the numbering per org; `order by count desc` makes the most-used tag number 1. Crucially, this *annotates* each tag row with a rank — it doesn't collapse anything. Every (org, tag) row from stage one survives, now carrying a rank.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"\${tagCounts.tagId}"`} color="violet">
+    Two tags tied on count would make `row_number` pick a winner arbitrarily — and "arbitrary" means the ranks can shuffle between runs. Adding `tagId` as a second sort key breaks ties deterministically, so rank 2 is always the *same* tag. The tiebreaker reflex from the very first lesson, now living inside a window.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Then the final select wires both CTEs in and cuts to the top three.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+const topTags = await db
+  .with(tagCounts, ranked)
+  .select({
+    orgId: ranked.orgId,
+    tagName: ranked.tagName,
+    count: ranked.count,
+    rank: ranked.rank,
+  })
+  .from(ranked)
+  .where(lte(ranked.rank, 3))
+  .orderBy(ranked.orgId, ranked.rank);
+`}>
+  <AnnotatedStep meta={`{2} ".with(tagCounts, ranked)"`} color="violet">
+    Both CTEs come into scope here, chained through one `with`. `ranked` was defined in terms of `tag_counts`, and now the main query gets both. This is the multi-CTE chain from earlier, doing real work.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{10} "lte(ranked.rank, 3)"`} color="violet">
+    The payoff. The rank is now a real column on `ranked`, so an ordinary `where` can filter it — keep ranks 1, 2, 3 per org, drop the rest. This filter was impossible one layer up, where the rank didn't exist yet. That's the whole reason for two layers.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Notice what the result type did, without you lifting a finger. The rows come back as `{ orgId, tagName, count, rank }` — exactly the projection you wrote in the final `select`, fully inferred. No hand-written interface, no `Pick`, no restated shape. The type follows the projection straight through two CTEs and a window function, the same "derive, don't declare" reflex from the relational and aggregations lessons. You declared the shape once, in the `select`, and TypeScript carried it the rest of the way.
+
+Now write one yourself. This is the exercise the lesson has been building toward — a CTE plus `row_number()`, assembled into a real ranking.
+
+<DrizzleCoding
+  instructions="Return the top 2 most-used tags for each organization, by how many invoices carry each tag. The tag_counts CTE is written for you. Finish the ranked CTE's row_number() window, wire both CTEs into the final query with .with(...), and keep only ranks 1 and 2 per org. Ties on count are broken by tag id, lower id wins. Return orgId, tagName, count, and rank, ordered by org then rank."
+  schema={`export const organizations = pgTable('organizations', {
+  id: integer('id').primaryKey(),
+  name: text('name').notNull(),
+});
+
+export const invoices = pgTable('invoices', {
+  id: integer('id').primaryKey(),
+  organizationId: integer('organization_id')
+    .notNull()
+    .references(() => organizations.id),
+});
+
+export const tags = pgTable('tags', {
+  id: integer('id').primaryKey(),
+  name: text('name').notNull(),
+});
+
+export const invoiceTags = pgTable('invoice_tags', {
+  invoiceId: integer('invoice_id')
+    .notNull()
+    .references(() => invoices.id),
+  tagId: integer('tag_id')
+    .notNull()
+    .references(() => tags.id),
+});`}
+  seed={`INSERT INTO organizations (id, name) VALUES
+  (1, 'Acme'),
+  (2, 'Globex');
+
+INSERT INTO tags (id, name) VALUES
+  (1, 'urgent'),
+  (2, 'billing'),
+  (3, 'support'),
+  (4, 'design');
+
+INSERT INTO invoices (id, organization_id) VALUES
+  (1, 1), (2, 1), (3, 1), (4, 1), (5, 1), (6, 1), (7, 1),
+  (8, 2), (9, 2), (10, 2), (11, 2), (12, 2);
+
+-- Acme: urgent on 3 invoices, billing on 2, support on 2 (billing & support tie)
+INSERT INTO invoice_tags (invoice_id, tag_id) VALUES
+  (1, 1), (2, 1), (3, 1),
+  (1, 2), (2, 2),
+  (3, 3), (4, 3);
+
+-- Globex: urgent on 1 invoice, design on 4
+INSERT INTO invoice_tags (invoice_id, tag_id) VALUES
+  (8, 1),
+  (8, 4), (9, 4), (10, 4), (11, 4);`}
+  starter={`// Stage one is written for you: count invoices per (org, tag).
+const tagCounts = db.$with('tag_counts').as(
+  db
+    .select({
+      orgId: invoices.organizationId,
+      tagId: tags.id,
+      tagName: tags.name,
+      count: count(invoices.id).as('count'),
+    })
+    .from(invoices)
+    .innerJoin(invoiceTags, eq(invoiceTags.invoiceId, invoices.id))
+    .innerJoin(tags, eq(tags.id, invoiceTags.tagId))
+    .groupBy(invoices.organizationId, tags.id, tags.name),
+);
+
+// Stage two: rank the tags within each org.
+const ranked = db.$with('ranked').as(
+  db
+    .select({
+      orgId: tagCounts.orgId,
+      tagName: tagCounts.tagName,
+      count: tagCounts.count,
+      // TODO: number each org's tags from most-used to least-used.
+      // partition by the org, order by count desc, then tagId to break ties.
+      rank: sql<number>\`\`.as('rank'),
+    })
+    .from(tagCounts),
+);
+
+return await db
+  // TODO: bring both CTEs into scope here.
+  .with()
+  .select({
+    orgId: ranked.orgId,
+    tagName: ranked.tagName,
+    count: ranked.count,
+    rank: ranked.rank,
+  })
+  .from(ranked)
+  // TODO: keep only ranks 1 and 2, then order by org, then rank.
+  ;`}
+  expectedRows={[
+    { orgId: 1, tagName: 'urgent', count: 3, rank: 1 },
+    { orgId: 1, tagName: 'billing', count: 2, rank: 2 },
+    { orgId: 2, tagName: 'design', count: 4, rank: 1 },
+    { orgId: 2, tagName: 'urgent', count: 1, rank: 2 },
+  ]}
+  ordered={true}
+/>
+
+If your first instinct was to `groupBy` and grab each org's single biggest tag, that's the instinct the exercise is built to correct. `groupBy` gives you *one* tag per org, and the question asked for *two* — the collapse threw away the runner-up you needed. The window function is what keeps every tag in play long enough to rank it and *then* cut to the top two. That's the difference between collapsing and annotating, in a query you just had to write.
+
+## Recursive queries, named for recognition
+
+One shape remains, and it earns a short paragraph rather than a section, because its job here is to close a loop honestly, not to teach a skill you need this month.
+
+When data is a tree — an org chart where employees report to employees, a threaded comment that replies to a comment, a category nested inside a category — walking it takes a query that refers to *itself*. That's a <Term term="recursive CTE">A CTE that references itself, used to walk hierarchical or tree data via a base case and a repeating step.</Term>, written `WITH RECURSIVE`. It works by starting from a **base case** (the root rows) and then repeatedly joining a **recursive step** back onto its own prior results — pulling in the next level of the tree each pass — until a pass adds no new rows and it stops.
+
+Here's the honest part. Drizzle's query builder does **not** have a method for this — there is no `db.$withRecursive`. When you genuinely need a recursive CTE, you write it as raw `sql` and run it through `db.execute(...)` — the raw-SQL escape hatch, which gets its own lesson later in this chapter. Don't go hunting for a builder method to wrap it; there isn't one, and that's expected.
+
+The watch-out, for the day you reach for it: a recursive CTE *must* terminate. The base case plus a depth guard is what guarantees it stops; an unterminated recursive step loops until it slams into Postgres' row cap. Deep tree recursion is genuinely rare in early SaaS — most "hierarchies" are two levels and a plain join handles them — so this is a recognition beat. You now know the shape exists, what it's called, that it's raw SQL not a builder call, and that termination is the thing that bites. That's enough until the day a real tree shows up.
+
+## Choosing the shape
+
+Step back. This was a *decision* lesson wearing a syntax lesson's clothes. You learned `inArray(subquery)`, `exists`, `.as(...)` derived tables, `$with`/`with` CTEs, and `row_number()` — but the durable thing you're taking away is the ladder for choosing among them. Here it is as one reflex, to run on the next two-pass query you meet:
+
+- **Existence yes/no?** → `exists` / `notExists`. The answer is a boolean, so don't build pairs or counts.
+- **Used once, and reads better with the set right there?** → inline subquery, or a derived table if it's an aggregate you need to join against.
+- **Used more than once, or naming it untangles an inside-out query?** → a CTE.
+- **Small result, and two short reads are simpler than one composed one?** → two queries in app code.
+- **Need to rank rows and keep the top N per group?** → a CTE plus `row_number()`.
+- **Walking a tree?** → raw `WITH RECURSIVE` (rare).
+
+Drill that ladder now, on situations rather than code.
+
+<Buckets twoCol instructions="Each row describes a query you need to write. Drop it into the shape you'd reach for — judged on readability first, the way this lesson taught.">
+  <Bucket name="inline" label="Inline / exists" description="Used once, or a yes/no existence question." />
+  <Bucket name="cte" label="CTE" description="Used more than once, or naming untangles it." />
+  <Bucket name="appcode" label="App code" description="Small result; two straight reads beat one clever one." />
+
+  <Item bucket="inline">Filter organizations by whether any invoice exists for them</Item>
+  <Item bucket="inline">Keep invoices whose org is in a small computed set, used just once</Item>
+  <Item bucket="cte">The same per-org total is needed in three different places in one query</Item>
+  <Item bucket="cte">Rank tags and keep the top three per organization</Item>
+  <Item bucket="appcode">Fetch about 10 ids, then fetch those 10 rows; both reads are tiny</Item>
+  <Item bucket="appcode">A single clever query that no one on the team can read at a glance</Item>
+</Buckets>
+
+The closing principle ties the whole lesson to the chapter's voice: **a CTE that nobody can read is a worse outcome than two queries that read straight.** Layer logic into SQL when the intermediate is big enough that round-tripping it through TypeScript would cost real latency — *that's* when keeping the work in the database earns its weight. Don't layer to look clever. Readability first; reach for SQL composition when the data size makes the round-trip the actual cost.
+
+And the bounded forward-pointer, so you know exactly what this lesson did and didn't promise. This lesson owns *correct and readable* layering. Whether a correlated subquery or a deep CTE is actually *fast* — the `EXPLAIN ANALYZE` that proves it — belongs to the third lesson of the next chapter, and indexing the columns these queries lean on belongs to its first lesson. When the question turns from "is this the right shape?" to "is this shape fast on my data?", that's where the answer lives.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Drizzle — Select, the with clause"
+    href="https://orm.drizzle.team/docs/select#with-clause"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="Canonical reference for CTEs and subqueries in the builder: $with to define, .with() to wire them in."
+  />
+  <ExternalResource
+    title="Drizzle — Magic sql operator"
+    href="https://orm.drizzle.team/docs/sql"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="How to drop window functions and other raw fragments into a query with sql<T> while keeping parameterization."
+  />
+  <ExternalResource
+    title="PostgreSQL — WITH Queries (CTEs)"
+    href="https://www.postgresql.org/docs/current/queries-with.html"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="The source of truth for CTE semantics, MATERIALIZED, and WITH RECURSIVE when a real tree shows up."
+  />
+  <ExternalResource
+    title="How Window Functions Work (animated)"
+    href="https://dataschool.com/how-to-teach-people-sql/how-window-functions-work/"
+    icon="lucide:chart-no-axes-column"
+    iconColor="#F97316"
+    description="Data School visualizes OVER, PARTITION BY, and ORDER BY with animated GIFs — the per-row mental model, made visual."
+  />
+</CardGrid>

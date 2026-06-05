@@ -1,0 +1,413 @@
+---
+title: The raw SQL escape hatch
+tagline: When and how to drop below the Drizzle query builder into raw SQL with the sql template tag, safely and deliberately.
+chapter-id: 38
+course-progress: 0.00005
+sidebar:
+  order: 10
+  label: Raw SQL escape hatch
+---
+
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import Tokens from '../../../components/exercises/Tokens.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import ParamBindVsSplice from '../../../components/lessons/038/10/param-bind-vs-splice.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The query builder has covered every read and write this chapter needed — selects, joins, the relational API, aggregations, upserts, pagination, subqueries, full-text search, JSONB. So here's a fair question to end on: if the builder is that complete, why does Drizzle ship a <Term definition="A JavaScript tagged template. Drizzle reads the interpolations — tables and columns become quoted identifiers, values become bound $1 parameters.">`sql` template</Term> at all, and when does an experienced engineer actually reach for it?
+
+You already have, more than once. The `filter (where …)` aggregate you wrote when counting paid invoices, the `row_number() over (…)` window for cursor pagination, the `websearch_to_tsquery` match for search, the `@>` containment check on JSONB — every one of those was a small, deliberate drop below the builder into raw SQL. You've been using the escape hatch all chapter; you just haven't named it. This lesson promotes that scattered reflex into one governed model: the builder is the floor you stand on, raw SQL is a rope you lower yourself on — useful, deliberate, and you keep both hands on it. By the end you'll know the triggers that justify the reach, the one rule that keeps it safe, and the corner of the hatch (`sql.raw`) that doesn't get that safety for free. The takeaway in one line: an experienced engineer reaches rarely, reaches deliberately, and can always answer "where did this string come from?"
+
+## When the builder stops and raw SQL begins
+
+Most days you don't reach. The builder owns the structure of the query — the `select`, the `from`, the `where`, the `orderBy` — and on the rare occasion you drop below it, you're only ever filling a *gap* inside that structure, not abandoning it. So the decision isn't "builder or raw SQL"; it's "the builder, plus a small raw fragment where the builder is missing something." Hold that default in mind, because it changes what counts as a good reason to reach.
+
+There are three legitimate triggers, and it's worth grouping them so they stay memorable rather than becoming a flat checklist.
+
+The first is **a Postgres feature with no Drizzle helper.** Postgres is enormous, and Drizzle wraps the common surface — but not all of it. A custom operator like the trigram distance `<->` (nearest-neighbour text similarity), the `@@` full-text match you used last lesson, a set-returning function, a `LATERAL` join — these have no builder method, so a raw fragment is the only way to express them. The signal here is precise: the builder is *missing a feature*, not merely *too verbose*.
+
+The second is **a sub-expression inside an otherwise-builder query** — and this is the shape you'll hit most often by far, because it's the one you already know. ``where(sql`…`)``, ``orderBy(desc(sql`ts_rank(…)`))``. The builder keeps the whole query structure and all of its types; the `sql` fills exactly one predicate or one ordering key. You're not leaving the builder, you're handing it a small expression it couldn't write itself.
+
+The third is **a one-off statement** — maintenance work that has no place in your feature code at all. `refresh materialized view …`, an ad-hoc admin fix, a helper inside a migration. These run once, by hand or on a schedule, and there's no builder shape that fits because there's barely a query to speak of.
+
+Now the **anti-trigger** — the reason that *feels* legitimate and isn't. You reach for raw SQL because the builder "felt verbose," or because you remember the SQL and you'd have to look up the builder method. That's the wrong reason. The cost of dropping below the builder (we'll itemize it at the end of the lesson) is never worth saving yourself a documentation lookup. Here's the reflex to internalize: a `sql` showing up in a diff invites the question *"what does the builder not do here?"* — and there should always be a real answer. "I couldn't be bothered to find the method" is not one.
+
+One more mental model, because it's the thing juniors get backwards: **the reach is a spectrum, not a cliff.** Embedding a `sql` in a single `where` is a one-inch drop — the surrounding result type is untouched, the builder still projects your columns, you've only gone raw for one boolean predicate. Running a whole ``db.execute(sql`select … `)`` is a full drop — no inference, no builder safety, you've left the typed world entirely. These are not the same act, and you should always prefer the *shallowest drop that solves the problem*. Fill the gap; don't abandon the builder because part of it was inconvenient.
+
+The walk below puts that decision in the order an experienced engineer actually asks it — builder first, shallowest drop next, raw only at the leaf. Step through it for a query you're unsure about.
+
+<StateMachineWalker kind="decision" title="When do you reach for raw SQL?">
+  <Question
+    id="has-method"
+    prompt="Does the builder have a method for what you need?">
+    <Branch
+      label="Yes — there's a builder method or operator helper"
+      to="use-builder" />
+    <Branch
+      label="No — Postgres can do it but Drizzle has no wrapper"
+      to="sub-or-statement" />
+  </Question>
+
+  <Question
+    id="sub-or-statement"
+    prompt="Is it a sub-expression inside a query, or a whole statement?"
+    description="A sub-expression is one predicate or ordering key inside a select or update. A whole statement runs on its own.">
+    <Branch
+      label="A sub-expression — one predicate or ordering key"
+      to="use-fragment" />
+    <Branch label="A whole statement, run once" to="use-execute" />
+    <Branch
+      label="It's structural — an index, trigger, or extension"
+      to="use-migration" />
+  </Question>
+
+  <Leaf id="use-builder" verdict="Stay in the builder">
+    This is the floor. If a method or operator helper exists, use it — you
+    keep inference, the missing-`where` guard, and a reader who doesn't have
+    to context-switch. No reach is needed.
+  </Leaf>
+
+  <Leaf id="use-fragment" verdict="The shallow drop — sql in a where">
+    `where(sql…)`. Keep the builder's structure and types; hand it the one
+    expression it can't write. Parameterization still fires inside the tag, so
+    values stay bound. This is the most common and lowest-cost reach.
+  </Leaf>
+
+  <Leaf id="use-execute" verdict="The full drop — db.execute">
+    `db.execute(sql…)`. A one-off with no meaningful row-shape to type, like
+    `refresh materialized view`. You're outside the typed world, so reserve it
+    for statements the builder genuinely can't express. You are now the
+    guardrail.
+  </Leaf>
+
+  <Leaf id="use-migration" verdict="Hand-write the SQL in a migration">
+    Indexes, triggers, and extensions aren't queries — they live in a migration
+    file, where hand-authored SQL is the norm, not a smell. The last section
+    covers this.
+  </Leaf>
+</StateMachineWalker>
+
+## Inside the `sql` template: identifiers, values, and the parameter boundary
+
+This is the part that matters most, because it's where a junior ships a vulnerability without realizing it. To see why, you first need to name the two things the `sql` tag does with the values you interpolate — you've used both, probably without distinguishing them.
+
+When you interpolate a **table or a column**, it becomes a quoted identifier. Write `` sql`select * from ${invoices} where ${invoices.id} = …` `` and Drizzle, which knows the SQL names from your schema, emits `"invoices"."id"`. The interpolation is *structural* — it's naming a part of the query, not supplying a value.
+
+When you interpolate a **value**, it becomes a bound `$1` parameter. Write `` sql`… where ${invoices.id} = ${id}` `` and the value of `id` never enters the SQL string at all; the database driver sends the query text and the value separately and binds them on the other side. This is the exact same guarantee as `eq(col, value)` from the start of the chapter — you've just dropped one level lower to get it. The tag is doing the parameterizing for you.
+
+That second behavior is the whole safety story, so let's make the failure mode unmistakable. Here are three shapes that *look* nearly identical and behave completely differently. The first is the only safe one.
+
+<CodeVariants syncKey="param-boundary">
+  <CodeVariant label="Parameterized">
+    <div data-mark-color="green">
+
+    ```ts "${userInput}"
+    const rows = await db
+      .select()
+      .from(invoices)
+      .where(sql`${invoices.customerName} = ${userInput}`);
+    ```
+
+    </div>
+    **Bound as `$1` — safe.** The `sql` tag intercepts the interpolation and hands `userInput` to the driver as a separate bound parameter. It never becomes part of the SQL text, so there is nothing to inject. Same guarantee as `eq(invoices.customerName, userInput)`.
+  </CodeVariant>
+
+  <CodeVariant label="Plain template literal">
+    <div data-mark-color="red">
+
+    ```ts "${userInput}"
+    const { rows } = await pool.query(
+      `select * from invoices where customer_name = '${userInput}'`,
+    );
+    ```
+
+    </div>
+    **Concatenated into the string — injectable.** No `sql` tag, just a plain backtick literal handed to the driver's raw `pool.query`: `userInput` is spliced straight into the SQL text. A value like `' or '1'='1` rewrites your query. This is textbook SQL injection — the `sql` tag is exactly what's missing.
+  </CodeVariant>
+
+  <CodeVariant label="sql.raw">
+    <div data-mark-color="red">
+
+    ```ts "sql.raw("
+    const rows = await db.execute(
+      sql.raw(`select * from invoices where customer_name = '${userInput}'`),
+    );
+    ```
+
+    </div>
+    **Concatenated inside the tag — still injectable.** The `sql` is present, which is what makes this dangerous: `.raw` opts *out* of binding and passes the string through verbatim. It looks safe and isn't — the danger is camouflaged by the tag that usually protects you.
+  </CodeVariant>
+</CodeVariants>
+
+The reason the safe form is safe comes down to one picture: a bound parameter travels *beside* the query, never *inside* it. The diagram below traces the same fragment — `` sql`… where email = ${input}` `` — down two tracks so you can see the split.
+
+<ParamBindVsSplice />
+
+Now reinforce the distinction with your hands. In the block below, several values are interpolated. Click only the ones that reach the driver as a *bound parameter* — the ones the `sql` tag protects — and leave the spliced ones alone.
+
+<Tokens
+  prompt="Click every interpolation that reaches the driver as a bound $1 parameter — not the ones spliced into the SQL string. Then press Check."
+  targets={['${term}']}
+  decoys={['${sortColumn}', '${status}', '${orgId}']}
+>
+```ts
+const matched = await db
+  .select()
+  .from(invoices)
+  .where(sql`${invoices.searchVector} @@ websearch_to_tsquery('english', ${term})`)
+  .orderBy(sql.raw(`${sortColumn} desc`));
+
+const legacy = await pool.query(
+  `select * from invoices where status = '${status}' and org_id = ${orgId}`,
+);
+```
+</Tokens>
+
+<details>
+<summary>Show the answer</summary>
+
+Only **`${term}`** is bound. It sits inside a ``sql`…` `` tag, so the tag intercepts the interpolation and hands the value to the driver as a separate `$1` parameter — it never enters the SQL text. (The other interpolation under that same tag, `${invoices.searchVector}`, is a *column*, so it becomes the quoted identifier `"invoices"."search_vector"` — structural, not a value, which is why it isn't clickable.)
+
+The three decoys are all spliced straight into the SQL string:
+
+- **`${sortColumn}`** is inside `sql.raw(…)`. The `sql` is present, but `.raw` opts *out* of binding, so the string passes through verbatim — the camouflaged-danger case from the tabs above.
+- **`${status}`** and **`${orgId}`** sit in a plain backtick literal with **no `sql` tag at all**. `pool.query` receives a string that already has the values concatenated into it. `${orgId}` is the trap: it *looks* like it should be bound — same `${…}` shape as `${term}` — but the literal around it was never tagged, so nothing binds it. That missing tag is the whole difference between safe and injectable.
+
+</details>
+
+## Re-claiming the type you dropped
+
+When you drop below the builder, you lose its inferred return type along with everything else — so you put it back by hand. The tool is the type parameter on the tag: `` sql<T>`…` `` tells the surrounding builder what the expression evaluates to. The `ts_rank` ordering key from last lesson is the canonical example — `` sql<number>`ts_rank(…)` `` tells the builder this ordering key is a number, because Postgres returns a float and nothing downstream could have guessed that.
+
+Here is the part to hold onto, the same caveat that's followed every `sql<T>` you've written this chapter: **it's a TypeScript-side claim, not a runtime check** — exactly like `as`. Drizzle can't validate it against what Postgres actually returns; it simply trusts you. Claim `sql<number>` on something that comes back as a string and you've created a lie the compiler will believe — surfacing later as a cast error at runtime, or worse, a silently wrong type that propagates through your code. So the discipline is narrow: claim only when you *know* the real Postgres return type, and keep the claim honest. `ts_rank` is a `number`. A `count(*) filter (where …)` is a `number`. A JSONB `->>` leaf is a `string` until you cast it. Each of these you've written already — now you can name what the `<T>` was doing.
+
+<CodeTooltips tooltips={{
+  'sql<number>': 'A TypeScript-side claim, not a runtime check. Drizzle trusts it — like `as`. A wrong claim surfaces as a cast error or a silently wrong type.',
+}}>
+```ts "sql<number>"
+const ranked = await db
+  .select({
+    id: invoices.id,
+    rank: sql<number>`ts_rank(${invoices.searchVector}, websearch_to_tsquery('english', ${term}))`,
+  })
+  .from(invoices)
+  .where(eq(invoices.organizationId, orgId))
+  .orderBy(desc(sql`ts_rank(${invoices.searchVector}, websearch_to_tsquery('english', ${term}))`));
+```
+</CodeTooltips>
+
+The depth of the drop decides how much type you lose, and it's worth being precise about it. Inside `` where(sql`…`) `` the *surrounding* result type is untouched — the builder still projects your columns, so the rows come back fully typed; only the fragment itself is untyped, and it usually doesn't even need a `<T>` because it returns a boolean predicate nobody reads. A full `` db.execute(sql`select …`) `` is the opposite: there's no projection to lean on, so the result comes back driver-shaped and essentially `unknown`. That's the practical reason the typed builder stays the better default whenever the *shape of the returned rows* matters — and it sets up the next section.
+
+## `db.execute` and the one-off statement
+
+<Term definition="Runs an arbitrary statement on the connection pool, returning the raw driver result — rows plus metadata — not a typed builder array.">``db.execute(sql`…`)``</Term> runs an arbitrary statement against the connection pool and hands you back the **raw driver result** — rows plus driver metadata — not a builder-typed array. This is the full drop: you've left the typed world, so reserve it for statements that have no meaningful row-shape to type or that the builder simply can't express. Refreshing a materialized view. A one-off maintenance `update`. A `with recursive …` walk of the kind the subqueries lesson pointed here for. Maintenance scripts, migration helpers, ad-hoc admin queries — that's the neighbourhood.
+
+Two things to watch, and they're sharp enough that they belong in your head before you type `db.execute`, not in a footnote.
+
+The builder's "every mutation carries a `where`" reflex is *gone* the moment you drop to `db.execute`. A raw `delete from invoices` with no `where` will run, delete every row, and Drizzle will not say a word — there's no missing-`where` guardrail down here. When you drop to `db.execute` for a mutation, *you* are the guardrail. Nothing else is watching.
+
+And the result shape is driver-specific. Neon's serverless driver and node-postgres differ slightly in what `db.execute` returns — where the rows sit, what metadata rides along. The setup chapter that wires `db/index.ts` standardizes which driver the course uses, so the shape is settled there, not guessed at here. Just know the divergence exists so a result that doesn't look the way you expected sends you to the right place.
+
+The canonical legitimate shape is a single line — a statement with nothing to type and no builder equivalent:
+
+```ts
+await db.execute(sql`refresh materialized view concurrently invoice_totals`);
+```
+
+## The unsafe corner: `sql.raw` and dynamic identifiers
+
+<Term definition="Interpolates a string into SQL without parameter binding. Safe only for fixed identifiers from your own code, never user input.">`sql.raw(input)`</Term> interpolates a string into the SQL **without** parameterization — the whole string becomes part of the query text. The rule comes first and comes hardest: **never pass it anything user input has touched.** That's the injection vector the figure two sections ago drew as a picture, and `sql.raw` is the function that opens it.
+
+So why does it exist? Because there's one thing a bound parameter genuinely cannot be: an **identifier**. Postgres won't accept a `$1` placeholder where a table or column *name* goes — `order by $1` doesn't sort by a column, it sorts by the literal string. So when you need a <Term definition="A table or column name chosen at runtime rather than written literally — the one thing a bound parameter can't be.">dynamic identifier</Term> — a sort key the user picks from a dropdown, say — a bound parameter is structurally impossible, and you're forced to build the identifier as text. Even then, the text must come from a **fixed allow-list in your own code** — a hardcoded map keyed by a value you've validated — never the raw request value. The user picks *which* key; your code owns *what each key maps to*.
+
+For that common case, though, `sql.raw` is not even the right tool. <Term definition="Quotes a runtime-chosen table or column name. The right tool for a dynamic identifier — but quoting is not your defense; still validate the name against a fixed allow-list.">`sql.identifier(name)`</Term> quotes a runtime-chosen identifier properly — it wraps the name and escapes the delimiter — so most "I need a dynamic column name" needs should reach for `sql.identifier`, not the lower-level `sql.raw`. (You'll also see `sql.placeholder('foo')` around — that's the named placeholder for prepared statements, a performance detail the next chapter owns. It's unrelated to `sql.raw`; just don't confuse the two when you meet it.)
+
+Here is the part that separates an experienced engineer from someone who read half the docs, and it's not hypothetical. **`sql.identifier` quoting your identifier is necessary but not sufficient.**
+
+:::danger
+**CVE-2026-39356** was a real SQL injection *through* `sql.identifier()`, fixed in Drizzle **0.45.2** and **1.0.0-beta.20**. Older `escapeName()` implementations wrapped the identifier in quotes but didn't double an embedded `"`, so an attacker-controlled value could terminate the quoted identifier and inject SQL anyway. The canonical vulnerable line was exactly the naive dynamic sort: `orderBy(sql.identifier(req.query.sort))`.
+:::
+
+That CVE teaches two things, and you need both. First: keep Drizzle patched — the quote-escaping fix is the floor, and `sql.identifier` on a patched version (≥ 0.45.2) quotes correctly. But second, and this is the durable lesson: **the quoting helper is not your defense — the allow-list is.** Even with a fully patched `sql.identifier`, you never pass request input to it. You validate the input against a fixed set of permitted names *first*, and only then build the identifier. Patched quoting reduces the blast radius if you slip; the allow-list is the actual control. One protects you when the other fails, and you want both.
+
+The three tabs below escalate from the bug to the fix. The first is the CVE pattern; read each tab's verdict before the code.
+
+<CodeVariants syncKey="identifier-allowlist">
+  <CodeVariant label="From the request">
+    <div data-mark-color="red">
+
+    ```ts "sql.identifier(sortParam)"
+    const sortParam = searchParams.get('sort') ?? 'created_at';
+
+    const rows = await db
+      .select()
+      .from(invoices)
+      .where(eq(invoices.organizationId, orgId))
+      .orderBy(sql.identifier(sortParam));
+    ```
+
+    </div>
+    **The CVE pattern — injectable, even patched.** `sortParam` comes straight from the request and goes straight to `sql.identifier`. On a patched Drizzle the quoting holds; the moment you're a version behind, an attacker controls part of your SQL. Either way, request input must never reach an identifier helper directly.
+  </CodeVariant>
+
+  <CodeVariant label="Allow-list, then sql.identifier">
+    <div data-mark-color="green">
+
+    ```ts "sql.identifier(sort)" {4}
+    const SORTABLE = ['created_at', 'amount_due'] as const;
+
+    const requested = searchParams.get('sort');
+    const sort = SORTABLE.find((column) => column === requested) ?? 'created_at';
+
+    const rows = await db
+      .select()
+      .from(invoices)
+      .where(eq(invoices.organizationId, orgId))
+      .orderBy(sql.identifier(sort));
+    ```
+
+    </div>
+    **Validated against a fixed set first — safe.** `sort` can only be a member of `SORTABLE` — `find` returns one of those literals or `undefined`, and the `??` supplies the default. By the time it reaches `sql.identifier`, it's no longer attacker-controlled; it's one of two strings you wrote. The allow-list is the control; the quoting is the seatbelt.
+  </CodeVariant>
+
+  <CodeVariant label="sql.raw from a map">
+    <div data-mark-color="green">
+
+    ```ts "SORT_COLUMNS[sort]"
+    const SORT_COLUMNS = {
+      created_at: 'created_at desc',
+      amount_due: 'amount_due desc, created_at desc',
+    } as const;
+
+    const sort: keyof typeof SORT_COLUMNS = 'created_at';
+
+    const rows = await db
+      .select()
+      .from(invoices)
+      .where(eq(invoices.organizationId, orgId))
+      .orderBy(sql.raw(SORT_COLUMNS[sort]));
+    ```
+
+    </div>
+    **Same allow-list discipline, one level lower.** When you need more than a bare identifier — a tiebreaker, a direction — `sql.identifier` doesn't fit, so you drop to `sql.raw`. It's only safe because the string is keyed from a map *you* wrote; `sort` indexes a fixed object, never the request. The rule never changed: the value is traceable to a fixed set in your code.
+  </CodeVariant>
+</CodeVariants>
+
+This is the governance reflex to carry out of the chapter, stated the way it shows up in a code review: **when `sql.raw` — or `sql.identifier` on a runtime value — appears in a diff, the reviewer's first question is "where did this name come from?", and the only acceptable answer is "a fixed set in our code."** If the value can't be traced to an allow-list, that's the bug, patched quoting or not. The helper reduces the damage; the allow-list is what makes it correct.
+
+<ExternalResource
+  title="Drizzle security advisory — sql.identifier injection (CVE-2026-39356)"
+  href="https://github.com/drizzle-team/drizzle-orm/security/advisories/GHSA-gpj5-g38j-94v9"
+  icon="simple-icons:drizzle"
+  iconColor="#C5F74F"
+  description="The real advisory: the escaping bug, the fix in 0.45.2 / 1.0.0-beta.20, and the patched-version floor."
+/>
+
+## Migrations: where hand-written SQL is the default, not the exception
+
+Everything so far treats raw SQL as the governed exception — reach rarely, parameterize always, trace every identifier. There is one place where that framing flips entirely: **inside a migration file, hand-authored SQL is normal and expected.** Not a smell, not a last resort — the authoring language.
+
+Here's why. Drizzle Kit reads your schema and generates the DDL for tables, columns, and constraints. But there's a whole category of database objects it *doesn't* generate — and that category is exactly the running list of "owned by a migration" pointers this chapter kept planting. Every one of those debts comes due here:
+
+- **Custom indexes.** The GIN index for the `tsvector` search column from last lesson, the GIN index for JSONB containment, partial indexes, the composite cursor index, expression indexes. The chapter deferred *every* index to the next chapter — but that's where the index *mechanic* and *tuning* live. The *vehicle* is what we're naming now: a hand-written `create index` in a migration file.
+- **Triggers.** The `updatedAt` trigger from the schema chapter — the one that stamps `updated_at` on every row change — is a hand-written `create trigger` in a migration. That's not a workaround; that's the correct home for it.
+- **Extensions.** `create extension if not exists pg_trgm`, `pgcrypto`, and friends. Postgres features that have to be switched on before you can use them.
+- **Constraint tweaks Drizzle Kit doesn't generate.** A `check` constraint shape or an exclusion constraint beyond what the schema can express.
+
+The model to hold: **the builder governs *queries*; migrations are a different surface, and on that surface SQL is the authoring language.** A hand-written `create index` or `alter table` inside a generated migration's `.sql` file is exactly what's supposed to be there. The discipline on that surface isn't *avoid SQL* — it's *read every migration before it ships*, the generated DDL and your hand edits alike. The mechanics of how migrations are structured and run belong to the migrations chapter; all you need from this lesson is that migrations are raw-SQL-normal, and which artifacts live there.
+
+Here is what that looks like — an extension, a GIN index, and the `updatedAt` trigger, side by side. Read it as migration-file SQL, not as anything you'd write inside a feature.
+
+```sql title="drizzle/0003_search_and_audit.sql"
+create extension if not exists pg_trgm;
+
+create index idx_invoices_search_vector_gin
+  on invoices using gin (search_vector);
+
+create or replace function set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+create trigger invoices_set_updated_at
+  before update on invoices
+  for each row
+  execute function set_updated_at();
+```
+
+## What dropping to raw actually costs
+
+The "reach rarely" rule only has teeth if the cost of reaching is concrete, so let's itemize what you give up the moment you drop below the builder. Four things, each one a capability the chapter spent a lesson building.
+
+**Type inference** — gone, and you re-claim it by hand with `sql<T>`, a claim Drizzle never checks. The "derive your result type, never hand-write it" discipline that ran through the whole chapter stops at the edge of a raw fragment; inside it, you're back to asserting.
+
+**Builder-level safety** — gone too. A raw mutation has no missing-`where` guard; a raw query has no schema-aware column checking. Every guardrail the builder was quietly holding for you, you now hold yourself.
+
+**Forward-compatibility** — the builder tracks changes across Postgres and Drizzle versions, adjusting the SQL it emits. Hand-written SQL is frozen the day you wrote it; if a syntax shifts under you, it's yours to migrate.
+
+**Reader cost** — and this one's easy to discount because it lands on someone else. Every `sql` makes the next reader context-switch between builder calls and raw SQL. A fragment that needed to exist earns that cost; one that was just a skipped lookup taxes everyone who opens the file after you.
+
+Put it all together and the lesson lands on one sentence — the spine, restated as a rule you can actually follow: **an experienced engineer reaches for raw SQL rarely, deliberately, at the shallowest depth that works, always parameterized, and never `sql.raw` with input they can't trace to an allow-list.**
+
+Now put the judgment to work. Each situation below is drawn from the chapter you just finished — sort each into the bucket where an experienced engineer would put it.
+
+<Buckets twoCol instructions="Sort each situation into where an experienced engineer would handle it.">
+  <Bucket
+    name="raw"
+    label="Reach for raw SQL"
+    description="The builder is missing the feature, or it's not a query at all" />
+  <Bucket
+    name="builder"
+    label="Stay in the builder"
+    description="A method or operator helper already covers it" />
+
+  <Item bucket="raw">Ordering by trigram `<->` distance (no Drizzle operator)</Item>
+  <Item bucket="builder">`where status = 'sent'`</Item>
+  <Item bucket="raw">`refresh materialized view` (a `db.execute` one-off)</Item>
+  <Item bucket="builder">A paginated list with a `createdAt` + `id` tiebreaker</Item>
+  <Item bucket="raw">`create index … using gin` (lives in a migration)</Item>
+  <Item bucket="builder">Selecting one invoice by its id</Item>
+  <Item bucket="raw">Ordering by `ts_rank` (a shallow `sql` fragment)</Item>
+  <Item bucket="raw">A dynamic column name from a fixed allow-list (via `sql.identifier`)</Item>
+</Buckets>
+
+## External resources
+
+Two canonical references — the magic `sql` operator and the runner that executes it.
+
+<CardGrid>
+
+<ExternalResource
+  title="Drizzle — the magic sql operator"
+  href="https://orm.drizzle.team/docs/sql"
+  icon="simple-icons:drizzle"
+  iconColor="#C5F74F"
+  description="The full reference for the sql template tag and its .raw / .identifier / .placeholder helpers."
+/>
+
+<ExternalResource
+  title="Drizzle — db.execute"
+  href="https://orm.drizzle.team/docs/goodies#raw-sql-queries-execution"
+  icon="simple-icons:drizzle"
+  iconColor="#C5F74F"
+  description="Running an arbitrary statement against the pool, and what the raw driver result looks like."
+/>
+
+</CardGrid>

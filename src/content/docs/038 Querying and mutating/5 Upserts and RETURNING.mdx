@@ -1,0 +1,353 @@
+---
+title: Upserts and RETURNING
+tagline: Postgres ON CONFLICT through Drizzle, the atomic create-or-update plus RETURNING that ends every mutation in this chapter.
+chapter-id: 38
+course-progress: 0.00005
+sidebar:
+  order: 5
+  label: Upserts & RETURNING
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import DrizzleCoding from '../../../components/live-coding/DrizzleCoding/DrizzleCoding.astro';
+import Term from '../../../components/ui/Term.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import RaceFrame from '../../../components/lessons/038/5/race-frame.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+You can already insert a row and update a row by id. But a surprising share of the writes a SaaS backend does aren't cleanly one or the other. A payment provider sends you a webhook, then sends the *same* webhook again because it never saw your `200`. A user clicks "Join" on an organization they might already belong to. A settings panel saves the same row every time someone toggles a switch. Each of these is the same shape: *insert this if it's new, update it if it already exists.*
+
+You could reach for what looks obvious — read the row, check whether it's there, then branch to an `insert` or an `update`. That code reads correctly and ships, and then it produces duplicate rows in production that you can never reproduce on your laptop. So the question this lesson answers is two-part: how do you make "create or update" a single statement that can't break under concurrent load, and how do you get the row you just wrote back without asking the database for it a second time?
+
+The two tools are <Term definition="A single statement that inserts a row or, if it would collide with an existing row on a unique constraint, updates that row instead.">upsert</Term> — Postgres' `ON CONFLICT` clause, which Drizzle exposes as `onConflictDoNothing` and `onConflictDoUpdate` — and `RETURNING`, which Drizzle attaches with `.returning()`. They're independent features, but they travel together: by the end of this chapter every mutation you write ends in `.returning()`.
+
+## The read-then-write race
+
+Start with the tempting version, because seeing *why* it's wrong is what makes the fix feel inevitable. Here's "add this user to this organization, but don't duplicate them if they're already a member," written the way it first occurs to you:
+
+```ts
+const existing = await db.query.memberships.findFirst({
+  where: (m, { and, eq }) =>
+    and(eq(m.userId, userId), eq(m.organizationId, orgId)),
+});
+
+if (existing) return existing;
+
+const [created] = await db
+  .insert(memberships)
+  .values({ userId, organizationId: orgId, role: 'member' })
+  .returning();
+return created;
+```
+
+Read it top to bottom and it's airtight. Look it up; if it's there, hand it back; otherwise create it. The flaw isn't in the logic — it's in the *gap*. This is two separate trips to the database with application code in between, and nothing stops a second request from squeezing into that gap.
+
+Picture two requests arriving at almost the same instant — the user double-clicked the "Join" button, or two browser tabs fired the same action. Both run the `findFirst`. Neither has inserted anything yet, so both get back "no such membership." Both conclude they need to create it. Both run the `insert`.
+
+<DiagramSequence>
+  <DiagramStep caption="Request A's read lands first and finds nothing — the membership genuinely doesn't exist yet.">
+    <RaceFrame step={1} />
+  </DiagramStep>
+
+  <DiagramStep caption="B reads in the window before A writes, so it sees the same emptiness. The trap is set here: both requests have now decided, independently, that they need to create the row.">
+    <RaceFrame step={2} />
+  </DiagramStep>
+
+  <DiagramStep caption="A's insert goes through and a real membership row exists. Nothing told B about it — B is still acting on the 'absent' it read at T2.">
+    <RaceFrame step={3} />
+  </DiagramStep>
+
+  <DiagramStep caption="B inserts the row it decided was missing back at T2 — but A already wrote it. Without a unique constraint that's a duplicate; with one, B's request crashes on the violation.">
+    <RaceFrame step={4} />
+  </DiagramStep>
+</DiagramSequence>
+
+This is a <Term definition="A bug where the outcome depends on the unpredictable interleaving of two operations running at the same time.">race condition</Term>, and it has the worst property a bug can have: it's invisible when you test. Single-threaded, on your machine, one request at a time, the read always finishes before the next request starts — the gap never gets exploited, so the code looks correct forever. It only fails when two requests genuinely overlap, which is exactly what production traffic does and your test suite doesn't.
+
+The fix is to remove the gap entirely. If the database could do "insert it, or update it if it's already there" as **one statement**, there'd be no in-between moment for a second request to slip into — Postgres holds a lock on the row for the whole duration of the statement, so the two requests are forced to take turns instead of overlapping. That single statement is `INSERT ... ON CONFLICT`, and it's <Term definition="Executes as one indivisible unit — it either fully happens or not at all, with no observable half-finished state in between.">atomic</Term>: it either fully happens or it doesn't, with no half-finished state another request can observe.
+
+If that instinct feels familiar, it's the same one the previous chapter built when you reached for a `UNIQUE` constraint instead of checking for duplicates in application code: push the guarantee down into the database, where it can be enforced without your code having to coordinate it.
+
+<VideoCallout videoId="wEsPL50Uiyo" videoTitle="Why understanding database concurrency control is important">
+  Web Dev Cody fires 100 concurrent requests at a read-then-write endpoint to reproduce this exact race live, then walks through the fixes (9 min).
+</VideoCallout>
+
+## `onConflictDoNothing` — skip on conflict
+
+There are two things you can do when an insert hits a conflict: nothing, or an update. Start with nothing, because it's the smaller idea and it maps onto the cleanest real example — a webhook you might receive twice.
+
+When a provider like Stripe sends you an event, it expects a `200` back. If your server is slow, or a deploy restarts mid-request, or the network hiccups, the provider never sees that `200` and assumes the event was lost — so it sends the exact same event again. Your handler has to be safe to run on a redelivery: processing the event twice must do no more harm than processing it once. That property has a name — the handler must be <Term definition="An operation that produces the same result whether it runs once or many times, so it's safe to retry.">idempotent</Term> — and the cleanest way to get it is to record each event by its provider-assigned delivery id and refuse to record the same id twice.
+
+```ts {4}
+await db
+  .insert(webhookDeliveries)
+  .values({ deliveryId: event.id, payload: event })
+  .onConflictDoNothing({ target: webhookDeliveries.deliveryId });
+```
+
+Read it as one sentence: *insert this delivery; if a row with the same `deliveryId` already exists, do nothing.* The first time the event arrives, the row is inserted. On a redelivery, the `deliveryId` collides with the row that's already there, and instead of throwing a unique-violation error, Postgres quietly skips the insert. The handler is now safe to run any number of times — it does real work exactly once, and is a harmless no-op every time after.
+
+:::note
+The `target` names the column that defines "a conflict" — here, `deliveryId`. That only works because `deliveryId` carries a `UNIQUE` constraint in the schema; assume it was declared that way (the previous chapter covered how). Without a unique constraint behind it there's no collision for Postgres to catch. We'll come back to this dependency hard in the next section, because it's the single thing most likely to bite you.
+:::
+
+There's a subtlety hiding in that code, though. The statement resolves whether the row was freshly inserted *or* silently skipped — from the outside, the two outcomes look identical. Most of the time that's fine; you genuinely don't care. But a real webhook handler usually *does* care: it wants to do the downstream work (provision the subscription, send the receipt) only on the first delivery, and skip it on a repeat. So how do you tell which branch fired?
+
+This is the first place `.returning()` earns its keep. Attach it, and an insert that actually happened hands back the row, while an insert that got skipped hands back an empty array. You branch on whether you got a row.
+
+<CodeVariants>
+  <CodeVariant label="No signal">
+    ```ts
+    await db
+      .insert(webhookDeliveries)
+      .values({ deliveryId: event.id, payload: event })
+      .onConflictDoNothing({ target: webhookDeliveries.deliveryId });
+    ```
+    **The write happens, but you learn nothing.** A fresh insert and a skipped one both just resolve — there's no way to tell whether this was the first time you saw the event or the fifth, so you can't decide whether to do the downstream work.
+  </CodeVariant>
+
+  <CodeVariant label="With returning">
+    <div data-mark-color="green">
+
+    ```ts ".returning()" {7-9}
+    const [delivery] = await db
+      .insert(webhookDeliveries)
+      .values({ deliveryId: event.id, payload: event })
+      .onConflictDoNothing({ target: webhookDeliveries.deliveryId })
+      .returning();
+
+    if (!delivery) {
+      return; // already processed — this is a redelivery
+    }
+    // first time we've seen this event — safe to do the real work
+    ```
+
+    </div>
+    **Now the skip is observable.** `.returning()` gives you `[row]` on a real insert and `[]` on a skip, so an empty result *is* the signal that you've seen this event before.
+  </CodeVariant>
+</CodeVariants>
+
+One detail about `target`: Drizzle lets you omit it, in which case *any* unique conflict on the table triggers the no-op. Naming the column is the clearer form — it says exactly which collision you're handling — and it's required the moment a table has more than one unique constraint you might hit, since otherwise Postgres can't know which one you mean. Name the target.
+
+:::note
+This delivery-id dedupe is the heart of the webhook ingestion pattern, and you'll build the full handler — signature verification, replay protection, the whole pipeline — much later in the course. Here you're only learning the *write shape* that handler is built around.
+:::
+
+<VideoCallout videoId="XAccGbtl3Z8" videoTitle="Idempotency — what it is and how to implement it">
+  Alex Hyett zooms out from the delivery-id trick to idempotency in general — why retries duplicate work, and idempotency keys as the broader pattern (8 min).
+</VideoCallout>
+
+## `onConflictDoUpdate` — update on conflict
+
+The other thing you can do on a conflict is actually update the row that's already there. This is the full upsert, and it's the center of this lesson, because it's what "find or create" really wants.
+
+Go back to the membership example from the start of the chapter — adding a user to an organization. The `memberships` table from the previous chapter carries a composite unique constraint on `(userId, organizationId)`: a given user can be a member of a given org at most once. That constraint is exactly what makes "find or create" expressible as an upsert. Instead of reading, branching, and inserting across two trips, you write one statement that says "insert this membership; if this user is already in this org, update their role to the one I just tried to insert":
+
+```ts
+const [membership] = await db
+  .insert(memberships)
+  .values({ userId, organizationId: orgId, role: 'member' })
+  .onConflictDoUpdate({
+    target: [memberships.userId, memberships.organizationId],
+    set: { role: sql`excluded.role` },
+  })
+  .returning();
+```
+
+There's more machinery here than in `onConflictDoNothing`, so let's walk it one piece at a time.
+
+<AnnotatedCode lang="ts" code={`
+const [membership] = await db
+  .insert(memberships)
+  .values({ userId, organizationId: orgId, role: 'member' })
+  .onConflictDoUpdate({
+    target: [memberships.userId, memberships.organizationId],
+    set: { role: sql\`excluded.role\` },
+  })
+  .returning();
+`}>
+  <AnnotatedStep meta="{3}" color="blue">
+    The values you'd insert if no row exists yet. This is the *create* half — an ordinary insert of a new membership with the default `'member'` role.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5}" color="blue">
+    The columns that define a conflict. Because the unique constraint covers the *pair*, the target lists both columns. Crucial: the target **references** the existing unique constraint — it does not create one. If no unique covers these columns, this errors at runtime.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{6}" color="green">
+    What to change when the row already exists. `excluded` is the row Postgres *tried* to insert but couldn't — Postgres exposes it under that fixed alias. So `excluded.role` is the `'member'` we passed to `.values()`, and this says "set the existing row's role to the value the insert proposed."
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{8}" color="violet">
+    Hand back the resulting row — whether it was freshly inserted or updated. The result is typed exactly like a `select` from `memberships`: a `Membership`. No second query to find out what happened.
+  </AnnotatedStep>
+</AnnotatedCode>{/* upsert-walkthrough */}
+
+The piece worth slowing down on is `excluded`. It's a Postgres feature, not a Drizzle one: inside `ON CONFLICT DO UPDATE`, the row that your insert *proposed* — the one that got rejected because it collided — is made available under the alias `excluded`. So `excluded.role` is the `'member'` you handed to `.values()`. The whole point of reaching for it is that you don't have to restate the incoming value:
+
+<CodeTooltips tooltips={{
+  excluded: 'Postgres pseudo-table available only inside ON CONFLICT DO UPDATE: the row the insert proposed but couldn\'t write because it collided. Its column values feed the update.',
+  sql: 'Drizzle tagged template. Values interpolated into it become bound parameters ($1, $2), so it\'s injection-safe — the same guarantee as eq(col, value).',
+}}>
+```ts
+set: { role: sql`excluded.role` }
+```
+</CodeTooltips>
+
+You *could* instead write `set: { role: 'member' }`, restating the literal. For a single hardcoded value that's harmless, but `excluded` is the shape an experienced engineer reaches for, and there's a concrete reason: it has a single source of truth for the incoming value, and it keeps working when the value isn't a literal. Picture a *bulk* upsert — inserting fifty memberships in one statement, each with its own role. A literal `set: { role: 'member' }` would stamp every conflicting row with `'member'`; `set: { role: sql\`excluded.role\` }` gives each conflicting row the role *its own* proposed row carried. `excluded` reads "apply whatever this insert was going to use," which is almost always what you mean.
+
+One thing Drizzle does *not* give you here: a typed accessor for `excluded`. There's no `excluded.role` builder you can autocomplete into — `excluded` lives at the SQL level, so you write it as a raw fragment, `sql\`excluded.role\``. If you go looking for a Drizzle method and don't find one, that's expected; the `sql` tagged template is the tool, and it's parameterization-safe the same way the rest of your queries are.
+
+Now the watch-out the whole lesson has been pointing at.
+
+:::caution
+The conflict target **must** point at a column or set of columns that already carries a `UNIQUE` or `PRIMARY KEY` constraint. If it doesn't, Postgres rejects the statement at runtime with:
+
+> there is no unique or exclusion constraint matching the ON CONFLICT specification
+
+This is a *runtime* error, not a compile error — Drizzle can't see your table's constraints from the query, so the type checker stays silent and you find out only when the query runs. Build the reflex now: every `onConflictDoUpdate` target points at a unique you can name. If you can't name the unique behind it, that *is* the bug — go add the constraint (or fix the target), don't fight the error.
+:::
+
+Two columns deserve a moment of restraint when you write the `set`. It's tempting to "just update everything from `excluded`," but some columns are insert-only — `id`, and especially `createdAt`. If you copy `createdAt` from `excluded` on every conflict, you overwrite the original creation timestamp with the *current* one each time the row is touched, quietly erasing when the row was actually born. Leave immutable columns out of the `set`; update only the fields that are genuinely meant to change.
+
+## `RETURNING` — the write that hands back its row
+
+`.returning()` has ridden along on every example so far. Now make it a habit, because it's not upsert-specific — it belongs on the tail of *every* mutation.
+
+Here's the problem it solves, stated plainly. An ordinary `insert` resolves successfully but tells you nothing about what it wrote. So if you need the generated `id`, or any column the database filled in for you (a `defaultNow()` timestamp, a default status), the obvious move is to immediately `select` the row back. That works, and it's the wrong instinct — for three reasons the comparison below makes concrete.
+
+<CodeVariants>
+  <CodeVariant label="Two trips">
+    <div data-mark-color="red">
+
+    ```ts {3-6}
+    await db.insert(invoices).values({ organizationId: orgId, amountDue: '0.00' });
+
+    const [invoice] = await db
+      .select()
+      .from(invoices)
+      .where(eq(invoices.id, /* …but we don't know the id yet */));
+    ```
+
+    </div>
+    **A select right after a write is the smell.** Two round-trips instead of one, a fresh race window between them where another request can change the row, and a result you have to type by hand because it came from a separate query — and worst of all, the insert never told you the generated id, so you have nothing to filter on.
+  </CodeVariant>
+
+  <CodeVariant label="One statement">
+    <div data-mark-color="green">
+
+    ```ts ".returning()"
+    const [invoice] = await db
+      .insert(invoices)
+      .values({ organizationId: orgId, amountDue: '0.00' })
+      .returning();
+    ```
+
+    </div>
+    **One trip, one type.** The write hands back the row it wrote — generated id and all — typed exactly like a `select` from `invoices`. No second query, no race window, nothing to type by hand.
+  </CodeVariant>
+</CodeVariants>
+
+So adopt this as a reflex: a `select` immediately after a write you just did is a smell. The write already touched those rows; ask it to hand them back. Two round-trips collapse to one, the race window between them disappears, and the result arrives already typed — the same `$inferSelect` shape a `select *` would give you, no hand-written interface.
+
+And it really does ride on *every* write, not just upserts. An `update` returns the rows it changed; a `delete` returns the rows it removed:
+
+```ts
+const [archived] = await db
+  .update(invoices)
+  .set({ deletedAt: new Date() })
+  .where(eq(invoices.id, invoiceId))
+  .returning();
+
+const [removed] = await db
+  .delete(sessions)
+  .where(eq(sessions.id, sessionId))
+  .returning();
+```
+
+The first is a soft delete — you'll meet the full pattern in the next chapter — and `.returning()` hands you the freshly archived row to send back to the client. The second deletes a row and returns what it removed, which is exactly what you'd write to an audit log: you can't read a deleted row afterward, so the delete itself is your only chance to capture it.
+
+When you don't need the whole row, narrow it. `.returning()` accepts a projection, just like a `select` does, and the inferred type follows the projection exactly:
+
+```ts
+const [{ id }] = await db
+  .insert(memberships)
+  .values({ userId, organizationId: orgId, role: 'member' })
+  .returning({ id: memberships.id });
+```
+
+Here the result type is `{ id: string }[]`, not the full `Membership` — the type follows what you asked for. Reach for a projection when the caller only needs the new id back, not every column.
+
+One last detail that's easy to miss and occasionally load-bearing: for a bulk insert, `insert([...]).returning()` gives the rows back in **insertion order**, so the returned array lines up position-for-position with the values array you passed in. When you need to correlate each input to the id it generated, that alignment is what lets you do it.
+
+## The canonical idempotent write
+
+Step back and notice that the two ideas have fused into one shape. **Upsert plus `.returning()` is the create-or-update that's atomic *and* hands back the row** — no race, no follow-up query. That's the default for a whole family of SaaS writes, and it's worth carrying a mental index of the three places it shows up:
+
+- **Webhook idempotency** — `onConflictDoNothing` on the delivery-id unique, with `.returning()` to tell a first delivery from a repeat.
+- **Find or create** — `onConflictDoUpdate` on the natural or composite unique (the `memberships` example), with `.returning()` for the resulting row.
+- **Settings save** — `onConflictDoUpdate` keyed on a `unique(organizationId)`: one settings row per organization, written over and over as the user changes things, each save setting the changed columns from `excluded`.
+
+That settings case is where a tedious detail shows up. Imagine a settings table with twenty columns. Writing `set: { theme: sql\`excluded.theme\`, locale: sql\`excluded.locale\`, … }` by hand for all twenty is busywork, and easy to get out of sync when you add a column. The experienced move is a tiny helper that builds the `set` object automatically by mapping every non-primary-key column to its `excluded` counterpart — a few lines that turn "set all the columns from what I tried to insert" into one call. We're naming the helper rather than shipping it; the idea is what matters, and you'll recognize it when you need it.
+
+Two more knobs exist on the conflict clause that you'll rarely touch but should recognize by name. `targetWhere` constrains *which rows count as a conflict* — it pairs with a **partial** unique index (uniqueness that only holds `where deleted_at is null`, say), so a "soft-deleted" row doesn't block a new insert. `setWhere` constrains *which conflicts actually get updated* — for example, "only overwrite the existing row if the incoming one is newer." Both are real, both are the long tail, and neither shows up in everyday SaaS work. Know they exist; reach for them only when a partial-unique or a conditional-overwrite problem actually lands on your desk.
+
+And know where this tool stops. Upsert resolves *one row's* conflict using *that row's* proposed values. The moment a conflict's resolution needs to read some *other* row's data — bulk logic where one row's update depends on a sibling — `ON CONFLICT` can't express it. That's a job for a CTE, which is the next lesson. Drawing that boundary now means you won't waste an afternoon trying to bend an upsert into a shape it doesn't have.
+
+### Practice: find or create a membership
+
+Time to write the shape yourself. Below is a `memberships` table seeded with one existing row — user `1` is already a `member` of organization `1`. Your job is the find-or-create: add user `1` to organization `1` with the role `admin`, and `.returning()` the row.
+
+The trap is the whole point. A plain `insert` collides with the seeded row and throws a unique violation. `onConflictDoNothing` skips the insert and hands you back an empty array — so you never get `admin`. Only `onConflictDoUpdate`, with the composite `target` and the `set` pulling the role from `excluded` (or a literal `'admin'`), updates the existing row in place and returns it as an `admin`. One row out, `role: 'admin'`, no duplicate.
+
+<DrizzleCoding
+  instructions="Add user 1 to organization 1 as an `admin`. The pair (user_id, organization_id) is already taken by a `member` row, so a plain insert would collide on the composite unique. Upsert on that unique and `.returning()` the row — the existing membership should end up `admin`, not duplicated. One row out."
+  schema={`export const memberships = pgTable('memberships', {
+  id: integer('id').primaryKey(),
+  userId: integer('user_id').notNull(),
+  organizationId: integer('organization_id').notNull(),
+  role: text('role').notNull(),
+}, (t) => [
+  unique('memberships_user_org_unique').on(t.userId, t.organizationId),
+]);`}
+  seed={`INSERT INTO memberships (id, user_id, organization_id, role) VALUES
+  (1, 1, 1, 'member');`}
+  starter={`return await db
+  .insert(memberships)
+  .values({ id: 2, userId: 1, organizationId: 1, role: 'admin' })
+  // finish: upsert on the (user_id, organization_id) unique, then .returning()
+  ;`}
+  expectedRows={[{ userId: 1, organizationId: 1, role: 'admin' }]}
+  ordered={false}
+/>{/* find-or-create-membership */}
+
+You now have the two writes the basic insert and update couldn't express on their own: the atomic create-or-update that survives concurrent traffic, and the write that hands its own result back instead of making you ask for it twice. From here on, every mutation in this chapter ends in `.returning()` — treat it as the default and a follow-up `select` as the exception that needs justifying.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Drizzle ORM — Upsert Query"
+    href="https://orm.drizzle.team/docs/guides/upsert"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The exact API this lesson uses — onConflictDoUpdate, excluded, composite targets, and the column-mapping helper named at the end."
+  />
+  <ExternalResource
+    title="PostgreSQL — INSERT (ON CONFLICT & RETURNING)"
+    href="https://www.postgresql.org/docs/current/sql-insert.html"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="The canonical reference under Drizzle's surface: the ON CONFLICT clause, the excluded table, and what RETURNING does and does not give back."
+  />
+</CardGrid>

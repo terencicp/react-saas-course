@@ -1,0 +1,637 @@
+---
+title: Nested reads with the relational API
+tagline: Read entities with their related rows as nested objects using Drizzle's relational query builder, instead of folding flat join results by hand.
+chapter-id: 038
+course-progress: 0.00005
+sidebar:
+  order: 3
+  label: Nested reads (RQB)
+---
+
+import Figure from '../../../components/figures/Figure.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import Dropdowns from '../../../components/exercises/dropdowns/Dropdowns.astro';
+import Matching from '../../../components/exercises/matching/Matching.astro';
+import Pair from '../../../components/exercises/matching/Pair.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import TrueFalse from '../../../components/exercises/true-false/TrueFalse.astro';
+import Statement from '../../../components/exercises/true-false/Statement.astro';
+import TfWhy from '../../../components/exercises/true-false/TfWhy.astro';
+import DrizzleCoding from '../../../components/live-coding/DrizzleCoding/DrizzleCoding.astro';
+import FlatVsTreeShape from '../../../components/lessons/038/3/flat-vs-tree-shape.astro';
+import NPlusOneVsOneStatement from '../../../components/lessons/038/3/n-plus-one-vs-one-statement.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+You can already join two tables. So picture the most ordinary screen in the whole invoicing app: an invoice detail page. It needs the invoice itself, its line items rendered as a list, and the name of the organization it belongs to. Three tables, one page. In the previous lesson that read was a `leftJoin`, and it worked — the columns all came back. But the *shape* of what came back was wrong for the page, and fixing that shape by hand is exactly the chore this lesson removes.
+
+## When a join gives you the wrong shape
+
+Here is the join you'd write for that detail page with the SQL builder you learned in the last lesson.
+
+```ts
+const rows = await db
+  .select({
+    invoice: invoices,
+    lineItem: invoiceLineItems,
+    organization: organizations,
+  })
+  .from(invoices)
+  .leftJoin(invoiceLineItems, eq(invoiceLineItems.invoiceId, invoices.id))
+  .leftJoin(organizations, eq(organizations.id, invoices.organizationId))
+  .where(eq(invoices.id, invoiceId));
+```
+
+It runs. But look at what you get back and two costs land at once.
+
+The first: **the result is flat and duplicated.** SQL only knows how to return a rectangle of rows. An invoice with three line items comes back as *three rows* — the same invoice columns and the same organization columns copied onto each one, differing only in the line-item part. The page wants one invoice with an array of three line items inside it. So the app has to take that rectangle and fold it back into the nested object by hand: group the rows by invoice id, collect the line items into an array, peel one copy of the organization off the top. That regrouping `reduce` is boilerplate you write again for every detail screen, and it's where off-by-one bugs hide.
+
+The second: **left-join nullability.** Every column on the right side of a `leftJoin` is typed `T | null`, because the join has to account for an invoice with no line items at all. So even `organization.name` — a column you know is always there for a real invoice — arrives as `string | null`, and you're threading null checks through code that should just render a name.
+
+Neither cost is the join's fault. A join's job is to return columns from more than one table, and it does that. The mismatch is that you asked for a *rectangle* when the thing you actually wanted was a *tree*.
+
+<FlatVsTreeShape />
+
+When the read is a **tree** — one entity plus its related rows — you don't want to describe a join and then reshape the result. You want to describe the tree you want and let Drizzle build the SQL that returns it. That is exactly what the <Term definition="Drizzle's db.query.<table>.findMany / findFirst API. It reads the relations graph and returns nested objects instead of flat rows.">relational query builder</Term> (RQB) is for. And it doesn't invent the relationships out of thin air — it reads the relations graph you declared with `defineRelations` back in the schema chapter. That declaration was a promise; this is where it pays off.
+
+For the rest of this lesson, keep one sentence in your head: **describe the tree, get the tree.** With the SQL builder you compose the *operation* — these columns, this join predicate, group it like so — and you shape the result yourself. With RQB you declare the *shape* — this entity, with these relations, filtered like this — and Drizzle plans the SQL. The SQL builder is the imperative, operation-first read. RQB is the declarative, shape-first read. Every "which one do I use?" decision later in this lesson falls straight out of that distinction.
+
+## findMany, findFirst, and the `with` traversal
+
+RQB has two entry points, and you already know their semantics from the single-vs-many reads in the first lesson of this chapter.
+
+```ts
+const all = await db.query.invoices.findMany(); // Invoice[]
+const one = await db.query.invoices.findFirst(); // Invoice | undefined
+```
+
+`findMany` returns an array of rows — with no options, it's the same set of invoices `db.select().from(invoices)` would give you, just through the relational entry point. `findFirst` adds a `LIMIT 1` and returns a single row, or `undefined` when nothing matches. Note that carefully: `undefined`, not `null`, and it does not throw. This is the relational-API version of the `const [row] = await db.select()…limit(1)` idiom from the first lesson — same single-row read, except you don't destructure an array, you get the row directly. And `db.query.<table>` exists for *every* table in your schema: the entry is generated from the schema the same way `db.select` is, so `db.query.organizations`, `db.query.users`, and the rest are all there.
+
+That's the plain read. The reason you reach for RQB is the next option: `with`, the one that loads related rows into the result.
+
+<AnnotatedCode lang="ts" code={`
+const invoice = await db.query.invoices.findFirst({
+  where: { id: invoiceId },
+  with: { lineItems: true, organization: true },
+});
+`}>
+  <AnnotatedStep meta="{1}" color="blue">
+    The RQB entry on `invoices`, with `findFirst`. You get one invoice back, or `undefined` if no row has that id.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"where: { id: invoiceId }"`} color="orange">
+    The filter is a plain object: keys are columns, and a bare value means equals. We'll do the full `where` object two sections down; for now read it as `WHERE id = invoiceId`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"with: { lineItems: true, organization: true }"`} color="green">
+    This is the traversal. Each key is a relation you declared with `defineRelations` in the schema chapter; `true` means load it. `lineItems` is a `many` relation, so it comes back as an array. `organization` is a `one` relation, so it comes back as a single object.
+  </AnnotatedStep>
+
+  <AnnotatedStep>
+    No type was written by hand, yet `invoice` is fully typed: `Invoice & { lineItems: LineItem[]; organization: Organization }`. The nested type is inferred from the relations and the `with` keys. We lean on that hard at the end of the lesson.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Two rules from that block carry the whole API.
+
+**The key inside `with` is the relation name — exactly as you declared it.** When you wrote `defineRelations` in the schema chapter, you named each relation: `lineItems`, `organization`, `tags`. Those names are the keys you put in `with`. A `many` relation resolves to an array; a `one` relation resolves to a single object. This is why naming relations so they "read like the data" mattered back then — the name you chose is the name you type here, and the result reads like the sentence "the invoice, with its line items and its organization."
+
+**A `with` key that isn't a declared relation silently does nothing — it doesn't error.** This is the single most common RQB surprise, and it's worth pre-empting now. If you write `with: { tags: true }` but never declared the `tags` relation, `tags` simply won't appear in the result and won't appear in the inferred type. There's no runtime error. Your real signal is the editor: TypeScript autocompletes only the relations you declared, so a typo or a missing relation shows up as "this key isn't allowed" rather than a wrong result at runtime. Remember the distinction from the schema chapter — a foreign key is a *write-time* guarantee that the reference is valid; the relation is a *separate, read-time* declaration that tells RQB how to walk it. Having the FK does not give you the `with` key. You declare the relation for that.
+
+## Nesting deeper and picking columns
+
+Depth and width are two independent knobs on a tree read. `with` controls depth — how far down the relations you walk. `columns` controls width — how many fields you carry at each level. Let's add one, then the other.
+
+Relations chain, so `with` nests. Starting from a line item, you can walk back to the invoice it belongs to, and from that invoice on to its organization:
+
+```ts
+const lineItem = await db.query.invoiceLineItems.findFirst({
+  where: { id: lineItemId },
+  with: {
+    invoice: {
+      with: { organization: true },
+    },
+  },
+});
+```
+
+Postgres assembles that entire tree — line item, its invoice, the invoice's organization — in **one** statement, and the inferred type nests to match: `lineItem.invoice.organization` is fully typed all the way down. You declare the shape; the depth is just how deeply you nest `with`.
+
+Now width. Most of the time you don't want every column — you want the handful the screen renders. The `columns` option narrows the selection, at the top level:
+
+```ts
+const invoice = await db.query.invoices.findFirst({
+  where: { id: invoiceId },
+  columns: { id: true, amountDue: true, status: true },
+});
+```
+
+The result type narrows to exactly those three keys — the same "the type follows the projection" rule from the first lesson, now on RQB. And this isn't only a type trick: Drizzle does the partial select in the SQL, so the unselected columns never travel from the database. There's an exclude form too — `columns: { internalNote: false }` keeps everything *except* `internalNote` — but include-mode and exclude-mode don't mix. The moment you mark one column `true`, you're in include-mode and only the `true` columns come back.
+
+The same `columns` option lives on a relation inside `with`, which is where it earns its keep. You almost never need an organization's full row to render a card — you need its `id` and `name`:
+
+<CodeVariants>
+  <CodeVariant label="Whole row">
+    <div data-mark-color="blue">
+
+    ```ts "organization: true"
+    with: {
+      organization: true,
+    },
+    ```
+
+    </div>
+    **Everything.** Loads all of the organization's columns — fine when you genuinely use them, wasteful when you don't.
+  </CodeVariant>
+
+  <CodeVariant label="Just what the card needs">
+    <div data-mark-color="green">
+
+    ```ts "columns: { id: true, name: true }"
+    with: {
+      organization: { columns: { id: true, name: true } },
+    },
+    ```
+
+    </div>
+    **Two columns.** The same `columns` narrowing, applied to the child — the result's `organization` is typed `{ id: string; name: string }` and only those two columns leave the database.
+  </CodeVariant>
+
+  <CodeVariant label="Depth + projection">
+    <div data-mark-color="violet">
+
+    ```ts /columns:/
+    with: {
+      lineItems: {
+        columns: { id: true, description: true, amountDue: true },
+        with: { invoice: { columns: { id: true } } },
+      },
+    },
+    ```
+
+    </div>
+    **Every level, shaped independently.** Depth (`with`) and width (`columns`) compose freely — each relation in the tree picks its own columns and its own children.
+  </CodeVariant>
+</CodeVariants>
+
+That "shape every level independently" line is the generalization to hold onto: a tree read is a tree of `{ columns, with }` choices, one per node.
+
+Projecting columns isn't premature optimization for its own sake. It's the difference between shipping an invoice's twenty columns to render a dropdown label and shipping two — and on a nested read the saving compounds, because you pay it once per child row. For any read that feeds a specific piece of UI, projecting down to the columns that UI actually renders is the default reflex, not an advanced tuning step.
+
+## Filtering and ordering, the v2 way
+
+So far the only filter you've seen is `where: { id: invoiceId }`. Time to take the `where` object seriously — because in Drizzle's current relational builder it *is* an object, and that's the part most likely to trip you up if you've read older tutorials.
+
+:::note
+If you've seen `where: (invoices, { eq, and }) => and(eq(invoices.id, x))` — a callback that receives the table and operator helpers — that's the **v1** form of the relational builder. It still exists, relocated to `db._query` and marked old. The course uses the current builder, `db.query`, which takes a **filter object** instead of a callback. Same expressive power, far less ceremony. You'll meet the callback form only in pre-2026 tutorials; don't reach for it.
+:::
+
+The filter object has a small number of shapes, and they stack. Build them up one at a time.
+
+**A bare value is equality.** The common case — `column = value` — is just a key and a value:
+
+```ts
+where: { status: 'sent' }
+```
+
+**An operator object compares.** When you need more than equality, the value becomes an object whose keys are operators:
+
+```ts
+where: { amountDue: { gt: '0' } }
+```
+
+The operators are the ones you'd expect — `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `notIn`, `like`, `ilike`, `isNull`, `isNotNull`, and the array forms. Note the money value is the string `'0'`, not the number `0`: `amountDue` is a `numeric` column, which Drizzle represents as a `string` end-to-end, so its operands are strings too. That's the same two-worlds reflex from the schema chapter — money stays a string from the database all the way to your comparison.
+
+**Several keys are AND-ed.** Put more than one key in the object and they combine with AND, which covers the everyday "this *and* that" filter:
+
+```ts
+where: { organizationId: orgId, status: 'sent' }
+```
+
+**Boolean combinators are keys too.** When you need OR, or an explicit AND, or a negation, they're capitalized keys whose values are arrays (or, for `NOT`, a nested filter):
+
+```ts
+where: { OR: [{ status: 'sent' }, { status: 'paid' }] }
+```
+
+`AND: [...]` and `NOT: {...}` work the same way.
+
+**`RAW` is the escape hatch.** For the rare predicate the object syntax can't express — a Postgres operator the builder doesn't model, a function call — drop to a `sql` fragment under the `RAW` key:
+
+```ts
+where: { RAW: (t) => sql`${t.amountDue} > ${threshold}` }
+```
+
+That `RAW` callback hands you the table so you can reference its columns, and the `sql` template parameterizes exactly like everywhere else — every `${value}` becomes a `$1` bound separately by the driver, so there's no injection surface even here. Reach for <Term definition="The RQB where escape hatch: a (t) => sql`…` callback for predicates the filter object can't express. Still parameterized.">`RAW`</Term> last, when the object genuinely can't say what you mean.
+
+Ordering is an object too. Each key is a column, each value a direction:
+
+```ts
+orderBy: { createdAt: 'desc', id: 'desc' }
+```
+
+Multiple keys sort by multiple columns, in the order you write them. And notice this one pairs `createdAt` with `id` — that's the tiebreaker reflex from the first lesson, in object form. `createdAt` isn't unique (two invoices can land in the same millisecond), so on its own the order of ties is undefined and can shuffle between runs. Adding the primary key as a final sort key makes the order total and stable. That stable total order is exactly what cursor pagination will lean on a few lessons from now; seed the habit here.
+
+`limit` and `offset` round it out, with the same meaning as the SQL builder — `limit: 20, offset: 40` for "twenty rows starting after the first forty." (Whether `offset` is the right paging tool is its own discussion, a few lessons ahead; here it's just an option.)
+
+Here's a realistic read that uses the whole vocabulary at once — every invoice that's been sent and still owes money, newest first, with a lightweight organization attached for the row label.
+
+<AnnotatedCode lang="ts" code={`
+const sent = await db.query.invoices.findMany({
+  where: { organizationId: orgId, status: 'sent', amountDue: { gt: '0' } },
+  orderBy: { createdAt: 'desc', id: 'desc' },
+  limit: 20,
+  with: { organization: { columns: { name: true } } },
+});
+`}>
+  <AnnotatedStep meta={`"where: { organizationId: orgId, status: 'sent', amountDue: { gt: '0' } }"`} color="blue">
+    Three keys in one object, all AND-ed: scope to this tenant's organization, status equals `'sent'` (bare value), and `amountDue` greater than zero (operator object). The tenant scope is explicit and carried by hand on every multi-tenant read until a scoped client exists later in the course.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"{ gt: '0' }"`} color="orange">
+    The operator object up close. Operators are keys; the value is a string because `amountDue` is `numeric`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"orderBy: { createdAt: 'desc', id: 'desc' }"`} color="green">
+    Newest first, with the primary key as a tiebreaker so equal `createdAt` values never shuffle. Total, deterministic order.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{4-5}" color="violet">
+    Page size, plus a child projected down to a single column — exactly the shape a row label needs and nothing more.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Lock the object shape in with a quick drill. Fill each blank so the read returns this organization's paid invoices, largest first.
+
+<Dropdowns
+  instructions="Fill the filter-object and order slots so the read returns this org's paid invoices, largest amount first."
+  answers={[
+    { answer: "'paid'", options: ["'paid'", "eq('paid')", "{ eq: 'paid' }"] },
+    { answer: 'gt', options: ['gt', 'gte', 'lt'] },
+    { answer: "'desc'", options: ["'desc'", "'asc'", 'desc()'] },
+  ]}
+>
+```ts
+const paid = await db.query.invoices.findMany({
+  where: {
+    organizationId: orgId,
+    status: ___,
+    amountDue: { ___: '0' },
+  },
+  orderBy: { amountDue: ___, id: 'desc' },
+});
+```
+</Dropdowns>
+
+## Filtering the children, filtering by the children
+
+Here is where the same little `where` object does two genuinely different jobs depending on *where you put it*. Getting this distinction is most of what separates someone who's comfortable with RQB from someone who fights it.
+
+**Put `where` inside a `with` and it filters which children load — it never drops the parent.** Say you want every invoice, but on each one only its line items with a non-zero quantity:
+
+```ts
+with: {
+  lineItems: { where: { quantity: { gt: 0 } } },
+},
+```
+
+That filters the line-item array per invoice. An invoice whose every line item has quantity zero still comes back — it just comes back with `lineItems: []`. The parent is untouched; you've only shaped its child list. The `where` here is the exact same object syntax as the top level, scoped to the relation. And it composes with the relation's own `orderBy` and `limit` — `with: { comments: { orderBy: { createdAt: 'desc' }, limit: 3 } }` is "the three most recent comments per post," all per-parent.
+
+**Put a relation *as a key* in the parent's `where` and it filters which parents survive, based on their children.** This is the genuinely new capability, and it's worth pausing on, because it used to require dropping out of the relational API entirely.
+
+The old situation, honestly: "give me invoices that *have* a line item over $100" couldn't be expressed in v1's relational `where` at all. You'd reach for the SQL builder and an `exists()` subquery, or a join with grouping. The current builder lets you write the parent-by-child filter directly:
+
+```ts
+// invoices that have at least one line item over $100
+where: { lineItems: { amountDue: { gt: '100' } } }
+
+// invoices that have any line items at all
+where: { lineItems: true }
+```
+
+Read a relation name in `where` as a question about existence: *does a related row matching this exist?* The `{ … }` form constrains what counts as a match; the bare `true` form just asks whether any related row exists at all. This is the structural answer to the thing the previous lesson had to punt on — dropping a parent based on a fact about its children — and for the common existence case it replaces the old `exists()` reach entirely.
+
+The whole trap is that those two reads share a predicate and look almost identical, so put them side by side and let the *position* be the difference.
+
+<CodeVariants>
+  <CodeVariant label="Filter the children">
+    <div data-mark-color="green">
+
+    ```ts "where: { amountDue: { gt: '100' } }"
+    const invoices = await db.query.invoices.findMany({
+      where: { organizationId: orgId },
+      with: {
+        lineItems: { where: { amountDue: { gt: '100' } } },
+      },
+    });
+    ```
+
+    </div>
+    **Keeps every invoice.** The `where` lives *inside* `with`, so it trims each invoice's `lineItems` array to the over-$100 ones — an invoice with none still returns, just with `lineItems: []`.
+  </CodeVariant>
+
+  <CodeVariant label="Filter the parents">
+    <div data-mark-color="orange">
+
+    ```ts "lineItems: { amountDue: { gt: '100' } }"
+    const invoices = await db.query.invoices.findMany({
+      where: {
+        organizationId: orgId,
+        lineItems: { amountDue: { gt: '100' } },
+      },
+    });
+    ```
+
+    </div>
+    **Drops invoices.** The relation is a key in the *top-level* `where`, so only invoices that *have* a matching line item come back — the rest vanish entirely.
+  </CodeVariant>
+</CodeVariants>
+
+Same predicate, two positions, two meanings: inside `with` it shapes the child list and keeps the parent; in the parent's `where` it decides whether the parent exists at all. Hold those apart and the rest of RQB filtering is just those two moves.
+
+There's still a ceiling. Genuinely gnarly parent predicates — ones correlated across several relations, or aggregate thresholds like "invoices with *more than five* line items" — go beyond what relation filters express, and those still drop to the SQL builder with `exists()` or a `having` clause. Relation filters cover the common "has a matching child" case cleanly; counting how many children there are is a job for the aggregation lesson coming up next.
+
+## Many-to-many without naming the junction
+
+Tags are a many-to-many: an invoice has many tags, a tag is on many invoices, and the two are wired together through the `invoiceTags` junction table — two foreign keys and a composite primary key, no columns of its own. Back in the schema chapter you declared `invoices.tags` as a `many` relation that walks *through* that junction. The junction was inert when you declared it — a table nothing read yet. This is where something finally reads it.
+
+```ts
+const invoice = await db.query.invoices.findFirst({
+  where: { id: invoiceId },
+  with: { tags: true },
+});
+// invoice.tags is Tag[] — invoiceTags never appears
+```
+
+`with: { tags: true }` returns `tags: Tag[]`. You never name `invoiceTags`. You never write the two-hop join through it. You never see the junction in the result. The `through` declaration you wrote once did all of that work, and from here a many-to-many traversal costs exactly one `with` key — the same `true` you'd use for any other relation.
+
+Contrast that with the previous lesson, where the same tags read meant two explicit `innerJoin`s — invoices to `invoiceTags`, `invoiceTags` to `tags` — producing a flat, duplicated result you then regrouped by hand. RQB collapses both joins *and* the regroup into `with: { tags: true }`. Of every shape in the last lesson, the many-to-many is the one RQB improves the most, and it's the cleanest illustration of "describe the tree, get the tree."
+
+One thing the through-walk is *not* for: a junction that grew columns of its own. A membership — a user in an organization *with a role* — isn't a pure junction anymore; the `role` makes it a real entity. So you don't walk through it invisibly. You relate *to* it and traverse it as a first-class relation in its own right: an organization's `memberships`, and each membership's `user`. The rule of thumb from the schema chapter — pure junctions disappear, junctions-with-data become entities — has a direct read consequence here: the first you walk through, the second you walk to. The membership read gets its full treatment when organizations land later in the course.
+
+## One statement, no N+1
+
+You now know *what* RQB returns. The reason it's the senior default for tree reads is *how* it gets there: a `findMany` with `with`, no matter how deeply nested, compiles to **one** SQL statement. Drizzle uses correlated subqueries that aggregate each relation's rows into JSON, then assembles the nested object from that single result. There is no round trip per parent row.
+
+To see why "one statement" is the headline, look at the trap it sidesteps. The naive way to build the same list, by hand, reads perfectly innocently:
+
+```ts
+const rows = await db.select().from(invoices); // 1 query
+const detail = await Promise.all(
+  rows.map(async (invoice) => ({
+    ...invoice,
+    lineItems: await db
+      .select()
+      .from(invoiceLineItems)
+      .where(eq(invoiceLineItems.invoiceId, invoice.id)), // 1 query — per invoice
+  })),
+);
+```
+
+Fetch the invoices in one query, then fetch each invoice's line items in its own query. For one hundred invoices that's one query plus one hundred more: **1 + N** round trips to the database, each with its own latency. This is the <Term definition="One query for the parents plus one more per parent for the children — the round-trip explosion that makes list reads slow. RQB avoids it by emitting a single statement.">N+1 problem</Term>, and it's one of the most common reasons a list endpoint that felt fine with ten rows crawls at a thousand. RQB does the identical read in **one** round trip — the N+1 simply never arises, because you never wrote the loop.
+
+You don't have to take that on faith. Turn on the query logger you met in the schema chapter — `drizzle({ client, logger: true, … })` — and run the `with` query: you'll see Drizzle emit a *single* statement with subqueries, not a burst of one-per-parent selects. That log is the proof.
+
+The contrast is worth feeling as a sequence rather than reading as a claim. Scrub through it.
+
+<NPlusOneVsOneStatement />
+
+One honest caveat, so you don't over-trust it. Because RQB plans its own SQL, a deeply nested `with` over wide tables can emit a heavier JSON-aggregating query than you'd guess — "one statement" doesn't always mean "cheap statement." The fix is never to abandon RQB and hand-roll the loop (that just trades a heavy query for the N+1 you were avoiding). The fix is to *measure* when something feels slow: `logger: true` to read the SQL it generated, and the query-plan tools coming in the next chapter to see what that SQL actually costs. Spotting and fixing N+1 in code that bypasses RQB, and reading the plans, are jobs for the next chapter; the reflex this lesson plants is simply this — *reach for RQB and the N+1 doesn't arise.*
+
+## The result type is your prop type
+
+A nested read needs a nested type, and you should never hand-write one. Recall the fact from the end of the schema chapter: `typeof invoices.$inferSelect` is **flat**. The `Invoice` type has `organizationId: string` and nothing else relational — no `organization`, no `lineItems`, no `tags`. So when you pass the result of a `with` query into a Server Component, `$inferSelect` is the wrong type; it describes the row, not the tree.
+
+The tempting wrong move is to fill the gap by hand:
+
+```ts
+type InvoiceDetail = {
+  id: string;
+  amountDue: string;
+  organization: { id: string; name: string };
+  lineItems: { id: string; description: string }[];
+  // …and every field, kept in sync by hand, forever
+};
+```
+
+That restates fields the schema already knows — the hand-typed-interface smell the whole schema chapter was built to kill. Rename a column or change one `with` key and this interface silently goes stale.
+
+The right move: the RQB call's return type *already is* the nested shape. Derive your type from the query instead of describing it twice.
+
+<CodeTooltips tooltips={{
+  ReturnType: 'The return type of a function. Here, the Promise that the query function returns.',
+  Awaited: 'Unwraps a Promise to its resolved type — peels the Promise off the query result.',
+  NonNullable: 'Removes null and undefined from a type. Strips the `| undefined` that findFirst adds.',
+}}>
+```ts
+const getInvoiceDetail = (id: string) =>
+  db.query.invoices.findFirst({
+    where: { id },
+    with: { lineItems: true, organization: true },
+  });
+
+type InvoiceDetail = NonNullable<Awaited<ReturnType<typeof getInvoiceDetail>>>;
+```
+</CodeTooltips>
+
+Read the type right to left: `ReturnType<typeof getInvoiceDetail>` is the `Promise` the function returns, `Awaited<…>` unwraps it to the resolved value, and `NonNullable<…>` strips the `| undefined` that `findFirst` tacks on. What's left, `InvoiceDetail`, is the fully-typed nested shape — generated, not written. Change the `with`, rename a column, and the type updates with zero edits, which means the component prop, the function return, and the query can never drift apart.
+
+This is the chapter's "one shape, one source" principle, finally reaching reads. The schema is the source of truth for a row's type; the *query* is the source of truth for its own result type. You don't describe the shape of a read in two places any more than you describe a table in two places — you derive the second from the first.
+
+(Where these read helpers live — verb-led functions in a `db/queries/` folder, closing over a tenant-scoped client — is a structure for later in the course. Here the point is only the type extraction: the query owns its result type.)
+
+## When to reach for the SQL builder instead
+
+Knowing RQB, the failure mode is forcing *every* read through it. So name the boundary with one test: **is the read a tree?**
+
+**Reach for RQB** — `db.query.…({ with })` — when the result is an entity plus its related rows as a nested object: detail pages, lists with their children, anything you'd naturally draw as a tree. It's the N+1-safe default, and as of this lesson it also handles filtering parents by a fact about their children.
+
+**Drop to the SQL builder** — `db.select(...).leftJoin(...)` from the previous lesson — when the read is *not* a tree:
+
+- **Aggregates** — a `COUNT`, `SUM`, or `AVG` over related rows, anything with `GROUP BY`. RQB returns rows and their relations; it doesn't roll them up into computed totals. That's the next lesson's job.
+- **Flat, irregular projections** — a report row that pulls a few columns from three different tables into one flat record. That's a rectangle by design, not a tree.
+- **Aggregate-existence predicates** — "invoices with more than five line items." Relation filters answer *has a matching child*, not *has this many children*; counting is `having` on the SQL builder.
+- **Set operations, window functions, CTEs** — the layered-SQL territory a few lessons ahead.
+
+The decision is driven by the *shape you want back*, not by what each API can technically do — both return Drizzle-typed results either way. Tree → RQB. Flat, aggregated, or irregular → SQL builder. And the two mix freely within one feature: an invoice detail page might fetch the invoice-with-line-items-and-tags through RQB *and* compute "total billed this year" with a `db.select` aggregate on the same screen. That's normal, not a compromise.
+
+Match each read to the tool that fits its shape.
+
+<Matching instructions="Match each read to the API whose result shape fits it.">
+  <Pair>
+    <Fragment slot="left">An invoice with its line items and its tags</Fragment>
+    <Fragment slot="right">RQB — `with`</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">Revenue per month across all invoices</Fragment>
+    <Fragment slot="right">SQL builder — aggregate with `GROUP BY`</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">Each post with only its 3 newest comments</Fragment>
+    <Fragment slot="right">RQB — `with` plus per-relation `orderBy` and `limit`</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">Invoices that have at least one paid line item</Fragment>
+    <Fragment slot="right">RQB — relation filter in the parent `where`</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">A flat report: invoice id, org name, line-item count</Fragment>
+    <Fragment slot="right">SQL builder — join with a projected/aggregated row</Fragment>
+  </Pair>
+</Matching>
+
+## Check your understanding
+
+First, write one. The schema below seeds an organization, two invoices, and several line items. Return the invoice with id `1` together with its line items, ordered by line-item id.
+
+:::note
+This sandbox runs the **SQL builder**, so `db.query` (and its relations graph) isn't wired up here — finish the equivalent `leftJoin` that returns the same three rows. The shape it returns is flat, exactly the "rectangle, not a tree" cost from the top of the lesson: invoice 1's `status` repeats on every line-item row. RQB would hand you the same data already folded into `{ ...invoice, lineItems: [...] }`.
+:::
+
+<DrizzleCoding
+  instructions="Return invoice 1 together with its line items, ordered by line-item id. The select and the join are written for you — finish the where so only invoice 1's rows come back, then order by the line-item id. Invoice 2's line item must not appear."
+  schema={`export const organizations = pgTable('organizations', {
+  id: integer('id').primaryKey(),
+  name: text('name').notNull(),
+});
+
+export const invoices = pgTable('invoices', {
+  id: integer('id').primaryKey(),
+  organizationId: integer('organization_id')
+    .notNull()
+    .references(() => organizations.id),
+  status: text('status').notNull(),
+  amountDue: numeric('amount_due').notNull(),
+});
+
+export const invoiceLineItems = pgTable('invoice_line_items', {
+  id: integer('id').primaryKey(),
+  invoiceId: integer('invoice_id')
+    .notNull()
+    .references(() => invoices.id),
+  description: text('description').notNull(),
+  amountDue: numeric('amount_due').notNull(),
+});`}
+  seed={`INSERT INTO organizations (id, name) VALUES (1, 'Acme');
+
+INSERT INTO invoices (id, organization_id, status, amount_due) VALUES
+  (1, 1, 'sent', '600.00'),
+  (2, 1, 'sent', '90.00');
+
+INSERT INTO invoice_line_items (id, invoice_id, description, amount_due) VALUES
+  (1, 1, 'Design', '200.00'),
+  (2, 1, 'Build',  '300.00'),
+  (3, 1, 'QA',     '100.00'),
+  (4, 2, 'Hosting','90.00');`}
+  starter={`return await db
+  .select({
+    invoiceId: invoices.id,
+    status: invoices.status,
+    lineItemId: invoiceLineItems.id,
+    description: invoiceLineItems.description,
+  })
+  .from(invoices)
+  .leftJoin(invoiceLineItems, eq(invoiceLineItems.invoiceId, invoices.id))
+  // 1. keep only invoice 1's rows
+  // 2. order by the line-item id
+  ;`}
+  expectedRows={[
+    { invoiceId: 1, lineItemId: 1, description: 'Design' },
+    { invoiceId: 1, lineItemId: 2, description: 'Build' },
+    { invoiceId: 1, lineItemId: 3, description: 'QA' },
+  ]}
+/>
+
+<details>
+<summary>Reference solution</summary>
+
+```ts
+return await db
+  .select({
+    invoiceId: invoices.id,
+    status: invoices.status,
+    lineItemId: invoiceLineItems.id,
+    description: invoiceLineItems.description,
+  })
+  .from(invoices)
+  .leftJoin(invoiceLineItems, eq(invoiceLineItems.invoiceId, invoices.id))
+  .where(eq(invoices.id, 1))
+  .orderBy(invoiceLineItems.id);
+```
+
+Three rows, invoice 1's `status` copied onto each — the flat rectangle you'd fold back into one nested invoice by hand. The RQB form, `db.query.invoices.findFirst({ where: { id: 1 }, with: { lineItems: { orderBy: { id: 'asc' } } } })`, returns that tree directly.
+
+</details>
+
+Now a concept the silent-`undefined` rule turns on.
+
+<MultipleChoice>
+  You write `db.query.invoices.findFirst({ with: { tags: true } })`. The invoice comes back, but `tags` is on neither the result nor the inferred type — no error, no warning. The `invoiceTags` junction is in your schema with both foreign keys in place, and editor autocomplete didn't offer `tags` when you typed it. Which fix makes `tags` appear?
+
+  <McqChoice correct>Add `invoices.tags` to `defineRelations` — the foreign keys are in the schema, but the relation that tells RQB how to traverse them isn't.</McqChoice>
+  <McqChoice>Swap `findFirst` for `findMany`, since `with` only works on the many-row entry point.</McqChoice>
+  <McqChoice>List the junction explicitly: `with: { invoiceTags: { with: { tags: true } } }`.</McqChoice>
+  <McqChoice>Drop RQB for this read and walk the junction with two `innerJoin`s on the SQL builder.</McqChoice>
+
+  <McqWhy>The foreign keys are a *write-time* guarantee that the reference is valid; they don't tell RQB how to walk it. The relation is a *separate, read-time* declaration — without `invoices.tags` in `defineRelations`, there's nothing for `with` to traverse, so the key is silently absent instead of an error. That silence is why the tell was the missing autocomplete: the editor lists only declared relations, so a relation you never declared simply never appears.</McqWhy>
+</MultipleChoice>
+
+And a fast round on the parts that bite.
+
+<TrueFalse instructions="Each claim is about where a relation lives in an RQB query — and what that position does.">
+  <Statement answer="false">
+    `with: { lineItems: { where: { amountDue: { gt: '100' } } } }` can drop an invoice that has no matching line item from the result.
+    <TfWhy>A `where` *inside* `with` filters the child array, never the parent. An invoice with no matching line item still comes back — with `lineItems: []`.</TfWhy>
+  </Statement>
+
+  <Statement answer="true">
+    `where: { lineItems: { amountDue: { gt: '100' } } }` at the top level drops invoices that have no matching line item.
+    <TfWhy>A relation *as a key* in the parent's `where` is an existence filter — only invoices that *have* a matching line item survive; the rest vanish.</TfWhy>
+  </Statement>
+
+  <Statement answer="true">
+    A single `findMany` with nested `with` still compiles to one SQL statement.
+    <TfWhy>RQB uses correlated subqueries that aggregate each relation's rows into JSON, so any depth of `with` is one statement — that's what makes it N+1-safe by construction.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    The current `db.query` `where` takes a `(table, operators) => …` callback.
+    <TfWhy>That's the v1 form, now relocated to `db._query`. The current builder takes a filter object — `{ column: value | { op }, AND, OR, NOT, RAW }`.</TfWhy>
+  </Statement>
+</TrueFalse>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Drizzle — Relational queries (v2)"
+    href="https://orm.drizzle.team/docs/rqb-v2"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The canonical reference for findMany / findFirst, the object where and orderBy, with, and columns."
+  />
+  <ExternalResource
+    title="Drizzle — Relations v1 to v2"
+    href="https://orm.drizzle.team/docs/relations-v1-v2"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="If a tutorial shows the callback where, this documents the move to the object syntax this lesson uses."
+  />
+  <ExternalResource
+    title="Drizzle — Relations (v2)"
+    href="https://orm.drizzle.team/docs/relations-v2"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The relations graph these queries consume, including predefined relation filters."
+  />
+</CardGrid>

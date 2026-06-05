@@ -1,0 +1,440 @@
+---
+title: Cursor pagination
+tagline: The senior default for paging Drizzle lists that grow or change under the user, seeking past the last row seen instead of counting offsets from the front.
+chapter-id: 38
+course-progress: 0.00005
+sidebar:
+  order: 6
+  label: Cursor pagination
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import DrizzleCoding from '../../../components/live-coding/DrizzleCoding/DrizzleCoding.astro';
+import OffsetRescanVsCursorSeek from '../../../components/lessons/038/6/offset-rescan-vs-cursor-seek.astro';
+import OffsetShiftDuplicate from '../../../components/lessons/038/6/offset-shift-duplicate.astro';
+import FetchNPlusOne from '../../../components/lessons/038/6/fetch-n-plus-one.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import Term from '../../../components/ui/Term.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+You can already page through a list: `orderBy`, then `limit(20).offset(40)` for page three. When you learned that in the first lesson of this chapter, two debts got written down for later. Offset, you were told, is "the simple default with a ceiling" — and the tiebreaker habit, pairing a sort column with the primary key, would "matter later in this chapter." This is later. Both debts come due here, and they turn out to be the same debt.
+
+Picture the screen that forces the issue: an invoice list that grows month after month, or an activity feed that's being written to *while* someone scrolls it. Offset pagination works fine for those right up until it doesn't — and when it breaks, it breaks in two ways that a small admin table never reveals. So the question an experienced engineer asks before shipping any list endpoint is this: when a list could grow large, *or* changes under the user as they page through it, how do you serve it page by page without getting slow at depth and without showing the same row twice or skipping one entirely?
+
+The answer is <Term definition="Paging through a list by remembering the last row a page returned and asking for the rows after it, rather than counting from the front. The opposite of offset pagination.">cursor pagination</Term>, and it's the senior default for any list that grows or moves. Offset doesn't disappear — it stays the right call for small, stable tables — but it stops being the default. By the end of this lesson you'll be able to pick the right one on real criteria, write the cursor query (the part with a tiebreaker baked into it), pack the cursor into a URL-safe token and validate it on the way back, and tell the UI "there's another page" without a second round-trip. Let's start by making offset's two ceilings concrete, because the cursor is the fix for both.
+
+## Where offset breaks
+
+Offset, recapped in one breath: you sort the rows, skip the first N, and take the next page's worth.
+
+```ts
+const pageThree = await db
+  .select()
+  .from(invoices)
+  .where(eq(invoices.organizationId, orgId))
+  .orderBy(desc(invoices.createdAt), desc(invoices.id))
+  .limit(20)
+  .offset(40);
+```
+
+Skip forty rows, take twenty — page three. It reads exactly like how you'd describe it out loud, and for a list of a few hundred rows that nobody pages deep into, it's genuinely the right tool. Don't let the rest of this lesson talk you out of that.
+
+But two failures hide behind that clean syntax, and neither shows up on your laptop with ten seeded rows. You have to see both to understand why the cursor exists.
+
+### Failure one: it gets slow the deeper you page
+
+Here's the trap people fall into: they assume `OFFSET 10000` is cheap because *they're* not asking for those ten thousand rows — they only want the twenty after them. The database doesn't get to skip them, though. To return rows 10,001 through 10,020 *in sorted order*, Postgres has to produce the first 10,000 in that order too, walk past every one of them, and throw them away. The skipped rows aren't free; they're computed and discarded. So the cost of a page grows with how deep into the list it sits. Page one is instant; page five hundred drags, because page five hundred is secretly "build and discard ten thousand rows, then hand me twenty."
+
+A cursor doesn't count from the front, so it never pays this. The contrast is the whole reason it's faster, and it's easier to see than to describe.
+
+<OffsetRescanVsCursorSeek />
+
+### Failure two: it shows the wrong rows on live data
+
+This is the one that actually files a bug report, and it has nothing to do with size. It bites a *small* list too, the moment that list is changing while someone reads it.
+
+Offset addresses rows by their *position* in the current ordering — "give me rows 41 through 60." But position is relative to whatever is in the table *right now*. Suppose a user loads page one (the twenty newest invoices), reads it, and clicks "next." Between those two clicks, a new invoice gets created and lands at the top of the list — newest first, remember. Now every row has shifted down one position. The invoice that *was* row 20 is now row 21. So when page two asks for "rows 21 through 40," row 21 is a row the user already saw at the bottom of page one. They see it **twice**. (A delete above their position does the mirror-image damage: every row shifts *up*, and one row gets skipped entirely — it falls into the gap between the two pages.)
+
+Step through it and watch the window land on a row it already showed.
+
+<OffsetShiftDuplicate />
+
+Notice what went wrong: offset asked for rows *by position*, and position is a moving target the instant anyone writes to the table. The fix is to stop addressing rows by where they sit and start addressing them relative to the last row the user actually saw. A new invoice at the top can't change which row that was. That anchor is a <Term definition="An opaque token marking the last row a page returned. The next page asks for the rows after it. Because it points at a specific row, inserts and deletes above it don't move the boundary.">cursor</Term>, and it's the single idea the rest of the lesson builds on. Keep this one sentence in your head, because every property of cursor pagination falls out of it:
+
+**A cursor remembers the last row you saw and asks for the rows after it; offset counts from the front and re-counts every time.**
+
+The slowness was annoying. The duplicated row is a bug report. The cursor fixes both with the same move.
+
+## When offset is still the right call
+
+Before building the cursor, draw the line the other way — because the failure mode now is over-correcting, slapping a cursor on every list out of fear. Offset isn't broken; it has a narrower home than people assume. It's the right tool, sometimes the better one, when *all three* of these roughly hold:
+
+- **The list is small and bounded.** An admin table of a few hundred feature flags that won't grow without limit. You never page deep enough for the re-scan to cost anything.
+- **The data is read-mostly.** It isn't mutating under the user as they page — so the positional shift never happens.
+- **The UI genuinely wants random page access or a total count.** Offset pairs naturally with a "page 3 of 12" control: numbered pages, jump-to-page, a known total. A cursor can't offer that — it only knows "is there a next page."
+
+Cross any one of the switch-to-cursor triggers and offset stops being safe: a list that could grow past the low thousands (the re-scan starts to bite), *or* a list users see while it's being written to (a feed, an inbox, an activity log — anywhere the positional shift can strike). The honest read is that *most* SaaS list endpoints cross at least one trigger, which is exactly why cursor is the default and offset is the justified exception, not the other way around.
+
+Sort a few concrete lists into the right bin before we build anything — the decision is the part worth drilling, and it's easy to get backwards.
+
+<Buckets twoCol instructions="Sort each list into the pagination it should use.">
+  <Bucket name="offset" label="Offset is fine" description="Small, bounded, read-mostly" />
+  <Bucket name="cursor" label="Reach for a cursor" description="Grows past low thousands, or mutates under the user" />
+
+  <Item bucket="offset">An internal admin table of ~200 feature flags, edited rarely</Item>
+  <Item bucket="cursor">A customer-facing activity feed, thousands of rows, written to live</Item>
+  <Item bucket="offset">A report with a fixed "page 4 of 9" control over a static nightly export</Item>
+  <Item bucket="cursor">The invoices list — grows every month, shows newly created invoices at the top</Item>
+  <Item bucket="offset">A one-page settings screen of ~30 rows, no paging UI at all</Item>
+  <Item bucket="cursor">An inbox the user reads while new messages keep arriving</Item>
+</Buckets>
+
+The pattern in bucket B is always the same: the list *grows* or *moves*. Hold that, and the build ahead is just the mechanics of "the rows after this one."
+
+## The cursor query
+
+This is the center of the lesson, so we'll build the query in stages and let the tiebreaker arrive as the fix to a concrete break — not as a rule handed down. Start from the spine: *give me the rows after the last one I saw.*
+
+### Stage one: the naive single-key cursor
+
+The invoices list is newest-first, sorted by `createdAt`. The last row of the current page has some `createdAt`; the next page is the rows that come *after* it in that ordering. Since the list descends, "after" means "older than" — so the obvious shape filters for rows whose `createdAt` is less than the cursor's:
+
+```ts
+const page = await db
+  .select()
+  .from(invoices)
+  .where(
+    and(
+      eq(invoices.organizationId, orgId),
+      cursor ? lt(invoices.createdAt, cursor.createdAt) : undefined,
+    ),
+  )
+  .orderBy(desc(invoices.createdAt))
+  .limit(pageSize);
+```
+
+Read it and it sounds right: rows older than the last one we showed, newest of those first, capped at a page. Two details before we break it. The cursor is an object holding the last row's sort value — `{ createdAt }` for now. And on the *very first* page there's no last row yet, so `cursor` is `undefined` and that branch drops out of the `and` — Drizzle skips an `undefined` condition, so the first page is just "newest, limited." (`organizationId` is always in the `where`; we'll come back to why it lives there and not in the cursor.)
+
+This works in every demo you'll ever build. Then it meets real data and silently loses a row.
+
+### Stage two: the tie that skips a row
+
+Two invoices can share a `createdAt`. A bulk import writes a batch in the same instant; a traffic burst stamps two rows the same millisecond. It's not an edge case you can wish away — at any real volume, timestamp collisions happen.
+
+Now suppose the page boundary lands *between* two invoices that have the identical `createdAt` — one of them is the last row of this page, the other should be the first row of the next. The next-page query asks for `lt(createdAt, boundary)`: rows *strictly* older than that timestamp. But the row that should start the next page has *the same* timestamp as the cursor, not an older one — it isn't strictly less than the boundary. So it fails the filter and never comes back. The user pages right past it. The row is just *gone* from their view, and nothing errors.
+
+The fix is the reflex you drilled in the first lesson, now made load-bearing: don't compare on `createdAt` alone — compare on the **pair** `(createdAt, id)`. The primary key is unique, so two rows can tie on `createdAt` but never on `id`. Comparing the pair gives every row a single, unambiguous position in the order, which means the boundary is never stuck between two indistinguishable rows. In a predicate, "the pair `(createdAt, id)` is less than `(cursor.createdAt, cursor.id)`" expands to:
+
+```ts
+or(
+  lt(invoices.createdAt, cursor.createdAt),
+  and(eq(invoices.createdAt, cursor.createdAt), lt(invoices.id, cursor.id)),
+)
+```
+
+Say it out loud: *rows strictly older than the cursor's timestamp, OR rows with the **same** timestamp but a smaller id.* The first branch handles the common case; the second branch is the tiebreaker — it reaches back into the tied group and grabs exactly the rows on the far side of the boundary, the ones the single-key version dropped. This is the compound-cursor shape Drizzle's own pagination guide recommends, here in its descending form (`lt` rather than `gt`) because the list runs newest-first. So now you know: *this* is why you drilled the tiebreaker. It wasn't hygiene. Without it, the cursor skips rows at every page seam where timestamps collide.
+
+### Stage three: the sort has to match the cursor
+
+One more piece, and it's the one people forget. The compound predicate decides which rows are "after the cursor" by comparing `(createdAt, id)` as a pair, descending. For that boundary to mean anything, the rows have to actually *come back* in that same order — otherwise "after" is comparing against an ordering the result doesn't follow, and the logic is nonsense. So the `orderBy` carries the same two columns in the same two directions:
+
+```ts
+.orderBy(desc(invoices.createdAt), desc(invoices.id))
+```
+
+State it as a rule and never break it: **the cursor predicate and the `orderBy` are one design — same columns, same directions, or the boundary is meaningless.** Here's the whole query assembled, and it's worth stepping through the `where` slowly, because the compound predicate is the densest thing in this lesson and the exact place eyes glaze over.
+
+<AnnotatedCode lang="ts" code={`
+const page = await db
+  .select()
+  .from(invoices)
+  .where(
+    and(
+      eq(invoices.organizationId, orgId),
+      cursor
+        ? or(
+            lt(invoices.createdAt, cursor.createdAt),
+            and(
+              eq(invoices.createdAt, cursor.createdAt),
+              lt(invoices.id, cursor.id),
+            ),
+          )
+        : undefined,
+    ),
+  )
+  .orderBy(desc(invoices.createdAt), desc(invoices.id))
+  .limit(pageSize);
+`}>
+  <AnnotatedStep meta="{9}" color="blue">
+    The main branch: rows strictly *older* than the cursor's timestamp. This is the common case — almost every row of the next page comes back through here. On its own, though, it silently drops any row that *ties* the cursor's timestamp.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{10-13}" color="orange">
+    The tiebreaker branch, and the watch-out: *same* `createdAt` as the cursor, but a smaller `id`. Without this, two invoices sharing a timestamp at the page seam mean the next page skips one. The unique `id` breaks the tie so no row falls through.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{8}" color="green">
+    The `or` unions the two branches: strictly-after on the sort key, *or* tied-on-the-sort-key-but-after-on-the-`id`. Together they describe exactly "every row after this specific row" — a total, gap-free boundary.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{18}" color="violet">
+    Same two columns, same descending directions as the predicate. The boundary only makes sense if the rows come back in the order the comparison assumes — the `where` and the `orderBy` are a matched pair.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Two traps live next to this query, and both are distinct from the missing tiebreaker — name them so you recognize each one on its own.
+
+**Sort only on a stable key.** A cursor works only if the sort value can't change for a row mid-pagination. `createdAt` is set once at insert and never touched, which is exactly what you want. `updatedAt` is the opposite: touch a row — mark an invoice paid — while a user is paging, and its `updatedAt` jumps to *now*, which under newest-first vaults it to the top, *across* the cursor boundary. The user sees it again on a later page, or it vanishes from where it should have been. Cursoring on a mutable column reintroduces the exact instability you adopted the cursor to escape. Sort cursor lists on creation time or another immutable key, never on a "last modified" column.
+
+**The tenant scope rides on the request, not the cursor.** The `where` still carries `eq(invoices.organizationId, orgId)` — your multi-tenant org-scope reflex from the first lesson is not optional here. But look at where `orgId` comes from: your auth context, on the server, *not* the cursor. This matters because the cursor is a token you hand to the client and the client hands back. If the tenant id were baked into it, a user could decode that token, swap in another organization's id, and send it back — a horizontal access-control leak handed out by design. So the cursor carries *only* the sort key and tiebreaker, `{ createdAt, id }`, and nothing that identifies the tenant. The request authenticates the tenant; the cursor only marks a position within it.
+
+That compound predicate has a formal name you'll meet in the docs: <Term definition="The formal name for cursor pagination — paging by the value of the last row's sort key(s), the (createdAt, id) pair here, rather than by position. 'Keyset' = the set of key columns the cursor compares.">keyset pagination</Term>. Same thing; now you'll recognize it.
+
+### Practice: the compound cursor
+
+Time to write the predicate that does the real work. The table below is seeded newest-first, and — this is the whole point — two invoices share the exact same `created_at`, straddling the page boundary. A naive `lt(createdAt, …)` cursor drops one of them; only the compound `or(lt(createdAt), and(eq(createdAt), lt(id)))` returns the full, correct next page. Write the `where`.
+
+<DrizzleCoding
+  instructions="Page 1 ended on the invoice in `cursor` — and its `created_at` is shared with another, lower-id invoice that belongs on page 2. Finish the `where` so it returns every row after `cursor` under newest-first order with `id` as the tiebreaker: rows with an older `created_at`, OR the same `created_at` but a smaller `id`. The `orderBy` is already wired to match."
+  schema={`export const organizations = pgTable('organizations', {
+  id: integer('id').primaryKey(),
+  name: text('name').notNull(),
+});
+
+export const invoices = pgTable('invoices', {
+  id: integer('id').primaryKey(),
+  organizationId: integer('organization_id')
+    .references(() => organizations.id)
+    .notNull(),
+  amountDue: numeric('amount_due', { precision: 12, scale: 2 }).notNull(),
+  status: text('status').notNull(),
+  createdAt: timestamp('created_at', { mode: 'string' }).notNull(),
+});`}
+  seed={`INSERT INTO organizations (id, name) VALUES (1, 'Acme');
+
+INSERT INTO invoices (id, organization_id, amount_due, status, created_at) VALUES
+  (10, 1, '100.00', 'sent', '2026-05-10 10:00:00Z'),
+  (9,  1, '200.00', 'sent', '2026-05-09 10:00:00Z'),
+  (8,  1, '300.00', 'sent', '2026-05-08 10:00:00Z'),
+  (7,  1, '400.00', 'sent', '2026-05-08 10:00:00Z'),
+  (6,  1, '500.00', 'sent', '2026-05-07 10:00:00Z'),
+  (5,  1, '600.00', 'sent', '2026-05-06 10:00:00Z');`}
+  starter={`const cursor = { createdAt: '2026-05-08 10:00:00Z', id: 8 };
+
+return await db
+  .select()
+  .from(invoices)
+  .where(
+    and(
+      eq(invoices.organizationId, 1),
+      /* finish: rows after the cursor — older created_at, OR same created_at with a smaller id */
+    ),
+  )
+  .orderBy(desc(invoices.createdAt), desc(invoices.id));`}
+  expectedRows={[
+    { id: 7, amountDue: '400.00' },
+    { id: 6, amountDue: '500.00' },
+    { id: 5, amountDue: '600.00' },
+  ]}
+  ordered={true}
+/>{/* compound-cursor-where */}
+
+## Turning the cursor into a URL token
+
+The query needs a `{ createdAt, id }` object. But that object lives on the *server*; the next page is a fresh request from the *client*. So the cursor has to make a round trip — out to the client in the response, back to the server in the next request's URL — and that raises two questions: what form does it travel in, and how do you trust it when it comes back?
+
+The form is an **opaque token**. You don't ship the client a tidy `{ createdAt, id }` it can read and rebuild. You encode it into a meaningless-looking string and let the client treat it as a black box: copy it, send it back, never parse it. Why hide it? Because the moment a client can read or construct cursors, it depends on your exact field names and sort columns — and then you can't change how the list is ordered without breaking every caller. Opaque keeps that freedom. It's a one-way door for the *client*, but not for you: the server must still decode it, so "opaque" means hidden-from-the-client, not encrypted.
+
+The encoding is two steps — serialize to JSON, then `base64url` it:
+
+```ts
+const token = Buffer.from(JSON.stringify(cursor)).toString('base64url');
+```
+
+That `base64url` matters, and it's not the same as plain `base64`. Standard base64 uses `+` and `/` and trailing `=`, all of which have meaning in a URL and would need escaping. `base64url` swaps in URL-safe characters and drops the padding, so the result drops straight into a query string with nothing to escape: `?cursor=eyJjcmVhdGVkQXQ...`. (The page size travels as its own plain param, `?pageSize=20`, with a server-side cap — typically 100 — and a default that lives in a constants file, not scattered across queries.)
+
+Coming back in, decode and then — this is the part beginners skip — **validate before you trust**. The cursor is a value a user controls. It could be malformed, stale from an old sort, or hand-crafted by someone poking at your API. A bad cursor has to be rejected as bad input — the way a 400 rejects any malformed request — not swallowed, and not allowed to crash deep in the query layer when `cursor.createdAt` turns out to be `undefined`.
+
+<CodeTooltips tooltips={{
+  base64url: 'A URL-safe Base64 variant — uses - and _ instead of + and /, and drops the = padding — so the encoded value drops straight into a query string with no escaping.',
+  cursorSchema: 'A Zod schema describing the only shape a valid cursor can have: { createdAt: string, id: number }. safeParse passes only if the decoded object matches.',
+  safeParse: 'Validates without throwing — returns { success: true, data } on a match or { success: false, error } on a mismatch, so you branch on it instead of try/catch.',
+}}>
+```ts
+const decoded = JSON.parse(Buffer.from(raw, 'base64url').toString());
+const result = cursorSchema.safeParse(decoded);
+
+if (!result.success) {
+  return err('validation', 'Invalid cursor');
+}
+const cursor = result.data; // { createdAt: string; id: number } — safe to query with
+```
+</CodeTooltips>
+
+Two of those names are forward references, so read them lightly. `cursorSchema.safeParse` is Zod, which the forms chapter a few units on owns in full — here just read it as "confirm the decoded object really is `{ createdAt, id }`." And `err('validation', …)` is the course's way of *returning* a failure rather than throwing it — a bad cursor is expected user input, not a crash, so it travels back as a typed error the caller turns into a 400; the error-handling chapter formalizes that channel. The durable point underneath both is one you already met in the first lesson: **a cursor is just another request parameter, so it gets the same validate-at-the-boundary defense as any query string or body field.** And to close the loop on a worry the first lesson raised — no, decoding a cursor doesn't reopen the SQL-injection door. The decoded `createdAt` and `id` still flow into `lt(...)` and `eq(...)` like any other value, so they're bound as `$1` placeholders, never spliced into SQL text. Untrusted-but-parameterized is exactly the posture you want.
+
+Where these two helpers live — a `parseCursor` and `encodeCursor` pair in your `lib/` folder rather than inlined into the query — is the kind of structure the code conventions settle later. The point here is the shape: encode on the way out, decode-and-validate on the way in.
+
+## Knowing there's a next page
+
+A paginated UI needs one more bit of information: is there *another* page, or is this the end? You could answer it with a separate `count()` query, but that's a whole round-trip spent on a yes/no. There's a sharper trick, and it costs you exactly one extra row.
+
+Ask for one more row than the page actually needs — `limit(pageSize + 1)`. Then read the result by its length. If you got `pageSize + 1` rows back, there's at least one more row out there, so a next page exists — and you slice that extra row off before returning, because it belongs to the *next* page, not this one. If you got `pageSize` or fewer, you've reached the end. The extra row never gets shown; its mere existence is the signal.
+
+```ts
+const rows = await query.limit(pageSize + 1);
+
+const hasNextPage = rows.length > pageSize;
+const items = rows.slice(0, pageSize);
+const nextCursor = hasNextPage ? encodeCursor(items.at(-1)) : null;
+
+return { items, nextCursor };
+```
+
+The next cursor is the key of the *last row you actually return* — `items.at(-1)`, after the slice — never the probe row you threw away. Encode it, and that token becomes the `?cursor=` for the request that fetches the following page; when there's no next page, it's `null` and the UI knows to stop. The return shape, `{ items, nextCursor }`, is the one the code conventions describe for a paginated read — an array, plus the cursor metadata to fetch more.
+
+<FetchNPlusOne />
+
+## The index this depends on
+
+Everything so far has been about *correctness* — returning the right rows, in the right order, with no skips or duplicates. There's a performance condition sitting underneath it that this lesson names but does not teach, and it's important enough that the two must never ship apart. Cursor pagination is fast **only** when an index covers the cursor's columns in the cursor's sort direction. Without it, "seek to the boundary" quietly degrades into a sequential scan of the table — and a cursor that scans is *slower* than the offset it replaced. You'd have taken on all the complexity and lost the payoff.
+
+Here's the shape of the index the query needs:
+
+```ts
+index('idx_invoices_org_created_at_id').on(
+  invoices.organizationId,
+  invoices.createdAt.desc(),
+  invoices.id.desc(),
+)
+```
+
+Read it against the query column by column. The tenant scope comes first — `organizationId` is an equality filter (`eq`), so it leads. Then the two cursor columns, `createdAt` and `id`, in the *same* descending order the `orderBy` uses. With those three in one index, Postgres can satisfy the org filter, produce the rows already in sort order, and seek straight to the cursor boundary — all from a single structure, no scanning. The column-and-direction correspondence between this index, the `where`, and the `orderBy` is not a coincidence; it's the whole reason the seek is cheap.
+
+:::note
+This lesson owns *correct*; the next chapter owns *fast*. Declaring indexes, choosing their columns and direction, and reading `EXPLAIN ANALYZE` to confirm the database is really seeking and not scanning are the indexing lesson's job in the next chapter. All you need here is to know the cursor query has a hard index dependency, and what that index looks like — so the query and its index are designed, and shipped, together.
+:::
+
+## The same query through the relational API
+
+One thing to be clear about: cursor pagination is a *query shape*, not a feature of any one API. You met two ways to read in this chapter — the SQL builder (`db.select`) and the relational query builder (`db.query`) — and the cursor rides on whichever one the feature already uses. The model is identical; only the surface differs. Here's the exact same `(createdAt, id)` boundary, the same `desc/desc` order, the same `pageSize + 1` probe, written both ways.
+
+<CodeVariants>
+  <CodeVariant label="SQL builder">
+    <div data-mark-color="blue">
+
+    ```ts {8-14,18}
+    const rows = await db
+      .select()
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.organizationId, orgId),
+          cursor
+            ? or(
+                lt(invoices.createdAt, cursor.createdAt),
+                and(
+                  eq(invoices.createdAt, cursor.createdAt),
+                  lt(invoices.id, cursor.id),
+                ),
+              )
+            : undefined,
+        ),
+      )
+      .orderBy(desc(invoices.createdAt), desc(invoices.id))
+      .limit(pageSize + 1);
+    ```
+
+    </div>
+    **Reach here when the read is flat.** When the page rows are a plain list of invoices — already a `db.select` — the cursor is just the compound `where` you built above, plus the `+ 1` probe. The boundary is the `or(...)` block; the `orderBy` carries the same pair in the same direction.
+  </CodeVariant>
+
+  <CodeVariant label="Relational query builder">
+    <div data-mark-color="green">
+
+    ```ts {4-8,10}
+    const rows = await db.query.invoices.findMany({
+      where: {
+        organizationId: orgId,
+        RAW: (t) =>
+          sql`(
+            ${t.createdAt} < ${cursor.createdAt}
+            or (${t.createdAt} = ${cursor.createdAt} and ${t.id} < ${cursor.id})
+          )`,
+      },
+      orderBy: { createdAt: 'desc', id: 'desc' },
+      limit: pageSize + 1,
+    });
+    ```
+
+    </div>
+    **Reach here when the page rows are a tree.** When each row carries its relations — an invoice with its line items — you paginate the parents through `db.query`. The compound boundary can't be said in the plain filter object, so it drops to the `RAW` callback while the tenant scope and `orderBy` stay in object syntax. On the first page you just leave the `RAW` key off.
+  </CodeVariant>
+</CodeVariants>
+
+Look past the syntax and it's the same query: the same pair compared in the same direction, the same probe row. The only real difference is the seam — the SQL builder takes operator helpers in a `where(...)` call, the relational builder takes a filter object and drops to its `RAW` callback for the one predicate the object can't express. So the decision isn't "which pagination API" — you don't choose your pagination API at all. You paginate whatever read the feature already does: flat list through `db.select`, tree through `db.query`. The cursor mechanics don't change either way.
+
+## What cursors give up
+
+The cursor isn't free, and knowing what it costs keeps you from being surprised later — or from over-engineering to win back something the product doesn't need.
+
+**No total count, no "page 3 of 12."** A cursor knows whether there's a *next* page; it has no idea how many pages exist in total. That's a real loss if your UI shows numbered pages — and it's why most 2026 SaaS lists don't. They lean into the cursor: a "Load more" button or infinite scroll instead of a page picker, and either no count or an approximate one ("200+"). If the product genuinely needs an exact total, that's a separate `count()` query — sometimes cached — and you pay for it deliberately, only where it earns its keep.
+
+**Forward-only, by default.** The cursor you built pages forward. "Previous page" is usually not a second, backward cursor — it's re-anchoring from a position the UI already kept (or just the browser's own back button). True bidirectional cursors exist — a reversed predicate over a reversed order, with the rows flipped back at the end — but in early SaaS they rarely earn the implementation cost. Recognize the shape; reach for it only when the product clearly needs it.
+
+And one pairing this lesson set up but doesn't have to invent from scratch: the cursor lives in the URL's search params so a paged view is shareable and survives a refresh. You've already met that primitive — the URL-state lesson back in Unit 4 read `?cursor=` from `searchParams`, validated it at the boundary, and made the point that the cursor token is opaque base64 on purpose. What's still ahead is putting it to work in a live list view: wiring that `?cursor=` param to client navigation — syncing it as the user moves through pages, keeping the URL the source of truth — which the list-view chapters in Unit 10 own. Here you built the cursor's mechanics; there you'll wire it to the address bar of a real, navigable list.
+
+Step back and you've turned the first lesson's tiebreaker reflex into a real mechanism. That habit of pairing a sort column with the primary key, which looked like fussy good-hygiene at the time, is the exact thing that makes the cursor correct — it's what lets the boundary land cleanly between any two rows. And the cursor it powers is the senior default for every list that grows or moves: it *seeks* instead of scanning, so it stays fast at depth, and it *anchors* instead of counting, so it stays stable under writes. Every list view in the units ahead is built on this shape.
+
+<VideoCallout videoId="zwDIN04lIpc" videoTitle="Pagination in MySQL — offset vs. cursor">
+  PlanetScale walks the whole arc visually in 13 min — the ID tiebreaker, offset's shift-on-delete and deep-page cost, and the base64-encoded cursor token.
+</VideoCallout>
+
+## Keep these close
+
+<CardGrid>
+  <ExternalResource
+    title="Drizzle — Cursor-based pagination"
+    href="https://orm.drizzle.team/docs/guides/cursor-based-pagination"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The official compound-cursor recipe this lesson follows: the or(gt, and(eq, gt)) predicate, the matching orderBy, and the required composite index."
+  />
+  <ExternalResource
+    title="Drizzle — Select"
+    href="https://orm.drizzle.team/docs/select"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The where / orderBy / limit reference the SQL-builder cursor query is built from."
+  />
+</CardGrid>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Use The Index, Luke! — No Offset"
+    href="https://use-the-index-luke.com/no-offset"
+    icon="lucide:database"
+    iconColor="#2F6FED"
+    description="Markus Winand on why offset is slow and unstable, and how the keyset seek the next chapter indexes for avoids both."
+  />
+  <ExternalResource
+    title="ByteByteGo — API Pagination"
+    href="https://www.youtube.com/watch?v=14K_a2kKTxU"
+    icon="simple-icons:youtube"
+    iconColor="#FF0000"
+    description="A 3-minute systems-design framing of offset vs cursor, plus where keyset and time-based cursors each fit."
+  />
+</CardGrid>

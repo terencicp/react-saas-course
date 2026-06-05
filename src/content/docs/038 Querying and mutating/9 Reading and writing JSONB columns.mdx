@@ -1,0 +1,348 @@
+---
+title: Reading and writing JSONB columns
+tagline: Reach inside a Postgres JSONB column with Drizzle, reading, filtering, and partially updating the JSON while knowing exactly where the type system stops helping.
+chapter-id: 38
+course-progress: 0.00005
+sidebar:
+  order: 9
+  label: JSONB columns
+---
+
+import { Aside, CardGrid } from '@astrojs/starlight/components';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import NestedReadAndCast from '../../../components/lessons/038/9/NestedReadAndCast.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import SQLCoding from '../../../components/live-coding/SQLCoding/SQLCoding.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+You already have the column. Back when you built the schema, you gave `webhookDeliveries` a `payload` column typed `jsonb().$type<WebhookEvent>()` — a place to park the raw body a third party sends you, a shape they own and you don't. It's been sitting there holding thousands of stored deliveries. Now the feature work arrives, and it asks two things of that column that the schema never planned for: pull the `eventType` field out of every delivery, and find every delivery whose payload says `status: 'paid'`. Neither of those is a column. They live *inside* the blob.
+
+This is the lesson where you learn to reach into that blob — to read a single field, filter by what the JSON contains, and patch one key without rewriting the whole document. It's also where the type system stops helping you, and you should know that going in. Here's the one sentence that explains every example you're about to see: **Drizzle types the whole column, but the moment you reach inside it you're in raw `sql` — typed at the boundary, untyped in the middle.** Read the column whole and TypeScript hands you a `WebhookEvent`. Reach for one field and you're writing a hand-rolled SQL fragment that comes back as untyped text you have to cast and re-claim yourself. Every section below is a consequence of that line.
+
+A one-line refresher, since you met this column a couple of chapters ago. <Term definition="Binary JSON. Postgres parses the document into a binary representation it can index and query into — the indexable, queryable form. The course uses jsonb, never plain json.">`jsonb`</Term> is the binary, indexable JSON type — the one you reach for when a column's shape isn't yours to fix. That's the whole recall. From here it's all read path, write path, and filter path.
+
+By the end you'll read whole payloads and single fields, filter by containment and key existence, do partial writes that leave the rest of the blob intact, and — the part that outlasts any operator — know the exact moment a JSONB field has earned promotion to a real column.
+
+## When the payload belongs in JSONB — and when it has outgrown it
+
+You already know the rule for *reaching* for `jsonb`: use it when the shape isn't yours or isn't fixed. Third-party webhook bodies, where the sender owns the schema. Audit-log `details` that look completely different per event type. User-provided metadata with open-ended keys. And you know the foil: **skip `jsonb` for anything you filter or sort on across every row, or anything two different consumers have to agree about the shape of.** That's a real, named column with a real type.
+
+What this lesson adds is the other half of that rule — the part you can only see once a field has been in production for a while. Call it the **promotion trigger**, and learn to spot it in code review, because it's a smell that creeps in one commit at a time.
+
+It goes like this. A field starts life inside `jsonb`, and that's correct — nobody queries it, it's just along for the ride. Then a feature needs to filter on it, so someone adds a `WHERE` that reaches into the JSON. Still fine; it runs occasionally. Then that filter moves onto the list view, and now it runs on *every single page load*, against every row, with no index able to help it. The moment a JSONB path shows up in a hot filter, that field has quietly become **normalization debt hiding behind a raw-SQL accessor.** It wanted to be a column three commits ago.
+
+The fix, when you spot it, is to promote the field to a real indexed column. You don't do that by editing the table in place — there's already data in the blob — you do it with an expand-then-backfill-then-contract migration, the safe staged change that adds the column, copies the values across, and only then starts depending on it. That mechanic gets its own chapter later; for now the skill is *recognizing the trigger*, not running the migration.
+
+So before any operator, get the triage reflex. The following exercise gives you six concrete fields. Some belong in `jsonb`; some have outgrown it and want to be a column. Drag each one to where it belongs. The tell is always the same question: do you just *read* this field, or do you *query* on it across all rows?
+
+<Buckets twoCol instructions="Sort each field by what you do with it: keep it in `jsonb` if you only ever read it back, promote it to a real column if you filter, sort, or join on it across all rows.">
+  <Bucket name="keep" label="Keep in `jsonb`" description="Read it back, never query across rows" />
+  <Bucket name="promote" label="Promote to a column" description="Filtered, sorted, or joined on every list" />
+
+  <Item bucket="keep">The raw webhook body, stored exactly as the sender sent it</Item>
+  <Item bucket="keep">An audit-log `details` blob whose keys differ per event type</Item>
+  <Item bucket="keep">Open-keyed user metadata where every tenant adds their own fields</Item>
+  <Item bucket="promote">The `status` you filter every invoice list by</Item>
+  <Item bucket="promote">A `priority` you let users sort the list on</Item>
+  <Item bucket="promote">The `eventType` you now branch on in every query</Item>
+</Buckets>
+
+The three on the "keep" side share a trait: you read them whole and never branch on them in SQL. The three on the "promote" side all ended up in a `WHERE` or an `ORDER BY` that runs on every list. That's the entire decision — and it's worth more than memorizing operators, because it's the call that keeps a schema from rotting.
+
+## Reading the whole column comes back typed
+
+Start with the one place JSONB is completely, effortlessly typed — the reward for annotating the column back in the schema. When you select the column *whole*, with no operator and no reaching inside, the `$type<WebhookEvent>` annotation rides straight through to the result. Drizzle hands you a `WebhookEvent`.
+
+```ts
+const deliveries = await db
+  .select({ payload: webhookDeliveries.payload })
+  .from(webhookDeliveries);
+```
+
+That's it. No cast, no operator, no helper. `deliveries[0].payload` is a `WebhookEvent`, and your editor autocompletes its fields. The same is true through the relational query API or `findFirst` — anywhere the projection includes the whole `payload`, the type comes along.
+
+The following block is the same select, with the part that's doing the quiet work flagged. Hover the marked tokens.
+
+<CodeTooltips tooltips={{
+  payload: 'Comes back inferred as WebhookEvent. The $type annotation on the column carries straight through the projection — no cast at the read site.',
+  webhookDeliveries: "The table's $inferSelect shape already knows payload is a WebhookEvent. Selecting it whole inherits that.",
+}}>
+```ts
+const deliveries = await db
+  .select({ payload: webhookDeliveries.payload })
+  .from(webhookDeliveries);
+```
+</CodeTooltips>
+
+Here's the mental model to lock in, because the next section trades on it: **the column is a fully-typed object to TypeScript the instant you select it whole. The untyped territory begins only when you index into it inside SQL.** Whole-column read sits on the typed side of the boundary. One operator past that and you've crossed over.
+
+<Aside type="tip">
+When the code consuming a delivery needs more than one field off the payload, reach for the whole-column read. It comes back typed, it autocompletes, and it's one fewer raw `sql` fragment for you to maintain. Save the single-field accessors for when you genuinely want just one value — usually inside a `WHERE`.
+</Aside>
+
+## Reaching for one field drops you into raw SQL
+
+Now cross the boundary. To pull one field out of the JSON, Postgres gives you two accessor operators, and the difference between them is the whole game:
+
+- <Term definition="The JSON field accessor. Returns the value at a key as jsonb — still a JSON value, so you can keep descending into it.">`->`</Term> returns a **JSON value** — still `jsonb`. You use it to descend another level into a nested object.
+- <Term definition="The JSON text accessor. Returns the value at a key as text — a plain string, always, regardless of the JSON value's underlying type.">`->>`</Term> returns **text** — a plain string. You use it to extract a leaf you're actually going to read or compare.
+
+The thing the outline promised and this lesson delivers: Drizzle has no typed builder for either of these. There's no `.field('eventType')` method waiting to be discovered. You write them as `sql` fragments, by hand, exactly the way you wrote raw filters and full-text functions in earlier lessons. This is the design, not a gap:
+
+```ts
+sql`${webhookDeliveries.payload}->>'eventType'`
+```
+
+The interpolated `webhookDeliveries.payload` binds as a quoted column identifier; the `'eventType'` is a SQL string literal naming the key. The result is `text`. And one reassurance, stated once for the whole lesson: any *value* you later compare this against still flows through Drizzle's parameter binding as `$1`, separately from the SQL text. Reaching into JSON opens no injection door — the key is a literal you typed, and every dynamic value is still bound, never concatenated.
+
+Now the part that has bitten more people than any other line in this lesson. **`->>` returns text. Always.** So the instant you compare its result to a number, you're doing a *string* comparison, and string comparison sorts lexically, character by character. Watch — this filter silently returns deliveries with an amount of 90, because the text `'90'` sorts *after* the text `'100'` (`'9'` beats `'1'` at the first character):
+
+<div data-mark-color="red">
+
+```ts "> '100'"
+where(sql`${webhookDeliveries.payload}->>'amount' > '100'`)
+```
+
+</div>
+
+No error, no warning, just wrong rows. The fix is to cast the extracted text to a real number *in the SQL*, before the comparison runs:
+
+<div data-mark-color="green">
+
+```ts "::numeric"
+where(sql`(${webhookDeliveries.payload}->>'amount')::numeric > 100`)
+```
+
+</div>
+
+If you need that value back in TypeScript as a number — not just for a comparison — you cast in SQL and then re-claim the type on the TS side with `sql<number>`. That generic is a **claim, not a check**: it tells the compiler "trust me, this fragment yields a number." Postgres does the actual cast; the generic just informs TypeScript so the rest of your code types correctly.
+
+The following walkthrough takes a single query that reads a *nested* field — the customer's email, two levels deep — and uses an amount in the `where`. Step through it; the attention lands on three different spans in turn: the operators, the cast, and the type-claim.
+
+<NestedReadAndCast />
+
+One more form worth recognizing, not drilling. When a leaf is buried deep, chaining `->`…`->`…`->>` gets noisy. The `#>>` operator takes a path array and dives straight to a text leaf: `` sql`${webhookDeliveries.payload}#>>'{customer,address,city}'` `` reads the same as walking the path by hand. Reach for it when the depth makes the chain hard to read; otherwise the chained form is clearer about each hop.
+
+## Filtering by what the payload contains
+
+Extracting a field is one job. *Finding rows by what their JSON contains* is the other, and it has a dedicated senior-default operator that you'll use far more than the accessors: <Term definition="The JSON containment operator. Tests whether the left jsonb value contains the right one — every key and value on the right must be present on the left. The most-used jsonb filter, and the one a GIN index can accelerate.">`@>`</Term>, *containment*.
+
+```ts
+where(sql`${webhookDeliveries.payload} @> ${{ data: { status: 'paid' } }}::jsonb`)
+```
+
+Read that as "rows whose payload **contains** this object." It's the workhorse of JSONB querying, and it's the form a GIN index can accelerate later. Two details on it are load-bearing, and skipping either one will cost you an afternoon.
+
+**First: the right-hand side must carry an explicit `::jsonb` cast.** Drizzle binds your object as a parameter, and without the cast the binding can fail at the boundary — the driver doesn't always know the parameter should be `jsonb` rather than `text`. The `::jsonb` is not decoration and not optional; it's what tells Postgres how to treat the bound value. Write `${obj}::jsonb` every time.
+
+**Second: `@>` tests containment, not equality.** `{ data: { status: 'paid' } }` matches a payload that has `status: 'paid'` *and* twenty other keys alongside it. That's exactly the point — you're asking "does it contain this?", not "is it exactly this?" It's the reason `@>` is so useful (partial match against a fat, third-party payload) and the watch-out to keep in mind (it will never anchor on an exact shape — there's almost always more in the blob than what you matched).
+
+There's a narrower question you'll sometimes need: not *what value* a key holds, but *whether the key is there at all*. That's the <Term definition="The JSON key-existence operator. Tests whether a top-level key is present in the jsonb value, regardless of what value it holds. Sibling forms: ?| (any of several keys) and ?& (all of them).">`?`</Term> operator and its siblings:
+
+```ts
+where(sql`${webhookDeliveries.payload} ? 'refundedAt'`)
+```
+
+That reads "rows where the `refundedAt` key is set," and the value behind it is irrelevant — presence is the whole question. `?|` matches if *any* of several keys exist; `?&` if *all* of them do. You reach for these much less often than `@>`, but they're the right tool the day "was this field ever populated?" is the actual question.
+
+The following two tabs put the two filter questions side by side on the same table. They look similar and answer completely different things — that's the point.
+
+<CodeVariants>
+  <CodeVariant label="Contains a value (@>)">
+    <div data-mark-color="blue">
+
+    ```ts "@>"
+    const paid = await db
+      .select()
+      .from(webhookDeliveries)
+      .where(sql`${webhookDeliveries.payload} @> ${{ data: { status: 'paid' } }}::jsonb`);
+    ```
+
+    </div>
+    **Match on value.** Returns every delivery whose payload contains `status: 'paid'` nested under `data`, no matter what else is in the blob. The `::jsonb` cast on the bound object is required — without it the parameter can fail to bind. Containment, not equality: a payload with that status plus a hundred other keys still matches.
+  </CodeVariant>
+
+  <CodeVariant label="Has a key (?)">
+    <div data-mark-color="orange">
+
+    ```ts "?"
+    const refunded = await db
+      .select()
+      .from(webhookDeliveries)
+      .where(sql`${webhookDeliveries.payload} ? 'refundedAt'`);
+    ```
+
+    </div>
+    **Match on presence.** Returns every delivery where the `refundedAt` key exists at the top level — the value behind it doesn't matter, only that it's there. This is the question when a key being *set at all* is the signal, like a timestamp that's only written once a refund happens.
+  </CodeVariant>
+</CodeVariants>
+
+A note on scale, so you're not surprised later. An unindexed `@>` works fine on a few thousand rows and degrades past that — it has to deserialize and check every row. The fix is a GIN index, which makes `@>` fast at any size, and it's the first thing the next chapter covers. For now write the correct query; making it fast is a deliberate next step, not something to bolt on here.
+
+One power tool to *recognize*, not learn today: when you need to navigate inside a JSON *array* with a condition — "any line item whose quantity exceeds ten" — there's a whole SQL/JSON path language (`jsonb_path_query` and friends) built for exactly that. It's the right reach for array-walking predicates. `@>` covers the overwhelming majority of what you'll write; the path language is there for the day it doesn't.
+
+<VideoCallout videoId="nxeUiRz4G-M" videoTitle="How to store and query JSON data in Postgres">
+Supabase walks the same accessors and filters in raw Postgres in five minutes — `->` vs `->>`, nested access, and the `?`, `?&`, `?|`, and `@>` operators you just met.
+</VideoCallout>
+
+## Writing and partially updating JSONB
+
+Reading was the hard part. Writing a *whole* payload is trivial — you hand Drizzle the object and it serializes it, with `$type` checking the shape at compile time:
+
+```ts
+const [created] = await db
+  .insert(webhookDeliveries)
+  .values({ deliveryId, payload: { eventType: 'invoice.paid', data: { status: 'paid' } } })
+  .returning();
+```
+
+That's the same `.returning()` tail you've put on every mutation this chapter — the post-write row comes back without a second query.
+
+The interesting case is the *partial* update: you have a stored payload and you want to change one field without re-sending the entire blob. Re-sending the whole thing is what you'd do naively, and it's wrong for two reasons — you'd have to read the current value first, and you'd clobber any concurrent edit that landed between your read and your write. Postgres gives you two surgical tools instead, and which one you reach for depends only on *how deep* the field sits.
+
+- <Term definition="The jsonb concatenation operator. Merges two jsonb objects at the top level — keys on the right are added or overwrite matching keys on the left. A shallow merge, one level deep only.">`||`</Term> is a **shallow merge.** `payload || '{...}'::jsonb` adds or overwrites keys at the *top level*, last value wins. Reach for it to set a top-level field.
+- <Term definition="A Postgres function that writes a single nested path inside a jsonb value, leaving everything else intact. Signature: jsonb_set(target, path, new_value). The path is a text-array literal like '{customer,tier}'.">`jsonb_set`</Term> writes **one nested path.** `jsonb_set(payload, '{customer,tier}', '"premium"'::jsonb)` reaches into the object along the path array and replaces just that leaf.
+
+The decision is mechanical: `||` when the field is top-level, `jsonb_set` when it's nested. Both leave the rest of the document untouched — which is the entire reason you prefer them over replacing `payload` wholesale.
+
+The two tabs below show each one as a before/after, with the existing payload shown so you can see exactly what changed.
+
+<CodeVariants>
+  <CodeVariant label="Merge a field (||)">
+    <div data-mark-color="blue">
+
+    ```ts "||"
+    // before: { eventType: 'invoice.paid', data: { status: 'paid' } }
+    await db
+      .update(webhookDeliveries)
+      .set({ payload: sql`${webhookDeliveries.payload} || ${{ processedAt: '2026-06-05T10:00:00Z' }}::jsonb` })
+      .where(eq(webhookDeliveries.deliveryId, deliveryId));
+    // after: { eventType: 'invoice.paid', data: { status: 'paid' }, processedAt: '…' }
+    ```
+
+    </div>
+    **For a top-level field.** `||` merges the right object into the left at the top level — `processedAt` gets added, and everything already in the payload stays put. If the key already existed, the right side wins. Note the `::jsonb` cast on the merged object, same as `@>`.
+  </CodeVariant>
+
+  <CodeVariant label="Set a nested path (jsonb_set)">
+    <div data-mark-color="orange">
+
+    ```ts "jsonb_set"
+    // before: { eventType: 'invoice.paid', data: { status: 'paid' }, customer: { tier: 'free' } }
+    await db
+      .update(webhookDeliveries)
+      .set({ payload: sql`jsonb_set(${webhookDeliveries.payload}, '{customer,tier}', '"premium"'::jsonb)` })
+      .where(eq(webhookDeliveries.deliveryId, deliveryId));
+    // after: { …, customer: { tier: 'premium' } }
+    ```
+
+    </div>
+    **For a nested field.** `jsonb_set(target, path, new_value)` rewrites just the leaf at the path `{customer,tier}` and leaves the rest of `customer` — and the rest of the payload — intact. The path is a text-array literal; the new value is `jsonb`, so the string `"premium"` is quoted *inside* the SQL literal.
+  </CodeVariant>
+</CodeVariants>
+
+Now the watch-out this whole lesson has been walking toward, the one that ties the trusting read side to the disciplined write side. **`$type` does not validate writes.** A partial update written through `sql` can store a shape that violates `WebhookEvent`, and TypeScript will stay perfectly silent — you typed raw SQL, not a checked object. Postgres accepts the bytes. And then the *next typed read* of that column hands the consumer a `WebhookEvent` that isn't one. The type lied, because nothing enforced it on the way in.
+
+So hold these two halves together. The read side trusts `$type`; that trust is only earned if the write side guarantees the shape. The runtime gate that does the guaranteeing is Zod validation at the write boundary — you validate the payload against a schema before it ever reaches a `sql` write, and that's what makes the read-side `$type` honest. `$type` is the convenience that *assumes* a validated boundary; it is not the boundary. (Zod gets its own chapter; here, just know that a raw write bypassing validation is how a typed column starts lying.)
+
+<Aside type="caution">
+None of this works on a plain `json` column, and you should never reach for one. `json` stores the document as raw text — it's not binary, it can't be indexed, and the operators behave differently (or not at all). The course is `jsonb`-only, end to end. If you ever see `json()` in a schema, that's the bug.
+</Aside>
+
+## Practice: query a webhook payload
+
+Time to write the two highest-value skills together against real rows. The exercise below seeds a `webhook_deliveries` table with a handful of deliveries, each carrying a realistic webhook body in its `payload` column — an `eventType`, a nested `data` object with a `status` and an `amount`, and a `refundedAt` key on some rows but not others.
+
+Your task: return the deliveries that are both **paid** and **over a threshold amount**, selecting the `eventType` of each. Two traps are waiting, and they're exactly the two this lesson warned you about. The amount filter has to cast — one row has an amount that's numerically below the threshold but *lexically* above it, so a string comparison will wrongly include it. And the status match wants `@>` containment with its `::jsonb` cast (an equivalent `->>` path works too). Get both right and the correct rows come back.
+
+<SQLCoding
+  instructions="Return the eventType of every delivery whose payload has status: 'paid' (nested under data) AND whose data.amount is greater than 500. Mind the cast — amount comes out as JSON text until you make it a number. Alias the extracted value as event_type and order by id."
+  seed={`CREATE TABLE webhook_deliveries (
+  id int PRIMARY KEY,
+  delivery_id text NOT NULL UNIQUE,
+  payload jsonb NOT NULL,
+  received_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO webhook_deliveries (id, delivery_id, payload) VALUES
+  (1, 'evt_a', '{"eventType":"invoice.paid","data":{"status":"paid","amount":900}}'),
+  (2, 'evt_b', '{"eventType":"invoice.paid","data":{"status":"paid","amount":90}}'),
+  (3, 'evt_c', '{"eventType":"invoice.sent","data":{"status":"open","amount":1200}}'),
+  (4, 'evt_d', '{"eventType":"invoice.paid","data":{"status":"paid","amount":750},"refundedAt":"2026-06-01T00:00:00Z"}'),
+  (5, 'evt_e', '{"eventType":"invoice.paid","data":{"status":"open","amount":2000}}'),
+  (6, 'evt_f', '{"eventType":"invoice.paid","data":{"status":"paid","amount":600}}');`}
+  starter={`SELECT payload->>'eventType' AS event_type
+FROM webhook_deliveries
+WHERE -- status must be 'paid' (nested under data), AND amount must be > 500
+ORDER BY id;`}
+  expectedRows={[
+    { event_type: 'invoice.paid' },
+    { event_type: 'invoice.paid' },
+    { event_type: 'invoice.paid' },
+  ]}
+  ordered={true}
+/>
+
+The correct set is rows 1, 4, and 6 — the three deliveries that are paid *and* over 500. Both traps are live in that seed. Row 2 is paid but its amount is `90`: filter without the `::numeric` cast and the text `'90'` sorts after `'500'`, so the lexical comparison wrongly lets it in. Rows 3 and 5 carry the highest amounts in the table but aren't `status: 'paid'`, so the containment filter has to drop them. Get the `@>` containment (with its `::jsonb` cast) and the numeric cast both right and exactly those three `invoice.paid` rows come back.
+
+<details>
+<summary>Reference solution</summary>
+
+```sql
+SELECT payload->>'eventType' AS event_type
+FROM webhook_deliveries
+WHERE payload @> '{"data":{"status":"paid"}}'::jsonb
+  AND (payload->'data'->>'amount')::numeric > 500
+ORDER BY id;
+```
+
+The `@>` containment filter keeps only payloads that nest `status: 'paid'` under `data`; its right-hand side carries the required `::jsonb` cast. The amount path descends with `->` into `data`, lands on `amount` as text with `->>`, then casts to `::numeric` *before* the comparison — without that cast `> 500` would be the lexical string comparison the lesson warned about. An equivalent `payload->'data'->>'status' = 'paid'` works in place of the `@>` form.
+
+</details>
+
+<Aside type="note">
+The `@>` filter in that solution is correct but, on a real table, slow once the row count climbs — it scans every payload. The fix is a GIN index on the `jsonb` column, and that's the first thing you'll reach for in the next chapter on performance and integrity. The query you just wrote doesn't change; you only add the index behind it.
+</Aside>
+
+## External resources
+
+Four references worth a bookmark. Drizzle's docs on its `sql` magic operators are the canonical answer for everything the typed builder doesn't cover — JSONB is one case of that broader "drop to raw SQL" posture — and its column-types page is where the `$type` annotation that makes the whole-column read typed is spelled out. The Postgres docs on JSON functions and operators are the full catalog: every accessor, `@>`, `jsonb_set`, `||`, and the SQL/JSON path language. The practical guide ties them together with runnable examples and the indexing payoff.
+
+<CardGrid>
+  <ExternalResource
+    title="Drizzle ORM — Magic sql operator"
+    href="https://orm.drizzle.team/docs/sql"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The sql`` template, parameterization, and how to write what the builder doesn't expose — including JSONB operators."
+  />
+  <ExternalResource
+    title="Drizzle ORM — jsonb column and $type"
+    href="https://orm.drizzle.team/docs/column-types/pg"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The jsonb() column declaration and the $type<…> annotation that carries a typed shape through a whole-column read — compile-time only, no runtime check."
+  />
+  <ExternalResource
+    title="PostgreSQL — JSON functions and operators"
+    href="https://www.postgresql.org/docs/current/functions-json.html"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="The full reference for ->, ->>, #>>, @>, ?, ||, jsonb_set, and the SQL/JSON path language."
+  />
+  <ExternalResource
+    title="A practical guide to the JSONB type in Postgres"
+    href="https://www.wirekat.com/a-practical-guide-to-using-the-jsonb-type-in-postgres/"
+    icon="lucide:database"
+    iconColor="#10B981"
+    description="A hands-on walkthrough of containment, accessors, jsonb_set, key removal, and the GIN index that makes @> fast at scale."
+  />
+</CardGrid>
