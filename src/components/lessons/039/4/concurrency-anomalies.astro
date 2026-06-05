@@ -1,0 +1,627 @@
+---
+// Diagram: the three concurrency anomalies on an interleaved two-lane timeline
+// (diagram id: concurrency-anomalies, Chapter 039 Lesson 4 — "Transactions and
+// isolation levels"). The load-bearing teaching device of the isolation half of
+// the lesson: anomalies are abstract in prose and only become concrete when you
+// watch two transactions interleave on a clock.
+//
+// One <TabbedContent> with three tabs (one anomaly each); each tab is its own
+// scrubbable <DiagramSequence>. Per the component contract a DiagramSequence is
+// its own card and is NOT wrapped in <Figure>, but it CAN live inside a
+// TabbedItem.
+//
+// Board model (per step):
+//   A vertical timeline of operation rows, time flowing DOWNWARD. Two columns —
+//   "Transaction A" (left) and "Transaction B" (right). Each timeline step is
+//   one row whose chip sits in its own lane's column; the other column shows a
+//   faint rail so the two lanes read as parallel tracks. Interleaving is visible
+//   because consecutive rows alternate sides.
+//
+//   Every row is present in every step so the grid-stacked stage keeps a
+//   constant height as the reader scrubs. Row state is the only thing that
+//   changes: rows before the cursor are DONE (solid, muted), the row at the
+//   cursor is ACTIVE (accented, ring), rows after are FUTURE (ghosted). A
+//   readout panel under the lanes shows what A currently observes — and, for
+//   write skew, the shared invariant (admins remaining) that breaks.
+//
+// House style follows the ch 039 family (atomicity-fork.astro / seq-scan-vs-
+// index.astro): pinned `color-scheme: light` so hand-picked tints survive dark
+// mode, inline style strings only, slate chrome carrying no meaning, semantic
+// green/red/amber, `box-sizing: border-box` + `margin: 0` throughout to defeat
+// Starlight's injected prose margins.
+
+import TabbedContent from '../../../figures/tabbed-content/TabbedContent.astro';
+import TabbedItem from '../../../figures/tabbed-content/TabbedItem.astro';
+import DiagramSequence from '../../../figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../figures/diagram-sequence/DiagramStep.astro';
+
+const sans = "system-ui, -apple-system, 'Segoe UI', sans-serif";
+const mono = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
+
+// ---- palette (pinned light) ----------------------------------------------
+const INK = '#1e293b'; // slate-800
+const INK_SOFT = '#64748b'; // slate-500
+const SURFACE = '#ffffff';
+const HAIRLINE = '#e2e8f0'; // slate-200
+const RAIL = '#e2e8f0'; // slate-200 — the faint lane rail
+
+// Transaction A — indigo; Transaction B — slate/steel. Two distinct neutral-ish
+// hues so the lanes read apart without competing with the semantic green/red.
+const A_BORDER = '#a5b4fc'; // indigo-300
+const A_BG = '#eef2ff'; // indigo-50
+const A_INK = '#4338ca'; // indigo-700
+const A_ACCENT = '#6366f1'; // indigo-500
+
+const B_BORDER = '#94a3b8'; // slate-400
+const B_BG = '#f1f5f9'; // slate-100
+const B_INK = '#334155'; // slate-700
+const B_ACCENT = '#475569'; // slate-600
+
+// semantic
+const GREEN_INK = '#15803d'; // green-700
+const RED = '#dc2626'; // red-600
+const RED_BG = '#fef2f2'; // red-50
+const RED_INK = '#b91c1c'; // red-700
+const AMBER_BG = '#fffbeb'; // amber-50
+const AMBER_BORDER = '#fcd34d'; // amber-300
+const AMBER_INK = '#b45309'; // amber-700
+
+// ---- data model -----------------------------------------------------------
+// Each anomaly is an ordered list of timeline operations. Per op:
+//   lane     'A' | 'B'  — which column the chip sits in
+//   tag      the SQL-ish operation chip text
+//   note     optional short sub-line under the chip text (smaller, muted)
+//   kind     'commit' tints the chip green; 'write' nudges weight; default plain
+// Plus, for each STEP cursor, the readout to show below the board.
+type Lane = 'A' | 'B';
+type OpKind = 'plain' | 'write' | 'commit';
+
+interface Op {
+  lane: Lane;
+  tag: string;
+  note?: string;
+  kind?: OpKind;
+}
+
+// The readout under the board for a given step (0-based cursor).
+interface Readout {
+  // primary value A currently observes, e.g. "100" / "3 rows"
+  value: string;
+  // label for that value, e.g. "A sees" / "A's count"
+  label: string;
+  // optional second pill (used by write skew for the invariant)
+  invariant?: { label: string; value: string; broken?: boolean };
+}
+
+interface Anomaly {
+  id: string;
+  label: string;
+  ops: Op[];
+  // one Readout per step (same length as ops)
+  readouts: Readout[];
+  // rich caption per step (string; the punchline lands on the relevant step)
+  captions: string[];
+  // index of the step whose caption should be visually emphasized as the
+  // "this is the bug" beat (gets a red left-edge on its caption)
+  punchAt: number;
+  // final summary line shown in the figure-level prose? no — captions carry it.
+  finalCaptionHtml?: string;
+}
+
+const anomalies: Anomaly[] = [
+  {
+    id: 'nonrepeatable',
+    label: 'Non-repeatable read',
+    ops: [
+      { lane: 'A', tag: 'BEGIN', note: 'read balance' },
+      { lane: 'B', tag: 'BEGIN', note: 'UPDATE balance = 150', kind: 'write' },
+      { lane: 'B', tag: 'COMMIT', kind: 'commit' },
+      { lane: 'A', tag: 'read balance', note: 'same query, again' },
+      { lane: 'A', tag: 'COMMIT', kind: 'commit' },
+    ],
+    readouts: [
+      { label: 'A sees', value: '100' },
+      { label: 'A sees', value: '100' },
+      { label: 'A sees', value: '100' },
+      { label: 'A sees', value: '150', invariant: undefined },
+      { label: 'A sees', value: '150' },
+    ],
+    captions: [
+      'A starts and reads the balance: <b>100</b>.',
+      'B updates the same row to <b>150</b> — not committed yet, so A still sees 100.',
+      "B commits. Its change is now visible to reads that start <em>after</em> this point.",
+      'A runs the <em>same query</em> in the <em>same transaction</em> — and gets <b>150</b>. That is a non-repeatable read.',
+      "<code>read committed</code> allows this: each statement re-snapshots. <code>repeatable read</code> would freeze A's snapshot so the second read still returns <b>100</b>.",
+    ],
+    punchAt: 3,
+  },
+  {
+    id: 'phantom',
+    label: 'Phantom read',
+    ops: [
+      { lane: 'A', tag: 'BEGIN', note: "count(*) where status = 'pending'" },
+      { lane: 'B', tag: 'BEGIN', note: 'INSERT a pending invoice', kind: 'write' },
+      { lane: 'B', tag: 'COMMIT', kind: 'commit' },
+      { lane: 'A', tag: 'count(*) again', note: 'same range query' },
+      { lane: 'A', tag: 'COMMIT', kind: 'commit' },
+    ],
+    readouts: [
+      { label: "A's count", value: '3 rows' },
+      { label: "A's count", value: '3 rows' },
+      { label: "A's count", value: '3 rows' },
+      { label: "A's count", value: '4 rows' },
+      { label: "A's count", value: '4 rows' },
+    ],
+    captions: [
+      'A counts the pending invoices: <b>3</b>.',
+      'B inserts a brand-new <em>pending</em> row — a row that matches A&rsquo;s filter.',
+      'B commits the new row.',
+      'A re-runs the <em>same count</em> and gets <b>4</b>. A row that was never there appeared — a phantom.',
+      "<code>read committed</code> allows this. In Postgres, <code>repeatable read</code> already prevents it — A&rsquo;s snapshot, taken at its first statement, hides B&rsquo;s later insert.",
+    ],
+    punchAt: 3,
+  },
+  {
+    id: 'writeskew',
+    label: 'Write skew',
+    ops: [
+      { lane: 'A', tag: 'BEGIN', note: "count admins → check rule" },
+      { lane: 'B', tag: 'BEGIN', note: 'count admins → check rule' },
+      { lane: 'A', tag: 'demote Ada', note: 'UPDATE role = member', kind: 'write' },
+      { lane: 'B', tag: 'demote Bo', note: 'UPDATE role = member', kind: 'write' },
+      { lane: 'A', tag: 'COMMIT', kind: 'commit' },
+      { lane: 'B', tag: 'COMMIT', kind: 'commit' },
+    ],
+    readouts: [
+      {
+        label: 'A sees',
+        value: '2 admins',
+        invariant: { label: 'admins left', value: '2' },
+      },
+      {
+        label: 'B sees',
+        value: '2 admins',
+        invariant: { label: 'admins left', value: '2' },
+      },
+      {
+        label: 'A decides',
+        value: 'safe to demote',
+        invariant: { label: 'admins left', value: '2' },
+      },
+      {
+        label: 'B decides',
+        value: 'safe to demote',
+        invariant: { label: 'admins left', value: '2' },
+      },
+      {
+        label: 'after A',
+        value: 'Ada demoted',
+        invariant: { label: 'admins left', value: '1' },
+      },
+      {
+        label: 'after B',
+        value: 'Bo demoted',
+        invariant: { label: 'admins left', value: '0', broken: true },
+      },
+    ],
+    captions: [
+      'The rule: <em>at least one admin must remain</em>. A counts and sees <b>2</b> admins — safe to demote one.',
+      'B runs at the same time, sees the same <b>2</b> admins, and also concludes it&rsquo;s safe.',
+      'A demotes admin <b>Ada</b>.',
+      'B demotes admin <b>Bo</b> — a <em>different</em> admin.',
+      'A commits. One admin left — still fine, on its own.',
+      'B commits too. <b>Zero admins remain.</b> Neither transaction read stale data, yet the invariant broke. Only <code>serializable</code> catches this — it detects the two can&rsquo;t be ordered consistently and aborts one with a serialization failure.',
+    ],
+    punchAt: 5,
+  },
+];
+
+// ---- shared style builders ------------------------------------------------
+const board = [
+  'box-sizing: border-box',
+  'display: flex',
+  'flex-direction: column',
+  'gap: 12px',
+  'margin: 0',
+  'padding: 2px',
+  'color-scheme: light',
+  `font-family: ${sans}`,
+  `color: ${INK}`,
+].join('; ');
+
+// the two-column lane grid
+const lanes = [
+  'box-sizing: border-box',
+  'display: grid',
+  'grid-template-columns: 1fr 1fr',
+  'column-gap: 14px',
+  'margin: 0',
+].join('; ');
+
+// lane header (sticky-feel column titles)
+const laneHead = (accent: string, ink: string, bg: string, border: string) =>
+  [
+    'box-sizing: border-box',
+    'display: flex',
+    'align-items: center',
+    'gap: 7px',
+    'margin: 0 0 8px',
+    'padding: 5px 10px',
+    'border-radius: 999px',
+    `border: 1.5px solid ${border}`,
+    `background: ${bg}`,
+    `color: ${ink}`,
+    `font-family: ${mono}`,
+    'font-size: 12px',
+    'font-weight: 800',
+    'letter-spacing: 0.02em',
+    'line-height: 1.2',
+  ].join('; ');
+
+const laneHeadDot = (accent: string) =>
+  [
+    'box-sizing: border-box',
+    'flex: 0 0 auto',
+    'width: 8px',
+    'height: 8px',
+    'margin: 0',
+    'border-radius: 999px',
+    `background: ${accent}`,
+  ].join('; ');
+
+// one timeline row = a full-width 2-col grid; chip occupies its lane's cell.
+const rowGrid = [
+  'box-sizing: border-box',
+  'display: grid',
+  'grid-template-columns: 1fr 1fr',
+  'column-gap: 14px',
+  'align-items: stretch',
+  'margin: 0',
+].join('; ');
+
+// the faint rail shown in the lane that has no chip on this row
+const rail = (side: 'A' | 'B') =>
+  [
+    'box-sizing: border-box',
+    'margin: 0',
+    'min-height: 100%',
+    'border-radius: 8px',
+    `border: 1.5px dashed ${RAIL}`,
+    'background: transparent',
+    'opacity: 0.55',
+  ].join('; ');
+
+// operation chip. `state` ∈ done|active|future. lane drives the hue.
+const chip = (lane: Lane, state: 'done' | 'active' | 'future', kind: OpKind) => {
+  const isA = lane === 'A';
+  const border = isA ? A_BORDER : B_BORDER;
+  const bg = isA ? A_BG : B_BG;
+  const accent = isA ? A_ACCENT : B_ACCENT;
+
+  const base = [
+    'box-sizing: border-box',
+    'position: relative',
+    'display: flex',
+    'flex-direction: column',
+    'gap: 2px',
+    'margin: 0',
+    'padding: 7px 11px',
+    'border-radius: 8px',
+    'min-width: 0',
+  ];
+
+  if (state === 'future') {
+    return base
+      .concat([
+        `border: 1.5px dashed ${HAIRLINE}`,
+        `background: ${SURFACE}`,
+        'opacity: 0.4',
+      ])
+      .join('; ');
+  }
+  if (state === 'done') {
+    return base
+      .concat([
+        `border: 1.5px solid ${border}`,
+        `background: ${bg}`,
+        'opacity: 0.6',
+      ])
+      .join('; ');
+  }
+  // active
+  return base
+    .concat([
+      `border: 2px solid ${accent}`,
+      `background: ${bg}`,
+      `box-shadow: 0 0 0 3px ${isA ? 'rgba(99,102,241,0.18)' : 'rgba(71,85,105,0.16)'}`,
+    ])
+    .join('; ');
+};
+
+const chipTag = (lane: Lane, state: 'done' | 'active' | 'future', kind: OpKind) => {
+  const isA = lane === 'A';
+  let color = isA ? A_INK : B_INK;
+  if (kind === 'commit' && state !== 'future') color = GREEN_INK;
+  return [
+    'margin: 0',
+    `font-family: ${mono}`,
+    'font-size: 12.5px',
+    `font-weight: ${state === 'active' ? '800' : '700'}`,
+    'line-height: 1.25',
+    `color: ${color}`,
+  ].join('; ');
+};
+
+const chipNote = [
+  'margin: 0',
+  `font-family: ${mono}`,
+  'font-size: 10.5px',
+  'font-weight: 600',
+  'line-height: 1.3',
+  `color: ${INK_SOFT}`,
+].join('; ');
+
+// "active now" marker dot on the accented chip
+const activeMark = (lane: Lane) =>
+  [
+    'box-sizing: border-box',
+    'position: absolute',
+    'top: -6px',
+    'right: -6px',
+    'width: 12px',
+    'height: 12px',
+    'margin: 0',
+    'border-radius: 999px',
+    `background: ${lane === 'A' ? A_ACCENT : B_ACCENT}`,
+    `border: 2px solid ${SURFACE}`,
+  ].join('; ');
+
+// the time arrow rail down the gutter between header and rows
+const timeNote = [
+  'box-sizing: border-box',
+  'display: flex',
+  'align-items: center',
+  'gap: 6px',
+  'margin: 0 0 2px',
+  `font-family: ${sans}`,
+  'font-size: 10px',
+  'font-weight: 700',
+  'text-transform: uppercase',
+  'letter-spacing: 0.06em',
+  `color: ${INK_SOFT}`,
+].join('; ');
+
+// ---- readout panel --------------------------------------------------------
+const readoutWrap = [
+  'box-sizing: border-box',
+  'display: flex',
+  'flex-wrap: wrap',
+  'align-items: center',
+  'gap: 10px',
+  'margin: 0',
+  'padding: 10px 12px',
+  'border-radius: 10px',
+  `border: 1.5px solid ${HAIRLINE}`,
+  `background: ${SURFACE}`,
+].join('; ');
+
+const readoutPill = (broken?: boolean) =>
+  [
+    'box-sizing: border-box',
+    'display: inline-flex',
+    'align-items: baseline',
+    'gap: 8px',
+    'margin: 0',
+    'padding: 6px 12px',
+    'border-radius: 999px',
+    `border: 1.5px solid ${broken ? RED : HAIRLINE}`,
+    `background: ${broken ? RED_BG : '#f8fafc'}`,
+  ].join('; ');
+
+const readoutLabel = [
+  'margin: 0',
+  `font-family: ${sans}`,
+  'font-size: 10px',
+  'font-weight: 800',
+  'text-transform: uppercase',
+  'letter-spacing: 0.05em',
+  `color: ${INK_SOFT}`,
+].join('; ');
+
+const readoutValue = (broken?: boolean) =>
+  [
+    'margin: 0',
+    `font-family: ${mono}`,
+    'font-size: 15px',
+    'font-weight: 800',
+    'line-height: 1',
+    `color: ${broken ? RED_INK : INK}`,
+  ].join('; ');
+
+const invariantPill = (broken?: boolean) =>
+  [
+    'box-sizing: border-box',
+    'display: inline-flex',
+    'align-items: baseline',
+    'gap: 8px',
+    'margin: 0',
+    'padding: 6px 12px',
+    'border-radius: 999px',
+    `border: 1.5px solid ${broken ? RED : AMBER_BORDER}`,
+    `background: ${broken ? RED_BG : AMBER_BG}`,
+  ].join('; ');
+
+const invariantValue = (broken?: boolean) =>
+  [
+    'margin: 0',
+    `font-family: ${mono}`,
+    'font-size: 15px',
+    'font-weight: 800',
+    'line-height: 1',
+    `color: ${broken ? RED_INK : AMBER_INK}`,
+  ].join('; ');
+
+// a tiny arrow glyph between the readout pills
+const readoutArrow = [
+  'margin: 0',
+  `font-family: ${sans}`,
+  'font-size: 13px',
+  'font-weight: 700',
+  `color: ${INK_SOFT}`,
+].join('; ');
+
+// per-step caption styling — punch step gets a red left edge
+const capBase = [
+  'box-sizing: border-box',
+  'margin: 0',
+  'padding: 0 0 0 12px',
+  `border-left: 3px solid ${HAIRLINE}`,
+  `font-family: ${sans}`,
+  'font-size: 13.5px',
+  'line-height: 1.55',
+  `color: ${INK}`,
+].join('; ');
+
+const capPunch = [
+  'box-sizing: border-box',
+  'margin: 0',
+  'padding: 0 0 0 12px',
+  `border-left: 3px solid ${RED}`,
+  `font-family: ${sans}`,
+  'font-size: 13.5px',
+  'line-height: 1.55',
+  `color: ${INK}`,
+].join('; ');
+
+// state of op `i` given the cursor at step `s`
+function stateOf(i: number, s: number): 'done' | 'active' | 'future' {
+  if (i < s) return 'done';
+  if (i === s) return 'active';
+  return 'future';
+}
+---
+
+<TabbedContent>
+  {
+    anomalies.map((anomaly) => (
+      <TabbedItem label={anomaly.label}>
+        <DiagramSequence>
+          {
+            anomaly.ops.map((_op, stepIndex) => {
+              const readout = anomaly.readouts[stepIndex];
+              return (
+                <DiagramStep>
+                  <div style={board}>
+                    {/* lane headers */}
+                    <div style={lanes}>
+                      <div style={laneHead(A_ACCENT, A_INK, A_BG, A_BORDER)}>
+                        <span style={laneHeadDot(A_ACCENT)} aria-hidden="true" />
+                        Transaction A
+                      </div>
+                      <div style={laneHead(B_ACCENT, B_INK, B_BG, B_BORDER)}>
+                        <span style={laneHeadDot(B_ACCENT)} aria-hidden="true" />
+                        Transaction B
+                      </div>
+                    </div>
+
+                    {/* time hint */}
+                    <div style={timeNote}>
+                      <svg
+                        width="11"
+                        height="11"
+                        viewBox="0 0 12 12"
+                        fill="none"
+                        stroke={INK_SOFT}
+                        stroke-width="1.6"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        aria-hidden="true"
+                        style="display:block;margin:0"
+                      >
+                        <line x1="6" y1="1" x2="6" y2="11" />
+                        <polyline points="3 8 6 11 9 8" />
+                      </svg>
+                      time
+                    </div>
+
+                    {/* timeline rows */}
+                    {anomaly.ops.map((op, i) => {
+                      const st = stateOf(i, stepIndex);
+                      const onA = op.lane === 'A';
+                      return (
+                        <div style={rowGrid}>
+                          {onA ? (
+                            <div style={chip(op.lane, st, op.kind ?? 'plain')}>
+                              {st === 'active' && (
+                                <span style={activeMark(op.lane)} aria-hidden="true" />
+                              )}
+                              <span style={chipTag(op.lane, st, op.kind ?? 'plain')}>
+                                {op.tag}
+                              </span>
+                              {op.note && <span style={chipNote}>{op.note}</span>}
+                            </div>
+                          ) : (
+                            <div style={rail('A')} aria-hidden="true" />
+                          )}
+
+                          {!onA ? (
+                            <div style={chip(op.lane, st, op.kind ?? 'plain')}>
+                              {st === 'active' && (
+                                <span style={activeMark(op.lane)} aria-hidden="true" />
+                              )}
+                              <span style={chipTag(op.lane, st, op.kind ?? 'plain')}>
+                                {op.tag}
+                              </span>
+                              {op.note && <span style={chipNote}>{op.note}</span>}
+                            </div>
+                          ) : (
+                            <div style={rail('B')} aria-hidden="true" />
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    {/* readout */}
+                    <div style={readoutWrap}>
+                      <div style={readoutPill(false)}>
+                        <span style={readoutLabel}>{readout.label}</span>
+                        <span style={readoutValue(false)}>{readout.value}</span>
+                      </div>
+                      {readout.invariant && (
+                        <>
+                          <span style={readoutArrow} aria-hidden="true">
+                            ·
+                          </span>
+                          <div style={invariantPill(readout.invariant.broken)}>
+                            <span style={readoutLabel}>{readout.invariant.label}</span>
+                            <span style={invariantValue(readout.invariant.broken)}>
+                              {readout.invariant.value}
+                            </span>
+                          </div>
+                          {readout.invariant.broken && (
+                            <span
+                              style={`margin:0;font-family:${sans};font-size:12px;font-weight:800;color:${RED_INK}`}
+                            >
+                              invariant broken
+                            </span>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  <Fragment slot="caption">
+                    <p
+                      style={stepIndex === anomaly.punchAt ? capPunch : capBase}
+                      set:html={anomaly.captions[stepIndex]}
+                    />
+                  </Fragment>
+                </DiagramStep>
+              );
+            })
+          }
+        </DiagramSequence>
+      </TabbedItem>
+    ))
+  }
+</TabbedContent>

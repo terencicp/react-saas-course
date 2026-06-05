@@ -1,0 +1,724 @@
+---
+title: Transactions and isolation levels
+tagline: Wrapping multi-statement database writes in Postgres transactions through Drizzle, choosing isolation levels, and handling the concurrency conflicts they raise.
+chapter-id: 39
+course-progress: 0.00005
+sidebar:
+  order: 4
+  label: Transactions
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import Term from '../../../components/ui/Term.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import TabbedContent from '../../../components/figures/tabbed-content/TabbedContent.astro';
+import TabbedItem from '../../../components/figures/tabbed-content/TabbedItem.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import DrizzleCoding from '../../../components/live-coding/DrizzleCoding/DrizzleCoding.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import AtomicityFork from '../../../components/lessons/039/4/atomicity-fork.astro';
+import ConcurrencyAnomalies from '../../../components/lessons/039/4/concurrency-anomalies.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Picture the write behind a "create invoice" button. It runs three statements: insert the invoice row, insert its line items, then bump the customer's `lastActivityAt` so the dashboard shows them as recently active. On your machine, all three run in a few milliseconds and you never think about them again.
+
+Now the server crashes after the first statement. Or the second statement trips a constraint and throws. Either way you're left with an invoice that has no line items — a row a user will open, stare at, and report as a bug. The data is wrong, and nothing in the code you've written so far stops it.
+
+The queries in that write are the ones you learned to write in the previous chapters; the constraints guarding the rows came from your schema. What's missing is the thing that makes the *write itself* safe: a guarantee that those three statements either all happen or none of them do. That's what a transaction is, and it's the everyday reason you'll reach for one.
+
+There's a second, rarer reason that gets tangled up with the first, and the goal of this lesson is to keep them apart. A transaction is a boundary with two knobs. The first knob is **atomicity** — all-or-nothing — and it's on by default; it's why you wrap those three statements. The second knob is the **isolation level**, and it governs what a *different* transaction running at the same instant is allowed to see. Most developers learn both at once, conclude that "I need a transaction" and "I need the strongest isolation level" are the same decision, and ship code that's either fragile or slow. They are not the same decision. We'll do atomicity first, completely, and only then turn to the second knob.
+
+By the end you'll have two small helpers you'll carry into later chapters: one that retries a transaction the database asked you to retry, and one that turns a duplicate-key collision into a clean message instead of a server error.
+
+## A transaction is a boundary that's all-or-nothing
+
+A <Term definition="A group of SQL statements that commit together or roll back together. Either every statement's effect is durable, or none of them happened.">transaction</Term> is a group of statements that commit together or roll back together. There is no halfway. If the group commits, every statement's effect is permanent; if anything goes wrong before the commit, the database unwinds every change the group made, back to the state before it started.
+
+Here's the part that surprises people: you've been using transactions this whole time without naming them. Postgres wraps every single statement in an implicit transaction already. A lone `UPDATE` that touches a thousand rows either updates all thousand or, if it hits an error partway, none — you never see five hundred half-updated rows. The explicit transaction you're about to write just *extends* that same all-or-nothing guarantee across **multiple** statements, so your three-statement invoice write behaves like the single `UPDATE` does: one unit, indivisible.
+
+You'll have seen the acronym <Term definition="Atomicity, Consistency, Isolation, Durability — the four guarantees a transactional database provides.">ACID</Term> attached to databases. It's four guarantees, and it's worth one tight pass so you know which two this lesson is actually about:
+
+- **A — <Term definition="All statements in a transaction succeed together or fail together. There is no partial state.">Atomicity</Term>.** All-or-nothing. This is the everyday reason for a transaction and the whole first half of the lesson.
+- **C — Consistency.** The database moves from one valid state to another: every constraint you declared still holds at commit time. You already did this work in your schema — your `UNIQUE`, `CHECK`, and foreign keys are what "consistency" means here.
+- **I — Isolation.** Concurrent transactions each see a coherent view of the data rather than each other's half-finished work. This is the second knob, the second half of the lesson.
+- **D — <Term definition="Once a transaction commits, its writes survive a crash, power loss, or restart.">Durability</Term>.** Once a transaction commits, its writes survive a crash or power loss. Postgres handles this for you; you won't write a line of code for it.
+
+So of the four, two come essentially free from Postgres plus the constraints you've already written (C and D), and two are the actual subject here: Atomicity, which you'll reach for constantly, and Isolation, which you'll reach for rarely and deliberately.
+
+<VideoCallout videoId="GAe5oB742dw" videoTitle="ACID Properties in Databases With Examples">
+  ByteByteGo walks all four ACID properties in five animated minutes, with the dirty / non-repeatable / phantom reads we'll meet later.
+</VideoCallout>
+
+The mental image to hold for atomicity is a fork in the road with no middle lane.
+
+<AtomicityFork />
+
+That impossible middle card is the entire point. The corrupted invoice from the introduction lives in that struck-out box, and a transaction is what deletes that box from the realm of possibility.
+
+## Wrapping writes in `db.transaction`
+
+In Drizzle, the boundary is a function call that takes a callback:
+
+```ts
+await db.transaction(async (tx) => {
+  // every statement in here uses tx, not db
+});
+```
+
+Two things about this shape carry the whole discipline. First, inside the callback you write your statements against `tx`, the transaction handle the callback receives — never against the outer `db`. Second, you never call `commit` or `rollback` yourself. The control flow *is* the signal: if the callback returns normally, Drizzle commits; if the callback **throws**, Drizzle rolls back. A thrown error — a tripped constraint, a failed validation, a bug — unwinds everything automatically. That's why atomicity feels effortful in raw SQL and effortless here: you express failure the way you already do in JavaScript, by throwing, and the rollback is implied.
+
+There's one more detail that trips up nearly everyone the first time. How do you get the new invoice's id back out, when the work happened inside a callback? The return value of the callback becomes the return value of `db.transaction(...)`. Whatever you `return` from inside crosses the boundary out.
+
+Here's the invoice-create write, wrapped:
+
+<AnnotatedCode lang="ts" code={`
+const newInvoice = await db.transaction(async (tx) => {
+  const [invoice] = await tx
+    .insert(invoices)
+    .values({ organizationId, customerId, total })
+    .returning();
+
+  await tx.insert(lineItems).values(
+    items.map((item) => ({ invoiceId: invoice.id, ...item })),
+  );
+
+  await tx
+    .update(customers)
+    .set({ lastActivityAt: sql\`now()\` })
+    .where(eq(customers.id, customerId));
+
+  return invoice;
+});
+`}>
+  <AnnotatedStep meta={`{1} "tx"`} color="blue">
+    The callback receives `tx`, the transaction handle. Everything that follows runs against it as one atomic unit; the variable on the left receives whatever the callback returns.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{2-5}" color="blue">
+    Insert the invoice and capture the row with `.returning()`. We need its generated `id` for the next statement, so we hold it in a closure variable.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{7-9} "tx"`} color="blue">
+    Insert the line items, each pointing at the invoice we just created via `invoice.id`. Same `tx`, same unit — if this throws, the invoice insert above is undone too.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{11-14} "tx"`} color="blue">
+    Bump the customer's activity timestamp. Three statements, one boundary.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{16} "return invoice"`} color="blue">
+    Return the invoice. Because the callback returns it, `db.transaction(...)` resolves to it — this is how the new row crosses the boundary back out to `newInvoice`.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+### Every statement uses `tx` — and so does every helper
+
+The rule "use `tx`, not `db`" sounds trivial until your transaction calls a helper function. In a real codebase you don't inline every query; you have small read helpers in `db/queries/` like `getCustomer(id)`. The moment one of those runs inside a transaction, a silent and genuinely dangerous bug becomes possible.
+
+Recall from the chapter on Postgres that the `db` you import is backed by a <Term definition="A fixed set of reusable open database connections. The driver lends one out for a query and takes it back when the query finishes, so requests don't pay the cost of opening a new connection each time.">connection pool</Term> — a set of reusable connections the driver lends out per query. A transaction runs on **one** specific connection, checked out for its whole duration. If a helper called from inside the transaction reaches for the module-scope `db`, that query goes out on a *different* pooled connection — outside your transaction entirely. It commits on its own. It cannot be rolled back with the rest. Worse, it can't see your uncommitted writes, so a "read the row I just inserted" inside the helper comes back empty.
+
+This is the bug that passes every test on a single-developer machine and corrupts data in production, because on a quiet machine the timing happens to work out. The fix is a convention, and it's the one the course follows everywhere: **any data-layer helper that might run inside a transaction takes the client as its first argument.**
+
+<CodeVariants maxLines={12}>
+  <CodeVariant label="Leaks out of the transaction">
+    <div data-mark-color="red">
+
+    ```ts del={2} "getCustomer(customerId)"
+    const getCustomer = (id: string) =>
+      db.query.customers.findFirst({ where: eq(customers.id, id) });
+
+    await db.transaction(async (tx) => {
+      const customer = await getCustomer(customerId);
+      // ...this read ran on a different connection, outside tx
+    });
+    ```
+
+    </div>
+    **Silently runs outside the transaction.** `getCustomer` closes over the module-scope `db`, so its query goes out on a separate pooled connection. It can't see this transaction's uncommitted writes and won't roll back with it — and nothing warns you.
+  </CodeVariant>
+
+  <CodeVariant label="Threads tx">
+    <div data-mark-color="green">
+
+    ```ts "client" "getCustomer(tx, customerId)"
+    const getCustomer = (client: DbClient, id: string) =>
+      client.query.customers.findFirst({ where: eq(customers.id, id) });
+
+    await db.transaction(async (tx) => {
+      const customer = await getCustomer(tx, customerId);
+      // ...same connection, inside tx
+    });
+    ```
+
+    </div>
+    **Stays inside the transaction.** The helper takes the client first and uses whatever it's handed. Pass `tx` and the read joins the transaction; pass `db` elsewhere and it runs standalone. One helper, both call sites, no leak.
+  </CodeVariant>
+</CodeVariants>
+
+The type on that first parameter is worth a word. You want it to accept both the pooled `db` and a transaction's `tx`, since the same helper is called both ways. Drizzle exposes a client type that covers both — a small alias like `type DbClient = typeof db | DbTransaction` does the job — and once your helpers take it, "thread the client through" stops being a thing you remember and becomes a thing the types enforce.
+
+:::caution
+Inside a transaction callback, treat the outer `db` as off-limits. Every statement and every helper call goes through `tx`. A single stray `db` is a write that escapes the boundary.
+:::
+
+## When a write earns a transaction — and when it doesn't
+
+You've got the shape. Now the judgment: a transaction isn't free — it holds a connection and adds a round-trip — so it earns its place only when the work genuinely needs atomicity. Four situations call for one. Each has the same fingerprint: **correctness depends on a group of statements being indivisible.**
+
+1. **A multi-row mutation that must all succeed or all fail.** The invoice plus its line items. Sign-up that creates a user, a profile, and their first organization row. Creating a team and inserting its first member. Any "this isn't done until all of these are done."
+2. **A cross-row invariant the schema can't express.** "The sum of the line-item allocations must equal the invoice total." You read the rows, compute the sum, and abort if it's off — all inside the boundary so no concurrent write can slip between the check and the commit.
+3. **A read-modify-write under contention.** Decrement an account balance, allocate the last seat from a pool, increment a usage counter — anywhere you read a value, decide based on it, then write a value that depends on what you read. The read and the write have to be one unit or two callers can both read the old value.
+4. **An atomic state transition with side effects in the database.** Move an invoice from `draft` to `sent`, write a row recording that it was sent, and bump `lastActivityAt` — all of it or none of it.
+
+And the negative space, which matters just as much. **A single statement is already atomic** — wrapping it in a transaction adds a network round-trip and buys you nothing, because Postgres already runs it all-or-nothing. That includes bulk inserts: `db.insert(invoices).values([...])` with an array is *one* statement, however many rows it writes, so it needs no transaction. A read-only query doesn't need one either — unless it spans several statements that must agree with one another, which is a snapshot question we'll get to with the second knob.
+
+### Before you write a transaction, ask if a constraint already does the job
+
+Look again at trigger #2 — the cross-row invariant. There's a reflex worth building here, and it points back to your schema. Before you write a transaction whose entire job is to *check* something, ask: can a database constraint enforce this for me?
+
+A `UNIQUE` constraint, a `CHECK`, a foreign key — these run on every write, automatically, with no race window, and you can't forget to call them. A transaction-with-a-check is code you have to remember to wrap correctly every single time. The constraint is the cheaper, always-on, race-free defense. Reach for the transaction-with-a-check only for invariants the schema genuinely *can't* express. (Postgres also has `EXCLUSION` constraints for a class of "no two rows may overlap" rules — worth knowing the name exists, not worth more than that here.)
+
+So before sorting these into "constraint" or "transaction," the test is: can a single declarative rule on the table catch every violation on its own?
+
+<Buckets twoCol instructions="For each rule, decide whether a database constraint enforces it on its own, or whether it needs a transaction with a check.">
+  <Bucket name="constraint" label="A constraint handles it" description="Declarative, always-on, race-free" />
+  <Bucket name="transaction" label="Needs a transaction" description="A multi-statement check or mutation" />
+
+  <Item bucket="constraint">No two users can share an email</Item>
+  <Item bucket="constraint">An invoice total can't be negative</Item>
+  <Item bucket="constraint">Every line item points at a real invoice</Item>
+  <Item bucket="transaction">Allocate the last remaining seat in a plan's pool</Item>
+  <Item bucket="transaction">Insert an invoice and its line items together</Item>
+  <Item bucket="transaction">The sum of allocations must equal the invoice total before saving</Item>
+</Buckets>
+
+If you found yourself wanting to put "one primary contact per organization" somewhere — that one's a trap worth flagging. It *feels* like a transaction-with-a-check, but a partial unique index (the conditional uniqueness you saw earlier in this chapter) enforces it declaratively. Constraint first, always.
+
+## What another transaction sees — the second knob
+
+Everything up to here was atomicity: the first knob, on by default, the reason you wrap writes. Set it down for a moment, because the next question is genuinely separate.
+
+Your transaction does not run on an empty planet. While it's open, other transactions are reading and writing the same tables. So: what does *your* transaction see of *their* work? If another transaction commits a change to a row you're reading, does your transaction notice mid-flight, or does it keep seeing the value from when it started?
+
+The answer is set by the second knob, the **isolation level**, and the cleanest way to think about it is in terms of snapshots. Each transaction reads from some <Term definition="A consistent view of the entire database as of a particular moment. A transaction reads from its snapshot rather than from whatever the latest committed state happens to be.">snapshot</Term> of the database — a frozen, consistent view as of some moment. The isolation level decides *how stable* that snapshot stays across your transaction's lifetime, and therefore which changes committed by others are allowed to leak into your view while you're still running.
+
+That's abstract, and it stays abstract until you watch it happen on a clock. Concurrency bugs are notoriously slippery precisely because they only appear when two transactions interleave in a particular order — you can't see them by reading one transaction's code. So we'll watch two transactions, side by side, step through time, and see exactly when each anomaly appears. There are three to know, and they get progressively nastier.
+
+The diagram below has two lanes — Transaction A on the left, Transaction B on the right — with time flowing downward. Scrub through each step and watch the value A observes. Each tab is one anomaly.
+
+<ConcurrencyAnomalies />
+
+Walk away from that diagram with the three names attached to what you just saw. A <Term definition="Reading the same row twice in one transaction and getting two different values, because another transaction committed a change in between.">non-repeatable read</Term> is the same row giving two answers. A <Term definition="Re-running the same range query in one transaction and finding rows that weren't there before, because another transaction inserted matching rows.">phantom read</Term> is the same *query* returning a row that wasn't there before. And <Term definition="Two transactions each read an overlapping set, each make a decision that's valid in isolation, and their combined writes violate an invariant that neither broke alone.">write skew</Term> — the subtle one — is two transactions that each read correctly, each decide correctly, and together produce a result that's wrong.
+
+One accuracy note, because it contradicts what a lot of older material says. Postgres's `repeatable read` is *stronger* than the textbook SQL standard requires: it prevents phantom reads, not just non-repeatable ones, because it uses snapshot isolation. The classic claim that "only the strongest level stops phantoms" describes the standard, not Postgres. Trust what you saw in tab two.
+
+## The four isolation levels and where each earns its keep
+
+Now we can name the levels, because you've seen the anomalies each one is defined against. There are four. We'll go cheapest-and-loosest first and escalate, which is also the order you should consider them.
+
+**Read uncommitted.** The loosest level in the SQL standard, where a transaction can even read another's *uncommitted* changes. Postgres doesn't implement this distinctly — ask for it and you silently get `read committed` instead. Dirty reads simply don't exist in Postgres. It's named here so you recognize it; it's never the answer in this stack.
+
+**Read committed — the default.** Every transaction you've written in this lesson has been running at this level without our saying so. Here, each *statement* sees a fresh snapshot of everything committed as of the moment that statement begins. It's the cheapest level and it's correct for the overwhelming majority of mutations — which is the whole point: you wrap writes in a transaction for *atomicity*, and the default isolation level is already fine. Its looseness is exactly what you saw: because each statement re-snapshots, two reads in one transaction can disagree (non-repeatable read) and a re-run query can grow (phantom).
+
+**Repeatable read.** Now the whole *transaction* reads from a single snapshot, taken at its first statement. Run the same query five times and you get the same answer five times, no matter what commits around you — and in Postgres, as you saw, phantoms are prevented too. Reach for this when a multi-statement *read* needs to be internally coherent: a month-end roll-up that touches a dozen tables and must see all of them as of one instant, or any report where two queries disagreeing would be a bug. The cost: if a write in your transaction conflicts with a concurrent write, Postgres can't honor the frozen snapshot and aborts your transaction with a <Term definition="The error Postgres raises when it can't serialize concurrent transactions safely. SQLSTATE 40001. The contract is that the application retries the whole transaction.">serialization failure</Term> — and your application is then obligated to retry.
+
+**Serializable.** The strongest level. Postgres guarantees the result is *as if* all the concurrent transactions had run one after another in some serial order — even though they actually ran at the same time. This is the only level that catches write skew, because catching it requires reasoning about the *combination* of transactions, which is exactly what serializability does. It's the most expensive level, it raises serialization failures more often, and so the retry isn't optional — it's part of the call shape. You reach for `serializable` when a cross-row invariant can't be a constraint *and* concurrent writers are contending over it.
+
+Setting the level in Drizzle is the second argument to `transaction`:
+
+```ts
+await db.transaction(
+  async (tx) => {
+    // ...
+  },
+  { isolationLevel: 'serializable' },
+);
+```
+
+Drizzle accepts all four level strings there. The same options object also takes `accessMode: 'read only'` (a hint for read-only transactions) and `deferrable` — worth knowing they exist, not worth more right now.
+
+So which do you pick? The honest answer is that the *order* in which you ask the questions matters more than memorizing four definitions — and the order is built to fight the instinct to grab the strongest level "to be safe." Walk this:
+
+<StateMachineWalker kind="decision" title="Which isolation level does this write need?" root="single">
+  <Question
+    id="single"
+    prompt="Is the whole operation a single statement?"
+    description="A lone insert, update, or delete — including a bulk insert with an array of values.">
+    <Branch label="Yes — one statement" to="leaf-none" />
+    <Branch label="No — multiple statements" to="reads-only" />
+  </Question>
+
+  <Question
+    id="reads-only"
+    prompt="Does it only read across those statements, needing them to agree?"
+    description="No writes — just several reads that must reflect one consistent moment, like a multi-table report.">
+    <Branch label="Yes — reads only, must be coherent" to="leaf-rr" />
+    <Branch label="No — it writes" to="invariant" />
+  </Question>
+
+  <Question
+    id="invariant"
+    prompt="Is correctness a cross-row invariant a constraint can't express, with concurrent writers contending?"
+    description="You ruled out a UNIQUE / CHECK / foreign key already, and two callers really can race on the same rule.">
+    <Branch label="No — atomicity is all I need" to="leaf-default" />
+    <Branch label="Yes — a real concurrent invariant" to="hot-row" />
+  </Question>
+
+  <Question
+    id="hot-row"
+    prompt="Is the contended row identifiable up front?"
+    description="Do you know exactly which one row (or few rows) the writers fight over — one balance, one pool?">
+    <Branch label="Yes — I know the hot row" to="leaf-forupdate" />
+    <Branch label="No — the conflict is diffuse" to="leaf-serializable" />
+  </Question>
+
+  <Leaf id="leaf-none" verdict="No transaction — it's already atomic">
+    A single statement runs all-or-nothing on its own. Wrapping it adds a round-trip and buys nothing.
+  </Leaf>
+
+  <Leaf id="leaf-default" verdict="read committed (the default) — wrap for atomicity">
+    By far the common case. You need the statements to commit together; you don't need a stronger snapshot. Wrap in `db.transaction` and move on.
+  </Leaf>
+
+  <Leaf id="leaf-rr" verdict="repeatable read — one coherent snapshot">
+    Freezes the whole transaction to a single snapshot so every read agrees. Be ready to retry on a serialization failure.
+  </Leaf>
+
+  <Leaf id="leaf-forupdate" verdict="read committed + SELECT … FOR UPDATE">
+    Lock the known hot row so writers queue instead of racing. Pessimistic, no retry thrash. (Covered next.)
+  </Leaf>
+
+  <Leaf id="leaf-serializable" verdict="serializable + a retry wrapper">
+    The only level that catches write skew. Ship it *with* the retry — never without.
+  </Leaf>
+</StateMachineWalker>
+
+Notice where the walk lands most often: `leaf-none` and `leaf-default`. The everyday answer is "no transaction" or "the default level, just for atomicity." The higher levels are the exceptions you escalate to when a specific anomaly forces your hand — never the starting point.
+
+<MultipleChoice>
+  A nightly job reads from `orders`, `refunds`, and `payouts` to produce one reconciliation report. It writes nothing, but if the three reads don't reflect the same instant the numbers won't add up. Which isolation level fits?
+
+  <McqChoice>`read committed`</McqChoice>
+  <McqChoice correct>`repeatable read`</McqChoice>
+  <McqChoice>`serializable`</McqChoice>
+  <McqChoice>No transaction at all</McqChoice>
+
+  <McqWhy>The job runs the walker straight to the read-only branch: several reads that must agree on one moment. A single per-transaction snapshot is exactly that guarantee, and it's the cheapest level that provides it. `read committed` re-snapshots per statement, so the three queries could each catch a different committed state and stop reconciling. `serializable` defends an invariant against concurrent *writers* — there are none here, so you'd pay for protection you can't use. And skipping the transaction leaves three independent statements with room for other commits to land between them.</McqWhy>
+</MultipleChoice>
+
+## Surviving serialization failures — the retry
+
+The higher two levels handed you an obligation, and ignoring it is how prophylactic `serializable` turns into a pile of random 500s. Let's settle the debt.
+
+At `repeatable read` and `serializable`, Postgres sometimes can't safely reconcile concurrent transactions without breaking the guarantee it promised. When that happens it does the right thing: rather than corrupt data, it aborts one of the transactions and raises an error with <Term definition="A five-character SQL standard error code that classifies what went wrong. Postgres returns it on every error; you switch on it to handle specific cases.">SQLSTATE</Term> `40001`, `serialization_failure`. This is **expected and normal**. It is not a bug and it is not a 500. It's Postgres saying "I couldn't serialize that one — try it again."
+
+And that's the contract: the application retries the *whole transaction*. Not the one statement that conflicted — the entire closure, from the top. Re-running it has to be safe, which means the closure must have no side effects outside the database. (That requirement isn't an accident; it's the same reason you'll see in a moment for never doing external IO inside a transaction. The two rules reinforce each other.)
+
+So you write the retry once, as a wrapper, and never think about it again at the call sites:
+
+<AnnotatedCode lang="ts" code={`
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function isSerializationFailure(error: unknown): boolean {
+  return error instanceof Error && 'code' in error && error.code === '40001';
+}
+
+export async function withRetry<T>(
+  run: (tx: DbTransaction) => Promise<T>,
+): Promise<T> {
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await db.transaction(run, { isolationLevel: 'serializable' });
+    } catch (error) {
+      if (!isSerializationFailure(error) || attempt === maxAttempts) throw error;
+      await sleep(2 ** attempt * 25);
+    }
+  }
+  throw new Error('unreachable');
+}
+`}>
+  <AnnotatedStep meta={`{3-5} "40001"`} color="orange">
+    A type guard for the one error we retry on. We narrow `unknown` properly — `instanceof Error`, then check the `code` is `40001` — never `catch (e: any)`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{10-11}" color="blue">
+    The attempt budget: a small fixed number of tries, two or three. Bounded, so a permanently-conflicting transaction can't loop forever.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{13} "isolationLevel: 'serializable'"`} color="blue">
+    Run the whole closure inside a `serializable` transaction. On success we return immediately — most attempts succeed on the first try.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{15} "throw error"`} color="blue">
+    On any other error, or once the budget is spent, rethrow. We only swallow-and-retry the serialization failure; everything else propagates.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{16} /2 \\*\\* attempt/`} color="blue">
+    Back off before the next attempt — a short, growing delay. This is load-bearing, not decoration (see the warning below).
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Two failure modes around this code are worth naming sharply, because each is a real outage.
+
+:::danger
+A retry loop **without** backoff makes contention *worse*. If every conflicting transaction retries instantly, they collide again at the same instant — a thundering herd that keeps the database thrashing. The growing delay spreads the retries out so the conflict actually clears. And the mirror failure: `serializable` (or `repeatable read`) shipped *without any* retry surfaces serialization failures straight to users as random 500s. The higher level and the retry ship together or not at all.
+:::
+
+## Mapping unique-constraint conflicts to a clean error
+
+There's a second database error you'll catch constantly, and the experienced move is to recognize that it's the *opposite* of a serialization failure — same `try/catch` instinct, completely different handling.
+
+When a write violates a `UNIQUE` constraint or unique index, Postgres raises SQLSTATE `23505`, a <Term definition="The error Postgres raises when an insert or update would create a duplicate value in a column or set of columns guarded by a UNIQUE constraint or unique index. SQLSTATE 23505.">unique violation</Term>. You've already created the conditions for this all over your schema: the duplicate-email sign-up hits the unique email constraint; the second insert of the same webhook event id hits the `(organizationId, externalId)` unique index you built for idempotency earlier in this chapter. The driver surfaces it as a catchable error carrying `code === '23505'`.
+
+Here's the contrast that matters. A serialization failure (`40001`) means "I couldn't order that — **try again**," so you retry. A unique violation (`23505`) means "that value already exists — **trying again changes nothing**." Retrying a duplicate insert produces the identical duplicate insert. It's a *deterministic* conflict, and the right response isn't a retry and isn't a 500 — it's a clean, typed message telling the user what's wrong.
+
+<TabbedContent>
+  <TabbedItem label="40001 — serialization failure">
+    - **Meaning:** Postgres couldn't safely order concurrent transactions.
+    - **Cause:** contention at `repeatable read` / `serializable`.
+    - **Response: retry the whole transaction.**
+    - It's transient — the next attempt usually succeeds.
+  </TabbedItem>
+
+  <TabbedItem label="23505 — unique violation">
+    - **Meaning:** a value already exists that a `UNIQUE` rule forbids duplicating.
+    - **Cause:** a duplicate insert/update — duplicate email, replayed webhook id.
+    - **Response: don't retry — return a clear message to the user.**
+    - It's deterministic — retrying reproduces it exactly.
+  </TabbedItem>
+</TabbedContent>
+
+To map it cleanly, you write a small type guard mirroring the one from the retry wrapper, and use it at the boundary to return a `Result` instead of letting the error bubble into a 500. The `Result<T>` channel — the `ok` / `err` pair from the course conventions — is exactly the right place for an expected failure like this.
+
+<CodeVariants maxLines={14}>
+  <CodeVariant label="Unhandled — becomes a 500">
+    <div data-mark-color="red">
+
+    ```ts
+    export async function createUser(input: NewUser) {
+      const [user] = await db.insert(users).values(input).returning();
+      return user;
+    }
+    ```
+
+    </div>
+    **Surfaces a duplicate email as a server error.** The unique violation throws straight past this function. The user sees a generic 500 for what is really a perfectly ordinary "that email's taken".
+  </CodeVariant>
+
+  <CodeVariant label="Mapped to err('conflict', …)">
+    <div data-mark-color="green">
+
+    ```ts {11} "isUniqueViolation(error)"
+    function isUniqueViolation(error: unknown): boolean {
+      return error instanceof Error && 'code' in error && error.code === '23505';
+    }
+
+    export async function createUser(input: NewUser) {
+      try {
+        const [user] = await db.insert(users).values(input).returning();
+        return ok(user);
+      } catch (error) {
+        if (isUniqueViolation(error)) {
+          return err('conflict', 'That email is already taken');
+        }
+        throw error;
+      }
+    }
+    ```
+
+    </div>
+    **Turns the conflict into a typed result.** `isUniqueViolation` catches `23505` and returns `err('conflict', …)` the UI can render on the field; anything else still throws. Note the asymmetry with the retry — we map this, we don't retry it.
+  </CodeVariant>
+</CodeVariants>
+
+Hold on to `isUniqueViolation`. In a later chapter, when you build forms with Server Actions, this exact helper is what turns a duplicate-email collision into an error attached to the right form field — you're writing it here, and wiring it to UI there.
+
+## Locking a row instead of retrying — `SELECT … FOR UPDATE`
+
+The decision walker had a branch you haven't seen yet: when the contended row is *identifiable up front*, there's an alternative to `serializable` + retry that's often the better tool. Instead of letting both transactions run and aborting the loser, you make the second writer *wait*.
+
+`SELECT … FOR UPDATE` locks exactly the rows the query returns, for the rest of the transaction. Any other transaction that tries to update those same rows blocks — politely waits — until yours commits or rolls back. So the classic read-modify-write becomes safe by serialization-through-waiting rather than serialization-through-aborting:
+
+```ts
+await db.transaction(async (tx) => {
+  const [account] = await tx
+    .select()
+    .from(accounts)
+    .where(eq(accounts.id, accountId))
+    .for('update');
+
+  await tx
+    .update(accounts)
+    .set({ balance: account.balance - amount })
+    .where(eq(accounts.id, accountId));
+});
+```
+
+The `.for('update')` is the whole move. It runs inside an ordinary `read committed` transaction — you don't need a higher isolation level, because the <Term definition="A lock taken on specific rows so other transactions must wait before modifying them. Held until the locking transaction commits or rolls back.">row lock</Term> is doing the serialization work the higher level would otherwise do, scoped to just the rows you named.
+
+This is the difference between two whole philosophies, and naming them helps:
+
+- **<Term definition="Let transactions run freely and detect conflicts at commit, aborting and retrying the losers. Best when conflicts are rare.">Optimistic concurrency</Term>** — `serializable` + retry. Let everyone run, catch conflicts at commit, retry the losers. Best when conflicts are *rare*: most transactions sail through and the retry almost never fires.
+- **<Term definition="Take a lock up front so conflicting transactions wait their turn instead of racing. Best when contention is high and the hot row is known.">Pessimistic concurrency</Term>** — `FOR UPDATE`. Take the lock first, make conflicts wait. Best when contention is *high* and you know precisely which row everyone fights over — one balance, one inventory count, one pool.
+
+Which one is right is a judgment call, not a rule. Rare conflicts? Let them run and retry. A known hot row under heavy contention? Lock it and skip the retry thrash entirely.
+
+<VideoCallout videoId="wEsPL50Uiyo" videoTitle="This is why understanding database concurrency control is important">
+  Web Dev Cody reproduces a read-modify-write race live, then fixes it four ways — `FOR UPDATE`, `serializable`, and an optimistic version check — all in Postgres.
+</VideoCallout>
+
+:::caution
+A `FOR UPDATE` lock is held until the transaction commits. While it's held, *every* other writer of those rows waits. So the same discipline as everything else applies, doubly: keep the transaction short. A slow transaction holding a row lock turns into a queue of blocked requests behind it.
+:::
+
+## Keeping transactions short — the pool-starvation rule
+
+That "keep it short" warning isn't a style preference. It's a production rule with a specific mechanism behind it, and it's one of the silent bugs that only shows up under load.
+
+Recall how the pooled connection works. The default `db` client talks to Postgres through PgBouncer in <Term definition="A connection-pooling mode where a server connection is assigned to a client for the duration of one transaction, then returned to the pool. The pool can serve far more clients than there are real connections.">transaction-mode pooling</Term> — and the name is the tell. A real database connection is checked out for the **entire duration of your transaction** and only returned to the pool when you commit or roll back. A single statement borrows a connection for milliseconds. A transaction holds one for as long as the transaction is open.
+
+Now suppose you do something slow inside that boundary — call an external API, send an email, charge a card. You've just held a pooled connection hostage for the length of that network call. One such transaction is survivable. Dozens of them at once, under real traffic, and the pool runs dry: there are no free connections left, and every other request — including ones that just want to read a single row — queues up waiting. The whole app stalls behind a handful of transactions that are sitting idle waiting on an HTTP response. That's <Term definition="When all pooled connections are checked out and unavailable, so new queries must wait. Often caused by long-held transactions, especially ones awaiting external IO.">pool starvation</Term>.
+
+The rule that prevents it is absolute:
+
+:::danger
+**Never `await` external IO inside `db.transaction`.** No `fetch`, no email send, no Stripe, R2, or queue call inside the boundary. Gather everything you need from the outside world *before* the transaction, and fire any external side effects *after* it commits.
+:::
+
+This dovetails exactly with the retry rule. A transaction has to be safe to re-run; if it had already sent an email or charged a card mid-flight, re-running it would send a second email or double-charge. So "no external IO inside" and "must be safely retryable" are two views of the same discipline — the database boundary is for database work only.
+
+<CodeVariants maxLines={14}>
+  <CodeVariant label="Starves the pool">
+    <div data-mark-color="red">
+
+    ```ts del={3}
+    await db.transaction(async (tx) => {
+      const [invoice] = await tx.insert(invoices).values(input).returning();
+      await sendEmail(invoice.customerEmail, invoice);
+      await tx
+        .update(customers)
+        .set({ lastActivityAt: sql\`now()\` })
+        .where(eq(customers.id, input.customerId));
+    });
+    ```
+
+    </div>
+    **Holds a pooled connection through a network call.** The email send sits inside the boundary, so the connection stays checked out for the whole round-trip to the email provider. Under load these stack up and the pool starves — unrelated reads start timing out.
+  </CodeVariant>
+
+  <CodeVariant label="External IO outside the boundary">
+    <div data-mark-color="green">
+
+    ```ts {11}
+    const invoice = await db.transaction(async (tx) => {
+      const [created] = await tx.insert(invoices).values(input).returning();
+      await tx
+        .update(customers)
+        .set({ lastActivityAt: sql\`now()\` })
+        .where(eq(customers.id, input.customerId));
+      return created;
+    });
+
+    await sendEmail(invoice.customerEmail, invoice);
+    ```
+
+    </div>
+    **Commits fast, then sends.** The transaction does only database work and returns in milliseconds, freeing the connection. The email goes out after commit — and because the email isn't inside the boundary, the transaction is also safe to retry.
+  </CodeVariant>
+</CodeVariants>
+
+One footnote for completeness: there genuinely *are* long-running transactions — a data migration, a rare batch job — that can't finish in milliseconds. Those use the unpooled connection (`dbUnpooled`) precisely so they don't tie up a pooled connection that request traffic needs. But that's the exception. Everything on the request path uses pooled `db` and stays well under a tenth of a second.
+
+## Worked example — atomic invoice create, proven by rollback
+
+Time to put it together on the write the whole lesson opened with. We'll stay at the data-layer level — just the `db.transaction` shape. (Wrapping this in a Server Action, parsing input, revalidating the page — all of that comes in a later chapter; here we're nailing the transaction itself.)
+
+The "before" is what you'd write before this lesson, and it's the corrupted-invoice hazard made concrete: three bare statements with nothing tying them together.
+
+<CodeVariants maxLines={0}>
+  <CodeVariant label="Before — three loose statements">
+    <div data-mark-color="red">
+
+    ```ts
+    export async function createInvoice(input: NewInvoiceInput) {
+      const [invoice] = await db
+        .insert(invoices)
+        .values({
+          organizationId: input.organizationId,
+          customerId: input.customerId,
+          total: input.total,
+        })
+        .returning();
+
+      await db.insert(lineItems).values(
+        input.items.map((item) => ({ invoiceId: invoice.id, ...item })),
+      );
+
+      await db
+        .update(customers)
+        .set({ lastActivityAt: sql\`now()\` })
+        .where(eq(customers.id, input.customerId));
+
+      return invoice;
+    }
+    ```
+
+    </div>
+    **No boundary — a crash between statements corrupts data.** If the line-items insert throws, the invoice row is already committed and now has no lines. Each `db` call commits on its own; there's nothing to undo the first when the second fails.
+  </CodeVariant>
+
+  <CodeVariant label="After — wrapped in a transaction">
+    <div data-mark-color="green">
+
+    ```ts "db.transaction" "tx"
+    export async function createInvoice(input: NewInvoiceInput) {
+      return db.transaction(async (tx) => {
+        const [invoice] = await tx
+          .insert(invoices)
+          .values({
+            organizationId: input.organizationId,
+            customerId: input.customerId,
+            total: input.total,
+          })
+          .returning();
+
+        await tx.insert(lineItems).values(
+          input.items.map((item) => ({ invoiceId: invoice.id, ...item })),
+        );
+
+        await tx
+          .update(customers)
+          .set({ lastActivityAt: sql\`now()\` })
+          .where(eq(customers.id, input.customerId));
+
+        return invoice;
+      });
+    }
+    ```
+
+    </div>
+    **One boundary — all three or none.** Same three statements, every one on `tx`, all inside `db.transaction`. A throw anywhere rolls back the whole group, and the returned invoice crosses the boundary out. This is the default level (`read committed`) doing atomicity, which is all this write needs.
+  </CodeVariant>
+</CodeVariants>
+
+Atomicity is the kind of guarantee you only believe once you've watched it work. So the proof is a small test that deliberately throws *inside* the boundary after the invoice insert, then checks that nothing survived:
+
+```ts {7}
+import { expect, test } from 'vitest';
+
+test('createInvoice rolls back when a later statement fails', async () => {
+  await expect(
+    db.transaction(async (tx) => {
+      await tx.insert(invoices).values(validInvoice).returning();
+      throw new Error('boom — simulate a failure after the insert');
+    }),
+  ).rejects.toThrow('boom');
+
+  const rows = await db.select().from(invoices);
+  expect(rows).toHaveLength(0);
+});
+```
+
+The invoice insert ran, then the throw aborted the transaction, and the row count afterward is zero. Rollback isn't a claim in the docs anymore — it's something you watched happen. That zero is the corrupted invoice from the introduction, prevented.
+
+Your turn. The exercise below gives you a seeded schema and a starter that does the three writes *unwrapped* — exactly the "before" shape. Wrap them in `db.transaction`, run every statement on `tx`, and return the new invoice so the grader can read it back.
+
+<DrizzleCoding
+  instructions="The three writes below run unwrapped, so a crash between them would leave a corrupted invoice. Wrap all three in db.transaction, run every statement on tx instead of db, and return the inserted invoice so it crosses the boundary back out."
+  schema={`export const customers = pgTable('customers', {
+  id: integer('id').primaryKey(),
+  name: text('name').notNull(),
+  last_activity_at: timestamp('last_activity_at'),
+});
+
+export const invoices = pgTable('invoices', {
+  id: integer('id').primaryKey(),
+  customer_id: integer('customer_id').references(() => customers.id),
+  total: integer('total').notNull(),
+});
+
+export const line_items = pgTable('line_items', {
+  id: integer('id').primaryKey(),
+  invoice_id: integer('invoice_id').references(() => invoices.id),
+  description: text('description').notNull(),
+  amount: integer('amount').notNull(),
+});`}
+  seed={`INSERT INTO customers (id, name) VALUES (1, 'Globex');`}
+  starter={`const [invoice] = await db
+  .insert(invoices)
+  .values({ id: 1, customer_id: 1, total: 300 })
+  .returning();
+
+await db.insert(line_items).values([
+  { id: 1, invoice_id: invoice.id, description: 'Setup', amount: 100 },
+  { id: 2, invoice_id: invoice.id, description: 'Service', amount: 200 },
+]);
+
+await db
+  .update(customers)
+  .set({ last_activity_at: sql\`now()\` })
+  .where(eq(customers.id, 1));
+
+return invoice;`}
+  expectedRows={[{ id: 1, customer_id: 1, total: 300 }]}
+  ordered={false}
+/>
+
+## Where this thread gets cashed in
+
+You've built the two knobs and the two helpers; here's where they reappear, so you recognize them rather than relearn them. When you reach Server Actions in a later chapter, the create/update mutations wrap exactly this `db.transaction` shape — parse the input, authorize, run the transaction, revalidate, return — and the transaction at the center is the one you just wrote. The `isUniqueViolation` helper is what maps a duplicate-key conflict to a specific form field there. And the pattern of doing external work *after* a transaction commits grows, much later, into a dedicated outbox pattern for reliable messaging. None of that is for now — just know the thread runs forward.
+
+The one mental model to keep: a transaction is a boundary with two knobs. The first knob, atomicity, is on by default and is the reason you reach for one at all. The second knob, the isolation level, defaults to `read committed` and you only turn it up when a named anomaly — a non-repeatable read, a phantom, a write skew — proves you must, and turning it up signs you up for a retry loop. And before either knob, ask whether a plain database constraint already does the job for free.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="PostgreSQL — Transaction Isolation"
+    href="https://www.postgresql.org/docs/current/transaction-iso.html"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="The canonical reference for the four levels and every anomaly, straight from the source."
+  />
+  <ExternalResource
+    title="Drizzle ORM — Transactions"
+    href="https://orm.drizzle.team/docs/transactions"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The db.transaction API, isolation-level options, and nested-transaction behavior."
+  />
+  <ExternalResource
+    title="Transaction Isolation in Postgres, explained"
+    href="https://www.thenile.dev/blog/transaction-isolation-postgres"
+    icon="lucide:layers"
+    iconColor="#22C55E"
+    description="A Postgres-specific deep dive tying MVCC, snapshots, and each anomaly together with worked SQL."
+  />
+  <ExternalResource
+    title="Hermitage — Testing the “I” in ACID"
+    href="https://martin.kleppmann.com/2014/11/25/hermitage-testing-the-i-in-acid.html"
+    icon="simple-icons:githubpages"
+    iconColor="#222222"
+    description="Martin Kleppmann's runnable test suite showing exactly which anomalies each level really allows."
+  />
+</CardGrid>
