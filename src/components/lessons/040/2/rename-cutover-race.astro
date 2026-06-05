@@ -1,0 +1,507 @@
+---
+// Diagram: the rename cutover race (diagram id: rename-cutover-race, Chapter 040
+// Lesson 2 — "Production-safe migrations"). The single temporal diagram of the
+// lesson, because the bug IS a timing problem: a rename-in-place opens a window
+// where the OLD app version and the DATABASE disagree about which column exists,
+// and every request in that window 500s. A static picture can't show "for these
+// ninety seconds prod is down"; scrubbing the slider can.
+//
+// Each step is a two-box row:
+//   LEFT  = the app version(s) live right now + the column each one queries.
+//   RIGHT = the columns the `invoices` table actually has (chips).
+// A status pill under the row reads the agreement: GREEN "OK" when the queried
+// column exists in the DB, RED "500" when it doesn't. The queried column and its
+// matching/missing DB chip share the pill's colour, so the eye sees the match
+// (steps 1, 3, 4) or the mismatch (step 2 — the broken window) at a glance.
+//
+//   Step 1  Old app queries `customer_name`; DB has it. Green — all fine.
+//   Step 2  Migration renamed it to `client_name`. The OLD app is STILL serving
+//           and still queries `customer_name`, now gone. Red, 500s. The bug.
+//   Step 3  New app deploys, queries `client_name`; DB has it. Green again — but
+//           steps 2→3 were a live outage.
+//   Step 4  The fix in miniature: expand-contract adds `client_name` ALONGSIDE
+//           `customer_name`. Both app versions find a column they can read.
+//           Green throughout — no red window ever opens.
+//
+// Colour convention (pinned light, mirrors the ch 038/039 DB family):
+//   BLUE  = neutral chrome of the database box,
+//   GREEN = agreement / the request succeeds / the column being read safely,
+//   RED   = the disagreement being avoided / the 500 / the missing column,
+//   slate = inert chrome (the app boxes, panel borders).
+// House style: DiagramSequence provides the outer card (never wrap in Figure);
+// pinned `color-scheme: light` so the hand-picked tints survive dark mode; inline
+// style strings only; `margin: 0` + box-sizing: border-box throughout to defeat
+// Starlight's injected prose margins. Horizontal, height-capped. No leader lines,
+// so the figure stays expandable.
+
+import DiagramSequence from '../../../figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../figures/diagram-sequence/DiagramStep.astro';
+
+const sans = "system-ui, -apple-system, 'Segoe UI', sans-serif";
+const mono = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
+
+// ---- palette (pinned light) ----------------------------------------------
+const INK = '#1e293b'; // slate-800 — primary ink
+const INK_SOFT = '#64748b'; // slate-500 — muted text
+const SURFACE = '#ffffff';
+const PANEL_BORDER = '#e2e8f0'; // slate-200 — neutral chrome
+
+// the app you own — neutral slate, carries no meaning on its own.
+const OWN = '#334155'; // slate-700
+const OWN_BG = '#f1f5f9'; // slate-100 wash
+
+// BLUE — the database box (neutral data store).
+const BLUE = '#2563eb'; // blue-600
+const BLUE_INK = '#1e3a8a'; // blue-900
+const BLUE_BG = '#eff6ff'; // blue-50 wash
+
+// GREEN — agreement: the request succeeds, the column is there to read.
+const GREEN = '#16a34a'; // green-600
+const GREEN_INK = '#15803d'; // green-700
+const GREEN_BG = '#f0fdf4'; // green-50 wash
+
+// RED — disagreement: the 500, the column that no longer exists.
+const RED = '#dc2626'; // red-600
+const RED_INK = '#b91c1c'; // red-700
+const RED_BG = '#fef2f2'; // red-50 wash
+
+// ---- step model ----------------------------------------------------------
+type Status = 'ok' | 'fail';
+
+// one app version live in this step: a label + the column it queries, and
+// whether that column is present in the DB this step (drives the chip colour).
+interface AppRow {
+  label: string; // e.g. "Old app version"
+  column: string; // the column it queries
+  present: boolean; // is `column` in the DB right now?
+}
+
+// one column chip on the database side.
+interface DbCol {
+  name: string;
+  // 'has'      — present, not the one in question (neutral),
+  // 'matched'  — present AND queried by a live app (green),
+  // 'missing'  — queried by a live app but NOT present (red ghost),
+  // 'added'    — newly added alongside (green, the expand move).
+  tone: 'has' | 'matched' | 'missing' | 'added';
+}
+
+interface Step {
+  phase: string; // small overline label
+  apps: AppRow[];
+  cols: DbCol[];
+  status: Status;
+  statusNote: string; // short text inside the pill
+  caption: string;
+}
+
+const steps: Step[] = [
+  {
+    phase: 'Before the migration',
+    apps: [{ label: 'Old app version', column: 'customer_name', present: true }],
+    cols: [
+      { name: 'id', tone: 'has' },
+      { name: 'customer_name', tone: 'matched' },
+      { name: 'amount', tone: 'has' },
+    ],
+    status: 'ok',
+    statusNote: 'every request OK',
+    caption:
+      'Steady state. The running app queries customer_name, and the invoices table has that column. Everything works.',
+  },
+  {
+    phase: 'The migration runs — rename in place',
+    apps: [{ label: 'Old app version', column: 'customer_name', present: false }],
+    cols: [
+      { name: 'id', tone: 'has' },
+      { name: 'customer_name', tone: 'missing' },
+      { name: 'client_name', tone: 'matched' },
+      { name: 'amount', tone: 'has' },
+    ],
+    status: 'fail',
+    statusNote: 'every request 500s',
+    caption:
+      'The column is renamed to client_name in one instant — but the old app version is still serving traffic and still asks for customer_name, which is now gone. Postgres throws; every request 500s. This is the broken window.',
+  },
+  {
+    phase: 'New version takes over',
+    apps: [{ label: 'New app version', column: 'client_name', present: true }],
+    cols: [
+      { name: 'id', tone: 'has' },
+      { name: 'client_name', tone: 'matched' },
+      { name: 'amount', tone: 'has' },
+    ],
+    status: 'ok',
+    statusNote: 'requests OK again',
+    caption:
+      'The new app version deploys and queries client_name, which the DB now has. Green again — but the gap between steps 2 and 3 was a live outage, however brief.',
+  },
+  {
+    phase: 'The fix: expand-contract',
+    apps: [
+      { label: 'Old app version', column: 'customer_name', present: true },
+      { label: 'New app version', column: 'client_name', present: true },
+    ],
+    cols: [
+      { name: 'id', tone: 'has' },
+      { name: 'customer_name', tone: 'matched' },
+      { name: 'client_name', tone: 'added' },
+      { name: 'amount', tone: 'has' },
+    ],
+    status: 'ok',
+    statusNote: 'no red window opens',
+    caption:
+      'Expand-contract instead: client_name is added alongside customer_name, so both app versions find a column they can read while they coexist. The old column is dropped only later, once nothing reads it. No red window ever opens.',
+  },
+];
+
+// ---- styles --------------------------------------------------------------
+const stage = [
+  'box-sizing: border-box',
+  'display: flex',
+  'flex-direction: column',
+  'align-items: center',
+  'justify-content: center',
+  'gap: 16px',
+  'margin: 0',
+  'padding: 6px 2px',
+  'color-scheme: light',
+  `font-family: ${sans}`,
+  `color: ${INK}`,
+  'min-height: 250px',
+].join('; ');
+
+const phaseLabel = (accent: string) =>
+  [
+    'box-sizing: border-box',
+    'margin: 0',
+    'padding: 0',
+    `font-family: ${sans}`,
+    'font-size: 11px',
+    'font-weight: 800',
+    'letter-spacing: 0.06em',
+    'text-transform: uppercase',
+    'text-align: center',
+    `color: ${accent}`,
+  ].join('; ');
+
+// the horizontal row: app column | connector | database.
+const row = [
+  'box-sizing: border-box',
+  'display: flex',
+  'flex-direction: row',
+  'align-items: center',
+  'justify-content: center',
+  'flex-wrap: wrap',
+  'gap: 14px',
+  'margin: 0',
+  'width: 100%',
+].join('; ');
+
+// the left column can hold one or two stacked app boxes.
+const appStack = [
+  'box-sizing: border-box',
+  'display: flex',
+  'flex-direction: column',
+  'align-items: stretch',
+  'justify-content: center',
+  'gap: 10px',
+  'margin: 0',
+].join('; ');
+
+// one app box. `accent` tints the border + the queried-column line.
+const appBox = (accent: string) =>
+  [
+    'box-sizing: border-box',
+    'display: flex',
+    'flex-direction: column',
+    'align-items: center',
+    'justify-content: center',
+    'gap: 6px',
+    'margin: 0',
+    'padding: 12px 14px',
+    'border-radius: 12px',
+    `border: 1.5px solid ${accent}`,
+    `background: ${OWN_BG}`,
+    'text-align: center',
+    'min-width: 178px',
+  ].join('; ');
+
+const appTitle = [
+  'margin: 0',
+  `font-family: ${sans}`,
+  'font-size: 12.5px',
+  'font-weight: 800',
+  'line-height: 1.2',
+  `color: ${OWN}`,
+  'white-space: nowrap',
+].join('; ');
+
+// the "queries …" line under an app title; mono column name tinted by status.
+const queryLine = (ink: string) =>
+  [
+    'box-sizing: border-box',
+    'display: inline-flex',
+    'align-items: baseline',
+    'gap: 5px',
+    'margin: 0',
+    `font-family: ${sans}`,
+    'font-size: 10.5px',
+    'font-weight: 600',
+    'line-height: 1.2',
+    `color: ${INK_SOFT}`,
+    'white-space: nowrap',
+  ].join('; ');
+
+const queryCol = (ink: string) =>
+  [
+    'margin: 0',
+    `font-family: ${mono}`,
+    'font-size: 11px',
+    'font-weight: 800',
+    `color: ${ink}`,
+    'white-space: nowrap',
+  ].join('; ');
+
+// the connector between app and DB — a short rule + arrowhead, tinted to status.
+const connector = [
+  'box-sizing: border-box',
+  'flex: 0 0 auto',
+  'display: flex',
+  'flex-direction: row',
+  'align-items: center',
+  'justify-content: center',
+  'margin: 0',
+  'min-width: 30px',
+].join('; ');
+
+const connectorLine = (color: string) =>
+  [
+    'flex: 1 1 auto',
+    'height: 0',
+    'margin: 0',
+    'min-width: 22px',
+    `border-top: 2.5px solid ${color}`,
+  ].join('; ');
+
+const connectorHead = (color: string) =>
+  [
+    'flex: 0 0 auto',
+    'width: 0',
+    'height: 0',
+    'margin: 0 0 0 -1px',
+    'border-top: 5px solid transparent',
+    'border-bottom: 5px solid transparent',
+    `border-left: 8px solid ${color}`,
+  ].join('; ');
+
+// the database box (right) — a Postgres cylinder, neutral blue.
+const dbBox = [
+  'box-sizing: border-box',
+  'flex: 0 0 auto',
+  'display: flex',
+  'flex-direction: column',
+  'align-items: center',
+  'justify-content: flex-start',
+  'gap: 8px',
+  'margin: 0',
+  'padding: 13px 15px 14px',
+  'border-radius: 14px',
+  `border: 1.5px solid ${BLUE}`,
+  `background: ${BLUE_BG}`,
+  'text-align: center',
+  'min-width: 172px',
+].join('; ');
+
+const dbHead = [
+  'box-sizing: border-box',
+  'display: flex',
+  'flex-direction: column',
+  'align-items: center',
+  'gap: 1px',
+  'margin: 0',
+].join('; ');
+
+const dbTitle = [
+  'margin: 0',
+  `font-family: ${sans}`,
+  'font-size: 12.5px',
+  'font-weight: 800',
+  'line-height: 1.2',
+  `color: ${BLUE_INK}`,
+  'white-space: nowrap',
+].join('; ');
+
+const dbSub = [
+  'margin: 0',
+  `font-family: ${mono}`,
+  'font-size: 9.5px',
+  'font-weight: 700',
+  'line-height: 1.2',
+  `color: ${BLUE}`,
+  'white-space: nowrap',
+].join('; ');
+
+// the column-chip stack inside the DB box.
+const colStack = [
+  'box-sizing: border-box',
+  'display: flex',
+  'flex-direction: column',
+  'align-items: stretch',
+  'gap: 5px',
+  'margin: 0',
+  'width: 100%',
+].join('; ');
+
+// one column chip. tone drives the colour scheme.
+const colChip = (tone: DbCol['tone']) => {
+  const map = {
+    has: { border: PANEL_BORDER, bg: SURFACE, ink: INK },
+    matched: { border: GREEN, bg: GREEN_BG, ink: GREEN_INK },
+    missing: { border: RED, bg: RED_BG, ink: RED_INK },
+    added: { border: GREEN, bg: GREEN_BG, ink: GREEN_INK },
+  } as const;
+  const c = map[tone];
+  return [
+    'box-sizing: border-box',
+    'display: flex',
+    'align-items: center',
+    'justify-content: center',
+    'gap: 6px',
+    'margin: 0',
+    'padding: 4px 8px',
+    'border-radius: 7px',
+    `border: 1.5px ${tone === 'missing' ? 'dashed' : 'solid'} ${c.border}`,
+    `background: ${c.bg}`,
+    `font-family: ${mono}`,
+    'font-size: 11px',
+    'font-weight: 700',
+    `color: ${c.ink}`,
+    'line-height: 1.2',
+    'white-space: nowrap',
+    tone === 'missing' ? 'text-decoration: line-through' : '',
+  ]
+    .filter(Boolean)
+    .join('; ');
+};
+
+// a tiny tag riding on a chip — "renamed away" / "new".
+const chipTag = (ink: string) =>
+  [
+    'margin: 0',
+    `font-family: ${sans}`,
+    'font-size: 8.5px',
+    'font-weight: 800',
+    'letter-spacing: 0.03em',
+    'text-transform: uppercase',
+    'text-decoration: none',
+    `color: ${ink}`,
+    'white-space: nowrap',
+  ].join('; ');
+
+// the status pill under the row.
+const pill = (status: Status) => {
+  const c =
+    status === 'ok'
+      ? { border: GREEN, bg: GREEN_BG, ink: GREEN_INK }
+      : { border: RED, bg: RED_BG, ink: RED_INK };
+  return [
+    'box-sizing: border-box',
+    'display: inline-flex',
+    'align-items: center',
+    'gap: 9px',
+    'margin: 0',
+    'padding: 7px 16px',
+    'border-radius: 999px',
+    `border: 1.5px solid ${c.border}`,
+    `background: ${c.bg}`,
+    `color: ${c.ink}`,
+    `font-family: ${sans}`,
+    'font-size: 12.5px',
+    'font-weight: 700',
+    'line-height: 1.2',
+    'white-space: nowrap',
+  ].join('; ');
+};
+
+const pillCode = (status: Status) => {
+  const ink = status === 'ok' ? GREEN_INK : RED_INK;
+  return [
+    'margin: 0',
+    `font-family: ${mono}`,
+    'font-size: 13px',
+    'font-weight: 900',
+    'line-height: 1',
+    `color: ${ink}`,
+    'letter-spacing: 0.02em',
+  ].join('; ');
+};
+---
+
+<DiagramSequence>
+  {
+    steps.map((step) => {
+      const statusAccent = step.status === 'ok' ? GREEN : RED;
+      return (
+        <DiagramStep caption={step.caption}>
+          <div style={stage}>
+            <p style={phaseLabel(statusAccent)}>{step.phase}</p>
+
+            <div style={row}>
+              {/* left: the live app version(s) */}
+              <div style={appStack}>
+                {step.apps.map((app) => {
+                  const accent = app.present ? GREEN : RED;
+                  return (
+                    <div style={appBox(accent)}>
+                      <span style={appTitle}>{app.label}</span>
+                      <span style={queryLine(INK_SOFT)}>
+                        queries
+                        <code style={queryCol(accent)}>{app.column}</code>
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* the request connector, tinted to the step's outcome */}
+              <span style={connector}>
+                <span style={connectorLine(statusAccent)} />
+                <span style={connectorHead(statusAccent)} />
+              </span>
+
+              {/* right: the columns the DB actually has */}
+              <div style={dbBox}>
+                <div style={dbHead}>
+                  <span style={dbTitle}>Postgres</span>
+                  <span style={dbSub}>invoices</span>
+                </div>
+                <div style={colStack}>
+                  {step.cols.map((col) => (
+                    <span style={colChip(col.tone)}>
+                      {col.name}
+                      {col.tone === 'missing' && (
+                        <span style={chipTag(RED_INK)}>renamed away</span>
+                      )}
+                      {col.tone === 'added' && (
+                        <span style={chipTag(GREEN_INK)}>new</span>
+                      )}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* the verdict for this instant */}
+            <span style={pill(step.status)}>
+              <code style={pillCode(step.status)}>
+                {step.status === 'ok' ? '200' : '500'}
+              </code>
+              {step.statusNote}
+            </span>
+          </div>
+        </DiagramStep>
+      );
+    })
+  }
+</DiagramSequence>

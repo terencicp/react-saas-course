@@ -1,0 +1,742 @@
+---
+// DiffEngineLoop — one frame of the Drizzle Kit "generate = diff" loop, used
+// inside <DiagramSequence>. This is the load-bearing visual for Ch040 L1: it
+// makes the diff-engine mental model concrete so the folder layout, the
+// commit-the-snapshot rule, and the immutability footgun all later feel
+// inevitable.
+//
+// Three persistent zones, left to right, reused on every step so the layout
+// never jumps as the reader scrubs:
+//   - db/schema.ts (your intent)      — the TypeScript you edit
+//   - snapshot (last known state)     — the saved meta/ JSON `generate` diffs against
+//   - a Postgres cylinder             — the real database
+// A relation glyph (= / ≠) sits between schema and snapshot; an "outputs" row
+// below holds what `generate` produces; the cylinder reserves a row for the
+// __drizzle_migrations ledger.
+//
+// `step` selects the frame (1..4):
+//   1  In sync — schema = snapshot, no pending changes, DB untouched.
+//   2  Edit — schema gains a green `archived_at` line; schema ≠ snapshot (stale).
+//   3  generate — diffs the two, emits a numbered .sql file AND refreshes the
+//      snapshot (= again). The DB is dimmed: nothing has hit it yet.
+//   4  migrate — the .sql file flows into the DB; a __drizzle_migrations row
+//      records that 0001 ran.
+//
+// Pure HTML + CSS so it survives DiagramSequence's stacked grid (inactive steps
+// stay in layout). No ArrowDiagram leader lines (positioned from document.body,
+// they break when only one stacked step is visible). `not-content` + margin
+// resets defeat Starlight's prose-margin selectors.
+
+interface Props {
+  step: 1 | 2 | 3 | 4;
+}
+
+const { step } = Astro.props;
+
+const reset = 'margin: 0';
+const mono =
+  'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
+const sans = 'var(--sl-font-system, ui-sans-serif, system-ui, sans-serif)';
+
+const OK = '#16a34a'; // green-600 — the added line / a fresh, matching snapshot
+const STALE = '#f59e0b'; // amber-500 — the snapshot is stale (diverged)
+const ACT = '#2563eb'; // blue-600 — an active command (generate / migrate)
+
+// On step 2 the snapshot has diverged; on every other step it matches the
+// schema (step 1 never edited, step 3 just refreshed it, step 4 unchanged).
+const snapshotStale = step === 2;
+// The DB only gets touched at step 4; before that it sits inert and, at step 3,
+// is deliberately dimmed to drive home "nothing has hit the DB yet".
+const dbDimmed = step === 3;
+const dbHit = step === 4;
+// The .sql file exists from step 3 onward.
+const showFile = step >= 3;
+// The schema carries the new column from step 2 onward.
+const schemaEdited = step >= 2;
+
+// ---- shared atoms --------------------------------------------------------
+
+const root = [
+  reset,
+  `font-family: ${sans}`,
+  'box-sizing: border-box',
+  'display: flex',
+  'flex-direction: column',
+  'align-items: center',
+  'gap: 16px',
+  'width: 100%',
+  'max-width: 760px',
+  'margin-inline: auto',
+].join('; ');
+
+// The headline strip — a step counter, a command/state kicker, a one-liner.
+const headRow = [
+  reset,
+  'box-sizing: border-box',
+  'display: flex',
+  'flex-wrap: wrap',
+  'align-items: baseline',
+  'justify-content: center',
+  'gap: 8px 12px',
+  'text-align: center',
+].join('; ');
+
+const stepNum = [
+  reset,
+  `font-family: ${mono}`,
+  'font-size: 11px',
+  'font-weight: 700',
+  'letter-spacing: 0.04em',
+  'color: var(--sl-color-gray-3)',
+  'white-space: nowrap',
+].join('; ');
+
+const kicker = (color: string) =>
+  [
+    reset,
+    `font-family: ${sans}`,
+    'font-size: 14px',
+    'font-weight: 700',
+    'line-height: 1.2',
+    `color: ${color}`,
+  ].join('; ');
+
+const headLine = [
+  reset,
+  `font-family: ${sans}`,
+  'font-size: 12px',
+  'font-weight: 500',
+  'line-height: 1.3',
+  'color: var(--sl-color-gray-2)',
+  'flex-basis: 100%',
+].join('; ');
+
+const headlines: Record<
+  Props['step'],
+  { kicker: string; color: string; line: string }
+> = {
+  1: {
+    kicker: 'In sync',
+    color: 'var(--sl-color-white)',
+    line: 'The schema and the saved snapshot describe the same tables — nothing is pending.',
+  },
+  2: {
+    kicker: 'You edit the schema',
+    color: STALE,
+    line: 'A new column is added. The snapshot still describes the old shape — it is now stale.',
+  },
+  3: {
+    kicker: 'generate',
+    color: ACT,
+    line: 'Diffs the two, writes the difference as a numbered SQL file, and refreshes the snapshot.',
+  },
+  4: {
+    kicker: 'migrate',
+    color: ACT,
+    line: 'Applies the pending SQL file to the database and records that it ran.',
+  },
+};
+const headline = headlines[step];
+
+// The top row: schema | glyph | snapshot | arrow | cylinder.
+const stageRow = [
+  reset,
+  'box-sizing: border-box',
+  'display: flex',
+  'flex-wrap: wrap',
+  'align-items: center',
+  'justify-content: center',
+  'gap: 10px',
+  'width: 100%',
+].join('; ');
+
+// A generic labelled card (schema + snapshot share this shell).
+function card(opts: {
+  accent: string;
+  bg: string;
+  ring?: string;
+  width?: string;
+}): string {
+  return [
+    reset,
+    'box-sizing: border-box',
+    'display: flex',
+    'flex-direction: column',
+    'gap: 6px',
+    'flex: 0 1 auto',
+    opts.width ? `width: ${opts.width}` : '',
+    'padding: 10px 11px 11px',
+    'border-radius: 10px',
+    `border: 1.5px solid ${opts.accent}`,
+    `background: ${opts.bg}`,
+    opts.ring ?? 'box-shadow: none',
+  ]
+    .filter(Boolean)
+    .join('; ');
+}
+
+const cardLabel = (color: string) =>
+  [
+    reset,
+    `font-family: ${sans}`,
+    'font-size: 11px',
+    'font-weight: 700',
+    'line-height: 1.15',
+    `color: ${color}`,
+  ].join('; ');
+
+const cardSub = [
+  reset,
+  `font-family: ${sans}`,
+  'font-size: 9.5px',
+  'font-weight: 500',
+  'line-height: 1.2',
+  'color: var(--sl-color-gray-3)',
+].join('; ');
+
+// A single "code line" inside the schema card.
+const codeLine = (opts: { color?: string; dim?: boolean }) =>
+  [
+    reset,
+    `font-family: ${mono}`,
+    'box-sizing: border-box',
+    'font-size: 10.5px',
+    'font-weight: 600',
+    'line-height: 1.5',
+    'white-space: nowrap',
+    `color: ${opts.color ?? (opts.dim ? 'var(--sl-color-gray-3)' : 'var(--sl-color-text)')}`,
+  ].join('; ');
+
+// The highlighted, added line (a green diff row).
+const addedLine = [
+  reset,
+  `font-family: ${mono}`,
+  'box-sizing: border-box',
+  'display: block',
+  'font-size: 10.5px',
+  'font-weight: 700',
+  'line-height: 1.4',
+  'white-space: nowrap',
+  'padding: 1px 5px',
+  'margin: 1px -5px 0',
+  'border-radius: 5px',
+  `color: ${OK}`,
+  `background: color-mix(in srgb, ${OK} 15%, transparent)`,
+  `border-left: 2.5px solid ${OK}`,
+].join('; ');
+
+// A placeholder line that holds the added-row height on steps where the schema
+// is NOT yet edited, so the schema card doesn't grow when the green row appears.
+const ghostLine = [
+  reset,
+  'box-sizing: border-box',
+  'display: block',
+  'height: 17px',
+  'margin: 1px 0 0',
+].join('; ');
+
+// The relation glyph between schema and snapshot (= or ≠).
+const glyphWrap = [
+  reset,
+  'box-sizing: border-box',
+  'flex: 0 0 auto',
+  'display: flex',
+  'flex-direction: column',
+  'align-items: center',
+  'gap: 3px',
+  'width: 40px',
+].join('; ');
+
+const glyphChar = (color: string) =>
+  [
+    reset,
+    `font-family: ${sans}`,
+    'font-size: 24px',
+    'font-weight: 800',
+    'line-height: 1',
+    `color: ${color}`,
+  ].join('; ');
+
+const glyphNote = (color: string) =>
+  [
+    reset,
+    `font-family: ${sans}`,
+    'font-size: 8.5px',
+    'font-weight: 700',
+    'letter-spacing: 0.03em',
+    'text-transform: uppercase',
+    'line-height: 1.1',
+    'text-align: center',
+    `color: ${color}`,
+  ].join('; ');
+
+// The arrow connecting the snapshot/file zone to the cylinder.
+const arrowWrap = [
+  reset,
+  'box-sizing: border-box',
+  'flex: 0 0 auto',
+  'display: flex',
+  'flex-direction: column',
+  'align-items: center',
+  'justify-content: center',
+  'gap: 4px',
+  'width: 64px',
+].join('; ');
+
+const arrowRule = (color: string, dimmed: boolean) =>
+  [
+    reset,
+    'box-sizing: border-box',
+    'display: flex',
+    'flex-direction: row',
+    'align-items: center',
+    'width: 100%',
+    dimmed ? 'opacity: 0.45' : '',
+  ]
+    .filter(Boolean)
+    .join('; ');
+
+const arrowLine = (color: string) =>
+  [`flex: 1 1 auto`, 'height: 0', reset, `border-top: 2.5px solid ${color}`].join(
+    '; ',
+  );
+
+const arrowHead = (color: string) =>
+  [
+    'flex: 0 0 auto',
+    'width: 0',
+    'height: 0',
+    'margin: 0 0 0 -1px',
+    'border-top: 5px solid transparent',
+    'border-bottom: 5px solid transparent',
+    `border-left: 8px solid ${color}`,
+  ].join('; ');
+
+const arrowLabel = (color: string) =>
+  [
+    reset,
+    `font-family: ${mono}`,
+    'font-size: 10px',
+    'font-weight: 700',
+    'line-height: 1.2',
+    'text-align: center',
+    `color: ${color}`,
+    'white-space: nowrap',
+  ].join('; ');
+
+// ---- the Postgres cylinder ----------------------------------------------
+// A box with an elliptical lid via a tall border-radius so it reads as a DB.
+const cylinderCol = [
+  reset,
+  'box-sizing: border-box',
+  'flex: 0 0 auto',
+  'display: flex',
+  'flex-direction: column',
+  'align-items: center',
+  'gap: 6px',
+  'width: 150px',
+].join('; ');
+
+const cylinder = (dimmed: boolean, hit: boolean) => {
+  const accent = hit
+    ? OK
+    : dimmed
+      ? 'var(--sl-color-gray-4)'
+      : 'var(--sl-color-gray-3)';
+  const bg = hit
+    ? `color-mix(in srgb, ${OK} 11%, var(--sl-color-gray-6))`
+    : 'var(--sl-color-gray-6)';
+  return [
+    reset,
+    'box-sizing: border-box',
+    'display: flex',
+    'flex-direction: column',
+    'align-items: center',
+    'justify-content: center',
+    'gap: 2px',
+    'width: 100%',
+    'padding: 17px 14px 13px',
+    'border-radius: 50% / 16px',
+    `border: 1.5px solid ${accent}`,
+    `background: ${bg}`,
+    'text-align: center',
+    dimmed ? 'opacity: 0.5' : '',
+    hit ? `box-shadow: 0 0 0 3px color-mix(in srgb, ${OK} 15%, transparent)` : '',
+  ]
+    .filter(Boolean)
+    .join('; ');
+};
+
+const cylinderTitle = (color: string) =>
+  [
+    reset,
+    `font-family: ${sans}`,
+    'font-size: 13px',
+    'font-weight: 800',
+    'line-height: 1.2',
+    `color: ${color}`,
+    'white-space: nowrap',
+  ].join('; ');
+
+const cylinderSub = [
+  reset,
+  `font-family: ${sans}`,
+  'font-size: 9.5px',
+  'font-weight: 600',
+  'line-height: 1.2',
+  'color: var(--sl-color-gray-3)',
+  'white-space: nowrap',
+].join('; ');
+
+// The __drizzle_migrations ledger row that appears under the cylinder at step 4.
+// A reserved slot keeps its height on every step so the row never jumps.
+const ledgerSlot = [
+  reset,
+  'box-sizing: border-box',
+  'width: 100%',
+  'min-height: 26px',
+  'display: flex',
+  'align-items: center',
+  'justify-content: center',
+].join('; ');
+
+const ledgerPill = [
+  reset,
+  `font-family: ${mono}`,
+  'box-sizing: border-box',
+  'display: inline-flex',
+  'align-items: center',
+  'gap: 5px',
+  'font-size: 9.5px',
+  'font-weight: 700',
+  'line-height: 1.2',
+  'padding: 3px 8px',
+  'border-radius: 6px',
+  `color: ${OK}`,
+  `background: color-mix(in srgb, ${OK} 12%, transparent)`,
+  `border: 1px solid color-mix(in srgb, ${OK} 40%, transparent)`,
+  'white-space: nowrap',
+].join('; ');
+
+// ---- the "generate outputs" row -----------------------------------------
+// A reserved row under the stage. At step 3 it shows the generate command
+// fanning into its two products; at step 4 it shows the .sql file as the input
+// migrate consumes. On steps 1-2 it holds the same height, empty.
+const outputsSlot = [
+  reset,
+  'box-sizing: border-box',
+  'width: 100%',
+  'min-height: 96px',
+  'display: flex',
+  'flex-direction: column',
+  'align-items: center',
+  'justify-content: center',
+  'gap: 6px',
+].join('; ');
+
+// The .sql file card.
+const fileCard = (active: boolean) =>
+  [
+    reset,
+    'box-sizing: border-box',
+    'display: inline-flex',
+    'flex-direction: column',
+    'gap: 2px',
+    'padding: 8px 11px',
+    'border-radius: 8px',
+    `border: 1.5px solid ${active ? ACT : OK}`,
+    `background: color-mix(in srgb, ${active ? ACT : OK} 11%, var(--sl-color-gray-6))`,
+    'text-align: center',
+  ].join('; ');
+
+const fileName = (color: string) =>
+  [
+    reset,
+    `font-family: ${mono}`,
+    'font-size: 11px',
+    'font-weight: 700',
+    'line-height: 1.25',
+    `color: ${color}`,
+    'white-space: nowrap',
+  ].join('; ');
+
+const fileSub = [
+  reset,
+  `font-family: ${sans}`,
+  'font-size: 9px',
+  'font-weight: 600',
+  'line-height: 1.2',
+  'color: var(--sl-color-gray-3)',
+].join('; ');
+
+// generate's command badge sitting above the two outputs at step 3.
+const cmdBadge = (color: string) =>
+  [
+    reset,
+    `font-family: ${mono}`,
+    'box-sizing: border-box',
+    'display: inline-flex',
+    'align-items: center',
+    'gap: 6px',
+    'font-size: 10.5px',
+    'font-weight: 700',
+    'line-height: 1.2',
+    'padding: 4px 10px',
+    'border-radius: 999px',
+    `color: ${color}`,
+    `background: color-mix(in srgb, ${color} 13%, transparent)`,
+    `border: 1px solid color-mix(in srgb, ${color} 42%, transparent)`,
+    'white-space: nowrap',
+  ].join('; ');
+
+// The two-pronged fan under the generate badge.
+const fanRow = [
+  reset,
+  'box-sizing: border-box',
+  'display: flex',
+  'align-items: flex-start',
+  'justify-content: center',
+  'gap: 18px',
+  'flex-wrap: wrap',
+].join('; ');
+
+const fanItem = [
+  reset,
+  'box-sizing: border-box',
+  'display: flex',
+  'flex-direction: column',
+  'align-items: center',
+  'gap: 4px',
+].join('; ');
+
+// A small down-arrow connector for the fan.
+const downArrow = (color: string) =>
+  [
+    reset,
+    'box-sizing: border-box',
+    'width: 0',
+    'height: 0',
+    'border-left: 5px solid transparent',
+    'border-right: 5px solid transparent',
+    `border-top: 7px solid ${color}`,
+  ].join('; ');
+
+// A small up-arrow connector — at step 4 the .sql file points UP into the
+// cylinder that sits above it in the stage row.
+const upArrow = (color: string) =>
+  [
+    reset,
+    'box-sizing: border-box',
+    'width: 0',
+    'height: 0',
+    'border-left: 5px solid transparent',
+    'border-right: 5px solid transparent',
+    `border-bottom: 7px solid ${color}`,
+  ].join('; ');
+
+const outLabel = (color: string) =>
+  [
+    reset,
+    `font-family: ${sans}`,
+    'font-size: 9.5px',
+    'font-weight: 700',
+    'line-height: 1.2',
+    'text-align: center',
+    `color: ${color}`,
+    'white-space: nowrap',
+  ].join('; ');
+
+const snapshotChip = [
+  reset,
+  `font-family: ${sans}`,
+  'box-sizing: border-box',
+  'display: inline-flex',
+  'align-items: center',
+  'gap: 5px',
+  'font-size: 10px',
+  'font-weight: 700',
+  'line-height: 1.2',
+  'padding: 6px 10px',
+  'border-radius: 8px',
+  `color: ${OK}`,
+  `background: color-mix(in srgb, ${OK} 11%, var(--sl-color-gray-6))`,
+  `border: 1.5px solid ${OK}`,
+  'white-space: nowrap',
+].join('; ');
+
+// ---- derived colours for the schema/snapshot cards ----------------------
+
+const schemaCard = card({
+  accent: schemaEdited ? OK : 'var(--sl-color-gray-3)',
+  bg: schemaEdited
+    ? `color-mix(in srgb, ${OK} 7%, var(--sl-color-gray-6))`
+    : 'var(--sl-color-gray-6)',
+  width: '210px',
+});
+
+const snapCardStyle = card({
+  accent: snapshotStale ? STALE : 'var(--sl-color-gray-3)',
+  bg: snapshotStale
+    ? `color-mix(in srgb, ${STALE} 10%, var(--sl-color-gray-6))`
+    : 'var(--sl-color-gray-6)',
+  ring: snapshotStale
+    ? `box-shadow: 0 0 0 3px color-mix(in srgb, ${STALE} 14%, transparent)`
+    : 'box-shadow: none',
+  width: '180px',
+});
+
+// glyph between schema and snapshot
+const glyphColor = snapshotStale ? STALE : 'var(--sl-color-gray-2)';
+const glyphSymbol = snapshotStale ? '≠' : '=';
+const glyphText = snapshotStale ? 'diverged' : 'in sync';
+---
+
+<div class="not-content del" style={root}>
+  {/* headline strip */}
+  <div style={headRow}>
+    <span style={stepNum}>STEP {step} / 4</span>
+    <span style={kicker(headline.color)}>{headline.kicker}</span>
+    <span style={headLine}>{headline.line}</span>
+  </div>
+
+  {/* stage: schema | glyph | snapshot | arrow | cylinder */}
+  <div style={stageRow}>
+    {/* db/schema.ts — your intent */}
+    <div style={schemaCard}>
+      <div style="display:flex; align-items:baseline; justify-content:space-between; gap:8px; margin:0;">
+        <code style={cardLabel('var(--sl-color-text)')}>db/schema.ts</code>
+        <span style={cardSub}>your intent</span>
+      </div>
+      <div style="margin:0;">
+        <code style={codeLine({ dim: true })}>pgTable('invoices', &#123;</code>
+        <code style={codeLine({})}>&nbsp;&nbsp;id, total, status,</code>
+        {
+          schemaEdited ? (
+            <code style={addedLine}>+ archivedAt: timestamp()</code>
+          ) : (
+            <span style={ghostLine} />
+          )
+        }
+        <code style={codeLine({ dim: true })}>&#125;)</code>
+      </div>
+    </div>
+
+    {/* relation glyph */}
+    <div style={glyphWrap}>
+      <span style={glyphChar(glyphColor)}>{glyphSymbol}</span>
+      <span style={glyphNote(glyphColor)}>{glyphText}</span>
+    </div>
+
+    {/* snapshot — last known state */}
+    <div style={snapCardStyle}>
+      <div style="display:flex; align-items:baseline; justify-content:space-between; gap:8px; margin:0;">
+        <code style={cardLabel(snapshotStale ? STALE : 'var(--sl-color-text)')}>
+          snapshot
+        </code>
+        <span style={cardSub}>last known</span>
+      </div>
+      <code style={codeLine({ dim: true })}>meta/000{step >= 3 ? '1' : '0'}_snapshot.json</code>
+      <span
+        style={[
+          reset,
+          `font-family: ${sans}`,
+          'font-size: 10px',
+          'font-weight: 600',
+          'line-height: 1.3',
+          `color: ${snapshotStale ? STALE : 'var(--sl-color-gray-2)'}`,
+        ].join('; ')}
+      >
+        {
+          snapshotStale
+            ? 'still the old shape'
+            : step === 3
+              ? 'refreshed to match'
+              : 'matches the schema'
+        }
+      </span>
+    </div>
+
+    {/* arrow into the database */}
+    <div style={arrowWrap}>
+      <span style={arrowLabel(dbHit ? ACT : 'var(--sl-color-gray-4)')}>
+        {dbHit ? 'migrate' : ''}
+      </span>
+      <div style={arrowRule(dbHit ? ACT : 'var(--sl-color-gray-4)', !dbHit)}>
+        <span style={arrowLine(dbHit ? ACT : 'var(--sl-color-gray-4)')} />
+        <span style={arrowHead(dbHit ? ACT : 'var(--sl-color-gray-4)')} />
+      </div>
+      <span style={arrowLabel('var(--sl-color-gray-4)')}>
+        {dbHit ? '' : 'DDL'}
+      </span>
+    </div>
+
+    {/* Postgres database */}
+    <div style={cylinderCol}>
+      <div style={cylinder(dbDimmed, dbHit)}>
+        <span style={cylinderTitle(dbHit ? OK : 'var(--sl-color-gray-2)')}>
+          Postgres
+        </span>
+        <span style={cylinderSub}>
+          {dbHit ? 'archived_at exists' : 'no archived_at yet'}
+        </span>
+      </div>
+      <div style={ledgerSlot}>
+        {
+          dbHit && (
+            <span style={ledgerPill}>
+              __drizzle_migrations: 0001 &#10003;
+            </span>
+          )
+        }
+      </div>
+    </div>
+  </div>
+
+  {/* generate outputs row (steps 3-4); reserved height on 1-2 */}
+  <div style={outputsSlot}>
+    {
+      step === 3 && (
+        <>
+          <span style={cmdBadge(ACT)}>$ drizzle-kit generate</span>
+          <div style={fanRow}>
+            <div style={fanItem}>
+              <span style={downArrow(OK)} />
+              <div style={fileCard(false)}>
+                <span style={fileName(OK)}>0001_add_invoices_archived_at.sql</span>
+                <span style={fileSub}>new — a file you can read</span>
+              </div>
+              <span style={outLabel(OK)}>written to disk</span>
+            </div>
+            <div style={fanItem}>
+              <span style={downArrow(OK)} />
+              <span style={snapshotChip}>snapshot &#8594; refreshed</span>
+              <span style={outLabel(OK)}>now matches the schema again</span>
+            </div>
+          </div>
+        </>
+      )
+    }
+    {
+      step === 4 && (
+        <div style={fanItem}>
+          <span style={outLabel(ACT)}>migrate runs this file against the DB &#8593;</span>
+          <span style={upArrow(ACT)} />
+          <div style={fileCard(true)}>
+            <span style={fileName(ACT)}>0001_add_invoices_archived_at.sql</span>
+            <span style={fileSub}>the pending file from generate</span>
+          </div>
+        </div>
+      )
+    }
+  </div>
+</div>
+
+<style>
+  /* Laptop viewports — the design target — show the full stage in one row.
+     On narrow screens let the stage wrap rather than overflow. */
+  @media (max-width: 680px) {
+    .del :global(*) {
+      --del-wrap: 1;
+    }
+  }
+</style>
