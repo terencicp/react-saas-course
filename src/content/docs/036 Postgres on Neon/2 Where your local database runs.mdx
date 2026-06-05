@@ -1,0 +1,338 @@
+---
+title: Where your local database runs
+chapter-id: 36
+course-progress: 0.00005
+tagline: Where your dev Postgres lives, weighing Docker, a Neon cloud branch, and the Neon Local proxy behind a single DATABASE_URL.
+sidebar:
+  order: 2
+  label: Local dev database
+---
+
+import Figure from '../../../components/figures/Figure.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import ConnectionStringAnatomy from '../../../components/lessons/036/2/ConnectionStringAnatomy.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+In the last lesson you decided the *shape* of your invoicing data — the tables, the columns, the keys. That shape needs somewhere to live. So now you run `pnpm dev`, your app wakes up wanting to read and write invoices, and it reaches for Postgres. Here's the question nobody hands you an answer to: *where is that Postgres actually running?*
+
+There are two ways a junior gets this wrong, and they're mirror images of each other. One says "I'll just point at a cloud database" — and then they're on a flight with no wifi, or the provider has a Friday outage, and they can't write a single line of code against their data. The other says "I'll run Postgres on my laptop" — and then they ship a bug that passes every local check and only blows up in staging, because their laptop's Postgres isn't the one production runs.
+
+There are three credible answers in 2026, and by the end of this lesson you'll be able to lay all three out on a single axis and defend the one this course quietly settles on. This isn't a feature you build. It's a decision you make once and stop thinking about.
+
+## One environment variable is the whole interface
+
+Before we look at a single option, you need the idea that makes all of them small.
+
+Your app does not know where its database is. It never asks. All it knows is one thing: a Postgres <Term definition={"A single URL that encodes everything a client needs to reach a database: scheme, credentials, host, port, and database name."}>connection string</Term> it reads from an environment variable called `DATABASE_URL`. Hand it that string and it connects. It has no opinion about whether the string points at your laptop or at a server three time zones away.
+
+That single fact is the spine of this entire lesson. Every option you're about to meet — a container on your machine, a branch in the cloud, a clever bridge between the two — is *the same thing on the other end of the same string*. Switching between them is editing one line in a file and restarting the dev server. Zero lines of your application code change. Not the query, not the schema, not the component that renders the invoice. They can't change, because they never knew where the database was in the first place.
+
+So before the options diverge, let's make sure you can *read* that string. Once you can, you'll recognize which option produced any `DATABASE_URL` just by looking at it.
+
+<Figure>
+  <ConnectionStringAnatomy />
+  <Fragment slot="caption">
+    The host is the only segment that tells you *where* the database lives. `@localhost` means it's on your machine; a `...neon.tech` host means it's in the cloud. Everything else is the same regardless of which option you pick.
+  </Fragment>
+</Figure>
+
+Read it left to right and it gives up everything a client needs. `postgresql://` is the scheme — the protocol to speak. `postgres:postgres` is a username and password. `@localhost` is the host: the machine the database is on. `:5432` is the port Postgres listens on, the default. And `/invoicing` is which database on that server to open. The host is the segment that matters for this lesson. `@localhost` says the database is on your own machine; a host ending in `...neon.tech` says it's in the cloud. Same string shape, different answer to "where."
+
+One guardrail before we move on, because it's the kind of thing that's cheap to get right and expensive to get wrong. Your `DATABASE_URL` holds a password. It lives in `.env.local` — the local environment file you met in earlier chapters — and that file is never committed to git. A connection string in your repository history is a leaked credential, full stop. A couple of chapters from now, in the lesson on environment variables, you'll see how this string gets validated at build time and kept off the client; for now, the rule is simply: it goes in `.env.local`, it stays out of version control.
+
+## Just enough Docker to read a compose file
+
+The first option runs Postgres on your laptop inside Docker. To follow it, you need exactly four words of Docker vocabulary — enough to read a config file, and not one term more. Docker is a real subject with its own course; this is the minimum to follow along, and then we stop.
+
+Here are the four, in the order they build on each other:
+
+- An <Term definition={"A read-only disk template a container is created from. Versioned and pulled from a registry; here, the official postgres:18 image."}>**image**</Term> is a read-only template — a frozen snapshot of a filesystem and the program to run. Here it's the official `postgres:18` image: a working Postgres, packaged.
+- A **container** is a running instance of an image — an isolated process started from that frozen template. The image is the recipe; the container is the meal. Your running Postgres is a container.
+- A <Term definition={"Persistent storage mounted into a container so its files outlive the container. Without it, stopping the container loses every row."}>**volume**</Term> is persistent storage mounted into the container. A container is disposable — delete it and everything inside vanishes, including your tables. The volume is the part that survives. You mount one so the database files outlive any restart.
+- A <Term definition={"Maps a port inside the container to a port on the host machine, so the host can reach the container's service. 5432:5432 maps the container's Postgres port to localhost:5432."}>**port mapping**</Term> connects a port inside the container to a port on your machine. Postgres listens on port 5432 *inside* its container, which by itself is unreachable. Mapping `5432:5432` exposes it on the host, so your app finds it at `localhost:5432`.
+
+That's the whole vocabulary. Image, container, volume, port mapping. Now the config file reads as plain English.
+
+<VideoCallout videoId="pg19Z8LL06w" videoTitle="Docker Crash Course for Absolute Beginners — TechWorld with Nana">
+  Want the full Docker grounding this lesson deliberately skips? TechWorld with Nana's hour-long crash course unpacks images, containers, port binding, and image versions in depth.
+</VideoCallout>
+
+## Option A — Postgres in a Docker container
+
+You describe the container you want in a file called `docker-compose.yml`, run `docker compose up`, and Docker pulls the `postgres:18` image and starts it. Your `DATABASE_URL` then points at `postgresql://postgres:postgres@localhost:5432/invoicing` — the `@localhost` host you now know how to spot.
+
+The single thing this buys you is the thing nothing else on this list can: it works **offline**. No account, no network, no provider. On a plane, through a coffee-shop wifi outage, on the Friday your cloud provider is having an incident — your database is right there on your disk, indifferent to all of it.
+
+The cost is the mirror image of that win, and it's worth saying precisely, because "it's less realistic" is too vague to act on. The Postgres in this container is a *different artifact* than the Postgres production runs. It can lag a major version behind. It won't have the extensions your cloud provider enables. It pools connections differently. Every one of those gaps is a place a bug can hide: code that runs clean against your local container and then fails in CI or staging, where the Postgres is the real one. This is the entire reason an experienced engineer hesitates to make Docker the default — not snobbery, a specific class of "works on my machine" bug born from exactly these gaps.
+
+Here's the config. It's short; let's walk the four lines that matter.
+
+<AnnotatedCode lang="yaml" maxLines={18} code={`
+services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: invoicing
+    ports:
+      - '5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql
+
+volumes:
+  pgdata:
+`}>
+  <AnnotatedStep meta="{3}" color="orange">
+    The version pin. This one line decides which Postgres you get — and it is the single line that must match what production runs. Parity is won or lost here, which is exactly the call the decision section ends on.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{4-7}">
+    The credentials and database name. These three values become the user, password, and database-name segments of `DATABASE_URL` — `postgres` / `postgres` / `invoicing` are the same three you saw labeled in the connection-string figure above.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{8-9} "'5432:5432'"`}>
+    The port mapping. This is the line that makes `localhost:5432` resolve to the database. Without it the container runs but your app can't reach it.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{10-11,13-14}">
+    Persistence. The named volume `pgdata` is mounted at the parent path `/var/lib/postgresql` — *not* the `/var/lib/postgresql/data` every pre-18 tutorial still shows, because Postgres 18 moved its data directory to a version-specific path. Mount the old path on `postgres:18` and it silently fails to persist your rows: the same image, one detail off, data quietly gone. Version drift biting, live.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+When your project eventually needs an extension — say `pgvector` for similarity search, much later in the course — it's a one-line change to use an image that ships with it. Named here so you know it's a small addition, not taught; that's a problem for the day you have it.
+
+Two operational facts you'll want before you trust this with anything. First: `docker compose down` stops the container but *keeps* the volume — your data is still there next time. `docker compose down -v` adds the `-v` flag and **deletes** the volume with it. That single flag is the difference between "pause the database" and "wipe the database." Reach for it deliberately, never by reflex. Second: this container wants host port 5432, and so does the third option we'll meet. Only one process can own a host port at a time, so you run one or the other per project — not both at once.
+
+## Option B — A Neon dev branch in the cloud
+
+The second option doesn't run anything on your laptop at all. You create one development branch on a Neon project — free tier, costs nothing while idle — and the Neon console hands you a connection string. You paste it into `.env.local`. That's the entire setup: no compose file, no container, no `docker` command. The "config" is a copy-paste.
+
+The host in that string ends in `...neon.tech`, not `localhost`, because the database genuinely lives in Neon's cloud. And that is exactly the point, because of what it buys you: **prod-parity**, exactly. Same Postgres major version as production. Same extensions available. Same connection pooler sitting in front. Same pricing behavior. This branch *is* the same kind of database your production will be. Code that runs against it runs against production — which means the entire class of "works on my machine" bugs Docker invites simply cannot form here. There's no gap to hide in, because there's no gap.
+
+The costs are the inverse of Docker's, and there are three worth naming:
+
+- **It needs connectivity.** No network, no database. The flight is lost. This is the hard trade against Option A.
+- **There's a cold start.** To cost nothing while it sits idle, a free-tier branch's compute auto-suspends after five minutes of no activity — fixed on the free tier, not something you tune. Your first query after that pays roughly half a second to wake it; every query after is fast again. This is <Term definition={"The database's compute suspends after an idle window and wakes on the next query. While suspended it bills storage only, so an idle branch costs nothing."}>scale-to-zero</Term> working as designed, not a glitch: an idle database that bills you nothing is the feature, and the half-second wake is its price. The economics are the next lesson's subject; here, it's only the source of the small pause you'll occasionally feel.
+- **One branch is shared.** If you and a teammate point at the same dev branch, your test data mingles. The fix is a branch per person or per feature — available today, and the workflow is the next lesson's. Name it now, don't reach for it yet.
+
+There's no code block to show, because there's nothing to configure. The connection string the console gives you *is* the setup. You'll see its one line in the comparison below.
+
+## Option C — Neon Local, the localhost-to-cloud bridge
+
+The third option refuses to accept that you have to choose between A and B.
+
+Look at what each of the first two forces on you. Docker gives you a `localhost` string but a database that drifts from prod. A Neon branch gives you a prod-identical database but a cloud host. What if some code, or some teammate's setup, really wants `localhost` — but you refuse to give up parity to get it?
+
+That's the gap Neon Local fills. It's a Docker container, but it doesn't run Postgres. It runs a <Term definition={"A local stand-in that exposes a localhost interface and transparently forwards every connection to a real database elsewhere — here, a Neon branch in the cloud."}>proxy</Term>: a stand-in that exposes a normal `postgres://localhost:5432` interface on your machine and transparently forwards every query to a real Neon branch in the cloud. Your app sees `localhost`. Your data lives on Neon, version-matched and extension-matched to production. And the branch it creates is **ephemeral** — the container spins up a fresh, isolated branch when it starts and deletes it when it stops. Every `docker compose up` is a clean database with no leftover state and nothing to clean up by hand.
+
+So it dissolves the false choice: you get the `localhost` ergonomics *and* the prod-parity, in one container. What it can't dissolve is the network. The branch is in the cloud — the proxy in front of it is the only local part — so Neon Local still needs connectivity, and it additionally needs a Neon API key and project id to do its job. It buys you `localhost` plus parity; it does not buy you offline.
+
+Configuring it stays light — you're recognizing the shape, not memorizing a setup. The image is `neondatabase/neon_local`. It takes three things in its environment: a `NEON_API_KEY`, a `NEON_PROJECT_ID`, and a `PARENT_BRANCH_ID`. That last one is the trick that makes the branch ephemeral: by giving it a *parent* to branch from rather than a fixed branch to attach to, you're telling it to cut a fresh child branch each run. Your app then connects with a `localhost` string — `postgres://neon:npg@localhost:5432/neondb` — exactly as if a plain Postgres were sitting there. The API key is a credential, so it lives in `.env.local` and never gets committed, same rule as the connection string itself.
+
+And the same port note from Option A applies from the other side: Neon Local wants host port 5432, just as a plain Docker Postgres does. Pick one per project.
+
+Here's the honest placement for Neon Local. It's the strong choice for a *team* that wants both the `localhost` ergonomics and the parity and has a reliable network — that's a real, defensible default. It is not *this course's* default, for a plain reason: it costs an extra API key and a running container to buy you a `localhost` string, and once `DATABASE_URL` abstracts the host away anyway, the course doesn't need that string to be `localhost`. We'll pay nothing for an ergonomic we don't use.
+
+## The three options, side by side
+
+Three options, one contract. Here they are next to each other so you can see that the only thing changing is the value of one variable — and what's running behind it.
+
+<CodeVariants>
+  <CodeVariant label="Docker" icon="simple-icons:docker">
+    ```yaml
+    # docker-compose.yml
+    services:
+      db:
+        image: postgres:18
+        ports: ['5432:5432']
+    ```
+
+    ```bash
+    # .env.local
+    DATABASE_URL=postgresql://postgres:postgres@localhost:5432/invoicing
+    ```
+
+    **Offline-capable; drifts from prod.** The host is `localhost`, the database is yours, the network is irrelevant — and so is whether it matches production.
+  </CodeVariant>
+
+  <CodeVariant label="Neon branch" icon="simple-icons:postgresql">
+    ```bash
+    # .env.local
+    DATABASE_URL=postgresql://neondb_owner:...@ep-cool-name-123.us-east-2.aws.neon.tech/neondb
+    ```
+
+    **Prod-parity; needs connectivity.** Nothing to run — paste the string the console gives you; the `...neon.tech` host is the cloud database production also uses.
+  </CodeVariant>
+
+  <CodeVariant label="Neon Local" icon="simple-icons:docker">
+    ```yaml
+    # docker-compose.yml
+    services:
+      db:
+        image: neondatabase/neon_local
+        ports: ['5432:5432']
+        environment:
+          NEON_API_KEY: ${NEON_API_KEY}
+          NEON_PROJECT_ID: ${NEON_PROJECT_ID}
+          PARENT_BRANCH_ID: ${PARENT_BRANCH_ID}
+    ```
+
+    ```bash
+    # .env.local
+    DATABASE_URL=postgres://neon:npg@localhost:5432/neondb
+    ```
+
+    **Localhost string *and* prod-parity; still needs connectivity.** A `localhost` host like Docker, but the proxy routes to an ephemeral Neon branch, so the database behind it matches prod.
+  </CodeVariant>
+</CodeVariants>
+
+Look at what *didn't* change across those three tabs: nothing your app runs. The query is the same, the schema is the same, the component is the same. Only the value of `DATABASE_URL` — and the kind of thing answering on the other end of it — is different. That's the payoff of the contract we set up at the start: three genuinely different setups, one unchanged application.
+
+## Choosing: prod-parity is the default, offline is the exception
+
+Now that all three are on the table and you understand each, you can actually *choose* between them. The skill here isn't memorizing a recommendation — it's learning the order an experienced engineer asks the questions in. Walk it yourself.
+
+<StateMachineWalker title="Where should your local database run?">
+  <Question
+    id="offline"
+    prompt="Is working fully offline a hard requirement?"
+    description="The real cases: air-gapped or compliance work, or development where you genuinely lose the network often — long flights, unreliable connectivity."
+  >
+    <Branch
+      label="Yes — I must work with no network"
+      to="docker"
+      rationale="Offline is the one property only Docker has."
+    />
+    <Branch
+      label="No — I can rely on a network"
+      to="localhost"
+      rationale="With connectivity on the table, both Neon options open up."
+    />
+  </Question>
+
+  <Question
+    id="localhost"
+    prompt="Does your setup need the database at localhost specifically, or is a cloud host fine?"
+    description="Some code or tooling hard-codes a localhost host; otherwise the host is just a value in DATABASE_URL and a cloud endpoint is fine."
+  >
+    <Branch
+      label="A cloud host is fine"
+      to="neon-branch"
+      rationale="Nothing to run locally — paste the string and go."
+    />
+    <Branch
+      label="It must be localhost (and the network is reliable)"
+      to="neon-local"
+      rationale="A proxy gives you localhost while the data lives on Neon."
+    />
+  </Question>
+
+  <Leaf id="docker" verdict="Docker Postgres (postgres:18)">
+    The only option that needs no network.
+    Accept that it drifts from production — different major version, missing extensions, different pooling — and lean on CI running against a Neon branch to catch what drifts before it ships.
+  </Leaf>
+
+  <Leaf id="neon-branch" verdict="Neon dev branch — the course default">
+    Prod-parity with the fewest moving parts: no container, no extra credential, just a connection string from the console.
+    Tolerate the half-second cold start after idle, and branch per feature when you collaborate (next lesson).
+  </Leaf>
+
+  <Leaf id="neon-local" verdict="Neon Local">
+    A `localhost` string *and* prod-parity, via an ephemeral branch the proxy cuts on every start.
+    Costs a Neon API key and a running container, and — because the branch is in the cloud — still needs the network.
+  </Leaf>
+</StateMachineWalker>
+
+Notice the question that comes *first*: offline. That's deliberate. Offline-capability is the one property only Docker has, so an experienced engineer checks it before anything else — if you truly need it, the decision is already made and parity is a cost you accept. Only once offline is off the table does the second question — does it have to be `localhost`? — separate the two Neon options.
+
+Here's where the course commits: **the chapters that follow assume a Neon dev branch.** The reasoning is one sentence. For a SaaS on this stack, prod-parity prevents more bugs than offline prevents lost hours — a "works on my machine" failure that surfaces in staging costs more than the rare afternoon without wifi. So the default optimizes for parity.
+
+And here's the reassurance that makes committing safe: because your app only ever reads `DATABASE_URL`, a student who prefers Docker loses *nothing*. Every later lesson — every query, every migration, every seed — works against any of the three. The default is a recommendation, not a lock-in.
+
+If you remember one watch-out from this lesson, make it this: Postgres **major-version drift** between your local database and production is the single most common cause of the "works on my machine" bug. That's precisely why the default optimizes for parity — and precisely why this lesson pinned `postgres:18` for *both* the Docker image and the Neon branch, so that even the offline option drifts as little as it can.
+
+Before you move on, test the decision logic on a scenario rather than the recommendation itself.
+
+<MultipleChoice>
+  A team ships PR-preview deployments on Neon and works mostly in-office on a reliable network. One engineer, on a policy that forbids putting development data on any cloud provider, can't use Neon at all. What fits *that engineer* — without changing what the rest of the team runs?
+
+  <McqChoice correct>That engineer runs Docker Postgres; everyone else stays on their Neon branch.</McqChoice>
+  <McqChoice>The whole team moves to Neon Local so everyone shares one local setup.</McqChoice>
+  <McqChoice>The whole team moves to Docker Postgres to keep everyone consistent.</McqChoice>
+  <McqChoice>Everyone, including that engineer, shares one Neon dev branch.</McqChoice>
+
+  <McqWhy>Only one property — keeping data off the cloud — forces the answer away from Neon, and it forces it for *one person*, not the team. So Docker is the right tool for that engineer and the wrong tool to standardize on: it's the only choice that satisfies the policy, while the rest keep the prod-parity that catches version drift. Neon Local still routes to a cloud branch, so it never satisfied the constraint; a shared Neon branch violates it outright; and converting the whole team to Docker spends everyone's parity to solve one person's problem. The fix for the drift on that one machine is CI running against a real Neon branch.</McqWhy>
+</MultipleChoice>
+
+## What runs the database, runs the same migrations
+
+It's worth closing on *why* this decision was safe to make in isolation — why we could spend a whole lesson on it without it entangling everything downstream. The answer is the contract. Because the app only reads `DATABASE_URL`, the choice of A, B, or C is genuinely orthogonal to everything that comes after it. Whichever one you run:
+
+- the same Drizzle Kit migrations apply, shaping the tables;
+- the same seed script populates your dev data;
+- the same Drizzle `db` client — the code that actually issues your queries — connects.
+
+None of those care where the database is. They're the next chapters' work; named here only so you can see the seam they'll plug into.
+
+You'll also want eyes on your data — a GUI to browse tables and rows. The course teaches **Drizzle Studio** as the in-stack default (you'll meet it alongside migrations). Plenty of good standalone tools exist too — TablePlus, pgAdmin, DataGrip, and Neon's own web console — and you can adopt any of them later. Named for recognition, not as instruction.
+
+So here's the whole lesson in one line, the thing to actually carry forward: *the app reads `DATABASE_URL`; you decide what's on the other end; the course points it at a Neon branch.*
+
+When you're ready to act on any of this, these are the pages worth opening.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Neon Local"
+    href="https://neon.com/docs/local/neon-local"
+    icon="simple-icons:postgresql"
+    iconColor="#00E599"
+    description="Run the localhost-to-cloud proxy container against an ephemeral Neon branch."
+  />
+  <ExternalResource
+    title="Neon scale-to-zero"
+    href="https://neon.com/docs/introduction/scale-to-zero"
+    icon="simple-icons:postgresql"
+    iconColor="#00E599"
+    description="How idle compute suspends and wakes — the source of the dev cold start."
+  />
+  <ExternalResource
+    title="Connect from any app"
+    href="https://neon.com/docs/connect/connect-from-any-app"
+    icon="simple-icons:postgresql"
+    iconColor="#00E599"
+    description="Neon's own breakdown of the connection string you paste into DATABASE_URL."
+  />
+  <ExternalResource
+    title="Official postgres Docker image"
+    href="https://hub.docker.com/_/postgres"
+    icon="simple-icons:docker"
+    iconColor="#2496ED"
+    description="Where the version-18 data-directory change and volume path are documented."
+  />
+  <ExternalResource
+    title="Docker Compose docs"
+    href="https://docs.docker.com/compose/"
+    icon="simple-icons:docker"
+    iconColor="#2496ED"
+    description="The official reference for the docker-compose.yml file Option A is built on."
+  />
+</CardGrid>

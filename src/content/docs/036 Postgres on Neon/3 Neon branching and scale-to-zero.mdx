@@ -1,0 +1,284 @@
+---
+title: Neon branching and scale-to-zero
+tagline: How Neon's separation of storage from compute makes serverless Postgres give every preview deployment its own copy-on-write database branch that scales to zero when idle.
+chapter-id: 36
+course-progress: 0.00005
+sidebar:
+  order: 3
+  label: Neon branching & scale-to-zero
+---
+
+import Figure from '../../../components/figures/Figure.astro';
+import StorageComputeSplit from '../../../components/lessons/036/3/StorageComputeSplit.astro';
+import PointInTimeTimeline from '../../../components/lessons/036/3/PointInTimeTimeline.astro';
+import PrPreviewLifecycle from '../../../components/lessons/036/3/PrPreviewLifecycle.astro';
+import ProductionTopology from '../../../components/lessons/036/3/ProductionTopology.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid, Aside } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+You're shipping a SaaS in 2026. Every pull request your team opens gets its own live preview URL — a full running copy of the app a reviewer can click through before anyone merges. And like everything else in your stack, the database bills you for what you use, not a flat rate for a box sitting in a rack. Picture the production database behind all of that. What does it actually look like?
+
+Two harder questions hide inside that one. First: each preview needs its *own* data — if two reviewers are poking at two different PRs against the same shared database, they corrupt each other's tests, and nobody trusts what they see. So how does every preview get an isolated copy? Second: if there's a database behind every open PR, are you paying a monthly bill for each one, even the ones nobody has opened in a week? On a traditional Postgres server both of these are dealbreakers — a per-PR database is too slow to copy and too expensive to leave idle, so teams don't even try. This lesson is about why that ceiling doesn't exist on Neon. Both answers fall out of a single architectural choice Neon makes, and by the end you'll be able to look at a real Neon project and explain why this setup is both cheap and safe. The previous lesson ended by pointing your `DATABASE_URL` at a Neon branch and promising the explanation later. This is later. We're going to find out what that branch *is*, and why branching is the entire pitch.
+
+## Storage and compute, pulled apart
+
+Everything in this lesson — branching, the database-per-preview trick, the bill that drops to zero, all of it — is a consequence of one fact about how Neon is built. Learn this fact properly and the rest stops being a list of features to memorize and becomes a set of things you could have predicted. So we spend the most care here.
+
+Start with the model you already hold, because naming it is half the lesson. A traditional Postgres server is **one process welded to its disk**. There's a program running — the thing that parses your SQL, plans queries, and reads and writes rows — and there are the data files it owns, sitting on a disk bolted to that same machine. The running program and the stored data are a single inseparable unit. They boot together, they live together, they die together.
+
+That welding is invisible until you try to do something with it, and then you feel it in three specific places:
+
+- **Copying the database means physically copying the disk.** To duplicate a 10 GB database you run `pg_dump` and restore it somewhere else — minutes of work and a second, full 10 GB on disk. The data has nowhere to live except attached to a process, so a copy is a whole new attached disk.
+- **An idle server still costs money.** The process runs whether or not anyone is querying it. A database behind a preview nobody has touched in a week is burning the same compute as one under load, because the process is always on — that's the only state it has.
+- **You can't add a read-only copy without replicating everything.** Want a second process to spread out read traffic? It needs its own disk, which means copying all the data and keeping the copy in sync. The disk is chained to one process.
+
+Hold those three pains. Each one is about to dissolve.
+
+Here's the reframe, and it's genuinely just one move. **Neon splits the process apart from the disk.** Storage becomes its own thing: a log of page versions living in durable cloud storage, completely independent of any running program. Compute becomes its own thing too: a <Term definition={"A process that holds no permanent data of its own. Kill it and nothing is lost; start a fresh one and it reads everything back from storage."}>stateless</Term> Postgres process the platform starts on demand and *points at* that storage. The word stateless is the whole trick — the compute holds no permanent state. Kill it and the data is untouched, because the data was never in the process; it was in storage all along. Start a brand-new process and point it at the same storage, and it picks up exactly where the last one left off.
+
+<StorageComputeSplit />
+
+Look at the right side of that figure and read off the three consequences directly — each is one of those three pains, inverted:
+
+- Storage is **shared**, so a second process doesn't need its own copy of the data. That's what makes branching cheap. (Next section.)
+- Compute is **disposable**, so when nobody's querying, the platform can throw the process away entirely and you pay nothing for it. That's scale-to-zero. (A couple of sections down.)
+- Multiple computes can read **one** storage, so a read-only replica is just another process pointed at the same log — no replication, no second disk. Neon supports this for scaling reads and analytics; the course never needs it, so we name it once and move on.
+
+Three of Postgres's oldest constraints, all gone, all for the same reason. Keep the split in your head — every section from here just asks "given that storage and compute are separate, what becomes possible?"
+
+## Branches share storage, so they're nearly free
+
+A <Term definition={"A new compute pointed at a copy-on-write snapshot of a parent branch's storage, captured at a point in time. Cheap to create because it shares the parent's existing pages."}>branch</Term> is a new compute pointed at a snapshot of a parent's storage at a moment in time. The snapshot is the interesting part, so look closely at how it's taken. It's <Term definition={"A copy that shares the original's data until something changes. Only the changed pages get written fresh; everything unchanged is still the shared original."}>copy-on-write</Term>: the new branch starts by *sharing* every existing page with its parent rather than duplicating any of them. Nothing is copied up front. Only when the branch actually changes a page — you insert a row, update a value — does that one changed page get written fresh and kept separate. Everything you haven't touched is still, physically, the parent's pages.
+
+So put the two models next to each other. To copy a 10 GB database the old way: `pg_dump`, restore, minutes of work, a fresh 10 GB on disk. To branch it on Neon: under a second, and roughly *zero* added storage — because at the instant of branching, the branch is sharing all 10 GB and has changed nothing. You only ever pay storage for the pages your branch diverges on. A branch you create and barely touch costs almost nothing to keep around. That "almost nothing," as you're about to see, is the hinge the whole economic story turns on.
+
+Now the one thing about branches that trips up nearly everyone, taught right here so it never bites you. A branch captures its parent **as it was at the moment you created it**, and then the two go their separate ways. This is what <Term definition={"A branch reflects the parent exactly as it was at branch-creation time. Changes on either side after that do not cross over."}>point-in-time</Term> means, and it has teeth:
+
+<PointInTimeTimeline />
+
+That diagram is the misconception killer. A branch is **not** a live mirror of its parent. Rows the parent gains *after* you branch do not show up in the branch — so an old branch shows old data, and "why isn't my new production row in this branch?" has a one-word answer: timing. And it cuts the other way too, which is the part that makes branches *safe*: rows your branch writes never flow back to the parent. You can do anything to a branch — fill it with garbage, drop a table — and the parent doesn't feel it.
+
+That safety is what makes branching worth building a workflow around. Here's what it unlocks, each expanded in the sections that follow:
+
+- **A branch per preview deployment** — every open PR gets its own isolated, prod-shaped database, with no shared mess. (Next section, in full.)
+- **Two long-lived branches as your baseline** — a `production` branch (the primary, the one real users hit) and a `staging` branch forked off it that lives indefinitely. This pair is the course's working setup; treat it as the default everything else hangs off.
+- **What-if and migration rehearsal** — about to run a destructive migration against production and not entirely sure it's safe? Branch production, run the scary thing on the branch, inspect the result, and throw the branch away if it went wrong. The branch is your undo button. The actual mechanics of running a migration this way are a few chapters out, in the migrations chapter; for now just know the capability exists and that it's *the* reason branching belongs in a senior's toolkit.
+
+There's nothing for you to type in this section. On a real project these branches are created by the platform and the integration we're about to meet — not by you running a command. The point here is the model, not the keystrokes.
+
+## A database branch for every preview
+
+This is the headline, and the direct answer to the first question we opened with: how does every preview get its own data? Watch one pull request travel from "opened" to "merged" and the answer becomes something you can picture rather than recite.
+
+<DiagramSequence>
+  <DiagramStep>
+    <PrPreviewLifecycle step={1} />
+    <Fragment slot="caption">
+      **PR opened.** A developer pushes a Git branch and opens a pull request on GitHub. So far the database side is unchanged: `production` and `staging` exist, and there's no preview branch yet.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <PrPreviewLifecycle step={2} />
+    <Fragment slot="caption">
+      **Neon branch created.** The Vercel–Neon integration sees the new deployment and instantly creates a Neon branch off the parent — named something like `preview/<git-branch>`. It's copy-on-write, so it shares storage with its parent and costs almost nothing to create.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <PrPreviewLifecycle step={3} />
+    <Fragment slot="caption">
+      **Preview deployed with the branch's URL.** Vercel builds the preview and injects *that branch's* connection string as the deployment's `DATABASE_URL`. The preview app now talks to its own private database — seeding it or mutating it can't touch `production` or any other PR.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <PrPreviewLifecycle step={4} />
+    <Fragment slot="caption">
+      **Iterate safely.** The developer pushes more commits, runs migrations against the preview branch, and QA clicks through real, isolated data. Nothing here leaks into `production` or collides with another open PR.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <PrPreviewLifecycle step={5} />
+    <Fragment slot="caption">
+      **PR merged or closed → branch deleted.** With auto-delete enabled, the integration tears the preview branch down and reclaims the storage its diverged pages used. Back to just `production` and `staging`.
+    </Fragment>
+  </DiagramStep>
+</DiagramSequence>
+
+Scrub through that and the shape of the thing is obvious: a database appears for the life of a PR and vanishes when the PR is done. That disposability at the end is not incidental — it's the whole reason this is affordable, and it sets up the next section.
+
+Now the part worth being blunt about, because it's the senior payoff. **A single shared staging database is the anti-pattern this kills.** Picture the old way: one staging database, two PRs in flight. Reviewer A seeds it with test invoices; reviewer B's destructive test wipes a table out from under them; a third person's migration leaves it in a half-broken state and now nobody believes anything they see in staging. Shared staging rots because everyone writes to it and no one owns it. A branch per PR ends that by construction: every preview gets a clean, isolated, production-shaped database that exactly one PR can touch. And because branches are nearly free to create and — as we're about to see — nearly free to keep around while idle, you can genuinely afford one per open pull request without thinking about it.
+
+One detail to recognize rather than configure, because it decides *how cleanup happens*. As of 2026 the Vercel–Neon integration comes in two flavors, and the only thing they differ on is who deletes the branch:
+
+- **Neon-managed**: you switch on "automatically delete obsolete branches," and cleanup runs the next time a preview deploys.
+- **Vercel-managed**: a preview branch is deleted when Vercel removes the matching deployment, governed by Vercel's deployment-retention policy — roughly six months by default.
+
+Don't memorize the setup; the deployment chapter later in the course owns the actual wiring. The one thing to carry out of this is the watch-out it implies: **auto-delete is a setting you have to turn on and understand. Leave it off and preview branches quietly pile up** until your project is cluttered with the database of every PR you ever opened. That's not a flaw in branching; it's a switch you forgot to flip.
+
+How the preview app actually *opens* a connection over that injected URL — which driver it uses, why the endpoint has a `-pooler` in it — is the next lesson's entire subject. Here it's enough to say: the integration injects a connection string, and the app reads it.
+
+## Compute sleeps when nobody's looking
+
+Remember the second pain from the storage/compute split — an idle traditional server burns money because its process is always on? Watch it disappear, for the same reason branching was cheap.
+
+Because a Neon compute holds no permanent state, the platform can do something a welded server never could: after a stretch of no activity, it **suspends the compute entirely**. The process goes away. While it's gone you pay nothing for compute — and your data is completely safe, because the data was never in the process; it's sitting in storage, untouched. The moment a query arrives, the platform spins a fresh compute back up, points it at the same storage, and serves the query. The database fell asleep and woke up, and nothing was lost. The current numbers, as of mid-2026:
+
+- **Idle window**: after about **five minutes** with no activity, the compute suspends. On paid (Scale) plans this is a dial you can turn — as short as a minute, or all the way to "never suspend, stay awake always." On the free tier the five-minute window is **fixed**; you take it as it comes.
+- **Wake time** (the <Term definition={"The latency the first query pays to wake a suspended compute. Every query after, on the now-warm compute, is fast again."}>cold start</Term>): roughly **300–800 milliseconds** to resume, with total time-to-first-query usually landing between half a second and a second.
+
+Here's the economic punchline, and it's the answer to the second question we opened with. An idle preview branch with no traffic bills you for **storage only** — its compute has dropped to zero. *This* is what makes "a branch per PR" actually sustainable instead of a nice idea you can't afford. Ten open pull requests are not ten databases burning compute around the clock. They're ten cheap storage snapshots whose compute flickers on only when someone actually opens that preview, and goes right back to zero when they leave. Cheap-to-create branches and scale-to-zero compute are the two halves of one affordability story: branching makes the copy free, scale-to-zero makes the *idle* free. Together they're why the whole pattern holds up.
+
+But this is a trade, not a free lunch, and the experienced move is knowing exactly what you're trading. The first query after a suspend pays the wake latency — that 300–800ms. Every query after that, on the now-warm compute, is fast. So the cost lands entirely on *first* queries after idle, and the skill is matching that cost to the surface:
+
+<Aside type="tip" title="Cold start is a per-branch call">
+  Cold start is fine where nobody's waiting on a promise: dev branches and idle preview environments. No reviewer's first click being half a second slower breaks anything, and you get the scaled-to-zero savings for free.
+
+  Where it is *not* fine is production traffic — you never want a real user's request to be the one that wakes a sleeping compute. So production is tuned to stay warm (a longer or disabled idle window, a configured minimum), trading a little always-on cost for never making a customer eat a cold start. Same database product, opposite setting, because the surfaces have opposite needs.
+</Aside>
+
+Frame it as a per-branch decision and it stops being a gotcha and becomes a knob you set deliberately: previews scale to zero because cheap beats fast there; production stays warm because fast beats cheap there.
+
+One honest limit before we move on. Neon's free plan gives you something like 100 compute-hours per project a month, half a gigabyte of storage, and around ten branches — exact numbers drift, so treat those as "roughly," and check the pricing page in the resources below for the current figures. That's plenty to learn this model on and run a side project; it is *not* sized for live production traffic, where you'll burn through the compute-hours under real load and need a paid plan. The free tier teaches the architecture perfectly. It just isn't where a real product's production lives.
+
+## The shape of a production Neon project
+
+Pull the pieces together and a recognizable shape falls out — the one you should be able to read off a real project at a glance. We're describing it, not building it; you don't touch Vercel in this lesson. But when you see this shape later, it should look familiar.
+
+<ProductionTopology />
+
+Read top to bottom, that figure is the entire production setup:
+
+- A Neon **project** holding a `production` **primary** branch — this is the branch your `DATABASE_URL` points at in production — and a long-lived `staging` branch forked off it.
+- A **Vercel–Neon integration** that cuts an ephemeral branch per preview deployment, injects that branch's connection string into the preview, and — with auto-delete switched on — cleans the branch up afterward so they don't accumulate.
+- Production compute tuned to **stay warm**, so no real user ever eats a cold start; preview and dev branches left to **scale to zero**, because there cheap wins.
+
+Now look at `production` sitting right there in that tree and notice what's protecting it: nothing but a name. This is the watch-out worth carrying out of the whole lesson. **`production` is just a branch by convention.** The platform does not stop anyone from running a destructive migration straight against it without branching first — there's no railing, no "are you sure," no technical guard. What protects production is *discipline*: branch it, test the change on the branch, then apply it for real. That habit — branch, run, promote — is the migrations chapter's whole job to teach. Neon hands you the safety net; whether you actually use it before doing something irreversible is on you.
+
+Three things this section deliberately leaves for later, so you know where they live: provisioning a project and wiring the integration for real is the deployment chapter, later in the course; the migration discipline — branch, run, promote — is the migrations chapter; and how your application code actually connects to whichever branch's URL it's handed is the very next lesson.
+
+## Check your understanding
+
+You've got the whole model now: storage split from compute, branches that share storage, compute that sleeps. Before the next lesson dives into how the app connects, make sure you can *use* this model — map a real situation to the right move, and dodge the two misconceptions that bite people most.
+
+Start with the decisions. Each scenario below is a spot you'll actually land in; walk it to the move an experienced engineer would make.
+
+<StateMachineWalker title="What's the Neon move here?">
+  <Question id="situation" prompt="Which situation are you in?">
+    <Branch
+      label="I need to rehearse a destructive migration before running it on production"
+      to="whatif"
+    />
+    <Branch
+      label="Every PR's QA keeps colliding with other PRs on the same shared data"
+      to="per-preview"
+    />
+    <Branch
+      label="Users complain the first request each morning is slow, then it's fine"
+      to="cold-start"
+    />
+    <Branch
+      label="Old preview branches are piling up and storage keeps creeping"
+      to="auto-delete"
+    />
+  </Question>
+
+  <Leaf id="whatif" verdict="Branch production, run it on the branch, discard">
+    Branching is your undo button. Cut a branch off `production`, run the destructive migration *there*, and inspect the result. If it's wrong, throw the branch away — `production` never knew. (The branch–run–promote workflow itself is the migrations chapter.)
+  </Leaf>
+
+  <Leaf id="per-preview" verdict="A branch per preview deployment, via the Vercel–Neon integration">
+    Shared staging is the disease; a database per PR is the cure. Each preview gets its own isolated, prod-shaped branch, so one PR's test data can't poison another's.
+  </Leaf>
+
+  <Leaf id="cold-start" verdict="That's a cold start — keep production compute warm">
+    The first request after an idle period is waking a scaled-to-zero compute. That's fine for dev and previews, but not for users. Tune `production` to stay warm — a longer or disabled idle window — so real traffic never pays the wake latency.
+  </Leaf>
+
+  <Leaf id="auto-delete" verdict="Enable auto-delete of obsolete branches in the integration">
+    Preview branches don't clean themselves up unless you tell them to. Turn on auto-delete so each branch is torn down when its PR closes, and the storage its diverged pages used gets reclaimed instead of creeping.
+  </Leaf>
+</StateMachineWalker>
+
+The order matters more than any single answer: a senior reads the *situation* first, then reaches for the Neon feature that fits it. Now the two misconceptions, because getting these wrong leads to real confusion later.
+
+<MultipleChoice>
+  On **Monday** you create a branch off `production`. On **Tuesday**, three new rows are inserted into `production` — nothing else touches the branch. When you query the branch on **Wednesday**, what does it return?
+
+  <McqChoice correct>Monday's data, without the three Tuesday rows.</McqChoice>
+  <McqChoice>All of Monday's data plus the three Tuesday rows — the branch tracks `production` as it changes.</McqChoice>
+  <McqChoice>The three Tuesday rows, and any rows you wrote to the branch now also show up in `production`.</McqChoice>
+  <McqChoice>Nothing, until you manually pull the latest data from `production` into the branch.</McqChoice>
+
+  <McqWhy>A branch captures its parent at the instant you create it, and from then on the two are independent — nothing crosses over in either direction. The branch was cut on Monday, so it freezes Monday's rows; `production`'s Tuesday writes stay on `production` and never appear in it. The same independence runs the other way, which is the whole point of a branch: anything you write to the branch never leaks back to `production`, so you can experiment freely.</McqWhy>
+</MultipleChoice>
+
+<MultipleChoice>
+  A preview branch has sat with **zero traffic for the last hour** — nobody opened its preview. The branch still holds the few pages it diverged from `production`. Which part of it is Neon billing you for during that idle hour?
+
+  <McqChoice>Neither part — once a branch goes idle it costs nothing until a query wakes it.</McqChoice>
+  <McqChoice correct>The diverged pages it's holding, but not the process that serves queries.</McqChoice>
+  <McqChoice>The process that serves queries, kept running so the first query after idle is instant.</McqChoice>
+  <McqChoice>A fixed per-branch charge that's the same whether the branch is busy or asleep.</McqChoice>
+
+  <McqWhy>Scale-to-zero suspends the **compute** — the query-serving process — so after the idle window an untouched branch stops billing for it entirely; that's why the first query later has to pay a cold start. What doesn't go away is the **storage**: the branch's diverged pages still live in durable storage and you keep paying for those. So idle costs storage only, and that asymmetry is the whole reason a branch per PR is affordable — the expensive half drops to zero while only a few cheap pages remain.</McqWhy>
+</MultipleChoice>
+
+## Where to read more
+
+These are the canonical pages worth opening — especially for the numbers in this lesson, which drift over time, so trust the docs over any figure printed here.
+
+<CardGrid>
+  <ExternalResource
+    title="Neon — Scale to Zero"
+    href="https://neon.com/docs/introduction/scale-to-zero"
+    icon="simple-icons:postgresql"
+    description="The canonical reference for the idle window and wake latency — the numbers that move."
+  />
+  <ExternalResource
+    title="Neon — Branching"
+    href="https://neon.com/docs/introduction/branching"
+    icon="simple-icons:postgresql"
+    description="The copy-on-write model in depth: how a branch shares its parent's storage."
+  />
+  <ExternalResource
+    title="Neon — Branch per preview with Vercel"
+    href="https://neon.com/docs/guides/vercel-overview"
+    icon="simple-icons:vercel"
+    description="The integration that creates a database branch for every Vercel preview deployment."
+  />
+  <ExternalResource
+    title="Neon — Pricing"
+    href="https://neon.com/pricing"
+    icon="simple-icons:postgresql"
+    description="The authoritative source for free-tier limits and compute-hour allowances."
+  />
+  <ExternalResource
+    title="The magic of copy-on-write (live demo)"
+    href="https://neon.com/blog/instantly-copy-tb-size-datasets-the-magic-of-copy-on-write"
+    icon="simple-icons:postgresql"
+    description="A one-minute interactive demo: branch a 1 TB database, change rows, and revert — copy-on-write made tangible."
+  />
+  <ExternalResource
+    title="Jack Vanlightly — Neon's serverless Postgres architecture"
+    href="https://jack-vanlightly.com/analyses/2023/11/15/neon-serverless-postgresql-asds-chapter-3"
+    icon="lucide:network"
+    iconColor="#8B5CF6"
+    description="A distributed-systems engineer's deep dive into the storage/compute split — for when you want the layer below this lesson."
+  />
+</CardGrid>

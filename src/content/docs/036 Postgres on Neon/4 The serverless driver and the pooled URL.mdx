@@ -1,0 +1,381 @@
+---
+title: The serverless driver and the pooled URL
+tagline: How serverless functions reach Neon Postgres without exhausting it, choosing the pooled or unpooled connection string and the Neon serverless driver's HTTP or WebSocket shape.
+chapter-id: 36
+course-progress: 0.00005
+sidebar:
+  order: 4
+  label: Driver and pooled URL
+---
+
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import SpikeExhaustion from '../../../components/lessons/036/4/SpikeExhaustion.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+It's launch day. Your invoices page is a <Term definition="A React component that renders on the server and can read the database directly, taught earlier in this course.">Server Component</Term> — it runs on the server, reads the invoice list straight from Postgres, and streams the HTML back. It works perfectly in development. Then your launch post lands, and five hundred people open the page in the same few seconds. Vercel responds the way it's supposed to: it boots five hundred copies of your function, one per request, all at once.
+
+Every one of those functions needs to reach Postgres. And here's the question this lesson exists to answer: *how does each one open a connection without knocking the database over?* You already have the pieces from the last three lessons — a schema, a Neon Postgres, and a `DATABASE_URL` that points at it. The one piece you haven't built yet is the connection itself: the actual mechanism a function uses to reach the database and run a query. That turns out to be two separate decisions, not one, and getting either wrong is the kind of bug that's invisible in dev and catastrophic under load.
+
+Here are the two reflexes you'll walk away with. Keep them in the back of your mind as we go, because everything else is the reasoning that earns them:
+
+- **Pooled URL for app traffic, unpooled URL for migrations and long scripts.**
+- **HTTP driver for one-shot reads, WebSocket driver for transactions.**
+
+They sound like four unrelated rules. They're not. They all fall out of one fact about how serverless works — a fact we need to make uncomfortably concrete first, by watching the database fall over.
+
+:::note
+You won't write a working database client in this lesson. That wiring belongs to the next chapter, where Drizzle gets connected. The deliverable here is the mental model and the two reflexes above. Every code block you see is a *preview* of what gets built next, shown only so the shapes are familiar when you meet them for real.
+:::
+
+## Why a fresh connection per request breaks Postgres
+
+Before we can talk about fixes, you have to feel the failure. So let's build the simplest possible picture of what a connection costs, and then break it.
+
+### A connection is not free
+
+When your function opens a connection to Postgres, a surprising amount happens. There's a TCP handshake, then a TLS handshake to encrypt the channel, then an authentication round-trip to prove who you are — call the whole thing the <Term definition="The TCP, TLS, and authentication round-trips paid up front before a connection can run a single query.">handshake</Term>, the back-and-forth paid before a single query runs. That's the part you might guess at.
+
+The part that bites is what happens *after* the handshake. For each connection, Postgres forks a real operating-system process to serve it — a <Term definition="A dedicated Postgres server process serving exactly one connection, with its own memory.">backend</Term>, a whole process dedicated to your one connection, holding its own slice of memory. Not a lightweight thread, not an entry in a table: a process. Connections, in Postgres, are expensive in the most literal way — each one is a program running on the server.
+
+Because backends are real processes, you can't have unlimited ones. Postgres enforces a ceiling called <Term definition="The server-side hard cap on how many connections, and therefore backend processes, can exist at once.">`max_connections`</Term> — the wall past which it simply refuses to open more. On a typical managed plan that ceiling sits somewhere around a hundred. Don't memorize the number; it shifts with the plan and the version. Memorize that **there is a wall**, and that the wall is low — low enough that five hundred functions will hit it without trying.
+
+### The traditional fix, and why serverless can't use it
+
+If you've seen a database connected from a normal Node server, you've seen the standard answer to this, and it works beautifully — for a normal Node server.
+
+The trick is a <Term definition="A small, fixed set of connections opened once and reused across many requests, instead of one per request.">connection pool</Term>: instead of opening a connection per request, the server opens a small, fixed set once — say ten or twenty — when it boots, and keeps them alive. Every incoming request borrows a connection from that pool, runs its query, and hands it back. Ten thousand requests an hour might flow through the same ten connections. The library that does this in the Node world is <Term definition="The standard Postgres driver for long-lived Node processes, imported as the pg package.">node-postgres</Term>, and its `Pool` is the workhorse you'd reach for.
+
+Look closely at *why* that works, because the reason is the whole lesson. The pool pays the cost of opening connections **once, at boot**, and then amortizes it across every request for the rest of the server's life. That bargain only makes sense because the server *has* a life — it's a long-lived process that stays running for days. The pool lives in the server's memory, and the server is always there.
+
+Now hold that next to a <Term definition={"Ephemeral compute that boots to handle one request and is gone right after.\nNo process persists between requests."}>serverless function</Term>. A serverless function does not stay running. It is born when a request arrives, it runs that one request, and then it dies. There is no "at boot, once" for it to amortize against, because by the time the next request shows up, this function — and any pool it might have opened — may no longer exist.
+
+This is the crux of the entire lesson, so let me say it as plainly as I can: **the in-process pool assumes a long-lived server, and a serverless function is the opposite of a long-lived server.** Every fix in this lesson is an answer to that one broken assumption. Everything else follows.
+
+<VideoCallout videoId="Vq34xPYZwXg" videoTitle="Database Connection Pooling: Why It Matters? Essential OS-Level Insights">
+  Denis Magda watches Postgres spawn a real OS process per connection, then caps the churn with a pool — the per-process cost and the pool fix made tangible in 5 minutes.
+</VideoCallout>
+
+### The spike
+
+So what actually happens on launch day? Each function, unable to reuse anything, opens its own fresh connection. Three functions, three connections. That's fine. Fifty functions, fifty connections — still fine. But five hundred functions is five hundred connections, all reaching for backends at the same instant, and the wall is around a hundred.
+
+Past the wall, Postgres stops being polite. New connections are refused with `FATAL: sorry, too many connections for role`, the function that got refused throws, and the user gets a 500 instead of their invoices — at the exact moment your launch is sending you the most traffic you've ever had.
+
+The cruelest part is that nothing warned you. On your laptop you are one developer making one request, opening a handful of connections, never within sight of the wall. The bug is *invisible at low concurrency by construction* — it only exists when many functions run at once, which is precisely the condition you can't reproduce alone at your desk. It looks fine in dev and falls over under load. This is the category of failure experienced engineers are paid to see coming.
+
+Scrub through the sequence below to watch it happen. Each step shows your functions on the left and Postgres on the right, with a live count of how many connections Postgres is holding against its cap. Watch the gauge climb, hit the wall, and turn red — and then watch the last frame, which is a teaser for the fix.
+
+<DiagramSequence>
+  <DiagramStep caption="Calm. Three requests, three functions, three connections. Postgres is nowhere near its ceiling.">
+    <SpikeExhaustion step={1} />
+  </DiagramStep>
+
+  <DiagramStep caption="The spike. The launch post lands; hundreds of functions boot at once, each opening its own connection. The count races toward the wall.">
+    <SpikeExhaustion step={2} />
+  </DiagramStep>
+
+  <DiagramStep>
+    <SpikeExhaustion step={3} />
+    <Fragment slot="caption">
+      The wall. Past `max_connections`, Postgres refuses new connections with `FATAL: too many connections`. Those functions throw; their users get a 500.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep caption="The fix, previewed. Put a pooler in front. The same hundreds of functions connect to it, but the pooler keeps only a small, fixed set of connections to Postgres — so the count stays flat and low no matter how big the spike. The next section explains how.">
+    <SpikeExhaustion step={4} />
+  </DiagramStep>
+</DiagramSequence>
+
+That last frame is the answer, and notice where the answer lives. Years ago, the fix would have been *your* job: you'd tune your app's connection pool, set its size, manage its lifecycle. In 2026, **the fix moved out of your application code entirely.** The database provider runs the pooler, in front of Postgres, and your app just talks to it. Which means the first half of this lesson isn't something you build — it's something you *select*, by choosing the right connection string.
+
+## The pooled connection string
+
+Here's the first fix, and it lives on the axis of *which URL your app connects to*. Hold that boundary firmly: this section is only about the connection string. How the call site actually sends a query — HTTP or WebSocket — is a separate axis we get to next, and fusing the two is the single most common way this topic confuses people.
+
+### What Neon runs in front of Postgres
+
+Neon places a <Term definition="A lightweight connection pooler that sits between clients and Postgres and reuses a small set of server connections.">PgBouncer</Term> in front of the database, running it in <Term definition={"A PgBouncer mode that lends a server connection for one transaction, then reclaims it.\nVersus session mode, which pins one to a client for its whole session."}>transaction mode</Term>. Transaction mode is the detail that makes the whole thing work, so let's unpack it.
+
+PgBouncer maintains a small, fixed set of real connections to Postgres — the backends, the expensive things from the last section. In front of those, it accepts an enormous number of cheap client connections from your booting functions. The bridge between the two is the rule that defines transaction mode: **PgBouncer lends a real backend to a client only for the duration of one transaction, then takes it back.** The instant a transaction ends, that backend returns to the pool and goes to the very next client waiting. This is <Term definition="Many short-lived client connections sharing a few long-lived server connections by taking turns.">multiplexing</Term> — many client connections taking turns on a few server connections.
+
+Run the launch-day numbers through that. Five hundred functions connect to PgBouncer, which is happy to hold five hundred cheap client connections. But each function only needs a real backend for the handful of milliseconds its transaction runs, so a few dozen real backends, rapidly handed around, serve all five hundred. The connection count *to Postgres* stays flat and low while the function count spikes — exactly the last frame of the diagram you just scrubbed through.
+
+### How you turn it on
+
+The remarkable part is how little you do to get this. Neon gives you two endpoints for the same database, and they differ by a single token in the hostname. The pooled endpoint carries a `-pooler` segment in its host; the direct one doesn't:
+
+<CodeVariants>
+  <CodeVariant label="Pooled (DATABASE_URL)">
+    <div data-mark-color="blue">
+
+    ```text wrap "-pooler"
+    postgresql://app:••••@ep-cool-haze-12345678-pooler.us-east-2.aws.neon.tech/neondb?sslmode=require
+    ```
+
+    </div>
+    **This is `DATABASE_URL` in production.** Every Server Component, Server Action, and route handler connects through this string — the `-pooler` host routes them through PgBouncer.
+  </CodeVariant>
+
+  <CodeVariant label="Direct / unpooled">
+    <div data-mark-color="blue">
+
+    ```text wrap ".us-east-2"
+    postgresql://app:••••@ep-cool-haze-12345678.us-east-2.aws.neon.tech/neondb?sslmode=require
+    ```
+
+    </div>
+    Same database, same credentials, same everything — the host just skips the pooler (no `-pooler` token) and reaches Postgres directly. Reserved for the few jobs that need a stable connection, which we get to shortly.
+  </CodeVariant>
+</CodeVariants>
+
+Same database. Same username, same password, same database name. The *only* thing that changes is the host's routing: with `-pooler`, you reach PgBouncer; without it, you reach Postgres directly. Neon's console hands you both — the connection-string box has a toggle for the pooled version — so in practice you copy whichever one the situation calls for.
+
+And the default could not be simpler: **the pooled URL is for all serverless app traffic.** That's what `DATABASE_URL` points at in production. The direct URL is the exception, for the handful of cases we'll name in a moment.
+
+### What transaction-mode pooling takes away
+
+There's no free lunch here, and it's worth knowing the price so you recognize the failure if you ever trip it. Transaction mode works by handing your next transaction *a different backend than your last one*. So anything that quietly assumes "I'm still on the same connection I was on a moment ago" breaks, because you're probably not. The casualties:
+
+- **A prepared statement pinned to a session.** You prepare a statement on one backend; your next transaction lands on a different backend that's never heard of it. (Modern drivers, including the ones Drizzle uses, handle this for you, so you'll rarely trip it — but now you'd recognize the symptom.)
+- **Session-level state: `SET` for the session, session-scoped <Term definition="Postgres's built-in publish/subscribe, scoped to one connection.">`LISTEN`/`NOTIFY`</Term>, an <Term definition="An application-defined Postgres lock, identified by a number your code chooses.">advisory lock</Term> held across statements.** All of it belongs to a session, and the session is gone the moment the transaction ends and the backend goes back to the pool.
+- **A temporary table created outside a transaction.** Same story — it lived on a backend you no longer have.
+
+The senior framing turns all of that into one habit: **keep your work inside transactions, don't lean on session state, and you'll never notice the pooler is there.** Your everyday reads and writes already fit that rule perfectly, which is why pooling is invisible in normal use.
+
+But two operations genuinely *do* need a stable, persistent session — and the course cares about both. **Migrations**, which run a long stream of schema-changing statements that must all land on the same connection, and **long-running maintenance scripts**, which may hold a session open for minutes. Transaction-mode pooling would sever either one at a transaction boundary. That is precisely why the unpooled, direct URL from the comparison above exists. Hold onto that — it's the hinge we swing on two sections from now.
+
+## Two ways to send a query: HTTP and WebSocket
+
+Now the second axis, and it is genuinely independent of the first. Pooling decided *which URL* your app connects to. This decides *how the call site talks* over that connection. You make both choices, and you make them separately — in fact, both shapes you're about to see typically use the *pooled* URL for app traffic. Keep the two axes apart in your head and this stays simple; let them blur and it gets needlessly confusing.
+
+To send queries from a serverless runtime, you reach for <Term definition="Neon's official driver for serverless runtimes — a drop-in replacement for node-postgres that talks to Postgres over HTTP or WebSocket.">`@neondatabase/serverless`</Term>. It's at version 1.0, generally available and stable. It hands you two different shapes for talking to the database, and the difference between them is the whole point.
+
+### HTTP: one query, one fetch
+
+The first shape is `neon(connectionString)`, and it talks to Postgres over **HTTP**. Each query you run is a single `fetch` — one POST to Neon's SQL-over-HTTP endpoint, carrying your query, returning your rows.
+
+Sit with why that fits serverless so well. There is **no persistent connection to hold** — which means there's nothing to leak when your function dies and nothing to exhaust under a spike. The thing that broke us at the top of the lesson, the held connection, simply isn't part of this picture. For a single one-shot query, an HTTP request is also the lowest-latency path Neon offers.
+
+The catch is the flip side of the same coin: with no persistent connection, you can't hold a transaction open across multiple round-trips. The HTTP driver *does* support a non-interactive batch — `transaction([q1, q2, q3])`, an array of queries sent in one round-trip and run together in one transaction. What it cannot do is the *interactive* shape: `begin`, read a result, branch on what you read, then write — all on one held connection. For that you need the second shape.
+
+### WebSocket: a held connection for real transactions
+
+The second shape is `Pool` (or `Client`), and it talks over a <Term definition="A persistent, bidirectional connection over HTTP, kept open across many messages.">WebSocket</Term> — a connection held open across many queries. It's API-compatible with node-postgres's `Pool`, and it gives you back the thing HTTP gave up: a connection that stays open long enough for an <Term definition={"A transaction where you begin, read a result, branch on it, then write — all on one held connection.\nVersus a fixed batch sent at once."}>interactive transaction</Term>. Begin, read, decide, then write, all on the same connection, all-or-nothing.
+
+That's the reach for the moment a single request has to read the current state, make a decision based on what it read, and write the result atomically. Deduct credits only if the balance covers it; insert a row and update a counter together or not at all. Those need one connection held across several steps, and that's what the WebSocket Pool is for.
+
+<CodeVariants>
+  <CodeVariant label="HTTP — one-shot read">
+    <div data-mark-color="green">
+
+    ```ts "neon"
+    const sql = neon(env.DATABASE_URL);
+    const invoices = await sql`select * from invoices where org_id = ${orgId}`;
+    ```
+
+    </div>
+    **One query, one fetch — nothing held open.** This is the default for reads in a Server Component; the next chapter wraps it with `drizzle-orm/neon-http`.
+  </CodeVariant>
+
+  <CodeVariant label="WebSocket — transaction">
+    <div data-mark-color="blue">
+
+    ```ts "Pool"
+    const pool = new Pool({ connectionString: env.DATABASE_URL });
+    const dbWs = drizzle(pool);
+    await dbWs.transaction(async (tx) => {
+      const [account] = await tx.select().from(accounts).where(eq(accounts.id, id));
+      await tx.update(accounts).set({ credits: account.credits - cost }).where(eq(accounts.id, id));
+      await tx.insert(charges).values({ accountId: id, amount: cost });
+    });
+    ```
+
+    </div>
+    **A persistent connection — the reach when one request must read, decide, then write atomically.** The next chapter wraps this with `drizzle-orm/neon-serverless`.
+  </CodeVariant>
+</CodeVariants>
+
+Those two import names are worth tucking away, because you'll meet them for real in the next chapter: `drizzle-orm/neon-http` wraps the HTTP driver, and `drizzle-orm/neon-serverless` wraps the WebSocket Pool. Don't worry about the Drizzle setup yet — that's the next chapter's whole job. For now they're just labels: two wrappers, one per driver shape.
+
+### Which one a call site reaches for
+
+The decision rule is short, and it maps onto things you already know how to recognize:
+
+- **A Server Component reading data to render** reaches for **HTTP**. It fetches once and renders; there's no transaction, and latency on that single read is what the user feels. This is the course's default for data fetches.
+- **A Server Action or route handler that writes** reaches for **WebSocket** — but only when the write needs a real transaction: read-modify-write, or several statements that must all land or all fail. (Server Actions are taught later in the course; you don't need them now. Just know this is where the WebSocket driver earns its keep.)
+
+The heuristic, compressed to something you can carry: **one read → HTTP; a transaction → WebSocket.**
+
+Now let's fold *both* axes — the URL choice and the driver choice — into a single walk, so you drill the order an experienced engineer asks these questions in. Step through the decision below. Notice that the very first question isn't about reads or transactions at all; it's "what kind of call site is this?" — because if the answer is a migration, the whole serverless story doesn't apply and you take the direct URL instead.
+
+<StateMachineWalker title="Which connection does this call site take?">
+  <Question id="call-site" prompt="What kind of call site is this?">
+    <Branch
+      label="An app request"
+      to="needs-tx"
+      rationale="A Server Component, Server Action, or route handler — many short bursts."
+    />
+    <Branch
+      label="A migration or long-running maintenance script"
+      to="leaf-unpooled"
+      rationale="Needs a stable session across many statements — the pooler would sever it."
+    />
+  </Question>
+
+  <Question
+    id="needs-tx"
+    prompt="Does this single request need an interactive transaction?"
+    description="Read-modify-write, or multiple statements that must all succeed or all fail."
+  >
+    <Branch label="No — it's a one-shot read" to="leaf-http" />
+    <Branch label="Yes — read, decide, then write atomically" to="leaf-websocket" />
+  </Question>
+
+  <Leaf id="leaf-http" verdict="Pooled URL + HTTP driver (neon-http)">
+    The default for Server Component reads. One `fetch` per query, no connection held open, lowest latency for a single read. Connects through the pooled `DATABASE_URL`.
+  </Leaf>
+
+  <Leaf id="leaf-websocket" verdict="Pooled URL + WebSocket Pool (neon-serverless)">
+    A persistent connection for interactive transactions — the reach when one request must read a result and branch on it before writing. Still rides the pooled `DATABASE_URL`; the held connection is short-lived per request.
+  </Leaf>
+
+  <Leaf id="leaf-unpooled" verdict="Unpooled direct URL + node-postgres or unpooled WebSocket">
+    Migrations and long scripts need a single stable session across many statements, so they skip the pooler and use the direct host. The *how* — running migrations — comes later in this unit; here you just need to know they take the **other** URL.
+  </Leaf>
+</StateMachineWalker>
+
+## Three clients, one job each
+
+Time to land all of this somewhere concrete. The reasoning from this whole lesson collapses into a single small file you'll meet in the next chapter — and once you understand *why* it has the shape it does, that file will read like an obvious consequence rather than a convention to memorize.
+
+The shape is this: your `db/index.ts` exports **three** database clients, by course convention. The first is named `db` — the **pooled HTTP** client, imported almost everywhere a Server Component reads data. The second is `dbTx` — the **pooled WebSocket** client, over the *same* pooled URL but reached for when a Server Action needs a real interactive transaction. The third is `dbUnpooled` — over the **direct, unpooled** URL, reserved for migrations and long-running maintenance and almost nothing else. Two environment variables back all three in production: `DATABASE_URL` for the two pooled clients and <Term definition="The direct-host connection string that skips the pooler, reserved for migrations and long sessions.">`DATABASE_URL_UNPOOLED`</Term> for the direct one.
+
+Why three and not one? Because every piece of this lesson points at exactly this split:
+
+- `db` rides the pooler over **HTTP** because **app traffic is many short bursts** — the launch-day spike — and those one-shot reads must never exhaust Postgres. The pooler is the thing standing between your traffic and `FATAL: too many connections`.
+- `dbTx` rides the *same* pooler but over a **WebSocket**, because some app requests — a Server Action that reads a balance, decides, then writes — need **one connection held across several steps**. It's still pooled app traffic, just the transactional shape: the WebSocket is held only for the transaction's few milliseconds, which transaction-mode pooling handles fine.
+- `dbUnpooled` skips the pooler because **a migration is one long session**, a stream of schema changes that has to stay on one connection from start to finish. This is the payoff of the unpooled URL we promised you two sections ago.
+
+That last point hides a genuine hazard, and it's worth stating as the concrete consequence it is rather than an abstract warning. Run a migration over the *pooled* URL and you've handed a long `BEGIN … many ALTER and CREATE statements … COMMIT` to a pooler that's allowed to reclaim the backend at any transaction boundary. PgBouncer can cut the connection out from under your migration partway through — and a half-applied schema change is among the worst states a production database can be in. Avoiding exactly that is the entire reason `dbUnpooled` exists. (Running migrations is a later chapter's topic; here we only justify why a separate unpooled client is in the file.)
+
+Here's the sketch — and read it as a *shape*, not a finished file. The next chapter fills in the real Drizzle configuration; what matters right now is that there are three exports and *why* each one is the way it is.
+
+<AnnotatedCode lang="ts" code={`
+import { drizzle as drizzleHttp } from 'drizzle-orm/neon-http';
+import { drizzle as drizzleWs } from 'drizzle-orm/neon-serverless';
+import { Pool } from '@neondatabase/serverless';
+import { env } from '@/env';
+
+export const db = drizzleHttp(env.DATABASE_URL);
+
+export const dbTx = drizzleWs(new Pool({ connectionString: env.DATABASE_URL }));
+
+export const dbUnpooled = drizzleWs(new Pool({ connectionString: env.DATABASE_URL_UNPOOLED }));
+`}>
+  <AnnotatedStep meta="{1-2}" color="blue">
+    Two drivers imported, one per call-site shape: HTTP for one-shot reads, WebSocket for transactions. The WebSocket driver backs two of the three clients below — one pooled, one not. This is a preview — the next chapter adds the real Drizzle configuration (schema, casing) that this sketch leaves out.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{6} "env.DATABASE_URL)"`} color="blue">
+    `db` — the default, imported almost everywhere. It rides the **pooled** `DATABASE_URL` over **HTTP**, the right shape for one-shot Server Component reads. App traffic is many short bursts; the pooler keeps them from exhausting Postgres.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{8} "env.DATABASE_URL }"`} color="violet">
+    `dbTx` — the transactional client. Same **pooled** `DATABASE_URL`, but over a **WebSocket**, so a Server Action can hold one connection across a read-decide-write. The pooler is fine here: the connection is held only for the transaction's few milliseconds.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{10} "DATABASE_URL_UNPOOLED"`} color="orange">
+    `dbUnpooled` — the escape hatch. A WebSocket over the **direct, unpooled** URL, reserved for migrations and long scripts that need one stable session. Run those over the pooled URL and the pooler could sever a migration mid-transaction.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+One last reframing, because it's the thing to actually keep: **one `DATABASE_URL` in your head, two endpoints underneath.** Your app reasons about a single logical database. That there are secretly two connection strings — one through the pooler, one around it — is an operational detail, and the client exports are the seam that hides it. Most of the time you import `db`, you query, you move on.
+
+Before the close, a quick check to make sure the synthesis landed. Sort each operation into the client and driver it should use.
+
+<Buckets twoCol instructions="Sort each operation into the database client and driver it should use.">
+  <Bucket name="pooled-http" label="Pooled db / HTTP" description="One-shot reads" />
+  <Bucket name="pooled-ws" label="Pooled db / WebSocket" description="Interactive transactions" />
+  <Bucket name="unpooled" label="Unpooled dbUnpooled" description="Migrations & long sessions" />
+
+  <Item bucket="pooled-http">Render an invoice list in a Server Component</Item>
+  <Item bucket="pooled-http">Fetch one customer by id for a detail page</Item>
+  <Item bucket="pooled-ws">A Server Action that deducts credits, then inserts a charge — atomically</Item>
+  <Item bucket="unpooled">`drizzle-kit migrate` on deploy</Item>
+  <Item bucket="unpooled">A nightly cleanup script that holds a session open for minutes</Item>
+</Buckets>
+
+## The senior reflexes
+
+Pull it back to the two reflexes from the top of the lesson — except now they're not rules you're trusting, they're conclusions you derived. Re-tie each to its root cause so you leave with the spine, not four loose facts:
+
+- **Pooled URL for app traffic; unpooled URL for migrations and long scripts.** Because serverless app traffic is many short connections that must not exhaust Postgres, while a migration is one long session the pooler would sever mid-transaction.
+- **HTTP driver for reads; WebSocket driver for transactions.** Because a one-shot read needs no held connection at all, while a read-modify-write needs a single connection held across several steps.
+
+And the one line under both of them, the thing to actually remember when everything else fades: **match the connection to the call site's lifetime.** One logical `DATABASE_URL`, two endpoints, three clients. A read that lives for a single fetch gets the connection-less HTTP path through the pooler; a transaction that must stay open gets a held WebSocket over that same pooler; a migration that runs for a long time gets the direct line that won't be cut. Lifetime decides everything.
+
+A couple of these debts get paid off later in the course, and it's worth knowing where: the next chapter is where Drizzle actually wires `db`, `dbTx`, and `dbUnpooled`; Server Actions, later in the course, are where the transactional WebSocket client (`dbTx`) earns its weight; migrations run on the unpooled URL in a later chapter of this unit; and from here on, every query you write flows through one of these clients.
+
+Let's check one thing that trips people up — the boundary between the two axes.
+
+<MultipleChoice>
+  A Server Action on production traffic must read an account balance, confirm it covers a charge, then deduct the credits and insert the charge row — all or nothing. Pick the connection string **and** the driver it should reach for.
+
+  <McqChoice>The unpooled direct URL with the WebSocket driver — a transaction needs a held connection, so it has to skip the pooler.</McqChoice>
+  <McqChoice correct>The pooled `DATABASE_URL` with the WebSocket driver.</McqChoice>
+  <McqChoice>The pooled `DATABASE_URL` with the HTTP driver — every Server Action runs over HTTP.</McqChoice>
+  <McqChoice>Either URL paired with the WebSocket driver — once you're holding a connection, which host you dialed stops mattering.</McqChoice>
+
+  <McqWhy>Answer the two axes separately. *Which URL?* This is ordinary app traffic — many short bursts that must not exhaust Postgres — so it rides the **pooled** URL. The unpooled URL isn't "for transactions," it's for migrations and long maintenance sessions that need one stable connection. *Which driver?* The request reads a value, branches on it, then writes — an interactive transaction — so it needs the **WebSocket** driver, not HTTP. The pooler still works fine here: each request holds its WebSocket connection only for those few milliseconds.</McqWhy>
+</MultipleChoice>
+
+:::note
+The HTTP/WebSocket serverless driver isn't the *only* way to reach these same Neon URLs — plain `pg` (node-postgres) still works against them, and it's the right reach for a genuinely long-lived Node process, like a background worker or a queue consumer (a topic for later in the course). `@neondatabase/serverless` is specifically the answer for *serverless* runtimes; it isn't the only driver, it's the correct one here.
+:::
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Neon serverless driver"
+    href="https://neon.com/docs/serverless/serverless-driver"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="The HTTP and WebSocket driver, with the neon() and Pool shapes side by side."
+  />
+  <ExternalResource
+    title="Drizzle — Connect to Neon"
+    href="https://orm.drizzle.team/docs/connect-neon"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="How neon-http and neon-serverless wrap the driver — the next chapter's wiring."
+  />
+  <ExternalResource
+    title="Neon — Connection pooling"
+    href="https://neon.com/docs/connect/connection-pooling"
+    icon="simple-icons:neon"
+    iconColor="#00E599"
+    description="The -pooler host, PgBouncer transaction mode, and the features it takes away — the URL axis in depth."
+  />
+</CardGrid>
