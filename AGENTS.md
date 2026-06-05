@@ -32,3 +32,11 @@ Read project files only if essential to your current task. Read only the relevan
 - `documentation/code standards/Code conventions.md` — canonical code conventions for project repos and lesson MDX code blocks. Extensive document, read only the relevant sections.
 - `documentation/components/INDEX.md` — API for the pre-built astro components.
 - `documentation/diagrams/INDEX.md` — How to pick the best diagram engine for each use case.
+
+### Authoring pipelines
+
+Chapters are built by an orchestrator that routes each chapter to one of two pipelines, run sequentially by a fleet of single-purpose subagents.
+
+- `documentation/chapter orchestrator prompts/Orchestrator.md` — finds the next unwritten chapter, classifies it as teaching or project, and routes it to the matching pipeline.
+- Teaching chapters — `documentation/chapter orchestrator prompts/Teaching lessons.md` defines the pipeline; its subagents live in `.claude/agents/lesson/`.
+- Project chapters — `documentation/chapter orchestrator prompts/Project lessons.md` defines the pipeline; its subagents live in `.claude/agents/project/`.
