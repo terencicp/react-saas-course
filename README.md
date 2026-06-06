@@ -1,5 +1,9 @@
 # A personalized course built using agentic workflows
 
+![A Claude prompt that reads "Create a course: How to build a React SaaS app in 2026"](readme-question.png)
+
+Imagine an AI could take that one sentence, break it into a month of work, and actually do it — design the curriculum, write every lesson, build the interactive exercises, ship a working codebase for each project. This repository is that answer, run for real. Not a chatbot reply you read in thirty seconds, but the full thing an agent fleet produces when it's allowed to decompose the problem and grind on it chapter after chapter.
+
 A full-depth course on building a production SaaS with the minimum-viable 2026 stack, **designed and built for me — by me**, with Claude Code (Opus 4.8). I'm building it to learn from; the experiment is that I also engineered the agentic system that authors it. Authoring began May 2026.
 
 > **Status: work in progress.** 43 of a planned 108 chapters are published. Built over ~4 weeks and ~620 commits so far (first commit 2026-05-08). Not yet deployed publicly.
