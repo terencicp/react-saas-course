@@ -1,0 +1,457 @@
+---
+title: 'zodResolver: one schema, both sides of the wire'
+tagline: Wire one Zod schema into React Hook Form through zodResolver so the same validation rules guard the client form and the Server Action, then route server-only errors back to the right field.
+chapter-id: 45
+course-progress: 0.43
+sidebar:
+  order: 3
+  label: One schema, both sides
+---
+
+import { Aside, CardGrid, Steps } from '@astrojs/starlight/components';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import TSPlaygroundCallout from '../../../components/embeds/TSPlaygroundCallout.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Dropdowns from '../../../components/exercises/dropdowns/Dropdowns.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The skeleton you built in the last lesson has two loose ends. One sits in the `useForm` call — `resolver: zodResolver(InvoiceSchema)` with a `// wired next lesson` comment hanging off it. The other sits in `onSubmit` — `// map result.error.fieldErrors back into the form — next lesson`. This lesson ties off both.
+
+Here is the problem that knot solves. Your `createInvoice` action already validates on entry: its first line is `InvoiceSchema.safeParse(...)`. But the action only runs *after* the user submits, and only reports back *after* a round-trip to the server. The form wants the same rules client-side, so it can flag a malformed email the moment the user leaves the field — no submit, no round-trip. The lazy way to get that is to write the rules a second time: a parallel client schema, or per-field rules wired into `register`. That works right up until someone adds a field or tightens a length check in one place and forgets the other. Now the form accepts what the server rejects, and your users hit an error that the inline validation swore wasn't there.
+
+By the end of this lesson, one schema feeds both sides. You'll wire the resolver, see how to type the form when the schema transforms its values, decide which of two shapes to call the action with, and route the failures the schema *can't* predict — a taken email — back to the right field. Keep one line in view the whole way through: the resolver is a convenience for the user. The action's parse is still the gate.
+
+## A resolver is the form's validation source
+
+Before wiring `zodResolver`, it helps to know what slot it plugs into, so it doesn't read as magic.
+
+React Hook Form has one job when you submit: decide whether the values are valid, and if not, which fields failed. It delegates that decision to a single function you hand it — the <Term definition="The function React Hook Form calls to validate the form's values. @hookform/resolvers ships one per validation library; zodResolver(schema) is the Zod adapter.">resolver</Term>. Conceptually the resolver takes the current field values and hands back either the parsed values or a map of field errors:
+
+```ts frame="none"
+type Resolver = (values: FieldValues) => { values: Output; errors: FieldErrors };
+```
+
+That is the whole contract. Anything that can produce `{ values, errors }` from the form's values can be a resolver. You could write one by hand. You won't, because validation libraries already describe these rules better than imperative code does — and you already have a Zod schema doing exactly that on the server.
+
+That is what `@hookform/resolvers` is for. It's a small package, separate from `react-hook-form`, that ships pre-built resolvers for the validation libraries people actually use — Zod, Valibot, ArkType, Yup, and more. `zodResolver(schema)` is the adapter: hand it a Zod schema, get back a resolver function shaped exactly like the contract above. Validation passes, it returns the parsed values; validation fails, it returns the field errors Zod produced.
+
+Here's the discipline to install now, because it shapes every decision that follows: **the resolver is the form's only validation source.** No `required` or `minLength` rules tucked into `register`. No hand-written `setError` for a malformed email. If a rule is about the *shape* of the data — a format, a length, a required field — it lives in the schema, and the resolver enforces it for free. The form doesn't get a second opinion.
+
+And because the resolver is just "point validation at a schema," wiring it is genuinely three lines.
+
+## Wiring it: install, import, pass
+
+<Steps>
+
+1. Install `@hookform/resolvers`. It ships separately from `react-hook-form`, so it's its own install. `zod` you already added back in [the Zod chapter](/042-zod-4---the-validation-contract/1-the-eight-builders/), so it's not on this line.
+
+   ```bash
+   pnpm add @hookform/resolvers
+   ```
+
+2. Import the Zod adapter. It lives under the package's `/zod` entry point.
+
+   ```ts
+   import { zodResolver } from '@hookform/resolvers/zod';
+   ```
+
+3. Pass it to `useForm`. The line that was a comment in the last lesson is now real.
+
+   ```tsx title="app/invoices/new-invoice-form.tsx" ins={2}
+   const form = useForm<InvoiceInput, unknown, Invoice>({
+     resolver: zodResolver(InvoiceSchema),
+     defaultValues: { customer: '', email: '', total: 0 },
+     mode: 'onBlur',
+   });
+   ```
+
+</Steps>
+
+That's the mechanical part, and it's deliberately the shortest section in the lesson. From here the resolver runs on the `mode` you set — `'onBlur'`, the default the last lesson landed on — and again on every `handleSubmit`. When it fails, the errors land in `formState.errors`, keyed by the schema's field paths: `customer`, `email`, `total`. That is the exact place your `Field` rows already read from through `<FieldError>`. So the moment the resolver is wired, the form you built last lesson lights up with validation — no per-field changes, no new JSX. The plumbing was already there; you just turned on the water.
+
+The rest of the lesson is the three things that actually take thought.
+
+## One schema, two importers
+
+This is the thesis in the title, and it's worth making concrete enough to review in a pull request.
+
+The schema lives in one shared module — a file the feature owns, alongside the action it serves. Two files import it. The action file imports `InvoiceSchema` and parses the incoming data against it. The form file imports the *same* `InvoiceSchema` and hands it to `zodResolver`. One definition holds the field rules, the error messages, and the value transforms. Both sides read from it.
+
+Look at the same import appear in three places:
+
+<CodeVariants>
+  <CodeVariant label="The schema (one file)">
+    <div data-mark-color="blue">
+
+    ```ts title="app/invoices/_lib/invoice-schema.ts" {5}
+    import { z } from 'zod';
+
+    export const InvoiceSchema = z.object({
+      customer: z.string().min(1),
+      email: z.email(),
+      total: z.coerce.number<number>().positive(), // generic pins the input type — see below
+    });
+
+    export type InvoiceInput = z.input<typeof InvoiceSchema>;
+    export type Invoice = z.output<typeof InvoiceSchema>;
+    ```
+
+    </div>
+    **The source.** Field rules, error messages, transforms — all here. `InvoiceInput` is the shape going in; `Invoice` is the shape coming out. They differ, and the next section is about why that matters.
+  </CodeVariant>
+
+  <CodeVariant label="The action (imports it)">
+    <div data-mark-color="green">
+
+    ```ts title="app/invoices/actions.ts" "import { InvoiceSchema } from './_lib/invoice-schema';"
+    'use server';
+
+    import { InvoiceSchema } from './_lib/invoice-schema';
+
+    export async function createInvoice(input: Invoice) {
+      const parsed = InvoiceSchema.safeParse(input);
+      if (!parsed.success) {
+        // ...return the Result with fieldErrors (Server Actions chapter)
+      }
+      // ...authorize, mutate, revalidate, return Result
+    }
+    ```
+
+    </div>
+    **The gate.** The action parses on entry — unchanged from the Server Actions chapter. Same import, server-side.
+  </CodeVariant>
+
+  <CodeVariant label="The form (imports it)">
+    <div data-mark-color="green">
+
+    ```tsx title="app/invoices/new-invoice-form.tsx" "import { InvoiceSchema } from './_lib/invoice-schema';"
+    'use client';
+
+    import { InvoiceSchema } from './_lib/invoice-schema';
+
+    const form = useForm<InvoiceInput, unknown, Invoice>({
+      resolver: zodResolver(InvoiceSchema),
+      defaultValues: { customer: '', email: '', total: 0 },
+      mode: 'onBlur',
+    });
+    ```
+
+    </div>
+    **The renderer.** Same import, client-side, fed to `zodResolver`. The form validates against the exact rules the action parses with.
+  </CodeVariant>
+</CodeVariants>
+
+The same `import { InvoiceSchema }` line is in the action and the form, character for character. That is the entire point made spatially: not "the form and the server happen to agree," but "there is one definition, and two files point at it."
+
+Now feel the payoff. Add a `notes` field. Tighten `customer` to `.min(2)`. Reword the email error message. Each change happens *once*, in the schema, and both the client UX and the server gate move together — automatically, because neither side has its own copy to forget. Compare that to the lazy path: a parallel client schema, or `register` rules. There you edit two places every time, and the bug isn't loud. The form keeps accepting last week's shape while the server enforces this week's, and the mismatch only surfaces as a confused user staring at a server error their inline validation never warned them about.
+
+That gives you a reviewer reflex worth keeping: a pull request that adds validation inside the form component — a rule that isn't in the schema — gets sent back. The schema is the source. The form renders it. The action enforces it. New rules go in the source.
+
+<VideoCallout videoId="0VqijABRq5Y" videoTitle="The BEST Way to Handle Form Validation in Next.js">
+  Jan Marshal walks the whole lesson end to end in 27 minutes — one Zod schema feeding `zodResolver` for client-side errors and the same schema re-parsed inside a Next.js Server Action, with the failures routed back to the form.
+</VideoCallout>
+
+This is also the place to be precise about why running the schema in two runtimes isn't wasteful duplication. The resolver runs the schema *client-side* for fast inline feedback — that's for the user. The action runs the *same schema* server-side because the client can be skipped entirely: someone opens devtools and calls the action directly, replays a captured request, or turns JavaScript off and the resolver never loads. The network between the browser and your server is hostile by default, so the server cannot trust that the client validated. Same rules, two runtimes, two different jobs. The resolver makes the form pleasant; the `safeParse` keeps the data clean. Deleting either one removes a job the other was never doing.
+
+<Aside type="caution">
+The resolver runs *only the schema's rules*. Any rule the client can't evaluate on its own — is this email already taken, has this org hit its plan limit, anything that needs the database — cannot live in the schema, so the resolver will never catch it. Those come back from the action as `fieldErrors`, and there's a whole section below on routing them to the right field. "The schema is the source" means the source of *shape* rules, not every rule the system has.
+</Aside>
+
+## The type bridge: z.input vs z.output
+
+This is the section most likely to bite you, and it's invisible until a transform shows up in the schema — at which point a form that type-checked yesterday starts lying. So it earns the lesson's most careful walkthrough.
+
+Quick re-anchor from the Zod chapter, two sentences, because that chapter owns this idea. A schema with a `.transform()`, a `z.coerce`, or a `.default()` has a *different input type than output type* — the type it accepts is not the type it produces. `z.coerce.number()` is the case you have on `total`: it produces a `number`, but what it *accepts* is `unknown`. Not `string`, even though the value arrives from an `<input>` as text — and not `number` either. `unknown`.
+
+That distinction lands directly on the form, in two places:
+
+- The values React Hook Form *tracks* — what `defaultValues` must match, what `field.value` is, what `register` wires up — are the <Term definition="The type a schema accepts before transforms and coercion run. What React Hook Form tracks and defaultValues must match. For a bare z.coerce.x() it's unknown unless you pin it.">input</Term> type. The raw, pre-transform shape. With a bare `z.coerce.number()`, the input type of `total` is `unknown`, which makes `defaultValues: { total: 0 }` and a typed number field awkward — you're handing a `number` to a field RHF thinks holds `unknown`.
+- The values handed to your `onSubmit` *after* the resolver runs are the <Term definition="The type a schema produces after transforms run. What onSubmit receives.">output</Term> type. Coerced and transformed — `total` is now a clean `number`.
+
+There's a small fix for that awkward `unknown`, and you already saw it in the schema tab. Zod 4 lets you pin the coercion's input type with a generic: `z.coerce.number<number>()` makes the input type resolve to `number` instead of `unknown`. Now `defaultValues: { total: 0 }` type-checks against a real `number`, and the registered number field has a sensible type — while the output stays `number` exactly as before. It's a precision tweak, not a new concept: for an RHF number field, the pinned generic is simply the cleaner shape.
+
+So the schema produces two genuinely different types, and the form straddles both: it *tracks* the input, it *receives* the output. The senior move is to tell `useForm` about both, so registration is typed against the input and `onSubmit` is typed against the output. React Hook Form's `useForm` takes three type parameters for exactly this — the values it tracks, a context type you rarely use, and the *transformed* values your submit handler receives:
+
+<AnnotatedCode lang="tsx" code={`
+const form = useForm<InvoiceInput, unknown, Invoice>({
+  resolver: zodResolver(InvoiceSchema),
+  defaultValues: { customer: '', email: '', total: 0 },
+  mode: 'onBlur',
+});
+
+const onSubmit = async (values: Invoice) => {
+  // values.total is a number here — the resolver ran the coercion
+  await createInvoice(values);
+};
+`}>
+  <AnnotatedStep meta={`"<InvoiceInput, "`} color="violet">
+    The first parameter is what RHF *tracks* — the input type. Every `defaultValues` entry, every `field.value`, every `register` is this raw, pre-coercion shape. `total` here is whatever goes *in*.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`", Invoice>"`} color="green">
+    The third parameter is what `onSubmit` *receives* — the output type, after the resolver transformed the values. The middle slot is the rarely-used context type; `unknown` is fine.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"values: Invoice" {8}`} color="blue">
+    Inside `onSubmit`, the resolver has already run, so `total` is a real `number` — not the string it started as. You call the action with clean, output-typed values. No manual `Number(...)` anywhere.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Read those three slots as one sentence: *track this, transform, receive that.* That's the mental model to keep.
+
+Now the trap, because this is a "looks fine until it doesn't" footgun. Typing the form with a single inferred type — `useForm<z.infer<typeof InvoiceSchema>>()` — *compiles* while the schema has no transforms. Everything looks correct. Then someone adds a `z.coerce` or a `.default()`, the input and output types drift apart, and `z.infer` (which is the *output*) silently mistypes what `register` and `defaultValues` track. No error. The form just quietly disagrees with itself about what shape it holds. Spelling out `z.input` and `z.output` explicitly is correct from the first line, before any transform exists to break the shortcut — which is why the last lesson's `useForm<InvoiceInput>` gets upgraded here to the full three-parameter form the moment the resolver lands.
+
+It's worth seeing where this `coerce` came from in the first place. Back in [the Zod chapter's FormData lesson](/042-zod-4---the-validation-contract/6-crossing-the-formdata-boundary/), every value crossing the form boundary arrives as a string — `FormData` has no numbers. `z.coerce.number()` was the tool that absorbed that string-to-number seam. Here it's the same tool doing the same job, except now the seam is *internal*: it sits between what RHF tracks (the input) and what the action expects (the output). The coercion is why the two types differ at all.
+
+If you want to watch the two types resolve for yourself, the playground below has the schema wired with both queries — skip it if the model above already landed.
+
+<TSPlaygroundCallout
+  url="https://www.typescriptlang.org/play/?strict=true#code/JYWwDg9gTgLgBAbzgLzgXzgMyhEcDkyEAJvgNwBQFA9NXAAYwQwCGANvXAK4DOApjzgwAFnzhhgAO0l9icAOZ8ZUYAGMAXCgB0qiHyiq+WyVxAAjfQB4T5-QD4AFAEotNOgEE4ZllDHIdegZGNhZQznAgLADWAkKicACSAHIACgCqACpCAJ5gYvRcklGSEADukpxSPDB8LMSuupLViZIAbhBqfADKqqKRcAC82hBmAFZ8qjAOCBRwcKq8TCD6mv7VKpLyzlogUg4AjE4ANLNwfJHAbKta5yyXzidzTKxX2rr6hsamodbf9tuQHjAGDAVp8B4UNBOSgUGC5MQJNodQyIsBceBDfxSNEwSxwvIQTAtdqdHp9Fh2Sj4hFIzqDYbonF4+GE4nI7q9W6Uqi0OAAdWELHgACVapM4AAJCAQKJwABi0DwMCgLFUUUEgBQCOII1KZOBA4hGSUQMFQBjK1UxYj0VyG1RsHxiRrNC1q2SaREklGSHEAbXwz3Y+AAupReXMI5G5gA9AD8PLoAqFcAgki6XDMu3gvkMoNiWpEYgA8pl0lkDUapaaGDwM1matbbRMHb55qnmrXM8CGx7aYZ-YG2CGw3Qo2O4xQgA"
+  title="z.input vs z.output on a coerced field"
+  label="Open the input-vs-output playground"
+  height={520}
+>
+  Optional. Hover the two `^?` queries — `tracked` is the input side, `submitted` is the output side. With the pinned `z.coerce.number<number>()`, both land on a clean `number`; the comment notes how a bare `z.coerce.number()` would leave the input as `unknown`.
+</TSPlaygroundCallout>
+
+## Calling the action: typed object vs FormData
+
+The last lesson's skeleton called `createInvoice(values)` from inside `onSubmit` — but left open *with what shape*. Here's the decision, and it has a default, not two equal options.
+
+**Typed object — the 2026 reflex when React Hook Form is the only caller.** RHF already holds the typed, coerced object. So `onSubmit` just hands it over: `await createInvoice(values)`. The action's signature is `createInvoice(input: Invoice)`, and its first line is still `InvoiceSchema.safeParse(input)` — no `FormData`, no `Object.fromEntries`. When you already have the object, packing it into `FormData` only to unpack it on the other side is pure ceremony. For an RHF-managed form, reach for the typed object.
+
+**Keep `FormData` — when the endpoint serves more than this form.** Sometimes the same action also answers a non-RHF caller: a no-JavaScript fallback, or a native `<form action>` of the kind [the previous chapter](/044-forms-the-platform-way/1-uncontrolled-inputs-and-the-formdata-contract/) built, pointing at the same endpoint. To stay compatible with both, build `FormData` from `values` and call `createInvoice(formData)`; the action keeps its `Object.fromEntries(formData)` parse and serves every caller the same way.
+
+Side by side, the cost of each is visible:
+
+<CodeVariants>
+  <CodeVariant label="Typed object (default)">
+    <div data-mark-color="green">
+
+    ```tsx "createInvoice(values)" "InvoiceSchema.safeParse(input)"
+    // in the form
+    const onSubmit = async (values: Invoice) => {
+      const result = await createInvoice(values);
+      // ...handle result
+    };
+
+    // in the action
+    export async function createInvoice(input: Invoice) {
+      const parsed = InvoiceSchema.safeParse(input);
+      // ...
+    }
+    ```
+
+    </div>
+    **The default.** RHF already has the object; pass it straight through. The action parses the object instead of a `FormData`. No reconstruction, no string round-trip.
+  </CodeVariant>
+
+  <CodeVariant label="FormData (multi-caller)">
+    <div data-mark-color="orange">
+
+    ```tsx {3-6} "createInvoice(formData)"
+    // in the form
+    const onSubmit = async (values: Invoice) => {
+      const formData = new FormData();
+      formData.set('customer', values.customer);
+      formData.set('email', values.email);
+      formData.set('total', String(values.total));
+      const result = await createInvoice(formData);
+      // ...handle result
+    };
+
+    // in the action
+    export async function createInvoice(formData: FormData) {
+      const parsed = InvoiceSchema.safeParse(Object.fromEntries(formData));
+      // ...
+    }
+    ```
+
+    </div>
+    **The multi-caller shape.** You rebuild `FormData` by hand — note `String(values.total)`, since `FormData` only holds strings. Worth it only when a native form or no-JS path hits the same action.
+  </CodeVariant>
+</CodeVariants>
+
+The decision in one line: **React Hook Form is the only caller, pass the typed object; the action serves other shapes too, keep `FormData`.** Default to the typed object — the `FormData` tab is what the *second* condition costs, and you reach for it only when that condition is actually true.
+
+Either way, notice what doesn't change: the action's first move is `safeParse`, full stop. The typed-object action parses the object; the `FormData` action parses `Object.fromEntries(formData)`. The input arrives, the action parses it, no exceptions — the trust boundary is identical regardless of the call shape. (This is also why the chapter's project keeps `FormData`: it's deliberately built on the native pattern, so an RHF form calling that same `createInvoice` is the multi-caller case in the flesh — not a hypothetical.)
+
+## Mapping server errors back into the form
+
+Time to tie off the second loose end: `// map result.error.fieldErrors back into the form`. This is where a failure the schema couldn't have predicted becomes a red message under the right field.
+
+Picture the case the resolver can't cover. The user types `ada@example.com`, leaves the field, the resolver checks it against `z.email()` — well-formed, no error. They submit. The action runs, tries to insert, and the database says that email is already taken. The schema was never going to catch this; uniqueness lives in the database, not in the shape of a string. So the action returns the course `Result`, failure arm:
+
+<div data-mark-color="orange">
+
+```ts frame="none" {6}
+{
+  ok: false,
+  error: {
+    code: 'conflict',
+    userMessage: 'That email is already in use.',
+    fieldErrors: { email: ['That email is already in use.'] },
+  },
+}
+```
+
+</div>
+
+`fieldErrors` is a flat map from field name to an array of messages — the exact contract [the Server Actions chapter](/043-server-actions/3-result-or-throw/) locked in. Your job on the client is to take that map and surface each message on its field.
+
+Here's the mechanism, and it's the punchline of the whole lesson. React Hook Form's `form.setError(name, { message })` pushes an error into `formState.errors[name]` — the *same place the resolver writes*. So a server-pushed error doesn't need any new UI. It flows through the identical `Field` / `<FieldError>` row that's been rendering your client-side validation all along. Client format errors and server business errors are *one rendering path*, because they land in one place.
+
+The pattern is a loop: walk the returned `fieldErrors`, call `setError` for each. And since every form will do this the same way, hoist it into the small helper the last lesson promised — `applyServerErrors(form, result)`. Here's the completed `onSubmit` with that helper, which finally erases the skeleton's last comment:
+
+<AnnotatedCode lang="tsx" maxLines={18} code={`
+const onSubmit = async (values: Invoice) => {
+  const result = await createInvoice(values);
+  if (result.ok) {
+    form.reset(values);
+    return;
+  }
+  applyServerErrors(form, result);
+};
+
+function applyServerErrors(
+  form: UseFormReturn<InvoiceInput, unknown, Invoice>,
+  result: { ok: false; error: { fieldErrors?: Record<string, string[]> } },
+) {
+  const fieldErrors = result.error.fieldErrors ?? {};
+  for (const [name, messages] of Object.entries(fieldErrors)) {
+    form.setError(name as FieldPath<InvoiceInput>, { message: messages[0] });
+  }
+}
+`}>
+  <AnnotatedStep meta={`"const result = await createInvoice(values);"`} color="blue">
+    The action ran and returned the canonical `Result`. The resolver already passed client-side, so this round-trip is here to catch what only the server can know — the taken email.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{3-6}" color="green">
+    Success path: `reset` to the values you just saved. That clears the dirty state so the form looks freshly loaded — the move from the previous lesson, reused.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"applyServerErrors(form, result);"`} color="orange">
+    Failure with field errors: hand the whole thing to the helper. One call site, every form does it identically.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"form.setError" "messages[0]"`} color="orange">
+    `setError` writes into `formState.errors` — the same place the resolver writes — so the existing `<FieldError>` row renders the server's message with zero new UI. Read `messages[0]`, the first message, matching the flat contract.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Two things to get right, both easy to get wrong:
+
+Don't reach for `setValue('email', value, { shouldValidate: true })` to push a server error in. `setValue` changes a *value*, and `shouldValidate` re-runs the resolver against it — which, for a well-formed email, *passes* and wipes out the server's specific "already taken" message. `setError` is the tool for a server-pushed error; `setValue` is the tool for changing what's in the field. They are not interchangeable here.
+
+And a quieter one: `setError` on a name that doesn't match a registered field is a silent no-op. No crash, no warning — the message simply never appears. The defense is the thesis paying off one more time: the schema keys, the form field `name`s, and the action's `fieldErrors` keys all agree, *because they all derive from the one schema*. The loop you'd otherwise have to babysit is safe by construction.
+
+<Aside type="note">
+This closes the loop on the title. Client format errors from the resolver and server business errors from the action flow through one `formState.errors` object and render through one `<FieldError>` row — because the field names come from one schema. One schema, one error surface, both sides of the wire.
+</Aside>
+
+One last knob to name, since the last lesson forward-referenced it: `mode` versus `reValidateMode`. They sound alike and do different things. `mode` sets *when validation first runs* for a field — its default is `'onSubmit'`, but the course uses `'onBlur'`, so a field is first checked when the user leaves it. `reValidateMode` sets *when validation re-runs after that field has already errored* — default `'onChange'`, so once a field is showing an error, it re-checks on every keystroke and the error clears the instant the value becomes valid. Together they give the canonical "validate on blur, then fix-as-you-type" feel:
+
+<CodeTooltips tooltips={{
+  mode: "When a field is validated for the first time. Default 'onSubmit'; the course uses 'onBlur' — check when the user leaves the field.",
+  reValidateMode: "When a field re-validates after it has already errored. Default 'onChange' — re-check on every keystroke so the error clears as soon as the value is valid.",
+}}>
+```tsx
+const form = useForm<InvoiceInput, unknown, Invoice>({
+  resolver: zodResolver(InvoiceSchema),
+  mode: 'onBlur',
+  reValidateMode: 'onChange',
+});
+```
+</CodeTooltips>
+
+## Async checks in the schema (the rare case)
+
+One door worth knowing exists, without walking through it. Zod's `.refine()` accepts an async predicate, and the resolver supports it — so you *can* run a live "is this username available?" check as part of validation, debounced as the user types. The senior shape when you do: the async refinement calls a route handler that runs the uniqueness check server-side and reuses the same schema, so even the live check stays single-source. But most forms don't need it. They route uniqueness through the action's failure path — the `fieldErrors` round-trip you just built — and pay nothing for a live check the form doesn't require. The route-handler half of this is the next chapter's; for now, just know the door is there.
+
+## Check your understanding
+
+<MultipleChoice>
+  A teammate wires `zodResolver(InvoiceSchema)` into the form, sees inline validation working, and opens a pull request that deletes the `InvoiceSchema.safeParse(input)` line from the `createInvoice` action — "the form already validates against this schema, so parsing again on the server is redundant." What's the problem?
+
+  <McqChoice correct>The schema never actually reaches the server — `zodResolver` runs only in the browser, and a caller can route straight past it (devtools, a replayed request, JS turned off). The action's parse is the one check that can't be skipped, so it's the real gate, not a duplicate of the form's work.</McqChoice>
+  <McqChoice>Nothing's wrong — it's the same schema either way, so the second parse is genuinely dead code.</McqChoice>
+  <McqChoice>It's only safe to delete if the form uses `mode: 'onChange'` so validation runs continuously.</McqChoice>
+  <McqChoice>The fix is the other direction: drop the resolver and validate only on the server, so there's exactly one place.</McqChoice>
+
+  <McqWhy>Client validation and server validation are the same rules doing two different jobs. The resolver makes the form pleasant for an honest user; the `safeParse` keeps the data clean against a hostile network that can route straight past the browser. Identical schema, but only one of the two can be trusted — so neither is redundant, and the server's is the one you can never remove.</McqWhy>
+</MultipleChoice>
+
+<Dropdowns
+  instructions="This schema coerces total from a string to a number, so its input and output types differ. Fill the first blank with the type for what RHF tracks, and the onSubmit parameter with the type for what the handler receives."
+  answers={[
+    { answer: 'InvoiceInput', options: ['InvoiceInput', 'Invoice', 'z.infer<typeof InvoiceSchema>'] },
+    { answer: 'Invoice', options: ['Invoice', 'InvoiceInput', 'z.infer<typeof InvoiceSchema>'] },
+  ]}
+>
+
+```tsx
+const form = useForm<___, unknown, Invoice>({
+  resolver: zodResolver(InvoiceSchema),
+  defaultValues: { customer: '', email: '', total: 0 },
+});
+
+const onSubmit = async (values: ___) => {
+  await createInvoice(values);
+};
+```
+
+</Dropdowns>
+
+## External resources
+
+The lesson stands on its own, but these fill in the corners.
+
+<CardGrid>
+  <ExternalResource
+    title="@hookform/resolvers"
+    href="https://github.com/react-hook-form/resolvers"
+    icon="simple-icons:reacthookform"
+    iconColor="#EC5990"
+    description="The resolver package and its Zod adapter; the README documents the three-parameter useForm typing for transforming schemas."
+  />
+  <ExternalResource
+    title="React Hook Form — useForm"
+    href="https://react-hook-form.com/docs/useform"
+    icon="simple-icons:reacthookform"
+    iconColor="#EC5990"
+    description="The resolver option, the transformed-values generic, and setError for pushing server errors into the form."
+  />
+  <ExternalResource
+    title="Zod — API reference"
+    href="https://zod.dev/api"
+    icon="simple-icons:zod"
+    iconColor="#3E67B1"
+    description="The z.input / z.output distinction and coercion, if you want the source behind the type bridge."
+  />
+  <ExternalResource
+    title="React Hook Form — setError"
+    href="https://react-hook-form.com/docs/useform/seterror"
+    icon="simple-icons:reacthookform"
+    iconColor="#EC5990"
+    description="The exact API behind the server-error section — how setError writes into formState.errors and where it differs from setValue."
+  />
+  <ExternalResource
+    title="Carl Rippon — server-side validation"
+    href="https://carlrippon.com/react-hook-form-server-validation/"
+    icon="lucide:server-cog"
+    iconColor="#0EA5E9"
+    description="A worked walkthrough, with a live CodeSandbox, of the reusable setError helper that maps a fieldErrors map onto the form."
+  />
+</CardGrid>
