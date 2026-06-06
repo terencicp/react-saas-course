@@ -1,0 +1,471 @@
+---
+// Diagram: the round-trip (diagram id: the-round-trip, Chapter 043 Lesson 1 —
+// "The 'use server' seam"). The lesson's anchor visual. Its whole job is to
+// kill the "I imported it, so it runs in my code" misconception by making the
+// abstract claim — `await createInvoice(formData)` is really an HTTP POST —
+// concrete and scrubbable. The round-trip is inherently TEMPORAL ("for these
+// milliseconds the request is in flight"), so it is a DiagramSequence the
+// student scrubs, not a static stack.
+//
+// Each step is one horizontal row with three zones:
+//   LEFT   "Browser" lane — always shows a fixed `createInvoice → opaque ID`
+//          binding chip (the ONE invariant: the browser only ever holds the ID,
+//          never the body) plus a per-step status line below it.
+//   CENTER the wire channel — a track whose label + arrow show what is on the
+//          wire this step: idle / serialize / POST → id+args (arrow right) /
+//          (server running) / ← result (arrow left) / resolved.
+//   RIGHT  "Server" lane — a per-step status; on the run step the ID resolves
+//          to `createInvoice(args)`.
+// The active side is accent-highlighted, the idle side muted, so the eye reads
+// where the work is happening at each instant.
+//
+//   Step 1  Bound. Browser holds createInvoice as an opaque ID; server idle.
+//   Step 2  Serialize the arguments (the FormData) into the RSC payload.
+//   Step 3  HTTP POST crosses, carrying { action id, serialized args }. Public
+//           request — same trust boundary as any endpoint. Wire is hot.
+//   Step 4  Server resolves the id back to the real function and runs it (where
+//           parse/authorize/db will live — the five seams).
+//   Step 5  The return value serializes back across the wire.
+//   Step 6  Client deserializes; the await resolves. It looked local the whole
+//           time — that illusion is the thing to stay suspicious of.
+//
+// Colour convention (pinned light, mirrors the ch 038-042 family):
+//   BLUE   = the browser/client side,
+//   VIOLET = the server side AND the seam itself (the `'use server'` token
+//            colour the AnnotatedCode below the diagram reuses),
+//   GREEN  = success / the await resolved,
+//   AMBER  = the wire-is-hot, public-POST moment (the trust boundary),
+//   slate  = inert chrome (idle lanes, the opaque-ID chip, borders).
+//
+// House style follows ch 040 L2 (rename-cutover-race.astro): DiagramSequence
+// provides the outer card (never wrap in Figure); pinned `color-scheme: light`
+// so the hand-picked tints survive dark mode; inline style strings only;
+// `margin: 0` + box-sizing: border-box throughout to defeat Starlight's injected
+// prose margins. Horizontal, height-capped. No leader lines, so the figure
+// stays expandable.
+
+import DiagramSequence from '../../../figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../figures/diagram-sequence/DiagramStep.astro';
+
+const sans = "system-ui, -apple-system, 'Segoe UI', sans-serif";
+const mono = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
+
+// ---- palette (pinned light) ----------------------------------------------
+const INK = '#1e293b'; // slate-800 — primary ink
+const INK_SOFT = '#64748b'; // slate-500 — muted text
+const INK_FAINT = '#94a3b8'; // slate-400 — idle / placeholder
+const SURFACE = '#ffffff';
+const PANEL_BORDER = '#e2e8f0'; // slate-200 — neutral chrome
+
+// BLUE — the browser / client side.
+const BLUE = '#2563eb'; // blue-600
+const BLUE_INK = '#1e3a8a'; // blue-900
+const BLUE_BG = '#eff6ff'; // blue-50 wash
+
+// VIOLET — the server side and the seam token.
+const VIOLET = '#7c3aed'; // violet-600
+const VIOLET_INK = '#5b21b6'; // violet-800
+const VIOLET_BG = '#f5f3ff'; // violet-50 wash
+
+// GREEN — success: the await resolved.
+const GREEN = '#16a34a'; // green-600
+const GREEN_INK = '#15803d'; // green-700
+const GREEN_BG = '#f0fdf4'; // green-50 wash
+
+// AMBER — the wire is hot: a public POST crossing the trust boundary.
+const AMBER = '#d97706'; // amber-600
+const AMBER_INK = '#b45309'; // amber-700
+const AMBER_BG = '#fffbeb'; // amber-50 wash
+
+// ---- step model ----------------------------------------------------------
+type Side = 'browser' | 'server';
+// what the wire is doing this step, which drives the centre channel:
+//   'idle'  — nothing on the wire,
+//   'out'   — args travelling browser → server (arrow right, amber/hot),
+//   'work'  — request landed, server busy (no arrow, the lanes carry it),
+//   'back'  — result travelling server → browser (arrow left, green).
+type Wire = 'idle' | 'out' | 'work' | 'back';
+
+interface LaneState {
+  // the per-step status line under the lane's title. `code` renders monospace.
+  text: string;
+  code?: boolean;
+  tone: 'active' | 'idle' | 'done';
+}
+
+interface Step {
+  active: Side; // which lane is doing the work this step (gets the accent)
+  wire: Wire;
+  wireLabel?: string; // text riding on the wire channel this step
+  browser: LaneState;
+  server: LaneState;
+  caption: string;
+}
+
+const steps: Step[] = [
+  {
+    active: 'browser',
+    wire: 'idle',
+    browser: { text: 'imported, ready to call', tone: 'active' },
+    server: { text: 'idle', tone: 'idle' },
+    caption:
+      'The Client Component holds createInvoice — but the binding is an opaque action id, not the function body. The body never shipped to the browser.',
+  },
+  {
+    active: 'browser',
+    wire: 'idle',
+    browser: { text: 'serialize(formData)', code: true, tone: 'active' },
+    server: { text: 'idle', tone: 'idle' },
+    caption:
+      'The form submits. The client serializes the arguments — here, the FormData — into the RSC payload.',
+  },
+  {
+    active: 'server',
+    wire: 'out',
+    wireLabel: 'POST · id + args',
+    browser: { text: 'POST sent', tone: 'idle' },
+    server: { text: 'receiving', tone: 'active' },
+    caption:
+      'An HTTP POST crosses the network carrying the action id and the serialized arguments. This is a public request — same trust boundary as any endpoint on the internet.',
+  },
+  {
+    active: 'server',
+    wire: 'work',
+    browser: { text: 'awaiting', tone: 'idle' },
+    server: { text: 'id → createInvoice(args)', code: true, tone: 'active' },
+    caption:
+      'The server resolves the id back to the real function and runs it. This is where parse, authorize, and the database write will live — the five seams you fill in.',
+  },
+  {
+    active: 'server',
+    wire: 'back',
+    wireLabel: 'result',
+    browser: { text: 'awaiting', tone: 'idle' },
+    server: { text: 'serialize(result)', code: true, tone: 'active' },
+    caption: 'The function returns. The server serializes the return value back across the wire.',
+  },
+  {
+    active: 'browser',
+    wire: 'idle',
+    browser: { text: 'await resolved', code: true, tone: 'done' },
+    server: { text: 'done', tone: 'idle' },
+    caption:
+      'The client deserializes the result and the await resolves. From the component’s point of view it looked local the whole time — that illusion is the thing to stay suspicious of.',
+  },
+];
+
+// ---- styles --------------------------------------------------------------
+const stage = [
+  'box-sizing: border-box',
+  'display: flex',
+  'flex-direction: column',
+  'align-items: stretch',
+  'justify-content: center',
+  'gap: 14px',
+  'margin: 0',
+  'padding: 8px 2px',
+  'color-scheme: light',
+  `font-family: ${sans}`,
+  `color: ${INK}`,
+  'min-height: 188px',
+].join('; ');
+
+// the three-zone row: browser lane | wire channel | server lane.
+const row = [
+  'box-sizing: border-box',
+  'display: grid',
+  'grid-template-columns: minmax(0, 1fr) minmax(96px, 132px) minmax(0, 1fr)',
+  'align-items: stretch',
+  'gap: 0',
+  'margin: 0',
+  'width: 100%',
+].join('; ');
+
+// one lane (browser or server). `accent` tints the border + title when active.
+const lane = (accent: string, on: boolean) =>
+  [
+    'box-sizing: border-box',
+    'display: flex',
+    'flex-direction: column',
+    'gap: 10px',
+    'margin: 0',
+    'padding: 14px 15px',
+    'border-radius: 14px',
+    `border: ${on ? '1.5px' : '1.5px'} solid ${on ? accent : PANEL_BORDER}`,
+    `background: ${on ? (accent === BLUE ? BLUE_BG : VIOLET_BG) : SURFACE}`,
+    'min-width: 0',
+    'min-height: 118px',
+  ].join('; ');
+
+const laneHead = [
+  'box-sizing: border-box',
+  'display: flex',
+  'align-items: center',
+  'gap: 7px',
+  'margin: 0',
+].join('; ');
+
+const laneDot = (accent: string, on: boolean) =>
+  [
+    'flex: 0 0 auto',
+    'width: 9px',
+    'height: 9px',
+    'border-radius: 999px',
+    'margin: 0',
+    `background: ${on ? accent : INK_FAINT}`,
+  ].join('; ');
+
+const laneTitle = (accent: string, on: boolean) =>
+  [
+    'margin: 0',
+    `font-family: ${sans}`,
+    'font-size: 11px',
+    'font-weight: 800',
+    'letter-spacing: 0.06em',
+    'text-transform: uppercase',
+    'line-height: 1.2',
+    `color: ${on ? accent : INK_SOFT}`,
+    'white-space: nowrap',
+  ].join('; ');
+
+// the fixed binding chip on the browser lane: createInvoice → opaque ID.
+// Present and unchanged in every step — it carries the lesson's one invariant.
+const bindChip = [
+  'box-sizing: border-box',
+  'display: flex',
+  'flex-direction: column',
+  'gap: 4px',
+  'margin: 0',
+  'padding: 8px 10px',
+  'border-radius: 9px',
+  `border: 1px dashed ${INK_FAINT}`,
+  'background: color-mix(in srgb, #64748b 7%, transparent)',
+].join('; ');
+
+const bindLabel = [
+  'margin: 0',
+  `font-family: ${sans}`,
+  'font-size: 9px',
+  'font-weight: 800',
+  'letter-spacing: 0.05em',
+  'text-transform: uppercase',
+  'line-height: 1.2',
+  `color: ${INK_SOFT}`,
+].join('; ');
+
+const bindRow = [
+  'box-sizing: border-box',
+  'display: flex',
+  'align-items: center',
+  'gap: 6px',
+  'flex-wrap: wrap',
+  'margin: 0',
+].join('; ');
+
+const bindFn = [
+  'margin: 0',
+  `font-family: ${mono}`,
+  'font-size: 12px',
+  'font-weight: 700',
+  'line-height: 1.2',
+  `color: ${BLUE_INK}`,
+  'white-space: nowrap',
+].join('; ');
+
+const bindArrow = [
+  'margin: 0',
+  `font-family: ${sans}`,
+  'font-size: 12px',
+  'font-weight: 700',
+  'line-height: 1',
+  `color: ${INK_FAINT}`,
+].join('; ');
+
+const bindId = [
+  'box-sizing: border-box',
+  'margin: 0',
+  'padding: 1px 7px',
+  'border-radius: 999px',
+  `border: 1px solid ${INK_FAINT}`,
+  'background: ' + SURFACE,
+  `font-family: ${mono}`,
+  'font-size: 10.5px',
+  'font-weight: 800',
+  'line-height: 1.4',
+  `color: ${INK_SOFT}`,
+  'white-space: nowrap',
+].join('; ');
+
+// the per-step status line under a lane.
+const statusLine = (state: LaneState, accent: string) => {
+  const ink =
+    state.tone === 'active' ? accent : state.tone === 'done' ? GREEN_INK : INK_FAINT;
+  return [
+    'box-sizing: border-box',
+    'display: flex',
+    'align-items: center',
+    'gap: 6px',
+    'margin: 0',
+    `font-family: ${state.code ? mono : sans}`,
+    'font-size: ' + (state.code ? '12px' : '12.5px'),
+    'font-weight: ' + (state.tone === 'idle' ? '600' : '700'),
+    'line-height: 1.3',
+    `color: ${ink}`,
+  ].join('; ');
+};
+
+// ---- centre wire channel -------------------------------------------------
+const channel = [
+  'box-sizing: border-box',
+  'position: relative',
+  'display: flex',
+  'flex-direction: column',
+  'align-items: center',
+  'justify-content: center',
+  'gap: 6px',
+  'margin: 0',
+  'padding: 0 6px',
+].join('; ');
+
+// the colour the wire takes this step.
+const wireColor = (w: Wire) =>
+  w === 'out' ? AMBER : w === 'back' ? GREEN : w === 'work' ? VIOLET : INK_FAINT;
+
+// the horizontal track line. Dashed + faint when idle, solid + tinted when hot.
+const track = (w: Wire) => {
+  const c = wireColor(w);
+  const live = w === 'out' || w === 'back';
+  return [
+    'box-sizing: border-box',
+    'width: 100%',
+    'height: 0',
+    'margin: 0',
+    `border-top: ${live ? '2.5px' : '2px'} ${live ? 'solid' : 'dashed'} ${c}`,
+  ].join('; ');
+};
+
+// the wire label pill that rides above the track when the wire is hot.
+const wireTag = (w: Wire) => {
+  const c = wireColor(w);
+  const bg = w === 'out' ? AMBER_BG : w === 'back' ? GREEN_BG : SURFACE;
+  const ink = w === 'out' ? AMBER_INK : w === 'back' ? GREEN_INK : INK_SOFT;
+  return [
+    'box-sizing: border-box',
+    'margin: 0',
+    'padding: 2px 8px',
+    'border-radius: 999px',
+    `border: 1px solid ${c}`,
+    `background: ${bg}`,
+    `font-family: ${mono}`,
+    'font-size: 9.5px',
+    'font-weight: 800',
+    'letter-spacing: 0.02em',
+    'line-height: 1.4',
+    `color: ${ink}`,
+    'white-space: nowrap',
+    'text-align: center',
+  ].join('; ');
+};
+
+// arrowheads at the track ends, shown only in the direction of travel.
+const headBase = 'flex: 0 0 auto; width: 0; height: 0; margin: 0;';
+const headRight = (c: string) =>
+  `${headBase} border-top: 5px solid transparent; border-bottom: 5px solid transparent; border-left: 8px solid ${c};`;
+const headLeft = (c: string) =>
+  `${headBase} border-top: 5px solid transparent; border-bottom: 5px solid transparent; border-right: 8px solid ${c};`;
+
+// the track row: [head?] line [head?]. Arrowhead sits on the moving end.
+const trackRow = [
+  'box-sizing: border-box',
+  'display: flex',
+  'align-items: center',
+  'gap: 0',
+  'margin: 0',
+  'width: 100%',
+].join('; ');
+
+// a small "running" spinner-style chip shown over the channel on the work step.
+const workChip = [
+  'box-sizing: border-box',
+  'margin: 0',
+  'padding: 2px 9px',
+  'border-radius: 999px',
+  `border: 1px solid ${VIOLET}`,
+  `background: ${VIOLET_BG}`,
+  `font-family: ${sans}`,
+  'font-size: 9.5px',
+  'font-weight: 800',
+  'letter-spacing: 0.04em',
+  'text-transform: uppercase',
+  'line-height: 1.4',
+  `color: ${VIOLET_INK}`,
+  'white-space: nowrap',
+].join('; ');
+---
+
+<DiagramSequence>
+  {
+    steps.map((step) => {
+      const browserOn = step.active === 'browser';
+      const serverOn = step.active === 'server';
+      const wc = wireColor(step.wire);
+      return (
+        <DiagramStep caption={step.caption}>
+          <div style={stage}>
+            <div style={row}>
+              {/* LEFT — the browser lane */}
+              <div style={lane(BLUE, browserOn)}>
+                <div style={laneHead}>
+                  <span style={laneDot(BLUE, browserOn)} />
+                  <span style={laneTitle(BLUE, browserOn)}>Browser</span>
+                </div>
+
+                {/* the invariant: createInvoice is only ever an opaque id here */}
+                <div style={bindChip}>
+                  <span style={bindLabel}>holds</span>
+                  <span style={bindRow}>
+                    <code style={bindFn}>createInvoice</code>
+                    <span style={bindArrow}>&rarr;</span>
+                    <span style={bindId}>opaque id</span>
+                  </span>
+                </div>
+
+                <span style={statusLine(step.browser, BLUE_INK)}>
+                  {step.browser.tone === 'done' && (
+                    <span style={`color: ${GREEN_INK}; font-weight: 900;`}>&#10003;</span>
+                  )}
+                  {step.browser.text}
+                </span>
+              </div>
+
+              {/* CENTRE — the wire channel */}
+              <div style={channel}>
+                {step.wire === 'work' ? (
+                  <span style={workChip}>running</span>
+                ) : (
+                  step.wireLabel && <span style={wireTag(step.wire)}>{step.wireLabel}</span>
+                )}
+                <div style={trackRow}>
+                  {step.wire === 'back' && <span style={headLeft(wc)} />}
+                  <span style={track(step.wire)} />
+                  {step.wire === 'out' && <span style={headRight(wc)} />}
+                </div>
+              </div>
+
+              {/* RIGHT — the server lane */}
+              <div style={lane(VIOLET, serverOn)}>
+                <div style={laneHead}>
+                  <span style={laneDot(VIOLET, serverOn)} />
+                  <span style={laneTitle(VIOLET, serverOn)}>Server</span>
+                </div>
+                <span style={statusLine(step.server, VIOLET_INK)}>
+                  {step.server.text}
+                </span>
+              </div>
+            </div>
+          </div>
+        </DiagramStep>
+      );
+    })
+  }
+</DiagramSequence>
