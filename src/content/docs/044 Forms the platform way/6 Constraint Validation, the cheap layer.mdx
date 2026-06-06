@@ -1,0 +1,401 @@
+---
+title: Constraint Validation, the cheap layer
+chapter-id: 44
+course-progress: 0.00005
+tagline: Meet the browser's native Constraint Validation API, the cheap pre-submit layer that catches shape errors before they ever reach your Server Action.
+sidebar:
+  order: 6
+  label: Constraint Validation
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import MirrorsAndWall from '../../../components/lessons/044/6/MirrorsAndWall.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import ReactCoding from '../../../components/live-coding/ReactCoding/ReactCoding.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Your invoice form is wired. The user types an amount, hits submit, and your Server Action `safeParse`s the payload with Zod, returns a `Result`, and `useActionState` paints the field errors. It works. But watch what happens when someone submits with the amount field left blank: the form serializes, the POST flies to the server, the action runs, the schema rejects it, the `Result` comes back, and *then* — about 200 milliseconds later — the field lights up with "Required." The browser knew that field was empty before any of that. It just sat there and let the network do the work anyway.
+
+This lesson installs the layer that closes that gap: the browser's own validation, which runs in the page before a single byte hits the wire. By the end you'll add cheap native checks that fire pre-submit, style the invalid state so it only appears after the user has actually engaged a field, replace the browser's ugly gray tooltip with your design system's inline error, and — the line that's easiest to get wrong — know exactly which rules belong in the browser, which belong in your Zod schema, and which can only live in the action body. Hold onto one line through all of it: **constraint validation is the cheap layer; the server is the boundary of correctness.**
+
+## The attributes the browser already validates
+
+You already know these attributes. `required`, `type`, `min`, `maxlength` — they're plain HTML, the same attributes that have shipped in every browser for years. What changes here is that you start placing them *deliberately*, because each one is a rule the browser enforces for free, before the network, with zero JavaScript.
+
+This collection of attributes (plus a small JavaScript API you'll meet later) is the <Term definition="The browser's native, pre-submit form-validation surface: a set of HTML attributes the browser checks on submit, plus a JavaScript ValidityState API for the cases the attributes can't express.">Constraint Validation API</Term>. Let's walk through it on the invoice form's inputs.
+
+<AnnotatedCode lang="tsx" code={`
+<input
+  name="amount"
+  type="number"
+  min="0"
+  step="0.01"
+  required
+/>
+<input name="reference" type="text" pattern="INV-\\d{4}" required />
+<input name="email" type="email" required />
+<input name="dueDate" type="date" min={today} required />
+<textarea name="note" maxLength={500} />
+`}>
+  <AnnotatedStep meta="{1-7}" color="blue">
+    The amount field. On submit the browser refuses to proceed if the field is empty (`required`), if the value is negative (`min="0"`), or if it isn't a whole multiple of one cent (`step="0.01"`). All three checks run before the action is even called.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{11}" color="blue">
+    The note. `maxLength` is a hard cap — the browser simply won't let the user type past 500 characters. (Its sibling `minLength` is the one that *reports* a "too short" violation on submit; `maxLength` prevents the overflow rather than reporting it.)
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{8}" color="blue">
+    The reference. `pattern` holds the value to a regular expression: the browser blocks submit unless the value is a *full* match for `INV-\d{4}` — exactly `INV-` followed by four digits, nothing more, nothing less.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{9-10}" color="blue">
+    The email and due-date fields. `type="email"` rejects anything that isn't a plausible address; `type="date"` rejects an invalid date and, paired with `min`, anything earlier than the floor you set (`today` here is an ISO date string computed on the server).
+  </AnnotatedStep>
+</AnnotatedCode>
+
+In JSX the length attribute is `maxLength` (the camelCase DOM property), even though the underlying HTML attribute is `maxlength` — the same goes for `minLength`, `inputMode`, and `autoComplete`. The lowercase `min`, `max`, `step`, `pattern`, `type`, `required`, and `name` keep their HTML casing.
+
+Two attributes that often sit on the same inputs are *not* validation, even though they ride along on the same surface: `inputMode` (which keyboard a phone pops up) and `autoComplete` (the autofill hint). They never reject input — they only shape the experience. They earn their own discipline later in this lesson; for now, just know they aren't part of the checking.
+
+:::caution
+Two of these bite immediately. `type="number"` treats the **empty string as valid** — an untouched number field passes its type check, so without `required` an empty amount sails straight through to the server. And `pattern` is **full-match**: `INV-\d{4}` rejects `INV-12` *and* `xINV-1234` — there's no "contains" mode. When you need a partial or "starts-with" rule, that check belongs in JavaScript or in your schema, not in `pattern`.
+:::
+
+## Two mirrors and a wall: where each check lives
+
+Here is the idea the whole lesson turns on, and the one that separates a form with real defenses from a form whose only defense is HTML attributes a `curl` request ignores.
+
+You have three places a validation rule can live, and each rule belongs to a specific place for a specific reason.
+
+The first place is the browser, through the constraint attributes you just saw. The second is your Zod schema on the server. And here's the part that surprises people: for the rules the browser can check — presence, length, format, range — **both** of those places get the rule. The same "amount is required" lives as `required` on the input *and* as a non-optional field in the schema. The same "valid email" lives as `type="email"` *and* as `z.email()`. The same 500-character cap lives as `maxLength={500}` *and* as `.max(500)`. These two layers are **mirrors** of each other.
+
+That's not duplication for its own sake. The two mirrors serve two different jobs. The browser's copy is for speed — instant feedback, no network, a better experience for the human filling out the form. The schema's copy is for correctness, because the browser's copy can be skipped entirely. A stale tab running last week's HTML, a submit that fires before your JavaScript bundle has loaded, a script or a `curl` request hitting your action directly — none of those run the attributes. The constraint API is an optimization layered on top of a correct server; it is never a substitute for one. The browser is the cheap layer; **the server is the boundary of correctness.**
+
+The third place is the action body, and it's different in kind. Some rules can't be checked in the browser at all, because the browser doesn't have the data. Is this invoice number already used somewhere in the org? Does this customer actually belong to this org? Is the org under its monthly invoice limit? Answering any of those requires reading server state the client has never seen and never should. These checks can't be mirrored forward to the browser — they live only in the action body, after the parse, in the mutate stage of your Server Action. This third place is a **wall**: the client can't see past it.
+
+<MirrorsAndWall />
+
+Read the figure left to right. Zones 1 and 2 are the same rules twice — once in the browser for speed, once in the schema for correctness. Zone 3 is the wall: rules that need the database, fenced off where the client can never reach them. The duplication between the first two zones is the design, not a smell. Your schema is already the single source of truth for the *shape* of the data; the constraint attributes are simply that shape projected forward into the browser so the user gets feedback the instant they make a mistake.
+
+There's no tool in this stack that auto-generates the attributes from your schema, so keeping the two mirrors in sync is a manual, reviewed discipline — the same way you keep an input's `name` matching its schema key. When you add `.max(1000)` to the note in the schema, you bump `maxLength` to match in the same change. They drift only if you let them.
+
+Let's pin the line down. Sort each rule into where it must actually be enforced.
+
+<Buckets twoCol instructions="Sort each invoice rule into where it must be enforced.">
+  <Bucket
+    name="mirror"
+    label="Constraint attribute + schema"
+    description="The browser checks it for UX; the schema enforces it for real"
+  />
+  <Bucket
+    name="schema"
+    label="Schema only"
+    description="No attribute expresses it, but it's still a shape rule"
+  />
+  <Bucket
+    name="action"
+    label="Action body only"
+    description="Needs server state the client can't see"
+  />
+
+  <Item bucket="mirror">Amount must be present</Item>
+  <Item bucket="mirror">Amount must be a positive number</Item>
+  <Item bucket="mirror">Email is a valid email</Item>
+  <Item bucket="mirror">Note is at most 500 characters</Item>
+  <Item bucket="action">Invoice number is unique within the org</Item>
+  <Item bucket="action">Customer belongs to this org</Item>
+  <Item bucket="action">Org is under its monthly invoice limit</Item>
+  <Item bucket="schema">Amount has at most two decimal places</Item>
+</Buckets>
+
+The last chip is the one that catches people: **Amount has at most two decimal places** is *schema only*, not a mirror.
+It's tempting to call it a mirror because `step="0.01"` looks like it enforces precision — but `step` is only a UX nudge.
+The browser will flag `1.005` in its native check, yet a scripted request can send three decimals straight past it.
+Strict two-decimal precision is a *guarantee*, and a guarantee lives in the schema (a `.multipleOf(0.01)` refinement), never in an HTML attribute.
+The three `action body only` rules land there for the opposite reason: the browser doesn't have the data — it can't see the org's other invoices, its customer list, or its plan limit — so those checks can't be mirrored forward at all.
+
+## How constraint validation meets the React 19 submit
+
+You wired `<form action={formAction}>` earlier; here's how the cheap layer slots into that submit without any extra work from you. React's form submit respects native validation. When the user clicks submit, React first lets the browser run constraint validation — and if any field is invalid, **the action never fires.** The browser blocks the submission, pops the first invalid field's native bubble, and moves focus to it. Your action, your `isPending`, your `Result` — none of it runs.
+
+So the cheap layer sits *in front of* the entire pipeline you built, for free. Drop the browser's check into the lifecycle you already know and it becomes a single inserted beat:
+
+1. The user clicks submit.
+2. **The browser runs constraint validation. If any field is invalid, it stops here — report, focus, done.** Nothing past this point runs.
+3. React serializes the named inputs into `FormData`.
+4. `isPending` flips to `true`.
+5. The action runs on the server.
+6. The `Result` comes back, the form re-renders.
+
+Invalid-shape submits — the everyday "I left a field blank" — never reach step 3. They never touch the network, never spend a pending state, never produce a `Result`. This is also the one validation layer that survives with JavaScript turned off entirely: the browser checks `required` and `pattern` natively, with or without your bundle. We'll come back to that property in the progressive-enhancement lesson; for now it's just a bonus.
+
+:::note
+This is exactly why you keep the attributes *and* still return field errors from the server — they cover different submitters. The attributes stop the common case (a human who left a field blank) before the network ever sees it. The schema catches everything that slips past the browser: the stale tab, the disabled-JS submit, the script. Two layers, two submitters, one anchor — the browser is the cheap layer, the server is the boundary of correctness.
+:::
+
+## Styling the invalid state without lying to the user
+
+The browser flags invalid fields, but by default it does nothing visible until submit. You'll usually want to color an invalid field's border red so the user can see the problem inline. CSS gives you pseudo-classes that hook straight into the browser's validation state — and there is exactly one right choice and one tempting trap.
+
+The trap is `:invalid`. It matches a field's validity *right now*, from the very first render. Style a `required` field with `:invalid` and it paints red the instant the page loads — before the user has typed a single character, before they've done anything wrong. That's hostile UX: you're scolding someone for not yet filling out a form they just opened.
+
+The right default is `:user-invalid`. It matches only *after* the user has engaged the field — edited it and moved on, or tried to submit. Same red border, but it appears when the user has actually had a chance to make a mistake, not before. (There's also `:placeholder-shown`, handy for float-label patterns, and the `:valid` / `:user-valid` counterparts — but `:user-invalid` is the one you reach for constantly.)
+
+The course styles through Tailwind, so you write these as variants. The invalid state reads from the DOM, not from React state — which is exactly the convention: state-driven styling keys off the browser, not a `useState`.
+
+<div data-mark-color="blue">
+
+```tsx "user-invalid:border-destructive" "aria-invalid:border-destructive"
+<input
+  name="email"
+  type="email"
+  required
+  className="border user-invalid:border-destructive aria-invalid:border-destructive"
+/>
+```
+
+</div>
+
+Note the pairing. `user-invalid:` covers the *pre-submit* case — the browser noticed the field is bad before it ever left the page. `aria-invalid:` covers the *post-submit* case — the `<FieldError>` you built sets `aria-invalid` on the input when the server returns an error, and this variant gives that state the identical red border. One field, two possible origins of "invalid," one consistent look.
+
+Feel the difference yourself. The exercise below has two `required` inputs — one styled with `invalid:`, one with `user-invalid:`. Type in each, then clear it.
+
+<ReactCoding
+  live
+  instructions={`Type something in each field, then clear it. One field's border was red before you ever touched it — that's the one styled with the invalid: variant. The user-invalid: field stays calm until you've engaged it and left it (or tried to submit). Same red border, very different timing — that timing is the whole point.`}
+  starter={`export function App() {
+  return (
+    <form className="flex flex-col gap-4 p-4">
+      <label className="flex flex-col gap-1">
+        <span className="text-sm font-medium">Styled with invalid:</span>
+        <input
+          required
+          placeholder="Required"
+          className="border border-slate-300 rounded-md p-2 invalid:border-red-500"
+        />
+      </label>
+      <label className="flex flex-col gap-1">
+        <span className="text-sm font-medium">Styled with user-invalid:</span>
+        <input
+          required
+          placeholder="Required"
+          className="border border-slate-300 rounded-md p-2 user-invalid:border-red-500"
+        />
+      </label>
+    </form>
+  );
+}`}
+/>
+
+:::caution
+This is the single most common bug at this API. `:invalid` — and Tailwind's `invalid:` — styles a `required` field red on first paint, before the user has done anything. Always reach for `:user-invalid` (`user-invalid:`) when the styling is meant to signal an error the user could plausibly have made.
+:::
+
+## Replacing the native bubble with the design system
+
+The browser's native bubble — that little gray "Please fill out this field" tooltip — is fine for a prototype. In a designed SaaS UI it's a problem: you can't style it, it doesn't match your components, and it pops up wherever the browser feels like. You want to keep the cheap pre-submit check but render the message yourself. There are two ways to take control, and they are not equally good.
+
+<CodeVariants>
+  <CodeVariant label="Drop validation entirely">
+    <div data-mark-color="red">
+
+    ```tsx "noValidate"
+    <form action={formAction} noValidate>
+      <Input name="email" type="email" required />
+      <SubmitButton>Create invoice</SubmitButton>
+    </form>
+    ```
+
+    </div>
+    **This turns off every constraint check, not just the bubble.** With `noValidate` the browser skips `required`, `type`, `pattern` — all of it. The action still runs, the Zod parse on the server still catches everything, and `<FieldError>` renders the result. But every shape error now costs a full server roundtrip, the exact latency this lesson opened against. Reach for it only when the design system fully owns inline-error rendering and you've consciously accepted that cost. It's rare.
+  </CodeVariant>
+
+  <CodeVariant label="Keep the check, suppress the bubble">
+    <div data-mark-color="green">
+
+    ```tsx "onInvalid" "user-invalid:border-destructive" "aria-invalid:border-destructive"
+    <input
+      name="email"
+      type="email"
+      required
+      onInvalid={(event) => event.preventDefault()}
+      aria-describedby={errorId}
+      className="border user-invalid:border-destructive aria-invalid:border-destructive"
+    />
+    ```
+
+    </div>
+    **You keep the cheap pre-submit check and just stop the native tooltip from appearing.** `onInvalid` fires when the browser marks the field invalid; `preventDefault()` cancels only the bubble, leaving the validation itself intact. The field still blocks submit, still participates in `:user-invalid` styling — you've simply taken over the rendering.
+  </CodeVariant>
+</CodeVariants>
+
+In practice you rarely need either of these as a special move, because the design-system rendering takes over the bubble on its own. Here's the chapter's default, stated plainly: **keep constraint validation on, let `:user-invalid` styling make the bad field visible, and let the `<FieldError>` you already built render any message.** The constraint API's real job is to *stop the submit early*; the styling makes "this field is invalid" visible without the gray bubble; and `<FieldError>` is already your renderer for anything the server returns.
+
+That ties the two sources of error into one visual. A pre-submit shape error shows up as `:user-invalid` styling on the field (and an inline message if you choose to add one). A post-submit error — including every business-rule failure from behind the wall, the uniqueness checks and plan limits the browser could never run — comes back in the `Result` and `<FieldError>` paints it. One field, two possible origins of "invalid," one consistent look the user never has to decode.
+
+:::caution
+`noValidate` disables the cheap checks *too*, not just the bubble — it is not the way to hide the tooltip. Reach for it deliberately, only when you've accepted the roundtrip cost for every shape error. The default keeps the checks on and lets your own UI override the bubble.
+:::
+
+## When attributes aren't enough: setCustomValidity
+
+Some rules can't be written as an attribute at all, because they span more than one field or need computed logic. An invoice's due date must fall after its issue date — there's no `min` you can hard-code, because the floor is whatever the *other* field currently holds. For these, JavaScript can mark a field invalid by hand.
+
+`input.setCustomValidity('Due date must be after the issue date')` flags the field with that message; the field then blocks submit and participates in `:user-invalid` styling just like a native check. Passing an empty string, `input.setCustomValidity('')`, clears the flag. The React-idiomatic call site is a handler that reads the inputs through a ref and recomputes the flag whenever the field changes.
+
+```tsx "setCustomValidity"
+const dueDateRef = useRef<HTMLInputElement>(null);
+
+const checkDueDate = () => {
+  const dueDate = dueDateRef.current;
+  const issueDate = dueDate?.form?.elements.namedItem('issueDate');
+  if (!dueDate || !(issueDate instanceof HTMLInputElement)) return;
+  dueDate.setCustomValidity(
+    dueDate.value < issueDate.value
+      ? 'Due date must be after the issue date'
+      : '',
+  );
+};
+```
+
+And the input it drives:
+
+```tsx
+<input ref={dueDateRef} name="dueDate" type="date" onBlur={checkDueDate} required />
+```
+
+The `instanceof HTMLInputElement` check narrows the `namedItem` lookup cleanly — no cast needed. And because `type="date"` values are `YYYY-MM-DD` strings, they compare chronologically under a plain string comparison, so `<` is correct here.
+
+To inspect *why* a field is invalid, every form control exposes a <Term definition={"The read-only object on every form control that reports which constraints currently fail: valueMissing, typeMismatch, tooShort, rangeOverflow, patternMismatch, customError, and so on."}>ValidityState</Term>. After the call above, `dueDate.validity.customError` is `true`; you can branch on those flags when you want different handling per failure reason.
+
+And the boundary holds even here. A `setCustomValidity` cross-field check is *still* a mirror — the same "due date after issue date" rule belongs in the schema too, as a `.refine()` on the object. This is the case that feels the most like "real" client logic, and it's exactly the case where it's tempting to stop at the client check. Don't. The client check is UX; the schema check is correctness. The wall and the mirrors don't bend for a clever handler.
+
+One thing this is *not*: a place to call the server. Checking invoice-number uniqueness on blur — hitting the database as the user types — is a different technique with different tradeoffs. That's a deliberate debounced fetch, or a job for the form library in the next chapter. The constraint API stays client-only and synchronous.
+
+## Autocomplete and inputmode: the zero-cost wins
+
+These two attributes aren't validation — they don't reject anything — but leaving them off is a real cost, and scaffolds leave them off constantly. Filling them in is one of the cheapest quality upgrades you can make to a form.
+
+`autoComplete` tells the browser and the password manager what each field holds, so they can offer the right autofill. Every input carrying a known data type should name its token:
+
+- Identity and contact: `email`, `name` (or the granular `given-name` / `family-name`), `tel`, `bday`.
+- Address: `street-address`, `postal-code`, `country`.
+- The security-relevant trio: `new-password`, `current-password`, `one-time-code`.
+
+That last trio matters more than it looks. `autoComplete="new-password"` triggers the password manager's *suggest-a-strong-password* flow on a signup field; `current-password` gets the right credential offered on sign-in; `one-time-code` lets phones autofill an SMS code into a 2FA field. You'll build the auth forms that depend on these later in the course — filling in the tokens now is the habit that makes those forms work *with* the user's password manager instead of fighting it.
+
+`inputMode` is the mobile companion: it tells a phone which soft keyboard to raise. The invoice amount wants `inputMode="decimal"` (a number pad with a decimal point); an integer field wants `numeric`; pair `email` and `tel` with their matching types. `inputMode` doesn't replace `type` — `type` carries the validation and the semantics, `inputMode` only changes the on-screen keyboard, so you set both.
+
+The reflex: `autoComplete` is non-optional on any field the user has typed somewhere before, and `inputMode` is the cheap mobile pairing on numeric and contact fields. Both are accessibility and UX wins that cost you nothing but the keystrokes.
+
+:::tip
+A filled-in `autoComplete` is the difference between a form a password manager helps with and one it fights. It is the single highest-return attribute on this whole list.
+:::
+
+## What shadcn adds to a native form
+
+This chapter has been building forms by hand — `<label>`, shadcn's `<Input>`, your `<FieldError>`, the `aria` wiring done manually. But the course uses shadcn, and shadcn ships a whole set of *form* primitives. So the fair question is: what do they give a native `<form action={formAction}>`, and should you adopt them here? The honest answer is sharper than it first looks, and it's worth getting exactly right.
+
+shadcn's form set is `<Form>`, `<FormField>`, `<FormItem>`, `<FormLabel>`, `<FormControl>`, `<FormDescription>`, and `<FormMessage>`. It's tempting to read these as pure layout helpers — styled label-and-control stacks you can drop into any form. But that's not how they're built. Under the hood, `<FormLabel>`, `<FormControl>`, `<FormDescription>`, and `<FormMessage>` all call an internal `useFormField()` hook, and that hook reads React Hook Form's context. Use any of them outside a `<FormField>` (which is itself a thin wrapper over React Hook Form's `Controller`) and they throw. They are not engine-agnostic; they are React Hook Form components wearing layout clothes.
+
+The one exception is `<FormItem>`: it's the vertical spacing wrapper — roughly a `grid gap-2` div — and it touches no React Hook Form context at all. That's the only piece of the set you can use without pulling in the whole form library.
+
+So the call for this chapter, where the form is native `<form action>` plus `useActionState` and there's no React Hook Form anywhere, is the deflating one: shadcn's form primitives don't buy you much *yet*. You keep the field cluster you already built — it's correct, it's accessible, it ships. If you want the design system's exact field spacing, you can wrap that cluster in `<FormItem>`. But the label wiring, the control wiring, and the message rendering stay yours, because shadcn's versions of those are bound to a library you haven't adopted.
+
+<CodeVariants>
+  <CodeVariant label="Hand-rolled (this chapter's default)">
+    ```tsx
+    const errorId = useId();
+    const messages = state?.ok === false ? state.error.fieldErrors?.email : undefined;
+
+    return (
+      <div className="grid gap-2">
+        <label htmlFor="email">Send invoice to</label>
+        <Input
+          id="email"
+          name="email"
+          type="email"
+          required
+          aria-invalid={messages != null}
+          aria-describedby={errorId}
+        />
+        <FieldError id={errorId} messages={messages} />
+      </div>
+    );
+    ```
+    **This is exactly what the earlier lesson built** — correct, accessible, and shippable as-is. The `grid gap-2` is the hand-written field spacing, and the label, control, and message wiring are all yours.
+  </CodeVariant>
+
+  <CodeVariant label="Wrapped in shadcn's FormItem">
+    <div data-mark-color="blue">
+
+    ```tsx "<FormItem>" "</FormItem>"
+    const errorId = useId();
+    const messages = state?.ok === false ? state.error.fieldErrors?.email : undefined;
+
+    return (
+      <FormItem>
+        <label htmlFor="email">Send invoice to</label>
+        <Input
+          id="email"
+          name="email"
+          type="email"
+          required
+          aria-invalid={messages != null}
+          aria-describedby={errorId}
+        />
+        <FieldError id={errorId} messages={messages} />
+      </FormItem>
+    );
+    ```
+
+    </div>
+    **`<FormItem>` is the only shadcn form primitive that's React-Hook-Form-free** — it swaps the hand-written `grid gap-2` for the design system's own field spacing, and that's all it can safely give you here. Everything else (the label, the control, the message) is identical to variant 1, because the matching shadcn primitives need React Hook Form.
+  </CodeVariant>
+</CodeVariants>
+
+That's genuinely the whole story for now, and it's a useful one: don't reach for the heavy abstraction before its trigger. The full shadcn form stack — `<Form>`, `<FormField>`, the wired `<FormLabel>` / `<FormControl>` / `<FormMessage>` — earns its weight the moment your form's *shape* outgrows flat `FormData`: dynamic line-item arrays, multi-step wizards, controlled third-party inputs that need their values tracked as the user types. That's the trigger for React Hook Form, and it's exactly where the next chapter picks up. Until then, native `<form action>` plus your own field cluster is the default that holds up — lighter, simpler, and one fewer dependency in the submit path.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="MDN — Client-side form validation"
+    href="https://developer.mozilla.org/en-US/docs/Learn_web_development/Extensions/Forms/Form_validation"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The canonical Constraint Validation API guide: every attribute, the ValidityState flags, and setCustomValidity, with runnable examples."
+  />
+  <ExternalResource
+    title="MDN — :user-invalid pseudo-class"
+    href="https://developer.mozilla.org/en-US/docs/Web/CSS/:user-invalid"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="Authoritative reference for the one selector this lesson turns on — why it fires only after the user engages a field, not on first paint."
+  />
+  <ExternalResource
+    title="web.dev — Help users enter the right data in forms"
+    href="https://web.dev/learn/forms/validation"
+    icon="simple-icons:google"
+    iconColor="#4285F4"
+    description="Google's Learn Forms chapter on validation — the HTML attributes, :invalid vs :user-invalid styling, and the JavaScript API in one guided read."
+  />
+  <ExternalResource
+    title="shadcn/ui — Forms"
+    href="https://ui.shadcn.com/docs/components/form"
+    icon="simple-icons:shadcnui"
+    iconColor="#000000"
+    description="See the React-Hook-Form-coupled form API first-hand and confirm the split this lesson draws between FormItem and the rest of the set."
+  />
+</CardGrid>
