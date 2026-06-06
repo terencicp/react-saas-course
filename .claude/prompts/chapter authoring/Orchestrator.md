@@ -23,4 +23,4 @@ echo "Last: $last → Next chapter: $next"
 
 Project chapter ids: 028, 035, 041, 047, 050, 055, 059, 062, 065, 067, 069, 071, 073, 075, 077, 079, 082, 085, 091, 095, 100, 104, 108. Other chapters are teaching chapters.
 
-If the selected next chapter is a teaching chapter, read the prompt in `documentation/chapter orchestrator prompts/Teaching lessons.md` and follow its instructions. If it's a project chapter, read `documentation/chapter orchestrator prompts/Project lessons.md` and follow its instructions.
+If the selected next chapter is a teaching chapter, read the prompt in `.claude/prompts/chapter authoring/Teaching lessons.md` and follow its instructions. If it's a project chapter, read `.claude/prompts/chapter authoring/Project lessons.md` and follow its instructions.

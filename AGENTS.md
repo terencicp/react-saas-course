@@ -37,6 +37,6 @@ Read project files only if essential to your current task. Read only the relevan
 
 Chapters are built by an orchestrator that routes each chapter to one of two pipelines, run sequentially by a fleet of single-purpose subagents.
 
-- `documentation/chapter orchestrator prompts/Orchestrator.md` — finds the next unwritten chapter, classifies it as teaching or project, and routes it to the matching pipeline.
-- Teaching chapters — `documentation/chapter orchestrator prompts/Teaching lessons.md` defines the pipeline; its subagents live in `.claude/agents/lesson/`.
-- Project chapters — `documentation/chapter orchestrator prompts/Project lessons.md` defines the pipeline; its subagents live in `.claude/agents/project/`.
+- `.claude/prompts/chapter authoring/Orchestrator.md` — finds the next unwritten chapter, classifies it as teaching or project, and routes it to the matching pipeline.
+- Teaching chapters — `.claude/prompts/chapter authoring/Teaching lessons.md` defines the pipeline; its subagents live in `.claude/agents/lesson/`.
+- Project chapters — `.claude/prompts/chapter authoring/Project lessons.md` defines the pipeline; its subagents live in `.claude/agents/project/`.

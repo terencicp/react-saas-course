@@ -208,12 +208,13 @@ src/
   content/docs/      the lessons (MDX), one folder per chapter
   components/        the interactive component library (figures, exercises, live-coding, embeds…)
 documentation/       the "authoring brain"
-  chapter orchestrator prompts/   the orchestrator + the two pipeline definitions
   content/                        unit/chapter/lesson outlines + continuity notes
   pedagogical approach/           the teaching guidelines every agent follows
   code standards/                 canonical code conventions for projects and samples
   components/ · diagrams/         component API and diagram-engine indices
-.claude/agents/      the 32 authoring subagents (lesson/ and project/)
+.claude/
+  prompts/chapter authoring/      the orchestrator + the two pipeline definitions
+  agents/                         the 32 authoring subagents (lesson/ and project/)
 projects/            per-chapter project codebases (start/ + solution/)
 ```
 
