@@ -1,0 +1,5 @@
+# Chapter 041 screenshot pool
+
+l6-desktop-1440.png — lesson 6, route /inspector?orgId=<org-a>&invoiceId=<inv-a>, desktop 1440, settled (light theme), the full inspector: counts banner, header (org switcher with Acme active + status filter + reseed), the 20-row paginated list on the left, the selected invoice INV-00608 detail (customer + email + dates + total + line items) on the right, and the collapsed plan panel. Serves the Lesson 1 overview "one screenshot of the inspector" and Lesson 6's detail figure.
+l5-desktop-1440-status-paid.png — lesson 5, route /inspector?orgId=<org-a>&status=paid, desktop 1440, settled (light theme), the list server-filtered to paid (every visible row shows a paid badge, the "paid" status control is active) beside the empty detail state. Serves Lesson 5's "filter applied" figure.
+l4-desktop-1280-counts-banner.png — lesson 4, route /inspector, desktop 1280, settled (light theme), tight clip of just the verification counts banner after seeding: the single rounded card with six labeled count cells reading organizations 2, users 4, org_members 5, customers 40, invoices 625, invoice_lines 1889. Serves Lesson 4's "seeded banner" figure.

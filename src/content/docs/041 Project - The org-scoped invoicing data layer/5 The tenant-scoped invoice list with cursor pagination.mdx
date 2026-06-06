@@ -1,0 +1,225 @@
+---
+title: The tenant-scoped invoice list with cursor pagination
+chapter-id: 41
+course-progress: 0.00005
+sidebar:
+  order: 5
+  label: Invoice list & pagination
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The schema is migrated and the database is full of invoices, but the inspector's list panel still shows the empty state for every org — the query behind it is a stub. In this lesson you write that query: `listInvoices`, the read that makes the inspector list one org's invoices, page through them with a cursor, and filter by status on the server.
+
+This is not just one feature. It is the read pattern every later list view in the course inherits — the customers list, the subscriptions list, the audit log. They all start here, with three decisions that have to be right the first time, because getting them wrong does not throw an error. It silently leaks another tenant's data, or silently skips rows as the user pages. You ship this one carefully and the rest come for free.
+
+When you are done, the list panel renders rows showing the invoice number, customer name, a status badge, the total, and the due date. "Next page" advances with a fresh `?cursor=...` in the URL and never repeats a row. `?status=paid` shows only paid invoices and survives a hard reload. And the plan panel at the bottom confirms the planner serves the query from a composite index, never a `Seq Scan` across the whole table.
+
+<Screenshot viewport="desktop">
+  <img
+    src="/screenshots/041/l5-desktop-1440-status-paid.png"
+    alt="The invoice inspector for Acme Corporation with the paid status filter active in the header. The list panel on the left shows a column of invoice rows — each with an invoice number, customer name, a paid status badge, a total, and a due date — and a Next page link in the footer. The detail panel on the right is empty, and a collapsed EXPLAIN ANALYZE list-query plan panel sits at the bottom."
+  />
+</Screenshot>
+
+## Your mission
+
+Implement `listInvoices` in `src/lib/invoices/queries.ts`. The inspector already calls it from `list-panel.tsx` — your job is to fill the body so the panel comes alive.
+
+The function takes a typed `ListInvoicesInput`, and this is the first thing to notice: it does **not** validate that input itself. The shape — `organizationId` required, `status` optional, `cursor` as an already-decoded `Cursor` object (not the URL token), `pageSize` defaulting to 20 and capped at 100 — is defined by the provided `listInvoicesInputSchema` in `lib/invoices/schema.ts`, and the inspector page parses against that schema and runs `decodeCursor` on the URL token *before* it ever calls your function. So `listInvoices` trusts its typed argument. That separation is deliberate: when the Server Actions chapters arrive later in the course, the same input schema validates a Server Action's `FormData` at *its* boundary. The schema lives in `/lib` precisely so different callers can compose it and the query stays a pure function of its already-validated input — parse once, at the edge, then trust the type. Do not call `.parse` inside the query.
+
+The query itself rides on three load-bearing decisions, and the trap with all three is treating them as optional polish.
+
+The first is the **tenant guard**. The `organizationId` filter belongs *inside* the query's `where`, AND-ed with everything else. The tempting alternative — load the org's invoices and then filter in memory, or worse, load by id and then check the org afterward — reads as correct and is the classic IDOR leak: any row whose id an attacker can guess comes back regardless of who owns it. The filter is the security boundary. This is the manual discipline that a later chapter's `tenantDb` helper enforces structurally, so that forgetting it becomes impossible to write. For now, you write it by hand, every time.
+
+The second is the **compound cursor tiebreaker**. You will order the list by `createdAt` descending so the newest invoices come first — but `createdAt` alone is not enough to page correctly. The moment two invoices share a timestamp, a cursor that compares on `createdAt` only will either skip rows or return the same row on two different pages, depending on where the page boundary falls. The fix is to break the tie on `id`: the cursor carries the `(createdAt, id)` pair, and the predicate asks for rows strictly older than the cursor's `createdAt`, *plus* rows at exactly that `createdAt` with a smaller `id`. This predicate is included only when a cursor is actually present — the first page has no boundary to compare against.
+
+The third is the **`pageSize + 1` trick**. To render the "Next page" link you need to know whether another page exists. The naive way is a second query — a `count()` of the whole filtered set — which is a wasted round trip on every list render. Instead, fetch one extra row: ask for `pageSize + 1`. If you get the extra row back, a next page exists; slice it off, keep `pageSize` rows, and build `nextCursor` from the last row you kept. If you do not, this is the final page and the cursor is `null`.
+
+Out of scope: the detail read (`getInvoiceDetail`) is the next lesson — leave that stub alone. The plan panel and the `EXPLAIN ANALYZE` probes behind it are provided; you read their output here, you do not build them. And no writes — this whole project is read-only. Server Actions and CRUD against this schema come in a later chapter, not here.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">The list returns one org's invoices, scoped to `organizationId`; switching orgs in the switcher changes which rows appear.</ChecklistItem>
+  <ChecklistItem chip="tested">A cross-org pairing returns no leaked rows: invoices for a different org never appear under the requested org.</ChecklistItem>
+  <ChecklistItem chip="tested">Paging forward via the returned `nextCursor` yields a fresh page with no row repeated across pages, and `nextCursor` is `null` on the last page.</ChecklistItem>
+  <ChecklistItem chip="tested">Passing `status: 'paid'` returns only paid rows; the paid-filtered set matches the paid rows inside the unfiltered list, whether or not the status arrived via the URL.</ChecklistItem>
+  <ChecklistItem chip="tested">A page never returns more than `pageSize` rows even when more exist; the extra `+ 1` probe row is dropped, not emitted.</ChecklistItem>
+  <ChecklistItem chip="untested">Each returned row carries its `customer` (e.g. the customer name) from the same query, with no per-row follow-up fetch.</ChecklistItem>
+  <ChecklistItem chip="untested">In the inspector, `?status=paid` puts the status in the URL and a hard reload (or a second tab on the same URL) reproduces the filtered view.</ChecklistItem>
+  <ChecklistItem chip="untested">The list query's plan uses `idx_invoices_org_created_at_id` without a status filter and `idx_invoices_org_status_created_at_id` with one, never a `Seq Scan`.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Implement `listInvoices` against the brief above and the Lesson 5 tests, then open the inspector and click through a few pages before you read the walkthrough.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+The whole file is short, but it is organized in three moves: a private builder that constructs the query, a row type inferred *from* that builder, and the public function that runs it and computes the page boundary. Here is the builder.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+const listInvoiceRows = (input: ListInvoicesInput) => {
+  const { organizationId, status, cursor, pageSize } = input;
+
+  return db.query.invoices.findMany({
+    where: (t, { and, eq, lt, or }) =>
+      and(
+        eq(t.organizationId, organizationId),
+        status ? eq(t.status, status) : undefined,
+        // The compound cursor predicate: rows strictly older than the cursor's
+        // createdAt, plus rows at the same createdAt with a smaller id (the
+        // (createdAt, id) tiebreaker). createdAt is pinned to millisecond
+        // precision, so the cursor's ISO string round-trips exactly.
+        cursor
+          ? or(
+              lt(t.createdAt, new Date(cursor.createdAt)),
+              and(
+                eq(t.createdAt, new Date(cursor.createdAt)),
+                lt(t.id, cursor.id),
+              ),
+            )
+          : undefined,
+      ),
+    orderBy: (t, { desc }) => [desc(t.createdAt), desc(t.id)],
+    limit: pageSize + 1,
+    with: { customer: true },
+  });
+};
+`}>
+  <AnnotatedStep meta={`"(t, { and, eq, lt, or })" "eq(t.organizationId, organizationId)"`} color="green">
+    The callback `where` form: Drizzle hands you the table `t` and the operator helpers, and you return one combined condition. The first leaf is the tenant guard, AND-ed in before anything else. This is the IDOR defense — the org filter lives in the query, not in a check after the rows come back.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"status ? eq(t.status, status) : undefined"`} color="blue">
+    The optional status leaf. When a status is passed you add `eq(t.status, status)`; when it is absent you pass `undefined`. `and()` drops `undefined` leaves, so the status filter conditionally vanishes from the SQL with no branching in the query shape — one `findMany` covers both the filtered and unfiltered list.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{9-21}" color="orange">
+    The conditional cursor predicate, and the heart of the lesson. With a cursor present, "the next page" means: rows strictly older than the cursor's `createdAt`, OR rows at exactly that `createdAt` but with a smaller `id`. That `(createdAt, id)` tiebreaker is what makes paging correct when timestamps collide. Note `cursor.createdAt` is wrapped in `new Date(...)` because the column is a `Date`; `createdAt` is pinned to millisecond precision (the `timestamps` group uses `precision: 3`), so the ISO string in the cursor round-trips back to the exact stored value.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{23}" color="violet">
+    The ordering matches the cursor's comparison direction — newest first, ties broken by `id` descending — and it matches the column order of `idx_invoices_org_created_at_id` from the schema lesson. That alignment between `orderBy`, the cursor predicate, and the index is exactly why the planner can serve this from the index instead of sorting the whole table.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{24-25}" color="blue">
+    `limit: pageSize + 1` fetches one extra row so the public function can tell whether a next page exists without a second `count()` query. `with: { customer: true }` pulls each row's customer in the *same* round trip, so the list cell's customer name is already there — no per-row follow-up fetch.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The extra row, the slice, and the cursor live in the public function:
+
+```ts
+export type InvoiceListRow = Awaited<
+  ReturnType<typeof listInvoiceRows>
+>[number];
+
+export const listInvoices = async (
+  input: ListInvoicesInput,
+): Promise<{ rows: InvoiceListRow[]; nextCursor: string | null }> => {
+  const { pageSize } = input;
+
+  const rows = await listInvoiceRows(input);
+
+  // Fetched pageSize + 1: the extra row proves a next page exists. Drop it and
+  // emit a cursor from the last kept row; otherwise this is the final page.
+  const hasNextPage = rows.length > pageSize;
+  const kept = hasNextPage ? rows.slice(0, pageSize) : rows;
+  const last = kept.at(-1);
+
+  const nextCursor =
+    hasNextPage && last
+      ? encodeCursor({ createdAt: last.createdAt.toISOString(), id: last.id })
+      : null;
+
+  return { rows: kept, nextCursor };
+};
+```
+
+`hasNextPage` is just `rows.length > pageSize` — if the extra row came back, there is more to show. You slice it off so the caller never sees more than `pageSize`, then build `nextCursor` from the last row you *kept* (not the one you dropped) by serializing its `(createdAt, id)` pair with `encodeCursor`. The list panel drops that token straight into the next page's URL, and when the inspector reads it back, `decodeCursor` hands you exactly the `Cursor` object this query expects. On the final page there is no extra row, so `nextCursor` is `null` and the panel renders "End of list".
+
+A few decisions worth calling out:
+
+**Why the builder is split out.** Pulling the `findMany` into a private `listInvoiceRows` lets `InvoiceListRow` be inferred as `Awaited<ReturnType<typeof listInvoiceRows>>[number]` — the exact row shape the query returns, including the joined `customer`. The starter hand-typed `InvoiceListRow` as `Invoice & { customer: Customer }` to keep the file compiling, but inferring it from the query is the accurate version: if you later add `lines` to the `with`, the type updates itself with zero edits. It also keeps the public function's slice logic reading cleanly top to bottom.
+
+Hover the alias to see what the compiler infers for it:
+
+<CodeTooltips tooltips={{
+  InvoiceListRow: 'The exact row the query returns:\nid, organizationId, number, status, total, currency, issuedAt, dueAt, createdAt, ...\nplus a nested customer object — because with: { customer: true } joined it in.',
+}}>
+```ts
+export type InvoiceListRow = Awaited<
+  ReturnType<typeof listInvoiceRows>
+>[number];
+```
+</CodeTooltips>
+
+**Why `with: { customer: true }` is one round trip.** The relational query API resolves the customer join inside a single query plan — one trip to the database for the whole page, customers included. The alternative is a loop: fetch the invoices, then fetch each invoice's customer one by one. That is the N+1 problem — twenty rows become twenty-one queries — and it is exactly what the relational `with` exists to avoid. We covered the relational query API in the relational reads lesson of chapter 38, and why N+1 is a performance killer in the query-plans lesson of chapter 39, so this is the same tool applied here.
+
+**Why the tiebreaker and the `+ 1` are mandatory, not optional.** It is worth restating, because it is the whole point of the lesson. Without the `(createdAt, id)` tiebreaker, equal timestamps make the cursor ambiguous and paging skips or duplicates rows. Without the `+ 1`, you cannot know a next page exists without a separate `count()`. The cursor-pagination lesson of chapter 38 walks through both moves in isolation; this lesson is where they ship together against a real index.
+
+:::caution
+The tenant guard inside the `where` is the IDOR defense. The shape that looks correct — load the invoice, then check `if (invoice.organizationId === orgId)` — leaks every row whose id an attacker can guess, because the database already returned it before your check runs. The detail read in the next lesson follows the same rule, and a later chapter's `tenantDb` helper makes the missing filter structurally impossible to write. Until then, the filter goes in the query, every read, no exceptions.
+:::
+
+:::note
+To read the list query's plan, open the plan panel at the bottom of the inspector. With no status filter you should see `Index Scan using idx_invoices_org_created_at_id ...`; with a status, `... using idx_invoices_org_status_created_at_id ...`. Read it bottom-up, the way the query-plans lesson of chapter 39 covers. A `Seq Scan` here is a red flag — it means the composite index's column order from the schema lesson does not line up with this query's `where` plus `orderBy`.
+:::
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Drizzle — Cursor-based pagination"
+    href="https://orm.drizzle.team/docs/guides/cursor-based-pagination"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The official guide for the (createdAt, id) multi-column cursor and the index it rides on."
+  />
+  <ExternalResource
+    title="Drizzle — Relational queries"
+    href="https://orm.drizzle.team/docs/rqb"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The findMany + with API that loads each row's customer in one round trip."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's test suite:
+
+```bash
+pnpm test:lesson 5
+```
+
+The suite drives your `listInvoices` against the seeded database and asserts on the returned rows and cursor. It does **not** re-seed, so make sure the database is up, migrated, and seeded first:
+
+```bash
+docker compose up -d
+pnpm db:migrate
+pnpm db:seed
+```
+
+On success every test in the Lesson 5 suite passes — tenant scope, no cross-org leak, paging with no repeats and a null cursor on the last page, the status filter, and the `pageSize` cap. One detail makes the tiebreaker tests bite: the seed commits every invoice in a single transaction, so they all share the same `createdAt`. A `createdAt`-only cursor would skip or duplicate rows on every page boundary, and the suite would catch it — which is exactly why the `(createdAt, id)` tiebreaker is doing the real work here.
+
+The tests cover the query's behavior, but three things they cannot reach you confirm by hand in the inspector. Tick each as you go.
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">Against one org, click "Next page" three times and confirm no row repeats across the three pages (open `pnpm db:studio` to spot-check if needed); switch orgs in the switcher and confirm the rows differ.</ChecklistItem>
+  <ChecklistItem chip="untested">Click the `paid` filter, confirm the URL shows `?status=paid`, only paid rows render, and a hard reload (or opening the same URL in a second tab) preserves the filtered view.</ChecklistItem>
+  <ChecklistItem chip="untested">Expand the plan panel on the list query and confirm it uses `idx_invoices_org_created_at_id` with no status filter and `idx_invoices_org_status_created_at_id` with one, never a `Seq Scan` — if it falls back to a scan, the composite index's column order from the schema lesson is wrong.</ChecklistItem>
+</Checklist>
+
+With the list read shipping, the inspector finally lists and pages an org's invoices. The next lesson closes the data layer with the other read every later unit reuses: the single-round-trip invoice detail load, guarded by the same `organizationId` rule you just wrote.
