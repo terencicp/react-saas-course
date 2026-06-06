@@ -31,7 +31,7 @@ export interface FixtureResult {
 }
 
 const PARSE_TIMEOUT_MS = 5000;
-const ZOD_URL = 'https://esm.sh/zod@4';
+const ZOD_URL = 'https://esm.sh/zod@4.4.3';
 
 // Strip TS types so the iframe (which evaluates plain JS) doesn't choke on
 // `type X = ...` or `: T` annotations. We keep `import`/`export` statements
