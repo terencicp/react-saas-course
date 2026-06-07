@@ -1,0 +1,446 @@
+---
+title: Resend and the first verified send
+tagline: Wire up Resend, the transactional email provider this course uses, and send your first email through a verified domain.
+chapter-id: 048
+course-progress: 0.00005
+sidebar:
+  order: 1
+  label: Resend and the first send
+---
+
+import { Steps, CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import SendPath from '../../../components/lessons/048/1/SendPath.astro';
+import FromAnatomy from '../../../components/lessons/048/1/FromAnatomy.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+You have spent the last several chapters making your app *write* — Server Actions that take a form, validate it with Zod, and persist a row. Every one of those mutations stayed inside your own walls: the request came in, Postgres changed, the response went back. This chapter is the first time your app has to reach *out*, to a system you don't control, and put a message into a stranger's inbox. That turns out to be a surprisingly deep problem, and most of its depth has nothing to do with the line of code that sends the message.
+
+By the end of this lesson you will have four things: a verified sending domain, a working `RESEND_API_KEY` wired into your typed env, a `lib/email.ts` wrapper that returns the same `Result` shape your actions already speak, and one real email delivered through it. The send itself is three lines. Everything else — and it is most of the lesson — is the set of decisions an experienced engineer makes *before* writing those three lines, because in email the decisions are what determine whether the message lands in the inbox or the spam folder.
+
+## The four emails the app already owes its users
+
+Start from what the product needs, not from what email *is*. A SaaS that can't send email can't verify that a new user owns the address they typed. It can't let someone who forgot their password get back in. It can't send a sign-in link to a user who'd rather not have a password at all. It can't email a receipt after a charge. Account verification, password reset, magic-link sign-in, billing receipts — those are not nice-to-haves you bolt on later. They are load-bearing parts of the auth and billing flows you are about to build, and every one of them is blocked until email works.
+
+So email is infrastructure, not a feature. And the reflex an experienced engineer brings to a piece of infrastructure is to ask where the *responsibility* sits — what does my code own, and what does the platform own — because that boundary is where the bugs and the outages live.
+
+Here is the path one email takes. Look at where the responsibilities fall.
+
+<SendPath />
+
+The vendor handles the part that used to be a full-time job: speaking SMTP, maintaining a pool of sending IP addresses, keeping those IPs in good standing with the mailbox providers. That is real value, and it is exactly the part you do *not* want to own. But notice that everything on the left of that final arrow — the domain the mail claims to come from, the credential that authorizes it, the key that makes a retry safe — is yours. <Term definition="The likelihood that a sent email actually reaches the recipient's inbox rather than the spam folder or a hard bounce.">Deliverability</Term> is the app's responsibility, not the vendor's. That sentence is the spine of this entire chapter. Resend can hand you a clean SMTP pipe, but it cannot decide for you which domain to send from, whether that domain is authenticated, or whether you've trained a bad reputation by emailing addresses that don't exist. Those are your calls, and they live in your repository and your ops.
+
+The good news: the wrapper in the middle, `sendEmail()`, returns the same `Result` discriminated union your Server Actions already return. So once it exists, sending an email from inside an action looks exactly like a database write — call it, branch on `ok`, surface the message on failure. The plumbing is familiar. It's the decisions that are new.
+
+## Why Resend, and when it isn't the answer
+
+Before any code, the provider decision — because picking the wrong one costs you days of setup or years of dragged reputation, and it's the kind of choice you should be able to *defend* in a design review, not just recite.
+
+Here are the criteria an experienced engineer weighs for *transactional* mail in a Node and Next.js SaaS. First, can it render a React component into an email, so your templates live in the same language and component model as the rest of your app? Second, does it ship a Node SDK that *types* the send call, so a typo in a field is a compile error rather than a 4am bounce? Third, is there a credible free tier, so a brand-new project can send without a contract? Fourth, does it expose a webhook surface with proper signature verification, so you can later react to bounces and complaints with confidence the events are real? Fifth, can a single developer get a verified domain and a first send working in an afternoon, not after a call with a deliverability consultant?
+
+<Term definition="Resend — a developer-focused transactional email provider with a Node SDK and first-class React Email support. This course's default for sending mail.">Resend</Term> clears all five for an early-stage SaaS, which is why it's this course's default. The React rendering sets up the template work in the next chapter; the typed SDK makes the send call safe; the free tier and the afternoon-to-first-send keep the cost of starting near zero; and the webhook surface is the hook a later chapter uses to track delivery. Five criteria, five passes — that's a default, not a coin flip.
+
+But "default" means there are thresholds where something else wins, and naming them is the difference between a decision and a habit.
+
+- **Amazon SES** is the cheapest option at real scale. The cost is the setup: wiring IAM permissions, SNS topics for events, and SES itself is days of work, not minutes, and you own more of the operational surface afterward. Reach for SES when your send *volume* is large enough that the per-message savings pay for that ops tax — not before.
+- **Postmark** has the same posture as Resend: transactional-focused, deliverability-obsessed, a clean API. It's a completely credible swap. Choose between the two on pricing and your team's preference; there is no architecturally "wrong" answer between two transactional-focused providers.
+- **SendGrid, Mailchimp, and the marketing-first platforms** are the wrong tool here. They are built for campaigns — newsletters, drip sequences, blasts — and running your transactional mail through a marketing-shaped account mixes two very different reputations on one identity. A campaign's spam complaints then drag down the deliverability of your password resets. (The next two lessons go deep on why that mixing is so corrosive; for now, just don't reach for the marketing tool to send a verification code.)
+
+The durable lesson here is not the word "Resend." It's the shape of the decision: **for transactional mail, reach for a transactional-focused provider, never a marketing platform.** Resend is this course's pick, but the reasoning transfers to any stack you'll ever work in. Walk the decision in the order an experienced engineer actually asks the questions — purpose first, then scale, then existing infrastructure.
+
+<StateMachineWalker title="Which email provider do I reach for?">
+  <Question id="purpose" prompt="What kind of mail is this?" description="The first question is never about the vendor. It's about what the email is — because transactional and marketing mail want different tools and different reputations.">
+    <Branch label="Transactional — triggered by a user action" to="scale" rationale="Verification, password reset, magic-link, receipt." />
+    <Branch label="Marketing — a campaign on your schedule" to="leaf-marketing" rationale="Newsletter, announcement, drip sequence." />
+  </Question>
+
+  <Question id="scale" prompt="How much will you send, and where does your infra live?" description="Only now do volume and existing tooling enter the decision.">
+    <Branch label="Early-stage volume, no special constraints" to="leaf-resend" />
+    <Branch label="Large volume, team already deep in AWS" to="leaf-ses" />
+    <Branch label="A team that already standardized on Postmark" to="leaf-postmark" />
+  </Question>
+
+  <Leaf id="leaf-resend" verdict="Resend">
+    The default for transactional mail in a Node/Next.js SaaS. React Email rendering, a typed SDK, a credible free tier, and a webhook surface with signature verification — and you're sending within the afternoon. This is the course's pick.
+  </Leaf>
+
+  <Leaf id="leaf-ses" verdict="Amazon SES">
+    The cheapest option once volume is high *and* the team is already comfortable in AWS. You pay for it in setup — IAM, SNS, SES wiring is days, not minutes — and you own more of the operational surface. Defer here until the per-message savings clearly justify the ops cost.
+  </Leaf>
+
+  <Leaf id="leaf-postmark" verdict="Postmark">
+    A transactional-focused provider with the same posture as Resend. A genuinely credible alternative — pick it on pricing or because your team already runs it. The senior call is "a transactional-focused provider," not the specific logo.
+  </Leaf>
+
+  <Leaf id="leaf-marketing" verdict="A marketing platform — and a separate account">
+    Out of scope for this course, and deliberately. Campaign mail belongs on a marketing-focused tool with its *own* sending identity, never mixed onto the account that sends your password resets. Why that separation matters is the subject of the next two lessons.
+  </Leaf>
+</StateMachineWalker>
+
+<Term definition="Email Service Provider — a company that handles the sending of email on your behalf.">ESP</Term>, <Term definition="Email triggered by a specific user action and carrying information the user expects to receive — a verification code, a receipt, a password reset. Contrast with marketing mail, which the sender pushes on its own schedule.">transactional email</Term>, and <Term definition="Developer experience — how quickly and pleasantly a developer can get productive with a tool.">DX</Term> are the three pieces of vocabulary that show up whenever this decision comes up; you'll see all three in the docs.
+
+## Verifying your sending domain
+
+With the provider chosen, the setup ceremony. This part is procedural, and the exact buttons in the Resend dashboard will have moved by the time you read this, so learn the *shape* of the ceremony and the one reflex that never changes, not the pixel positions.
+
+<Steps>
+1. **Create a Resend account.** Email and password, or a GitHub login. The free tier is enough for everything in this chapter.
+
+2. **Add your sending domain — and choose the right one.** This is the one decision in the ceremony. Do not add your bare <Term definition="The root domain with no subdomain prefix — yourapp.com, as opposed to send.yourapp.com or www.yourapp.com.">apex domain</Term> (`yourapp.com`). Add a dedicated transactional subdomain like `send.yourapp.com`. The lesson after next defends *why* the subdomain — for now, take it as a given, so the `from` addresses you write today are honest and you won't have to rewrite them later.
+
+3. **Copy the DNS records Resend generates.** Adding the domain produces a small set of DNS records. What each one does — and there's a real protocol layer underneath them — is the entire job of the next lesson. Today you only need to know that Resend hands you a set of records and you have to publish them.
+
+4. **Add the records at your registrar.** Wherever your domain's DNS lives — the registrar you bought it from, or a provider like Cloudflare — paste the records in. This is the step that ages: every registrar's UI is different.
+
+5. **Wait for verification.** Resend re-checks the records and flips the domain's status to **Verified** once they resolve. <Term definition="The delay before a newly published DNS record becomes visible to resolvers around the world. Usually minutes, occasionally up to a day.">DNS propagation</Term> can take up to 24 hours but is usually a few minutes. The badge turning green is your done signal.
+</Steps>
+
+Now the reflex that matters more than any of those steps. Resend gives every new account a shared sandbox domain, `onboarding@resend.dev`, so you can fire a test send the instant you sign up. It is a trap for real mail. **No email to a real user ever goes out from `onboarding@resend.dev`.** That domain is shared across every Resend account on the planet, so its reputation is a coin flip — your message lands in spam for most providers, and worse, you start training your own users to expect your mail in the junk folder from day one. The verified domain is not bureaucracy. It is the price of admission to the inbox, and it is non-negotiable in any environment that touches real people.
+
+:::note
+You will not see SPF, DKIM, or MX explained here. Resend hands you those records; what each one proves and how mailbox providers use them is the whole of the next lesson. Resisting the urge to explain them now keeps this lesson about *sending*, not about DNS.
+:::
+
+<VideoCallout videoId="CF6gRy-9_LE" videoTitle="How to Verify a Domain in Resend">
+  Resend's own 4-minute walkthrough of the verification ceremony — adding the subdomain, pasting the DNS records, and the troubleshooting checklist when the badge won't turn green.
+</VideoCallout>
+
+## API keys: sending-only, and one per environment
+
+Resend authenticates your sends with an API key, and the way you handle that key is a small but pure test of senior instinct. There are two axes to get right.
+
+The first is **shape**. Resend issues keys at two permission levels. A *full-access* key can do anything your account can — create domains, manage webhooks, read everything. A *sending-only* key can do exactly one thing: call the send endpoint. The reflex follows from <Term definition="The principle that every credential should be granted only the permissions its specific job requires, and no more.">least privilege</Term>: your *running application* gets a sending-only key, because sending is the only thing it needs to do. Full-access keys are for one-off setup scripts you run by hand — and they stay out of your app's environment entirely. If your deployed app only ever holds a sending-only key, a leak of that key can't be used to delete your domain or hijack your webhooks.
+
+The second axis is **scope**: one key per environment. Your `dev`, `preview`, and `production` environments each get their own distinct key.
+
+<CodeVariants>
+  <CodeVariant label="One key everywhere">
+    <div data-mark-color="red">
+
+    ```bash
+    # .env in dev, preview, AND production — the same secret reused
+    RESEND_API_KEY=re_shared_key_used_in_all_three_environments
+    ```
+
+    </div>
+    **A staging leak takes production down with it.** When one key authorizes every environment, a credential that leaks from a throwaway preview deploy is also your production sending key. You can't rotate it without an outage, because rotating it breaks production too.
+  </CodeVariant>
+
+  <CodeVariant label="Split keys per environment">
+    <div data-mark-color="green">
+
+    ```bash
+    # production env store
+    RESEND_API_KEY=re_live_production_only
+
+    # preview env store
+    RESEND_API_KEY=re_preview_only
+
+    # local .env (gitignored)
+    RESEND_API_KEY=re_dev_only
+    ```
+
+    </div>
+    **Rotate any one in isolation.** A leaked preview key is revoked and reissued without production ever noticing. Each environment's blast radius stops at its own boundary — which is the entire point of having boundaries.
+  </CodeVariant>
+</CodeVariants>
+
+This pairs with <Term definition="Replacing a credential with a fresh one and revoking the old, done without taking the system down.">key rotation</Term>: the reason you split keys is so that when one is compromised, you can rotate *that one* and leave the others untouched. A single shared key has no safe rotation — every rotation is an outage. Set up the split on day one; retrofitting it after a leak is the worst possible time to learn the lesson.
+
+Sort these jobs by the key each one should hold. The question is never "what does this credential happen to have" — it's "what is the least this job needs."
+
+<Buckets twoCol instructions="Each task touches Resend. Sort it under the key shape it should use.">
+  <Bucket name="sending" label="Sending-only key" description="The app's runtime — least privilege" />
+  <Bucket name="full" label="Full-access key" description="One-off setup scripts, run by hand" />
+
+  <Item bucket="sending">The Server Action that sends a welcome email on sign-up</Item>
+  <Item bucket="sending">The running Next.js app in production</Item>
+  <Item bucket="sending">Every per-request transactional send</Item>
+  <Item bucket="full">A script that creates and verifies the sending domain</Item>
+  <Item bucket="full">Registering a webhook endpoint, once, during setup</Item>
+</Buckets>
+
+## The env slot and the `lib/email.ts` wrapper
+
+Now you write code. Two pieces: the env slot that makes the key safe, and the wrapper module that becomes your single door to Resend.
+
+### The env slot
+
+`RESEND_API_KEY` is a server secret, and you already have the right place for it. Back in the data layer chapters you built `lib/env.ts` with `@t3-oss/env-nextjs` and Zod — a typed schema that validates every environment variable at build time and gives you a single import that's guaranteed populated. Adding the email key is one line in the `server` block.
+
+```ts ins={5}
+export const env = createEnv({
+  server: {
+    DATABASE_URL: z.url(),
+    DATABASE_URL_UNPOOLED: z.url(),
+    RESEND_API_KEY: z.string().min(1),
+  },
+  // …client block, runtimeEnv mapping
+});
+```
+
+The payoff is the reason this pattern exists: with the key in the schema, a production build *refuses to boot* if `RESEND_API_KEY` is missing or empty. You can't accidentally ship an email feature with no credential and discover it when the first user's verification email silently never arrives. The failure moves from a 4am production incident to a build-time error you see before you deploy.
+
+### Installing the SDK
+
+Three packages:
+
+```bash
+pnpm add resend react-email @react-email/components
+```
+
+`resend` is the SDK you'll call. The other two — `react-email` and `@react-email/components` — are pulled in now because Resend renders your email *content* from a React component, and those packages are what let you build that component. The actual template work is the next chapter; today a one-line placeholder component stands in so the wiring is honest.
+
+### The wrapper
+
+Everything that sends email in your app will go through one module: `lib/email.ts`. Before the code, one architectural decision that's easy to get wrong.
+
+The instinct of a careful engineer, seeing a third-party SDK, is to hide it behind a generic interface — an `EmailProvider` abstraction with a `send` method, so you "could swap Resend out later." Resist that here. This wrapper is a *thin convenience layer, not an adapter*. It is one of a small set of sanctioned SDK carve-outs that live in `lib/` and call their vendor directly — Resend, the background-job runner, the object store. The course's fifth architectural principle names this explicitly: these SDKs are used directly, not wrapped behind a generic interface, because the cost of the abstraction outweighs a swap you will almost certainly never make. A premature `EmailProvider` interface buys you nothing and taxes every future change. The wrapper exists for three concrete, present-day jobs — a default `from` address, the canonical `Result` return shape, and a reserved spot for the suppression check that lands two lessons from now — not to pretend Resend is interchangeable.
+
+Here is the whole module. Walk through it one part at a time.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+import 'server-only';
+import type { ReactNode } from 'react';
+import { Resend } from 'resend';
+import { env } from '@/env';
+import { ok, err, type Result } from '@/lib/result';
+
+const resend = new Resend(env.RESEND_API_KEY);
+const DEFAULT_FROM = 'YourApp <noreply@send.yourapp.com>';
+
+type SendEmailInput = {
+  to: string;
+  subject: string;
+  react: ReactNode;
+  replyTo?: string;
+  idempotencyKey?: string;
+};
+
+export async function sendEmail(
+  input: SendEmailInput,
+): Promise<Result<{ id: string }>> {
+  // The suppression check lands here — see the suppression-list lesson.
+  const { data, error } = await resend.emails.send(
+    {
+      from: DEFAULT_FROM,
+      to: [input.to],
+      subject: input.subject,
+      react: input.react,
+      replyTo: input.replyTo,
+    },
+    input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : undefined,
+  );
+  if (error || !data) return err('internal', 'Could not send email.');
+  return ok({ id: data.id });
+}
+`}>
+  <AnnotatedStep meta={`{1} "server-only" {7}`} color="violet">
+    This module holds your secret API key, so the first line makes it a build error if anything client-side ever imports it — the key can never leak into a browser bundle. The client itself is constructed once at module load, a single shared <Term definition="One instance constructed once and reused across every request, rather than re-created on each call.">singleton</Term> reused across every send rather than a fresh client per call.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{8}" color="blue">
+    The default sender identity, defined in exactly one place. Every send uses it unless a caller overrides, so the app's `from` address has a single source of truth — and we'll dissect the anatomy of that string in a moment.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{10-16}" color="blue">
+    The wrapper takes a single options object, not a pile of positional arguments — past two parameters, an object is the convention, and it makes call sites self-documenting. Note `react` is a `ReactNode`: the email body is a component, the subject is a plain string, and `replyTo` and `idempotencyKey` are optional reflexes a caller opts into.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{21}" color="orange">
+    A deliberate seam, not dead code. Two lessons from now this comment becomes a check that asks "has this address bounced or complained?" before any send goes out. It lives *here*, in the one wrapper every send flows through, because a check at the chokepoint can't be forgotten by an individual caller.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{22-31}" color="green">
+    The actual send. `to` is an array because Resend accepts multiple recipients. The *second* argument is the options bag — and the only thing we pass through it is the `idempotencyKey`, conditionally, so a retried send never produces two emails. That key is the headline of this lesson's last section.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{32-33}" color="red">
+    The senior reflex with this SDK. Resend returns `{ data, error }` — it does *not* throw on a failed send. A caller that only reads `data` and ignores `error` will treat a silent rate-limit failure as a success. Always inspect `error` first, map it into the `Result` your action layer already understands, and only trust `data` once you've ruled the error out.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+That `{ data, error }` return is worth dwelling on, because it's the single most common way a send goes wrong silently. The Resend SDK does not throw when a send fails — a validation error, a rate-limit, an unverified `from` all come back as a populated `error` field alongside a null `data`. If your code does `const { data } = await resend.emails.send(...)` and walks away, every one of those failures looks exactly like success. Destructure both, check `error` first. The wrapper does this once so no caller ever has to remember.
+
+## Your first send
+
+Time to actually send something. To see what the wrapper is doing, look first at the bare SDK call it wraps — the native surface, with nothing of yours around it.
+
+<CodeTooltips tooltips={{
+  from: "Format: 'Display Name <local-part@verified.domain>'. The mailbox must be on a domain you've verified — Resend rejects a send from an unverified domain.",
+  to: 'An array — Resend accepts multiple recipients in one call.',
+  react: 'A server-renderable React component. No client hooks (no useState, no useEffect) — it renders to HTML on the server. The real template arrives next chapter.',
+  idempotencyKey: 'A stable key (max 256 chars, retained 24h). Two sends with the same key produce one email — the safety net for retries.',
+}}>
+```ts
+const { data, error } = await resend.emails.send(
+  {
+    from: 'YourApp <noreply@send.yourapp.com>',
+    to: ['delivered@resend.dev'],
+    subject: 'Welcome to YourApp',
+    react: <WelcomeEmail name="Ada" />,
+  },
+  { idempotencyKey: 'welcome-user/usr_123' },
+);
+```
+</CodeTooltips>
+
+Notice the recipient: `delivered@resend.dev`. Resend runs a few special test addresses that simulate outcomes without a real mailbox. `delivered@resend.dev` always reports a successful delivery, which is exactly what you want for a first verify — a clean success with nothing to set up. Its two siblings, `bounced@resend.dev` and `complained@resend.dev`, simulate a hard bounce and a spam complaint; you'll use those much later when you build the webhook handler that reacts to bounces and complaints. For today, you only need `delivered@`.
+
+And the `react` prop needs *something*. Until the next chapter builds real templates, a one-line placeholder keeps the call honest:
+
+```tsx
+// Placeholder — the next chapter replaces this with a real React Email template.
+const WelcomeEmail = ({ name }: { name: string }) => <p>Welcome, {name}!</p>;
+```
+
+It's a plain server-rendered component — no state, no effects, just markup. *Why* the email component can't use client hooks is a next-chapter detail; for now, treat it as a constraint and move on.
+
+Now wire it through your wrapper. From a small Server Action — or a one-off script if you'd rather not build a form yet — the call is the familiar `Result` shape:
+
+```ts
+const result = await sendEmail({
+  to: 'delivered@resend.dev',
+  subject: 'Welcome to YourApp',
+  react: <WelcomeEmail name="Ada" />,
+  idempotencyKey: 'welcome-user/usr_123',
+});
+
+if (!result.ok) {
+  // surface result.error.userMessage to the caller
+}
+```
+
+Run it. Three things tell you it worked: the call returns `ok` with a `data.id`, the send shows up in your Resend dashboard with a delivered status, and `delivered@resend.dev` reports the message as delivered. That is the lesson's done condition — a real email, through your own verified domain, through your own wrapper, returning your own `Result`.
+
+## The `from` line is a UX and reputation decision
+
+You've now sent from `YourApp <noreply@send.yourapp.com>` twice without me explaining the string. It deserves a closer look, because the `from` line is read by two audiences — the human recipient and the receiving mailbox provider — and a careless one costs you on both.
+
+Three parts, each a decision:
+
+<FromAnatomy />
+
+The **display name** (`YourApp`) is pure UX — it's the bold text the recipient sees in their inbox list, so make it your product's name, not a machine string. The **verified subdomain** (`send.yourapp.com`) is the hard requirement: the mailbox has to live on a domain you've verified, or Resend rejects the send outright. That leaves the **local part** — the bit before the `@` — which is where a small senior reflex lives.
+
+Name the <Term definition="The portion of an email address before the @ sign — the 'noreply' in noreply@send.yourapp.com.">local part</Term> for the *intent the user reads off the from line*, not for the system that happens to send the mail. `noreply@`, `auth@`, `billing@`, `security@` — these are signals. A user who sees `security@` knows to pay attention; their inbox filters can route `billing@` to a folder. They are reading meaning from those four characters, so spend them on meaning. An address like `auth-service-prod@` leaks your internal architecture into the user's inbox and signals nothing useful — it's a code smell. (The full address-convention table is the lesson after next; today you just need enough to write an honest `from`.)
+
+The second reflex is about replies. A `from: noreply@…` that silently swallows every reply is a small betrayal of the user's expectation — someone *will* hit reply on a receipt or a security alert, and their message vanishing into a black hole reads as a broken product. It's also a faint negative signal to mailbox providers, which increasingly reward senders who behave like they can be reached. The fix is the <Term definition="An email header that routes the recipient's 'Reply' to a different mailbox than the visible From address.">reply-to</Term> header: keep the bot identity in `from`, but point `replyTo` at a mailbox a human actually monitors.
+
+```ts {3-4}
+await sendEmail({
+  to: 'delivered@resend.dev',
+  replyTo: 'support@yourapp.com',
+  // …from defaults to the noreply identity in the wrapper
+  subject: 'Your receipt',
+  react: <Receipt /* … */ />,
+});
+```
+
+Now the inbox shows `noreply@send.yourapp.com` — clearly automated — but a reply lands in `support@`, where someone reads it. The user gets the honest signal *and* a way to reach a person.
+
+## Idempotency, rate limits, and the three environments
+
+Three send-time disciplines to close on. They share a frame — the production stakes of a send that gets retried, duplicated, or fired in the wrong environment — so take them together.
+
+### The idempotency key
+
+This is the most important reflex in the lesson. Distributed systems retry. A Server Action times out and the framework retries it; a user clicks "resend" before the first attempt finished; a webhook gets redelivered. Without protection, each retry is another email — two welcome messages, two password resets, two receipts for one charge. The fix is an <Term definition="A property of an operation such that running it many times produces the same result as running it once.">idempotency</Term> key: a stable identifier you attach to the send, so Resend recognizes a repeat and sends the email only once.
+
+Resend takes the key as the second argument's `idempotencyKey` option (max 256 characters, remembered for 24 hours). The detail that matters is the *shape* of the key. Don't generate a fresh random value per attempt — that defeats the entire purpose, because each retry would carry a new key and look like a new event. Build the key from the stable id the event *already has*, in Resend's recommended `<event-type>/<entity-id>` form:
+
+```ts
+const welcomeKey = `welcome-user/${userId}`;
+const resetKey = `password-reset/${requestId}`;
+const receiptKey = `invoice-receipt/${invoiceId}`;
+```
+
+The pattern is the same each time: an event-type prefix, then the stable id the event already carries. Now every retry of "the welcome email for user 123" carries the identical key `welcome-user/123`, and Resend collapses them to one send. The `<event-type>/` prefix namespaces the key so a user id and an invoice id can never collide. This is the same idempotency thread that runs through webhooks and background jobs later in the course — here it's the email-specific instance of a pattern you'll see again and again.
+
+### Rate limits
+
+Resend's default limit is **5 requests per second per team**, shared across all of that team's API keys, and raisable on request once you're an established sender. Don't let the number alarm you. A Server Action that sends one email per request will never come near it — five sends a second is a lot of individual user actions. The limit only matters on a *bulk* path: inviting a whole team at once, or sending a digest to thousands of users. For those, Resend offers a batch endpoint that sends up to 100 emails in a single call, which counts as *one* request against the limit — and you'd pair it with the same idempotency key discipline. Building that batch path is a later unit; today, just know the number exists and that bulk has its own tool.
+
+### The three environments
+
+Where you send depends on where you're running.
+
+- **Dev.** Send to your own inbox, or to the `*@resend.dev` test addresses. Never to real users from your laptop.
+- **Preview.** Every pull-request preview deploy can run your Server Actions, which means a careless email action could blast real users from a throwaway branch. Gate sending in preview behind a flag or a recipient allowlist so that can't happen.
+- **Production.** The verified domain is required, and — thanks to the env slot you wired earlier — the build won't even boot without `RESEND_API_KEY`. The discipline you set up at the start of the lesson is what makes production safe by default.
+
+One scenario pulls these threads together. Think it through before you peek at the answer.
+
+<MultipleChoice>
+  A password-reset Server Action takes too long and times out. The user, seeing nothing happen, clicks "resend" — and meanwhile the framework retries the original call on its own. Three send attempts are now in flight for one reset request. What stops the user from getting three reset emails?
+
+  <McqChoice>Requesting a higher rate limit from Resend</McqChoice>
+  <McqChoice>Disabling retries on the Server Action entirely</McqChoice>
+  <McqChoice correct>Attaching the reset request's id to every attempt as the `idempotencyKey`, so Resend collapses the duplicates into one send</McqChoice>
+  <McqChoice>Checking the suppression list before sending</McqChoice>
+
+  <McqWhy>All three attempts carry the same key — something like `password-reset/req_abc` — built from the one id the reset request already has. Resend sees the repeats and sends a single email. A higher rate limit doesn't dedupe anything; disabling retries throws away a useful safety mechanism and doesn't stop the user's manual click; and the suppression list is real but solves a *different* problem — it stops sends to addresses that bounced or complained, the subject of the suppression-list lesson later in this chapter, not duplicate sends.</McqWhy>
+</MultipleChoice>
+
+## External resources
+
+Resend's own documentation is the source of truth for the API surface, and it stays current as the dashboard moves. These cover everything this lesson touched.
+
+<CardGrid>
+  <ExternalResource
+    title="Resend — Send your first email (Node.js)"
+    href="https://resend.com/docs/send-with-nodejs"
+    icon="simple-icons:resend"
+    iconColor="#000000"
+    description="The SDK quickstart and the emails.send reference, including the options this lesson used."
+  />
+  <ExternalResource
+    title="Resend — Verify your domain"
+    href="https://resend.com/docs/dashboard/domains/introduction"
+    icon="simple-icons:resend"
+    iconColor="#000000"
+    description="The domain-verification ceremony and the records Resend asks for."
+  />
+  <ExternalResource
+    title="Resend — API keys"
+    href="https://resend.com/docs/dashboard/api-keys/introduction"
+    icon="simple-icons:resend"
+    iconColor="#000000"
+    description="Key permission levels and the per-environment discipline."
+  />
+  <ExternalResource
+    title="Resend — Idempotency keys"
+    href="https://resend.com/docs/dashboard/emails/idempotency-keys"
+    icon="lucide:repeat"
+    iconColor="#6366F1"
+    description="The retry-safety reflex from this lesson, with the exact <event-type>/<entity-id> key shape."
+  />
+  <ExternalResource
+    title="React Email — Documentation"
+    href="https://react.email/docs/introduction"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="The component model behind the react prop — the templating tool the next chapter builds on."
+  />
+</CardGrid>
+
+You now have the infrastructure every later send depends on: a verified domain, a per-environment key, a typed env slot, and a `lib/email.ts` wrapper that speaks `Result`. The next lesson opens up the DNS records you copied without reading — SPF, DKIM, and DMARC — and explains why, in 2026, an email that isn't authenticated by those three protocols is essentially undeliverable.

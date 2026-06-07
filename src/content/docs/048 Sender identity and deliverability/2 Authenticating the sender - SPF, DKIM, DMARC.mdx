@@ -1,0 +1,366 @@
+---
+title: "Authenticating the sender: SPF, DKIM, DMARC"
+tagline: The three DNS-based email authentication protocols, SPF, DKIM, and DMARC, that get your app's mail trusted by inbox providers and stop attackers from spoofing your domain.
+chapter-id: 048
+course-progress: 0.00005
+sidebar:
+  order: 2
+  label: SPF, DKIM, DMARC
+---
+
+import { Steps, Card, CardGrid, Aside } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Term from '../../../components/ui/Term.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import Matching from '../../../components/exercises/matching/Matching.astro';
+import MatchPair from '../../../components/exercises/matching/Pair.astro';
+import Dropdowns from '../../../components/exercises/dropdowns/Dropdowns.astro';
+import EmailThreeFields from '../../../components/lessons/048/2/EmailThreeFields.astro';
+import DkimSignVerify from '../../../components/lessons/048/2/DkimSignVerify.astro';
+import DmarcAlignment from '../../../components/lessons/048/2/DmarcAlignment.astro';
+import DmarcRolloutTimeline from '../../../components/lessons/048/2/DmarcRolloutTimeline.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+In the last lesson you added your sending domain to Resend, pasted the DNS records it handed you at your registrar, and watched the dashboard flip the domain to `Verified`. You sent a test email and it landed in your inbox. By every signal in front of you, the job is done.
+
+It isn't, and the reason is the most important idea in this chapter. **Deliverability is your app's responsibility, not your vendor's.** When Resend says `Verified`, it is telling you one narrow thing: *Resend can now sign mail on your behalf.* It is not Gmail telling you it will trust that mail. It is not Outlook promising to put it in the inbox instead of the spam folder. And it says nothing at all about stopping a stranger from sending mail that *displays your domain* in the From line to defraud your own customers.
+
+Those are two separate gaps, and this lesson closes both. The first is **trust at the receiving end** — since 2024, the major mailbox providers have moved from "we might spam-folder unauthenticated mail" to "we reject it outright," and the bar keeps creeping down toward smaller senders. The second is **brand protection** — stopping spoofers from forging your `From:` address. Both gaps are closed by the same three protocols, and neither is something Resend can do for you, because the fix lives in *your* DNS and *your* operational decisions, not in their infrastructure.
+
+Those three protocols are <Term def="Sender Policy Framework — a published list of servers allowed to send mail for a domain.">SPF</Term>, <Term def="DomainKeys Identified Mail — a cryptographic signature proving a message was authorized and unaltered.">DKIM</Term>, and <Term def="Domain-based Message Authentication, Reporting and Conformance — the policy that ties SPF and DKIM to the visible From address.">DMARC</Term>, and they stack in a specific order: SPF and DKIM are two peers you publish, and DMARC sits on top of both and makes them actually mean something. You will finish this lesson able to read every record Resend gave you instead of pasting it blindly, and with a staged rollout plan for turning the protection on without breaking your own mail. There is almost no application code here. The deliverables are DNS records and a playbook — and they will pay you back for the rest of your career.
+
+## Three checks on top of a protocol that trusts everyone
+
+To understand why three separate protocols exist, you have to understand the thing they are bolted onto. Email moves over <Term def="Simple Mail Transfer Protocol — the protocol mail servers use to relay messages to each other.">SMTP</Term>, a protocol designed in an era when every machine on the network was run by someone you knew. SMTP has no built-in way to verify who a message is from. The `From:` header is just text the sending server types in — there is nothing stopping a server from writing `From: ceo@yourcompany.com` on a message it composed itself. Think of the return address handwritten on a physical envelope: the post office delivers the letter regardless of what you scribble in that corner, because checking it was never the post office's job. SMTP works exactly the same way, and that open-trust default is the hole all three protocols exist to patch. Keep the envelope picture in mind — it runs through this whole lesson.
+
+The single most important thing to internalize before any protocol detail is that an email does not have *one* identity field. It has several, and they can disagree. This is the root of nearly every misunderstanding in this topic, so we are going to look at it before anything else.
+
+<EmailThreeFields />
+
+Sit with that illustration, because it carries the whole lesson. The field a human reads in their inbox — the visible `From:` — is *not* the field SPF checks, and it is *not* the field DKIM checks. SPF validates the <Term def="The MAIL FROM address used during the SMTP transaction; the hidden return path for bounces, distinct from the visible From header.">envelope sender</Term>, the hidden return address used during the SMTP handshake. DKIM validates the domain named in its own signature. Both of those are separate from the `From:` line your customer actually sees. A spammer can make SPF and DKIM pass perfectly *on their own domain* while writing `yourbank.com` in the visible `From:` — and unless something explicitly compares the passing checks back to that visible line, nobody catches it. Holding those three fields apart in your head is the difference between understanding this topic and being confused by it forever.
+
+With that picture in place, here is what each protocol contributes, framed as a layered stack rather than three unrelated DNS settings:
+
+- **SPF** answers: *is this server allowed to send for the domain?*
+- **DKIM** answers: *was this message altered in transit, and did the key-holder authorize it?*
+- **DMARC** answers: *do the checks that passed actually belong to the domain in the `From:` the user sees — and if not, what should I do about it?*
+
+SPF and DKIM are the two peers you publish. DMARC is the policy that turns them from a pair of disconnected checks into real brand protection. We will build them in exactly that order.
+
+<VideoCallout videoId="Q8NUW3CZRvw" videoTitle="CertMike Explains DMARC, DKIM and SPF">
+  Mike Chapple walks all three protocols in 6 minutes, doing live DNS lookups to read the actual records — a concrete preview of everything the sections below dissect.
+</VideoCallout>
+
+## SPF: which servers may send for the domain
+
+SPF is the simplest of the three, so we start here. An SPF record is a single TXT record published at your sending domain that lists who is allowed to send mail for it — as raw IP ranges, or, far more commonly, as `include:` references that point at *another* provider's published list of IPs. When mail arrives, the receiving server looks at the IP address of the machine that connected to it and checks whether that IP is covered by your SPF record. Authorized server, SPF passes. Unknown server, SPF fails.
+
+Here is the SPF record Resend asked you to add in the last lesson, on your sending subdomain:
+
+```txt title="TXT record on send.yourapp.com" "include:_spf.resend.com"
+v=spf1 include:_spf.resend.com ~all
+```
+
+Read it left to right. `v=spf1` is the version marker — every SPF record opens with it. `include:_spf.resend.com` is the workhorse: it tells the receiver "go look up Resend's own SPF record and treat all the IPs it authorizes as authorized for me too." Resend maintains the actual list of sending IPs behind that name, so when they add or rotate servers, your record keeps working without you touching it. That is the whole point of the <Term def="An SPF mechanism that delegates to another domain's SPF record, inheriting all the IPs it authorizes.">`include` mechanism</Term>. The last token, `~all`, is the catch-all: it says "for any server *not* matched above, softfail."
+
+That final token is a real decision, not boilerplate, so let's make it deliberately. The choice is between `~all` and `-all`. `~all` is a <Term def="An SPF result meaning 'this probably isn't authorized, but deliver it anyway and note the soft failure.' Written ~all.">softfail</Term> — it means "this server probably isn't authorized for me, but don't hard-reject the mail on that basis alone." `-all` is a <Term def="An SPF result meaning 'this is definitely not authorized; treat it as a failure.' Written -all.">hardfail</Term> — "this server is definitely not authorized; treat any mail from it as a failure." Hardfail is stricter and feels more correct, but it is only *safe* once you are certain that every single path sending mail from this subdomain goes through Resend. Resend defaults to `~all`, and that is the right default: start permissive, and tighten to `-all` only after you have confirmed Resend is the sole sender on the subdomain. Reach for the stricter setting when the evidence supports it, not on day one.
+
+Now the foreshadow that the next two sections pay off. **SPF authenticates the envelope `MAIL FROM`, not the visible `From:`.** Go back to the three-fields illustration: SPF only ever looks at that hidden return address from the SMTP handshake. It has no opinion about the `From:` line your customer reads. This is precisely half of why DMARC has to exist, and we will close the loop on it shortly.
+
+SPF carries one trap that bites hard in production, and it is worth understanding now because it shapes how you architect your domains. **SPF allows a maximum of 10 DNS lookups when it evaluates a record.** Every `include:` you add costs one of those lookups. Picture an apex domain that already includes Google Workspace, Microsoft 365, and three SaaS vendors that send on your behalf — a perfectly ordinary setup. You are close to the ceiling. Someone adds Resend's `include:` to that same record, the evaluation tips over 10 lookups, and the receiving server gives up with a `permerror`. The consequence is brutal and counterintuitive: SPF doesn't just fail for the new sender, it fails for **every** sender on that domain at once. The fix is structural, and it is the strongest single argument for the dedicated sending subdomain you have been using all along: when Resend sends from `send.yourapp.com`, that subdomain has its *own* SPF record with essentially nothing in it but Resend's one `include:`. The lookup limit is never anywhere near in play, and your apex's crowded SPF record is left completely untouched. The next lesson owns the full case for splitting your domains; for now, just notice that the split quietly defuses this landmine.
+
+One more record to recognize. Alongside the SPF entry, Resend also asks you to add an MX record on the sending subdomain. That sets up a custom return path so that bounces and complaint feedback flow back to Resend instead of vanishing — which, as a bonus, is also what keeps SPF aligned on that subdomain. You don't need to do anything with that feedback yet; just add the record and know it exists. A later lesson puts the bounce and complaint data it carries to work.
+
+## DKIM: a signature that proves the message is intact
+
+SPF answers "did this come from an allowed server." It says nothing about whether the *message itself* was tampered with on its way, or whether the sender genuinely holds the keys to the domain they claim. DKIM fills both of those gaps, and it does it with public-key cryptography.
+
+If signatures are fuzzy for you, here is the only model you need: a <Term def="A pair of keys where one (private) signs data and the matching other (public) verifies the signature, without ever exposing the private key.">keypair</Term> is two matched keys. The **private** key signs data and is kept secret. The **public** key can verify that signature and can be shared with anyone. Crucially, holding the public key lets you *check* a signature but never *forge* one — only the private key can produce a valid signature in the first place.
+
+DKIM applies that directly to email. When Resend sends your message, its <Term def="Mail Transfer Agent — the server software that relays email between systems.">MTA</Term> signs the message with a private key and attaches a `DKIM-Signature` header. The matching public key is published — where else — in your DNS, as a TXT record at a special <Term def="A label that names which DKIM public key to use, letting one domain publish several keys at distinct subdomains.">selector</Term> subdomain. Resend's selector is `resend`, so the public key lives at `resend._domainkey.send.yourapp.com`. When the message arrives, the receiver reads the selector out of the signature header, fetches the public key from that exact DNS location, and verifies the signature against the message it received.
+
+The record looks like this — and note immediately that you would never type this by hand:
+
+```txt title="TXT record at resend._domainkey.send.yourapp.com" wrap "p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQ…"
+v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQ…
+```
+
+`v=DKIM1` is the version, `k=rsa` names the key algorithm, and `p=` carries the public key itself — that base64 blob, truncated above, runs for hundreds of characters in reality. Resend generates this keypair for you, keeps the private half, and publishes the public half. You copy the value into your registrar exactly as given. You never author it, and Resend can rotate it over time without you re-learning anything.
+
+Let's trace the two halves of how this works, because the non-obvious mechanic is that the public key lives in *your* DNS and the receiver pulls it down at the moment of verification.
+
+<DkimSignVerify />
+
+What does a passing DKIM check actually buy you? Two distinct guarantees that students constantly merge into one. The first is **integrity**: the parts of the message that were signed arrived exactly as they were signed — no relay altered the body or the key headers in transit. The second is **authorization**: whoever produced the signature genuinely held the private key for the domain named in the signature's `d=` tag. Those are real and valuable. But notice the gap, the same gap SPF had: a passing DKIM check proves things about *the `d=` domain*, and the `d=` domain does not have to be the domain in the visible `From:`. On its own, DKIM does not prove the `From:` your customer reads is legitimate. That is, once again, DMARC's job — and now you have seen the gap from both sides.
+
+<Aside type="caution" title="The record that looks fine but silently fails">
+The single most common "I did everything and it still fails" support ticket in email setup is a DKIM record that *looks* present but never verifies — because the registrar truncated the long key or wrapped its segments in extra quotation marks. The record being visible in your DNS panel is not proof that it's correct. Paste the exact value Resend issues, and if your registrar splits long TXT strings into multiple quoted segments, follow *its* multi-string convention rather than hand-editing the value into pieces.
+</Aside>
+
+## Why DMARC is the piece that actually stops spoofing
+
+We have foreshadowed this from both directions; now we collect on it. This is the conceptual centre of the lesson, so slow down here.
+
+Start with the hole that SPF and DKIM, by themselves, leave wide open. Both checks pass *independently of the visible `From:` header*. So picture an attacker. They register `evil.com` — a domain they fully control. They set up flawless SPF and DKIM for `evil.com`; nothing is stopping them, it's their own domain. Then they send mail with the visible `From:` set to `security@yourbank.com`. What happens at the receiver? SPF passes — the connecting server really is authorized for `evil.com`. DKIM passes — the message really is validly signed for `evil.com`. Both checks are green. And nothing in SPF or DKIM contains a rule that says "wait, the `From:` the human will read says `yourbank.com`, but neither passing check has anything to do with `yourbank.com`." Authentication "worked," and your brand was spoofed anyway.
+
+DMARC is the rule that closes that hole, and it does it through one idea: <Term def="The DMARC requirement that a passing SPF or DKIM check belong to the same domain as the visible From header.">alignment</Term>. The core takeaway of this entire lesson is a single sentence, so read it slowly:
+
+> DMARC requires that at least one of SPF or DKIM both **passes** *and* is **aligned** with the visible `From:` domain — meaning the domain that passed is the same domain the human sees.
+
+In the spoof above, both checks pass, but both pass on `evil.com` while the `From:` says `yourbank.com`. Nothing is aligned, so DMARC fails — and now the receiver has an explicit instruction to act on it. Let's make alignment *visible* by running the legitimate case and the spoof case side by side, this time forging *your* domain rather than a bank's, so the stakes are concrete.
+
+<DmarcAlignment />
+
+So, concretely: a DMARC record is a TXT record published at `_dmarc.yourapp.com` that declares two things SPF and DKIM never could — first, the **policy** to apply when no aligned check passes, and second, **where to send reports** about what's happening to your mail. It is the only one of the three protocols that carries a policy and a feedback channel; SPF and DKIM are pure checks with no notion of "what to do on failure."
+
+That is the whole stack, so let's name the layering one last time, cleanly: **SPF and DKIM are the checks. DMARC is the rule that binds those checks to the `From:` your user reads, and tells receivers what to do when the binding fails.** Hold onto that and the three protocols stop being three things to memorize and become one coherent system.
+
+Before we read an actual DMARC record, let's pin down the mapping the whole lesson hinges on.
+
+<Matching instructions="Match each protocol to the one thing it checks.">
+  <MatchPair>
+    <Fragment slot="left">**SPF**</Fragment>
+    <Fragment slot="right">Checks the connecting server's IP against the envelope `MAIL FROM`.</Fragment>
+  </MatchPair>
+  <MatchPair>
+    <Fragment slot="left">**DKIM**</Fragment>
+    <Fragment slot="right">Signs and validates message integrity via a `d=` signing domain.</Fragment>
+  </MatchPair>
+  <MatchPair>
+    <Fragment slot="left">**DMARC**</Fragment>
+    <Fragment slot="right">Ties a passing check to the visible `From:` and sets the policy on failure.</Fragment>
+  </MatchPair>
+</Matching>
+
+## Reading a DMARC record field by field
+
+Knowing DMARC exists is one thing; being able to read and tune the record is the skill you actually need — for this chapter's project and for steering an AI agent that's editing your DNS. So let's take a complete, realistic DMARC record apart field by field.
+
+```txt title="TXT record at _dmarc.yourapp.com" wrap
+v=DMARC1; p=none; rua=mailto:dmarc-reports@yourapp.com; ruf=mailto:dmarc-failures@yourapp.com; fo=1; pct=100; adkim=s; aspf=s;
+```
+
+Each field below is one you will actually read or adjust, so we'll step through them one at a time.
+
+<AnnotatedCode lang="txt" code={`
+v=DMARC1; p=none; rua=mailto:dmarc-reports@yourapp.com; ruf=mailto:dmarc-failures@yourapp.com; fo=1; pct=100; adkim=s; aspf=s;
+`}>
+  <AnnotatedStep meta={`"v=DMARC1"`} color="blue">
+    The version marker. It's required, and it must come first — a record that doesn't start with this is ignored entirely.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"p=none"`} color="red">
+    The policy applied to the apex when no aligned check passes: `none` (monitor only — report but take no action), `quarantine` (deliver to spam), or `reject` (refuse the mail outright). This is the dial the next section ramps, and the one that can break real mail — hence the red.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"rua=mailto:dmarc-reports@yourapp.com"`} color="blue">
+    Where to send **aggregate** reports — daily XML roll-ups of how much of your mail passed and failed alignment, and from which sources. The single most valuable field while you're at `p=none`: it's how you discover senders you forgot you had.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"ruf=mailto:dmarc-failures@yourapp.com"`} color="blue">
+    Where to send **forensic** (per-message failure) reports. They're redacted and privacy-limited, and many receivers don't send them at all — useful to have, but don't expect much from it.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"fo=1"`} color="blue">
+    Forensic-report options: `1` means generate a failure report if *either* SPF or DKIM fails to align. A minor knob; it only matters if `ruf` reports actually arrive.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"pct=100"`} color="blue">
+    The percentage of failing mail the policy applies to. At `100` it hits all failing mail. This is your rollout throttle — you'll start a stricter policy at a low percentage and ramp it up.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"adkim=s" "aspf=s"`} color="blue">
+    Alignment mode for DKIM and SPF: `s` is strict (the domains must match exactly), `r` is relaxed (a subdomain of the `From:` org domain counts as aligned). Use strict on a sensitive apex; relaxed when subdomains legitimately send on your behalf.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+One field deserves separate attention precisely because it is *absent* from the record above: `sp=`, the **subpolicy** for subdomains. When you don't set it, subdomains simply inherit whatever `p=` is. That inheritance is the source of a classic and dangerous mistake. Inheritance runs from the apex *down* to subdomains — so the DMARC record at your apex, `_dmarc.yourapp.com`, automatically protects every subdomain under it. The trap is to publish DMARC only at the *subdomain* — `_dmarc.send.yourapp.com` — and leave the apex with no DMARC record at all. Now the one domain attackers most want to spoof, your bare apex, is completely unprotected, even though "you set up DMARC." The reflex of an experienced engineer is the reverse: publish DMARC at the apex first, since it covers everything, and reach for `sp=` only when you specifically want a subdomain to run at a different strictness than the apex.
+
+Now confirm you can author a record, not just read one.
+
+<Dropdowns
+  instructions="You're publishing your first DMARC record. You want monitor-only (no mail affected), applied to all of your mail, with strict DKIM alignment. Fill in the blanks."
+  answers={[
+    { answer: 'none', options: ['none', 'quarantine', 'reject'] },
+    { answer: '100', options: ['10', '50', '100'] },
+    { answer: 's', options: ['s', 'r'] },
+  ]}
+>
+```txt
+v=DMARC1; p=___; rua=mailto:dmarc-reports@yourapp.com; pct=___; adkim=___;
+```
+</Dropdowns>
+
+## Rolling out the policy: none, then quarantine, then reject
+
+Here is the part of the lesson that pays off most for the rest of your career, and the thing most people get wrong: `p=reject` is not a setting you turn on. It is a destination you arrive at, over weeks, on evidence.
+
+The reason is that a wrong `p=reject` does not fail gracefully. It *hard-bounces real mail* — every message from any legitimate sender you forgot to authenticate. The billing tool that emails invoices from your domain. The CRM that sends from a marketing address. The founder running a mail-merge from their laptop. Flip straight to `reject` and all of it starts bouncing the moment your DNS propagates, invisibly, while you think you've just improved your security posture. So the discipline is the opposite of a one-time DNS edit: you start permissive, watch what actually happens, and tighten only when the evidence says it's safe.
+
+That discipline is a four-stage playbook.
+
+<Steps>
+
+1. **Publish `p=none` with `rua` flowing to a report parser.** At `p=none`, *no mail is affected* — you are doing nothing but collecting the daily aggregate reports. Point `rua` at a DMARC monitoring service rather than a raw mailbox; the reports are XML and you should never hand-parse them. Services like dmarcian, PowerDMARC, and Postmark's DMARC monitoring all have free tiers that turn the XML into a readable dashboard.
+
+2. **Watch for about a week and authenticate every legitimate source.** This is what the reports are *for*: they reveal every system currently sending under your domain, including the ones you'd forgotten. Work down the list — add SPF includes, wire up DKIM, or route stray senders through your sending subdomain — until everything legitimate shows up as aligned.
+
+3. **Move to `p=quarantine` with `pct=10`, then ramp `pct` toward 100 over a week.** Now you begin enforcing, but on only a tenth of failing mail at first, watching the reports for collateral damage — any legitimate mail you missed showing up as a failure. If it's clean, raise the percentage in steps.
+
+4. **Move to `p=reject` once quarantine has run clean for about two weeks.** Only when enforcement has been quietly working with no legitimate casualties do you reach the destination: spoofed mail is now refused outright, and your brand is protected.
+
+</Steps>
+
+Seeing the ramp laid out on a timeline makes the logic click — each stage is a deliberate step down in risk, not an arbitrary stop.
+
+<DmarcRolloutTimeline />
+
+
+This is also exactly where your project lands. Your first deploy will publish `p=none` with monitoring and graduate up the ramp over the project's lifetime — that is the realistic, correct posture, and it's what this unit's project chapter ships. You are not expected to launch at `reject`; you are expected to launch at `none` and *know the path*.
+
+So when is it actually safe to take the next step? The decision is always gated on evidence from your reports, never on the calendar — walk it through.
+
+<StateMachineWalker kind="decision" title="Which DMARC policy are you ready for?">
+  <Question id="reports-flowing" prompt="Are aggregate reports flowing, and have you actually watched them for a while?"
+    description="The rua reports are your only window into who sends under your domain. No data, no decision.">
+    <Branch label="Not yet" to="leaf-setup-rua" />
+    <Branch label="Yes — they're flowing and I've read them" to="senders-aligned" />
+  </Question>
+
+  <Question id="senders-aligned" prompt="Is every legitimate sender now authenticated and showing as aligned in the reports?"
+    description="Work the report down to zero unexplained sources before you enforce anything.">
+    <Branch label="No — some legitimate senders still fail alignment" to="leaf-authenticate" />
+    <Branch label="Yes — every legitimate source is aligned" to="quarantine-clean" />
+  </Question>
+
+  <Question id="quarantine-clean" prompt="Has a quarantine window run clean — no legitimate mail failing — for a couple of weeks?"
+    description="Enforcement at quarantine is the dress rehearsal for reject. Watch for collateral damage before the final step.">
+    <Branch label="No — I haven't run quarantine yet, or it's not clean" to="leaf-quarantine" />
+    <Branch label="Yes — quarantine has been clean for weeks" to="leaf-reject" />
+  </Question>
+
+  <Leaf id="leaf-setup-rua" verdict="Stay at p=none — set up rua first">
+    You can't tighten what you can't see. Point `rua` at a monitoring service, let the daily aggregate reports start flowing, and read them for about a week before you change anything.
+  </Leaf>
+
+  <Leaf id="leaf-authenticate" verdict="Stay at p=none — authenticate the stragglers">
+    Tightening now would hard-bounce the legitimate senders that still fail alignment. Work down the report — add SPF includes, wire up DKIM, or route stray senders through your sending subdomain — until everything legitimate shows as aligned.
+  </Leaf>
+
+  <Leaf id="leaf-quarantine" verdict="Move to p=quarantine at pct=10">
+    Begin enforcing, but on only a tenth of failing mail. Ramp `pct` toward `100` over about a week, watching the reports for any legitimate mail that starts failing. A clean window here is what earns the move to `reject`.
+  </Leaf>
+
+  <Leaf id="leaf-reject" verdict="You're ready for p=reject">
+    Enforcement has run quietly with no legitimate casualties. Move to `p=reject` — spoofed mail is now refused outright and your brand is protected. This is a destination reached on evidence, not a day-one setting.
+  </Leaf>
+</StateMachineWalker>
+
+Notice what every branch has in common: the gate is always *what the reports show*, never how much time has passed. That is the entire discipline.
+
+## The 2026 bulk-sender bar
+
+Everything above would be good practice in any year. What makes it *non-optional* in 2026 is an external deadline that the major mailbox providers have already enforced. Here is the timeline, with no hype — just what happened and what it means for you.
+
+<CardGrid>
+  <Card title="Gmail + Yahoo — February 2024" icon="email">
+    The original bar: any sender over 5,000 messages/day to personal accounts must authenticate with SPF *and* DKIM, publish DMARC, and offer one-click unsubscribe on marketing mail. The wave that started it all.
+  </Card>
+  <Card title="Microsoft (Outlook / Hotmail / Live) — May 5, 2025" icon="email">
+    The same 5,000/day threshold and the same SPF + DKIM + DMARC requirement, with `p=none` as the minimum to be accepted at all.
+  </Card>
+  <Card title="La Poste — September 2025" icon="email">
+    France's postal email service followed with equivalent authentication requirements — a sign the bar is now an industry baseline, not a Big-Tech quirk.
+  </Card>
+</CardGrid>
+
+Read the trend, not just the dates. The explicit, written threshold is 5,000 messages a day to consumer mailboxes — but enforcement has hardened steadily, and the bar now applies *de facto* to far smaller senders. The correct read is simply to build to the bar from day one, whatever your volume, because retrofitting authentication after your signup emails start disappearing is a bad week.
+
+And "disappearing" is the right word, because the consequence has changed in kind. Failing mail is no longer quietly dropped into a spam folder where a determined user might dig it out — it is **rejected** outright. Here is Microsoft's actual SMTP response when authentication doesn't meet the bar:
+
+```txt title="Microsoft's SMTP rejection for unauthenticated mail" wrap "550 5.7.515"
+550 5.7.515 Access denied, sending domain … does not meet the required authentication level
+```
+
+Let that difference land. "Went to spam" means the user *could* still find your verification email. "Rejected" means they never receive it — and your signup funnel breaks silently, with no error visible to you, because the rejection happens at the recipient's server. That is the failure mode this whole lesson exists to prevent.
+
+So here is the 2026 baseline to build against — a list you can scan and check off.
+
+<Checklist id="2026-baseline">
+  <ChecklistItem>SPF and DKIM authenticated **and aligned** on every send.</ChecklistItem>
+  <ChecklistItem>DMARC published — `p=none` is the *minimum to send at all* to the major providers; `p=quarantine` or `p=reject` is the target to work toward.</ChecklistItem>
+  <ChecklistItem>**One-click unsubscribe** for **marketing** mail (the `List-Unsubscribe` and `List-Unsubscribe-Post` headers below). Transactional mail — verification codes, password resets, receipts — is **exempt from the unsubscribe requirement** but **not** from authentication. The next lesson owns the transactional/marketing split.</ChecklistItem>
+  <ChecklistItem>Spam complaint rate kept **below 0.3%** (Gmail's enforcement threshold); **above 0.1%** is the warning zone. Treat these as hard provider requirements; a later lesson owns the discipline for staying under them.</ChecklistItem>
+</Checklist>
+
+The unsubscribe headers named in that checklist look like this — you won't implement them in this chapter, but recognize the shape so the line between marketing and transactional mail is concrete:
+
+```txt title="One-click unsubscribe headers (RFC 8058) for marketing mail" "List-Unsubscribe-Post"
+List-Unsubscribe: <https://yourapp.com/unsubscribe?token=…>
+List-Unsubscribe-Post: List-Unsubscribe=One-Click
+```
+
+That is <Term def="RFC 8058 — one-click unsubscribe, the standard letting a mailbox provider unsubscribe a user with a single tap, required for marketing mail.">one-click unsubscribe</Term>: the `List-Unsubscribe-Post` header is what lets Gmail or Outlook show a native "unsubscribe" button that works in a single tap, without the user ever loading your page. Transactional mail doesn't need it — but it still needs every authentication item above.
+
+Finally, the satisfying part: proving your setup actually works. Once your records are live, verify them like this.
+
+<Steps>
+
+1. **Send a test to a header-parsing verifier.** Tools like `learndmarc.com` give you an address to mail; their auto-reply reports your SPF, DKIM, and DMARC results back to you, broken down field by field. This is the fastest way to see all three checks at once.
+
+2. **Send to a Gmail inbox and open "Show original."** In the message's three-dot menu, "Show original" displays the raw headers with a summary at the top. Confirm you see `SPF: PASS`, `DKIM: PASS`, and `DMARC: PASS`. This is the receiving provider's own verdict, which is the one that counts.
+
+3. **Check the Resend dashboard.** The latest send shows its authentication result; if something failed, it points you straight at the misconfigured record so you know which DNS entry to fix.
+
+</Steps>
+
+When all three agree, your domain is genuinely authenticated — not merely `Verified` by your vendor, but *trusted* by the providers your users actually read mail in.
+
+<Aside type="note" title="What comes after reject: BIMI">
+Once your DMARC reaches `quarantine` or `reject`, you unlock the option to publish a <Term def="Brand Indicators for Message Identification — a standard for displaying a brand's logo beside its authenticated mail.">BIMI</Term> record, which points at an SVG of your logo so it renders beside your name in the inbox. For Gmail's prominent inbox-icon slot you additionally need a <Term def="Verified Mark Certificate — a certificate tying a BIMI logo to a registered trademark, required by some providers.">Verified Mark Certificate</Term> tied to a registered trademark. The framing to keep: BIMI is a brand and marketing lever that *depends on* DMARC enforcement — it is not a deliverability tool, and it's not part of your project's MVP. Ship it after `p=reject` is stable, if the brand wants it.
+</Aside>
+
+To go deeper on the specifics for your own domain, these are the references worth bookmarking.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Implementing DMARC"
+    href="https://resend.com/docs/dashboard/domains/dmarc"
+    icon="simple-icons:resend"
+    iconColor="#000000"
+    description="Resend's canonical guide to the exact records and the staged p=none to p=reject path."
+  />
+  <ExternalResource
+    title="Email sender guidelines FAQ"
+    href="https://support.google.com/a/answer/14229414"
+    icon="simple-icons:google"
+    iconColor="#4285F4"
+    description="Google's authoritative statement of the Gmail authentication requirements and spam-rate thresholds."
+  />
+  <ExternalResource
+    title="LearnDMARC"
+    href="https://www.learndmarc.com/"
+    icon="lucide:flask-conical"
+    iconColor="#16A34A"
+    description="Interactive visualizer that steps a real message through SPF, DKIM, and DMARC alignment live."
+  />
+  <ExternalResource
+    title="Why DMARC"
+    href="https://dmarcian.com/why-dmarc/"
+    icon="lucide:bar-chart-3"
+    iconColor="#2563EB"
+    description="dmarcian's primer plus the report-parsing service you point rua at in stage one of the rollout."
+  />
+</CardGrid>
