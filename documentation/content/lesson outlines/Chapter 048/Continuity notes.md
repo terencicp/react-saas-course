@@ -28,7 +28,7 @@
 - Senior reflex codified: Resend's `emails.send` returns `{ data, error }` and **does not throw** — destructure both, check `error` first, map into `Result`. Guard shipped as `if (error || !data) return err('internal', 'Could not send email.')` then `return ok({ id: data.id })`.
 - Env: `RESEND_API_KEY: z.string().min(1)` added to the `server` block; production build refuses to boot without it.
 - Import alias used: `@/env` and `@/lib/result`.
-- Install set: `pnpm add resend react-email @react-email/components`.
+- Install set: `pnpm add resend react-email` (React Email 6 unified package; `@react-email/components` deprecated).
 
 **Misc.:**
 - Outline-drift correction baked into the lesson: env validation is **Ch 041** (`@t3-oss/env-nextjs`), not Ch 030 as the chapter outline claims — later lessons should cite Ch 041.

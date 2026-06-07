@@ -82,7 +82,7 @@ Where the student starts writing code. Two parts: the env validation slot, then 
 
 **Env slot.** `RESEND_API_KEY` is a server secret; it lands in the project's typed env schema. Reconnect to the prerequisite: the student already built `lib/env.ts` with `@t3-oss/env-nextjs` + Zod in Unit 5 (Chapter 041). Show only the one-line addition to the `server` block (`RESEND_API_KEY: z.string().min(1)`) as a plain `Code` fence with an `ins=` mark, and state the payoff: the build refuses to boot in production without it. Do not re-teach the env pattern — one sentence of recall plus the diff. (Note for downstream: the chapter outline says "Chapter 030 owns env" — that is drift; env validation is actually Chapter 041 lesson 2 (`@t3-oss/env-nextjs`). Reference Chapter 041, not 030.)
 
-**The wrapper.** Install: `pnpm add resend react-email @react-email/components`. State that `react-email` / `@react-email/components` are pulled now because the `react` prop needs them, but the template work is Chapter 049 — here a one-line placeholder component stands in.
+**The wrapper.** Install: `pnpm add resend react-email`. State that `react-email` is pulled now because the `react` prop needs it (React Email 6 unified every primitive into the one `react-email` package; the old `@react-email/components` is deprecated), but the template work is Chapter 049 — here a one-line placeholder component stands in.
 
 Then build `lib/email.ts`. Lead with the file-shape rule from conventions: it begins with `import 'server-only';`, exports a singleton `resend` client and a typed `sendEmail` wrapper, lives in `lib/` as a sanctioned SDK-adapter carve-out, and is **not** a generic email abstraction — name Architectural Principle #5 here (Resend, Trigger.dev, R2 are used directly; the swap cost doesn't justify wrapping them behind an interface). The wrapper's only jobs: default `from`, the canonical `Result` return shape, and a reserved seam for the suppression check (L4).
 
@@ -167,7 +167,7 @@ Optional `ExternalResource` cards: the Resend Node SDK quickstart / `emails.send
 
 ## Scope
 
-In scope: the provider decision (Resend vs. SES/Postmark/marketing ESPs), the verified-domain ceremony at a *shape* level, the full-access-vs-sending-only key shapes and per-environment key discipline, the `RESEND_API_KEY` env slot (one-line recall of the Chapter 041 pattern), `pnpm add resend react-email @react-email/components`, the `lib/email.ts` singleton + typed `sendEmail` wrapper returning `Result`, the first `resend.emails.send` call, the `from`/`reply_to` anatomy and per-purpose-local-part reflex, the idempotency-key reflex, the rate-limit number, and per-environment send behavior including the `*@resend.dev` test addresses.
+In scope: the provider decision (Resend vs. SES/Postmark/marketing ESPs), the verified-domain ceremony at a *shape* level, the full-access-vs-sending-only key shapes and per-environment key discipline, the `RESEND_API_KEY` env slot (one-line recall of the Chapter 041 pattern), `pnpm add resend react-email`, the `lib/email.ts` singleton + typed `sendEmail` wrapper returning `Result`, the first `resend.emails.send` call, the `from`/`reply_to` anatomy and per-purpose-local-part reflex, the idempotency-key reflex, the rate-limit number, and per-environment send behavior including the `*@resend.dev` test addresses.
 
 Out of scope (redefine prerequisites only in one line where needed):
 - **SPF / DKIM / DMARC mechanics, the DNS record anatomy, the policy progression** — Chapter 048 lesson 2. Here: "Resend gives you DNS records; the next lesson explains them."
@@ -182,6 +182,6 @@ Out of scope (redefine prerequisites only in one line where needed):
 - **Idempotency key:** confirmed — `idempotencyKey` is the second-argument option to `resend.emails.send`, max 256 chars, kept 24h. Recommended format `<event-type>/<entity-id>` (e.g. `welcome-user/123456789`). Outline updated to teach this format.
 - **Rate limit:** corrected — default is **5 requests/second per team** (was 2 r/s in older docs / training data), shared across the team's keys, raisable on request. Batch endpoint sends up to 100 emails in one request, counting as a single request against the limit. Outline updated.
 - **Send shape:** confirmed — `{ data, error }` return with `data.id`; `react` is the current prop name.
-- **Install:** confirmed — `resend @react-email/components react-email` is the current 2026 standard install set; Resend does not bundle rendering.
+- **Install:** confirmed — `resend react-email` is the current 2026 standard install set (React Email 6 unified components into the `react-email` package; `@react-email/components` is deprecated); Resend does not bundle rendering.
 - **Test addresses:** confirmed — `delivered@`, `bounced@`, `complained@` `@resend.dev` are current; they also support `+label` suffixes.
 - **`replyTo` casing:** the SDK accepts `replyTo` (camelCase) in the JS object — downstream should confirm against the installed SDK version when writing the wrapper.

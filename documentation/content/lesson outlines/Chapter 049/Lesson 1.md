@@ -22,7 +22,7 @@ Key decisions baked into section ordering:
 - The Tailwind-v4-to-v3 config bridge is genuinely fiddly and a known footgun; give it its own section but teach only the *shape* (one TS module, hex fallbacks for OKLCH), not an extraction algorithm.
 - End by composing everything into the running `WelcomeEmail` plus an `EmailLayout`, so the lesson lands a concrete, reusable artifact rather than a pile of isolated snippets.
 
-ReactCoding cannot load `@react-email/components` (per project constraint: the iframe runs only the React family from esm.sh, no third-party npm). So **no live coding** in this lesson — checks are non-coding (Buckets, Dropdowns, MultipleChoice) plus heavy use of `Code` / `AnnotatedCode` / `CodeVariants` for worked snippets. The real hands-on loop is lesson 2's preview server.
+ReactCoding cannot load `react-email` (per project constraint: the iframe runs only the React family from esm.sh, no third-party npm). So **no live coding** in this lesson — checks are non-coding (Buckets, Dropdowns, MultipleChoice) plus heavy use of `Code` / `AnnotatedCode` / `CodeVariants` for worked snippets. The real hands-on loop is lesson 2's preview server.
 
 ## Lesson sections
 
@@ -122,7 +122,7 @@ Tooltip candidates: `preheader`, `bulletproof button`.
 Goal: reframe the student's Unit-3 Tailwind muscle memory onto the email target, and surface the two things that differ — narrower supported subset, and inline-style output. This is the "same vocabulary, new render target" anchor applied to styling.
 
 Teach:
-- Wrap the body in `<Tailwind>` (from `@react-email/components`) and the template uses the familiar utilities: `text-lg`, `font-semibold`, `bg-zinc-50`, `mx-auto`, `max-w-[600px]`. Same vocabulary as the web app.
+- Wrap the body in `<Tailwind>` (from `react-email`) and the template uses the familiar utilities: `text-lg`, `font-semibold`, `bg-zinc-50`, `mx-auto`, `max-w-[600px]`. Same vocabulary as the web app.
 - What the wrapper actually does: at render time it compiles each used class into **inline styles per element** and drops unrecognized ones with a console warning. This is the payoff of "no CSS file is loaded" from the pipeline section — Tailwind can't ship a stylesheet, so it inlines. (The wrapper is built on Tailwind 4.x internally — verified June 2026 — so the utility vocabulary matches the web app's v4 build.)
 - The narrower subset, stated as concrete senior watch-outs: **no `flex`, no `grid`** (use `<Row>`/`<Column>` instead — tie back to the layout cluster); the `space-*` utilities and complex selectors are unsupported because of how styles inline; arbitrary values like `max-w-[37.5rem]` work and are useful; the `dark:` variant needs the head-tag plumbing from lesson 3, so don't reach for it yet.
 - The most insidious trap, taught inline: `flex`/`grid` *look like they work in the preview* because the preview renders in Chrome, but Gmail collapses them to default block flow. The preview's correctness is not the inbox's correctness. (This also seeds lesson 2's "the inbox is the only place that matters.")
@@ -141,13 +141,13 @@ IMPORTANT — fact-check correction (verified June 2026, see notes at end). The 
 
 Teach:
 - The mismatch in one sentence: the web app declares tokens in a CSS `@theme` block; the `<Tailwind>` component reads a **JS config object** instead. They don't share a source, so the brand tokens are mirrored by hand.
-- The `pixelBasedPreset` (from `@react-email/components`) — the senior default for email. Tailwind's units are `rem`-based for accessibility, but some email clients don't honor `rem`; the preset re-bases the utilities on `16px`. Include it in the config: `presets: [pixelBasedPreset]`. Name *why* (rem unreliable in some clients), not just that it exists.
+- The `pixelBasedPreset` (from `react-email`) — the senior default for email. Tailwind's units are `rem`-based for accessibility, but some email clients don't honor `rem`; the preset re-bases the utilities on `16px`. Include it in the config: `presets: [pixelBasedPreset]`. Name *why* (rem unreliable in some clients), not just that it exists.
 - The reach: a small hand-maintained `emails/emailTailwindConfig.ts` — one TS module, one default export — that sets `presets: [pixelBasedPreset]` and mirrors the brand tokens under `theme.extend.colors` with **hex/RGB values (not OKLCH)**, keyed by the same names the web app uses (so `bg-brand` means the same thing in both places).
 - Usage: `<Tailwind config={emailTailwindConfig}>` in every template.
 - Why hex/RGB specifically: a handful of mailbox clients drop properties whose values they can't parse (OKLCH), and the brand color silently disappears — relating to the broader watch-out that class-derived colors can vanish, so the email config uses concrete hex fallbacks for each token.
 - Frame as maintained by hand as the palette evolves — not auto-generated. Keep expectations honest: the student needs the shape and the why, not a sync script.
 
-How to convey: a single `Code` block of a trimmed `emailTailwindConfig.ts` — `import { pixelBasedPreset } from '@react-email/components'`, a default export with `presets: [pixelBasedPreset]` and 3-4 color tokens each as a hex value under `theme.extend.colors` — plus the `<Tailwind config={emailTailwindConfig}>` usage line. Keep it short — the point is the shape.
+How to convey: a single `Code` block of a trimmed `emailTailwindConfig.ts` — `import { pixelBasedPreset } from 'react-email'`, a default export with `presets: [pixelBasedPreset]` and 3-4 color tokens each as a hex value under `theme.extend.colors` — plus the `<Tailwind config={emailTailwindConfig}>` usage line. Keep it short — the point is the shape.
 
 Aside (caution) for the OKLCH-drops-silently footgun, since it's one of the two non-obvious reasons this file exists (the other being `pixelBasedPreset`).
 
