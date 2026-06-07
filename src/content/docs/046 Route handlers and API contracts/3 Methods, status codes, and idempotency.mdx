@@ -1,0 +1,421 @@
+---
+title: Methods, status codes, and idempotency
+tagline: The HTTP authoring discipline behind every route handler, choosing the method by intent and the status code by outcome, then making a retried POST safe with an idempotency key.
+chapter-id: 46
+course-progress: 0.455
+sidebar:
+  order: 3
+  label: Methods, codes, idempotency
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import StatusDecisionTree from '../../../components/lessons/046/3/StatusDecisionTree.astro';
+import IdempotencyReplay from '../../../components/lessons/046/3/IdempotencyReplay.astro';
+import Matching from '../../../components/exercises/matching/Matching.astro';
+import Pair from '../../../components/exercises/matching/Pair.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import TrueFalse from '../../../components/exercises/true-false/TrueFalse.astro';
+import Statement from '../../../components/exercises/true-false/Statement.astro';
+import TfWhy from '../../../components/exercises/true-false/TfWhy.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+You can now stand up a route handler that parses its input with Zod and returns a typed body. But the moment you write the second one, three decisions show up that the last two lessons never made you answer. Which method does a "soft-delete this invoice" endpoint use — is removing a row a `DELETE`, or is it a `POST` because it sends a notification? When two requests race to create the same invoice and one loses on a unique key, which status code does the loser get back — is that a `400`, a `409`, a plain `500`? And when you accept a job that won't finish during the request, what does a `202` actually carry in its body?
+
+These aren't trivia. Every one of them is a line a reviewer leaves on your pull request, because every one of them changes how the rest of the system behaves around your endpoint. You already know the protocol from the *outside*: back in the chapter on the HTTP contract every endpoint signs, you learned to read methods and status codes as a *client* — what to expect when you call someone else's API. And in the last two lessons you got the `route.ts` shape and the Zod-in, Zod-out contract with its Problem Details error body. This lesson is the layer on top of both: the authoring discipline. You learned to read these as a client. Now you sign the contract as the author.
+
+By the end you'll hold the table a reviewer enforces — method by intent, status code by outcome — plus the one genuinely operational thing this lesson ships: the idempotency contract that stops a retried `POST` from charging a customer's card twice. One sentence ties the whole lesson together, so keep it in view the entire way down: **the method and the status code are the contract; the body is only the explanation.**
+
+## The method is the contract, not POST-for-everything
+
+Open almost any codebase that grew without review and you'll find the same thing: every endpoint is a `POST`. List invoices? `POST /invoices/list`. Delete one? `POST /invoices/delete`. Read a single record? `POST /invoices/get`. It's not wrong in the sense that the protocol forbids it — `POST` is the loosest method, the spec permits it to mean almost anything. It's wrong in the sense that it throws away free information. The team that does this has decided that the request line of every call should say nothing.
+
+Here's the posture that replaces it: **the method is documentation.** When a request arrives, the method is the first signal of intent a reviewer (or a cache, or a retry policy, or a monitoring rule) reads — before the URL, long before the body. A reviewer reads `DELETE /invoices/abc` and knows the shape of what's about to happen without opening the handler. That's the whole value. The method declares intent at the wire level, where every generic HTTP tool can act on it without parsing your JSON.
+
+Two properties from the HTTP semantics chapter carry the entire discussion, so let me refresh them in one line each rather than assume you've got them loaded. A method is <Term definition="The method has no observable side effect — calling it changes nothing on the server. The client and any intermediary can call it freely.">safe</Term> when calling it changes nothing on the server. A method is <Term definition="Repeating the identical call leaves the server in the same final state as making it once. Not the same response necessarily — the same end state.">idempotent</Term> when repeating the identical call leaves the server in the same final state as making it once. Note that idempotent is about the *end state*, not the response — calling `DELETE` twice can land the same "row is gone" state even if the second response differs from the first. Hold onto idempotent in particular; it's the property the last section of this lesson is built on.
+
+Here's the five-method palette, each taught as *what it declares* to anyone reading the request line:
+
+- **`GET`** — safe, idempotent, cacheable. Reads, searches, lists. No side effects, ever; if your `GET` writes to the database, you've broken the contract every cache and crawler relies on. The reflex: anything that "fetches" or "lists" is a `GET`.
+- **`POST`** — non-idempotent by default. Use it to create a resource the *server* names (`POST /invoices` returns the new `id` the server chose), or to invoke a genuinely non-idempotent operation — send an email, charge a card, fire a webhook. Because it's non-idempotent, a repeated call may duplicate the effect unless the handler does something about it. That "something" is the last section of this lesson.
+- **`PUT`** — idempotent full replacement. The client sends the *entire* new shape of the resource; the handler replaces what's there. Send the same body twice and you land the same state both times. The reach for "here is the complete new version of this thing."
+- **`PATCH`** — partial update. The client sends only the fields that change. Whether it's idempotent depends on the *change itself*: setting a status to a fixed value (`{ status: 'sent' }`) is idempotent — do it twice, same result; incrementing a counter is not. The default wire form is a plain JSON object carrying the changed fields. (Two formal partial-update formats exist, JSON Merge Patch and JSON Patch — the HTTP semantics chapter named them; in practice your default reach is just a JSON object of the fields you're changing.)
+- **`DELETE`** — idempotent removal. The first call deletes the row. What the *second* call returns is a contract choice you make per project: `404` ("it's gone, there's nothing here") or `204` ("the end state you asked for — this resource not existing — is reached either way"). Pick one and document it; both are defensible.
+
+Now the example that makes the anti-reflex land, because it's the exact one a reviewer will use on you. You need an endpoint to cancel an invoice. Cancelling sends the customer an email and fires a webhook to the billing system — those are real, non-idempotent side effects. So `POST /invoices/[id]/cancel` is **correct**: cancel is a genuine action, not a field edit, and `POST` is the method for actions with side effects. But now suppose a teammate writes `POST /invoices/[id]/status` and the body is `{ status: 'cancelled' }`. That one is **wrong**, and the reviewer rejects it. Setting a field to a value is a state-diff; that's what `PATCH` is for. A `POST` carrying `{ status }` is a `PATCH` wearing a `POST` costume.
+
+The discriminator you can apply on any endpoint: is this operation a *state-diff* — "make these fields have these values" — or a *non-idempotent action* — "do this thing that has consequences"? State-diff goes to `PATCH` or `PUT`. Action goes to `POST`.
+
+That maps straight to code. Recall from the first lesson of this chapter that a `route.ts` file exports one async function *per method* — there's no `if (request.method === 'POST')` switch, the framework dispatches by export name. So picking the verb literally *is* picking which function runs. The two tabs below put the wrong choice next to the right one for a status change: first the `PATCH` wearing a `POST` costume, then the `PATCH` itself. Look only at the signatures and the routes for now — the bodies are this lesson's later sections.
+
+<CodeVariants>
+  <CodeVariant label="POST /status (wrong)">
+    <div data-mark-color="red">
+
+    ```ts "POST" "/status"
+    // app/api/invoices/[invoiceId]/status/route.ts
+    export async function POST(
+      request: NextRequest,
+      { params }: RouteContext<'/api/invoices/[invoiceId]/status'>,
+    ) {
+      // reads { status } from the body, then sets the field
+    }
+    ```
+
+    </div>
+    **A `PATCH` wearing a `POST` costume.** The body just sets a field to a value — a state-diff — but the method and the `/status` sub-path dress it up as an action. The reviewer rejects it.
+  </CodeVariant>
+
+  <CodeVariant label="PATCH the resource (right)">
+    <div data-mark-color="green">
+
+    ```ts "PATCH"
+    // app/api/invoices/[invoiceId]/route.ts
+    export async function PATCH(
+      request: NextRequest,
+      { params }: RouteContext<'/api/invoices/[invoiceId]'>,
+    ) {
+      // reads { status } from the body, then sets the field
+    }
+    ```
+
+    </div>
+    **The method already declares the intent.** Setting a field is a partial update, so it's a `PATCH` on the resource itself — no `/status` sub-path needed. (A `POST /invoices/[id]/cancel` would still be right for the cancel *action*, because cancel has real side effects.)
+  </CodeVariant>
+</CodeVariants>
+
+Before moving on to outcomes, lock in the intent mapping — this is the half of the reviewer's table that lives in the request line. Match each method to the single property that defines it.
+
+<Matching instructions="Match each HTTP method to what it declares about the operation.">
+  <Pair>
+    <Fragment slot="left">`GET`</Fragment>
+    <Fragment slot="right">Safe, cacheable read — no side effects, repeatable.</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">`POST`</Fragment>
+    <Fragment slot="right">Non-idempotent action or server-named create — may duplicate if retried.</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">`PUT`</Fragment>
+    <Fragment slot="right">Idempotent full replacement — the client sends the whole new shape.</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">`PATCH`</Fragment>
+    <Fragment slot="right">Partial state-diff — change only the named fields.</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">`DELETE`</Fragment>
+    <Fragment slot="right">Idempotent removal — first call deletes; the end state is "gone".</Fragment>
+  </Pair>
+</Matching>
+
+## The status code is the outcome the reviewer reads first
+
+If the method is the first thing read on the way *in*, the status code is the first thing read on the way *out* — and it's read by more than humans. Think about who consumes a response status before anyone looks at the body. An alerting rule does: the status *class* is what decides whether your phone rings. A `4xx` says the client sent something wrong — that's the caller's fault, and it does not page the on-call engineer. A spike of `5xx` says the server fell over — that's your fault, and it absolutely pages. A retry policy reads it too: a well-behaved client retries a `503`, never retries a `400`. None of these tools open your JSON. They read the number.
+
+Which is why the second anti-reflex is as costly as the first: **never return `200` with `{ error: ... }` in the body.** A `200` means "this worked." If you send `200` and then explain in the body that it actually failed, you've lied to every generic HTTP tool in the path. The alerting rule sees success and stays quiet. The retry policy sees success and moves on. The monitoring dashboard counts it as a healthy request. The status code *is* the contract; a body that contradicts it is invisible to everything that matters operationally. State the outcome in the number, then explain it in the body.
+
+There are dozens of status codes. You will not emit most of them. Let me give you the senior subset — roughly the dozen codes a real SaaS handler actually returns — grouped by class, each group small enough to glance at. The success and redirect groups are quick. The `4xx` group is where this lesson spends its budget, because that's where the genuinely hard, genuinely reviewable decisions live.
+
+### 2xx — it worked
+
+| Code | Name | When you return it |
+| --- | --- | --- |
+| `200` | OK | Succeeded, body returned. `GET` reads; mutations that hand back the updated resource. |
+| `201` | Created | A `POST` created a resource. Pair it with a `Location` header pointing at the new resource's URL. |
+| `202` | Accepted | Accepted but **not finished** — the work was queued for a background job. The body carries a poll URL or a job id so the client can check on it later. |
+| `204` | No Content | Succeeded, nothing to return. The body is empty. |
+
+Two of these carry a decision worth naming. For `204`: its legitimate home is a `DELETE`, or a fire-and-forget `PATCH` where the client genuinely doesn't need the result back. But the senior default for any mutation the client *cares* about is **`200` with the updated row**, not `204`. If you return `204` from "mark this invoice paid," the client now has to fire a second `GET` to find out the new state. Return `200` with the row and it already has it. And `202` is the one you reach for when the work outlives the request — you'll build the full background-job flow in a later chapter on background work; here, just know its body is a handle the client polls, never the finished result.
+
+### 3xx — go somewhere else
+
+Most route handlers never redirect, so this is a quick orientation, not a deep dive — the HTTP semantics chapter covered redirects in full. Two are worth recognizing. `308` is a permanent redirect that *preserves the method* — a `POST` stays a `POST` — and it's what you use when a URL has moved for good. `303 See Other` is the POST-redirect-GET reflex: after a `POST` succeeds, you redirect the browser to a `GET` on the new resource, and `303` guarantees that follow-up request is a `GET` regardless of the original method. (`307` is the temporary, method-preserving cousin; `301` is the legacy permanent form. You'll rarely hand-write either.) For a SaaS *author*, this is the lowest-value group — move on.
+
+### 4xx — the client got it wrong
+
+This is the heart of the lesson. Here's the subset, and then the three discriminations that every reviewer enforces, each as its own beat.
+
+| Code | Name | When you return it |
+| --- | --- | --- |
+| `400` | Bad Request | The wire payload is **malformed** — truncated JSON, wrong content type, unparseable. You couldn't even read it. |
+| `401` | Unauthorized | No valid credentials — you can't tell *who* the caller is. |
+| `403` | Forbidden | You know who the caller is, but they're **not allowed** to do this. |
+| `404` | Not Found | The resource doesn't exist — **or** it belongs to another tenant (more on this below). |
+| `409` | Conflict | The request collides with current state — a duplicate unique key, a version mismatch. |
+| `422` | Unprocessable Content | The payload **parsed** but failed validation — a field is the wrong shape or value. |
+| `429` | Too Many Requests | Rate limit exceeded. The `Retry-After` header carries the wait. |
+
+**The `400`-vs-`422` line.** These two get conflated constantly, and the distinction is exactly the one your Zod pipeline already draws. `400` means the bytes were *malformed* — `request.json()` threw because the JSON was truncated, or the `Content-Type` was wrong, or there was no parseable body at all. You never got far enough to look at the *contents*. `422` means the opposite: the JSON parsed cleanly into an object, but that object failed your schema — `total` was negative, `email` wasn't an email, a required field was missing. This is the operational meaning of last lesson's rule, "a schema `safeParse` failure returns `422`." The parse step splits the two: can't parse at all → `400`; parsed but `safeParse` rejected it → `422`. (Some teams collapse both into `400` and never use `422`. That's a defensible team convention — but it's a convention you pick once and apply everywhere, not a per-handler coin flip.)
+
+**The `401`-vs-`403`-vs-`404` line, and why it's a security decision.** The first two are about identity. `401` means the handler couldn't identify the caller at all — no session cookie, an expired token, nothing to authenticate. `403` means the handler *did* identify the caller, and that caller simply isn't allowed — their role is `member` but the route needs `admin`. Identity unknown is `401`; identity known but unauthorized is `403`.
+
+Then there's the third, and this is the single most important security-shaped status decision in the lesson. Suppose a caller requests `/api/invoices/[id]` for an invoice that exists — but it belongs to a *different organization*. The instinct is `403`: "you're not allowed to see this." **Don't.** Return `404`. Here's why: a `403` confirms the resource *exists*. An attacker probing ids learns "invoice `abc` is real, I just can't reach it" — that's an information leak, and on a tenant-scoped resource it's a real finding in a security review. A `404` tells them nothing: as far as they can prove, that invoice simply doesn't exist. So the rule is **`404`, not `403`, for resources scoped to a tenant you don't belong to** — refuse access by denying existence. You won't wire the tenant scoping by hand; a later chapter's `authedRoute` wrapper returns the `401`/`403` for auth, and the `tenantDb` helper enforces the `404`-by-scope structurally so you can't accidentally leak. What you're learning here is *which code each situation gets*, so you recognize the wrapper's output when you read it.
+
+**`409 Conflict`.** This is the code for "your request is fine in isolation, but it collides with the current state of the world." Two shapes show up. One is a duplicate unique key — two requests race to create an invoice with the same slug, the database's unique constraint rejects the second, and that's a `409`, not a `500` (the server didn't break; the request lost a legitimate race). The other is an <Term definition="Detecting a lost-update race by checking a version number: the row carries a version, the update only applies if the version still matches what the client last read. A mismatch means someone else wrote first.">optimistic concurrency</Term> mismatch — the client read version 3, someone else saved version 4, and the client's update arrives still believing it's editing version 3. The Problem Details body carries *why* it conflicted so the client can decide what to do. You'll build the version-column mechanism behind that second case in a later chapter on optimistic concurrency; here, just know `409` is the code it surfaces as on the wire.
+
+**`429 Too Many Requests`.** The caller hit a rate limit. The one authoring detail to get right now is the **response shape**: send a `Retry-After` header carrying the wait *in seconds* — `Retry-After: 30` — not an HTTP date. Seconds are unambiguous; a client parses `30` and waits 30 seconds with no timezone math. The actual limiter — counting requests, deciding who's over — is wired up in a later chapter on the security baseline; your job at the handler is the contract: the `429` and the seconds.
+
+A handful of `4xx` codes are real but rare. Recognize them so you're not lost when you see one, but don't reach for them daily: `405 Method Not Allowed` (a client sent `DELETE` to a route that only exports `GET` and `POST` — **let the framework return this for you**; Next.js automatically responds `405` for any method the file doesn't export, so you never hand-write it), `410 Gone` (the resource existed and was permanently removed — for sunset URLs), `413 Content Too Large` (the body blew past the platform limit — recall the 1 MB cap on Server Actions; route handlers can stream past it, which was one of the first lesson's triggers for reaching for a handler at all), and `415 Unsupported Media Type` (the wrong `Content-Type` — `text/plain` to a JSON-only endpoint).
+
+### 5xx — you got it wrong
+
+| Code | Name | When you return it |
+| --- | --- | --- |
+| `500` | Internal Server Error | An uncaught exception. Something in your handler threw and nothing caught it. |
+| `502` / `503` / `504` | Bad Gateway / Unavailable / Gateway Timeout | An upstream you depend on failed, is down, or timed out. |
+
+`500` is the one with a real production-stakes detail attached. When your handler throws, the framework's error boundary catches it and returns a `500` — and what that `500` body contains is a security decision. It must **not** carry the stack trace. A stack trace in a response body leaks your file paths, your dependency versions, sometimes secrets in a variable name — it's a genuine finding in a security audit. The trace goes to your observability sink (you'll wire that up in a later chapter on error tracking); the body carries a `correlationId` — a request id your support team can look up to find the real error — and nothing more. The `5xx` cousins (`502`/`503`/`504`) are for *upstream* failures: when a call to Stripe, Resend, or an AI provider fails, you propagate the failure and name *which* upstream broke in the body, so the client doesn't blame your service for someone else's outage.
+
+<VideoCallout videoId="qmpUfWN7hh4" videoTitle="HTTP Status Codes Explained In 5 Minutes">
+  ByteByteGo runs the whole 2xx–5xx ladder in five animated minutes — a quick visual recap of the subset above.
+</VideoCallout>
+
+That's the whole subset. Now here's the thing that turns a flat list into a usable skill: the codes have an *order*. A reviewer doesn't scan the table — they walk a sequence of questions, and the first "no" picks the code. The diagram below is that mental flowchart made visible. Trace it top to bottom: it's the exact order your handler should ask its questions in, and the exact order the last lesson's parse-then-authorize ladder already runs in.
+
+<Figure>
+  <StatusDecisionTree />
+  <Fragment slot="caption">
+    The reviewer's order of questions, top to bottom — the same order your handler runs its checks. Each question peels off to its status code on the answer that fails it; you reach the green success only when every gate above it has passed. An uncaught throw anywhere short-circuits to a <code>500</code>.
+  </Fragment>
+</Figure>
+
+That diagram, as code, is the early-return ladder of nearly every mutating handler you'll write. Walk through one below — a `POST` that creates an invoice. Each step asks one question from the tree and returns the matching code on a "no," using the `problem()` helper from the last lesson for every error body so the error shape never drifts across handlers. By the time control reaches the bottom, everything that could disqualify the request already has.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+export async function POST(request: NextRequest) {
+  const session = await getSession(request);
+  if (!session) return problem(401, 'no-session');
+  if (!session.roles.includes('member')) return problem(403, 'insufficient-role');
+
+  const input = parseOr422(createInvoiceSchema, await request.json());
+
+  const existing = await getInvoiceBySlug(session.orgId, input.slug);
+  if (existing) return problem(409, 'invoice-slug-conflict');
+
+  const invoice = await createInvoice(session.orgId, input);
+  return NextResponse.json(invoice, {
+    status: 201,
+    headers: { Location: \`/api/invoices/\${invoice.id}\` },
+  });
+}
+`}>
+  <AnnotatedStep meta={`{3,4} "401" "403"`} color="blue">
+    Identity and permission first, before any data is touched. No session means the handler can't say *who* is calling — `401`. This route is member-scoped — it requires the caller to hold the `member` role, which any higher role on the org carries too — so a session that lacks it is identified-but-not-allowed: `403`. These are the first two questions of the tree. (In a real app the `authedRoute` wrapper does this; shown inline here so the codes are visible.)
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{6} "parseOr422"`} color="orange">
+    The schema gate. The body already parsed — if `request.json()` had thrown on malformed bytes, the framework boundary would have returned a `400`. Now `parseOr422` runs the schema; a failure throws straight to a `422` Problem carrying the per-field errors. That is the `400`-vs-`422` line, in code.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{8,9} "409"`} color="violet">
+    The conflict check. A duplicate slug means this request lost a race against another create — the server didn't break, so it's a `409`, not a `500`, and the Problem body names the conflict. Tenant scope is enforced *inside* `getInvoiceBySlug`: an id from another org surfaces as a `404` there, never a `403`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{11-15} "201" "Location"`} color="green">
+    Every gate passed, the work succeeded, and the server named the new resource — so `201`, with a `Location` header pointing at the new row. Note that every error above went through the same `problem()` helper, so the error shape is byte-identical across every handler in the app.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Reference tables and walkthroughs only stick if you practice the classification, so here's the drill that matters most in this lesson. Each chip is a one-line scenario; drop it under the status code a reviewer would expect. These are the exact discriminations you'll defend on a pull request.
+
+<Buckets twoCol instructions="Sort each outcome into the status code a reviewer would expect your handler to return.">
+  <Bucket name="c400" label="400" description="Malformed payload" />
+  <Bucket name="c401" label="401" description="No identity" />
+  <Bucket name="c403" label="403" description="Identity, no permission" />
+  <Bucket name="c404" label="404" description="Missing or cross-tenant" />
+  <Bucket name="c409" label="409" description="Conflict with state" />
+  <Bucket name="c422" label="422" description="Validation failed" />
+  <Bucket name="c500" label="500" description="Server fault" />
+  <Bucket name="c201" label="201" description="Resource created" />
+
+  <Item bucket="c400">The JSON body was truncated mid-stream and `request.json()` threw.</Item>
+  <Item bucket="c401">No session cookie is present, so the handler can't tell who the caller is.</Item>
+  <Item bucket="c403">The caller's role is `member`, but the route requires `admin`.</Item>
+  <Item bucket="c404">The invoice id is valid, but the row belongs to another organization.</Item>
+  <Item bucket="c409">Two requests raced to create the same unique slug; this one lost.</Item>
+  <Item bucket="c422">The body parsed cleanly, but `total` came through as a negative number.</Item>
+  <Item bucket="c500">An upstream Stripe call threw and nothing in the handler caught it.</Item>
+  <Item bucket="c201">A `POST /invoices` succeeded and the server assigned the new `id`.</Item>
+</Buckets>
+
+Two confusions tend to survive even a clean Buckets run, so let me close them with a question each — these are the two the reviewer asks in the comment thread.
+
+<MultipleChoice>
+  A client sends `POST /api/invoices` with the body `{ "email": "not-an-email", "total": 50 }`. `request.json()` parses it without complaint, but `createInvoiceSchema.safeParse()` flags `email` as invalid. Which status does the handler return?
+
+  <McqChoice>`200`, with the field errors listed in the response body</McqChoice>
+  <McqChoice>`400 Bad Request`</McqChoice>
+  <McqChoice correct>`422 Unprocessable Content`</McqChoice>
+  <McqChoice>`500 Internal Server Error`</McqChoice>
+
+  <McqWhy>The bytes parsed cleanly, so it isn't a `400` — that code is for a payload `request.json()` can't even read. The *contents* then failed the schema, which is exactly what `422` means; the `problem()` body carries the per-field errors so the client can fix `email`. A `200` would lie to every monitor and retry policy in the path, and a `5xx` would page your on-call for what is the client's mistake.</McqWhy>
+</MultipleChoice>
+
+<MultipleChoice>
+  A signed-in user sends `GET /api/invoices/abc`. The row exists, but it belongs to a *different* organization than the caller's. The handler can read the caller's identity fine; the row just isn't theirs. Which status does a reviewer require here?
+
+  <McqChoice>`401 Unauthorized`</McqChoice>
+  <McqChoice>`403 Forbidden`</McqChoice>
+  <McqChoice correct>`404 Not Found`</McqChoice>
+  <McqChoice>`409 Conflict`</McqChoice>
+
+  <McqWhy>The answer is `404`. Compare the two plausible codes by what each one *tells the caller*. A `403` is an admission that the row is real — and on tenant-scoped data, an attacker walking ids can use that admission to map which records exist behind the wall, which is exactly the existence leak a security review flags. A `404` admits nothing: from where this caller stands, the row is indistinguishable from one that was never created, so refusing by denying existence leaks nothing. `401` is the wrong axis entirely — the caller *is* identified, so "who are you?" was already answered. And `409` is for a request that collides with current state, like a duplicate key; nothing here is colliding, the caller simply has no claim to this row.</McqWhy>
+</MultipleChoice>
+
+## Idempotency: making a retried POST safe
+
+Everything so far has been classification — picking the right method, the right code. This last section ships something different: a capability. It's the one genuinely operational thing in the lesson, and it's the most important, so it gets real space.
+
+Start with the pain, concretely, because the abstraction means nothing without it. You have a `POST` that charges a customer's card. The request arrives, your handler calls Stripe, the charge goes through, Stripe says OK — and then, in the half-second before your `200` reaches the client, the client's network blips. The phone dropped to a dead zone; the laptop's wifi hiccuped. The client never saw the response. So what does it do? It retries — either the HTTP layer retries automatically, or the user, staring at a spinner that never resolved, hits the "Pay" button again. Your handler receives a second, identical request. It calls Stripe again. **The card gets charged twice.**
+
+That's the stake, and it's measured in money and refund tickets and a customer who no longer trusts you. The property that prevents it is the one you've been holding since the top of the lesson: idempotency. If charging were idempotent, the retry would land the same single charge. But `POST` is non-idempotent *by default* — that's its whole nature. So if you want a `POST` to be safe under retry, the *handler* has to add idempotency itself. The protocol won't do it for you.
+
+### The contract
+
+Here's the deal you offer callers. Any public `POST` with a non-idempotent side effect — charging, sending an email, firing a webhook, creating a resource — accepts an **`Idempotency-Key`** request header: a <Term definition="A client-generated random id (typically a UUID v4) that names one logical operation. The client sends the same key on the original request and every retry of it, so the server can recognize a retry as the same operation rather than a new one.">client-generated UUID</Term> that names the *logical operation*. The crucial word is *logical*. The key identifies the intent — "charge invoice `abc`, this one specific time" — not the HTTP request. The client generates it once, and sends that *same* key on the original call and on every retry of that call. That stability is what lets the server tell "this is a retry of something I already did" apart from "this is a brand-new charge."
+
+Notice this is just last lesson's "headers that carry data," parsed by a `HeadersSchema`. The thread connects: `Idempotency-Key` is a header your handler reads and validates like any other input. What's new is what the handler *does* with it.
+
+### The mechanism
+
+Four steps. The diagram after them is what makes the why click, so read the steps, then scrub the diagram.
+
+1. **Read the `Idempotency-Key` header** off the incoming request.
+2. **Hash it together with the route and the authenticated tenant.** Not the bare key — the key *plus* which endpoint *plus* which org. This matters for security: it means one tenant's key can never collide with, or replay against, another tenant's operations. The dedup is scoped to exactly the operation that owns it.
+3. **Try to claim the operation** by inserting that hash into a `processed_requests` table with `INSERT ... ON CONFLICT DO NOTHING`. This is the atomic claim primitive, and it's the heart of the whole thing: either your insert *wins* (the hash wasn't there — this is the first time you've seen this operation, so proceed, run the side effect, and store the response) or it *loses* to the conflict (the hash was already there — this is a retry).
+4. **On a loss, return the cached response** — the one you stored the first time — instead of running the side effect again.
+
+That fourth step is the payoff. The first request does the work and remembers what it answered. Every retry carrying the same key short-circuits to that remembered answer. The card is charged exactly once, no matter how many times the request arrives.
+
+The diagram below makes the two passes tangible. Scrub from the first request to the retry and watch where the second pass diverges — that fork, where the claim hits the conflict and the side effect is *skipped*, is the entire idea.
+
+<IdempotencyReplay />
+
+Now a scope boundary, because this is exactly the kind of thing that's tempting to over-build. The sketch below is *recognition-level*. It shows the claim primitive and the table shape so you understand the contract — but it is deliberately simpler than the production version. The real implementation wraps the claim and the mutation in a single transaction and handles the case where a claim is won but the work then fails, and you'll build that complete, transactional version in a later chapter on webhook ingestion, where the same `processed_events` pattern dedups Stripe's webhook retries. For now, read this as "here's the shape and the why," not "here's the code to ship."
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+export async function POST(request: NextRequest) {
+  const session = await getSession(request);
+  if (!session) return problem(401, 'no-session');
+
+  const key = request.headers.get('Idempotency-Key');
+  if (!key) return problem(400, 'idempotency-key-required');
+
+  const fingerprint = hashKey(key, '/api/charges', session.orgId);
+  const claim = await db
+    .insert(processedRequests)
+    .values({ fingerprint })
+    .onConflictDoNothing()
+    .returning();
+
+  // → the webhook chapter wraps the claim + the charge in one transaction
+  if (claim.length === 0) return readCachedResponse(fingerprint);
+
+  const charge = await chargeInvoice(session.orgId, key);
+  return NextResponse.json(charge, { status: 201 });
+}
+`}>
+  <AnnotatedStep meta={`{5,6} "Idempotency-Key" "400"`} color="blue">
+    Read the header. On a side-effecting `POST`, a *missing* key is a malformed request — `400`, the client must supply one. This is last lesson's "a header that carries data," validated like any other input before the work begins.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{8} "hashKey"`} color="orange">
+    Hash the key *with* the route and the tenant — never the bare key. Scoping the fingerprint this way means one tenant's key can never collide with or replay against another tenant's operation. That is the security point made concrete.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{9-13} "onConflictDoNothing" "returning"`} color="violet">
+    The atomic claim. Win the insert and `returning()` hands back the row; lose it to the unique conflict and you get an empty array. The database decides the race for you, atomically — no read-then-write window for a second request to slip through.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{15,16} "readCachedResponse"`} color="green">
+    An empty array means this is a retry, so return the response stored the first time — the charge never reruns. The comment marks the scope line: the production handler wraps the claim and the charge in one transaction (the webhook chapter); this sketch shows the contract, not the shipped code.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Two more details round out the contract. **The dedup row doesn't live forever** — it expires after a tunable window, **24 hours** by default, which is the convention Stripe popularized. After that window a replay of the same key produces a fresh row and runs the operation again (the assumption being that a retry a day later is a genuinely new intent, not a stuck network packet). The job that sweeps expired rows is background work for a later chapter, not your handler's concern.
+
+And **the same discipline applies to your in-app forms, with a different carrier.** A form-driven Server Action can't read an HTTP header the way a handler does — so its idempotency key rides as a hidden UUID field in the form, generated when the form mounts (the same key that reconciles the optimistic UI you met back in the chapter on optimistic UI with `useOptimistic`). Same idea, same safety, different envelope: a header at the handler boundary, a hidden field at the action boundary. That's last lesson's principle restated — stay HTTP-native at the handler, JS-native at the action, and share the vocabulary in the middle.
+
+<VideoCallout videoId="XAccGbtl3Z8" videoTitle="Idempotency - What it is and How to Implement it">
+  Alex Hyett walks the same contract end to end in eight minutes — which methods are idempotent, why a retried `POST` double-charges, and the store-the-response-by-key workflow, with the Stripe header named.
+</VideoCallout>
+
+So when is the key *required*, and when is it pointless? That's the discrimination worth testing, because it's easy to over-apply. The key earns its place on non-idempotent methods with side effects — and only there. The round below walks the boundary cases.
+
+<TrueFalse instructions="Decide whether each endpoint needs to require an `Idempotency-Key` header.">
+  <Statement answer="true">
+    A `POST` that charges a customer's card should require an `Idempotency-Key`.
+    <TfWhy>The textbook case. Charging is a non-idempotent side effect that costs money, so a lost response plus a retry must not double-charge — exactly what the key prevents.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    A `GET` that lists invoices should require an `Idempotency-Key`.
+    <TfWhy>`GET` is already safe and idempotent by definition — repeating it changes nothing on the server, so there's no side effect to dedup. The key would be dead weight.</TfWhy>
+  </Statement>
+
+  <Statement answer="true">
+    A `POST` that creates a new organization should require an `Idempotency-Key`.
+    <TfWhy>Creating a server-named resource is non-idempotent — without the key, a retried request would create a second org. The key lets the second call return the first one's response instead.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    A `PUT` that replaces a user's full profile needs an `Idempotency-Key` to be safe under retry.
+    <TfWhy>`PUT` is already idempotent *by method* — sending the same full-replacement body twice lands the same final state. The method gives you retry-safety for free, so the header adds nothing here.</TfWhy>
+  </Statement>
+</TrueFalse>
+
+## Where this leaves you
+
+You now hold the table a reviewer enforces. The method is the contract's statement of *intent*, read off the request line before anything else — `GET` for safe reads, `POST` for non-idempotent actions and server-named creates, `PUT` and `PATCH` for state-diffs, `DELETE` for removals — and the cardinal sin is `POST`-for-everything, which throws that intent away. The status code is the contract's statement of *outcome*, read by humans and machines alike before the body — and the cardinal sin there is `200`-with-`{error}`, which lies to every tool in the path. The hard `4xx` lines are where the real reviewing happens: `400` for malformed bytes versus `422` for a failed schema, `404`-not-`403` to keep a tenant's data from leaking its own existence, `409` for a genuine state collision. And the one operational capability: an `Idempotency-Key` header, claimed atomically against a dedup row, that makes a retried side-effecting `POST` safe — the contract here, the full transactional build still ahead.
+
+The next lesson takes the last input source you haven't authored — the query string — and turns it into a real list endpoint: filtering, sorting, searching, and paginating, all as a Zod-validated contract.
+
+## External resources
+
+These are the canonical references for what this lesson taught — keep them bookmarked for the day you're staring at an unfamiliar status code or writing your first idempotent endpoint for real.
+
+<CardGrid>
+  <ExternalResource
+    title="HTTP request methods"
+    href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Methods"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="MDN's method reference, with the safe / idempotent / cacheable table that drives every choice in this lesson."
+  />
+  <ExternalResource
+    title="HTTP response status codes"
+    href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The complete, readable catalog of every code, for the day you meet one outside this lesson's subset."
+  />
+  <ExternalResource
+    title="RFC 9457 — Problem Details for HTTP APIs"
+    href="https://www.rfc-editor.org/rfc/rfc9457.html"
+    icon="lucide:scroll-text"
+    iconColor="#29527A"
+    description="The spec behind the application/problem+json error body this chapter standardizes on."
+  />
+  <ExternalResource
+    title="Stripe — Idempotent requests"
+    href="https://docs.stripe.com/api/idempotent_requests"
+    icon="simple-icons:stripe"
+    iconColor="#635BFF"
+    description="The de-facto reference for the Idempotency-Key pattern, including the 24-hour window this lesson named."
+  />
+</CardGrid>

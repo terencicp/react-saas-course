@@ -1,0 +1,541 @@
+---
+title: Wire contracts as Zod schemas
+tagline: Use Zod to define and enforce a route handler's API contract, validating untrusted requests on the way in and guarding responses on the way out.
+chapter-id: 46
+course-progress: 0.45
+sidebar:
+  order: 2
+  label: Zod wire contracts
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import ParseGauntlet from '../../../components/lessons/046/2/ParseGauntlet.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import ZodCoding from '../../../components/live-coding/ZodCoding/ZodCoding.astro';
+import Sequence from '../../../components/exercises/sequence/Sequence.astro';
+import Step from '../../../components/exercises/sequence/Step.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { CardGrid, FileTree } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+In a form, the Server Action was a *typed function call*: TypeScript knew the argument shape, the action ran, and it handed back a `Result` the form destructured. The compiler was watching the whole boundary. A route handler has none of that safety net. The caller might be a Python script, a mobile app, or someone fiddling with `curl`, and all your handler receives is a `NextRequest` whose body is `unknown` bytes. No implicit shape, no typed call site, no compiler standing guard. So the question this lesson answers is: with the compiler gone, what keeps the contract honest? The answer is the one you already met for Server Actions — Zod is the single source of truth — except now it runs in *both* directions: it validates what comes in, and it describes (and validates) what goes out.
+
+By the end you'll be able to author a complete, honest route-handler contract: a Zod schema for each input source, a typed response schema, and an RFC 9457 Problem Details error body — plus the two helpers that make the first three lines of every handler identical. The payoff is the last section: a single create-invoice operation served by *both* a Server Action and a public endpoint, sharing one schema and one mutator. Two seams, one trust posture — the same phrase from the last chapter, now made operational on the wire.
+
+Hold onto one sentence; the rest of the lesson hangs off it. **The body is `unknown` until you parse it — the type TypeScript infers at the wire boundary is a lie the schema makes true.**
+
+## `route.ts` reads four input sources, parsed cheapest first
+
+A request is not one blob. It arrives as four separate channels, and a handler reads from whichever ones it needs: the **path params** baked into the URL segments, the **headers** that carry metadata, the **query string** after the `?`, and the **body**. Each channel is untrusted wire data, so each gets its own Zod schema and its own `safeParse` call. This is the inbound half of the contract — the expanded "parse" seam from the five-seam model in the last lesson.
+
+Here is each source, its accessor, and the schema that guards it.
+
+**Path params** come in through the handler's second argument. In a file at `app/api/invoices/[invoiceId]/line-items/route.ts`, the `[invoiceId]` segment lands in `params` — and in Next.js 16 `params` is a `Promise`, so you `await` it before parsing (the gotcha from the last lesson; no need to relitigate *why*). The schema is usually a single format check, `z.object({ invoiceId: z.uuid() })`. Treat that UUID check as the cheapest "is this even a valid request" gate: a malformed id is a request you can reject before touching anything expensive.
+
+**Headers that carry data** are read one at a time with `request.headers.get(...)` — the <Term definition="Client-generated unique id sent so a retried request isn't processed twice. The handler stores it and short-circuits on replay — operationalized in the next lesson.">`Idempotency-Key`</Term>, `Content-Type`, `Accept`, `If-None-Match`. You parse them against a `HeadersSchema`, but only the one or two your handler actually relies on — not the dozens a browser sends. Most handlers parse zero or one header explicitly.
+
+**The query string** lives at `request.nextUrl.searchParams`, a `URLSearchParams` instance, parsed against a `QuerySchema`. The only contract-level point that matters here: `searchParams` values are *always strings*, so `z.coerce` and `z.preprocess` bridge them to numbers, dates, and booleans — the exact same coercion story you used at the `FormData` boundary, just a different source. The full filter-and-sort treatment for list endpoints is its own lesson later in this chapter.
+
+**The body** has four accessors, and which one you reach for is itself a decision:
+
+- `await request.json()` — typed JSON. The default for almost every handler.
+- `await request.text()` — the raw bytes, untouched. This is what a webhook reads, because a signature is computed over the exact bytes on the wire; we'll verify those signatures when we get to webhooks. Here, just know `text()` exists for "I need the bytes, not the parsed object."
+- `await request.formData()` — <Term definition="An HTTP encoding that packs multiple fields and binary file parts into one request body, each part with its own headers. The format browsers use to upload files.">`multipart/form-data`</Term>, for multipart file uploads.
+- `request.body` — a <Term definition="The Web Streams type for reading a body incrementally in chunks instead of buffering it all into memory at once.">`ReadableStream`</Term>, only when a payload is large enough that streaming earns its weight.
+
+Whichever accessor you use, its output feeds a `BodySchema.safeParse(...)`. One reach worth defaulting to at the body boundary: write that schema with `z.strictObject`, not `z.object`. On a request body, an unexpected key is almost always a client that's confused about your contract — a typo, a stale field, a misremembered name — and a `z.strictObject` rejects it with a 422 instead of silently swallowing it. The extra key isn't data; it's a signal the client got something wrong, and you want them to hear it.
+
+### Why the order matters
+
+The four sources are parsed in a fixed order — **path params, then headers, then query, then body** — cheapest disqualifier first, and the handler bails the instant one fails. This isn't fussiness; it's the difference between rejecting junk early and doing pointless work. A malformed UUID in the path is the cheapest possible "no," so it goes first: the handler returns 400 without ever awaiting — or even reading — the body. There is no reason to deserialize a megabyte of JSON for a request whose id was never going to be valid.
+
+The anchor to keep: **a handler's first few lines are nothing but `safeParse` calls and short-circuits.** No business logic, no database touch, no logging, until everything parses. Watch a single request walk that gauntlet.
+
+<DiagramSequence>
+  <DiagramStep>
+    <ParseGauntlet active={0} />
+    <Fragment slot="caption">
+      **Gate 1 — `params`.** Await and parse the path params with `z.object({ invoiceId: z.uuid() })`. This is the cheapest "is this even a valid request" check, so it goes first — a malformed id fails here and returns **400**, and nothing below ever runs.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <ParseGauntlet active={1} />
+    <Fragment slot="caption">
+      **Gate 2 — `headers`.** The id passed, so move on. Parse the one header this route relies on — `request.headers.get('idempotency-key')` — against the `HeadersSchema`. Still no I/O, still no business logic.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <ParseGauntlet active={2} />
+    <Fragment slot="caption">
+      **Gate 3 — `query`.** Parse `request.nextUrl.searchParams` against the `QuerySchema`. `searchParams` values are always strings, so `z.coerce` bridges them to numbers, dates, and booleans on the way through.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <ParseGauntlet active={3} />
+    <Fragment slot="caption">
+      **Gate 4 — `body`.** Only now `await request.json()` and `safeParse` it against the `BodySchema`. This is the most expensive read on the request, which is exactly why it is gated behind every cheaper check. Past it, every value is parsed and typed — business logic runs.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <ParseGauntlet failedAt={0} />
+    <Fragment slot="caption">
+      **The short-circuit.** A bad UUID in the path fails gate 1 and the handler returns **400** immediately. Look at gates 2–4: dimmed and untouched. The body is never read — the handler never paid to deserialize a payload for a request whose id was never going to be valid.
+    </Fragment>
+  </DiagramStep>
+</DiagramSequence>
+
+Now the same idea as code. This skeleton is the inbound-contract shape you'll reproduce in every handler — a `safeParse` per source stacked at the top, each short-circuiting, and only then a comment marking where the actual work begins. The `parseFailed(...)` calls are a placeholder for "return the error response"; a couple of sections from now you'll fold the parse-and-short-circuit pair into a single helper and this gets even tighter.
+
+<AnnotatedCode lang="ts" code={`
+export async function POST(
+  request: NextRequest,
+  { params }: RouteContext<'/api/invoices/[invoiceId]/line-items'>,
+) {
+  const path = ParamsSchema.safeParse(await params);
+  if (!path.success) return parseFailed(path.error);
+
+  const key = HeadersSchema.safeParse({
+    idempotencyKey: request.headers.get('idempotency-key'),
+  });
+  if (!key.success) return parseFailed(key.error);
+
+  const body = BodySchema.safeParse(await request.json());
+  if (!body.success) return parseFailed(body.error);
+
+  // Everything parsed. Business logic begins here, and only here.
+  // → returns a typed Response (next sections)
+}
+`}>
+  <AnnotatedStep meta="{1-4}" color="blue">
+    The signature: `NextRequest` plus the `{ params }` context, typed by the generated `RouteContext` helper. `params` is a `Promise` in Next.js 16, so it has to be awaited before anything reads it.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5-6}" color="blue">
+    Await and parse the path params first — the cheapest gate. On failure, return immediately; nothing below runs.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{8-11}" color="blue">
+    Read only the header this route needs and parse it. Note we hand `safeParse` an object we built from `request.headers.get(...)`, not the raw `Headers` instance.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{13-14}" color="blue">
+    The body parse runs last, after `await request.json()`. This is the expensive read, gated behind every cheaper check.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{16-17}" color="blue">
+    Past the last short-circuit, every value is parsed and typed. These comment lines are the boundary: business logic lives below them, never above.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+One reflex to restate, because on a public endpoint it stops being a style preference and becomes non-negotiable: at the wire boundary you use `safeParse`, never `parse`. You know the distinction — `parse` throws on bad input, `safeParse` returns a result you branch on. The reason it's non-negotiable here is that `parse` on hostile input throws an *uncaught* error, which the framework turns into a 500. That's both a worse experience for the caller (a 500 says "we broke," when the truth is "you sent garbage") and a source of noise in the 5xx alerts you'll wire up for real failures later. Untrusted input never throws. It gets `safeParse`d and answered with a deliberate status.
+
+<VideoCallout videoId="f-4-k1CP6wA" videoTitle="Master Zod in Just 30 Minutes">
+  Jan Marshal's 30-minute Zod walkthrough, if you want a slower tour of schema building, `z.infer`, and the `parse` vs `safeParse` split this lesson leans on.
+</VideoCallout>
+
+## The response schema validates what goes out
+
+Here's the part that most separates a real route handler from "just return some JSON," and it's the least intuitive idea in the lesson, so slow down with me. A response is also a contract. The shape you send back is a promise to whoever's consuming the endpoint, and like any promise on an untyped wire, it needs something enforcing it. That something is a response schema.
+
+Declare the success shape the same way you declare an input:
+
+```ts
+export const invoiceResponseSchema = z.object({
+  id: z.uuid(),
+  total: z.number(),
+  status: z.enum(['draft', 'sent', 'paid']),
+});
+```
+
+Now the interesting move. The handler doesn't just hand its data to `NextResponse.json(...)` — it passes the data *through the schema first*:
+
+```ts
+return NextResponse.json(invoiceResponseSchema.parse(data));
+```
+
+That `parse` is doing real work, not decoration. It validates the response on the way out. To see why that matters, picture the lazy version: the handler loads an invoice row from the database and does `NextResponse.json(invoiceRow)`. The row is a database object — it carries `internalNotes`, `createdBy`, maybe a `costBasis` your finance team logs. None of those were ever part of the public contract, and now every one of them is crossing the wire to a partner integration. That's not a hypothetical; it's the single most common way private data leaks out of an API. The response schema is the allowlist that makes it impossible: a field the schema doesn't declare doesn't ship.
+
+### Why `parse` here, when you just learned `safeParse`
+
+You learned the rule one section ago — untrusted input gets `safeParse` — and now I'm telling you to `parse` the response. That's not a contradiction; it's the same rule read in the other direction, and getting it straight is the subtle part.
+
+*Inbound* data comes from the outside world. It's untrusted, a bad shape is the *client's* mistake, and the right answer is a polite status code. So: `safeParse`, branch, respond. *Outbound* data is something your own handler constructed. If it doesn't match the response schema, that's not the client's fault — it's a bug in your code, a field you forgot to map or a refactor that changed the shape. A programmer error should *throw*, get caught at the framework's error boundary, and surface as a 500, because that's exactly the signal you want: "the server is broken, fix it." It's the same "throw at the framework edge for impossible situations" rule from the Server Action chapter, now applied to the response. So when a reviewer sees `parse` on the way out, they shouldn't reach to "fix" it to `safeParse` — the throw is the point.
+
+### Validate for the public, type for the inside
+
+Validating on the way out costs a runtime `parse` on every single response. For a public or partner-facing API, that cost buys you a contract that can't silently drift, and it's worth paying. For an internal-only handler — one your own typed code calls and nobody outside the building touches — the consumer is already a TypeScript caller, the leak risk is lower, and the runtime cost usually isn't justified. So the call an experienced engineer makes is a simple split: **validate the response on the way out for public APIs; type the return (no runtime parse) for internal handlers.** The three positions below make the difference concrete.
+
+<CodeVariants>
+  <CodeVariant label="Leaks the row">
+    <div data-mark-color="red">
+
+    ```ts "internalNotes" "createdBy"
+    const invoiceRow = await db.query.invoices.findFirst({
+      where: eq(invoices.id, path.data.invoiceId),
+    });
+    // invoiceRow carries every DB column: id, total, status,
+    // internalNotes, createdBy, costBasis, ...
+    return NextResponse.json(invoiceRow);
+    ```
+
+    </div>
+    **Ships every column the row carries** — `internalNotes` and `createdBy` cross the wire to a client that was never promised them. This is the single most common way private data leaks out of an API.
+  </CodeVariant>
+
+  <CodeVariant label="Typed but unguarded">
+    <div data-mark-color="blue">
+
+    ```ts "satisfies InvoiceResponse"
+    return NextResponse.json(data satisfies InvoiceResponse);
+    ```
+
+    </div>
+    **Right shape at compile time, but a later refactor can still ship a stray field at runtime** — acceptable for an internal handler whose callers are your own typed code.
+  </CodeVariant>
+
+  <CodeVariant label="Validated">
+    <div data-mark-color="green">
+
+    ```ts "invoiceResponseSchema.parse"
+    return NextResponse.json(invoiceResponseSchema.parse(data));
+    ```
+
+    </div>
+    **The schema is the allowlist** — a stray field throws in review, not in production. The default for any public API.
+  </CodeVariant>
+</CodeVariants>
+
+Two more threads before we move on. First, the type. `type InvoiceResponse = z.infer<typeof invoiceResponseSchema>` is the type an external client codes against — one declaration, one source of truth, the same principle you've used for inputs since you first met Zod, now living on the wire boundary. And if your API ever genuinely *leaves* the codebase — a published REST surface, a partner SDK — that same schema is what an OpenAPI generator like `next-openapi-gen` reads to produce a machine-readable spec. That's the escape hatch, named once and gated on a real question: is this API published externally? Most SaaS products ship a README in year one, not an OpenAPI document, so we won't build it — just know the schema is what feeds it when the day comes.
+
+Now feel the allowlist for yourself. The exercise below hands you a loose starter schema and runs three shapes through it: a clean public response, a database row carrying a stray `internalNotes` field, and a response missing a required field. Tighten the schema so it accepts the first and rejects the other two. Watch the inferred type resolve as you go — that's the type a client would see.
+
+<ZodCoding
+  schemaName="invoiceResponseSchema"
+  instructions="Tighten `invoiceResponseSchema` into the response allowlist: accept the public shape (`id`, `total`, `status`) and reject a database row carrying a stray `internalNotes`. Watch the `^?` query — that's the exact type an external client codes against."
+  starter={`import { z } from 'zod';
+
+// Too loose: only declares 'id', and 'z.object' lets unknown keys through.
+// Add 'total' and 'status', and switch the builder so a stray field is rejected.
+export const invoiceResponseSchema = z.object({
+  id: z.uuid(),
+});
+
+type InvoiceResponse = z.infer<typeof invoiceResponseSchema>;
+//   ^?
+`}
+  fixtures={[
+    {
+      name: 'clean public shape',
+      input: { id: '6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f', total: 240, status: 'sent' },
+      expect: 'pass',
+    },
+    {
+      name: 'leaking row (has internalNotes)',
+      input: { id: '6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f', total: 240, status: 'sent', internalNotes: 'late payer' },
+      expect: 'fail',
+      errorContains: 'Unrecognized key',
+    },
+    {
+      name: 'missing required field (no status)',
+      input: { id: '6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f', total: 240 },
+      expect: 'fail',
+    },
+  ]}
+/>
+
+## Errors speak `application/problem+json`
+
+Success has a schema; errors need one too, and they need a *consistent* one. If every handler invents its own error shape, a client has to write a different error renderer per endpoint, and your API has no contract on its worst day — the day something fails. The web already standardized the answer, and you've met it from the other side: RFC 9457 Problem Details. In an earlier chapter you *read* these bodies as a consumer; now you *write* them.
+
+Every error response is sent as <Term definition="The IETF spec for a standardized JSON error body for HTTP APIs. Defines the application/problem+json media type and the five core fields. Supersedes the older RFC 7807.">RFC 9457</Term> <Term definition="The media type for an RFC 9457 error body. Generic HTTP tooling recognizes it and parses the standard fields, where it would treat a plain application/json error as an opaque blob.">`application/problem+json`</Term> — and that content type genuinely matters, because generic HTTP tooling keys off it to recognize "this is a structured error." The body carries five core fields:
+
+- `type` — a stable URI that *is* the machine-readable error code. One URI per error class, and the docs page it points at is where that class is documented.
+- `title` — the human-readable name of the error class. Same for every instance.
+- `status` — the HTTP status code, repeated in the body.
+- `detail` — the message specific to *this* occurrence.
+- `instance` — a URI identifying this particular occurrence.
+
+Beyond those five, you can attach an <Term definition="A custom field added to a Problem Details body beyond the five core members. Here, the errors field that carries per-field validation messages.">extension member</Term> — and we'll use exactly one, `errors`, to carry per-field validation messages.
+
+### One helper for every error
+
+You do *not* want handlers hand-assembling that five-field object, because the moment two handlers build it slightly differently, your error contract has drifted and the client's single error renderer breaks. So every error response goes through one helper. A `problem(status, code, options?)` function lives in `/lib/api`, takes an HTTP status and your internal error code, and returns a `NextResponse` with the correct `Content-Type`, the matching `status`, and a typed body. One helper, every error, zero drift.
+
+The other half of the boilerplate is the validation case. When a body `safeParse` fails, you return **422 Unprocessable Entity** — the status for "this was valid JSON, but it failed the schema" (the distinction between 400 and 422, and the full status table, is the next lesson's job; here we just need this one). And you don't want to write the same `if (!result.success) return problem(...)` dance at the top of every handler, so it gets its own helper too: `parseOr422(schema, input)` either returns the parsed value or short-circuits straight to the Problem response. The handler body collapses to a single readable line:
+
+```ts
+const body = parseOr422(bodySchema, await request.json());
+```
+
+How does one line both return a value *and* short-circuit on failure? The honest answer is that `parseOr422` throws a `Response` on failure, which the handler's outer boundary returns. That's a deliberate teaching simplification — real error plumbing might return a discriminated result and let the caller decide — but the throw-a-`Response` shape keeps the call site to one line, and the one-line call site is the point.
+
+Here is the `problem` helper and the validation error path in one place. The two details that carry the weight are the content type (the easy one to forget) and the flat field-error shape.
+
+<AnnotatedCode lang="ts" code={`
+export const problem = (
+  status: number,
+  code: string,
+  options?: { detail?: string; errors?: Record<string, string[]> },
+) =>
+  NextResponse.json(
+    {
+      type: \`https://api.acme.com/problems/\${code}\`,
+      title: titleFor(code),
+      status,
+      detail: options?.detail,
+      errors: options?.errors,
+    },
+    { status, headers: { 'content-type': 'application/problem+json' } },
+  );
+
+export const parseOr422 = <T>(schema: z.ZodType<T>, input: unknown): T => {
+  const result = schema.safeParse(input);
+  if (result.success) return result.data;
+  const { fieldErrors } = z.flattenError(result.error);
+  throw problem(422, 'validation-failed', { errors: fieldErrors });
+};
+`}>
+  <AnnotatedStep meta="{1-5}" color="green">
+    The signature: a status, an internal `code`, and options. Two positional params, then an options object — the call site stays short.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"'application/problem+json'"`} color="green">
+    The content type. This single header is what makes the body a recognized Problem document instead of opaque JSON; forgetting it is the quiet bug.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{8-12}" color="green">
+    The body, assembled in one place so every handler's errors are shaped identically. The `type` URI is the stable, machine-readable error code; `errors` is the one extension member we attach.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"z.flattenError" "fieldErrors"`} color="green">
+    `parseOr422` flattens the Zod error to `fieldErrors`: a flat `Record<string, string[]>`. This exact shape is the bridge to the form layer — see below.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{21}" color="green">
+    On failure it throws the Problem `Response`, which the handler's boundary returns. That's what lets the call site read as one line.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+`titleFor(code)` is a small in-module lookup mapping each error code to its class-level human title — a `const` record like `{ 'validation-failed': 'Validation failed' }`. It is the one place the human-readable class name lives.
+
+### The flat `fieldErrors` shape is the bridge
+
+That `z.flattenError(result.error).fieldErrors` line is load-bearing, and not just inside this handler. It produces a flat `Record<string, string[]>` — field name to list of messages — and that is *the exact same shape* a Server Action's `Result` returns in its `error.fieldErrors`, which is *the exact same shape* the React Hook Form `applyServerErrors` helper consumes to paint errors onto inputs. Three layers, one vocabulary. The payoff is concrete: because the handler and the action speak the same field language, **the form's error renderer just works when a route handler is the caller.** One renderer, both seams.
+
+(A note for when you read the Zod docs: Zod offers both `z.flattenError` and `z.treeifyError`. The course's `Result` contract is the *flat* shape, so we use `flattenError` everywhere the field errors need to interoperate. Reach for `treeifyError` only when a form is genuinely nested and shaped to match — not here.)
+
+So the action and the handler share field *names*, but they are not the same object, and it's worth seeing the two side by side. A Server Action returns a `Result` — a plain JavaScript object the React form layer reads directly. A route handler returns a `Response` — an HTTP message the client decodes off the wire. Different envelopes; deliberately shared vocabulary.
+
+<Figure>
+  <table>
+    <thead>
+      <tr>
+        <th>Concern</th>
+        <th>Server Action (<code>Result</code>)</th>
+        <th>Route handler (<code>Response</code>)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Transport</td>
+        <td>plain JS object</td>
+        <td>HTTP message body</td>
+      </tr>
+      <tr>
+        <td>Success shape</td>
+        <td><code>{'{ ok: true, data }'}</code></td>
+        <td><code>2xx</code> status + JSON body</td>
+      </tr>
+      <tr>
+        <td>Error envelope</td>
+        <td><code>{'{ ok: false, error }'}</code></td>
+        <td><code>application/problem+json</code></td>
+      </tr>
+      <tr>
+        <td>Per-field errors</td>
+        <td><code>error.fieldErrors</code></td>
+        <td><code>errors</code> extension — <strong><em>same <code>{'Record<string, string[]>'}</code></em></strong></td>
+      </tr>
+      <tr>
+        <td>Human message</td>
+        <td><code>error.userMessage</code></td>
+        <td><code>detail</code></td>
+      </tr>
+      <tr>
+        <td>Machine code</td>
+        <td><code>error.code</code></td>
+        <td><code>type</code> URI</td>
+      </tr>
+    </tbody>
+  </table>
+  <Fragment slot="caption">
+    Different envelopes, shared field vocabulary — the form's error renderer works for both.
+  </Fragment>
+</Figure>
+
+The one-line rule that falls out of the table: **stay HTTP-native at the handler boundary, stay JS-native at the action boundary, and share the field vocabulary in the middle.** And two mistakes a reviewer will reject on sight. The first: returning an arbitrary JSON error shape instead of `application/problem+json` — the shared renderer can't read it, and the API has lost its error contract. The second: reusing the same `type` URI for different error classes — the URI *is* the code, so if "invoice not found" and "validation failed" share a URI, a client physically cannot tell them apart or branch on them. One URI per class; the per-instance detail goes in `detail`.
+
+Quick check on the one decision from this section you have to get right.
+
+<MultipleChoice>
+  A partner POSTs `{ "total": 240 }` to your create-invoice endpoint. The bytes deserialize cleanly as JSON, but your `BodySchema` rejects them because the required `status` field is absent. Which status line and `Content-Type` does the handler send back?
+
+  <McqChoice>
+    ```http
+    400 Bad Request
+    Content-Type: application/json
+    ```
+  </McqChoice>
+  <McqChoice>
+    ```http
+    400 Bad Request
+    Content-Type: application/problem+json
+    ```
+  </McqChoice>
+  <McqChoice correct>
+    ```http
+    422 Unprocessable Entity
+    Content-Type: application/problem+json
+    ```
+  </McqChoice>
+  <McqChoice>
+    ```http
+    422 Unprocessable Entity
+    Content-Type: application/json
+    ```
+  </McqChoice>
+
+  <McqWhy>The correct answer is **422 Unprocessable Entity** with **`application/problem+json`**. Ask two questions in order. *Was the request even parseable?* Yes — it was valid JSON, so the problem isn't malformed syntax (that's the 400 case); a request that deserialized but failed your schema is the textbook 422. *Is this an error response?* Yes — and every error on this API is a Problem document, so the body is `application/problem+json`, never plain `application/json`. Plain JSON would also strand `parseOr422`, since its whole job is to emit a Problem body. The full 400-vs-422 boundary and the rest of the status table are the next lesson's job.</McqWhy>
+</MultipleChoice>
+
+## One schema, one mutator, two callers
+
+Everything so far assembles into one shape, and this is where the lesson pays off. Picture a real requirement: a `createInvoice` operation needs to work from the dashboard form *and* be callable as a public endpoint by a partner integration. The lazy reach writes it twice — validation and business logic copied into both the action and the handler — and the two copies start drifting the day someone changes a rule in one and forgets the other. That's the bug you're designing out.
+
+The disciplined reach is three pieces and two thin seams. One input schema, shared. One pure mutator, shared. Two seams that differ *only* in wire format.
+
+- The **shared schema**, `createInvoiceSchema`, lives in `lib/schemas/invoice.ts` — the same file the form already imports.
+- The **pure mutator**, `createInvoice(input)`, lives in `lib/invoices.ts`. It takes the parsed, typed input, does the database work, and returns the created entity. It knows nothing about `Request`, `Response`, or `FormData` — no wire format touches it. That's the "thin seams, pure `/lib`" principle made physical, and it's the same split you've built before.
+- The **two seams** each parse their own wire format, call the identical mutator, and serialize their own way out. The action parses `FormData` and returns a `Result` the form destructures; the handler parses JSON and returns a `Response` the client decodes.
+
+Put the two seams next to each other and the lesson *is* the diff. Everything outside the highlighted mutator call is wire-format plumbing; the highlighted line is the shared core, identical in both.
+
+<CodeVariants>
+  <CodeVariant label="Server Action">
+    <div data-mark-color="blue">
+
+    ```ts "createInvoice(input)"
+    export const createInvoiceAction = async (
+      _prev: unknown,
+      formData: FormData,
+    ) => {
+      const parsed = createInvoiceSchema.safeParse(
+        Object.fromEntries(formData),
+      );
+      if (!parsed.success) {
+        return err('validation', 'Check the fields below.', flatten(parsed.error));
+      }
+      const input = parsed.data;
+      const invoice = await createInvoice(input);
+      revalidatePath('/invoices');
+      return ok(invoice);
+    };
+    ```
+
+    </div>
+    **Parses `FormData`, returns a `Result` — the form destructures it.** `err`/`ok` are the `Result` helpers, and `flatten` is the course's `z.flattenError(...).fieldErrors` projection.
+  </CodeVariant>
+
+  <CodeVariant label="Route handler">
+    <div data-mark-color="blue">
+
+    ```ts "createInvoice(input)"
+    export async function POST(request: NextRequest) {
+      const input = parseOr422(createInvoiceSchema, await request.json());
+      const invoice = await createInvoice(input);
+      return NextResponse.json(invoiceResponseSchema.parse(invoice), {
+        status: 201,
+      });
+    }
+    ```
+
+    </div>
+    **Parses JSON, returns a `Response` — the client decodes it.** Same schema, same mutator. The whole seam is three lines because `parseOr422` and `invoiceResponseSchema.parse` carry the contract.
+  </CodeVariant>
+</CodeVariants>
+
+The physical layout enforces the logical one. The schema and the mutator sit in `/lib`, where both seams import them; neither seam owns the contract or the logic.
+
+<Figure>
+  <FileTree>
+  - lib/
+    - schemas/
+      - **invoice.ts** the shared input schema — `createInvoiceSchema`
+    - **invoices.ts** the pure mutator — `createInvoice(input)`, no `Request`/`Response`
+    - api/
+      - problem.ts the `problem()` + `parseOr422()` helpers
+  - app/
+    - invoices/
+      - actions.ts the action seam — `FormData` → `Result`
+    - api/
+      - invoices/
+        - route.ts the handler seam — JSON → `Response`
+  </FileTree>
+  <Fragment slot="caption">
+    The schema and the mutator live in `/lib`; both seams import them. The physical separation enforces the logical one.
+  </Fragment>
+</Figure>
+
+The anchor to carry out of this lesson: **any time a handler and an action would duplicate business logic, the shared mutator is the seam.** The wire format is the variable; the logic is the constant.
+
+Now reconstruct the canonical handler from memory. Drag the steps of a route handler's `POST` body into the order they must run.
+
+<Sequence instructions="Order the body of a route handler's `POST`, from the first line to the last.">
+  <Step>Await and parse the path params — the cheapest gate.</Step>
+  <Step>Parse the JSON body with `parseOr422` — short-circuits to a 422 Problem on failure.</Step>
+  <Step>Call the shared mutator with the parsed, typed input.</Step>
+  <Step>Validate the result against the response schema with `parse`.</Step>
+  <Step>Return `NextResponse.json(...)` with the success status.</Step>
+</Sequence>
+
+## Going further
+
+Three references worth keeping open while you author your own contracts.
+
+<CardGrid>
+  <ExternalResource
+    title="Zod — parsing & error formatting"
+    href="https://zod.dev/error-formatting"
+    icon="simple-icons:zod"
+    iconColor="#3E67B1"
+    description="safeParse vs parse, flattenError, and the rest of the error-shaping API."
+  />
+  <ExternalResource
+    title="RFC 9457 — Problem Details for HTTP APIs"
+    href="https://www.rfc-editor.org/rfc/rfc9457"
+    icon="lucide:file-text"
+    description="The spec for application/problem+json and the five core fields."
+  />
+  <ExternalResource
+    title="Next.js — Route Handlers"
+    href="https://nextjs.org/docs/app/api-reference/file-conventions/route"
+    icon="simple-icons:nextdotjs"
+    description="The NextRequest / NextResponse API and the request accessors."
+  />
+</CardGrid>

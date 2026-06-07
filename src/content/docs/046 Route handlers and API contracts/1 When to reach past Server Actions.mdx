@@ -1,0 +1,354 @@
+---
+title: When to reach past Server Actions
+chapter-id: 46
+course-progress: 0.445
+tagline: A senior's decision rule for when an in-app mutation should stay a Server Action and when it needs a Next.js route handler instead.
+sidebar:
+  order: 1
+  label: Past Server Actions
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import SeamMapping from '../../../components/lessons/046/1/SeamMapping.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { Card, CardGrid, FileTree } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+You spent the last few chapters making the Server Action the reflex for every mutation, and that was the right instinct: for an in-app form, it *is* the reflex. But you have probably already felt a few places where it doesn't reach. A Stripe webhook can't submit your form. A mobile app can't `import` your Server Action and call it as a function. A public JSON feed needs a GET, and the action is POST-only. Those aren't bugs in the action — they are its edges.
+
+This lesson installs the checklist you'll re-run on every "should this be an action or a `route.ts`?" question for the rest of the course: the five concrete triggers that flip the choice to a route handler, and — just as important — the rule that keeps you inside the action the other ninety percent of the time. By the end you'll be able to look at any endpoint and say "action" or "handler" with a one-line justification, you'll recognize the shape of a `route.ts` file, and you'll know the one caching fact you have to carry before you write a single handler.
+
+## The Server Action's working envelope
+
+Before you can know when to step *outside* the action, you need a sharp picture of what's *inside* it. You already know this from building actions — so read the next list not as new material but as the action's **edges**. Every trigger in this lesson is a case where one of these edges gets crossed.
+
+<Card title="The Server Action envelope" icon="puzzle">
+
+- **POST-only.** The framework wires a POST under the hood. There is no GET, no PUT — one verb.
+- **React-caller-only.** It's invoked as a typed function from a React component on this same app, Client or Server. It is never a free-standing URL a third party hits by contract.
+- **Revalidates for free.** `revalidatePath` / `revalidateTag` / `updateTag` refresh the affected reads as part of the same request.
+- **~1 MB body cap by default.** The request body is capped (`serverActions.bodySizeLimit`, default `'1mb'`) and buffered into memory before your code runs.
+- **Opaque on the wire.** The framework stamps an internal action ID into the bundle. Your call site is typed; the wire format is an implementation detail you never hand-author.
+- **Returns a `Result`.** It hands back the canonical `Result` shape your form layer reads directly — not an HTTP response.
+- **Degrades gracefully.** A `<form action>` still submits with JavaScript disabled (progressive enhancement).
+
+</Card>
+
+So here is the reflex, stated once so it sticks: **for any in-app mutation that fits this envelope, the Server Action is the 2026 default — don't reach further.** The rest of this lesson is about the cases that don't fit.
+
+## Five triggers that flip the choice to a route handler
+
+Each of the following is a case where the action's envelope simply *can't stretch* — not a matter of taste, not "REST feels cleaner," but a hard edge the action cannot cross. Five of them. Learn the names; you'll be sorting real endpoints into them in a minute.
+
+### Non-React callers
+
+A mobile app. A Zapier or n8n integration. A partner's backend. A CLI. A webhook from another one of your own services. None of these can `import` a Server Action and invoke it as a function — they live in a different process, sometimes a different company. They need a real, stable HTTP URL.
+
+Remember from the envelope: the action is reachable only from React on this same app, and its action ID is an internal bundle artifact, not a public contract. The moment the caller is *anything else*, you need a route handler. Public REST endpoints and your <Term definition="Backend-for-Frontend — a thin server-side endpoint that proxies or aggregates third-party services for your own frontend, wearing your app's auth shape.">BFF</Term> surfaces both live in `route.ts`. This is the most common trigger you'll hit in a maturing SaaS.
+
+### Webhooks
+
+A provider — Stripe, Resend, a Svix-backed sender — POSTs to a fixed URL you give them, and signs the request with an <Term definition="A keyed hash the provider computes over the raw request body; your handler recomputes it over the exact bytes received to prove the request really came from them.">HMAC</Term> over the **raw body**. To verify that signature, you have to hash the *exact bytes they sent*.
+
+This is where the action's contract is the wrong shape. The action parses the body into a typed payload before your code ever sees it — and once the bytes have been parsed and re-serialized, the signature won't match. The route handler hands you the raw bytes directly:
+
+```ts
+const raw = await request.text();
+// verify the HMAC over `raw` before you parse it
+```
+
+You verify first, *then* parse. Earlier in the course you learned HTTP from the consumer side — calling other people's endpoints; this is the first time the protocol forces *you* to author one a specific way. The full verification dance and the deduplication that goes with it are built in the Stripe billing chapter — here, the point is only *why* a webhook forces a handler.
+
+### GET endpoints
+
+Server Actions are POST-only, so any read surface that has to be a GET needs a route handler: a public `/api/posts/[slug]`, an autocomplete endpoint, a JSON feed, a calendar `.ics` export.
+
+Here is the wrong turn to avoid, because it is the one almost everyone makes first. **Your own pages do not need GET handlers to read data.** A Server Component reads from the database directly, in-process — no HTTP round-trip, no handler. The GET route handler exists for **external** readers: a browser hitting a public URL, a partner polling a feed, a CDN caching a response. The one in-app exception is the rare Client Component that genuinely can't be a Server Component and has to `fetch` its data over HTTP — and you'll meet that case specifically when the course reaches TanStack Query. If you find yourself writing a GET handler for data one of your own Server Components could just read, stop: you don't need it.
+
+### Streaming and large bodies
+
+The envelope's ~1 MB cap and its buffered request/response model rule out a whole class of work: direct multipart file uploads, AI responses streamed token by token (the AI SDK's `streamText`), Server-Sent Events pushing live progress, and file downloads larger than the cap. The action buffers the whole body into memory and caps it; these need the handler's direct `Request`/`Response` surface and the platform's streaming runtime.
+
+Treat this one as a *recognition* trigger. You don't need the mechanics now — when you reach the AI unit you'll stream for real. For today: a buffered, capped POST can't stream, so streaming means a handler.
+
+### Custom HTTP semantics
+
+Sometimes the endpoint needs the protocol itself *as its contract*: a `Cache-Control` header the CDN obeys, an `ETag` and a `304 Not Modified` for conditional requests, content negotiation on `Accept`, or simply a status code the action's `Result` shape can't express. A `Result` is a JavaScript value; it has no concept of a 304 or a 307 redirect.
+
+The senior line to remember: **the protocol is the contract, and the route handler is the only surface that speaks raw HTTP.** This trigger overlaps with the GET trigger (caching headers) and the webhook trigger (specific statuses), but it stands on its own for the case where an otherwise in-app-shaped operation still needs an HTTP-native response.
+
+---
+
+That's all five. Now the other side, restated plainly because it's the part you'll lean on most: **everything else stays a Server Action.** Every in-app form, every authenticated dashboard mutation, every CRUD operation a React component invokes. The rule of thumb collapses to a single question — **is the caller a React component on this same Next.js app?** If yes, write the action. Past that envelope, the handler earns its weight.
+
+<VideoCallout videoId="NWx8oVLEdwE" videoTitle="Next.js Server Actions vs API Routes: The Final Answer for 2025">
+  Tobi Mey walks the same decision in 7 minutes — same conclusion you just read (actions by default, handlers for webhooks, AI streaming, non-React callers, and custom HTTP), with a side-by-side syntax and DX comparison.
+</VideoCallout>
+
+The following walkthrough is the artifact to keep. Don't memorize the five triggers as a flat list; walk them in the *order* an experienced engineer actually asks them. Caller identity comes first, because it resolves most cases before you have to think about anything else. Click through it now, then return to it whenever the question comes up.
+
+<StateMachineWalker kind="decision" title="Action or route handler?">
+  <Question
+    id="caller"
+    prompt="Who calls this endpoint?"
+    description="Ask this first — caller identity resolves the majority of cases before you weigh anything else."
+  >
+    <Branch
+      label="A React component on this same app"
+      to="raw-http"
+      rationale="Client or Server Component, invoked as a typed function."
+    />
+    <Branch
+      label="Something that isn't React on this app — mobile, partner, CLI, BFF"
+      to="public"
+      rationale="A different process, sometimes a different company."
+    />
+    <Branch
+      label="A third-party provider POSTing events — Stripe, Resend, Svix"
+      to="webhook"
+      rationale="It signs the raw body and POSTs to a fixed URL."
+    />
+    <Branch
+      label="A browser or CDN hitting a cacheable public read URL"
+      to="get"
+      rationale="An external reader, not one of your own Server Components."
+    />
+  </Question>
+
+  <Question
+    id="raw-http"
+    prompt="Does it need raw HTTP — streaming, a body over ~1 MB, or custom cache/status/conditional headers?"
+    description="The caller fits the envelope. The only question left is whether the protocol itself is part of the contract."
+  >
+    <Branch label="No" to="action" rationale="An ordinary in-app mutation." />
+    <Branch
+      label="Yes — streaming or a body over ~1 MB"
+      to="handler-stream"
+      rationale="Token streaming, SSE, file uploads or downloads."
+    />
+    <Branch
+      label="Yes — custom cache, status, or conditional headers"
+      to="handler-http"
+      rationale="A 304, an ETag, a redirect, content negotiation."
+    />
+  </Question>
+
+  <Leaf id="action" verdict="Server Action">
+    The caller is React on this app and the payload fits the envelope. You get a typed call site, free revalidation, and progressive enhancement. **The 2026 default — don't reach further.**
+  </Leaf>
+
+  <Leaf id="handler-stream" verdict="Route handler (streaming)">
+    The action buffers the whole body into memory and caps it at ~1 MB. Streaming and large bodies need the handler's direct `Request`/`Response` surface and the platform's streaming runtime. *Mechanics come in the AI unit.*
+  </Leaf>
+
+  <Leaf id="handler-http" verdict="Route handler (HTTP semantics)">
+    A `Result` is a JavaScript value — it can't express a `304 Not Modified`, an `ETag`, or content negotiation on `Accept`. The protocol is the contract, and only the handler speaks raw HTTP.
+  </Leaf>
+
+  <Leaf id="public" verdict="Route handler (public / BFF)">
+    Nothing outside React on this app can `import` an action, and its action ID is an internal bundle artifact, not a public contract. A public REST or BFF surface needs a real, stable HTTP URL. *The most common trigger in a maturing SaaS.*
+  </Leaf>
+
+  <Leaf id="webhook" verdict="Route handler (webhook)">
+    Signature verification must run over the *exact raw bytes* the provider sent — and the action's typed-payload contract parses those bytes away before your code sees them. The handler reads `await request.text()`, verifies, then parses. *Full treatment in the Stripe billing chapter.*
+  </Leaf>
+
+  <Leaf id="get" verdict="Route handler (GET)">
+    Server Actions are POST-only, so any read that has to be a GET needs a handler. **But:** an *in-app* read still belongs in a Server Component reading the database directly — this leaf is for **external** readers (a public URL, a partner polling a feed, a CDN).
+  </Leaf>
+</StateMachineWalker>
+
+Now practice the boundary yourself. The deciding axis is **caller identity plus protocol need** — not the verb (create / read / update) and not the entity. The mix below is weighted on purpose, so you can't pass by always picking "handler."
+
+<Buckets twoCol instructions="Sort each endpoint into the seam it belongs to. The deciding axis is who calls it plus whether the protocol is the contract — not the verb, not the entity.">
+  <Bucket name="action" label="Server Action" description="Called by a React component on this app" />
+  <Bucket name="handler" label="Route handler" description="Called over HTTP by something else" />
+
+  <Item bucket="action">Submit the "edit invoice" form from the dashboard</Item>
+  <Item bucket="handler">Stripe sends a `payment_intent.succeeded` event</Item>
+  <Item bucket="handler">The iOS app fetches the user's invoice list</Item>
+  <Item bucket="action">A button on the settings page archives a project</Item>
+  <Item bucket="handler">Serve a public `/api/changelog.json` feed, cached at the CDN</Item>
+  <Item bucket="handler">Stream an AI-generated summary token by token</Item>
+  <Item bucket="action">Add a comment from the in-app comment box</Item>
+  <Item bucket="action">Save profile changes from the account form</Item>
+</Buckets>
+
+## The `route.ts` file shape
+
+Now that you know *when* you'd write one, here is *what* a handler looks like. Keep this light — this is orientation, not the full contract. Parsing the request with Zod, choosing status codes, and shaping error bodies all come in the next lessons; right now you just need to recognize the file and its conventions.
+
+A handler is a file named `route.ts`. It can live anywhere in `app/` that isn't already a page segment, but by convention it goes under `app/api/...`. Compare the two kinds of segment side by side — a page route and an API route:
+
+<FileTree>
+- app/
+  - dashboard/
+    - page.tsx a UI page, served as HTML
+  - api/
+    - invoices/
+      - `[invoiceId]`/
+        - **route.ts** an API route, served as an HTTP response
+</FileTree>
+
+Inside the file, you don't register routes or wire a router. The framework decides *which* file by its location in `app/`, and *which* function by its name. You export one `async` function per HTTP method you support — `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS` — and the framework dispatches to it. No central route table, no `switch (method)`.
+
+Here is a single `route.ts` that handles two methods. Step through it.
+
+This route is for a single invoice, so it has a dynamic `[invoiceId]` segment. Two methods, one file:
+
+<AnnotatedCode lang="ts" code={`
+export async function GET(
+  request: NextRequest,
+  { params }: RouteContext<'/api/invoices/[invoiceId]'>,
+) {
+  const { invoiceId } = await params;
+  const invoice = await getInvoice(invoiceId);
+  return NextResponse.json(invoice);
+}
+
+export async function POST(request: NextRequest) {
+  // parse + authorize covered in the next lessons
+  const body = await request.json();
+  const created = await createInvoice(body);
+  return NextResponse.json(created, { status: 201 });
+}
+`}>
+  <AnnotatedStep meta="{1} {10}">
+    The two method-named exports, `GET` and `POST`, sitting side by side in one file. The framework dispatches by name — no router, no `switch (method)`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{1-5} "await params"`} color="orange">
+    The signature: each handler gets a `NextRequest` (a thin superset of the Web `Request` with `.nextUrl`, `.cookies`, and geo helpers) and, for a dynamic segment, a context whose `params` is a `Promise` in Next.js 16 — `await` it before use. The `RouteContext<'/api/invoices/[invoiceId]'>` helper type is globally available (generated by `next dev`/`build`, no import) and types `params` against the route's segments. Forgetting the `await` is the single most common Next.js 16 migration mistake.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{7} {14}" color="blue">
+    Return a `Response`. `NextResponse` is the `Response` superset with `.json()`, cookie, and redirect helpers; a bare `Response` works too. The POST returns `201` because it created something — choosing status codes is the next-but-one lesson.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{11}" color="violet">
+    A deliberate gap: no Zod parse, no auth check, no error shape yet. That's the next two lessons. This is the *skeleton*, not the production handler.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+One more thing the framework hands you for free. You don't write an `OPTIONS` handler for CORS preflight — it's auto-implemented from the methods you export. And a request with an unsupported method gets a `405 Method Not Allowed` automatically, with an `Allow` header listing exactly the methods this file exports. Let the framework return both. Hand-write `OPTIONS` only when your preflight response headers genuinely need to diverge.
+
+The instinct to fight here is the fat handler: one exported function with `if (request.method === 'POST')` branches inside it. Don't. Export `GET` and `POST` as separate functions side by side — that's what the method-name dispatch is *for*.
+
+## A segment is either a page or an API route, never both
+
+There's one structural rule worth naming before you trip on it: **`route.ts` and `page.tsx` cannot live at the same route segment.** The framework can't serve both a UI page and an API response at one path — it wouldn't know which you meant. So a segment is *either* a page *or* an API route. That's exactly why the file tree above tucks the handler under `app/api/...`: keeping API routes on their own branch keeps them off the page tree, and the conflict never comes up.
+
+## Caching: route handlers are dynamic by default
+
+This is the one caching fact you have to carry before writing any handler. Everything else about caching comes much later — but this one shapes your defaults from day one.
+
+A GET route handler runs **at request time, every time, by default.** It is dynamic and uncached — no automatic full-route cache sits in front of it. If you want a response cached, you opt in *deliberately, at that one endpoint*: either with the `'use cache'` directive or with explicit response headers like `Cache-Control: public, s-maxage=60`.
+
+Here's the *why*, and it's the part that matters. Most route handlers serve **authenticated, per-user** requests — this user's invoices, that user's settings. For those, caching is not just unhelpful, it's *dangerous*: a shared cache could hand one user's data to another. So dynamic-by-default is the safe default. You add caching only at the specific endpoints that serve **public, shareable** data, and nowhere else.
+
+<CodeVariants>
+  <CodeVariant label="Default — dynamic">
+
+  ```ts
+  export async function GET() {
+    const invoices = await listInvoices();
+    return NextResponse.json(invoices);
+  }
+  ```
+
+  **Runs on every request.** No headers, no caching — the safe default for anything per-user. This is what you get if you do nothing.
+  </CodeVariant>
+
+  <CodeVariant label="Opt-in — cached public read">
+
+  ```ts {4}
+  export async function GET() {
+    const changelog = await getPublicChangelog();
+    return NextResponse.json(changelog, {
+      headers: { 'Cache-Control': 'public, s-maxage=60, stale-while-revalidate=300' },
+    });
+  }
+  ```
+
+  **Cached at the CDN for 60s.** Only safe because the changelog is the same for everyone. Never do this with per-user data.
+  </CodeVariant>
+</CodeVariants>
+
+One real footgun to flag now so it doesn't catch you: **`'use cache'` cannot go directly inside a route-handler body.** If you want to cache the work, extract it into a helper function and put `'use cache'` on *that*, then call the helper from your handler. State it plainly — people hit this and stare at the error.
+
+:::caution
+Never set `Cache-Control: public` on an endpoint that returns per-user data. The CDN will cache one user's response and serve it to the next person who hits the URL. This privacy bug ships silently — everything works in development, and it bites in production once two users share a cache. It is the highest-stakes mistake in this lesson.
+:::
+
+## The same seam, a different wire format
+
+Here's the reassuring part. The route handler is not a new mental model to learn — it's the discipline you already own, with a different return shape. You know the five-seam shape of a Server Action by now:
+
+> parse → authorize → mutate → revalidate → return
+
+A route handler runs the *exact same five seams*, with exactly two substitutions. You still parse on entry with `safeParse` before touching anything. You still authorize before any database read or write. Those are identical — because a route handler is a public, untrusted-input boundary with the **same trust posture** as the action. Only the last two seams change shape: *revalidate* becomes "set cache headers, or call `revalidateTag(tag, profile)` when the handler mutates" (Next.js 16 requires that second `cacheLife` argument — `'max'` is the safe default), and *return a `Result`* becomes "return a `Response` with a status code and a body."
+
+<Figure caption="Same five seams; only the last two rows change shape. parse, authorize, and mutate are identical on both sides — a route handler is a public, untrusted-input boundary with the same trust posture as the action. Only revalidate and return take a different wire format.">
+  <SeamMapping />
+</Figure>
+
+Two threads carry over with that boundary, and both are worth naming now even though you'll build them later.
+
+**Authorization ports with the seam.** The `authedAction(role, schema, fn)` wrapper that lifts session, role, and parse out of every action body has a twin at the handler boundary: `authedRoute(role, schema, handler)`. Same parse-then-authorize order, same trust posture, different return shape — it's built in the organizations chapter. The point for today: don't hand-roll a fresh auth check inside every handler. There's a wrapper for that.
+
+**Don't invent a parallel router.** This is a principle the whole course holds: use the framework's surface, don't bolt a second one beside it. `route.ts` files in the App Router *are* your API surface. No Hono, no tRPC, no Express running on the side. There is exactly one scenario that would ever flip this — an externally-published, versioned REST API with autogenerated OpenAPI docs and a shipped client SDK — and even then the senior reach is Hono running *inside a single Next.js route handler*, not a parallel server. Most SaaS products don't ship a public API in their first year. It's named here so you recognize it; it's out of scope to build.
+
+## External resources
+
+The first two pages are the Next.js references worth keeping open when you start writing handlers for real. The rest cover the protocol fundamentals the triggers push you onto: caching headers, conditional requests, and the raw-body discipline a webhook demands.
+
+<CardGrid>
+  <ExternalResource
+    title="Next.js docs — Route Handlers"
+    href="https://nextjs.org/docs/app/getting-started/route-handlers-and-middleware"
+    icon="simple-icons:nextdotjs"
+    description="The getting-started guide: method exports, caching behavior, and the request/response surface."
+  />
+  <ExternalResource
+    title="Next.js docs — route.js file convention"
+    href="https://nextjs.org/docs/app/api-reference/file-conventions/route"
+    icon="simple-icons:nextdotjs"
+    description="The signature reference, including the params Promise and the RouteContext helper type."
+  />
+  <ExternalResource
+    title="MDN — HTTP caching"
+    href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Caching"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The mental model behind the caching section: shared vs private caches, freshness, ETags, and 304 Not Modified."
+  />
+  <ExternalResource
+    title="web.dev — stale-while-revalidate"
+    href="https://web.dev/articles/stale-while-revalidate"
+    icon="simple-icons:googlechrome"
+    iconColor="#4285F4"
+    description="A focused explainer for the exact directive in the cached-read example: serve stale instantly, refresh in the background."
+  />
+  <ExternalResource
+    title="Stripe — verify webhook signatures"
+    href="https://docs.stripe.com/webhooks/signature"
+    icon="simple-icons:stripe"
+    iconColor="#635BFF"
+    description="Why the webhook trigger forces a handler: signatures are checked over the exact raw bytes, before any parse."
+  />
+</CardGrid>

@@ -1,0 +1,481 @@
+---
+title: 'List endpoints: filter, sort, search, paginate'
+tagline: Design the Zod query schema and shared Drizzle query builder behind a list route handler, the contract that makes filtering, sorting, searching, and cursor pagination safe.
+chapter-id: 46
+course-progress: 0.46
+sidebar:
+  order: 4
+  label: List endpoints
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import TabbedContent from '../../../components/figures/tabbed-content/TabbedContent.astro';
+import TabbedItem from '../../../components/figures/tabbed-content/TabbedItem.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import ZodCoding from '../../../components/live-coding/ZodCoding/ZodCoding.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { FileTree, CardGrid } from '@astrojs/starlight/components';
+import UrlDimensionStrip from '../../../components/lessons/046/4/UrlDimensionStrip.astro';
+import CursorRoundtrip from '../../../components/lessons/046/4/CursorRoundtrip.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Here is a URL your `GET /api/invoices` handler might be asked to serve:
+
+```
+/api/invoices?status=sent&sort=-issuedAt&q=acme&cursor=eyJ…&limit=20
+```
+
+This is the same `route.ts` GET you wrote in the first lesson of this chapter, but the query string is now doing real work. Every word after the `?` is a knob the caller is turning, and not one of them is typed — the query string arrives as strings, only strings, ever. `limit=20` is the string `"20"`, not the number `20`. A caller who sends `?limit=999999` is, as far as the URL is concerned, asking a perfectly well-formed question. Your handler's job is to decide which questions it's willing to answer.
+
+In the lesson on wire contracts you learned that `searchParams` is strings and that `z.coerce` is the bridge that turns those strings back into numbers, dates, and booleans. That lesson stopped at the bridge. This one is about what the schema on the far side of the bridge actually contains — because a list endpoint's query schema is the entire input surface of the endpoint, and getting it wrong is how a client brings your database down or reads a column you never meant to expose.
+
+By the end you'll be able to author a list endpoint's query schema, translate the parsed query into a Drizzle query, and return a paginated response that won't break the first client the day you need to add a total count. And you'll factor the query logic so the in-app list view you build later reuses the exact same code — the payoff that makes this more than "parse a query string."
+
+Here's the frame that makes every list endpoint tractable. No matter the domain — invoices, users, support tickets, log lines — a list endpoint answers at most four questions, and the query string is how the caller asks them:
+
+- **Filter** — *which rows?* `status=sent`
+- **Sort** — *in what order?* `sort=-issuedAt`
+- **Search** — *matching what text?* `q=acme`
+- **Paginate** — *how many, and starting where?* `cursor=…&limit=20`
+
+Every list-API design decision reduces to "which of these four, and what's the convention for each." We'll take them one at a time, and each one adds a few fields to a single growing schema and a few lines to a single growing handler.
+
+<Figure caption="Every list query is some combination of four dimensions — filter, sort, search, paginate. Each colour returns as we build that part of the schema.">
+  <UrlDimensionStrip />
+</Figure>
+
+## Filtering: enum allowlists, not free strings
+
+Filtering is the first and simplest dimension: it narrows *which rows* come back. The instinct is to accept whatever the client sends and drop it into a `WHERE` clause. Resist it. A filter parameter is a promise about which columns and which values the caller is allowed to ask about, and that promise lives in the schema.
+
+Declare each filterable column explicitly, and make its allowed values an enum. A single-value filter is `z.enum([...]).optional()`; a filter the caller can repeat — "give me `sent` *and* `overdue`" — is that enum wrapped in `z.array`. Invoices want the second, so the worked schema starts there:
+
+```ts title="lib/schemas/invoice.ts"
+import { z } from 'zod';
+
+export const listInvoicesQuerySchema = z.object({
+  status: z
+    .array(z.enum(['draft', 'sent', 'overdue', 'paid']))
+    .optional(),
+});
+```
+
+The enum is the allowlist. A request for `?status=banana` fails the schema and comes back `422` — the same validation-failure status from the lesson on status codes — because `banana` isn't one of the four declared values. More importantly, a caller can only filter on the columns you sanctioned. There is no `?customerId=…` filter unless you add a `customerId` field to this schema. The schema is both the allowlist (which values are legal) and the ceiling (which columns exist at all).
+
+One choice worth being deliberate about: how the caller sends *more than one* status. Two conventions exist in the wild. The repeated-key form — `?status=sent&status=overdue` — and the comma-separated form — `?status=sent,overdue`. This project picks the repeated-key form. It composes cleanly with the platform (`URLSearchParams` has a method built for exactly this, which you'll see in a moment), and it sidesteps the question of what happens when a value legitimately contains a comma. The CSV form is the alternative; it's slightly shorter in the URL bar and you'll see it in plenty of APIs, but you'd own the splitting and the escaping yourself.
+
+That choice has a sharp edge, and filtering is where it first cuts. The obvious way to turn `searchParams` into something Zod can parse is `Object.fromEntries(searchParams)`. For single-valued parameters that's fine. For a *repeated* key it silently keeps only the last value — `?status=sent&status=overdue` becomes `{ status: 'overdue' }`, and `sent` vanishes without a trace. The fix is to read multi-valued keys with `getAll`. This is the canonical query-parsing bug, so let's look at the exact lines where it bites:
+
+<AnnotatedCode lang="ts" maxLines={10} code={`
+export function parseListQuery(searchParams: URLSearchParams) {
+  const raw = {
+    ...Object.fromEntries(searchParams),
+    status: searchParams.getAll('status'),
+  };
+  return listInvoicesQuerySchema.safeParse(raw);
+}
+`}>
+  <AnnotatedStep meta="{1}" color="blue">
+    The input is a `URLSearchParams` — the object `request.nextUrl.searchParams` hands you, every value a string.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{3}" color="blue">
+    `Object.fromEntries` collapses the params into a plain object — the right move for every *single-valued* key (`sort`, `q`, `limit`, `cursor`).
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{4} "getAll"`} color="orange">
+    But `Object.fromEntries` keeps only the *last* value of a repeated key. For any multi-valued key, read it with `getAll`, which returns the full array — and let it overwrite the single-valued version. This one line is the difference between honouring `?status=sent&status=overdue` and silently dropping half of it.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{6} "safeParse"`} color="blue">
+    Hand the assembled object to the schema with `safeParse` — never `parse` — because the query string is untrusted wire input, exactly the posture from the wire-contracts lesson.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The last refinement is normalization, and it follows from a simple stance: the URL is the *user's* surface, so defensive parsing is the *handler's* job. Three cases come up constantly. An empty filter value — `?status=` — means "I didn't specify a status," not "match rows whose status is the empty string"; drop empty strings before they reach the enum check. A caller who sends `?status=sent&status=sent` shouldn't widen your query with a duplicate; dedup the array. And once you've stripped empties, an array with nothing left in it should collapse to `undefined` — "no status filter," not "filter for the empty set of statuses" (which would match zero rows). All three belong in the schema, so the rest of your handler receives either a clean, deduplicated array or nothing at all, and never thinks about it again.
+
+Now make that schema yourself. The schema is pure Zod — it runs in the browser — so you can build it and watch the fixtures flip in real time:
+
+<ZodCoding
+  schemaName="listInvoicesQuerySchema"
+  instructions="Make every fixture pass. `status` is an optional array of the four invoice statuses — `banana` must be rejected, but an empty-string entry means 'not specified' and must normalize away, not fail the enum check. The starter already has the enum/array shape, so the last empty-string fixture is red. The order is the lesson: strip the empty strings *before* the enum runs — that's the job z.preprocess does. Watch the `^?` query: even with the preprocessing in front, the parsed type still reads `status?: ('draft' | 'sent' | 'overdue' | 'paid')[]`."
+  starter={`import { z } from 'zod';
+
+const STATUSES = ['draft', 'sent', 'overdue', 'paid'] as const;
+
+export const listInvoicesQuerySchema = z.object({
+  // The enum/array/optional shape is here, but it rejects an empty-string
+  // entry instead of dropping it. Wrap the array in z.preprocess so empty
+  // strings are stripped *before* the enum check (and, while you're there,
+  // dedup and collapse an emptied array to undefined).
+  status: z.array(z.enum(STATUSES)).optional(),
+});
+
+type ListInvoicesQuery = z.infer<typeof listInvoicesQuerySchema>;
+//   ^?
+`}
+  fixtures={[
+    { name: 'single status', input: { status: ['sent'] }, expect: 'pass' },
+    { name: 'multi status', input: { status: ['sent', 'overdue'] }, expect: 'pass' },
+    { name: 'out-of-enum value', input: { status: ['banana'] }, expect: 'fail', errorContains: 'overdue' },
+    { name: 'empty array (what getAll returns) collapses to undefined', input: { status: [] }, expect: 'pass' },
+    { name: 'empty string normalized away', input: { status: [''] }, expect: 'pass' },
+    { name: 'omitted is fine', input: {}, expect: 'pass' },
+  ]}
+/>
+
+:::note
+Unknown query parameters are *ignored*, not rejected — that's why the schema is `z.object`, not the `z.strictObject` you'd reach for on a request body. A request body with an unexpected key is usually a client bug worth surfacing; a stray `?utm_source=newsletter` on a URL is not. Different surface, different default.
+:::
+
+## Sorting: the prefix convention and the column allowlist
+
+Sorting decides *in what order* the rows come back. The whole dimension fits in a single query parameter, but there are three conventions for what goes in it, and the difference is mostly ergonomics:
+
+- **Prefix form** — `?sort=-issuedAt` for descending, `?sort=issuedAt` for ascending. The leading `-` is the descending marker. Shortest, readable straight from the URL bar. This project's pick.
+- **Field-plus-order pair** — `?sortBy=issuedAt&sortOrder=desc`. Verbose, but the right reach when each dimension wants its own typed enum.
+- **Comma-separated multi-sort** — `?sort=-issuedAt,total`. Rare in lists, common in reports; reach for it only when multi-column sort genuinely earns its weight.
+
+We'll use the prefix form. It means the schema receives a single string like `-issuedAt` and has to turn it into something a query can use: a field name and a direction. Parse that *inside the schema* with a `.transform`, so by the time your handler sees `parsed.sort` it already has the shape `{ field, direction }` — the string-wrangling never leaks into the handler body.
+
+Here is the security-shaped beat of this section, and it's the reason the field is an enum and not a free string. Picture a handler that takes `?sort=` and drops it straight into `ORDER BY`. A curious caller sends `?sort=passwordHash`, or `?sort=internalNotes`, and now they can probe the existence and rough ordering of columns you never meant to expose — and every such query scans the whole table, because the column they picked has no index. The fix is the same allowlist move as filtering: the sort field is an enum of the columns you've decided are sortable.
+
+These two snippets are the same idea written wrong and right. The contrast is the whole lesson of the section:
+
+<CodeVariants>
+  <CodeVariant label="Free string">
+    <div data-mark-color="red">
+
+    ```ts {2}
+    const column = parsed.sort?.field ?? 'issuedAt';
+    orderBy: sql.raw(`${column} ${direction}`),
+    ```
+
+    </div>
+    **Accepts any column — an information leak and a guaranteed table scan.** `column` is whatever string the client sent, spliced straight into the SQL. A caller sorts by `passwordHash` and learns it exists; a caller sorts by an unindexed column and every page scans the table.
+  </CodeVariant>
+
+  <CodeVariant label="Enum allowlist">
+    <div data-mark-color="green">
+
+    ```ts {1}
+    const column = SORTABLE_COLUMNS[parsed.sort.field];
+    orderBy: parsed.sort.direction === 'desc' ? desc(column) : asc(column),
+    ```
+
+    </div>
+    **Only the columns you sanctioned.** `parsed.sort.field` is one of the enum's literals, so it can only index a column you put in `SORTABLE_COLUMNS` — an out-of-enum field can't exist by the time this line runs. The allowlist is enforced by the type, not by a runtime check you might forget.
+  </CodeVariant>
+</CodeVariants>
+
+The right-hand version leans on a small lookup table — a record that maps each sortable field name to its Drizzle column. The enum lists the *names*; the record turns a name into the actual column object Drizzle's `asc`/`desc` need. Because the field is constrained to the enum's literals, an illegal field can't even index the record — the allowlist is enforced structurally, by the shape of the types, rather than by a guard you have to remember to write.
+
+<CodeTooltips tooltips={{
+  invoiceSortSchema: "After parsing, a sort field built from this reads as { field: 'issuedAt' | 'total' | 'status', direction: 'asc' | 'desc' } — the string convention is gone, only the structured shape remains.",
+  SORTABLE_COLUMNS: 'The field→column lookup. Keyed by the same names the enum allows, so an illegal field can\'t index it.',
+}}>
+```ts title="lib/schemas/invoice.ts"
+const SORTABLE_COLUMNS = {
+  issuedAt: invoices.issuedAt,
+  total: invoices.total,
+  status: invoices.status,
+} as const;
+
+export const invoiceSortSchema = z
+  .enum(['issuedAt', '-issuedAt', 'total', '-total', 'status', '-status'])
+  .default('-issuedAt')
+  .transform((value) => ({
+    field: value.replace('-', '') as keyof typeof SORTABLE_COLUMNS,
+    direction: value.startsWith('-') ? 'desc' : 'asc',
+  }));
+```
+</CodeTooltips>
+
+Note the enum lists both the bare and `-`-prefixed forms so every legal sort string is declared up front; the `.transform` then splits the prefix off into `direction`. We pull it out as its own named schema (`invoiceSortSchema`) because the full query schema will compose it in, and the in-app list view will reuse it too — one schema per intent.
+
+There's one reflex to carry out of here, and it belongs to the database chapters: every column you let the client sort by should be backed by a composite index that leads with the tenant column. A sortable column without an index turns every page of the list into a full table scan. You'll see *how* to build that index later; the rule to hold now is simply that **the set of columns in your sort allowlist and the set of columns you've indexed should be the same set.** We'll come back to that idea at the very end of the lesson, because it ties the whole thing together.
+
+## Searching: one string in, the SQL layer picks the operator
+
+Search is free-text: the caller types `acme` and expects rows that mention Acme. Here's the headline, and it's the senior move that keeps this dimension simple — *the query schema doesn't know how search works.* As far as the schema is concerned, `q` is nothing more than a bounded string:
+
+<div data-mark-color="blue">
+
+```ts {4} title="lib/schemas/invoice.ts"
+export const listInvoicesQuerySchema = z.object({
+  status: z.array(z.enum(['draft', 'sent', 'overdue', 'paid'])).optional(),
+  sort: invoiceSortSchema,
+  q: z.string().min(1).max(100).optional(),
+});
+
+// In the read helper, not the handler — the operator is the data layer's call.
+const searchPredicate = parsed.q
+  ? ilike(invoices.customerName, `%${parsed.q}%`)
+  : undefined;
+```
+
+</div>
+
+The bounds matter. `min(1)` means an empty `?q=` normalizes to "no search," consistent with the empty-filter rule from earlier — a blank search box shouldn't filter to nothing. And `max(100)` puts a ceiling on untrusted free text so a caller can't paste a megabyte into your `WHERE` clause. That's the entire schema-side story for search.
+
+*How* that bounded string becomes SQL is a separate decision, and it belongs to the data layer, not the handler. There are three tiers, and you only need to recognize them here — the SQL itself lives in the database chapters:
+
+<TabbedContent>
+  <TabbedItem label="ILIKE" caption="The default for 'search by name' on a modest table.">
+    A pattern match with a wildcard on both sides, backed by a <Term definition="An index that breaks each value into overlapping three-character chunks (n-grams), letting Postgres serve a leading-wildcard ILIKE fast. Built fully in the database chapters.">trigram index</Term>. Good for searching one column on a few-thousand-row table. (Trigram indexes need the search term to be a few characters long to engage, so single-letter search won't use the index.)
+
+    ```sql frame="none"
+    WHERE customer_name ILIKE '%' || $q || '%'
+    ```
+  </TabbedItem>
+
+  <TabbedItem label="Full-text search" caption="The reach when search spans columns or the table is large.">
+    Postgres's built-in <Term definition="Full-Text Search: matches a parsed query against a normalized, indexed tsvector — word stems, ranking, and several columns at once — instead of a raw substring scan.">FTS</Term> matches a parsed query against a stored, indexed `tsvector` — word stems, ranking, multiple columns at once. The reach when ILIKE stops scaling or you need relevance.
+
+    ```sql frame="none"
+    WHERE search_vector @@ plainto_tsquery($q)
+    ```
+  </TabbedItem>
+
+  <TabbedItem label="External" caption="The trigger past Postgres FTS.">
+    A dedicated search service — Algolia, Typesense, Meilisearch — when you need typo tolerance, faceting, and instant-search latency Postgres won't give you. Out of scope here; named so you know the boundary.
+
+    ```ts frame="none"
+    searchClient.index('invoices').search(q)
+    ```
+  </TabbedItem>
+</TabbedContent>
+
+Notice what *didn't* change across those three tabs: the schema. `q` is a string in all of them. Swapping ILIKE for full-text search, or full-text search for an external engine, changes one function in the data layer and touches the route handler not at all. That decoupling is the point — and it's the same shape as the payoff in the next-to-last section, where the entire query-building step moves behind one function.
+
+## Paginating: the envelope and the opaque cursor
+
+Pagination is the richest of the four, and it has two halves: the *shape you return* and the *cursor the client carries between pages*.
+
+### The envelope
+
+Start with the shape. The tempting thing is to return a bare array — `[{...}, {...}]` — and be done. Don't. Return a top-level object instead:
+
+```ts
+{ data: Invoice[], pageInfo: { nextCursor: string | null, hasMore: boolean } }
+```
+
+Here's the bug you're preventing. Ship a bare array as v1, and the first time someone asks "how many invoices are there total?" or "echo back which filters you applied" or "what was the search rank of each row," you have nowhere to put the answer. The only way to add it is to change the response from an array to an object — and that breaks every client already parsing the array. Wrap from day one and those fields drop into `pageInfo` (or beside `data`) with no breaking change. The naked-array v1 that v2 has to break is the anti-pattern; the envelope is cheap insurance against it.
+
+One consequence to state plainly, because it's a common reflex to get wrong: a list with no matching rows is `200`, not `404`. The body is `{ data: [], pageInfo: { nextCursor: null, hasMore: false } }`. The resource is the *list* — which exists, and happens to be empty. `404` would mean "there is no such list," which isn't true. This is the same status discipline from the previous lesson: `404` is for resources that don't exist, not for queries that found nothing.
+
+### The cursor at the wire
+
+Now the harder half. That `cursor` string is how the client asks for "the next page after the one I just saw." The contract at the wire boundary is one word: **opaque.** The client treats the cursor as a meaningless string it got from you and hands straight back; it never reads inside it, never builds one by hand.
+
+You make it opaque by base64url-encoding a small piece of JSON — `{ sortKey, id }` — on the way out, and decoding it on the way in. The encoding isn't encryption and isn't trying to be; the base64 wrapper *signals* opacity. A raw, readable `?cursor={"id":"…","issuedAt":"…"}` invites clients to construct cursors themselves, and the moment they do, the inner shape becomes part of your public contract and you can never change it. The base64 wrapper keeps the inner shape yours.
+
+You already learned the hard part of this elsewhere. <Term definition="Pagination that remembers the last row you saw — a (sortKey, id) key — instead of counting an offset. Stable when rows are inserted or deleted mid-scroll.">Keyset pagination</Term> — the `(sortKey, id)` predicate, the mandatory tiebreaker on `id`, the `WHERE` clause that fetches "everything after this key" — was built from the ground up in the chapter on querying and mutating. This lesson doesn't re-derive that SQL. Its job is the *encoding and validation at the API edge*: decode the base64, parse the inner JSON with a schema (it's untrusted wire input, so `safeParse`, never `parse`), and hand the validated `{ sortKey, id }` to the query helper that owns the predicate.
+
+That cursor needs a schema of its own — small, but it's a real input boundary:
+
+<div data-mark-color="green">
+
+```ts {10-11} title="lib/schemas/invoice.ts"
+export const cursorSchema = z.object({
+  sortKey: z.union([z.string(), z.number()]),
+  id: z.uuid(),
+});
+
+export const listInvoicesQuerySchema = z.object({
+  status: z.array(z.enum(['draft', 'sent', 'overdue', 'paid'])).optional(),
+  sort: invoiceSortSchema,
+  q: z.string().min(1).max(100).optional(),
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().positive().max(100).default(20),
+});
+
+export type ListInvoicesQuery = z.infer<typeof listInvoicesQuerySchema>;
+```
+
+</div>
+
+`invoiceSortSchema` is the named prefix-form sort from the sorting section, composed in here so the full schema reads at a glance; the two green lines — `cursor` and `limit` — are everything pagination adds to the query surface.
+
+Look at `limit` for a second, because it's mental model #2 in one line: **the schema is the ceiling.** `z.coerce.number()` bridges the string-to-number gap (the `z.coerce` from the wire-contracts lesson), `.int().positive()` rejects `-5` and `3.5`, `.default(20)` is the page size when the caller omits it — and `.max(100)` is the hard ceiling. That `.max(100)` is *part of the contract*, not a nicety. Without it, the first careless `?limit=999999` asks your handler to load a million rows into memory and your database obliges. Every list endpoint has a hard ceiling; this is where it lives.
+
+:::caution
+The cursor's inner JSON is decoded from a string the client controls, so it gets the same treatment as any wire input: `cursorSchema.safeParse(decoded)`, never `parse`. A client can send a base64 string that decodes to garbage — your handler should fall back to "first page," not throw a 500.
+:::
+
+How does `hasMore` get its value, and where does `nextCursor` come from? With the **fetch-`n+1`** trick — the same one the cursor-pagination chapter taught for the SQL, surfaced here as the source of the two `pageInfo` fields. You ask the database for one more row than the page size: `limit + 1`. If you get `limit + 1` rows back, there's a next page, so you slice off the extra row, set `hasMore: true`, and encode `nextCursor` from the *last row you're actually returning*. If you get `limit` or fewer, you're on the last page: `hasMore: false`, `nextCursor: null`. One round trip tells you both whether more exists and where the next page starts.
+
+The whole round trip is easier to see in motion than to read. Scrub through it:
+
+<CursorRoundtrip />
+
+One last decision: cursor or offset? You met both in the querying chapter; here's the rule for the wire. Cursor is the default, because it's stable across concurrent writes — when invoices are being created while a client pages through, cursor pagination won't double-count a row or skip one at the page seam, the way `OFFSET` does. Offset is the opt-in, reserved for small admin tables where the user genuinely wants "page 3 of 7" affordances and the data isn't churning. Cursor by default, offset on purpose.
+
+<VideoCallout videoId="zwDIN04lIpc" videoTitle="Pagination in MySQL — offset vs. cursor (PlanetScale)">
+  PlanetScale's 13-minute animated walkthrough of the same two strategies — watch it land deterministic ordering, the mandatory `id` tiebreaker, the base64-encoded cursor, and why offset skips rows under concurrent deletes.
+</VideoCallout>
+
+These pagination calls are judgment, not syntax — exactly the kind of thing a schema can't check for you. Test yourself:
+
+<MultipleChoice>
+  You're reviewing a teammate's new `GET /api/invoices` list endpoint before it merges. The PR description lists the design decisions below. Which ones would you approve as written? Select all that apply.
+
+  <McqChoice correct>A filter that excludes every invoice still responds `200`, with `data` set to an empty array — the route never returns `404` just because the result set is empty.</McqChoice>
+  <McqChoice>The handler returns the rows as a top-level JSON array; a comment in `route.ts` explains the shape so future fields can be bolted on when needed.</McqChoice>
+  <McqChoice correct>The `cursor` field is an encoded blob with no documented internals, specifically so clients can't assemble their own page requests against its structure.</McqChoice>
+  <McqChoice>When a request matches no rows, the handler replies `404` so the frontend has a clear signal to render its "no invoices yet" empty state.</McqChoice>
+  <McqChoice correct>The schema rejects `?limit=5000` even though the only screen that hits this endpoint requests 20 rows at a time and nothing in the product asks for more.</McqChoice>
+  <McqChoice>Page seams are kept consistent under heavy writes by paging with `OFFSET`, since a remembered-position cursor can point at a row that gets deleted between requests.</McqChoice>
+
+  <McqWhy>An empty list is still a list that exists, so an empty result is `200` with `data: []`, never `404` — `404` is reserved for a resource that genuinely isn't there. The cursor stays an opaque encoded token precisely so its inner shape never becomes part of your public contract; the moment clients can read or build it, you can never change it. And the `limit` ceiling is a contract clause that protects the database from a careless `?limit=999999` no matter how modest your own UI's requests are. The two rejected envelope/pagination claims are the classic traps: a bare array forces a breaking change the day you need a total count (the `{ data, pageInfo }` envelope is what absorbs that field for free), and it's *cursor* pagination — not `OFFSET` — that stays stable when rows are inserted or removed mid-scroll, which is exactly why cursor is the wire default.</McqWhy>
+</MultipleChoice>
+
+## One query, two callers: the shared builder
+
+You now have a complete query schema and, scattered across the last four sections, all the pieces a handler needs to turn it into a Drizzle query: a `where` from the filters, an `orderBy` from the sort, a search predicate, a `limit + 1`, and a cursor predicate. The obvious place to assemble those pieces is inside the route handler. That's also the wrong place — and seeing why is the real payoff of this lesson.
+
+Lift the assembly into a pure function. Call it `buildInvoiceListQuery`, and give it one job: take the parsed query and return the query *description* — the `where`, the `orderBy`, the `limit`. No `Request`, no `Response`, no database call; just a description of the query, built from the parsed input:
+
+```ts {6} "cursorPredicate" title="db/queries/invoices.ts"
+export function buildInvoiceListQuery(
+  parsed: ListInvoicesQuery,
+  orgId: string,
+) {
+  const where = and(
+    eq(invoices.orgId, orgId),
+    parsed.status ? inArray(invoices.status, parsed.status) : undefined,
+    parsed.q ? ilike(invoices.customerName, `%${parsed.q}%`) : undefined,
+    cursorPredicate(parsed.cursor, parsed.sort),
+  );
+
+  const column = SORTABLE_COLUMNS[parsed.sort.field];
+  const orderBy = parsed.sort.direction === 'desc' ? desc(column) : asc(column);
+
+  return { where, orderBy, limit: parsed.limit + 1 };
+}
+```
+
+Two lines lean on machinery from other chapters. `cursorPredicate` is the decode-and-keyset-`WHERE` helper that owns the SQL you built in the cursor-pagination chapter — referenced here, not re-derived. And the highlighted `eq(invoices.orgId, orgId)` is the tenant scope; in the real codebase this rides on the `tenantDb(orgId)` factory (the orgs chapter), which enforces scoping structurally rather than asking you to remember it on every query.
+
+It's a pure function: the same parsed query and the same `orgId` always produce the same description. That's what makes it shareable. And here's the reveal — *who* shares it.
+
+The route handler imports `buildInvoiceListQuery`, executes the description against the database, and returns the `{ data, pageInfo }` envelope. Later, when you build the in-app invoices list as a Server Component, **that component imports the exact same function**, reads the same `searchParams`, and renders rows instead of returning JSON. One source of truth for "what does an invoice list query mean," consumed from both sides of the wire boundary:
+
+<CodeVariants>
+  <CodeVariant label="Route handler">
+    <div data-mark-color="blue">
+
+    ```ts {6} "buildInvoiceListQuery" title="app/api/invoices/route.ts"
+    export async function GET(request: NextRequest) {
+      const parsed = parseListQuery(request.nextUrl.searchParams);
+      if (!parsed.success) return problem(422, parsed.error);
+
+      const { orgId } = await requireOrgUser();
+      const { where, orderBy, limit } = buildInvoiceListQuery(parsed.data, orgId);
+      const rows = await db.query.invoices.findMany({ where, orderBy, limit });
+
+      return Response.json(toEnvelope(rows, parsed.data.limit));
+    }
+    ```
+
+    </div>
+    **For external callers.** Parses `searchParams`, builds the query, executes it, and returns the paginated envelope as JSON. The wire format is JSON because the caller is over HTTP.
+  </CodeVariant>
+
+  <CodeVariant label="Server Component (preview)">
+    <div data-mark-color="blue">
+
+    ```tsx {6} "buildInvoiceListQuery" title="app/invoices/page.tsx"
+    export default async function InvoicesPage({ searchParams }: PageProps) {
+      const parsed = listInvoicesQuerySchema.safeParse(await searchParams);
+      if (!parsed.success) notFound();
+
+      const { orgId } = await requireOrgUser();
+      const { where, orderBy, limit } = buildInvoiceListQuery(parsed.data, orgId);
+      const rows = await db.query.invoices.findMany({ where, orderBy, limit });
+
+      return <InvoiceTable rows={rows} />;
+    }
+    ```
+
+    </div>
+    **For the in-app list (a later chapter).** Awaits `searchParams`, builds the *same* query with the *same* function, and renders rows instead of returning JSON. The wire format is HTML because the caller is the browser navigating.
+  </CodeVariant>
+</CodeVariants>
+
+Look at line 6 in both tabs. It's identical — same function, same arguments, same result. Everything around it differs: one parses `searchParams` from a `NextRequest` and returns JSON, the other awaits the `searchParams` prop and returns JSX. That's the recurring move this chapter keeps making — you saw it when a Server Action and a route handler shared one `createInvoice` mutator. **The wire format is the variable; the query and business logic are the constant.** Whenever a handler and another caller would duplicate logic, the shared pure function in the data layer is the seam that keeps them honest.
+
+That also draws a clean line around what this lesson is and isn't. The route handler is for **external callers** — a mobile app, a partner backend, a <Term definition="Backend-for-Frontend: a server-side layer that sits between a specific frontend and downstream services, shaping responses for that one client.">BFF</Term> — or for the rare in-app endpoint a Client Component has to `fetch` because it can't be a Server Component (the trigger you'll meet when TanStack Query enters the picture). The *in-app* list — where the user's URL bar **is** the state and a Server Component reads it directly — is a later chapter's job, built on a library called `nuqs`. This lesson builds the wire side; that one builds the in-app side; the shared builder is the seam between them. Here's where the pieces live:
+
+<Figure caption="The query schema and the builder live in shared modules; the route handler and the future in-app page are thin callers of the same code.">
+  <FileTree>
+  - src/
+    - db/
+      - queries/
+        - **invoices.ts** the shared builder + read helpers — `buildInvoiceListQuery`, `listInvoices`
+    - lib/
+      - schemas/
+        - invoice.ts `listInvoicesQuerySchema`, `cursorSchema`
+    - app/
+      - api/
+        - invoices/
+          - route.ts the handler — parses, calls the builder, returns the envelope
+      - invoices/
+        - page.tsx *(a later chapter)* — the in-app list, calls the same builder
+  </FileTree>
+</Figure>
+
+## Name-once knobs and the ceilings that protect the database
+
+A handful of decisions don't deserve their own section, but they're decisions, not trivia — and they all circle one idea: **a list endpoint is a contract, and the database's safety is a clause in it.** Three to file away.
+
+**Field selection — `?include=…` and `?fields=…` — default off.** Some APIs let the caller expand related resources (`?include=lineItems,customer`) or project a subset of columns (`?fields=id,total,status`). Both add real contract complexity, and you should reach for them only when the API is *published externally* and that complexity pays for itself. For an internal handler, serve one canonical response shape and let the typed client pick what it needs from it. Default: a fixed shape per endpoint.
+
+**The `count` decision — default omit.** A "showing 1–20 of 1,247" affordance needs a total, and a total means a second `SELECT COUNT(*)` that scans the whole table — cheap on a small table, painful on a large one. So leave `total` out of the envelope by default; let admin views opt in with `?withCount=1`, or approximate it from Postgres's table statistics when the table is huge. The good news is your envelope already has room for it — that's exactly the kind of field the `{ data, pageInfo }` shape was designed to absorb without a breaking change.
+
+**The index reflex — the closing anchor.** Pull the thread from the sorting section all the way through: every column your schema's allowlist lets a client filter or sort by needs a composite index that leads with the tenant column — `(orgId, sortColumn, id)`. A sanctioned-but-unindexed column makes every page of the list scan the table, and the cost grows linearly with the data. You'll learn to build those indexes in the database chapters; the durable takeaway is the reflex: **the allowlist and the index set are the same set.** Your query schema and your index strategy are two views of one decision — design them together, and the list endpoint stays fast as the data grows.
+
+## External resources
+
+The query-parsing behavior this lesson leans on, a battle-tested envelope to model yours on, and the authoritative cases behind the pagination and search choices:
+
+<CardGrid>
+  <ExternalResource
+    title="URLSearchParams — getAll()"
+    href="https://developer.mozilla.org/en-US/docs/Web/API/URLSearchParams/getAll"
+    icon="simple-icons:mdnwebdocs"
+    description="The exact getAll-vs-single-value behavior the multi-value filter relies on."
+  />
+  <ExternalResource
+    title="Stripe API — pagination"
+    href="https://docs.stripe.com/api/pagination"
+    icon="simple-icons:stripe"
+    iconColor="#635BFF"
+    description="A widely-copied real-world cursor envelope: has_more plus opaque cursors."
+  />
+  <ExternalResource
+    title="Use The Index, Luke! — No Offset"
+    href="https://use-the-index-luke.com/no-offset"
+    icon="lucide:database"
+    iconColor="#2D6A4F"
+    description="Why keyset pagination beats OFFSET — the deeper case behind this lesson's cursor-by-default rule."
+  />
+  <ExternalResource
+    title="PostgreSQL — pg_trgm"
+    href="https://www.postgresql.org/docs/current/pgtrgm.html"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="The trigram index that makes the ILIKE search tier fast, straight from the Postgres docs."
+  />
+</CardGrid>
