@@ -1,0 +1,303 @@
+---
+title: The suppression-gated send wrapper
+chapter-id: 050
+course-progress: 0.00005
+sidebar:
+  order: 3
+  label: Send wrapper
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Your domain is verified and the API key is sitting in your password manager. Before you send anything with it, you build the one function every email this app will ever send has to pass through: `src/lib/email.ts`. This lesson installs that seam — a `sendEmail` wrapper that reads the suppression list, defaults the `from` and `reply_to` from validated env, requires an idempotency key, and returns a `Result` instead of throwing — together with the `isSuppressed` helper it leans on and the five env entries the schema now validates.
+
+Nothing gets delivered yet. The proof this lesson asks for is the unglamorous kind: a `sendEmail` that compiles and imports cleanly, an `isSuppressed` that reports the seeded `suppressed@…` address as suppressed and any other address as clear, and an env schema that refuses to boot the moment `RESEND_API_KEY` goes missing. You verify all of that with a compile, a boot, and a probe — there is no inbox to check. The send path itself lands in the next lesson.
+
+:::note
+There is no screenshot in this lesson because nothing visual ships. The whole point is that the discipline proves out at compile and boot time, before a single email leaves the building.
+:::
+
+## Your mission
+
+You are building the chokepoint. Every transactional email this SaaS will ever send — the verification email in the next unit, the invitation email after that, billing receipts, the notification dispatcher's email channel — flows through the one `sendEmail` function you write here. So the seam carries the disciplines no caller should ever have to remember: it reads the suppression list before it calls Resend, it defaults the `from` and `reply_to` from validated env, it requires an idempotency key, and it returns a `Result` rather than throwing. This is the named-boundary principle from [Thin actions, pure /lib](/043-server-actions/4-thin-actions-pure--lib/) made operational — pure `/lib` modules where the side effects live at one named edge — with its corollary applied: the Resend client is **not** wrapped in a generic `EmailProvider` interface for some future provider swap. The swap cost doesn't justify the abstraction tax, so the wrapper is a convenience layer (suppression read plus defaults plus the `Result` shape), never an abstraction layer. The seam adds discipline on top of Resend; it does not hide Resend.
+
+A few decisions shape the implementation, and each one is the kind an inexperienced dev reverses without realizing the cost. Construct the Resend client as a module-scope singleton, not per call — re-allocating it on every request is wasted work, and a single instance is the boundary your tests will later mock. Keep the suppression read at the wrapper and nowhere else: a caller that double-checks suppressions is the smell, because the whole reason the chokepoint exists is so no one else has to. Make the idempotency key a *required* parameter, not an optional one — every transactional send has a logical event to key on, and forcing the caller to supply one forces them to think about replay safety instead of discovering double-sends in production. Default the `from` to env and never accept a per-call override; per-call senders are exactly how multi-tenant mail ends up leaving from the wrong subdomain. And log dispositions with structured fields — `console.info('[email] sent', { id, to, subject })`, `console.error('[email] failed', { to, error })` — not freehand strings, the structured-log pattern the observability unit later generalizes.
+
+Two things are explicitly out of scope. The marketing send path is not exercised: `isSuppressed` takes a `kind` argument so the transactional carve-out is honored — a user can't opt out of a password reset — but only `kind: 'transactional'` runs here. And the bounce/complaint webhook that *writes* suppression rows lands much later; this lesson only ever reads the list.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">`isSuppressed` reports the seeded `suppressed@…` address as suppressed and an unrelated address as clear.</ChecklistItem>
+  <ChecklistItem chip="tested">`isSuppressed` normalizes the email — trim and lowercase — before querying, so casing and whitespace can't slip a suppressed address past the gate.</ChecklistItem>
+  <ChecklistItem chip="tested">A recipient whose bypass window is still open reads as not suppressed, even when the row carries a suppressing reason.</ChecklistItem>
+  <ChecklistItem chip="tested">A `manual_unsubscribe` recipient is let through on a transactional send but still blocked on a marketing send.</ChecklistItem>
+  <ChecklistItem chip="tested">Sending to a suppressed recipient (with no bypass) returns a `forbidden` failure with the message "This recipient is on the suppression list." and never reaches Resend.</ChecklistItem>
+  <ChecklistItem chip="tested">If the suppression read itself throws, the send fails closed — it returns an `internal` failure before any Resend call, never an accidental delivery.</ChecklistItem>
+  <ChecklistItem chip="tested">`sendEmail` is callable with its full shape — recipient, subject, the React node, a required idempotency key, and optional reply-to and bypass — and returns a `Result`, never a thrown error on an expected failure.</ChecklistItem>
+  <ChecklistItem chip="untested">The five new env entries load, are typed at every read site, and are wired through both halves of the schema.</ChecklistItem>
+  <ChecklistItem chip="untested">A missing `RESEND_API_KEY` stops the app from booting with a Zod error that names the variable; restoring it boots cleanly.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Implement the three files against the brief and the test suite: the `src/env.ts` additions, the `isSuppressed` helper in `src/lib/suppressions.ts`, and the `sendEmail` wrapper in `src/lib/email.ts`. `src/lib/result.ts` needs no edit — its error-code union already carries `'forbidden'`, which is exactly the code the suppression short-circuit reuses. Try it yourself before you open the solution.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+### `src/env.ts`
+
+The env schema gains five entries, split across the two blocks `@t3-oss/env-nextjs` keeps separate: server-only secrets the browser must never see, and `NEXT_PUBLIC_*` values that ship to the client. This is the first time the `client` block is non-empty in this project.
+
+```ts title="src/env.ts"
+import { createEnv } from '@t3-oss/env-nextjs';
+import { z } from 'zod';
+
+// The single env boundary: application code imports `env`, never `process.env`.
+// createEnv validates at build time — a missing/invalid DATABASE_URL fails
+// `next build` with a message naming the variable.
+export const env = createEnv({
+  server: {
+    DATABASE_URL: z.url(),
+    DATABASE_URL_UNPOOLED: z.url(),
+    SEED: z.coerce.number().default(1),
+    RESEND_API_KEY: z.string().min(1),
+    EMAIL_FROM: z.string().min(1),
+    EMAIL_REPLY_TO: z.email(),
+  },
+  client: {
+    NEXT_PUBLIC_APP_NAME: z.string().min(1),
+    NEXT_PUBLIC_APP_URL: z.url(),
+  },
+  runtimeEnv: {
+    DATABASE_URL: process.env.DATABASE_URL,
+    DATABASE_URL_UNPOOLED: process.env.DATABASE_URL_UNPOOLED,
+    SEED: process.env.SEED,
+    RESEND_API_KEY: process.env.RESEND_API_KEY,
+    EMAIL_FROM: process.env.EMAIL_FROM,
+    EMAIL_REPLY_TO: process.env.EMAIL_REPLY_TO,
+    NEXT_PUBLIC_APP_NAME: process.env.NEXT_PUBLIC_APP_NAME,
+    NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
+  },
+});
+```
+
+The t3-oss split asks for the same variable twice on purpose: once in a schema block to declare its shape, and once in `runtimeEnv` to hand it the raw `process.env.X` value. Skipping the `runtimeEnv` line is the classic mistake — the schema validates against `undefined` and the boot fails for a reason that looks unrelated. So every new entry shows up in two places below.
+
+The two schemas worth a second look are the email addresses. `EMAIL_FROM` is `z.string().min(1)`, not `z.email()`, because it isn't a bare address — it's the full `Display Name <local-part@send.domain.tld>` form Resend expects in the `from` field, which a strict email validator would reject. `EMAIL_REPLY_TO`, by contrast, is a plain monitored mailbox, so `z.email()` is right. And `NEXT_PUBLIC_APP_URL` is the same value the next unit reuses when it swaps this chapter's placeholder verify link for a real signed token, which is why it earns a slot now even though nothing this lesson reads it.
+
+### `src/lib/suppressions.ts`
+
+`isSuppressed` is the read half of the chokepoint. It normalizes the address, does one indexed lookup, and resolves the row in a deliberate order.
+
+```ts title="src/lib/suppressions.ts"
+import 'server-only';
+
+import { eq } from 'drizzle-orm';
+
+import { db } from '@/db/index';
+import { emailSuppressions } from '@/db/schema';
+
+// The suppression read lives only here and at the `sendEmail` wrapper that calls
+// it; callers never re-check. `email` is normalized to match the unique index so
+// the lookup and every seeded/webhook-written row always agree.
+export const isSuppressed = async (
+  email: string,
+  opts: { kind: 'transactional' | 'marketing' },
+): Promise<{ suppressed: boolean; reason?: string; bypassUntil?: Date }> => {
+  const normalized = email.trim().toLowerCase();
+
+  const [row] = await db
+    .select()
+    .from(emailSuppressions)
+    .where(eq(emailSuppressions.email, normalized))
+    .limit(1);
+
+  if (!row) {
+    return { suppressed: false };
+  }
+
+  if (row.bypassUntil && row.bypassUntil > new Date()) {
+    return { suppressed: false, bypassUntil: row.bypassUntil };
+  }
+
+  if (row.reason === 'manual_unsubscribe' && opts.kind === 'transactional') {
+    return { suppressed: false, reason: 'manual_unsubscribe' };
+  }
+
+  return { suppressed: true, reason: row.reason };
+};
+```
+
+The `import 'server-only'` at the top is a poison pill: if this module is ever imported into a client bundle, the build fails loudly instead of leaking the database into the browser. It belongs here, in the consuming module, not in `src/env.ts`.
+
+The normalization is doing real work. The `email_suppressions` table is unique on a lowercased, trimmed `email`, and that's the form the seed and (later) the bounce webhook write. If the lookup didn't normalize identically, `Suppressed@Send.Acme.Example` would miss the row that `suppressed@send.acme.example` matches — and a suppressed address would slip straight through the gate. Normalize-on-read keeps the query aligned with the stored form on every path.
+
+The resolution order is the call to get right here. The bypass-window check sits **before** the reason check, because an open `bypassUntil` is an explicit "send to this address anyway for now" override that has to win regardless of why the row exists. Then the `manual_unsubscribe` carve-out: a user who unsubscribed from marketing still has to receive password resets and receipts, so a `manual_unsubscribe` row is *not* suppressed when `kind` is `'transactional'` — but it stays suppressed for marketing. Any other reason — a hard bounce, a complaint — suppresses unconditionally. The full semantics behind these rules are unpacked in [The suppression list as a send-time chokepoint](/048-sender-identity-and-deliverability/4-the-suppression-list-as-a-send-time-chokepoint/); here you're implementing them.
+
+### `src/lib/email.ts`
+
+This is the seam. Walk the four ordered steps — they are the whole lesson, and the order is not negotiable.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+import 'server-only';
+
+import type { ReactNode } from 'react';
+import { Resend } from 'resend';
+
+import { env } from '@/env';
+import { err, ok, type Result } from '@/lib/result';
+import { isSuppressed } from '@/lib/suppressions';
+
+// The single side-effect boundary every email flows through (Principle #3): a
+// thin convenience layer over Resend that reads the suppression list at the edge,
+// defaults from/replyTo from validated env, and returns a \`Result\` — never an
+// abstraction, never a per-call \`from\`, never a throw on an expected failure.
+const resend = new Resend(env.RESEND_API_KEY);
+
+export type SendInput = {
+  to: string;
+  subject: string;
+  react: ReactNode;
+  idempotencyKey: string;
+  replyTo?: string;
+  bypassSuppression?: boolean;
+};
+
+export const sendEmail = async (
+  input: SendInput,
+): Promise<Result<{ id: string }>> => {
+  const normalizedTo = input.to.trim().toLowerCase();
+
+  let suppression: Awaited<ReturnType<typeof isSuppressed>>;
+  try {
+    suppression = await isSuppressed(normalizedTo, { kind: 'transactional' });
+  } catch {
+    return err('internal', 'Could not send email.');
+  }
+
+  if (suppression.suppressed && !input.bypassSuppression) {
+    console.info('[email] suppressed', { to: normalizedTo });
+    return err('forbidden', 'This recipient is on the suppression list.');
+  }
+
+  const { data, error } = await resend.emails.send(
+    {
+      from: env.EMAIL_FROM,
+      to: [normalizedTo],
+      replyTo: input.replyTo ?? env.EMAIL_REPLY_TO,
+      subject: input.subject,
+      react: input.react,
+    },
+    { idempotencyKey: input.idempotencyKey },
+  );
+
+  if (error || !data) {
+    console.error('[email] failed', { to: normalizedTo, error });
+    return err('internal', 'Email send failed.');
+  }
+
+  console.info('[email] sent', {
+    id: data.id,
+    to: normalizedTo,
+    subject: input.subject,
+  });
+  return ok({ id: data.id });
+};
+`}>
+  <AnnotatedStep meta={`{14} "new Resend(env.RESEND_API_KEY)"`} color="blue">
+    The Resend client is constructed once at module scope, not inside `sendEmail`. One instance is reused across every request, and it's the single boundary the testing unit later mocks. Reading `env.RESEND_API_KEY` here — rather than `process.env` — means a missing key already failed the boot, so this line can't run with an undefined secret.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{16-23}`} color="blue">
+    The input shape. `idempotencyKey` is required, not optional — every transactional send keys on a logical event, and the required field forces the caller to supply one. `replyTo` and `bypassSuppression` are optional with env and `false` defaults.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{28}`} color="blue">
+    Step one: normalize the recipient. The wrapper trims and lowercases `to` so the suppression lookup and the eventual send agree on the exact address, the same normalization `isSuppressed` does internally.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{30-35} "try" "catch"`} color="orange">
+    Step two: read the suppression list inside a try/catch. If the read throws — a dropped database connection, anything — the wrapper **fails closed**: it returns `err('internal', …)` and never reaches the send. The default on an unknown suppression state is "do not send," because a silent delivery to a complained-about address is the expensive failure.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{37-40} "return err('forbidden'"`} color="red">
+    Step three: short-circuit a suppressed recipient **before** Resend. When the address is suppressed and the caller didn't set `bypassSuppression`, log the disposition and return `err('forbidden', …)`. Reusing the existing `'forbidden'` code rather than minting an email-specific one keeps the failure taxonomy small and lets the inspector branch on one familiar code. Crucially, `resend.emails.send` below never runs on this path.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{42-51} "from: env.EMAIL_FROM" "{ idempotencyKey: input.idempotencyKey }"`} color="green">
+    Step four: send. The `from` comes only from env — there is no per-call override, so multi-tenant mail can't leave from the wrong subdomain. `to` is an array because that's the shape Resend expects. The idempotency key rides as a second argument, telling Resend to collapse a retried send into one delivery and one send ID.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{53-63} "console.error" "console.info"`} color="green">
+    The dispositions. A Resend error or a missing `data` becomes `err('internal', …)` with a structured `[email] failed` log; success returns `ok({ id })` with a structured `[email] sent` log. Both failures and the success are values the caller reads off `result.ok`, never exceptions it has to catch.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+A few choices are worth naming explicitly, because each one is a place a reasonable-looking alternative would be wrong:
+
+- **The required idempotency key.** Making it optional would let a caller forget it and ship a double-send bug that only surfaces under a retry. Required-by-type means the compiler asks the replay-safety question for you.
+- **The env-only `from`.** No `from` parameter on `SendInput` at all. The sender identity is a property of the deployment, not of the call site, and exposing it per call is how a stray override lands mail on an unauthenticated domain and tanks deliverability.
+- **`Result`, never a throw.** Suppression and send failure are *expected* outcomes, not exceptions. Returning them as values means callers read `result.ok` and branch, instead of wrapping every send in a try/catch and hoping they remembered the right error type.
+- **`Awaited<ReturnType<typeof isSuppressed>>`.** The `suppression` variable is declared before the try block so it's in scope after it, and its type is derived from `isSuppressed`'s return type rather than restated by hand — so if the helper's shape changes, this annotation follows automatically.
+- **The top-of-file comment.** It states the seam's contract in one place: thin convenience layer, suppression read at the edge, env-defaulted, `Result`-returning, never an abstraction. That comment is the first thing the next person reads before they're tempted to "improve" the wrapper into a provider interface — the do-not-wrap rule from [Resend and the first verified send](/048-sender-identity-and-deliverability/1-resend-and-the-first-verified-send/).
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Resend — Send Email API reference"
+    href="https://resend.com/docs/api-reference/emails/send-email"
+    icon="simple-icons:resend"
+    iconColor="#000000"
+    description="The exact from / to / reply_to / react fields and the Idempotency-Key your wrapper passes to resend.emails.send."
+  />
+  <ExternalResource
+    title="React Email — Send with Resend"
+    href="https://react.email/docs/integrations/resend"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="How a React node is handed to resend.emails.send via the react field — the send step at the end of the seam."
+  />
+  <ExternalResource
+    title="@t3-oss/env-nextjs — Next.js setup"
+    href="https://env.t3.gg/docs/nextjs"
+    icon="simple-icons:zod"
+    iconColor="#3E67B1"
+    description="createEnv with the server / client blocks and the runtimeEnv mapping your five new entries are wired through."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's test suite:
+
+```bash frame="none"
+pnpm test:lesson 3
+```
+
+The suite needs a running local Postgres seeded with `pnpm db:seed` — it reads the seeded `suppressed@…` row and inserts a bypass row and a `manual_unsubscribe` row of its own, cleaning them up afterward. Every assertion targets the seven `[tested]` requirements above through your `isSuppressed`, your `sendEmail`, and the env schema; none of them performs a real network send. On success you'll see the green Lesson 3 summary with every test passing and zero failures.
+
+```ansi title="pnpm test:lesson 3"
+✓ tests/lessons/Lesson 3.test.ts (9 tests)
+
+Test Files  1 passed (1)
+     Tests  9 passed (9)
+```
+
+Two requirements live outside what the suite can reach — env loading happens at boot, not in a test run — so confirm them by hand:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">Comment out `RESEND_API_KEY` in `.env`, run `pnpm dev` (or `pnpm build`), and confirm the boot fails with the `@t3-oss/env-nextjs` Zod error naming `RESEND_API_KEY`. Restore the line and confirm a clean boot.</ChecklistItem>
+  <ChecklistItem chip="untested">Probe `isSuppressed` directly with a `pnpm tsx` one-liner against the seeded `suppressed@…` address and an unrelated address; confirm it returns suppressed `true` then `false`, then delete the scratch.</ChecklistItem>
+  <ChecklistItem chip="untested">Confirm `pnpm dev` boots cleanly and `/inspector/send-welcome` still renders. The send button keeps returning the action stub's error — the action lands in the next lesson.</ChecklistItem>
+</Checklist>
+
+With the suite green and the boot check passing, the chokepoint is in place: one function, the suppression read and the idempotency reflex baked into it, proven before a single email has left the building. The next lesson writes the `WelcomeEmail` template and the Server Action that fires it, and the inspector button finally delivers a real, rendered email end to end.

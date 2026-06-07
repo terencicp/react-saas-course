@@ -1,0 +1,272 @@
+---
+title: The verified-domain ceremony
+chapter-id: 050
+course-progress: 0.00005
+sidebar:
+  order: 2
+  label: Verified-domain ceremony
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import RecordFlow from '../../../components/lessons/050/2/RecordFlow.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { Steps, CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Deliverability is infrastructure you stand up once and reuse forever. You do not re-prove who you are on every feature; you verify a domain once, and from then on every send the app makes — the welcome email this chapter ships, the verification email in the next unit, invitations, billing receipts, the notification dispatcher's email channel — inherits the same authenticated identity for free. This lesson is that one-time stand-up. You will not write a single line of application code here. You will create a Resend account, hand Resend a sending subdomain, copy the DNS records it issues into your registrar, and wait for the domain to read `Verified` — the deliverability floor that gates every send in the rest of the chapter.
+
+It lives in its own lesson for one reason: DNS propagation is the slowest, flakiest step in the whole project, and a stalled record is the single most common place students stall. By keeping it separate from the code, a record that takes twenty minutes to resolve never blocks you from writing the wrapper or the template — you kick off verification here, move on, and come back when it flips green. The chapter 048 lessons explain the *why* behind each record; the alignment rule, the SPF / DKIM / DMARC mechanics, the 2026 enforcement bar. This lesson is the *doing*, on your own domain.
+
+One prerequisite carries over from the project overview, and it gates everything below: you need a cheap real domain. Resend's `onboarding@resend.dev` sandbox sender is out — it cannot prove a DKIM signature on a domain you control, which is the entire point of the exercise. If you skipped that step, get a `.com` from Namecheap, Porkbun, or Cloudflare Registrar (around \$8–12 a year), or use a subdomain of a domain you already own.
+
+<RecordFlow />
+
+## Create the Resend account and API keys
+
+Start at the Resend dashboard. If you already made an account while reading [Resend and the first verified send](/048-sender-identity-and-deliverability/1-resend-and-the-first-verified-send/), sign in and skip to the keys.
+
+<Steps>
+
+1. Sign up at [resend.com](https://resend.com) with the email you want to administer the account from — this is the account owner, not the sender address.
+
+2. Open **API Keys** and create **two** keys, not one: name the first `dev` and the second `production`. Set the permission on both to **Sending access** only, not **Full access**.
+
+3. Copy the `dev` key (it is shown once) into your password manager. You will paste it into `.env` in the next lesson, not here.
+
+</Steps>
+
+Two keys from day one is the discipline from [Resend and the first verified send](/048-sender-identity-and-deliverability/1-resend-and-the-first-verified-send/): one key per environment, scoped to sending only. A key that can only send is a key that, if it leaks out of a dev machine or a CI log, cannot read your domains, rotate other keys, or touch production config — it can do one thing, and you can revoke it without touching the production key. You will not need the `production` key until you deploy near the end of the course, but creating it now means you never reach for the dev key in production out of convenience.
+
+:::tip
+Do not paste the key into `.env` yet. The `src/env.ts` schema does not validate `RESEND_API_KEY` until the next lesson, so dropping it in now buys you nothing — the password manager is the right home for it until the wrapper is built.
+:::
+
+## Add the sending subdomain in Resend
+
+Now tell Resend which domain you send from.
+
+<Steps>
+
+1. Open **Domains** and click **Add Domain**.
+
+2. Enter a **subdomain**, not your apex: `send.<your-domain>.<tld>` — for example `send.example.com`, never `example.com`.
+
+3. Pick the region closest to you and confirm. Resend now shows you a table of DNS records to publish.
+
+</Steps>
+
+Sending from a subdomain rather than your root domain is the per-purpose isolation from [the transactional subdomain split](/048-sender-identity-and-deliverability/3-the-transactional-subdomain-split/): a deliverability mistake on `send.` — a bad campaign, a spam complaint spike — never bleeds into the reputation of the apex your real mail and your website live on. Keep the split; do not add the apex here.
+
+Resend generates a set of records scoped to that subdomain. The exact hostnames depend on what you entered, but the shapes look like this:
+
+```text
+# SPF — authorizes Resend's servers to send for the subdomain
+Type: TXT
+Host: send
+Value: v=spf1 include:amazonses.com ~all
+
+# DKIM — the public key receivers use to verify the signature
+Type: TXT
+Host: resend._domainkey.send
+Value: p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQ... (one long string)
+
+# MX — routes bounces and complaints back to Resend (optional but recommended)
+Type: MX
+Host: send
+Value: feedback-smtp.us-east-1.amazonses.com
+Priority: 10
+```
+
+The DKIM record uses the selector `resend._domainkey` — that prefix is how a receiver knows which public key to fetch when it checks the signature. Leave the values exactly as Resend prints them; you are about to copy them verbatim.
+
+<VideoCallout videoId="Q8NUW3CZRvw" videoTitle="CertMike Explains DMARC, DKIM and SPF">
+  Mike Chapple walks through each of the three records you are publishing here, reading real SPF, DKIM, and DMARC values straight out of DNS with `dig` (6 min).
+</VideoCallout>
+
+## Publish the records at your registrar
+
+Open the DNS panel for your domain — at Namecheap it is *Advanced DNS*, at Porkbun *DNS Records*, at Cloudflare the *DNS* tab. Add each record Resend issued, matching the type, host, and value exactly.
+
+<Steps>
+
+1. Add the **SPF** TXT record: type `TXT`, the host Resend gave you, the `v=spf1 ...` value pasted whole.
+
+2. Add the **DKIM** TXT record: type `TXT`, the `resend._domainkey...` host, and the long `p=...` key as one unbroken string.
+
+3. Add the **MX** record if Resend listed one: type `MX`, the host, the value, and the priority (usually `10`).
+
+4. Save. Most registrars apply DNS changes within minutes.
+
+</Steps>
+
+Two failure modes account for almost every stalled verification, and both happen at this step.
+
+:::caution[Paste the DKIM value whole]
+The DKIM key is a single long string, often 200+ characters. Some registrar UIs silently truncate a TXT value that long, or wrap it across lines and mangle it. Paste it in one go, then re-open the saved record and confirm the value is complete — the last characters should match what Resend shows. A truncated key fails verification with no obvious error.
+:::
+
+The second trap is the host field, and it is the most common stall in this whole lesson. Registrars disagree on whether you type the host **relative** to your domain or as the **absolute** name, and getting it wrong puts the record at the wrong place where Resend will never find it.
+
+<CodeVariants>
+  <CodeVariant label="Relative host (Namecheap, Porkbun)">
+    ```text
+    Host: resend._domainkey.send
+    ```
+    **You enter only the part in front of your domain.** Most registrars append your domain automatically, so the saved record resolves to `resend._domainkey.send.yourdomain.com`.
+  </CodeVariant>
+
+  <CodeVariant label="Absolute host (Cloudflare)">
+    ```text
+    Name: resend._domainkey.send.yourdomain.com
+    ```
+    **Type the whole thing, ending in your domain.** Cloudflare and a few others want the fully-qualified name.
+  </CodeVariant>
+</CodeVariants>
+
+Pick by what your registrar's UI shows, and verify by reading the saved record back — if it reads as the full name `resend._domainkey.send.yourdomain.com` either way, you got it right. There is no universal answer here. Whichever way you enter it, the record has to resolve to the fully-qualified name `resend._domainkey.send.<your-domain>`. The registrars' own DNS guides, linked at the end of this lesson, screenshot the exact field for each provider.
+
+## Wait for verification
+
+Back in Resend, open your domain's page and click **Verify**. Resend re-checks DNS; the status flips to `Verified` once SPF and DKIM both resolve. This usually takes a few minutes, occasionally up to 24 hours depending on your registrar's propagation.
+
+If it has not flipped after about half an hour, do not keep clicking — diagnose it. A DKIM stall past thirty minutes is almost always one of the two traps from the last step: a truncated key, or the host at the wrong name. Read the record back from your own machine with `dig` and compare it to what Resend issued:
+
+```bash
+dig TXT resend._domainkey.send.example.com +short
+```
+
+A healthy response prints the full `p=...` key as one quoted string (long records may come back split into several quoted chunks on one line — that is normal, the resolver reassembles them):
+
+```text
+"p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQ..." "...rest of the key"
+```
+
+An **empty** response means the record is not where you typed it — the host convention is wrong, so move it to the other form from the previous step. A response that prints a **short or clipped** value means the registrar truncated the key — re-paste it whole. Fix whichever it is, save, and click **Verify** again.
+
+:::caution
+The `dig` host must be the fully-qualified `resend._domainkey.send.<your-domain>`, not the relative form you may have typed into the registrar. `dig` always queries the absolute name regardless of how the record was entered.
+:::
+
+## Publish the DMARC record
+
+Resend's `Verified` badge covers SPF and DKIM. DMARC is the third record, and you add it yourself — it tells receivers what to do when a message *fails* the first two checks.
+
+<Steps>
+
+1. Add one more TXT record, this time at the **apex**, not the sending subdomain: host `_dmarc`, which resolves to `_dmarc.<your-domain>`.
+
+2. Set the value to a monitoring-only policy:
+
+   ```text
+   v=DMARC1; p=none; rua=mailto:dmarc-reports@example.com;
+   ```
+
+3. Save.
+
+</Steps>
+
+`p=none` is deliberately the weakest policy: it tells receivers to enforce nothing and just *report*. That is the right starting point — you observe how your mail authenticates in the wild before you ask receivers to quarantine or reject anything, which is exactly the progression [Authenticating the sender: SPF, DKIM, DMARC](/048-sender-identity-and-deliverability/2-authenticating-the-sender---spf-dkim-dmarc/) lays out. This chapter ships at `p=none` and stays there.
+
+The `rua` address is where aggregate reports land. For a side project, your own inbox is fine; production teams point it at a parsing service that turns the raw XML into dashboards.
+
+:::caution[Publish DMARC at the apex, not the subdomain]
+A DMARC record at `_dmarc.<your-domain>` covers every subdomain by inheritance, including `send.`. If you instead publish it only at `_dmarc.send.<your-domain>`, the apex and any other subdomain are left with no DMARC policy at all — a gap an attacker spoofing your root domain walks straight through. Put the one record at the apex and let inheritance do the rest.
+:::
+
+The experienced habit here is to set a calendar reminder: after a week of clean aggregate reports, graduate the policy from `p=none` to `p=quarantine`, and later to `p=reject`. You will not do that today — `p=none` is what ships now — but the reminder is what turns a monitoring policy into an enforcing one instead of leaving it at `none` forever.
+
+## Confirm with a test send
+
+The `Verified` badge says your records resolve. A real test send says the receiving inbox agrees — and that is the gate for the whole ceremony.
+
+<Steps>
+
+1. On the domain's page in Resend, use **Send test email** and address it to your own personal inbox (a Gmail account is ideal for the next step).
+
+2. Open the message in Gmail, click the three-dot menu, and choose **Show original**.
+
+3. Read the authentication-results panel at the top. You are looking for exactly three lines: **SPF: PASS**, **DKIM: PASS**, **DMARC: PASS**.
+
+</Steps>
+
+Three PASS lines is the only acceptable outcome. If any line reads `FAIL`, `NEUTRAL`, or `SOFTFAIL`, the corresponding record is wrong or has not propagated — go back to the matching step, re-check the value with `dig`, and re-test. Do not move on with a failing line; every send in the rest of the chapter depends on this passing.
+
+:::tip
+"Show original" is the reflex you will reach for again when you send the real welcome email in the welcome email send path lesson, and on every email surface you build after this course. Reading authentication results straight from the headers — rather than trusting that it "looks fine" in the inbox — is the 2026 habit for anyone shipping transactional mail.
+:::
+
+## Match the seed placeholder to your domain
+
+One repo edit, and it is the only change to the codebase in this entire lesson. The seed ships a placeholder suppressed address on the `acme.example` domain; point it at your own so the suppression path you test in later lessons reads as a real address on your verified domain.
+
+<CodeVariants>
+  <CodeVariant label="Shipped">
+    ```ts del={1} title="scripts/seed.ts"
+    .values({ email: 'suppressed@send.acme.example', reason: 'complaint' });
+    ```
+    **The starter ships the placeholder on the `acme.example` domain.**
+  </CodeVariant>
+
+  <CodeVariant label="Your domain">
+    ```ts ins={1} title="scripts/seed.ts"
+    .values({ email: 'suppressed@send.example.com', reason: 'complaint' });
+    ```
+    **Swap in your own verified subdomain.** This is the single line you change.
+  </CodeVariant>
+</CodeVariants>
+
+Then, if you want the seeded row to match your domain, re-run the seed:
+
+```bash
+pnpm db:seed
+```
+
+This address never needs to be a real, deliverable mailbox. The suppression check fires at the application layer — inside the `sendEmail` wrapper you build next lesson — and short-circuits *before* Resend would ever attempt delivery. On the suppression path the destination is irrelevant: the wrapper sees the address is on the list and returns a `forbidden` result without making a network call at all. The point of matching it to your domain is purely so the address reads coherently when you exercise that path; nothing is ever sent there.
+
+## Where this leaves you
+
+No application code changed, and that was the goal. What you have now is the foundation every later send stands on:
+
+- Your transactional subdomain `send.<your-domain>` reads `Verified` in Resend.
+- SPF, DKIM, and DMARC are live at your registrar and confirmed by a real test send showing all three PASS lines in "Show original".
+- The `dev` API key is in your password manager, ready to drop into `.env`.
+- The seed's suppressed address matches your domain.
+
+In the next lesson you paste that key into `.env`, add the email entries to the `src/env.ts` schema so the server fails closed without them, and build `src/lib/email.ts` — the single send seam that reads the suppression list and requires an idempotency key before it ever calls Resend.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Resend — Managing Domains"
+    href="https://resend.com/docs/dashboard/domains/introduction"
+    icon="simple-icons:resend"
+    iconColor="#000000"
+    description="Official reference for adding a domain, reading its status, and the SPF/DKIM/DMARC records Resend issues."
+  />
+  <ExternalResource
+    title="Namecheap — Add TXT / SPF / DKIM / DMARC records"
+    href="https://www.namecheap.com/support/knowledgebase/article.aspx/317/2237/how-do-i-add-txtspfdkimdmarc-records-for-my-domain/"
+    icon="simple-icons:namecheap"
+    iconColor="#DE3723"
+    description="Screenshots the exact Advanced DNS fields for the relative-host registrar workflow this lesson uses."
+  />
+  <ExternalResource
+    title="Cloudflare — Create DNS records"
+    href="https://developers.cloudflare.com/dns/manage-dns-records/how-to/create-dns-records/"
+    icon="simple-icons:cloudflare"
+    iconColor="#F38020"
+    description="The absolute-host convention from this lesson, shown in Cloudflare's DNS panel."
+  />
+  <ExternalResource
+    title="dmarc.org — Overview"
+    href="https://dmarc.org/overview/"
+    icon="lucide:shield-check"
+    iconColor="#2563EB"
+    description="The authoritative primer on DMARC tag syntax and the p=none to p=reject rollout you set a reminder for."
+  />
+</CardGrid>
