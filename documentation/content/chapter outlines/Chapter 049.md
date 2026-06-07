@@ -86,7 +86,7 @@ Estimated student time: 30 to 40 minutes. Setup-and-mechanics lesson with the te
 
 ## Lesson 3 — Readable in every client
 
-Teaches the auto-generated plain-text fallback via `render({ plainText: true })`, the email accessibility checklist (lang, headings, link text, alt, contrast, font size, touch targets), and the three-tier dark-mode posture with its `color-scheme` head plumbing.
+Teaches the auto-generated plain-text fallback (the Resend SDK derives the `text/plain` part from the `react` prop; `toPlainText(html)` from `react-email` is the manual/test utility — the old `render({ plainText: true })` flag is deprecated), the email accessibility checklist (lang, headings, link text, alt, contrast, font size, touch targets), and the three-tier dark-mode posture with its `color-scheme` head plumbing.
 
 Topics to cover:
 
@@ -97,7 +97,7 @@ Topics to cover:
   - Spam filters and content scanners that read the text part for keyword matching — a missing or empty text part is itself a small spam signal.
   - The clipping fallback when Gmail truncates at 102 KB (the "[Message clipped] View entire message" link reveals the full HTML, but search engines and indexers see the text part).
   The senior reflex: never ship a transactional send without both parts, and never hand-maintain the text part — generate it from the same JSX.
-- **`render(<Template />, { plainText: true })` — the generator.** React Email's `render` utility takes an options bag; passing `{ plainText: true }` returns a Markdown-flavored plain-text string with links inlined as `Text [https://url]`, headings prefixed (`# Heading`), and structural whitespace preserved. The Resend SDK's `react` prop runs both renders internally and assembles the multipart message. The application code never calls `render` directly for the production send; the preview server's "Plain text" tab is the inspection point.
+- **The generator — SDK auto-derivation plus `toPlainText`.** The Resend SDK's `react` prop derives the `text/plain` part automatically from the rendered HTML and assembles the multipart message (opt out by passing an explicit `text`). For tests or manual inspection, `toPlainText(html)` from `react-email` returns a Markdown-flavored plain-text string with links inlined as `Text [https://url]`, headings prefixed (`# Heading`), and structural whitespace preserved. (The older `render(<T/>, { plainText: true })` flag is deprecated.) The application code never calls a render utility directly for the production send; the preview server's "Plain text" tab is the inspection point.
 - **The text-version coherence check.** The senior reach is to read the generated text version in the preview server's plain-text tab and confirm it reads as a standalone message:
   - The subject of the message and the call-to-action are unambiguous from the text alone.
   - Links are labeled — a bare `https://yourapp.com/verify/abc-123` is correct but harder than `Verify your email: https://yourapp.com/verify/abc-123`.
@@ -155,6 +155,6 @@ Top 10 topics to quiz:
 - The 102 KB Gmail clipping threshold — why inline base64 images are the wrong reach, and what gets hidden when a message clips (unsubscribe link, legal address).
 - The `pnpm email dev` iteration loop — the file watcher, the viewport toggle, the dark-mode toggle, the HTML and plain-text tabs, and the canonical save-eyeball-fix loop.
 - The test-send as the verification gate — why the preview's dark-mode toggle approximates but doesn't replace a real cross-client test (Gmail Android's blanket inversion, Outlook VML rendering quirks).
-- Plain-text fallback — how it's generated (`render({ plainText: true })`, never hand-maintained), what it's for (screen readers, plain-text clients, spam filters, clipping fallback), and what to check in the preview's plain-text tab.
+- Plain-text fallback — how it's generated (Resend SDK auto-derives the `text/plain` part from the `react` prop; `toPlainText(html)` is the manual/test utility; never hand-maintained), what it's for (screen readers, plain-text clients, spam filters, clipping fallback), and what to check in the preview's plain-text tab.
 - The email accessibility checklist — `lang` attribute, `<Title>`, heading order, link text, image alt discipline, color contrast (WCAG AA 4.5:1 / 3:1), minimum font sizes, 44 px touch targets.
 - Dark-mode posture — the three client behaviors (no transformation / partial inversion / full inversion), the head meta tags and `color-scheme` plumbing, the `@media (prefers-color-scheme: dark)` block versus the Tailwind `dark:` variant, and the `<picture>` swap for the logo-on-dark problem.
