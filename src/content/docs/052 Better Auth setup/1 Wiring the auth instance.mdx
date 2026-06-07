@@ -1,0 +1,469 @@
+---
+title: Wiring the auth instance
+tagline: Stand up the Better Auth foundation in Next.js, the server instance, catch-all route, and browser client every later auth feature builds on.
+chapter-id: 52
+course-progress: 0.00005
+sidebar:
+  order: 1
+  label: Wiring the auth instance
+---
+
+import AuthWiringMap from '../../../components/lessons/052/1/auth-wiring-map.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { Steps, CardGrid, Card } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Last chapter you built the mental model: a session is an opaque handle living in a hardened `__Host-` cookie, pointing at a row the server owns and can delete in one statement. You modeled the whole thing — the lookup, the revocation, the cookie attributes — without writing a single line of a real library. That was deliberate. You were after the model, not the syntax.
+
+Now you make a real session exist. The library that issues that cookie, stores that row, and answers "who is this request from?" is Better Auth, and this is the chapter where its API finally shows up. But before you reach for any feature, there's a sharper question to answer first: *what's the smallest amount of wiring everything downstream needs to stand on?* Sign-in forms come next chapter. Request gating comes after that. Organizations come later still. Every one of them imports the same handful of files — and you don't want any of them re-deciding how auth is wired. So this lesson lays down that foundation: install the package, write the server instance, mount one route, create the browser client, validate two env vars, and prove the wiring responds. The restraint is the point. By the end you'll have an `auth` instance that does almost nothing yet — and that's exactly right.
+
+## Five files and one endpoint
+
+Here's the whole map before any code, so you always know where a given line lives.
+
+Better Auth has two faces. There's a **server instance** — one object, configured once, that holds every decision: which database, which secret, which plugins. And there's a **browser client** — a typed wrapper your React components call to trigger auth actions like signing in. These two never talk to each other directly. They're bridged by a single HTTP endpoint, a <Term definition="A `[...all]` dynamic route segment that matches every path beneath it. One file handles every URL under that prefix.">catch-all route</Term> mounted at `/api/auth/[...all]`.
+
+The split that matters — and the one this whole chapter turns on — is *who calls the instance, and how*. There are exactly two ways in, decided entirely by where your code is running.
+
+<AuthWiringMap />
+
+Read the diagram as two journeys ending at the same place. Server code — anything that runs on your machine, in the same Node process as the instance — just *calls the object*: `auth.api.getSession(...)`. No network hop, because there's nothing to hop to; the instance is right there in memory. Browser code can't do that. A React component running in someone's Chrome tab has no access to your server's memory, so it talks to the instance the only way it can — over HTTP, by POSTing to the catch-all route, which hands the request to the same instance and sends the answer back. Same destination, two transports. Notice the catch-all route only appears on the browser path; server code skips it entirely.
+
+That's the spine of the whole chapter. Keep it in view as the files go in.
+
+<VideoCallout videoId="x4hQ2Hmuy3k" videoTitle="Better Auth in Next.js (Complete Tutorial) — Cosden Solutions">
+  Cosden Solutions walks the same wiring end to end (35 min) — install, env vars, server instance, catch-all route, and client — if you'd rather watch it built before reading each file.
+</VideoCallout>
+
+Past the one-line install, the wiring lives in four places — one file you'll edit, three you'll create:
+
+<CardGrid>
+  <Card title="src/env.ts" icon="setting">
+    Two new validated env entries — `BETTER_AUTH_SECRET` and `BETTER_AUTH_URL` — added to the existing server schema.
+  </Card>
+  <Card title="src/lib/auth.ts" icon="approve-check">
+    The server `auth` instance. The single source of truth for server-side auth config.
+  </Card>
+  <Card title="src/app/api/auth/[...all]/route.ts" icon="random">
+    The catch-all route handler. One file exposes the entire auth HTTP API.
+  </Card>
+  <Card title="src/lib/auth-client.ts" icon="laptop">
+    The browser `authClient`. What React Client Components call to trigger auth actions.
+  </Card>
+</CardGrid>
+
+One thing to set expectations on before you start: this lesson deliberately does **not** turn on any auth feature. No email and password, no Google sign-in, no session lifetime tuning. Those bolt onto this foundation in later lessons — email and password in the next chapter, cookie hardening two lessons from now. What you're building here is the *surface area* everything else imports, nothing more. That's why the smoke test at the end returns `null` and that's the correct answer: there's no way to sign in yet, so there's no session to find. You're connecting the plumbing; turning on the water comes later.
+
+## Installing Better Auth
+
+The install is one line.
+
+```bash
+pnpm add better-auth
+```
+
+If you came from the NextAuth or Passport era, your instinct is to expect a constellation of companion packages — a separate React adapter here, a database integration there, a types package to bolt on. That instinct is wrong here, and the difference is worth noticing. Better Auth ships as *one* package with everything inside it, reached through sub-paths.
+
+That single `better-auth` install gives you all of this:
+
+<CardGrid>
+  <Card title="The server function" icon="seti:typescript">
+    `betterAuth(...)` from `better-auth` — the function that builds your instance.
+  </Card>
+  <Card title="Database adapters" icon="seti:db">
+    Including the Drizzle adapter you'll wire next lesson, under `better-auth/adapters/drizzle`.
+  </Card>
+  <Card title="Next.js helpers" icon="puzzle">
+    `nextCookies` and `toNextJsHandler` from `better-auth/next-js`.
+  </Card>
+  <Card title="The React client" icon="seti:react">
+    `createAuthClient` from `better-auth/react`.
+  </Card>
+</CardGrid>
+
+Plus its own TypeScript types, bundled in — no `@types/better-auth` to chase. The takeaway worth internalizing: there's no peer-dependency dance. No `@better-auth/react`, no `@better-auth/drizzle`. One install, many import paths.
+
+Since every file in this lesson pulls from one of those sub-paths, here's the whole import surface in one place. You don't need to write this anywhere — it's a map. As each file goes in, its imports will read as "oh, that one" instead of something new.
+
+```ts
+import { betterAuth } from 'better-auth';
+import { drizzleAdapter } from 'better-auth/adapters/drizzle';
+import { nextCookies, toNextJsHandler } from 'better-auth/next-js';
+import { createAuthClient } from 'better-auth/react';
+```
+
+Four imports, four files. That's the entire Better Auth API you touch this lesson.
+
+## The two env entries
+
+Before the instance can construct, it needs two values from the environment. You already have a validated env layer — the `src/env.ts` file from when you set up the database, where every variable passes through Zod before the app will boot. These two join it.
+
+The first is `BETTER_AUTH_SECRET`. This is the key Better Auth uses for encryption, signing, and hashing across the library — signing the cookie cache, binding the OAuth `state` and PKCE verifiers you met last chapter, and more. It has to be a high-<Term definition="A measure of unpredictability. High-entropy means drawn from enough genuine randomness that an attacker can't guess or brute-force it.">entropy</Term> random string, at least 32 characters. Generate one with:
+
+```bash
+openssl rand -base64 32
+```
+
+That's the canonical way. (The Better Auth installation docs page also has a one-click generator if you'd rather grab one in the browser.) Treat the output like any other secret — it goes in your `.env`, never in source control.
+
+:::note
+Better Auth can also read a plural `BETTER_AUTH_SECRETS` — a comma-separated list — to support **secret rotation**: roll in a new signing secret without invalidating every existing session at once. You won't configure rotation here; just know the mechanism exists for when an ops chapter reaches it.
+:::
+
+The second is `BETTER_AUTH_URL`. This is the public origin of your app — `http://localhost:3000` in development, `https://app.example.com` in production. Better Auth uses it to compute redirect URLs and to scope cookies correctly. It's the same value you'll pass to the instance as its `baseURL`.
+
+Now wire both into the validated layer. They are **server** variables — they must never reach the browser bundle — so they go in the `server` block of `env.ts`, right alongside the `DATABASE_URL` and `RESEND_API_KEY` already there.
+
+<CodeVariants maxLines={9}>
+  <CodeVariant label="Before">
+    ```ts
+    export const env = createEnv({
+      server: {
+        DATABASE_URL: z.url(),
+        RESEND_API_KEY: z.string().min(1),
+      },
+      // client, runtimeEnv, etc. omitted
+    });
+    ```
+    The two env entries from earlier chapters. Every one is validated at build time; a missing or malformed value stops the boot.
+  </CodeVariant>
+
+  <CodeVariant label="After">
+    <div data-mark-color="green">
+
+    ```ts ins={5-6}
+    export const env = createEnv({
+      server: {
+        DATABASE_URL: z.url(),
+        RESEND_API_KEY: z.string().min(1),
+        BETTER_AUTH_SECRET: z.string().min(32),
+        BETTER_AUTH_URL: z.url(),
+      },
+      // client, runtimeEnv, etc. omitted
+    });
+    ```
+
+    </div>
+    `BETTER_AUTH_SECRET` is `.min(32)` — short secrets get rejected before they can weaken the signing. `BETTER_AUTH_URL` is `.url()`. Both land in `server`, never `client` — the same guarantee `DATABASE_URL` already gives you: the build refuses to start if either is missing or invalid.
+  </CodeVariant>
+</CodeVariants>
+
+The placement in `server` is the load-bearing decision here, not the Zod refinements. The `server`/`client` split in `env.ts` is a structural guard: the validation layer throws if a `server` variable is ever read from client code, which means the secret physically can't leak into a browser bundle through this path. Never, ever prefix the secret with `NEXT_PUBLIC_` to "make it available" somewhere — that prefix is exactly what ships a value to the browser. A reviewer reads the prefix on every env entry for this reason.
+
+One operational habit to plant now, even though the full story is an ops concern: each environment gets its *own* secret. Development, preview, and production each have a distinct `BETTER_AUTH_SECRET`, set through Vercel's per-environment project variables. The reason is blunt — if a staging secret leaks, it must not be able to forge a production session. Split them from day one; it costs nothing now and it's painful to retrofit.
+
+## The server auth instance
+
+This is the center of the lesson. `src/lib/auth.ts` is the single source of truth for everything server-side about auth — every other file references it, never the other way around. It's also a small file, and it's going to grow over the next few lessons, so let's read it as the start of something rather than a finished thing.
+
+Two lines deserve to become reflexes before we walk the config itself.
+
+The very first line of the file is a side-effecting import:
+
+```ts
+import 'server-only';
+```
+
+You've done this before, on the database client. It's a compile-time guard: if any Client Component ever imports this module — directly, or transitively through some shared helper — the build *fails* with a clear error, instead of silently bundling your server auth library (and its database access, and its secret-reading env) into the browser. Auth gets the exact same treatment as the DB client, for the exact same reason: this code must never ship to the client, so you make an accidental import impossible rather than merely discouraged.
+
+Now the instance. Here's the whole file, then a walk through each decision in it.
+
+<AnnotatedCode lang="ts" code={`
+import 'server-only';
+
+import { betterAuth } from 'better-auth';
+import { drizzleAdapter } from 'better-auth/adapters/drizzle';
+import { nextCookies } from 'better-auth/next-js';
+
+import { db } from '@/db';
+import { env } from '@/env';
+
+export const auth = betterAuth({
+  database: drizzleAdapter(db, { provider: 'pg' }),
+  plugins: [nextCookies()],
+  secret: env.BETTER_AUTH_SECRET,
+  baseURL: env.BETTER_AUTH_URL,
+});
+`}>
+  <AnnotatedStep meta="{1}" color="violet">
+    The `server-only` guard from a moment ago, as the first line. A side-effecting import — no binding, just the protection. An accidental client import of this file becomes a build error, not a leaked bundle.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{3-5}" color="blue">
+    The three Better Auth imports, each from a sub-path of the single package: `betterAuth` builds the instance, `drizzleAdapter` connects it to Postgres, `nextCookies` is the plugin we're about to discuss. These are the import lines you previewed during the install.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{7-8}" color="blue">
+    Existing infrastructure, reused. `db` is the Drizzle client you built when you set up the database; `env` is the validated env you just extended. The instance *composes* what's already there — it doesn't invent its own database connection or read raw `process.env`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{11}">
+    `database` is how Better Auth persists into your existing Postgres. Named here so the import resolves and the instance is complete — *how* the adapter maps storage, and the four tables it needs, is entirely next lesson. Don't worry about the mechanics yet.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{12}" color="orange">
+    `nextCookies()` — the one line you cannot omit. Read the callout below the walkthrough; this is the single most common way to break Better Auth in Next.js, and it won't bite until you build sign-in next chapter.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{13-14}" color="blue">
+    `secret` and `baseURL`, pulled from validated env. Better Auth would auto-read these from the matching env-var names even if you left them off — but passing them explicitly routes through your validation layer and makes the config legible. Explicit over implicit magic.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Most of that file is unremarkable composition — it reaches for the database client and the env you already have and hands them to `betterAuth`. Two lines need more than the walkthrough gives them.
+
+The first is `database: drizzleAdapter(db, { provider: 'pg' })`. I'm naming it and moving on, on purpose. That single line is the entire subject of the next lesson — how Better Auth's <Term definition="The layer that maps a library's storage calls onto a specific database or ORM. Better Auth's Drizzle adapter translates its reads and writes into Drizzle queries against your Postgres.">adapter</Term> translates its storage calls into Drizzle queries, which four tables it needs, and how those tables get generated and migrated. It's here today so the instance is complete and the import resolves; resist the urge to dig into it now. `provider: 'pg'` just tells the adapter you're on Postgres.
+
+The second is the one to slow down on.
+
+```ts
+plugins: [nextCookies()],
+```
+
+This is the line that, when forgotten, produces the most baffling bug in the whole library — and you won't hit it until next chapter, which is exactly why it has to be understood *now*, the moment it goes in.
+
+Here's the problem it solves. In Next.js, when auth logic runs inside a Server Action and wants to set a cookie, the `Set-Cookie` header it produces doesn't automatically attach to the action's response. The cookie gets created server-side and then quietly dropped on the way out. `nextCookies()` is the <Term definition="A Better Auth module that extends the instance's behavior. nextCookies() teaches the instance to attach Set-Cookie headers to Next.js Server Action responses.">plugin</Term> that fixes this: it intercepts those headers and attaches them properly through Next's `cookies()` helper.
+
+Leave it out, and here's what happens — and it's nasty precisely because nothing *errors*. You build a sign-up form next chapter. A user submits it. The action runs, the server creates the session row, everything returns a clean `200`. And then... nothing. The user isn't signed in. The cookie never reached their browser, so the next request is anonymous again. This is the canonical *"I called signUp and nothing happened"* failure, and developers lose hours to it because every individual piece looks like it worked. Adding this one line now means you never meet that bug.
+
+Why is it a plugin instead of just being the default? Because Better Auth is framework-agnostic — it doesn't assume Next.js. The Next-specific cookie behavior is opt-in, which is what a plugin *is*.
+
+One more rule that matters even though this is the only plugin you have today: **`nextCookies()` must be the last entry in the `plugins` array.** It has to run after every other plugin so it can capture every `Set-Cookie` header they emit. You've got nothing else in the array right now, but the habit matters — when the organizations plugin and others arrive in later chapters, they'll sit *before* `nextCookies()`, and getting the order wrong reintroduces the exact bug you just inoculated against.
+
+:::caution
+Forgetting `nextCookies()` is the single biggest beginner mistake with Better Auth in Next.js. Sign-up and sign-in will appear to succeed — clean `200`, session row created — but no cookie reaches the browser, so the user is never actually signed in. Add it now; keep it last.
+:::
+
+That covers the file as it stands. But you should also know the *shape* it's growing into, so it doesn't surprise you later.
+
+First, a forward reference on one export. Per the project's conventions, `lib/auth.ts` will eventually also export a `SESSION_COOKIE_PREFIX` constant, so that `proxy.ts` and any other cookie reader can match the configured prefix without hardcoding the literal in two places. It's not here yet because the cookie prefix itself — the `__Host-` prefix you met last chapter — gets configured two lessons from now, when you harden the cookie. I'm flagging it so the file's eventual shape is honest; don't add it today.
+
+Second, the config object you passed to `betterAuth` is small now, but its full options surface — its `BetterAuthOptions` — is large. Rather than let that be intimidating, here's the growth schedule, so you can see this instance as a small object that gains a few options per lesson:
+
+| Option | When it's added |
+| --- | --- |
+| `database`, `secret`, `baseURL`, `plugins` | This lesson |
+| `session`, `advanced` (cookie tuning) | Two lessons from now |
+| `emailAndPassword`, `socialProviders`, `emailVerification`, `account` | Next chapter |
+| `trustedOrigins` | Named only — defaults to your `baseURL` origin |
+
+That last one is worth a sentence: `trustedOrigins` is Better Auth's CSRF allowlist. It defaults to the origin of your `baseURL`, which is exactly right for a normal same-origin app, and you only widen it if a client on a *different* origin shows up — a mobile app or a browser extension. Leave it defaulted here.
+
+The point of that table is to defuse the "wait, is this all of it?" worry. Yes — for today, that *is* all of it. The instance grows on a known schedule, one capability at a time.
+
+## The catch-all route
+
+Short file, big idea. This is the endpoint from the diagram — the bridge the browser client crosses to reach the instance. The entire file is two meaningful lines.
+
+```ts title="src/app/api/auth/[...all]/route.ts"
+import { auth } from '@/lib/auth';
+import { toNextJsHandler } from 'better-auth/next-js';
+
+export const { GET, POST } = toNextJsHandler(auth);
+```
+
+The teaching here is about the *route*, not the lines, so let's talk about what those two lines buy you.
+
+Start with the folder name: `[...all]`. That's a Next.js catch-all segment — you saw these when you learned the App Router. The square-bracket-dots syntax means this single file matches *every* path beneath `/api/auth/`. Not one route — all of them:
+
+| Path the browser hits | What it does |
+| --- | --- |
+| `POST /api/auth/sign-up/email` | Create an account with email and password |
+| `POST /api/auth/sign-in/email` | Sign in with email and password |
+| `POST /api/auth/sign-out` | End the current session |
+| `GET /api/auth/session` | Read the current session |
+| `GET /api/auth/callback/google` | Land an OAuth provider's redirect |
+
+...and dozens more. Better Auth's internal router looks at the rest of the path — the part the `[...all]` captured — and dispatches to the right handler. So **one file exposes the entire auth API.** You write it once and never touch it again, no matter how many auth features you turn on.
+
+The second line, `toNextJsHandler(auth)`, takes your instance and returns an object with `GET` and `POST` handler functions in it. The `export const { GET, POST } = ...` destructures those two out and re-exports them, which is exactly the shape Next.js route handlers expect — named exports per HTTP method. This two-line body is the canonical Better Auth shape; write it verbatim.
+
+The reflex this builds: you never hand-write individual route files for sign-in, sign-up, or OAuth callbacks. The catch-all *is* the contract — it's the agreement between your browser client and the framework about where auth requests land. The `authClient` you're about to write POSTs to paths under this mount, and those POSTs only resolve because the catch-all is sitting here to catch them.
+
+:::caution
+If you mount this handler somewhere other than `/api/auth` without also telling the client about it, the client will POST to a path that 404s — and the UI fails *silently*, since a failed background POST shows no error on screen. Keep the default `/api/auth` path unless you have a strong reason not to.
+:::
+
+## The browser client
+
+The fourth file is the other end of that HTTP path — the typed wrapper your React components call. It's even smaller.
+
+```ts title="src/lib/auth-client.ts"
+import { createAuthClient } from 'better-auth/react';
+
+export const authClient = createAuthClient();
+```
+
+That's the whole thing. `createAuthClient()` builds a client whose methods mirror the auth API — `authClient.signIn.email(...)`, `authClient.signUp.email(...)`, `authClient.signOut()`, `authClient.useSession()`, and the rest of the browser-callable surface (you'll meet them properly next chapter). Each method is a typed wrapper over an HTTP call to the catch-all route. When a component calls `authClient.signIn.email(...)`, under the hood that's a `POST` to `/api/auth/sign-in/email`. The client is the friendly, type-safe face on the raw HTTP you saw in the table above.
+
+Two details about that bare call are deliberate.
+
+The first is what's *missing*: there's no `baseURL`. The client defaults `baseURL` to the current origin — the same domain the browser is already on — and for a single-origin Next.js app, that's correct. The auth endpoint lives at `/api/auth/*` on the *same* domain as your pages, so the client's default already points at the right place. The rule: omit `baseURL` for same-origin, and set it explicitly *only* when the auth server lives on a different origin than the browser app. Passing it when you don't need to just adds a configuration surface that can drift out of sync.
+
+The second is what's *also* missing: there's no `import 'server-only'` here, and no `import 'client-only'` either. This is a plain module — Client Components import it freely. Contrast that with `lib/auth.ts`, which leads with `server-only`. That asymmetry is the boundary made concrete: the server instance is fenced *off* from the client; the browser client is meant to *be* imported by client code. Two files, opposite rules, because they live on opposite sides of the wire.
+
+Which brings us to the rule that ties the whole chapter together.
+
+## Where to call what
+
+You now have both faces of Better Auth: `auth` on the server, `authClient` in the browser. The single most common way people misuse this library is calling the wrong one from the wrong place — so let's make the rule sharp and build the reflex.
+
+The rule is short:
+
+- **On the server** — Server Components, Server Actions, route handlers, `proxy.ts` — call `auth.api.*`. This is an in-process call. No HTTP.
+- **In the browser** — Client Components — call `authClient.*`. This goes over HTTP to the catch-all route.
+
+The names deliberately mirror each other, because both sides reach the *same* endpoints — they just travel differently. Here's the same operation, sign-up, from each side.
+
+<CodeVariants maxLines={4}>
+  <CodeVariant label="Server" icon="server">
+    <div data-mark-color="blue">
+
+    ```ts "auth.api.signUpEmail"
+    // Inside a Server Action or route handler
+    await auth.api.signUpEmail({ body: { email, password, name } });
+    ```
+
+    </div>
+    Server code holds the instance directly, so it calls `auth.api.signUpEmail`. The call runs in-process — no network hop.
+  </CodeVariant>
+
+  <CodeVariant label="Client" icon="laptop">
+    <div data-mark-color="orange">
+
+    ```ts "authClient.signUp.email"
+    // Inside a 'use client' component
+    await authClient.signUp.email({ email, password, name });
+    ```
+
+    </div>
+    Browser code calls `authClient.signUp.email`, which POSTs to `/api/auth/sign-up/email` under the hood. Same endpoint as the server call — different transport.
+  </CodeVariant>
+</CodeVariants>
+
+Both of those reach `POST /api/auth/sign-up/email` in the end. The only difference is who's calling and how it gets there: the server holds the instance and calls it directly; the browser doesn't have the instance, so it goes over the wire through the route. (Treat those two snippets as *shape*, not a working sign-up — that's next chapter's job. The point here is purely which object each side reaches for.)
+
+Now the part that makes this a hard boundary rather than a soft suggestion. It isn't a style preference you could get away with ignoring — each direction of crossing it breaks in a concrete way.
+
+Import `auth` into a Client Component, and you'd be pulling the entire server library — its database access, its secret-reading env — into the browser bundle. That's a real leak, and it's exactly what the `server-only` line on `lib/auth.ts` prevents: the attempt becomes a build error before it can ship. And there's a deeper reason it could never work anyway: look back at the diagram. The server path is an *in-process* call. A browser tab has no access to your server's process — it physically cannot make an in-process call into server code. The HTTP route exists precisely because that direct path is impossible from the browser.
+
+Import `authClient` into a Server Component, and you've made the inverse mistake. The client is a browser-transport module — its whole job is to turn calls into HTTP requests. But on the server you already *have* the instance, sitting in memory, reachable with a direct call. Reaching for the HTTP client server-side is both wrong (you'd be making a network round-trip to your own server) and pointless (the direct path is right there and faster).
+
+So the durable mental model — the one sentence to carry out of this lesson — is this: **the server reads identity with `auth.api`; the browser triggers auth actions with `authClient`.** The specific method names come later. The *which object, which side* is what you internalize now.
+
+A couple of forward references so you know where the rest lands, then we'll drill it. The exact `getSession` call shape and the `getCurrentUser` / `requireUser` helpers that wrap it are coming two lessons from now. The full `useSession` client hook story is next chapter. This section is only about establishing which side calls which object.
+
+Time to make that split automatic. Sort each scenario by *where the code runs* — that alone decides the answer.
+
+<Buckets twoCol instructions="Each item is a place that needs to talk to Better Auth. Sort it by where the code runs — that's the only thing that decides which object it reaches for.">
+  <Bucket name="server" label="Call `auth.api`" description="Runs on the server — holds the instance directly" />
+  <Bucket name="client" label="Call `authClient`" description="Runs in the browser — goes over HTTP" />
+
+  <Item bucket="server">A Server Action reading the current user before a mutation</Item>
+  <Item bucket="client">A sign-in form's submit handler in a `'use client'` component</Item>
+  <Item bucket="server">`proxy.ts` checking whether a session exists</Item>
+  <Item bucket="client">A header avatar in a Client Component showing who's signed in</Item>
+  <Item bucket="client">A "Sign out" button's `onClick` in a `'use client'` component</Item>
+  <Item bucket="server">A route handler returning the current session as JSON</Item>
+  <Item bucket="server">A Server Component layout that hides an admin link when signed out</Item>
+</Buckets>
+
+If any of those gave you pause, the tell is always the same: find where the code runs. Server process → `auth.api`. Browser tab → `authClient`. There's no third case.
+
+## Proving the wiring
+
+You've written four files and added two env entries, and so far none of it has *done* anything you can see. Let's fix that. The wiring is complete enough to respond to a request, and there's a clean way to check it.
+
+Better Auth serves a `GET /api/auth/session` endpoint through your catch-all route. Hit it with no session cookie present, and it answers `null` — no cookie, no session. That `null` is the green light you're looking for.
+
+<Steps>
+
+1. Make sure both env vars are set in your `.env` — `BETTER_AUTH_SECRET` (from `openssl rand -base64 32`) and `BETTER_AUTH_URL` (`http://localhost:3000` in dev).
+
+2. Start the dev server:
+
+   ```bash
+   pnpm dev
+   ```
+
+3. Hit the session endpoint — open `http://localhost:3000/api/auth/session` in the browser, or from a terminal:
+
+   ```bash
+   curl http://localhost:3000/api/auth/session
+   ```
+
+4. You should see the response body:
+
+   ```json
+   null
+   ```
+
+</Steps>
+
+That `null` is doing more work than it looks. To return it, the catch-all route had to be mounted and dispatching correctly; the instance had to construct without throwing, which means both env vars resolved and validated; and the whole server-side wiring had to be sound. The `null` itself is *correct*: there's no sign-in surface yet, so there's no session to find. This isn't an anticlimax — it's proof the plumbing is connected. Next chapter turns on the water.
+
+One honest caveat about what this does and doesn't prove. The *first time a session is actually created* — when someone signs up — the database needs the `user` and `session` tables to exist, and those don't exist yet; generating and migrating them is next lesson. But this smoke test only exercises the *read* path on an anonymous request, which doesn't touch those tables, so it works today. Don't expect sign-up to work yet — that needs the tables.
+
+:::caution
+If `/api/auth/session` returns a `404`, the catch-all file is misplaced or misnamed — check it's exactly `src/app/api/auth/[...all]/route.ts`. If the dev server crashes on boot instead, an env var is missing or invalid — the env validation layer's error message names which one.
+:::
+
+## Recap and what comes next
+
+You laid the foundation everything downstream stands on. Concretely, you now have:
+
+- **`src/lib/auth.ts`** — the server `auth` instance, guarded by `server-only`, composing the Drizzle adapter (named, not yet wired), `nextCookies()`, and the secret and base URL from validated env.
+- **`src/app/api/auth/[...all]/route.ts`** — the catch-all route that exposes the entire auth API in two lines.
+- **`src/lib/auth-client.ts`** — the bare browser client React components call.
+- **Two validated env entries** — `BETTER_AUTH_SECRET` and `BETTER_AUTH_URL`, in the `server` schema.
+
+And two reflexes that will save you real debugging time:
+
+- **`nextCookies()` is non-negotiable**, and it goes *last* in the plugin array. Without it, sign-in succeeds server-side but the cookie never reaches the browser.
+- **`auth.api` on the server, `authClient` in the browser.** The boundary is enforced by `server-only`, not just by convention.
+
+Next lesson, the Drizzle adapter line you named here gets wired for real: you'll generate the four canonical tables Better Auth needs — `user`, `session`, `account`, and `verification` — and migrate them into your Postgres, so that the next time a session needs to be created, there's somewhere to write it.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Better Auth — Installation"
+    href="https://better-auth.com/docs/installation"
+    icon="lucide:download"
+    iconColor="#0070F3"
+    description="The official install walkthrough, including the one-click secret generator for BETTER_AUTH_SECRET."
+  />
+  <ExternalResource
+    title="Better Auth — Next.js integration"
+    href="https://better-auth.com/docs/integrations/next"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The catch-all handler, the nextCookies() plugin, and the server-vs-client call split, from the source."
+  />
+  <ExternalResource
+    title="Next.js — Dynamic Route Segments"
+    href="https://nextjs.org/docs/app/api-reference/file-conventions/dynamic-routes"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="How the [...all] catch-all segment matches every path beneath /api/auth, with the full matching table."
+  />
+  <ExternalResource
+    title="T3 Env — Next.js setup"
+    href="https://env.t3.gg/docs/nextjs"
+    icon="simple-icons:trpc"
+    iconColor="#398CCB"
+    description="The validated env layer you extended — createEnv, the server/client split, and build-time validation."
+  />
+</CardGrid>
