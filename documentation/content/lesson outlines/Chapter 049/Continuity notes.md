@@ -33,7 +33,7 @@
 
 ## Lesson 2 — The preview server loop
 
-**Taught** — The `pnpm email dev` workflow: `"email": "email"` `package.json` script boots the React Email preview server (file watcher + hot reload), the live props panel as a what-if surface, the desktop/mobile/dark lenses, the HTML and plain-text output views, the test-send-through-Resend gate, and the canonical 7-step iteration loop. Spine: preview server = iteration loop, test-send = verification gate.
+**Taught** — The `pnpm email dev` workflow: `"email": "email"` `package.json` script + `@react-email/ui` devDep (`pnpm add -D @react-email/ui`; not pulled in transitively, else `email dev` blocks on an interactive install prompt) boot the React Email preview server (file watcher + hot reload), the live props panel as a what-if surface, the desktop/mobile/dark lenses, the HTML and plain-text output views, the test-send-through-Resend gate, and the canonical 7-step iteration loop. Spine: preview server = iteration loop, test-send = verification gate.
 
 **Cut** — CI snapshot-testing of rendered output (`renderToStaticMarkup` + `toMatchSnapshot`), which the chapter outline named as a senior reach, was dropped entirely to protect the workflow focus (not in the project chapter).
 
