@@ -1,0 +1,298 @@
+---
+title: Transactional delete
+chapter-id: 47
+course-progress: 0.00005
+sidebar:
+  order: 6
+  label: Transactional delete
+---
+
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Your delete already works. Confirm the dialog, the row vanishes, you land back on the list — done in the previous lesson. So why are we here?
+
+Because "works today" and "works when the team adds the next thing" are different bars. An invoice doesn't live alone: it owns `invoice_lines` rows, and in a few units it will also own an audit-log entry, a soft-delete flag, and eventually a file in object storage that has to be cleaned up. The moment a delete touches more than one row, the question stops being "does it delete?" and becomes "does it delete *all or nothing*?". That is what this lesson installs: the durable shape that keeps a multi-step delete atomic, plus the discipline that keeps it correct as steps pile on.
+
+The payoff for the user is small and the payoff for the codebase is large — exactly the kind of trade an experienced engineer makes on purpose.
+
+By the end, deleting an invoice removes the invoice and its line rows inside one Drizzle transaction, and you close the loop the right way: the list page shows a server-rendered "Invoice INV-0042 deleted" banner that survives with JavaScript off, with a Sonner toast layered on top when JavaScript is on.
+
+<Screenshot viewport="desktop">
+  <img
+    src="/screenshots/047/l6-desktop-1280.png"
+    alt="The /invoices list immediately after a successful delete. The 'New invoice' header row sits at the top, with a server-rendered 'Invoice INV-00042 deleted' status banner below it and the inline create form and seeded invoice rows beneath. A Sonner success toast carrying the same 'Invoice INV-00042 deleted' text with a check icon appears in the bottom-right corner — the banner-plus-toast confirmation layered together."
+  />
+</Screenshot>
+
+A forced error in the middle of the delete — say the invoice delete fails after the lines are already gone — leaves *both* the invoice and its lines exactly where they were. Nothing half-deleted, ever.
+
+## Your mission
+
+Refactor `deleteInvoice` so its work runs inside one Drizzle transaction, and confirm the delete through a URL param that the page can paint with or without JavaScript.
+
+Lead with the senior point, because it is the whole reason this lesson exists and it is the thing an inexperienced engineer gets backwards. The foreign key on `invoice_lines.invoiceId` is already `ON DELETE CASCADE` — Postgres would delete the children on its own the instant the parent goes, so wrapping a single delete in a transaction buys you *nothing* for the code as it stands today. You are not adding the transaction for correctness. You are adding it for shape: an explicit, reviewable, multi-step block where a reviewer can read each step in order, and a slot where the audit-log write of a later unit, the soft-delete branch of another, and a file-cleanup step after that all drop in without anyone re-architecting the action. Write the heavy version now so the cheap version never has to be torn out later.
+
+That shape comes with a small rulebook, and every rule maps to a way the block silently breaks. Every query inside the callback runs on `tx`, never `db` — a stray `db` call opens its *own* implicit transaction and commits independently, so a "failure" in step two would leave step one's work committed and your atomicity is a lie. No external calls go inside the transaction; the reflex after seeing the block is "while we're here, email the customer", and that is the trap — the email goes *after* the commit, because an external call can't be rolled back, so on a rollback your database says "nothing happened" while the customer's inbox says "your invoice was deleted". Dispatch is owned by later units; here you just keep it out. `revalidatePath` and `redirect` likewise stay *outside* the callback — a rollback that still invalidated the cache or navigated the user would be telling them a delete succeeded when it didn't. And the one case that is *expected* — the row isn't there, or it belongs to another org — returns a plain value from the callback rather than throwing, because throwing is reserved for a genuine rollback, not for "found nothing to do".
+
+Finally, close the success loop through the URL, not through client state. The deleted invoice's number travels back as a `?deleted=INV-0042` query param; the page reads it and renders a server-side status banner from it, so even a no-JavaScript browser gets a visible confirmation, with the toast as a pure enhancement on top.
+
+Nothing new ships beyond this — it is the chapter's last step, and the surface stays the three routes you already have.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">Confirming a delete removes the invoice and all its line rows together.</ChecklistItem>
+  <ChecklistItem chip="tested">A forced error after the line delete but before the invoice delete leaves both the invoice and its lines intact.</ChecklistItem>
+  <ChecklistItem chip="tested">Deleting a missing or other-org invoice returns a not-found result rather than throwing.</ChecklistItem>
+  <ChecklistItem chip="tested">After a successful delete the list page shows the deleted invoice's number in a server-rendered banner, present without JavaScript.</ChecklistItem>
+  <ChecklistItem chip="untested">With JavaScript on, a Sonner toast carrying the same number appears on top of the banner.</ChecklistItem>
+  <ChecklistItem chip="untested">No external call or cache revalidation sits inside the transaction callback.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Refactor `deleteInvoice` into the transactional shape and carry the deleted number back through the redirect, working against the brief and the tests. Only the action changes — the list page and the toast island are already in the starter and need no edits. Then open the walkthrough.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+The only file you touch is the action. Here is the full refactored `deleteInvoice` in `lib/invoices/actions.ts` — the parse and context seams are unchanged from the previous lesson; the transaction is the new body.
+
+```ts title="src/lib/invoices/actions.ts"
+export const deleteInvoice = async (
+  _prevState: Result<null> | null,
+  formData: FormData,
+): Promise<Result<null>> => {
+  const parsed = deleteInvoiceInputSchema.safeParse(
+    Object.fromEntries(formData),
+  );
+  if (!parsed.success) {
+    return err(
+      'validation',
+      'Check the highlighted fields.',
+      z.flattenError(parsed.error).fieldErrors,
+    );
+  }
+
+  const { organizationId } = await getActiveContext();
+
+  const result = await db.transaction(async (tx) => {
+    const existing = await tx.query.invoices.findFirst({
+      where: (t, { and, eq }) =>
+        and(eq(t.id, parsed.data.id), eq(t.organizationId, organizationId)),
+    });
+    if (!existing) {
+      return { notFound: true as const };
+    }
+    await tx
+      .delete(invoiceLines)
+      .where(eq(invoiceLines.invoiceId, parsed.data.id));
+    await tx
+      .delete(invoices)
+      .where(
+        and(
+          eq(invoices.id, parsed.data.id),
+          eq(invoices.organizationId, organizationId),
+        ),
+      );
+    return { notFound: false as const, deletedNumber: existing.number };
+  });
+
+  if (result.notFound) {
+    return err('not_found', 'Invoice not found.');
+  }
+
+  revalidatePath('/invoices');
+  redirect(`/invoices?deleted=${result.deletedNumber}`);
+};
+```
+
+The transaction block is where every decision in the brief lives, so walk it step by step.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+const result = await db.transaction(async (tx) => {
+  const existing = await tx.query.invoices.findFirst({
+    where: (t, { and, eq }) =>
+      and(eq(t.id, parsed.data.id), eq(t.organizationId, organizationId)),
+  });
+  if (!existing) {
+    return { notFound: true as const };
+  }
+  await tx
+    .delete(invoiceLines)
+    .where(eq(invoiceLines.invoiceId, parsed.data.id));
+  await tx
+    .delete(invoices)
+    .where(
+      and(
+        eq(invoices.id, parsed.data.id),
+        eq(invoices.organizationId, organizationId),
+      ),
+    );
+  return { notFound: false as const, deletedNumber: existing.number };
+});
+
+if (result.notFound) {
+  return err('not_found', 'Invoice not found.');
+}
+
+revalidatePath('/invoices');
+redirect(\`/invoices?deleted=\${result.deletedNumber}\`);
+`}>
+  <AnnotatedStep meta={`{2-5} "tx.query"`} color="blue">
+    The existence read happens *inside* the transaction, on `tx`, and it is tenant-scoped: `and(eq(t.id, ...), eq(t.organizationId, organizationId))`. Reading inside the transaction is what makes the check-then-delete atomic — a read on `db` before the block would leave a race window for a second deleter to slip between the two queries. It also captures `existing.number`, which you need for the redirect.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{6-8} "notFound: true"`} color="violet">
+    When the row isn't there — missing id, or an id forged from another org — return a discriminated `{ notFound: true as const }` and let the callback end. You do **not** throw here. This is an expected outcome, not a failure; throwing is reserved for a genuine rollback, and the action body below maps this value to the right `Result`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{9-11} "tx.delete(invoiceLines)"`} color="green">
+    Delete the children first, on `tx`. The `ON DELETE CASCADE` foreign key would remove these anyway, but you delete them explicitly so the block reads as the multi-step operation it is destined to become — and so the rollback test has something to roll back.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{12-19} "tx.delete(invoices)"`} color="green">
+    Then delete the parent, on `tx`, with the same tenant-scoped `where`. Both deletes share one transaction, so if this second one fails, Postgres undoes the first too. Every query in the callback is on `tx` — a single stray `db.delete` here would open its own transaction and commit independently, breaking the all-or-nothing guarantee.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{20} "deletedNumber"`} color="blue">
+    On the happy path, return `{ notFound: false as const, deletedNumber: existing.number }`. The discriminated union — `{ notFound: true } | { notFound: false; deletedNumber }` — lets the body branch on `result.notFound` with the number narrowed in on the success side.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{23-25}`} color="orange">
+    `result.notFound` maps to `err('not_found', 'Invoice not found.')` — the missing-row case becomes a clean failed `Result`, never a thrown error.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{27-28} "revalidatePath" "redirect"`} color="red">
+    `revalidatePath` and `redirect` sit **outside** the callback, on the committed-success path only. If the transaction had rolled back, control would have left through a throw and neither of these would run — so a failed delete never invalidates the cache or navigates. The redirect carries the captured number as `?deleted=<number>`.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+A few decisions are worth naming on their own:
+
+- **The read sits inside the transaction.** The check and the delete are then one atomic unit. A read-then-delete split across the transaction boundary leaves a window where another request deletes the row between your two queries.
+- **The callback returns a value for "not found", it doesn't throw.** The action maps that discriminated value to `err('not_found', ...)`. Reserve throwing for an *actual* rollback — the forced-failure case — so the two are never confused.
+- **Revalidation and navigation live outside the callback.** A rollback must never leave a stale cache invalidated or send the user to a success banner for a delete that didn't happen.
+- **Success splits into a server-rendered banner and a JavaScript-only toast**, rather than a toast alone, so the no-JavaScript path still gets a visible confirmation. The next two files are where that split lives.
+
+The list page and the toast island are **already in the starter** — you don't write them. They're shown here only so you can see where your `?deleted=<number>` redirect lands. This is the relevant slice of `app/invoices/page.tsx`, the part that reads the param and renders the two layers (the `searchParams` read is the pattern from [URL state with searchParams and route params](/033-the-request-surface/4-url-state-with-searchparams-and-route-params); it is not student code):
+
+```tsx title="src/app/invoices/page.tsx (provided)"
+  const params = await searchParams;
+  const deleted =
+    typeof params.deleted === 'string' ? params.deleted : undefined;
+```
+
+```tsx title="src/app/invoices/page.tsx (provided)"
+      {deleted ? (
+        <>
+          {/* SSR success banner — survives no-JS (it's text from searchParams). */}
+          <p
+            role="status"
+            data-testid="deleted-banner"
+            className="rounded-md border border-border bg-card p-3 text-sm text-card-foreground"
+          >
+            Invoice {deleted} deleted
+          </p>
+          {/* JS-enhanced toast island. */}
+          <DeletedToast number={deleted} />
+        </>
+      ) : null}
+```
+
+The banner is plain `role="status"` text rendered on the server, so it is in the HTML a no-JavaScript browser receives — that is the half of the confirmation that survives without scripting. The `<DeletedToast>` island is the enhancement layered on top. It is also **provided** — a Client Component whose `useEffect` fires a single Sonner `toast.success` keyed by the number, returning nothing:
+
+```tsx title="src/app/invoices/_components/deleted-toast.tsx (provided)"
+'use client';
+
+import { useEffect } from 'react';
+import { toast } from 'sonner';
+
+// The JS-enhanced success toast. Success data flows through the URL (?deleted),
+// so the SSR `deleted-banner` survives no-JS; this island is the enhancement on
+// top — it fires the Sonner toast once when the param is present.
+export const DeletedToast = ({ number }: { number: string }) => {
+  useEffect(() => {
+    toast.success(`Invoice ${number} deleted`, { id: `deleted-${number}` });
+  }, [number]);
+
+  return null;
+};
+```
+
+The `<Toaster>` that renders these toasts is mounted once in `app/layout.tsx`, so the island only has to fire the event. The ``id: `deleted-${number}` `` deduplicates it — re-rendering with the same number won't stack a second toast.
+
+That covers the two checklist items the tests can't reach. **Req 6** — no external call and no revalidation inside the callback — is a code-shape rule you confirm by eye: every `tx.` call lives inside the block, and both `revalidatePath` and `redirect` sit *after* it. When later units add an audit-log write, a soft-delete branch, or file cleanup, the writes join the block on `tx` and any external dispatch lands *after* the commit — that placement is the whole point of building the heavier shape now. **Req 5** — the Sonner toast — is fired by the provided island; you verify it by hand with JavaScript on.
+
+:::note
+The transaction here is deliberately heavier than today's FK `ON DELETE CASCADE` needs. Read it as the shape that holds when the audit-log, soft-delete, and notification steps join it, not as redundant ceremony. For the mechanics of `db.transaction` and rollback semantics, see [Transactions and isolation levels](/039-indexes-plans-and-transactions/4-transactions); for what `revalidatePath` does to the cache, see [After the write](/043-server-actions/5-after-the-write).
+:::
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Drizzle ORM — Transactions"
+    href="https://orm.drizzle.team/docs/transactions"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The db.transaction(async (tx) => …) API you refactor into, including returning a value from the callback."
+  />
+  <ExternalResource
+    title="Drizzle ORM — Relational queries"
+    href="https://orm.drizzle.team/docs/rqb"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="findFirst with a where callback — the tenant-scoped existence read you run on tx inside the block."
+  />
+  <ExternalResource
+    title="Next.js — redirect"
+    href="https://nextjs.org/docs/app/api-reference/functions/redirect"
+    icon="simple-icons:nextdotjs"
+    description="Why redirect throws and must stay outside the transaction callback, plus the 303 it serves from a Server Action."
+  />
+  <ExternalResource
+    title="Next.js — revalidatePath"
+    href="https://nextjs.org/docs/app/api-reference/functions/revalidatePath"
+    icon="simple-icons:nextdotjs"
+    description="What the post-commit cache invalidation does, and why it belongs after the transaction, not inside it."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's test suite:
+
+```bash
+pnpm test:lesson 6
+```
+
+The suite drives your `deleteInvoice` against a real Postgres and asserts the observable result, never your file or function names. It deletes a seeded invoice-with-lines and checks both rows are gone together; it installs a real `BEFORE DELETE` trigger on `invoices` to force the *invoice* delete to fail after the *line* delete has run, then checks both rows survived — the genuine database-level rollback that proves the two deletes are one atomic block, not two independent commits; it deletes a non-existent id and another org's invoice and checks each comes back as a `not_found` `Result` with no throw and the foreign row untouched; and it renders the provided list page with `?deleted=INV-0042` to confirm the banner text is in the server markup. A green run looks like this:
+
+```
+ ✓ tests/lessons/Lesson 6.test.ts (6 tests) 1234ms
+
+ Test Files  1 passed (1)
+      Tests  6 passed (6)
+```
+
+:::caution
+The tests talk to Postgres. Make sure it's up, migrated, and seeded first — `docker compose up -d`, then `pnpm db:migrate`, then `pnpm db:seed` — or the suite fails at setup with a connection error rather than a feature failure.
+:::
+
+The tests cover the rollback, the not-found result, and the banner text. Confirm the rest by hand and tick each off:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">Delete an invoice and confirm — in `pnpm db:studio`, both the invoice row and its `invoice_lines` rows are gone, and the list shows the "Invoice INV-0042 deleted" banner plus a Sonner toast.</ChecklistItem>
+  <ChecklistItem chip="untested">Temporarily add `throw new Error('debug rollback')` between the two deletes and attempt a delete — the request fails and Studio still shows both the invoice and its lines. Remove the throw afterward.</ChecklistItem>
+  <ChecklistItem chip="untested">Disable JavaScript and delete via the inline fallback form — the server-rendered banner still renders on the list page from the URL param, while the Sonner toast does not (it's the JavaScript-only enhancement).</ChecklistItem>
+</Checklist>
+
+That closes the chapter. You now have a full CRUD surface on the invoicing data layer — create, edit, delete — every mutation flowing through a Server Action that parses with Zod, returns the canonical `Result`, and revalidates the list, with the delete carrying the atomic transaction shape it will grow into.

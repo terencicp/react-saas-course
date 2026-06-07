@@ -1,0 +1,244 @@
+---
+title: Delete with confirmation
+chapter-id: 047
+course-progress: 0.00005
+sidebar:
+  order: 4
+  label: Delete an invoice
+---
+
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Create and edit are the forms users spend time in. Delete is the one they hit once, by accident, and never get back. So this lesson ships the smallest of the three Server Actions — `deleteInvoice` — but wraps it in the guard rails that keep a one-click mistake from being a permanent one: a confirmation dialog before anything leaves, and a tenant-scoped `where` so one organization can never erase another's row. Your goal is plain in user terms — a student can delete an invoice from its detail page behind a confirmation step, and the delete still works with JavaScript switched off.
+
+Here is the feature you are building. The detail page at `/invoices/[invoiceId]` carries a red "Delete" button. Clicking it opens a shadcn `<Dialog>` that names the invoice — "Delete invoice INV-00003?" — over a dimmed page; confirming submits through the Server Action and returns you to `/invoices` with the row gone, while cancelling closes the dialog and changes nothing. With JavaScript off the dialog never opens, but an inline fallback form below it performs the exact same delete.
+
+<Screenshot viewport="desktop">
+  <img
+    src="/screenshots/047/l4-desktop-1280-delete-dialog-open.png"
+    alt="The invoice detail page for INV-00003, dimmed behind an open confirmation dialog. The centered card is titled 'Delete invoice INV-00003?' with the warning 'This permanently removes the invoice and its line items. This cannot be undone.' above a 'Cancel' button and a red 'Delete' button."
+  />
+</Screenshot>
+
+## Your mission
+
+Delete is the smallest action you will write, and that is exactly why it is the right place to make the progressive-enhancement discipline concrete. The action itself is almost nothing: a `deleteInvoiceInputSchema` that validates a single `id`, and a `deleteInvoice` that parses it, reads the active organization, runs one tenant-scoped `db.delete(...)`, revalidates the list, and redirects to `/invoices`. The interesting work lives in the form. The delete must travel through the form action — one POST to the action's URL, no `fetch` to some `/api/*` route — because the reflex an inexperienced developer reaches for here is to hang an `onClick` handler off the button that calls `fetch`, and that reflex is the trap. It throws away progressive enhancement, it invents client-side request plumbing you now have to maintain, and it buys you nothing the platform did not already hand you.
+
+The confirmation is a shadcn `<Dialog>`, the Radix-backed primitive that already shipped in the starter, so the focus trap, the Escape-to-close, and the click-outside-to-dismiss all come for free — you compose it, you do not rebuild it. The `<form action={formAction}>` lives inside the dialog body, with a hidden `id` input that tells the action which invoice to remove. But Radix needs JavaScript to open that dialog, so the component renders a *second* delete form inline, below the dialog — always present, never gated behind a "is scripting on?" check. With JavaScript the user never sees that fallback; the dialog handles the delete. Without JavaScript the dialog never opens and the fallback form is the only path, and it still POSTs to the same action. Rendering it unconditionally costs you nothing in the JS-on case and saves you from maintaining a scripting-detection branch you would otherwise get wrong.
+
+Two pieces stay out of scope here. The Drizzle transaction wrapping the delete, and the `?deleted=` success toast you land back on, both arrive in the next lesson, [Transactional delete](/047-project---crud-via-server-actions/6-transactional-delete/). For now the delete is a single statement and the redirect goes to a bare `/invoices`.
+
+Build it so each of these holds:
+
+<Checklist id="ch047-l4-mission">
+  <ChecklistItem chip="tested">Clicking "Delete" on <code>/invoices/[invoiceId]</code> opens a confirmation dialog; confirming removes the invoice and returns to <code>/invoices</code> without it.</ChecklistItem>
+  <ChecklistItem chip="untested">The confirmed delete fires as a single POST to the action URL — no <code>/api/*</code> fetch anywhere.</ChecklistItem>
+  <ChecklistItem chip="untested">Cancelling the dialog closes it and changes nothing.</ChecklistItem>
+  <ChecklistItem chip="untested">With JavaScript disabled, the inline fallback form deletes the invoice and returns to the list.</ChecklistItem>
+  <ChecklistItem chip="tested">Deleting one organization's invoice cannot remove another's row — the tenant id is in the delete <code>where</code>.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Implement `deleteInvoiceInputSchema`, `deleteInvoice`, and `DeleteInvoiceForm` against the brief and the tests, then open the reference build below to compare.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+The schema is the smallest of the three. Create derives its shape from the whole `invoices` table; edit extends that with an `id`; delete needs nothing but the `id`, because the row it targets is the only input. Add it to `lib/invoices/mutation-schemas.ts` alongside the create and edit schemas you already wrote:
+
+```ts title="src/lib/invoices/mutation-schemas.ts"
+export const deleteInvoiceInputSchema = z.object({ id: z.uuid() });
+
+export type DeleteInvoiceInput = z.input<typeof deleteInvoiceInputSchema>;
+export type DeleteInvoiceOutput = z.output<typeof deleteInvoiceInputSchema>;
+```
+
+The action is the same five-seam shape every action in this chapter follows — parse, authorize, mutate, revalidate, return — just shorter, because there is one column to delete on and nothing to give back on success. Add `deleteInvoice` to `lib/invoices/actions.ts`:
+
+```ts title="src/lib/invoices/actions.ts"
+export const deleteInvoice = async (
+  _prevState: Result<null> | null,
+  formData: FormData,
+): Promise<Result<null>> => {
+  const parsed = deleteInvoiceInputSchema.safeParse(
+    Object.fromEntries(formData),
+  );
+  if (!parsed.success) {
+    return err(
+      'validation',
+      'Check the highlighted fields.',
+      z.flattenError(parsed.error).fieldErrors,
+    );
+  }
+
+  const { organizationId } = await getActiveContext();
+
+  await db
+    .delete(invoices)
+    .where(
+      and(
+        eq(invoices.id, parsed.data.id),
+        eq(invoices.organizationId, organizationId),
+      ),
+    );
+
+  revalidatePath('/invoices');
+  redirect('/invoices');
+};
+```
+
+Two things in that body are worth pausing on. The tenant id sits *inside* the `where`, not in a load-then-check after the fact — `and(eq(invoices.id, ...), eq(invoices.organizationId, organizationId))`. This is the same rule the edit action followed in [Edit an invoice](/047-project---crud-via-server-actions/3-edit-an-invoice/): a forged id belonging to another organization matches zero rows and the delete quietly does nothing, instead of erasing a row the caller never had any right to touch. Drop the `organizationId` predicate and any organization that can see an invoice's id can delete it — the classic IDOR hole. And the action ends in a `redirect` rather than an `ok` return: the navigation back to `/invoices` is what closes the dialog, with no success-state bookkeeping to track on the client side, so there is nothing to reset when the page is no longer there.
+
+Now the form, where the real lesson lives. It is a Client Component because it uses `useActionState`, and it renders three things you should be able to point at distinctly: the dialog and its trigger, the form inside the dialog, and the always-present fallback form beneath it. Here is `app/invoices/[invoiceId]/delete-invoice-form.tsx` in full:
+
+<AnnotatedCode lang="tsx" maxLines={18} code={`
+// app/invoices/[invoiceId]/delete-invoice-form.tsx
+'use client';
+
+import { useActionState } from 'react';
+
+import { SubmitButton } from '@/app/_components/submit-button';
+import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog';
+import { deleteInvoice } from '@/lib/invoices/actions';
+
+type DeleteInvoiceFormProps = {
+  invoiceId: string;
+  invoiceNumber: string;
+};
+
+export const DeleteInvoiceForm = ({
+  invoiceId,
+  invoiceNumber,
+}: DeleteInvoiceFormProps) => {
+  const [state, formAction] = useActionState(deleteInvoice, null);
+
+  return (
+    <section data-testid="delete-invoice-form" className="flex flex-col gap-2">
+      <Dialog>
+        <DialogTrigger asChild>
+          <Button
+            type="button"
+            variant="destructive"
+            data-testid="delete-trigger"
+          >
+            Delete
+          </Button>
+        </DialogTrigger>
+        <DialogContent data-testid="delete-dialog">
+          <DialogHeader>
+            <DialogTitle>Delete invoice {invoiceNumber}?</DialogTitle>
+            <DialogDescription>
+              This permanently removes the invoice and its line items. This
+              cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <form action={formAction}>
+            <input type="hidden" name="id" defaultValue={invoiceId} />
+            <DialogFooter>
+              <DialogClose asChild>
+                <Button type="button" variant="outline">
+                  Cancel
+                </Button>
+              </DialogClose>
+              <SubmitButton variant="destructive">Delete</SubmitButton>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <form action={formAction} data-testid="delete-fallback-form">
+        <input type="hidden" name="id" defaultValue={invoiceId} />
+        <SubmitButton variant="destructive">Delete invoice</SubmitButton>
+      </form>
+
+      {state?.ok === false && (
+        <p role="alert" className="text-destructive">
+          {state.error.userMessage}
+        </p>
+      )}
+    </section>
+  );
+};
+`}>
+  <AnnotatedStep meta="{32-49}" color="blue">
+    **The dialog.** The shadcn `<Dialog>` gives you the overlay, the focus trap, Escape-to-close, and click-outside, all from the starter primitive. `asChild` lets your own destructive `Button` *be* the trigger rather than wrapping it. The title names the invoice so the confirmation is unambiguous, and the description spells out that the delete is permanent.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{50-60}" color="green">
+    **The JS path.** The dialog-body `<form action={formAction}>` binds the same `formAction` `useActionState` handed back, and the hidden `id` input is the single field it posts. Cancel is wrapped in `<DialogClose>`, so it closes the dialog without submitting — that is requirement 3, and it needs no handler of its own. The submit reuses the shared `<SubmitButton>` so the in-flight spinner comes for free.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{64-67}" color="violet">
+    **The no-JS fallback.** This second `<form>` is rendered unconditionally. With JavaScript on the user never reaches it; with JavaScript off the dialog above never opens, so this is the only form that can POST. Both forms bind the same `formAction` and carry the same hidden `id`, so whichever one submits, the action sees an identical payload.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{69-73}" color="orange">
+    **The error banner.** `useActionState` surfaces whatever `Result` the action returns. On the happy path the action redirects, so this never paints — but a validation failure (a malformed `id`) renders the `userMessage` here as a fallback.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+A few decisions in that file repay a second look.
+
+The delete rides the form action instead of a `fetch`, which is the whole point. There is no `onClick`, no client request to assemble, no JSON to hand-roll — the platform POSTs the FormData to the action and you are done. That is what keeps the no-JS path alive and what makes requirement 2 true: open the Network panel during a confirmed delete and you will see one POST to the action URL and not a single `/api/*` call, because there is no code anywhere that could make one.
+
+The fallback form is rendered unconditionally on purpose. The tempting alternative is to detect whether JavaScript is running and only render the fallback when it is not — but that is a branch you have to get right, and getting it wrong silently breaks delete for someone. Rendering both always is the cheaper and safer choice: in the JS-on case the user interacts with the dialog and never notices the second form; in the JS-off case the dialog is inert and the fallback is the only thing that works. Both forms bind the same `formAction` and carry the same hidden `id`, so they are interchangeable from the action's point of view.
+
+One subtlety to name: because the two forms share a `formAction` and a successful delete navigates away from the page, closing the dialog does not cancel an in-flight submit, and the dialog's open/closed state never matters once the redirect fires — the page the dialog lived on is simply gone. You do not need to coordinate the two.
+
+If you want to revisit any of the pieces this lesson composes rather than teaches: the `<form action>` + uncontrolled-input pattern and `useActionState` come from the native-forms chapter, the shared `<SubmitButton>` and its `useFormStatus` spinner from the same chapter, the five-seam Server Action shape and the `Result` type from the Server Actions chapter, the shadcn `<Dialog>` install from the shadcn chapter, and the tenant-scoped `where` from the Postgres-and-Drizzle project.
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="shadcn/ui — Dialog"
+    href="https://ui.shadcn.com/docs/components/dialog"
+    icon="simple-icons:shadcnui"
+    description="The exact primitive this form composes — DialogTrigger, DialogContent, DialogClose, and the asChild pattern."
+  />
+  <ExternalResource
+    title="React — useActionState"
+    href="https://react.dev/reference/react/useActionState"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="Reference for the hook driving both delete forms, including the FormData signature and permalink for progressive enhancement."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's suite:
+
+```bash
+pnpm test:lesson 4
+```
+
+The suite needs Postgres up, migrated, and seeded (`docker compose up -d`, then `pnpm db:migrate`, then `pnpm db:seed`) because it commits a fixture invoice, drives your real `deleteInvoice` against it, and reads the rows back through a separate auditor connection. Two suites should report passing: one proves that the form's first paint carries both a confirm form and an always-rendered fallback form (each posting the invoice id) and that a confirmed delete removes the row and redirects to `/invoices`; the other proves the tenant guard by seeding an invoice in a second organization, submitting its id under the Acme context, and confirming the foreign row is still there afterward.
+
+The tests reach the database and the action, but they cannot drive a real browser, so the network shape, the cancel path, and the no-JS path are yours to confirm by hand:
+
+<Checklist id="ch047-l4-verify">
+  <ChecklistItem chip="untested">Click "Delete", confirm — the invoice is gone from <code>/invoices</code>. In DevTools → Network: one POST to the action URL, no <code>/api/*</code> fetch.</ChecklistItem>
+  <ChecklistItem chip="untested">Click "Delete", then "Cancel" — the dialog closes and nothing changes.</ChecklistItem>
+  <ChecklistItem chip="untested">In DevTools settings, disable JavaScript, reload the detail page, and submit the inline fallback form — the invoice is deleted and you land on <code>/invoices</code>.</ChecklistItem>
+</Checklist>

@@ -1,0 +1,451 @@
+---
+title: Edit an invoice
+chapter-id: 047
+course-progress: 0.00005
+sidebar:
+  order: 3
+  label: Edit an invoice
+---
+
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The create form writes new rows; this lesson teaches the form that changes existing ones. By the end a student can open an invoice, edit its fields, and save in place — the page refreshes with the new values, no navigation, no manual reload — and a number that collides with another invoice comes back as a conflict banner.
+
+Here is the shape of it. `/invoices/[invoiceId]` already renders the read-only detail panel — the number, the customer, the dates, the line items — from the page you inherited. Below it sits an edit form, and that form is what you fill in. It opens prefilled with the invoice's current values: change the total, pick a new status, fix a date, hit save. The action writes the row and, instead of sending you somewhere, calls `revalidatePath` so the Server Component above re-fetches and the form re-renders with what you just saved. Set the number to one another invoice in the same org already uses and the save bounces back with a banner across the top of the form, not a message under the number field. That last distinction is the one to watch — it is dictated by where the database draws the uniqueness line.
+
+Most of this you already built in [Create an invoice](/047-project---crud-via-server-actions/2-create-an-invoice/). The five-seam action shape, the uncontrolled-input form, the `<SubmitButton>` and `<FieldError>` you wrote, the reset-on-commit echo trick — all of it carries over. So read this lesson for the two things that actually change: a schema that demands the row's `id`, and a write that refuses to reach across organization boundaries.
+
+## Your mission
+
+Editing is the create path with two new ideas bolted on, so most of the work is recognizing what stays the same and what doesn't. The first new idea is the schema. An update needs to know *which* row it's changing, so the input schema extends the create schema with a required `id` — `createInvoiceInputSchema.extend({ id: z.uuid() })` — and the form posts that id as a hidden input. Every other rule the create schema enforces comes along for free, because extension inherits them; you are adding one field, not rewriting a validator.
+
+The second new idea is the one that separates a multi-tenant update from a hobby one, and it is the reflex worth installing for the rest of your career: the tenant guard belongs *in the `where` clause*. You scope the update with `and(eq(invoices.id, parsed.data.id), eq(invoices.organizationId, organizationId))`, so a forged id that belongs to another org simply matches zero rows. What you must not do is load the row first, check its `organizationId` in application code, and then update — that load-then-check is the IDOR-class hole from [The single-round-trip invoice detail read](/041-project---the-org-scoped-invoicing-data-layer/6-the-single-round-trip-invoice-detail-read/), where a window opens between the read and the write and where one forgotten guard leaks a foreign row. Put the constraint in the query and the database enforces it atomically; there is no window and nothing to forget.
+
+Two consequences fall out of those choices. Unlike create, `updateInvoice` returns `ok` *without redirecting*. The user is already looking at the form they want to keep editing; there is nowhere better to send them. Because the action calls `revalidatePath('/invoices')`, the Server Component that loads the invoice re-runs and the fresh values flow back down into the form's defaults — the data updates without any client-side state to synchronize. And a duplicate `number` surfaces as a form-level banner rather than a field error, because the unique constraint is on the `(organizationId, number)` composite. The conflict is a property of the pair, not of the number field alone, so there is no single field to pin the message to.
+
+The form mirrors `NewInvoiceForm` almost exactly. The one real difference is where the initial values come from: every `defaultValue` is seeded from the loaded invoice the page passes as a prop, with the dates formatted to `yyyy-mm-dd` so a native date input can read them. Keep the inputs uncontrolled with `defaultValue`, and resist the urge to reach for controlled inputs "to make editing easier" — controlled `value` props would fight the `revalidatePath`-flows-new-defaults reconcile and you'd be back to hand-syncing state. Out of scope: the optimistic UI (edit deliberately skips it — [Optimistic create](/047-project---crud-via-server-actions/5-optimistic-create/) explains why the trigger doesn't fire when the user is staring at the form) and the Drizzle transaction (the delete lesson owns that).
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">Opening <code>/invoices/[invoiceId]</code> shows the edit form prefilled with the invoice's current values.</ChecklistItem>
+  <ChecklistItem chip="tested">Saving valid changes persists them and the page reflects the new values without a manual reload.</ChecklistItem>
+  <ChecklistItem chip="tested">Editing one org's invoice cannot modify another org's row — the tenant filter is in the <code>where</code>.</ChecklistItem>
+  <ChecklistItem chip="tested">Setting an invoice's <code>number</code> to one already used by another invoice in the same org surfaces a form-level banner, not a field error.</ChecklistItem>
+  <ChecklistItem chip="untested">An invalid edit re-renders the form with field-level messages and keeps the entered values.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Implement `updateInvoiceInputSchema`, `updateInvoice`, and the body of `EditInvoiceForm` against the brief and the tests. Try it before you open the reference — the tenant-`where` reflex only sticks if you've reached for the wrong shape first and felt why it's wrong.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+### One line of schema
+
+The update schema lives next to the create schema in `lib/invoices/mutation-schemas.ts`, and it is a single extension:
+
+```ts
+// lib/invoices/mutation-schemas.ts
+export const updateInvoiceInputSchema = createInvoiceInputSchema.extend({
+  id: z.uuid(),
+});
+
+export type UpdateInvoiceInput = z.input<typeof updateInvoiceInputSchema>;
+export type UpdateInvoiceOutput = z.output<typeof updateInvoiceInputSchema>;
+```
+
+`.extend` inherits every rule the create schema already enforces — the `number` length bounds, the money regex on `total`, the date coercions — and adds one required field, `id`, validated as a UUID. The form posts that id as a hidden input, so a save always says exactly which row it means. The `.extend` mechanics are the same composition you saw with `createInsertSchema` in [drizzle-zod: one source of truth](/042-zod-4---the-validation-contract/7-drizzle-zod---one-source-of-truth/); here it is just one field on top of a schema you already own.
+
+### The action, and the line that matters
+
+`updateInvoice` joins `createInvoice` in `lib/invoices/actions.ts`. It is the same five-seam shape — parse, authorize, mutate, return — and almost every seam is identical to create. The exception is the `where`, which is the whole point of the lesson.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+// lib/invoices/actions.ts
+export const updateInvoice = async (
+  _prevState: Result<{ id: string }> | null,
+  formData: FormData,
+): Promise<Result<{ id: string }>> => {
+  const parsed = updateInvoiceInputSchema.safeParse(
+    Object.fromEntries(formData),
+  );
+  if (!parsed.success) {
+    return err(
+      'validation',
+      'Check the highlighted fields.',
+      z.flattenError(parsed.error).fieldErrors,
+    );
+  }
+
+  const { organizationId } = await getActiveContext();
+
+  try {
+    await db
+      .update(invoices)
+      .set(parsed.data)
+      .where(
+        and(
+          eq(invoices.id, parsed.data.id),
+          eq(invoices.organizationId, organizationId),
+        ),
+      );
+  } catch (e) {
+    if (isUniqueViolation(e)) {
+      return err(
+        'conflict',
+        'An invoice with that number already exists for this org.',
+      );
+    }
+    throw e;
+  }
+
+  revalidatePath('/invoices');
+  return ok({ id: parsed.data.id });
+};
+`}>
+  <AnnotatedStep meta="{6-15}" color="blue">
+    **Parse.** Run `safeParse` with `updateInvoiceInputSchema` this time, not the create schema — the only change is that a missing `id` now fails validation. The same `z.flattenError(...).fieldErrors` the form's `<FieldError>` reads. Same discipline as create: a bad submit is a returned `Result`, never a throw.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{17}" color="violet">
+    **Authorize.** Read the tenant context after the parse, exactly as create does, so a parse failure never costs an auth lookup. Only `organizationId` is destructured here — an update doesn't restamp `createdBy`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{19-28}" color="green">
+    **The load-bearing line.** The update is scoped by *both* the row `id` and the active org. A forged id from another org matches zero rows and the foreign row is never touched — the tenant guard is the query, not a check you run after loading. This is what closes the IDOR hole.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{29-37}" color="orange">
+    **The conflict catch.** The same catch as create. A duplicate `(organizationId, number)` trips the unique constraint; `isUniqueViolation` maps the Postgres error to a `conflict` Result; anything else re-throws to the framework boundary.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{39-40}" color="red">
+    **No redirect.** `revalidatePath` re-runs the Server Component so the page shows fresh data, then the action returns `ok` with the row id. The user stays on the form.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Two decisions carry this action.
+
+**The tenant id sits in the `where`, never in a post-load check.** Scope the update by `organizationId` in the query and a forged id for another org matches zero rows — the foreign invoice is untouched and nothing leaks. The alternative an inexperienced dev reaches for — `findFirst` the row, compare its `organizationId` in JavaScript, then update — opens a read-then-write window and depends on a guard a future edit might drop. The query-level filter has no window and is enforced by Postgres on every statement. This is the rule you met on the read side in [The single-round-trip invoice detail read](/041-project---the-org-scoped-invoicing-data-layer/6-the-single-round-trip-invoice-detail-read/), applied now to a write.
+
+**No redirect on success.** Create navigates to the new detail page because there's somewhere new to go; an edit has the user exactly where they want to be. So `updateInvoice` calls `revalidatePath('/invoices')` and returns `ok({ id })`. The `revalidatePath` is what makes the change visible: it invalidates the cached render, the Server Component reloads the invoice, and its fresh values flow into the form's defaults on the next render. No client-side sync, no manual refetch. The `revalidatePath` and five-seam shape themselves were covered in [After the write](/043-server-actions/5-after-the-write/) — here they're just applied to an update.
+
+<VideoCallout videoId="g9Lu81MuNxE" videoTitle="Master Next.js Server Actions for Data Mutations & Forms (2026 Guide)">
+  A Next.js 16 walkthrough of the exact shape you're building — a form action with Zod field errors surfaced through `useActionState`, then `revalidatePath` to push fresh data back into the page; the validation section starts at 28:08 and revalidation at 41:19.
+</VideoCallout>
+
+:::note
+`db.update(...).set(...).where(...)` updates whatever rows the `where` matches. When the `where` matches none — a forged id, a deleted row — the statement succeeds and changes nothing. That "zero rows is not an error" behavior is exactly why the tenant guard in the `where` is safe: an attacker's forged id is a no-op, not an exception you have to remember to catch.
+:::
+
+### The form, prefilled
+
+`app/invoices/[invoiceId]/edit-invoice-form.tsx` is a Client Component, and it is the create form with one job changed: instead of starting blank, every field starts at the invoice's current value. The page passes the loaded invoice as a prop, and the form seeds its defaults from it.
+
+The field cluster, the `<FieldError>` wiring, the form-level banner, the `<SubmitButton>`, and the echoed-defaults-plus-`key`-remount mechanic that keeps your typed values after a failed submit are all identical to `NewInvoiceForm` — built and explained in [Create an invoice](/047-project---crud-via-server-actions/2-create-an-invoice/), so they're not re-derived here. Read the top of the component for what's new:
+
+<AnnotatedCode lang="tsx" maxLines={18} code={`
+// app/invoices/[invoiceId]/edit-invoice-form.tsx
+'use client';
+
+import { useActionState, useState } from 'react';
+
+import { FieldError } from '@/app/_components/field-error';
+import { SubmitButton } from '@/app/_components/submit-button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import {
+  NativeSelect,
+  NativeSelectOption,
+} from '@/components/ui/native-select';
+import { updateInvoice } from '@/lib/invoices/actions';
+import type { InvoiceDetail } from '@/lib/invoices/queries';
+import { statusSchema } from '@/lib/invoices/schema';
+
+type EditInvoiceFormProps = {
+  invoice: InvoiceDetail;
+  customers: { id: string; name: string }[];
+};
+
+const dateInputFormat = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'UTC',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+// The fields whose typed values are echoed back as defaultValue on a failed
+// submit. A \`<form action={fn}>\` fires requestFormReset on commit under
+// react-dom 19, so an invalid edit would otherwise revert the inputs to the
+// invoice prop's values; remounting the field cluster on each submit re-applies
+// these as the initial uncontrolled values, keeping what the user typed.
+const echoedFields = [
+  'customerId',
+  'number',
+  'status',
+  'total',
+  'issuedAt',
+  'dueAt',
+  'currency',
+] as const;
+
+export const EditInvoiceForm = ({
+  invoice,
+  customers,
+}: EditInvoiceFormProps) => {
+  const [state, formAction] = useActionState(updateInvoice, null);
+  const fieldErrors = state?.ok === false ? state.error.fieldErrors : undefined;
+
+  const [defaults, setDefaults] = useState<
+    Record<(typeof echoedFields)[number], string>
+  >({
+    customerId: invoice.customerId,
+    number: invoice.number,
+    status: invoice.status,
+    total: String(invoice.total),
+    issuedAt: dateInputFormat.format(invoice.issuedAt),
+    dueAt: dateInputFormat.format(invoice.dueAt),
+    currency: invoice.currency,
+  });
+  const [submitCount, setSubmitCount] = useState(0);
+
+  const handleSubmit = (formData: FormData) => {
+    setDefaults(
+      Object.fromEntries(
+        echoedFields.map((field) => [field, String(formData.get(field) ?? '')]),
+      ) as Record<(typeof echoedFields)[number], string>,
+    );
+    setSubmitCount((count) => count + 1);
+    formAction(formData);
+  };
+
+  return (
+    <section className="flex flex-col gap-4">
+      <h2 className="text-lg font-semibold">Edit invoice</h2>
+      <form
+        key={submitCount}
+        action={handleSubmit}
+        data-testid="edit-invoice-form"
+        className="flex flex-col gap-4"
+      >
+        <input type="hidden" name="id" defaultValue={invoice.id} />
+
+        <div className="grid gap-2">
+          <Label htmlFor="customerId">Customer</Label>
+          <NativeSelect
+            id="customerId"
+            name="customerId"
+            defaultValue={defaults.customerId}
+            aria-describedby="customerId-error"
+            aria-invalid={!!fieldErrors?.customerId?.[0]}
+          >
+            <NativeSelectOption value="">Select a customer</NativeSelectOption>
+            {customers.map((customer) => (
+              <NativeSelectOption key={customer.id} value={customer.id}>
+                {customer.name}
+              </NativeSelectOption>
+            ))}
+          </NativeSelect>
+          <FieldError name="customerId" fieldErrors={fieldErrors} />
+        </div>
+
+        <div className="grid gap-2">
+          <Label htmlFor="number">Number</Label>
+          <Input
+            id="number"
+            name="number"
+            type="text"
+            required
+            autoComplete="off"
+            defaultValue={defaults.number}
+            aria-describedby="number-error"
+            aria-invalid={!!fieldErrors?.number?.[0]}
+          />
+          <FieldError name="number" fieldErrors={fieldErrors} />
+        </div>
+
+        <div className="grid gap-2">
+          <Label htmlFor="status">Status</Label>
+          <NativeSelect
+            id="status"
+            name="status"
+            defaultValue={defaults.status}
+            aria-describedby="status-error"
+            aria-invalid={!!fieldErrors?.status?.[0]}
+          >
+            {statusSchema.options.map((status) => (
+              <NativeSelectOption key={status} value={status}>
+                {status}
+              </NativeSelectOption>
+            ))}
+          </NativeSelect>
+          <FieldError name="status" fieldErrors={fieldErrors} />
+        </div>
+
+        <div className="grid gap-2">
+          <Label htmlFor="total">Total</Label>
+          <Input
+            id="total"
+            name="total"
+            type="number"
+            step="0.01"
+            min="0"
+            required
+            inputMode="decimal"
+            defaultValue={defaults.total}
+            aria-describedby="total-error"
+            aria-invalid={!!fieldErrors?.total?.[0]}
+          />
+          <FieldError name="total" fieldErrors={fieldErrors} />
+        </div>
+
+        <div className="grid gap-2">
+          <Label htmlFor="issuedAt">Issued</Label>
+          <Input
+            id="issuedAt"
+            name="issuedAt"
+            type="date"
+            required
+            defaultValue={defaults.issuedAt}
+            aria-describedby="issuedAt-error"
+            aria-invalid={!!fieldErrors?.issuedAt?.[0]}
+          />
+          <FieldError name="issuedAt" fieldErrors={fieldErrors} />
+        </div>
+
+        <div className="grid gap-2">
+          <Label htmlFor="dueAt">Due</Label>
+          <Input
+            id="dueAt"
+            name="dueAt"
+            type="date"
+            required
+            defaultValue={defaults.dueAt}
+            aria-describedby="dueAt-error"
+            aria-invalid={!!fieldErrors?.dueAt?.[0]}
+          />
+          <FieldError name="dueAt" fieldErrors={fieldErrors} />
+        </div>
+
+        <div className="grid gap-2">
+          <Label htmlFor="currency">Currency</Label>
+          <Input
+            id="currency"
+            name="currency"
+            type="text"
+            defaultValue={defaults.currency}
+            aria-describedby="currency-error"
+            aria-invalid={!!fieldErrors?.currency?.[0]}
+          />
+          <FieldError name="currency" fieldErrors={fieldErrors} />
+        </div>
+
+        {state?.ok === false && state.error.code !== 'validation' && (
+          <p role="alert" className="text-destructive">
+            {state.error.userMessage}
+          </p>
+        )}
+
+        <SubmitButton>Save changes</SubmitButton>
+      </form>
+    </section>
+  );
+};
+`}>
+  <AnnotatedStep meta="{23-28}" color="orange">
+    **The date formatter.** A native `<input type="date">` needs its value as `yyyy-mm-dd`. The invoice's dates arrive as `Date` objects, so format them with an `en-CA` locale (which yields `yyyy-mm-dd`) pinned to the `UTC` time zone — UTC so a date stored at midnight doesn't slip to the previous day in a western browser.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{18-21} {45-48}" color="violet">
+    **The props.** They carry the full `InvoiceDetail` the page loaded plus the customer list for the dropdown. This is the prefill source — the form reads from the prop, it does not fetch.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{49}" color="blue">
+    **The action hook.** Same hook, same shape as create — `useActionState` binds `updateInvoice` and exposes the `Result` as `state`. `fieldErrors` is derived from `state` exactly as before.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{52-62}" color="green">
+    **The prefilled defaults.** Every initial `defaultValue` comes from the `invoice` prop: number, status, customer, currency as-is; `total` via `String(invoice.total)` because the column is a string; the two dates through the `en-CA` formatter. This object is what prefills the inputs on first paint.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{84}" color="red">
+    **The hidden id.** This is what the update schema requires and what the action's `where` uses to target the row. Without it the save has no row to change.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+A few things worth naming.
+
+**`defaultValue`, not `value`.** This is the same uncontrolled-input choice as create, and here it does extra work. When the save succeeds, `revalidatePath` re-runs the page, the loaded invoice arrives with the new values, and React flows them into these uncontrolled inputs as fresh defaults. Controlled `value` props would freeze the inputs at whatever client state held and you'd have to hand-sync them against the re-fetched data — exactly the bookkeeping uncontrolled inputs let you skip. The `key={submitCount}` remount plus the echoed `defaults` (the mechanic from the create lesson) is still what preserves the user's typed values across a *failed* submit, rather than snapping them back to the invoice prop.
+
+**The dates go through an `en-CA` UTC formatter.** A native `<input type="date">` only accepts `yyyy-mm-dd`. The invoice's dates come off the database as `Date` objects, and `en-CA` is the locale that formats a date as `yyyy-mm-dd`. Pinning the formatter to `timeZone: 'UTC'` matters: a date stored at midnight UTC would, formatted in a western-hemisphere local zone, render as the previous calendar day — UTC keeps the displayed day matching the stored day.
+
+**The banner is the conflict surface.** The block above the submit button renders only when `state.error.code !== 'validation'`. A validation error already paints under its fields, so this is reserved for the other codes — and the one that matters here is the duplicate-number `conflict`. It shows as a single line across the form rather than under the number field, because the unique constraint is on the `(organizationId, number)` pair: the violation belongs to the combination, not to the number value on its own, so there is no single field that owns the message. That is the distinction the tests check for and the one you confirm by hand below.
+
+And one thing that is deliberately *absent*: there is no `useOptimistic` here. Edit is the case where optimism doesn't earn its keep — the user is already looking at the form, the save is a small in-place change, and the perceived-speed win that justifies optimism on the create-and-list flow just isn't there. [Optimistic create](/047-project---crud-via-server-actions/5-optimistic-create/) is where optimism lands and where the brief spells out why edit is left out.
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="OWASP — IDOR Prevention Cheat Sheet"
+    href="https://cheatsheetseries.owasp.org/cheatsheets/Insecure_Direct_Object_Reference_Prevention_Cheat_Sheet.html"
+    icon="simple-icons:owasp"
+    iconColor="#000000"
+    description="Why scoping the query to the owner — the tenant in the where — is the fix, not a post-load check."
+  />
+  <ExternalResource
+    title="Drizzle — SQL Update"
+    href="https://orm.drizzle.team/docs/update"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="Reference for db.update().set().where() with and()/eq() — the scoped update this action writes."
+  />
+  <ExternalResource
+    title="Next.js — revalidatePath"
+    href="https://nextjs.org/docs/app/api-reference/functions/revalidatePath"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The API that re-runs the Server Component so the saved values flow back without a redirect."
+  />
+  <ExternalResource
+    title="MDN — Intl.DateTimeFormat() constructor"
+    href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/DateTimeFormat/DateTimeFormat"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The locale and timeZone options behind the en-CA/UTC formatter that seeds the date inputs."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's test suite with the project's runner:
+
+```bash
+pnpm test:lesson 3
+```
+
+The suite drives your `updateInvoice` against a real Postgres and renders `EditInvoiceForm` to check four things: opening the form paints the invoice's values as the inputs' defaults — number, total, currency, the formatted dates, and the hidden id; a valid save updates the row and returns `ok({ id })` with no redirect; an Acme-context save that names a Globex invoice's id leaves that foreign row untouched (the tenant guard in the `where`); and a duplicate number comes back as a `conflict` Result with no `number` field error. Make sure Postgres is up, migrated, and seeded first (`docker compose up -d`, `pnpm db:migrate`, `pnpm db:seed`) — the tests talk to the real database. When the edit path is wired correctly you'll see the suite pass:
+
+```
+ ✓ tests/lessons/Lesson 3.test.ts (4 tests)
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+```
+
+The tests cover the server contract and the first paint. What they can't reach cheaply is the live re-render and the typed-value echo, so confirm those by hand:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">Open an invoice, change a field, and save — the page shows the new value with no manual reload (<code>revalidatePath</code> re-fetched the Server Component).</ChecklistItem>
+  <ChecklistItem chip="untested">Set the <code>number</code> to one another invoice in the same org already uses, then save — a banner appears across the top of the form, not a message under the number field.</ChecklistItem>
+  <ChecklistItem chip="untested">Submit an invalid edit (temporarily drop <code>required</code> from a field to reach the server, or clear the total) — a message renders under the offending field and the values you typed in the other fields stay put. Restore <code>required</code> afterward.</ChecklistItem>
+</Checklist>

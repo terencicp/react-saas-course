@@ -1,0 +1,543 @@
+---
+title: Create an invoice
+chapter-id: 047
+course-progress: 0.00005
+sidebar:
+  order: 2
+  label: Create an invoice
+---
+
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The read surface is done; nothing on it changes anything yet. By the end of this lesson a student can open `/invoices/new`, fill the form, hit submit, and land on the brand-new invoice's detail page with the row written to Postgres — and it works even with JavaScript switched off.
+
+Here is the shape of the thing. `/invoices/new` renders a labeled form: a customer dropdown, an invoice number, a status, a total, two dates, and a currency. Submit a valid invoice and the action writes the row and redirects you to `/invoices/[newId]`, where the detail page you already have renders it. Submit a broken one — say, an empty total and a date that isn't a date — and the form comes back with a message under each offending field, the fields you filled correctly keep what you typed, and the submit button re-enables so you can fix it and try again. No spinner stuck on, no blanked form, no lost work.
+
+This is the first cut of the mutation flow that the rest of the chapter — edit, delete, optimism, the transaction — is built on top of. It carries the most weight precisely because it sets the shape everything else reuses. Read it for the discipline, not the feature.
+
+## Your mission
+
+You are wiring three pieces together: a Zod schema, a Server Action, and a form. The schema is the contract. Instead of hand-writing a validator and praying it stays in sync with the database, you derive it straight from the Drizzle `invoices` table with `createInsertSchema`, so the action's input shape and the form's input `name`s are both anchored to the same table definition. When a column changes, the schema changes with it, and a form field that no longer matches simply fails to parse — drift between the three layers stops being possible.
+
+The action follows the five-seam shape you learned in [Result, or throw](/043-server-actions/3-result-or-throw/): parse, authorize, mutate, revalidate, return. You parse the `FormData` with `safeParse` — never `parse`, which throws, and never a field-by-field walk of `formData.get(...)`, which is exactly the brittle hand-rolling the schema exists to replace. Only *after* the parse succeeds do you read the active org and user, so a malformed submission never costs you an auth lookup. You insert through the pooled Drizzle client, `revalidatePath('/invoices')` so the list picks up the new row, and hand back a `Result` rather than throwing. On the success branch you `redirect` to the new detail page. The org and user come from `getActiveContext()`, the stub the starter ships — not from `cookies()`, not from a session shape you invent. Real auth lands in a later unit and slots into exactly this spot; inventing it now only writes code that gets deleted.
+
+The form is a Client Component, but it holds almost no client state. The inputs are uncontrolled — `name` plus `defaultValue`, nothing bound to React — which is what lets the JavaScript-disabled path work unchanged: with no script, the browser POSTs the form to the action's URL and follows the redirect on its own. Field errors render from the action's `Result.error.fieldErrors`, not from local state. That is the rule to internalize: the form layer is a renderer, the server owns the truth. You also mirror the schema's rules in the native Constraint Validation attributes — `required` where a field is required, `type="number"` and `type="date"` where the column is numeric or a date — so a missing constraint and a stricter schema rule can't disagree. The `<SubmitButton>` and `<FieldError>` you build here are shared components; every later form in the chapter imports them.
+
+Out of scope, each in its own lesson: editing, deleting, the optimistic create, and the Drizzle transaction. Build only the create path.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">Submitting <code>/invoices/new</code> with a valid invoice writes the row, redirects to its <code>/invoices/[newId]</code> detail page, and the new row appears on <code>/invoices</code>.</ChecklistItem>
+  <ChecklistItem chip="untested">The same valid submission succeeds with JavaScript disabled — the browser POSTs to the action URL and navigates to the detail page.</ChecklistItem>
+  <ChecklistItem chip="tested">Submitting with <code>total</code> blank and a malformed <code>dueAt</code> re-renders the form with a message under each offending field, sourced from the action's <code>Result</code>.</ChecklistItem>
+  <ChecklistItem chip="tested">On that validation failure the other fields keep their typed values and the submit button re-enables.</ChecklistItem>
+  <ChecklistItem chip="untested">The submit button shows a spinner while the action is in flight.</ChecklistItem>
+  <ChecklistItem chip="untested">Each field's input constraints (required, numeric, date) match the schema's rules, and the red invalid styling appears on a field only after a submit the server flagged it on, not on mount.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Implement `createInvoiceInputSchema`, `createInvoice`, the shared `<SubmitButton>` and `<FieldError>`, and the create-path of `NewInvoiceForm` against the brief and the tests. Attempt it before you open the reference — the shape only sticks if you've wrestled with it first.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+### The schema is the contract
+
+Start with `lib/invoices/mutation-schemas.ts`. The whole file for this lesson is the create schema plus its two type aliases:
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+// lib/invoices/mutation-schemas.ts
+import { createInsertSchema } from 'drizzle-zod';
+import { z } from 'zod';
+
+import { invoices } from '@/db/schema';
+
+export const createInvoiceInputSchema = createInsertSchema(invoices, {
+  number: (s) => s.min(1).max(50),
+  total: (s) =>
+    s
+      .regex(/^\\d+(\\.\\d{1,2})?$/, 'Enter a valid amount (max 2 decimals)')
+      .refine((v) => Number(v) >= 0, 'Total must be non-negative'),
+  customerId: z.uuid(),
+  issuedAt: z.coerce.date('Enter a valid date'),
+  dueAt: z.coerce.date('Enter a valid date'),
+}).omit({ organizationId: true, createdBy: true, createdAt: true });
+
+export type CreateInvoiceInput = z.input<typeof createInvoiceInputSchema>;
+export type CreateInvoiceOutput = z.output<typeof createInvoiceInputSchema>;
+`}>
+  <AnnotatedStep meta="{9-13}" color="orange">
+    The `numeric(12,2)` column is typed as a *string* by drizzle-zod, so `total` stays a string — validate it with a regex and a non-negative `.refine`, never `z.coerce.number()`. Coercing it to a number would diverge from the column type and round money.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{18}" color="blue">
+    These three are server-owned — the action supplies the org and user, the database stamps the timestamp — so they have no business in the form's input. Note what is *not* omitted: the `id` column stays, optional and column-defaulted. The optimistic-create lesson posts a client-generated id through it, so resist the urge to tidy it away.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{20-21}" color="green">
+    `z.input` is the raw `FormData` shape (dates as strings, total as a string); `z.output` is the coerced shape the typed action body works with after a successful parse.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The `createInsertSchema` + override + `.omit` mechanics are taught in full in [drizzle-zod: one source of truth](/042-zod-4---the-validation-contract/7-drizzle-zod---one-source-of-truth/) — the override callback tightens a generated field, `.omit` drops the columns the form never sends. The one thing worth re-stating: `total` looks like it should be a number and isn't. Postgres `numeric(12,2)` is arbitrary-precision, so drizzle-zod hands you a string to avoid the float rounding that `z.coerce.number()` would introduce on money. You validate the string's shape with the regex and its sign with the refine; the action inserts the string as-is.
+
+:::note
+This file holds three schemas in the finished project — create, update, and delete. The update and delete schemas land in their own lessons. For now the file is just the create schema and its types.
+:::
+
+### The action in five seams
+
+Now `lib/invoices/actions.ts`. The file opens with `'use server'` at the top — that one directive marks every export in the file as a Server Action, the network boundary made explicit. Here is `createInvoice`:
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+// lib/invoices/actions.ts
+'use server';
+
+import { revalidatePath } from 'next/cache';
+import { redirect } from 'next/navigation';
+import { z } from 'zod';
+
+import { db } from '@/db/index';
+import { invoices } from '@/db/schema';
+import { getActiveContext } from '@/lib/auth-stub';
+import { createInvoiceInputSchema } from '@/lib/invoices/mutation-schemas';
+import { err, isUniqueViolation, type Result } from '@/lib/result';
+
+export const createInvoice = async (
+  _prevState: Result<{ id: string }> | null,
+  formData: FormData,
+): Promise<Result<{ id: string }>> => {
+  const parsed = createInvoiceInputSchema.safeParse(
+    Object.fromEntries(formData),
+  );
+  if (!parsed.success) {
+    return err(
+      'validation',
+      'Check the highlighted fields.',
+      z.flattenError(parsed.error).fieldErrors,
+    );
+  }
+
+  const { organizationId, userId } = await getActiveContext();
+
+  let row: { id: string } | undefined;
+  try {
+    [row] = await db
+      .insert(invoices)
+      .values({ ...parsed.data, organizationId, createdBy: userId })
+      .returning({ id: invoices.id });
+    revalidatePath('/invoices');
+  } catch (e) {
+    if (isUniqueViolation(e)) {
+      return err(
+        'conflict',
+        'An invoice with that number already exists for this org.',
+      );
+    }
+    throw e;
+  }
+
+  if (!row) {
+    return err('internal', 'Invoice could not be created.');
+  }
+
+  redirect(\`/invoices/\${row.id}\`);
+};
+`}>
+  <AnnotatedStep meta="{18-27}" color="blue">
+    **Parse.** Run `Object.fromEntries(formData)` through `safeParse`. On failure, return `err('validation', ...)` carrying `z.flattenError(parsed.error).fieldErrors` — a flat `Record<string, string[]>` keyed by field name, exactly what `<FieldError>` reads. No throw: a bad submit is an expected outcome, not an exception.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{29}" color="violet">
+    **Authorize.** Read the tenant context *after* the parse, so a parse failure never pays for an auth lookup. This is the seam where a real auth wrapper drops in later; the `await` is already here because that wrapper is async.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{31-37}" color="green">
+    **Mutate.** Insert `{ ...parsed.data, organizationId, createdBy: userId }` and `.returning({ id })` to get the new row's id back. `revalidatePath('/invoices')` lives inside the try, right after the insert succeeds, so the list picks up the new row.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{38-50}" color="orange">
+    **The conflict catch.** The unique `(organizationId, number)` constraint can trip on a duplicate number — `isUniqueViolation(e)` maps the Postgres error to a `conflict` Result; anything else re-throws to the framework's error boundary. The `if (!row)` guard just narrows the `returning` type before the redirect.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{52}" color="red">
+    **Redirect.** The redirect sits *outside* the try/catch on purpose. `redirect` works by throwing a control-flow signal; put it inside the try and the conflict catch would swallow it. After a successful insert, the success branch redirects to the new detail page.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Two ordering decisions carry the lesson. The `getActiveContext()` call sits **after** the parse so a parse failure never wastes a session lookup once a real auth wrapper replaces the stub — the rule from [Thin actions, pure /lib](/043-server-actions/4-thin-actions-pure--lib/). And `redirect` sits **after** the try/catch because it signals by throwing; on the success branch, outside the catch, the conflict handler can't intercept it. The `revalidatePath` and the five-seam shape itself are covered in [After the write](/043-server-actions/5-after-the-write/) — here they're just applied.
+
+:::caution
+A `redirect` inside the `try` would be caught by the unique-violation `catch` and turn a successful create into a swallowed exception. Keep it on the success path, after the block.
+:::
+
+The full file ships with the action signature returning `Result<{ id: string }>`. On the happy path the function never returns — it redirects — so that return type describes only the *error* branches the form sees. The `_prevState` argument is the previous `Result`, which `useActionState` threads in; this action ignores it.
+
+### Two shared components
+
+`<SubmitButton>` and `<FieldError>` are used by every form in this chapter, so they live in `app/_components/`, not next to any one form.
+
+`<SubmitButton>` reads the form's pending state with `useFormStatus()` and disables itself with a spinner while the action is in flight. `useFormStatus` only works from a component rendered *inside* the `<form>`, which is the whole reason this is its own component rather than a `disabled` prop you'd have to wire by hand — the pattern from [useFormStatus and the SubmitButton](/044-forms-the-platform-way/4-useformstatus-and-the-submitbutton/).
+
+```tsx
+// app/_components/submit-button.tsx
+'use client';
+
+import { Loader2 } from 'lucide-react';
+import type { ComponentProps, ReactNode } from 'react';
+import { useFormStatus } from 'react-dom';
+
+import { Button } from '@/components/ui/button';
+
+type SubmitButtonProps = {
+  children: ReactNode;
+  variant?: ComponentProps<typeof Button>['variant'];
+};
+
+export const SubmitButton = ({ children, variant }: SubmitButtonProps) => {
+  const { pending } = useFormStatus();
+
+  return (
+    <Button type="submit" variant={variant} disabled={pending}>
+      {pending && (
+        <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
+      )}
+      {children}
+    </Button>
+  );
+};
+```
+
+The `motion-reduce:animate-none` is a small courtesy: a user who has asked their OS to reduce motion gets a static icon instead of a spinning one. The optional `variant` is forwarded straight to the shadcn `<Button>` so the delete form, later, can render a destructive submit.
+
+`<FieldError>` takes a field `name` and the action's `fieldErrors` record, and renders the first message for that field — or nothing when the field is clean:
+
+```tsx
+// app/_components/field-error.tsx
+type FieldErrorProps = {
+  name: string;
+  fieldErrors: Record<string, string[]> | undefined;
+};
+
+export const FieldError = ({ name, fieldErrors }: FieldErrorProps) => {
+  const message = fieldErrors?.[name]?.[0];
+  if (!message) {
+    return null;
+  }
+
+  return (
+    <p
+      id={`${name}-error`}
+      className="mt-1 text-sm text-destructive"
+      role="alert"
+    >
+      {message}
+    </p>
+  );
+};
+```
+
+The ``id={`${name}-error`}`` is deliberate: each control points its `aria-describedby` at this exact id, so a screen reader announces the message when focus lands on the field. `role="alert"` makes assistive tech announce it the moment it appears. Notice there's no `'use client'` directive — it has no client-only hooks, so it needs none of its own and just renders inside whichever form imports it.
+
+### The form
+
+`app/invoices/new/new-invoice-form.tsx` is the create form. It's a Client Component because it needs `useActionState` to read the action's `Result`, but notice how little state it actually holds — the inputs themselves are uncontrolled.
+
+<AnnotatedCode lang="tsx" maxLines={18} code={`
+// app/invoices/new/new-invoice-form.tsx
+'use client';
+
+import { useActionState, useState } from 'react';
+
+import { FieldError } from '@/app/_components/field-error';
+import { SubmitButton } from '@/app/_components/submit-button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import {
+  NativeSelect,
+  NativeSelectOption,
+} from '@/components/ui/native-select';
+import { createInvoice } from '@/lib/invoices/actions';
+import { statusSchema } from '@/lib/invoices/schema';
+
+type NewInvoiceFormProps = {
+  customers: { id: string; name: string }[];
+};
+
+// The fields whose typed values are echoed back as defaultValue on a failed
+// submit. A \`<form action={fn}>\` fires requestFormReset on commit under
+// react-dom 19, so a validation re-render would otherwise blank the inputs;
+// remounting the field cluster on each submit re-applies these as the initial
+// uncontrolled values.
+const echoedFields = [
+  'customerId',
+  'number',
+  'status',
+  'total',
+  'issuedAt',
+  'dueAt',
+  'currency',
+] as const;
+
+const initialDefaults: Record<(typeof echoedFields)[number], string> = {
+  customerId: '',
+  number: '',
+  status: 'draft',
+  total: '',
+  issuedAt: '',
+  dueAt: '',
+  currency: 'USD',
+};
+
+export const NewInvoiceForm = ({ customers }: NewInvoiceFormProps) => {
+  const [state, formAction] = useActionState(createInvoice, null);
+  const fieldErrors = state?.ok === false ? state.error.fieldErrors : undefined;
+
+  const [defaults, setDefaults] = useState(initialDefaults);
+  const [submitCount, setSubmitCount] = useState(0);
+
+  // React 19 resets an uncontrolled \`<form action>\` on every commit — including
+  // a validation failure — so the typed values are echoed back as the next
+  // defaultValue set and the field cluster is remounted (the \`key\`) to re-apply
+  // them.
+  const echoSubmittedValues = (formData: FormData) => {
+    setDefaults(
+      Object.fromEntries(
+        echoedFields.map((field) => [field, String(formData.get(field) ?? '')]),
+      ) as Record<(typeof echoedFields)[number], string>,
+    );
+    setSubmitCount((count) => count + 1);
+  };
+
+  return (
+    <section className="flex flex-col gap-4">
+      <form
+        key={submitCount}
+        action={formAction}
+        onSubmit={(event) =>
+          echoSubmittedValues(new FormData(event.currentTarget))
+        }
+        data-testid="new-invoice-form"
+        className="flex flex-col gap-4"
+      >
+        <div className="grid gap-2">
+          <Label htmlFor="customerId">Customer</Label>
+          <NativeSelect
+            id="customerId"
+            name="customerId"
+            defaultValue={defaults.customerId}
+            aria-describedby="customerId-error"
+            aria-invalid={!!fieldErrors?.customerId?.[0]}
+          >
+            <NativeSelectOption value="">Select a customer</NativeSelectOption>
+            {customers.map((customer) => (
+              <NativeSelectOption key={customer.id} value={customer.id}>
+                {customer.name}
+              </NativeSelectOption>
+            ))}
+          </NativeSelect>
+          <FieldError name="customerId" fieldErrors={fieldErrors} />
+        </div>
+
+        <div className="grid gap-2">
+          <Label htmlFor="number">Number</Label>
+          <Input
+            id="number"
+            name="number"
+            type="text"
+            required
+            autoComplete="off"
+            defaultValue={defaults.number}
+            aria-describedby="number-error"
+            aria-invalid={!!fieldErrors?.number?.[0]}
+          />
+          <FieldError name="number" fieldErrors={fieldErrors} />
+        </div>
+
+        <div className="grid gap-2">
+          <Label htmlFor="status">Status</Label>
+          <NativeSelect
+            id="status"
+            name="status"
+            defaultValue={defaults.status}
+            aria-describedby="status-error"
+            aria-invalid={!!fieldErrors?.status?.[0]}
+          >
+            {statusSchema.options.map((status) => (
+              <NativeSelectOption key={status} value={status}>
+                {status}
+              </NativeSelectOption>
+            ))}
+          </NativeSelect>
+          <FieldError name="status" fieldErrors={fieldErrors} />
+        </div>
+
+        <div className="grid gap-2">
+          <Label htmlFor="total">Total</Label>
+          <Input
+            id="total"
+            name="total"
+            type="number"
+            step="0.01"
+            min="0"
+            required
+            inputMode="decimal"
+            defaultValue={defaults.total}
+            aria-describedby="total-error"
+            aria-invalid={!!fieldErrors?.total?.[0]}
+          />
+          <FieldError name="total" fieldErrors={fieldErrors} />
+        </div>
+
+        <div className="grid gap-2">
+          <Label htmlFor="issuedAt">Issued</Label>
+          <Input
+            id="issuedAt"
+            name="issuedAt"
+            type="date"
+            required
+            defaultValue={defaults.issuedAt}
+            aria-describedby="issuedAt-error"
+            aria-invalid={!!fieldErrors?.issuedAt?.[0]}
+          />
+          <FieldError name="issuedAt" fieldErrors={fieldErrors} />
+        </div>
+
+        <div className="grid gap-2">
+          <Label htmlFor="dueAt">Due</Label>
+          <Input
+            id="dueAt"
+            name="dueAt"
+            type="date"
+            required
+            defaultValue={defaults.dueAt}
+            aria-describedby="dueAt-error"
+            aria-invalid={!!fieldErrors?.dueAt?.[0]}
+          />
+          <FieldError name="dueAt" fieldErrors={fieldErrors} />
+        </div>
+
+        <div className="grid gap-2">
+          <Label htmlFor="currency">Currency</Label>
+          <Input
+            id="currency"
+            name="currency"
+            type="text"
+            defaultValue={defaults.currency}
+            aria-describedby="currency-error"
+            aria-invalid={!!fieldErrors?.currency?.[0]}
+          />
+          <FieldError name="currency" fieldErrors={fieldErrors} />
+        </div>
+
+        {state?.ok === false && state.error.code !== 'validation' && (
+          <p role="alert" className="text-destructive">
+            {state.error.userMessage}
+          </p>
+        )}
+
+        <SubmitButton>Create invoice</SubmitButton>
+      </form>
+    </section>
+  );
+};
+`}>
+  <AnnotatedStep meta="{47-48}" color="blue">
+    `useActionState(createInvoice, null)` returns the latest `Result` as `state` and a bound `formAction` to hand to the form. `fieldErrors` is pulled out of `state` only when the Result is a failure — that single derived value drives every `<FieldError>` and every `aria-invalid` below. The form reads state; it does not own it.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{129-144}" color="green">
+    The cluster pattern is `<div className="grid gap-2">` wrapping `<Label htmlFor>` + control + `<FieldError>`. The control mirrors the schema in native attributes — `type="number"`, `step="0.01"`, `min="0"`, `required`, `inputMode="decimal"` — and wires `aria-describedby` and `aria-invalid` to the same field's error. The `defaultValue` (not `value`) is what keeps the input uncontrolled.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{50-51} {57-64} {69}" color="orange">
+    React 19's `<form action>` fires a form reset on every commit — including a validation failure — which would blank the uncontrolled inputs. To keep the typed values, on submit the form copies them into a `defaults` state and bumps `submitCount`, used as the form's `key`, remounting the field cluster with the echoed values as its new initial state.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+A few decisions worth naming.
+
+**`defaultValue`, never `value`.** Every input is uncontrolled, so the form carries no per-keystroke state and the JavaScript-disabled path works untouched — the browser submits the raw form. The cost is React 19's reset-on-commit: a `<form action>` blanks its uncontrolled inputs on every commit, including the validation re-render. The `key={submitCount}` remount plus the echoed `defaults` is what re-seeds them, so a failed submit keeps your work instead of wiping it. The `onSubmit` here only runs with JavaScript on — it never fires on the no-JS POST, which is fine, because there's no re-render to survive when the whole page reloads.
+
+<VideoCallout videoId="KhO4VjaYSXU" videoTitle="Forms with React 19 and Next.js">
+  Lee Robinson walks the exact reset-on-commit problem you're solving here — why a `<form action>` blanks its inputs and how `useActionState` echoes the typed values back (9 min).
+</VideoCallout>
+
+**The field cluster is hand-rolled.** Each field is a plain `<div className="grid gap-2">` wrapping a `<Label htmlFor>`, the control, and `<FieldError>`, with `aria-invalid` and `aria-describedby` wired by hand. shadcn ships a `Form*` family — `<FormField>`, `<FormItem>`, `<FormControl>` — that would do this for you, but those call `useFormField()` and throw outside a React Hook Form `<FormField>`, and none of that family is even installed in this project. `useActionState` owns the form state here, not React Hook Form. This is the call from [Constraint Validation, the cheap layer](/044-forms-the-platform-way/6-constraint-validation-the-cheap-layer/).
+
+**The select is the native one.** `<NativeSelect>` is a thin wrapper over a plain `<select>`, not Radix's `<Select>`. A real `<select>` submits with the form and works with no JavaScript; the Radix component is a `<div>` tree that needs script to function. Native keeps the form progressively enhanced.
+
+The block above the submit button — `state.error.code !== 'validation'` — is the form-level banner. A `validation` error already renders under its fields, so the banner is reserved for the *other* error codes: a duplicate number comes back as a `conflict`, and that surfaces here as a single line rather than under any one field, because the violation is on the org-and-number pair, not a single value.
+
+A couple of the requirements the tests don't reach are closed right here in the markup. The Constraint Validation attributes mirror the schema one-to-one — `required` on every non-optional field, `type="number"` and `type="date"` matching the column, `inputMode="decimal"` on `total` for a numeric phone keypad, `autoComplete="off"` on `number` so the browser doesn't suggest stale invoice numbers. The red invalid ring on the shadcn `<Input>` is keyed off `aria-invalid` (its className carries an `aria-invalid:border-destructive` Tailwind variant), and `aria-invalid` only flips true once a field has an entry in the server's `fieldErrors`. That means a field never shows red on first paint — only after a submit the server rejected — which is the behavior you want over the browser's native `:invalid`, which would light up every empty required field the moment the page loads. The `aria-invalid` / `aria-describedby` wiring is also the accessibility pattern from [No ARIA is better than bad ARIA](/027-shadcn-ui-and-the-accessibility-baseline/3-no-aria-is-better-than-bad-aria/): it tells assistive tech the control is invalid and points it at the message.
+
+:::note
+The form in the finished project is dual-mode: it also renders inline on `/invoices` with an optimistic append, a client-generated id in a hidden input, and a "Simulate failure" checkbox. None of that is here. This version is standalone — it passes `formAction` straight to `action`, and on success the action's `redirect` takes you to the detail page. The optimistic wiring is its own lesson.
+:::
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="How to create forms with Server Actions"
+    href="https://nextjs.org/docs/app/guides/forms"
+    icon="simple-icons:nextdotjs"
+    description="The Next.js guide this lesson tracks: action signature, safeParse fieldErrors, useActionState, and the SubmitButton."
+  />
+  <ExternalResource
+    title="React — useActionState"
+    href="https://react.dev/reference/react/useActionState"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="Reference for the hook that threads the action's Result back to the form, plus the prevState first argument."
+  />
+  <ExternalResource
+    title="React — useFormStatus"
+    href="https://react.dev/reference/react-dom/hooks/useFormStatus"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="Why SubmitButton lives inside the form: the pending flag only works from a component rendered under <form>."
+  />
+  <ExternalResource
+    title="drizzle-zod"
+    href="https://orm.drizzle.team/docs/zod"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="createInsertSchema, override callbacks, and .omit — the schema-from-table mechanics the contract is built on."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's test suite, one lesson at a time, with the runner the project ships:
+
+```bash
+pnpm test:lesson 2
+```
+
+The suite drives your `createInvoice` against a real Postgres and asserts what it gives back to the form: a valid submission inserts the row and redirects to `/invoices/[newId]` with a matching row in the database; a submission with a blank `total` and a malformed `dueAt` comes back as a `validation` `Result` carrying a `fieldErrors` entry for each offending field; and that same failure leaves the fields that *were* valid out of `fieldErrors` entirely. Make sure Postgres is up, migrated, and seeded first (`docker compose up -d`, `pnpm db:migrate`, `pnpm db:seed`) — the tests talk to the real database. When the create path is wired correctly you'll see three passing suites:
+
+```
+ ✓ tests/lessons/Lesson 2.test.ts (3 tests)
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+```
+
+The tests cover the server-side contract — the insert, the redirect target, and the validation `Result`. They can't cheaply assert the rendering and no-JavaScript behavior, so confirm those by hand:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">In DevTools, open the command menu and run "Disable JavaScript", reload <code>/invoices/new</code>, and submit a valid invoice — the browser navigates to <code>/invoices/[newId]</code> and <code>pnpm db:studio</code> shows the new row.</ChecklistItem>
+  <ChecklistItem chip="untested">With JavaScript on, submit with <code>total</code> blank and a malformed <code>dueAt</code> (temporarily drop <code>required</code> from those inputs to reach the server path) — a message renders under both fields, the other inputs keep their values, and the submit button re-enables. Restore <code>required</code> afterward.</ChecklistItem>
+  <ChecklistItem chip="untested">The submit button shows its spinner while the action is in flight.</ChecklistItem>
+  <ChecklistItem chip="untested">No field shows the red invalid ring on first paint — it appears on a field only after a submit the server flagged it on (its <code>aria-invalid</code>), never as a wall of red when the empty form loads.</ChecklistItem>
+</Checklist>
