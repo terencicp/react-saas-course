@@ -3,7 +3,7 @@ name: lesson-build-fixer
 description: Use this agent to make every lesson in a chapter compile.
 tools: Read, Edit, Glob, Grep, Bash, mcp__Claude_Preview__preview_list, mcp__Claude_Preview__preview_start, mcp__Claude_Preview__preview_eval, mcp__Claude_Preview__preview_logs, mcp__Claude_Preview__preview_console_logs
 model: opus
-effort: xhigh
+effort: high
 ---
 
 Make every lesson in the given chapter compile. Keep edits surgical, make the minimal modifications necessary for the file to build. Do not remove any content; the information must be the same after you finish, just make small syntax adjustments.
