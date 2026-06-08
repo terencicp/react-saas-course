@@ -1,0 +1,271 @@
+---
+title: Magic links
+tagline: Passwordless sign-in with Better Auth's magic link plugin, when the inbox-as-credential trade-off earns its place and how to wire it safely.
+chapter-id: 53
+course-progress: 0.00005
+sidebar:
+  order: 5
+  label: Magic links
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExpiryLadder from '../../../components/lessons/053/5/expiry-ladder.astro';
+import MagicLinkFlow from '../../../components/lessons/053/5/magic-link-flow.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+You have done this a hundred times without thinking about it. You type your email into Slack, or Notion, or a newsletter you just subscribed to on Substack, and instead of a password field you get a quiet line: "We sent you a link." You open your phone, tap the link, and you are in. No password typed, none remembered, none to reset six months from now when you come back.
+
+That experience has a name — the magic link — and behind the smooth surface is a real engineering decision. It is not the right default for every product, and reaching for it because it feels modern is one of the most common ways teams make their own app harder to use. So this lesson is two things at once. First, the judgment: *when does passwordless actually earn its place, and when is it a tax on every sign-in?* Second, the wiring — which, as you are about to see, you have almost entirely built already. By the end you will be able to make the call and configure the `magicLink()` plugin, reusing every token primitive from the verification and reset flows.
+
+## When the inbox beats the password
+
+Across the last four flows you settled on a default: email and password, gated by email verification, with two-factor authentication as an option for accounts that need it. That default is boring on purpose. It works for almost every product in its first year, and "boring and works everywhere" is exactly what you want carrying the weight of your auth surface.
+
+Magic links are not a replacement for that default. They are a *conditional power tool* — something you reach for deliberately when the shape of your product crosses a specific threshold, not something you flip on because the demo looked slick. Get the threshold right and you delete a whole category of support pain. Get it wrong and your daily-active users curse you every morning. So before any code, let's weigh it the way an experienced engineer would, by asking what kind of product this is.
+
+It **wins** in three situations:
+
+- **People sign in rarely.** Think weekly, or monthly — the Slack-on-Monday-morning cadence. When sign-in is infrequent, the dominant credential risk is not someone guessing the password, it is the user *reusing* a password they use everywhere else, or simply forgetting it. Remove the password and you remove that risk entirely. The trip to the inbox is cheap when it only happens once in a while.
+- **A non-technical audience generates a flood of resets.** If "I forgot my password" is a meaningful share of your support tickets, magic links make that ticket category disappear. There is no password to forget.
+- **Email is already where the product lives.** Newsletter platforms, mailing-list tools, anything where the user spends their day in their inbox anyway. The link meets them exactly where they already are.
+
+And it **loses** in three:
+
+- **People sign in constantly.** If your app is a dashboard someone opens every day, the inbox round-trip is friction on *every single session*. Users who reach for your product daily come to resent the detour, and they are right to.
+- **Delivery is shaky.** The moment sign-in depends on an email actually landing, a spam filter or a locked-down corporate mail server can lock a user out through no fault of their own. We will come back to this, because it is the single biggest risk magic links carry.
+- **You have a hard second-factor requirement.** When the product touches money or admin powers and you *must* enforce strong multi-factor authentication, a password gives you a clean anchor to build the second factor on top of. Without that anchor the story is harder to reason about, and "harder to reason about" is the last thing you want around a money path.
+
+Notice the order those questions came in: how often, then who, then how reliable the delivery is. That order is the actual decision. Walk it yourself in the following tool — each answer commits and moves you to the next question, ending on a verdict.
+
+<StateMachineWalker title="Should this product offer magic links?">
+  <Question id="cadence" prompt="How often does a typical user sign in?">
+    <Branch label="Every day" to="stick-password" rationale="A dashboard they open every morning." />
+    <Branch label="Weekly, or more rarely" to="mfa" rationale="The Slack-on-Monday cadence." />
+  </Question>
+
+  <Question id="mfa" prompt="Does the product demand a hard second factor — money, admin powers?">
+    <Branch label="Yes, MFA is mandatory" to="password-anchor" />
+    <Branch label="No hard requirement" to="delivery" />
+  </Question>
+
+  <Question
+    id="delivery"
+    prompt="Can you rely on email landing for these users?"
+    description="Consumer inboxes (Gmail, Apple Mail) are forgiving; locked-down corporate mail is not."
+  >
+    <Branch label="Reliable consumer inboxes" to="magic-wins" />
+    <Branch label="Locked-down corporate mail" to="offer-with-fallback" />
+  </Question>
+
+  <Leaf id="stick-password" verdict="Stick with email + password">
+    Daily sign-in makes the inbox round-trip friction on *every* session. A magic link here is a tax users pay every morning. The password default already serves this product well.
+  </Leaf>
+
+  <Leaf id="password-anchor" verdict="Email + password, anchored by TOTP or a passkey">
+    A hard MFA requirement is cleaner to reason about with a password as the first factor. You can still offer a magic link as a convenience alternative, but it should not be the only way in.
+  </Leaf>
+
+  <Leaf id="magic-wins" verdict="Magic links earn the call">
+    Infrequent sign-in plus reliable delivery is exactly the sweet spot. The password-reuse risk is gone and your reset-ticket volume drops. This is where passwordless pays for itself.
+  </Leaf>
+
+  <Leaf id="offer-with-fallback" verdict="Offer it, but keep email + password as the fallback">
+    When delivery is unreliable, sign-in can never hang on a single email landing. Offer the magic link as the friendly path, keep the password so a delivery outage does not lock anyone out.
+  </Leaf>
+</StateMachineWalker>
+
+One mental model carries the whole rest of this lesson, and it is worth saying out loud: **the inbox is the credential.** A magic-link click proves exactly one thing — that the person controls the email account. It trades a *remembered* secret, the password, for a *delivered* one, the link. Hold that sentence and everything else falls out of it: why the link expires fast, why <Term definition="Whether your email actually lands in the inbox, versus going to spam or being silently dropped. The dominant risk for magic links.">deliverability</Term> is the dominant risk, why it still composes with a second factor rather than skipping one.
+
+<VideoCallout videoId="ulAbaGKqZis" videoTitle="Passwordless Accounts — Nielsen Norman Group">
+  The Nielsen Norman Group's 5-minute UX take on passwordless accounts — why daily users still want a password, and why an opt-in password fallback is the right call.
+</VideoCallout>
+
+## Installing the plugin
+
+You will not hand-roll any of this. Magic links ship as a Better Auth plugin, which means two registrations: the server plugin `magicLink()` added to the `plugins` array in `lib/auth.ts`, and its matching client plugin `magicLinkClient()` in `lib/auth-client.ts`. The two lists have to stay in sync — every server plugin that exposes client-side calls needs its client half registered, the same rule you followed setting up Better Auth. Forget the client half and `authClient.signIn.magicLink` simply will not exist.
+
+The server plugin takes a handful of options. Three of them you will recognize on sight, because you have configured their twins in the verification and reset flows. One of them is a trap the library sets for you, and getting it right is the most important line in this whole config block.
+
+The first option is the send callback:
+
+```ts
+sendMagicLink: async ({ email, url }) => {
+  await sendEmail({
+    to: email,
+    subject: 'Your sign-in link',
+    react: MagicLinkEmail({ url }),
+  });
+}
+```
+
+This is the exact same *shape* as `sendVerificationEmail` and `sendResetPassword`. The library mints the token and builds the fully-formed `url` for you; you mint no token and assemble no URL. Your only job is to put that `url` in front of the user, and you do it through the same Resend wrapper you built earlier. The `MagicLinkEmail` template is the verification email's twin — one call to action, a plain-text fallback URL underneath for clients that strip the button, and a line saying how soon it expires.
+
+The second option is the expiry, and it belongs on a ladder you have been climbing all chapter:
+
+<ExpiryLadder />
+
+```ts
+expiresIn: 60 * 5, // 5 minutes
+```
+
+A verification link can live for an hour, because all it proves is that you can read your own inbox — low stakes. A reset link gets ten minutes, because clicking it lets you change a credential. A magic link gets five — the shortest fuse of the three — because here there is no second step. The link does not *let you* sign in; clicking it *signs you in*. There is no "and also type your password" to catch a stolen link. The stakes set the fuse, and the magic link sits at the high-stakes end.
+
+The third option controls whether a brand-new email is allowed to create an account:
+
+```ts
+disableSignUp: false,
+```
+
+Left at its default of `false`, a magic link sent to an address the system has never seen will create that user on the click — more on why that is exactly right in a moment. Set it to `true` and only existing users can use the flow. If you do flip it to `true`, you have just re-opened a door you spent the sign-up flow closing: the response to an unknown email must stay *identical* to the response for a known one. The instant you show "no account found, sign up first," you have rebuilt the enumeration oracle that tells an attacker which emails are real. We will see exactly where that matters in the flow below.
+
+And the fourth option is the one the library gets wrong for you. Magic-link tokens default to being stored **in plaintext** in the `verification` row — Better Auth calls that setting `storeToken: 'plain'`, and it is the default. Sit with that for a second. In the verification flow, the library hashed the token for you before writing it; a snapshot of that table was inert. Here, out of the box, it is not. Anyone who can read a row of your database — a leaked backup, a misconfigured replica — reads a live, working sign-in link.
+
+You already understand the property this violates: exfiltrating the `verification` table must yield *zero* working links. The fix is one explicit knob.
+
+```ts
+storeToken: 'hashed', // overrides the 'plain' default; never store a live link
+```
+
+This is the single most important line in the block, and it is dangerous precisely because the happy path works identically whether it is there or not. The omission is invisible right up until the breach that surfaces it. Set it to `'hashed'`.
+
+Here is the whole `magicLink()` call. Step through it — the highlight moves to one option at a time.
+
+<AnnotatedCode lang="ts" code={`
+export const auth = betterAuth({
+  // ...adapter, emailAndPassword, etc.
+  plugins: [
+    magicLink({
+      sendMagicLink: async ({ email, url }) => {
+        await sendEmail({
+          to: email,
+          subject: 'Your sign-in link',
+          react: MagicLinkEmail({ url }),
+        });
+      },
+      expiresIn: 60 * 5,
+      disableSignUp: false,
+      storeToken: 'hashed',
+    }),
+  ],
+});
+`}>
+  <AnnotatedStep meta="{5-11}" color="orange">
+    The send callback. The library hands you a ready-made `url`; you forward it through the same `sendEmail` Resend wrapper you used for verification and reset. Same shape, same pipeline — you mint nothing.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"expiresIn: 60 * 5"`} color="blue">
+    Five minutes — the shortest fuse of any token in the chapter, because clicking the link is the sign-in itself, with no password step behind it to catch a stolen one.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"disableSignUp: false"`} color="blue">
+    The default. A first-time email creates the account on the click. Flip it to `true` only if you keep the unknown-email response identical to the known one, or you reopen the enumeration leak.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"storeToken: 'hashed'"`} color="violet">
+    The load-bearing override. The library defaults this to `'plain'` and stores the raw token; `'hashed'` is what keeps a leaked `verification` row from being a working sign-in link.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The token under all of this is a <Term definition="A secret that grants access to whoever holds it, with no further proof required. The magic-link token is one: clicking the link is the only credential.">bearer token</Term>, generated by a <Term definition="Cryptographically secure pseudo-random number generator — produces values an attacker cannot guess or predict.">CSPRNG</Term> so it cannot be guessed. Bearer plus unguessable is *why* the two mitigations matter: hashing keeps the stored copy inert, and the short expiry keeps a stolen copy from being useful for long.
+
+:::danger
+`storeToken` defaults to `'plain'`. Set it to `'hashed'`. A plaintext magic-link token sitting in your database is a working session for anyone who can read the row.
+:::
+
+## The four-step flow
+
+From the user's first tap to landing on the dashboard, four things happen. The library does all the token work you already understand — generating it, writing the row, looking it up, consuming it — so the flow is short.
+
+1. **The user submits their email.** The browser calls `authClient.signIn.magicLink({ email, callbackURL: '/dashboard' })`. The library generates a token, writes a `verification` row keyed under a namespace like `magic-link:<email>` — the same one-table-many-namespaces pattern verification and reset already use — and fires your `sendMagicLink` callback.
+2. **The form shows "check your inbox."** Exactly the calm, enumeration-safe success view from sign-up and verification: echo back the email they typed, and never branch into "we don't recognize that address." Same discipline you already practiced, nothing new.
+3. **The user clicks the link.** It points at `…/api/auth/magic-link/verify?token=<token>&callbackURL=<dest>`, served by the very same `[...all]` catch-all route from setup — no new route to add. The library looks the row up by token, checks it has not expired, finds or creates the user, issues a session, and redirects to the `callbackURL`. The lookup is **single-use and atomic**: the first click consumes the token. A second click finds nothing and lands on `?error=INVALID_TOKEN` — note the uppercase, matching the reset endpoint's casing. And requesting a fresh link supersedes the old one; only the most recent link works, the same one-live-token rule from the reset flow.
+4. **The user lands on `/dashboard`, signed in.** No password prompt anywhere. The click was the credential.
+
+Watch carefully *where* the session gets issued in the following sequence — it is the structural difference between this and password sign-in.
+
+<MagicLinkFlow />
+
+Two patterns ride along, both already in your toolbox. Any `callbackURL` that *your own* landing code reflects back into a redirect has to pass through `safeNext` first — Better Auth validates only the redirects it controls, through `trustedOrigins`, so anything you echo yourself is your responsibility to sanitize. And never log the magic-link URL or its token: it is a bearer credential, and a credential in your log files is a credential in everyone's reach.
+
+<VideoCallout videoId="b6qHfPdv4Y8" videoTitle="What Is Email Only Authentication — Magic Link Auth">
+  Web Dev Simplified walks the same token-in-an-email flow from scratch and argues, weakness by weakness, why passwordless is actually *more* secure than a password — a 12-minute reinforcement of the mental model.
+</VideoCallout>
+
+## Where magic links break the rules you learned
+
+You now hold every primitive this flow needs. What is left is the judgment — the handful of places where the intuition you built over the last four flows needs an adjustment, because magic links genuinely behave differently. This is where the experienced-engineer thinking lives.
+
+**The link is a bearer token in *someone's* browser.** The email arrives on a phone; the user clicks it and signs in on their laptop. That works because the 2026 Better Auth default is browser-agnostic — the token authenticates *whoever opens it, wherever they open it*. For usability that is the right default; phone-to-laptop is the everyday case. The cost is blunt: a forwarded or leaked link is access. The mitigation is the short five-minute expiry, not a binding switch. And here is the correction worth pinning down, because it is easy to assume otherwise: if a high-stakes product wants a link that only works in the browser that requested it, that is a *device-pinning technique you build by hand* — you set a paired cookie when the link is requested and check for it on the click. It is **not** a `magicLink()` option. There is no `sameBrowser` flag, no fingerprint toggle in the plugin. Know the trade, and know the honest shape of the API.
+
+**Magic links and passwords can coexist — but you have to communicate the choice.** Both can be enabled in the same app with no conflict underneath. The password lives on the `'credential'` account row; the magic-link flow never touches it; and either path issues the very same session shape, so the rest of your app cannot tell which door the user came through. The trap is not technical, it is in the interface. A sign-in form that shows an email field, a password field, *and* a magic-link field all at once gives the user two competing things to do and stalls them. The clean pattern is a primary email-and-password form with **"Email me a link instead"** as a clearly secondary alternative — one obvious path, one quiet escape hatch. Presenting them as equals is the failure mode.
+
+**The first click *is* the sign-up.** With `disableSignUp` at its default, a magic link sent to an address you have never seen creates that user on verify — and crucially, with `emailVerified` already set to `true`. That is not a shortcut that skips a safety check; it is the safety check. Clicking the delivered link *is* the proof of inbox control that the entire verification flow exists to establish. The deliverability check and the verification are the same act. So this is genuinely *faster* than password sign-up: one round-trip (request the link, click it) instead of two (sign up, then click a separate verification email). When you want first-timers to land somewhere different from returning users — an onboarding screen rather than the dashboard — the knob is `newUserCallbackURL`. Where password sign-up needed a separate verification email to prove the inbox, magic links fold sign-up and verification into a single click.
+
+**Deliverability is the dominant risk — so design for the bad day.** Because sign-in now hangs on an email landing, the failure mode is no longer "wrong password." It is "the email never came." Design for that explicitly. On the check-inbox view, surface "check your spam folder, then resend" prominently rather than burying it. Rate-limit the resend per email so the button cannot be used to flood someone's inbox — one send per thirty seconds or so, named at the call site here, fully wired up later in the course. And the rule that protects you from the worst version of this day: if you offer magic links, **always keep email and password as a fallback.** Shipping magic links as the *only* way in means a delivery outage locks out every user at once. Never let a single email be the only thing standing between your users and their accounts.
+
+**A second factor still applies — the inbox is one factor, not a bypass.** A magic-link click proves control of the email account: that is *one* factor. An account that has two-factor authentication enrolled — a TOTP code, a passkey — still gets prompted for that second factor *after* the click. Magic links replace the *password* factor with an *inbox-control* factor; they do not wave away multi-factor authentication. (The full second-factor challenge is the focus of the next lesson; here it is enough to know the click does not skip it.)
+
+With those five adjustments in hand, here is a product call to sharpen them against.
+
+<MultipleChoice>
+  Your team proposes shipping magic links as the **only** sign-in method for a B2B dashboard that customers open every weekday morning. Which objections are valid? Select all that apply.
+
+  <McqChoice correct>A product people open daily turns the inbox detour into friction they pay at the start of every shift.</McqChoice>
+  <McqChoice correct>With nothing else to fall back on, a bad day for email delivery means the whole customer base is shut out simultaneously.</McqChoice>
+  <McqChoice correct>Strict corporate mail filtering can quietly swallow the sign-in link, so it never reaches the person waiting on it.</McqChoice>
+  <McqChoice>Turning on magic links forces two-factor authentication off, so the dashboard can no longer require a second factor.</McqChoice>
+  <McqChoice>There is no safe way to keep a magic-link token at rest, so the approach is unsound by construction.</McqChoice>
+
+  <McqWhy>The three valid objections all flow from one fact — this is a daily-use product with corporate users and no fallback, the exact profile magic links fit worst. The two decoys are myths: magic links coexist with a second factor (it still prompts after the click), and their tokens are hashable at rest with `storeToken: 'hashed'`.</McqWhy>
+</MultipleChoice>
+
+## The email-OTP sibling, in one breath
+
+Magic links have a close cousin worth knowing by name: the `emailOTP()` plugin. Instead of a URL the user clicks, it emails a six-digit <Term definition="One-time password — a short, single-use code, valid only briefly.">OTP</Term> the user types back into the form. Underneath it is the same machinery — a token in a `verification` row, a short expiry, single use, the same enumeration discipline — just a different surface. It earns the call in two spots a clickable link struggles with: when the user is on a *different* device with no easy way to follow a link (typing six digits crosses a device gap a click cannot), and when email clients mangle or pre-fetch link URLs and trip the token early. The trade is simply typing six digits versus one tap. Think of it as magic links' cousin, distinguished by that single axis — code you type versus link you click — and reach for the docs when you need it.
+
+## External resources
+
+The plugin reference and the wider trade-off backdrop, for when you make this call on a real product.
+
+<CardGrid>
+  <ExternalResource
+    title="Better Auth — Magic Link plugin"
+    href="https://www.better-auth.com/docs/plugins/magic-link"
+    icon="lucide:wand-sparkles"
+    description="The canonical option reference: sendMagicLink, expiresIn, disableSignUp, storeToken, and more."
+  />
+  <ExternalResource
+    title="Better Auth — Email OTP plugin"
+    href="https://www.better-auth.com/docs/plugins/email-otp"
+    icon="lucide:hash"
+    description="The sibling plugin — a typed six-digit code instead of a clicked link."
+  />
+  <ExternalResource
+    title="Passwordless auth: the trade-offs"
+    href="https://postmarkapp.com/blog/magic-links"
+    icon="lucide:scale"
+    description="A practitioner's weigh-up of magic links against passwords, deliverability front and center."
+  />
+  <ExternalResource
+    title="OWASP — Authentication Cheat Sheet"
+    href="https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html"
+    icon="simple-icons:owasp"
+    description="The enumeration and credential discipline that underpins every flow in this chapter."
+  />
+</CardGrid>
