@@ -8,7 +8,7 @@ Run this agent sequence once, before writing the lessons. Steps 2–12 form a qu
 2 **project-architect**: Prompt with chapter id `<X>`. Returns the plan path, the ordered list of slice ids, and the screenshot list. On a re-plan, also pass the relevant feedback from all previous subagents.
 3 **project-plan-verifier**: Prompt with chapter id `<X>`, plan path.
 4 **project-scaffolding-coder**: Prompt with chapter id `<X>`, plan path.
-5 **project-slice-coder**: Prompt with chapter id `<X>`, plan path, slice id. Run a new subagent sequentially for each slice id in the order returned by the architect. Pass any other relevant info the slice coder might need. + optional **project-screenshotter**: Prompt with chapter id `<X>`, plan path, slice id, and the corresponding lesson number. Skip for slices without screenshots.
+5 **project-slice-coder**: Prompt with chapter id `<X>`, plan path, slice id. Run a new subagent sequentially for each slice id in the order returned by the architect. Pass any other relevant info the slice coder might need. + optional **project-screenshotter**: Prompt with chapter id `<X>`, plan path, slice id, and the corresponding lesson number. Run screenshtter after its slice; skip for slices without screenshots.
 7 **project-start-coder**: Prompt with chapter id `<X>`, plan path.
 8 **project-reviewer**: Prompt with chapter id `<X>`, plan path. Returns the list of issues to correct.
 9 **project-corrector**: Prompt with chapter id `<X>`, plan path, the reviewer's issues that require fixes. Run only if the reviewer reported issues.
