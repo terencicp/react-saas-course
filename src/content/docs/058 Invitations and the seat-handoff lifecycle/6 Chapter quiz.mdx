@@ -1,0 +1,132 @@
+---
+title: Quiz - Invitations and the seat-handoff lifecycle
+description: Test your grasp of partial unique guards, signed accept links, re-verification, rotation, and collision handling across the invitation lifecycle.
+chapter-id: 058
+sidebar:
+  order: 6
+  label: Chapter quiz
+---
+
+import Quiz from '../../../components/quiz/Quiz.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+
+<Quiz sources={{
+  '58.1': 'The seat reservation that outlives the request',
+  '58.2': 'Minting the signed accept link',
+  '58.3': 'Four arrival shapes on one accept URL',
+  '58.4': 'The pending-invites surface: list, resend, revoke, collide',
+  '58.5': 'Orphans, mismatches, and the double-click race',
+}}>
+  <MultipleChoice src="58.1">
+    The invitation table's uniqueness guard is a **partial** unique index — `(organization_id, lower(email))` with a `WHERE status = 'pending'` predicate — rather than a plain unique index on `(organization_id, email)`. What does the `WHERE status = 'pending'` clause buy you that a plain unique index would block?
+
+    <McqChoice correct>
+      Bob can keep an old `accepted` (or `canceled`) row from a past membership *and* still receive a fresh pending invite — only pending rows compete for uniqueness, so a legitimate re-invite isn't blocked by historical rows.
+    </McqChoice>
+    <McqChoice>
+      It lets the database skip the case-folding work, since `lower(email)` only has to run on pending rows.
+    </McqChoice>
+    <McqChoice>
+      It marks expired rows so a background job can find and delete them without scanning the whole table.
+    </McqChoice>
+
+    <McqWhy>
+      The partial predicate is the whole point: only `pending` rows participate in the uniqueness check, so the rule is exactly "at most one *pending* invite per address per org" — not "this address may appear once, ever." A plain unique on `(org, email)` would refuse a perfectly legitimate re-invite to someone who left and is coming back, because their old `accepted`/`canceled` row would still occupy the slot. Expiry isn't a stored status (it's computed at read time), so the index has nothing to do with marking or cleaning up expired rows.
+    </McqWhy>
+  </MultipleChoice>
+
+  <MultipleChoice src="58.2">
+    The accept token is already 32 bytes of CSPRNG randomness, verified by hashing the incoming value and looking it up by `tokenHash`. So what does adding an HMAC signature (`sig`) to the URL actually buy you, given the token alone is unguessable?
+
+    <McqChoice correct>
+      It lets the server reject a forged or tampered URL with one in-memory comparison *before* any database round-trip — and, since the attacker doesn't hold the signing secret, a leaked dump of `tokenHash` values still can't be turned into a working link.
+    </McqChoice>
+    <McqChoice>
+      It replaces the token as the real credential — the signature is what authenticates the invitee, and the token is just a database lookup key.
+    </McqChoice>
+    <McqChoice>
+      It makes the token unguessable; without the signature, 32 random bytes could be brute-forced over the seven-day window.
+    </McqChoice>
+
+    <McqWhy>
+      The token *authenticates*; that job is finished on its own. The signature is a cheap doorman: a tampered or fabricated URL fails the in-memory HMAC check before the server spends a single query, which also denies a fuzzer the satisfaction of a database round-trip. It adds one independent layer too — an attacker who somehow reads every `tokenHash` still can't forge a URL, because they don't hold `INVITATION_SIGNING_SECRET`. The signature is not the credential (the token is) and it does nothing for the token's entropy.
+    </McqWhy>
+  </MultipleChoice>
+
+  <MultipleChoice src="58.3">
+    The `acceptInvitation` Server Action re-runs the full verify ladder — signature, token hash, expiry, `status = 'pending'`, and the email match — even though the accept *page* already verified all of that before rendering the Accept button. Why re-verify?
+
+    <McqChoice correct>
+      The button press is a separate POST request: a new session that may have changed, with form inputs a script could have altered. The page's GET-time check is UX, not authorization — it never traveled to this request, so the write must prove the conditions itself.
+    </McqChoice>
+    <McqChoice>
+      Re-running the checks warms Postgres's query cache so the member insert that follows runs faster.
+    </McqChoice>
+    <McqChoice>
+      Next.js discards the page's verification result between the render and the action, so it has to be recomputed to read it back.
+    </McqChoice>
+
+    <McqWhy>
+      The page render and the button's POST are two distinct requests. Between them the session could change, and the form fields the action receives are attacker-tamperable. The page's pre-check exists so a human sees a clear screen instead of a dead button — it is not authorization and it does not carry across to the POST. The action is the real gate, so it re-verifies the signature, hash, expiry, status, and email match from scratch before it writes the `member` row.
+    </McqWhy>
+  </MultipleChoice>
+
+  <MultipleChoice src="58.4">
+    Alice clicks **Resend** on Bob's still-pending invite. The senior default is to *rotate*: mint a brand-new 32-byte token, overwrite `tokenHash`, and push `expiresAt` a full TTL out from now — rather than re-firing the original email with its original link and unchanged window. What's the reasoning?
+
+    <McqChoice correct>
+      A resend is a security event, not just a UX one — rotating invalidates any forwarded or leaked copy of the old token the instant its hash is overwritten, and gives Bob a clean fresh window instead of whatever sliver remained.
+    </McqChoice>
+    <McqChoice>
+      Reusing the same token would violate the partial unique index, since the row's `tokenHash` must be distinct on every send.
+    </McqChoice>
+    <McqChoice>
+      Rotating lets the action skip the `withTenant` transaction, because an UPDATE of a single row doesn't need one.
+    </McqChoice>
+
+    <McqWhy>
+      Re-sending the same link is cheap and quietly wrong: the original window keeps running (a resend the day before expiry buys ~24 hours, not a fresh week), and any copy Bob forwarded still works. Rotation refreshes both the credential and the window — overwriting `tokenHash` kills every old copy at once, and the new `expiresAt` gives a clean TTL. The unique index keys on `(org, lower(email))`, not on the token, and the rotation still runs its UPDATE plus audit write inside `withTenant`.
+    </McqWhy>
+  </MultipleChoice>
+
+  <MultipleChoice src="58.5">
+    Two invite collisions are handled in *opposite* ways. Re-inviting an address that already has a **pending** invite: just `INSERT` and catch the `23505` the unique index throws, translating it to `err('conflict', …)`. Inviting an address that's already a **member**: read first, in the action body, and refuse before writing. Why pre-check one but not the other?
+
+    <McqChoice correct>
+      A pre-check is right only when no constraint can catch the case. The pending collision is guarded by a real unique index (so a SELECT-then-INSERT would just add a race window) — but no single index spans the `member` and `invitation` tables, so a guarded read in the action is the only tool available.
+    </McqChoice>
+    <McqChoice>
+      The pending case is more common, so it's worth the cost of catching an exception; the already-member case is rare enough that a cheap read is fine either way.
+    </McqChoice>
+    <McqChoice>
+      Catching `23505` only works inside a transaction, and the already-member check runs before `withTenant` opens one.
+    </McqChoice>
+
+    <McqWhy>
+      The deciding factor is whether a constraint exists to catch. The pending-pending rule lives in a partial unique index, so you let the INSERT hit it and translate the `23505` — pre-checking it would only open a SELECT-then-INSERT race. The already-member invariant spans two tables (`member` keys on `userId`, not email), and no single index can enforce it, so there's nothing to catch; a guarded read in the action body is the right and only tool, residual race and all. Both refusals surface as `conflict` — the canonical `Result` union has no `already-invited` or `already-member` code — distinguished by message and where the check fired.
+    </McqWhy>
+  </MultipleChoice>
+
+  <MultipleChoice src="58.5">
+    Alice invited Bob to Acme, then left the company before Bob accepted. Bob clicks the link the next day. Select every statement that reflects the chapter's senior posture. **Select all that apply.**
+
+    <McqChoice correct>
+      The accept proceeds normally — the invite is Acme's decision, frozen on the row at send time, and the inviter's departure doesn't retract it.
+    </McqChoice>
+    <McqChoice correct>
+      The accept page may drop the "Invited by Alice" line if Alice is no longer a member, but that's cosmetic copy — it never changes whether the seat is granted.
+    </McqChoice>
+    <McqChoice>
+      `acceptInvitation` should check that the inviter is still a member and refuse if not, to avoid granting a seat on a departed admin's authority.
+    </McqChoice>
+    <McqChoice correct>
+      Bob should still get the role the invite carries even if Alice was demoted before he accepted, because the role is snapshotted on the row, not recomputed from the inviter.
+    </McqChoice>
+
+    <McqWhy>
+      An invitation records the *organization's* decision, captured at send time — the inviter is the clerk who filed it, not its owner. So the inviter leaving (or being demoted) doesn't reach back and rewrite the offer: the accept flow reads `invitation.role` off the row and never asks "what can Alice grant today?" The only thing a departed inviter changes is cosmetic — the page omits "Invited by Alice" via a cheap existence read — never the decision. Adding an inviter-still-a-member gate would turn a legitimate hire away, the loud and expensive failure the asymmetry argues against.
+    </McqWhy>
+  </MultipleChoice>
+</Quiz>

@@ -1,0 +1,424 @@
+---
+title: Four arrival shapes on one accept URL
+tagline: Build the invitation accept flow, the page and Server Action that turn one signed accept URL into an organization membership across every way a user can arrive.
+chapter-id: 58
+course-progress: 0.00005
+sidebar:
+  order: 3
+  label: The accept flow
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import SignupLoopStrip from '../../../components/lessons/058/3/SignupLoopStrip.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import TrueFalse from '../../../components/exercises/true-false/TrueFalse.astro';
+import Statement from '../../../components/exercises/true-false/Statement.astro';
+import TfWhy from '../../../components/exercises/true-false/TfWhy.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Three days after Alice sent it, Bob finally opens the email and clicks the link. The question is: who is Bob, right now, at the instant of that click? He might already be signed in as `bob@acme.com`, or signed in as some other account, or signed out with an account waiting for him, or signed out with no account at all. That's four different humans behind one URL, and the same row in the `invitation` table has to become a `member` row for exactly one of them — the right one, authenticated as the invited address, who has actually said yes.
+
+Last lesson mailed the credential. This lesson builds the lock it opens: an `/accept-invite` page that routes all four arrivals, an `acceptInvitation` action that writes the `member` row only behind a consent click, and a flow that stays safe even when Bob double-clicks the link.
+
+## The link is a GET, so the page is a read
+
+Everything in this lesson hangs off one structural fact: a link in an email is a `GET`. Bob clicks it, his browser issues `GET /accept-invite?id=…&token=…&sig=…`, and something has to render. You can't put a Server Action behind that click — actions are `POST`s triggered by forms and buttons, not by URLs in a mailbox. So the accept URL has to land on a **page**: `app/accept-invite/page.tsx`, a Server Component that reads the query string, verifies it, looks up the row, and decides what to show.
+
+Here's the instinct to kill before it costs you a support ticket. The naive read of "the link accepts the invite" is that *clicking* should do the accepting — land on the page, write the `member` row, flip the invitation to `accepted`, done. It feels right. It is exactly wrong, and the reason is that Bob's browser is not the only thing that fetches that URL. An email security scanner fetches every link in an inbound message to sniff it for malware. A <Term definition="A client or service that fetches a pasted link to render a preview card — the thumbnail Slack, Outlook, or iMessage draws under a URL.">link unfurler</Term> fetches it to draw a preview thumbnail. A corporate <Term definition="A proxy that intercepts outbound links and fetches them first — for malware scanning or click logging — before the user's click reaches the real destination.">URL rewriter</Term> fetches it before the click ever leaves the network. Each one is a silent GET, and the trap below lets each one accept Bob's invite for him.
+
+<CodeVariants maxLines={16}>
+  <CodeVariant label="Auto-accept on GET" icon="lucide:bug">
+    <div data-mark-color="red">
+
+    ```tsx del={7-8}
+    export default async function AcceptInvitePage({
+      searchParams,
+    }: { searchParams: Promise<{ id: string; token: string; sig: string }> }) {
+      const { id, token, sig } = await searchParams;
+      const invitation = await loadVerifiedInvitation(id, token, sig);
+
+      await db.insert(member).values({ userId, role: invitation.role });
+      await db.update(invitation).set({ status: 'accepted' });
+
+      return <p>You're in.</p>;
+    }
+    ```
+
+    </div>
+    **The render writes.** On render, this page inserts the member and flips the status, so the first scanner or unfurler to reach the URL — and one always reaches it before Bob — consumes the invitation. Bob clicks three days later and gets "you're already a member" for a seat a bot claimed. A `GET` is supposed to be safe to repeat with no side effect; writing to the database on render breaks that contract, and the bots will find the break.
+  </CodeVariant>
+
+  <CodeVariant label="Render, then gate" icon="lucide:check">
+    <div data-mark-color="green">
+
+    ```tsx ins={7-13}
+    export default async function AcceptInvitePage({
+      searchParams,
+    }: { searchParams: Promise<{ id: string; token: string; sig: string }> }) {
+      const { id, token, sig } = await searchParams;
+      const invitation = await loadVerifiedInvitation(id, token, sig);
+
+      return (
+        <form action={acceptInvitation}>
+          <input type="hidden" name="id" value={invitation.id} />
+          <input type="hidden" name="token" value={token} />
+          <button type="submit">Accept invitation to {invitation.orgName}</button>
+        </form>
+      );
+    }
+    ```
+
+    </div>
+    **The button writes.** Nothing is written when the page renders — the render is a pure read-and-decide that produces a button. The write happens only when a human presses it, which sends a `POST` that runs `acceptInvitation`. The button press is the consent signal — the one event a scanner or an unfurler will never produce, because none of them click.
+  </CodeVariant>
+</CodeVariants>
+
+That split is the spine of the whole lesson, so say it plainly: **the GET decides, the POST writes.** The page render reads the URL and chooses what to show. The accept action — behind an explicit button — is the only thing that touches the `member` table. Every other decision in this lesson is downstream of that one.
+
+:::note
+`page.tsx` is default-exported and framework-named, which is the one place the codebase's "named exports everywhere" rule steps aside — Next.js dictates the filename and the default export. And `searchParams` arrives as a Promise you `await`, because in Next.js 16 the request-bound inputs are async.
+:::
+
+## Verify in order, refuse as one
+
+Before the page can show Bob anything, it has to decide whether to trust the URL at all. A `GET /accept-invite?…` is just a string a stranger handed you; the query params could be tampered, stale, already spent, or pointing at a row that never existed. The page runs a fixed sequence of checks, and the *order* is the lesson — each step is cheaper than the next, and the first failure stops the line.
+
+You already have the first check from last lesson. `verifyInviteUrl(id, token, sig)` was a teaching stub then, a way to prove the sign-and-verify halves agreed. Here it becomes the production gate: it recomputes the HMAC over the canonical `` `${id}.${token}` `` payload and compares it to the `sig` from the URL with `crypto.subtle.verify` — never `===`, because a character-by-character string compare leaks timing and hands an attacker a side channel. If the signature doesn't check out, the URL is forged or mangled, and you refuse *without ever touching the database*. That's the whole point of the signature: it's a doorman who turns away bad URLs before they cost you a query.
+
+<AnnotatedCode lang="tsx" maxLines={18} code={`
+const { id, token, sig } = await searchParams;
+
+if (!(await verifyInviteUrl(id, token, sig))) {
+  return <InviteRefused />;
+}
+
+const invitation = await getInvitationById(id);
+if (!invitation) {
+  return <InviteRefused />;
+}
+
+if (!(await tokenMatches(token, invitation.tokenHash))) {
+  return <InviteRefused />;
+}
+
+if (invitation.expiresAt < new Date()) {
+  return <InviteExpired email={invitation.email} />;
+}
+
+switch (invitation.status) {
+  case 'pending':
+    return <AcceptDecision invitation={invitation} />;
+  case 'accepted':
+    return <AlreadyMember orgName={invitation.orgName} />;
+  case 'canceled':
+    return <InviteRevoked />;
+  case 'rejected':
+    return <InviteRefused />;
+}
+`}>
+  <AnnotatedStep meta={`{3-5} "verifyInviteUrl"`} color="blue">
+    Check the signature first, because it's the only check that needs no database. `verifyInviteUrl` recomputes the HMAC and constant-time-compares it to `sig`. A forged or tampered URL fails here and renders the generic refusal, having spent zero queries.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{7-10} "getInvitationById"`} color="blue">
+    Now load the row by `id`. No row means a deleted or fabricated id; render the *same* refusal — never a distinct "not found", which would confirm to a prober that some ids exist and others don't.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{12-14} "tokenMatches"`} color="blue">
+    Re-hash the incoming `token` and compare it against the stored `tokenHash`, timing-safe. A mismatch means the signed id and the token don't belong together; same generic refusal again.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{16-18} "expiresAt"`} color="blue">
+    Only now check time. An expired invite is a normal end-of-life, not an attack, so it earns its *own* friendlier screen: "this invite expired, ask for a new one." Differentiating expiry helps the user and reveals nothing useful to an attacker.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{20-29} "status"`} color="blue">
+    Finally branch on status. `pending` proceeds to the four-shape decision. `accepted` is a friendly "you're already a member" landing — almost always a double-click, not an error. `canceled` says the invite was revoked. `rejected` falls back to the generic refusal.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Look at where the screens converge and where they fork. A bad signature, a missing row, and a token-hash mismatch all collapse into **one** refusal screen. That's deliberate. From Bob's seat those three failures mean the same thing — "my link is no good, I need a fresh invite" — so they get the same recovery copy. And from an attacker's seat, telling them *which* of the three failed is a gift: "not found" versus "tampered" leaks whether a row exists, which is exactly the structure you don't want a prober mapping. One refusal string, zero enumeration, no user cost.
+
+Expiry and revocation fork off because they're honest, distinct situations with their own recovery. An expired invite genuinely was valid once and the fix is "ask for a new one." A revoked invite means an admin pulled it on purpose. Those carry real information the user can act on, so spending a separate screen on each is value, not a leak. The rule underneath: **differentiate a failure only when the distinction helps the user more than it helps an attacker.**
+
+One more reflex to bank, and it comes straight from the codebase's error-handling stance: a gate treats an exception as a refusal. If `verifyInviteUrl` throws — bad base64 in `sig`, a malformed key, anything — the catch defaults to deny. A check that controls access fails closed; it never falls through to "well, I couldn't decide, so let them in."
+
+<VideoCallout videoId="MKn3cxFNN1I" videoTitle="HMAC explained — keyed hash message authentication code">
+  Jan Goebel walks the same Alice-to-Bob HMAC framing this gate uses (6 min) — why recomputing the code and comparing proves both integrity and authorship.
+</VideoCallout>
+
+<MultipleChoice>
+  A request hits `/accept-invite` and the `sig` fails `verifyInviteUrl`. Which screen should the page render?
+
+  <McqChoice>A `404` reading "invitation not found".</McqChoice>
+  <McqChoice>A page that warns the visitor their link appears to have been tampered with.</McqChoice>
+  <McqChoice correct>The same generic refusal shown for a missing row or a bad token hash.</McqChoice>
+  <McqChoice>The Accept button — let `acceptInvitation` reject the bad signature when the form posts.</McqChoice>
+
+  <McqWhy>A bad signature, a missing row, and a token-hash mismatch all share one recovery — "get a fresh invite" — so they share one screen. Spelling out *which* check failed (or rendering a distinct `404`) tells anyone probing ids whether a given row exists, for zero benefit to a real invitee. And the page must refuse here, before any DB work: the signature is the cheap pre-database doorman, not something to defer to the action.</McqWhy>
+</MultipleChoice>
+
+## One URL, four humans
+
+The gate has passed and the status is `pending`. Now the payoff: the page has to render one of four UI states, and it picks the state from two facts it can read on the server — is there a session, and does the session's email match `invitation.email`? Walk it the way the server does, one question at a time. Each branch below is a real decision the page code makes; click through it.
+
+<StateMachineWalker kind="decision" title="Routing one accept URL">
+  <Question id="signed-in" prompt="Is there a session?"
+    description="The page reads the session on the server. Start here — everything branches off whether someone is logged in at all.">
+    <Branch label="Yes, someone is signed in" to="email-match" />
+    <Branch label="No session" to="has-account" />
+  </Question>
+
+  <Question id="email-match" prompt="Does the session email equal invitation.email?"
+    description="Compare the logged-in user's email against the address the invite was sent to.">
+    <Branch label="They match" to="leaf-accept" />
+    <Branch label="They differ" to="leaf-mismatch" />
+  </Question>
+
+  <Question id="has-account" prompt="Is there already an account on the invited email?"
+    description="No session — but the invited address may or may not already have a user record.">
+    <Branch label="An account exists" to="leaf-signin" />
+    <Branch label="No account yet" to="leaf-signup" />
+  </Question>
+
+  <Leaf id="leaf-accept" verdict="Shape A — render the Accept button">
+    Bob is signed in as exactly the invited person. Show "Accept invitation to Acme as member" and the consent button. This is the only leaf that reaches the write — every other shape has to route Bob *to* this state first.
+  </Leaf>
+
+  <Leaf id="leaf-mismatch" verdict="Shape B — refuse (handled in a later lesson)">
+    Someone is signed in, but as a *different* email than the invite was sent to. Render the strict refusal stub. It's a refusal, not an "accept anyway," because invites get forwarded: if you let the logged-in account accept an invite addressed to someone else, you've handed it the wrong person's seat. The full posture — the exact copy, the case-insensitive compare — lands in "Orphans, mismatches, and the double-click race."
+  </Leaf>
+
+  <Leaf id="leaf-signin" verdict="Shape C — sign in, then come back">
+    No session, but the invited email already has an account. Render a sign-in form prefilled with the invited address and a `next` param pointing back at this same accept URL. On success the page reloads → and now there's a matching session → Shape A.
+  </Leaf>
+
+  <Leaf id="leaf-signup" verdict="Shape D — sign up, then come back">
+    No session and no account. Render a sign-up form prefilled and email-locked to the invited address, returning to this accept URL. After sign-up the page reloads with a session whose email matches → Shape A.
+  </Leaf>
+</StateMachineWalker>
+
+Notice what the walker just made you do: it forced you through the server's exact question order, and it showed you that three of the four shapes are really *detours back to the first one*. Shape A is the only state where the Accept button appears, because Shape A is the only state where the right person is authenticated as the invited email. C and D are "get into Shape A first" — sign in, or sign up, then return. B is the dead end.
+
+The reflex to carry out of this section: **the routing decision is made on the server, from the row and the session — never from the query string's display values.** It's tempting to render the org name straight from a `?org=Acme` param, but a query param is attacker-controlled text; reflecting it into the page is a cross-site-scripting hole. The trustworthy source for anything you display — the org name, the role, the invited email — is the row you loaded by id, after the gate passed. The URL's job is to *identify* the invitation; the row's job is to *describe* it.
+
+Shapes C and D reuse the sign-in and sign-up actions you already built; there's nothing new in how they authenticate. This flow adds exactly two deltas. First, **prefill the email** from `invitation.email`, so Bob isn't retyping the address the invite already knows. Second, **carry `next` back to the accept URL**, so the moment he's authenticated he lands right back where he was instead of on some generic dashboard. (That `next` runs through the same open-redirect guard every return URL does — it can only point inside your own app.)
+
+Shape D gets one extra rule worth a sentence, because skipping it generates real support tickets. **Lock the sign-up email to the invited address** — render it readonly, don't let Bob edit it. If he can change the email at the sign-up prompt, he'll occasionally sign up as `bob.personal@gmail.com`, bounce straight into the mismatch branch, and write you a confused message about a broken invite. Prefilling *and* locking the field is the structural fix: the only account this form can create is one whose email matches the invitation, which is the only account that can accept it.
+
+## The accept action writes once, behind the click
+
+Bob is in Shape A, the button is on screen, he presses it. Now `acceptInvitation` runs — the one place in this whole flow that writes the `member` row. Two decisions shape it, and both are the kind beginners get wrong, so frame them up front.
+
+**It is not wrapped in `authedAction`.** That wrapper, from the RBAC chapter, checks a caller's `role` against their membership in the org before letting the action body run. But Bob has no membership yet — that's the entire point of accepting. There's no role to gate on. The authority that lets this action proceed isn't an org role; it's *the invitation token itself*. So `acceptInvitation` does its own authorization by hand: re-verify the token, then confirm the signed-in user's email equals the invited email.
+
+**It re-verifies the URL, even though the page already did.** This is the reflex that separates a careful engineer from a hopeful one. The page's verification ran during a `GET`, possibly seconds or minutes ago. The button press is a *separate* `POST` — a brand-new request, with its own session that might have changed, carrying form inputs a script could have tampered with before submitting. The page's pre-check is not authorization for the write; it never traveled to this request. So the action re-runs the signature, the hash, the expiry, and the `status = 'pending'` check itself, from scratch.
+
+<AnnotatedCode lang="tsx" maxLines={18} code={`
+'use server';
+
+export async function acceptInvitation(formData: FormData) {
+  const { id, token } = acceptInvitationSchema.parse(
+    Object.fromEntries(formData),
+  );
+  const user = await getCurrentUser();
+  const invitation = await getInvitationById(id);
+
+  if (
+    !invitation ||
+    !(await verifyInviteToken(id, token, invitation.tokenHash)) ||
+    invitation.expiresAt < new Date() ||
+    invitation.status !== 'pending'
+  ) {
+    return err('not_found', 'This invitation is no longer valid.');
+  }
+
+  if (!user || user.email !== invitation.email) {
+    return err('forbidden', 'This invitation was sent to a different address.');
+  }
+
+  await withTenant(invitation.organizationId, async (tx) => {
+    const [newMember] = await tx
+      .insert(member)
+      .values({ userId: user.id, role: invitation.role })
+      .returning({ id: member.id });
+
+    await tx
+      .update(invitation)
+      .set({ status: 'accepted', acceptedAt: new Date() })
+      .where(and(eq(invitation.id, id), eq(invitation.status, 'pending')));
+
+    if (!user.emailVerified) {
+      // the invite is the email-ownership proof
+      await tx
+        .update(userTable)
+        .set({ emailVerified: true })
+        .where(eq(userTable.id, user.id));
+    }
+
+    await auth.api.setActiveOrganization({
+      headers: await headers(),
+      organizationId: invitation.organizationId,
+    });
+
+    await logAudit(tx, {
+      action: 'invitation.accepted',
+      subjectType: 'invitation',
+      subjectId: id,
+      payload: { newMemberId: newMember.id, role: invitation.role },
+    });
+  });
+
+  redirect('/dashboard');
+}
+`}>
+  <AnnotatedStep meta={`{10-17} "verifyInviteToken"`} color="green">
+    Re-verify the URL from scratch: signature, token hash, expiry, and `status !== 'pending'`, all re-checked inside the action. Any failure returns a generic `not_found` `Result`. The page's earlier check does not carry here — this is a new request.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{19-21} "user.email"`} color="green">
+    The email guard. Confirm the signed-in user is the invited person, server-side. The UI must never be the *only* thing stopping the mismatch shape; this is the real gate.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{24-27} ".returning"`} color="green">
+    Insert the `member` row. The role is `invitation.role` — the inviter's snapshotted choice, never re-prompted at accept time. `.returning` hands back the new member's id for the audit payload.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{29-32} ".where"`} color="green">
+    Flip the invitation to `accepted`. The `.where` clause carries a `status = 'pending'` precondition: the update only lands if the row is *still* pending. One update wins; a racing second one matches zero rows. This clause does double duty — "Orphans, mismatches, and the double-click race" comes back to it.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{34-40} "emailVerified"`} color="green">
+    Mark the email verified, but only if it wasn't already — which is exactly the case where Bob signed up *through* this invite. The admin sent the invite to that address and the click proves it's reachable, so the invite *is* the email-ownership proof. Without this, a fresh invitee bounces straight off the verify-required check after confirming their address through the invite — a loop.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{42-45} "setActiveOrganization"`} color="green">
+    Switch Bob's active org to Acme. He was in his Personal org a second ago and just clicked an *Acme* link — intent is unambiguous. The alternative, leaving him in Personal to switch manually, is worse UX for no gain.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{47-52} "logAudit"`} color="green">
+    Write the audit row. The actor is *Bob* — this records him accepting, distinct from last lesson's `'invitation.sent'` row that recorded Alice's intent. Two rows, two moments, two actors. The payload carries the new `newMemberId`, which is the only link between the invitation and the member it became.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Two orderings in that action must never flip, and they're the same COMMIT pivot from last lesson. Everything inside `withTenant` shares one transaction — the member insert, the status flip, the email-verified write, the active-org switch, and the audit row all commit together or not at all. The `redirect('/dashboard')` fires *after* that commit returns. Redirect before the active-org write has committed and Bob lands on a dashboard that doesn't yet know he's in Acme — a refresh-the-page-and-it-works bug, the worst kind to debug.
+
+:::note
+Putting `setActiveOrganization` inside the transaction looks like it breaks the "no external IO in a transaction" rule, but it doesn't. That rule is about *network* IO — an email send, a Stripe call — where a slow third party holds a database connection hostage. `setActiveOrganization` is a Better Auth call that writes a session row in your own database, in-process. It's a DB write, so it belongs with the other DB writes.
+:::
+
+Notice the redirect target: a plain `/dashboard`, not a `next` param. Signing in carries a `next` because the user was *headed somewhere* and got bounced to sign in. Accepting an invite is its own intent with its own destination — the org you just joined. The protected layout resolves `/dashboard` inside Bob's now-active Acme context, so he lands in the right tenant by construction. There's nothing to thread through a query string.
+
+This is also why <Term definition="A WHERE clause guards the write against concurrent changes: the row must still be in the expected state for the update to land. Two racing updates compete; one matches, the other affects zero rows.">optimistic concurrency</Term> earns its keep here, and why the flow is safe to click twice. The `status = 'pending'` precondition means the action never *assumes* the row is still acceptable at write time — it lets the database decide, atomically, which of two competing accepts wins.
+
+## The signed-out signup path loops home
+
+Shape D is the only arrival with a loop, and seeing the loop closes the question "how does a brand-new user, who has no account and no session, ever reach an Accept button?" The answer is that Shape D doesn't have its own write path — it routes Bob back through the front door until he's in Shape A. Scrub through the round trip.
+
+<DiagramSequence>
+  <DiagramStep>
+    <SignupLoopStrip active="click" />
+    <Fragment slot="caption">
+      Signed out, no account. `GET /accept-invite?…` passes the verify gate and lands on **Shape D** — a sign-up form, email-locked to the invited address.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <SignupLoopStrip active="signup" />
+    <Fragment slot="caption">
+      Bob submits the sign-up form. It runs the existing sign-up action with `next` set to this same accept URL. An account and a session are created.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <SignupLoopStrip active="return" />
+    <Fragment slot="caption">
+      The browser returns to `/accept-invite?…`. This time there's a session, and its email matches the invitation — so the page renders **Shape A**, the Accept button.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <SignupLoopStrip active="accept" />
+    <Fragment slot="caption">
+      Bob presses Accept. `acceptInvitation` runs: it writes the `member` row, marks his email verified, switches his active org to Acme, logs the audit row, and redirects to `/dashboard`.
+    </Fragment>
+  </DiagramStep>
+</DiagramSequence>
+
+The judgment call this sequence embodies: **even immediately after sign-up, render the Accept button — don't auto-accept on his behalf.** It's tempting to save him a click — he just proved his identity, why make him press a button? Because the click is the consent signal, and Bob should see "you're about to join Acme" exactly once, on purpose, before he's a member. The cost is one extra click; the gain is that he knows what he joined. It also keeps the write path honest: Shape D doesn't get a special "sign up and accept in one shot" branch that duplicates the action. D collapses into A, and A is the only place the write fires.
+
+## Token already used, and the double-click
+
+You've now seen every screen and the one write. The last thing to settle is what happens when the link gets clicked more than once — because it will. People double-click. They reopen the tab they left open yesterday. They forward the email to themselves and click the new copy. The flow has to stay calm under all of it, and the reassuring part is that you've already built every piece that makes it safe.
+
+**The link clicked a second time, already accepted.** The second `GET` runs the same verify ladder, reaches the status switch, and finds `status = 'accepted'`. That's not an error — it's the friendly "you're already a member of Acme" landing with a link to the dashboard. The most common cause is a double-click or a stale tab, and the right response is to quietly deliver the human where they were going, not to scold them with an error page.
+
+**Two tabs, two simultaneous Accepts.** Bob has the page open twice and clicks Accept in both within the same second. Both `POST`s enter `acceptInvitation`, both pass verification, both try to flip the invitation. This is where the `where status = 'pending'` precondition does its job: the database lets exactly one update match the row; the other matches zero rows. One tab gets the new member and the redirect; the other resolves harmlessly into the already-a-member branch. The lesson to internalize: **never assume the row is still pending when you write** — the `where` clause is the guard that makes the race a non-event. That's what makes this whole flow <Term definition="An operation you can apply more than once with the same effect as applying it once. Clicking accept twice produces one membership, not two — and no error.">idempotent</Term>. The deeper walk-through of that race — the full sequence, who wins and why — is the job of "Orphans, mismatches, and the double-click race"; here it's enough to know the guard is in place.
+
+<VideoCallout videoId="wEsPL50Uiyo" videoTitle="Why understanding database concurrency control is important">
+  Web Dev Cody fires 100 concurrent writes at one row, then fixes the race with the exact `where version =` precondition this flow uses on `status` (9 min).
+</VideoCallout>
+
+<TrueFalse instructions="Each claim is about how the accept flow behaves when a link is clicked more than once.">
+  <Statement answer="false">
+    Clicking an already-accepted invitation link a second time renders an error page.
+    <TfWhy>False. It renders the friendly "you're already a member" landing with a dashboard link. A second click is almost always a double-click or a reopened tab — the flow delivers the person where they were going, not an error.</TfWhy>
+  </Statement>
+
+  <Statement answer="true">
+    When two Accept submissions race, the `where status = 'pending'` clause on the update lets only one of them succeed.
+    <TfWhy>True. The first update matches the still-pending row; the second matches zero rows and resolves into the already-a-member branch. The precondition is the concurrency guard — that's why the flow is idempotent.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    Rendering the accept page writes the `member` row.
+    <TfWhy>False. The render is a pure read-and-decide that produces a button. The write happens only in `acceptInvitation`, behind the consent click — never on a GET, which scanners and unfurlers also issue.</TfWhy>
+  </Statement>
+</TrueFalse>
+
+You've turned one URL into four authentication situations, gated all of them behind a single verify ladder that refuses as one, and written the `member` row exactly once — behind a consent click, re-verified in the action, safe to click twice. The mental model to keep: the accept URL is a key. Clicking it unlocks a decision page, not a door. The door opens only when the right human, authenticated as the invited email, presses Accept — and the action checks the key again on the way through.
+
+## External resources
+
+The Better Auth pages below are the source of truth for the two organization-plugin calls this flow leans on; the MDN page grounds the "a GET must not write" argument that the whole accept-page shape is built on.
+
+<CardGrid>
+  <ExternalResource
+    title="Better Auth — Organization plugin"
+    href="https://www.better-auth.com/docs/plugins/organization"
+    icon="lucide:users"
+    description="Reference for acceptInvitation and setActiveOrganization, the two server APIs the accept action calls."
+  />
+  <ExternalResource
+    title="MDN — Safe and idempotent HTTP methods"
+    href="https://developer.mozilla.org/en-US/docs/Glossary/Safe/HTTP"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="Why a GET must have no side effects — the rule the read-then-gate page shape obeys."
+  />
+  <ExternalResource
+    title="MDN — SubtleCrypto.verify()"
+    href="https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/verify"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The HMAC-verify call the gate uses instead of ===, returning a boolean that decides accept or refuse."
+  />
+</CardGrid>
