@@ -1,0 +1,572 @@
+---
+title: Sign up creates the account
+chapter-id: 055
+course-progress: 0.00005
+sidebar:
+  order: 2
+  label: Sign up creates the account
+---
+
+import Figure from '../../../components/figures/Figure.astro';
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import { CardGrid, Steps } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+This is the lesson where the app gets its spine. By the end a visitor can fill in the sign-up form, hit submit, and have a real account waiting for them in Postgres — a `user` row and an `account` row that holds the hash of their password. What they do *not* get is a session. They land on a "check your inbox" screen with no cookie set, because the project runs with email verification required from the first line of config: an account exists, but until the email is verified there is nobody signed in.
+
+The win here is mostly rows in the database, not pixels on the screen. The form itself already renders — it shipped with the starter — and the verify-email screen it sends you to is still a placeholder until the next lesson. What you are wiring is everything behind the submit button.
+
+<Figure caption="The form is provided — this lesson wires what happens when it is submitted.">
+  <Screenshot viewport="desktop">
+    <img
+      src="/screenshots/055/l2-desktop-1280.png"
+      alt="The /sign-up page titled 'Create your account' with stacked Name, Email, and Password fields above a black Create account submit button."
+    />
+  </Screenshot>
+</Figure>
+
+## Your mission
+
+This lesson stands up the auth spine and proves it end to end with one working sign-up. You configure the `betterAuth` instance as the single server-side auth module — Better Auth's API is consumed directly, with no wrapper layer of your own functions over it. You let the Better Auth CLI generate the four-table Drizzle schema instead of hand-writing it, and you mount one catch-all handler at `/api/auth/[...all]` that serves every endpoint the library exposes, rather than a route file per action.
+
+The single line that earns the most scrutiny is `nextCookies()` in the plugin array. It is the bridge that lets a Better Auth call land its `Set-Cookie` header on the Server Action's response. Without it a call succeeds on the server and the cookie silently never reaches the browser — the canonical Next.js failure with this library. That failure only bites once a session is actually issued, which does not happen in this lesson, so it is tempting to skip. Wire it now anyway, so the bridge is already in place before the first session lands in the next lesson and you are not debugging a missing cookie under time pressure.
+
+From the start `requireEmailVerification: true` and `autoSignIn: false` both hold. Their combined effect is the whole point of the lesson: sign-up creates the account but issues no session and sets no cookie — the user must verify their email before any session exists. Honor the carried-in cookie defaults at the call site: the `__Host-` prefix, `Secure` cookies in production only, and `minPasswordLength: 12` rather than the library's default of 8, which is the floor a team would actually ship with in 2026. `Secure` is production-only for a concrete reason — the browser refuses to store a `Secure` cookie over `http://localhost`, so leaving it on in development would make local sign-in silently drop its cookie.
+
+The sign-up action parses the submitted `FormData` with a Zod schema at the boundary, returns the project's standard `Result` shape on a validation miss so the form can re-render an inline message, and routes any genuinely-thrown Better Auth error through the provided `mapAuthError` in a `catch`. A taken email is deliberately *not* one of those errors. Under `autoSignIn: false`, submitting an email that already has an account returns the same generic success as a fresh sign-up — Better Auth does not throw. So the action ships no "email already exists" branch. Adding one would rebuild the user-enumeration oracle the authentication chapters closed at the source: a public sign-up form that tells an attacker which emails are registered. On success the action redirects to `/verify-email?email=…`.
+
+Out of scope, so you do not reach for them: the verification email itself — both the template and the `emailVerification` config block — lands in the next lesson; this lesson only confirms the rows and the redirect. The sign-in surface and the protected-route gate arrive in the two lessons after that. One thing you *do* write now that nothing calls yet: `getCurrentUser()` and `requireUser()`. They live in `lib/auth.ts` alongside the instance and are part of the spine, even though the first code to read them is the protected layout in the final lesson.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">Submitting `/sign-up` with a fresh email, a 12-character password, and a name creates a `user` row whose `emailVerified` is `false`.</ChecklistItem>
+  <ChecklistItem chip="tested">The same submission creates an `account` row with `providerId: 'credential'` and a scrypt hash in the `password` column; no `verification` row is written.</ChecklistItem>
+  <ChecklistItem chip="tested">Submitting a password shorter than 12 characters or a malformed email re-renders the form with an inline validation message and creates no rows.</ChecklistItem>
+  <ChecklistItem chip="tested">Submitting an email that already has an account follows the same generic success path as a fresh sign-up — no "email already exists" tell, no crash.</ChecklistItem>
+  <ChecklistItem chip="untested">The submission issues no session and sets no cookie — DevTools shows no `session_token` after sign-up — and the browser is redirected to `/verify-email?email=…`</ChecklistItem>
+  <ChecklistItem chip="untested">Running the Better Auth CLI generates `src/db/schema/auth.ts` with `user`, `session`, `account`, and `verification` tables, and the migration creates all four in Postgres with their indexes and FK cascades.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Build the spine against the brief and the tests first, then open the walkthrough to check your work. The order below is build order — environment, then the schema, then the instance, then the handler and the action — because each step depends on the one before it.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+### Add the two env vars
+
+Every later module reads its Better Auth config through the validated `env` object, never `process.env` directly — that is the rule the env boundary exists to enforce. So the first move is to teach that boundary about the two new variables. Add them to both the `server` block (where they are validated) and `runtimeEnv` (where they are mapped from `process.env`).
+
+```ts title="src/env.ts" ins={12,13,26,27}
+import { createEnv } from '@t3-oss/env-nextjs';
+import { z } from 'zod';
+
+// The single env boundary: application code imports `env`, never `process.env`.
+// createEnv validates at build time — a missing/invalid DATABASE_URL fails
+// `next build` with a message naming the variable.
+export const env = createEnv({
+  server: {
+    DATABASE_URL: z.url(),
+    DATABASE_URL_UNPOOLED: z.url(),
+    SEED: z.coerce.number().default(1),
+    BETTER_AUTH_SECRET: z.string().min(32),
+    BETTER_AUTH_URL: z.url(),
+    RESEND_API_KEY: z.string().min(1),
+    EMAIL_FROM: z.string().min(1),
+    EMAIL_REPLY_TO: z.email(),
+  },
+  client: {
+    NEXT_PUBLIC_APP_NAME: z.string().min(1),
+    NEXT_PUBLIC_APP_URL: z.url(),
+  },
+  runtimeEnv: {
+    DATABASE_URL: process.env.DATABASE_URL,
+    DATABASE_URL_UNPOOLED: process.env.DATABASE_URL_UNPOOLED,
+    SEED: process.env.SEED,
+    BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET,
+    BETTER_AUTH_URL: process.env.BETTER_AUTH_URL,
+    RESEND_API_KEY: process.env.RESEND_API_KEY,
+    EMAIL_FROM: process.env.EMAIL_FROM,
+    EMAIL_REPLY_TO: process.env.EMAIL_REPLY_TO,
+    NEXT_PUBLIC_APP_NAME: process.env.NEXT_PUBLIC_APP_NAME,
+    NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
+  },
+});
+```
+
+The `z.string().min(32)` on the secret is not arbitrary: a shorter secret weakens every cookie and token signature derived from it, so the boundary refuses to boot the app with a weak one.
+
+### Write the CLI-only generator config
+
+You are about to let the Better Auth CLI write your schema. The CLI loads a config file and reads its options to decide which tables it needs. It cannot read your real `auth.ts`, though, because that file opens with `import 'server-only'` — a marker that throws the instant it loads outside the React Server runtime, and the CLI's loader is not that runtime. So the project keeps a second, stripped-down config that exists only for the generator: a `'server-only'`-free mirror carrying just the options that shape the schema.
+
+```ts title="src/lib/auth-schema.config.ts"
+import { betterAuth } from 'better-auth';
+import { drizzleAdapter } from 'better-auth/adapters/drizzle';
+
+import { db } from '@/db';
+
+// CLI-only generator config — the `auth:generate` target. It is a server-only-free
+// mirror of lib/auth.ts: the CLI's jiti loader executes this whole import graph, and
+// any `import 'server-only'` in it throws, so this file (and everything it reaches)
+// stays server-only-free. It must never import @/lib/auth, @/lib/email, or
+// @/lib/suppressions. The real auth instance lives in src/lib/auth.ts.
+//
+// Only the schema-shaping options are mirrored — the adapter `provider` and the
+// `emailAndPassword` block — which yields the byte-identical four-table schema
+// (user/session/account/verification); no plugin here adds tables.
+export const auth = betterAuth({
+  database: drizzleAdapter(db, { provider: 'pg' }),
+  emailAndPassword: { enabled: true },
+});
+```
+
+Only the options that affect the table shape go here. The provider tells the generator it is targeting Postgres; `emailAndPassword` is what makes it emit the `account` table with a password column. None of the session, cookie, or plugin settings change the schema, so they are absent — and keeping them out is what keeps this file free of the `'server-only'` imports they would drag in.
+
+### Generate and commit the schema
+
+Run the generator. The `auth:generate` script points the CLI at the config above and writes the result to `src/db/schema/auth.ts`:
+
+<Steps>
+1. Run `pnpm auth:generate`. The CLI reads `auth-schema.config.ts`, sees it is targeting Drizzle on Postgres with email+password enabled, and writes the four-table schema to `src/db/schema/auth.ts`.
+
+   ```bash
+   pnpm auth:generate
+   ```
+
+2. Open the generated file and read it top to bottom — `user`, `session`, `account`, `verification`, plus their indexes and relations. You have seen these four tables before; revisit the Better Auth schema walkthrough in the setup chapter if any column is unfamiliar. Then commit it.
+
+   ```bash
+   git add src/db/schema/auth.ts && git commit -m "Generate Better Auth schema"
+   ```
+</Steps>
+
+Committing the generated file is a deliberate choice. The schema is the source of truth your migrations diff against, and a teammate (or CI) checking out the repo must see exactly the tables you generated — not re-run a generator and hope it produces the same bytes on a different Better Auth version. Generate once, read it, commit it, and from then on it is ordinary code under review like any hand-written schema.
+
+This is what the generator wrote. You do not type any of it — it is here so you know what you committed:
+
+```ts title="src/db/schema/auth.ts" collapse={17-34, 76-93}
+import { relations } from 'drizzle-orm';
+import { boolean, index, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
+
+export const user = pgTable('user', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  email: text('email').notNull().unique(),
+  emailVerified: boolean('email_verified').default(false).notNull(),
+  image: text('image'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at')
+    .defaultNow()
+    .$onUpdate(() => /* @__PURE__ */ new Date())
+    .notNull(),
+});
+
+export const session = pgTable(
+  'session',
+  {
+    id: text('id').primaryKey(),
+    expiresAt: timestamp('expires_at').notNull(),
+    token: text('token').notNull().unique(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at')
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+    ipAddress: text('ip_address'),
+    userAgent: text('user_agent'),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+  },
+  (table) => [index('session_userId_idx').on(table.userId)],
+);
+
+export const account = pgTable(
+  'account',
+  {
+    id: text('id').primaryKey(),
+    accountId: text('account_id').notNull(),
+    providerId: text('provider_id').notNull(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    accessToken: text('access_token'),
+    refreshToken: text('refresh_token'),
+    idToken: text('id_token'),
+    accessTokenExpiresAt: timestamp('access_token_expires_at'),
+    refreshTokenExpiresAt: timestamp('refresh_token_expires_at'),
+    scope: text('scope'),
+    password: text('password'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at')
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+  },
+  (table) => [index('account_userId_idx').on(table.userId)],
+);
+
+export const verification = pgTable(
+  'verification',
+  {
+    id: text('id').primaryKey(),
+    identifier: text('identifier').notNull(),
+    value: text('value').notNull(),
+    expiresAt: timestamp('expires_at').notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at')
+      .defaultNow()
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+  },
+  (table) => [index('verification_identifier_idx').on(table.identifier)],
+);
+
+export const userRelations = relations(user, ({ many }) => ({
+  sessions: many(session),
+  accounts: many(account),
+}));
+
+export const sessionRelations = relations(session, ({ one }) => ({
+  user: one(user, {
+    fields: [session.userId],
+    references: [user.id],
+  }),
+}));
+
+export const accountRelations = relations(account, ({ one }) => ({
+  user: one(user, {
+    fields: [account.userId],
+    references: [user.id],
+  }),
+}));
+```
+
+Two columns are worth flagging because they explain something this lesson asserts. `account.password` is where the scrypt hash of the password lands — never the plaintext, and that is what a test checks. And the `verification` table exists in the schema but stays empty in this whole flow: in this version of Better Auth the email-verification token is a stateless signed JWT carried in the URL, not a row that gets written and consumed. The table is there for the library's other token types; your email+password flow never touches it.
+
+### Spread the schema into the db client
+
+The Drizzle client only knows about the tables you hand it. Right now it has the suppressions schema; you need to add the generated auth schema so relational queries can resolve `user`, `session`, `account`, and `verification`.
+
+```ts title="src/db/index.ts" ins={4} ins=", ...authSchema"
+import { drizzle } from 'drizzle-orm/postgres-js';
+import postgres from 'postgres';
+import * as suppressionsSchema from '@/db/schema';
+import * as authSchema from '@/db/schema/auth';
+import { env } from '@/env';
+
+// postgres-js is the driver that reaches a vanilla (Docker) Postgres; the Neon
+// serverless driver speaks HTTP/WebSocket only and cannot. casing lives on the
+// client, set once — TS property names stay camelCase, columns map to snake_case.
+const client = postgres(env.DATABASE_URL);
+
+// The client holds the union of the pre-auth tables (email_suppressions) and the
+// CLI-generated auth tables (user/session/account/verification) so every app query
+// resolves its table.
+export const db = drizzle(client, {
+  schema: { ...suppressionsSchema, ...authSchema },
+  casing: 'snake_case',
+});
+
+// The pooled/unpooled split is a no-op locally; this alias exists so seed/migrate
+// code can read `dbUnpooled` per the convention Unit 20 makes real with Neon.
+export const dbUnpooled = db;
+```
+
+### Migrate the database
+
+The schema file describes the tables; the migration creates them. Generate a named migration from the schema diff, then apply it. Drizzle reads both schema files (the suppressions one and the auth one) and emits the SQL to create the four new tables with their indexes and foreign keys.
+
+<Steps>
+1. Generate the migration from the schema diff, giving it a readable name:
+
+   ```bash
+   pnpm db:generate --name add_auth_tables
+   ```
+
+2. Apply it to the running Postgres:
+
+   ```bash
+   pnpm db:migrate
+   ```
+
+3. Open Drizzle Studio and confirm the four tables now exist alongside `email_suppressions`. Check that `session` and `account` each carry their `user_id` index and a foreign key back to `user` with `on delete cascade` — deleting a user takes its sessions and accounts with it.
+
+   ```bash
+   pnpm db:studio
+   ```
+</Steps>
+
+### Configure the auth instance
+
+This is the heart of the lesson. `src/lib/auth.ts` is the one server-side auth module: it constructs the `betterAuth` instance and exposes the helpers the rest of the app reads through. Walk it in parts.
+
+<AnnotatedCode lang="ts" maxLines={16} code={`
+import 'server-only';
+
+import { betterAuth } from 'better-auth';
+import { drizzleAdapter } from 'better-auth/adapters/drizzle';
+import { nextCookies } from 'better-auth/next-js';
+import type { Route } from 'next';
+import { headers } from 'next/headers';
+import { redirect } from 'next/navigation';
+import { cache } from 'react';
+
+import { db } from '@/db';
+import * as authSchema from '@/db/schema/auth';
+import { env } from '@/env';
+
+// Declared once here, imported by the proxy. \`__Host-\` can't set over
+// http://localhost, so dev drops the prefix.
+export const SESSION_COOKIE_PREFIX =
+  process.env.NODE_ENV === 'production' ? '__Host-better-auth' : 'better-auth';
+
+export const auth = betterAuth({
+  database: drizzleAdapter(db, { provider: 'pg', schema: authSchema }),
+  secret: env.BETTER_AUTH_SECRET,
+  baseURL: env.BETTER_AUTH_URL,
+  emailAndPassword: {
+    enabled: true,
+    requireEmailVerification: true,
+    minPasswordLength: 12,
+    autoSignIn: false,
+  },
+  session: {
+    expiresIn: 60 * 60 * 24 * 30,
+    updateAge: 60 * 60 * 24,
+    freshAge: 60 * 10,
+    cookieCache: { enabled: true, maxAge: 5 * 60 },
+  },
+  advanced: {
+    cookiePrefix: SESSION_COOKIE_PREFIX,
+    useSecureCookies: process.env.NODE_ENV === 'production',
+  },
+  // nextCookies() MUST be last in \`plugins\` — it flushes Set-Cookie from the action
+  // response; out of order, sign-up/sign-in succeed server-side but no cookie lands.
+  plugins: [nextCookies()],
+});
+
+type User = typeof auth.$Infer.Session.user;
+
+// The single direct session read in the codebase; \`cache\` dedupes it per request.
+// Every read flows through getCurrentUser / requireUser, never this directly.
+const getSession = cache(async () =>
+  auth.api.getSession({ headers: await headers() }),
+);
+
+export const getCurrentUser = async (): Promise<User | null> =>
+  (await getSession())?.user ?? null;
+
+export const requireUser = async (next?: string): Promise<User> => {
+  const user = await getCurrentUser();
+  if (!user) {
+    redirect(
+      (next
+        ? \`/sign-in?next=\${encodeURIComponent(next)}\`
+        : '/sign-in') as Route,
+    );
+  }
+  return user;
+};
+`}>
+  <AnnotatedStep meta={`{1} "'server-only'"`} color="red">
+    `import 'server-only'` is the very first line. This module reaches the database and holds the auth secret, so it must never end up in a browser bundle — the marker turns an accidental client import into a build error instead of a silent leak.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{15-18}" color="blue">
+    `SESSION_COOKIE_PREFIX` is declared once and exported, then read back by the proxy in the final lesson. Keeping it as one source of truth stops the set and the read from drifting; production locks it to `__Host-`, dev relaxes it because the browser won't set a `Secure` cookie over `http://localhost`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{24-29}" color="green">
+    The `emailAndPassword` block is the lesson's center: `requireEmailVerification: true` and `autoSignIn: false` mean sign-up creates the account but issues no session, and `minPasswordLength: 12` pairs with the schema check in the action.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{30-35}" color="blue">
+    The `session` block carries the setup chapter's values — a 30-day expiry, 1-day sliding renewal, a 10-minute fresh window, and a 5-minute cookie cache. You exercise none of them here, but they belong on the instance from the moment it exists.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{40-42} "nextCookies()"`} color="orange">
+    `nextCookies()` is **last** in `plugins`: the bridge that flushes Better Auth's `Set-Cookie` onto the Server Action response. Out of order or absent, a call succeeds on the server but the cookie never reaches the browser — invisible this lesson because no session is issued, which is exactly why it is easy to forget.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{48-66}" color="violet">
+    The read ladder: a React-`cache`d `getSession` is the one direct call to `auth.api.getSession`, `getCurrentUser()` returns the user or `null`, and `requireUser(next?)` redirects to `/sign-in` when there is nobody. Nothing calls these until the final lesson, but they are the spine's public read surface.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+A few of these choices repay a closer look.
+
+`import 'server-only'` is the very first line. This module reaches the database and holds the auth secret, so it must never end up in a browser bundle. The marker turns an accidental client import into a build error instead of a silent leak — and it is exactly why the schema generator needs its own config file, since the marker would throw inside the CLI.
+
+`SESSION_COOKIE_PREFIX` is declared once and exported. In production it is `__Host-better-auth`; in development it relaxes to plain `better-auth`. The `__Host-` prefix is a browser-enforced lock — a cookie carrying it must be `Secure`, host-only, and path `/` — and the browser will not set a `Secure` cookie over `http://localhost`, so development cannot use the locked name. The reason this is a single exported constant rather than a string literal you write in two places: the proxy in the final lesson reads the cookie back by this exact prefix. If the value drifts between where it is set and where it is read, the proxy's lookup silently misses the cookie and bounces signed-in users. One source of truth removes that whole class of bug.
+
+The `session` block carries the values the setup chapter settled on — a 30-day expiry, a 1-day sliding renewal window, a 10-minute "fresh" window for sensitive operations, and a 5-minute cookie cache that lets most requests read the session straight off the cookie without a database round trip. You are not exercising any of these knobs in this lesson, but they belong on the instance from the moment it exists; later lessons and later chapters read them.
+
+`nextCookies()` is the last entry in `plugins`, and the comment says why in the file. It is the bridge that flushes Better Auth's `Set-Cookie` onto the Server Action response. Plugins run in array order, and this one has to run last so it sees the cookies every earlier plugin queued. Out of order, or absent, a call succeeds on the server and the cookie never reaches the browser. No session is issued in this lesson, so you will not *see* it fail here — which is exactly why it is easy to forget. Put it in now.
+
+<VideoCallout videoId="x4hQ2Hmuy3k" videoTitle="Cosden Solutions — Better Auth in Next.js (Complete Tutorial)">
+  Cosden Solutions builds the same spine you are wiring here — the `betterAuth` server instance, the `[...all]` handler, and the `nextCookies()` plugin (35 min); skip the UI section at the end.
+</VideoCallout>
+
+The bottom of the file is the read ladder, and you write it now even though nothing calls it until the final lesson. `getSession` is the one place that calls `auth.api.getSession` directly, wrapped in React's `cache` so multiple reads in the same request share one result instead of hitting the database repeatedly. `getCurrentUser()` returns the user or `null`; `requireUser(next?)` is the same read but redirects to `/sign-in` when there is nobody, optionally threading a `?next=` so the user returns where they were headed after signing in. These two are the spine's public read surface, and keeping them next to the instance is what keeps every session read in the app flowing through one deduplicated path.
+
+The browser side of the spine is already provided in `src/lib/auth-client.ts` — a bare `createAuthClient()` with no `baseURL`, because the client and the API live on the same origin. You do not touch it this lesson, but it is what the client islands in later lessons call.
+
+### Mount the catch-all handler
+
+Better Auth exposes dozens of endpoints — sign-up, sign-in, sign-out, verify, session reads, and more. They all live under `/api/auth`, and one route file serves all of them. The `[...all]` segment is a catch-all that matches every path beneath it and hands the request to the library's handler.
+
+```ts title="src/app/api/auth/[...all]/route.ts"
+import { toNextJsHandler } from 'better-auth/next-js';
+
+import { auth } from '@/lib/auth';
+
+export const { POST, GET } = toNextJsHandler(auth);
+```
+
+The catch-all is not optional and it is not a per-action thing. Writing a route file per endpoint would break the library, which expects to own the entire `/api/auth/*` surface from one handler — the rule the setup chapter established. This one file, three lines, is the whole server-side route surface for auth in the project.
+
+### Write the sign-up action
+
+Now the action that ties it together. It parses the form, calls Better Auth, and redirects.
+
+<AnnotatedCode lang="ts" maxLines={16} code={`
+'use server';
+
+import type { Route } from 'next';
+import { redirect } from 'next/navigation';
+import { z } from 'zod';
+
+import { auth } from '@/lib/auth';
+import { mapAuthError } from '@/lib/auth/error-mapping';
+import { err, type Result } from '@/lib/result';
+
+const SignUpSchema = z.strictObject({
+  name: z.string().min(1).max(80),
+  email: z.string().trim().toLowerCase().pipe(z.email()),
+  password: z.string().min(12),
+});
+
+export const signUpAction = async (
+  _prevState: Result<never> | null,
+  formData: FormData,
+): Promise<Result<never>> => {
+  const parsed = SignUpSchema.safeParse(Object.fromEntries(formData));
+  if (!parsed.success) {
+    return err(
+      'validation',
+      'Check the highlighted fields.',
+      z.flattenError(parsed.error).fieldErrors,
+    );
+  }
+
+  // No authorize seam: sign-up is a public endpoint.
+
+  const { name, email, password } = parsed.data;
+  try {
+    // No taken-email branch: under autoSignIn:false a duplicate returns generic
+    // success, so enumeration is closed at the source (Ch053 L1) — a taken email
+    // and a fresh one are indistinguishable to the caller.
+    await auth.api.signUpEmail({ body: { name, email, password } });
+  } catch (e) {
+    return mapAuthError(e);
+  }
+
+  redirect(\`/verify-email?email=\${encodeURIComponent(email)}\` as Route);
+};
+`}>
+  <AnnotatedStep meta={`{21} "safeParse"`} color="blue">
+    The parse seam comes first and owns all input validation. The schema also normalizes the email — trimmed and lowercased — and its `min(12)` is the boundary check that pairs with `minPasswordLength: 12` on the instance.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{22-28}" color="orange">
+    On a parse miss the action returns `err('validation', …)` carrying per-field messages flattened out of the Zod error, and the provided form renders those inline under each input — no rows written.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{33-40} "mapAuthError"`} color="green">
+    `signUpEmail` sits in a `try`/`catch` that routes thrown errors through `mapAuthError`. Note what is **not** here: no taken-email branch. Under `autoSignIn: false` a duplicate returns generic success, so the `catch` never sees one — and inventing a branch would rebuild the enumeration oracle.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{42}" color="violet">
+    On success, redirect to `/verify-email` carrying the email as a query param. There is no session to set — `requireEmailVerification: true` means the account exists but nobody is signed in. The redirect is the win this lesson confirms.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The parse seam comes first and owns all input validation. `safeParse` returns a discriminated result; on failure the action returns `err('validation', …)` carrying per-field messages flattened out of the Zod error, and the provided form renders those inline under each input. Note the schema also normalizes the email — trimmed and lowercased — before validating it, so `Ada@Acme.test ` and `ada@acme.test` resolve to the same account. The `min(12)` on the password is the boundary check that pairs with the `minPasswordLength: 12` on the instance.
+
+The `signUpEmail` call sits inside a `try`/`catch`, and the `catch` routes any thrown error through `mapAuthError`, which collapses the library's failures into the project's `Result` codes. But look at what is *not* there: no branch for a taken email. Under `autoSignIn: false`, `signUpEmail` does not throw on a duplicate — it returns the same generic success as a fresh sign-up. So the `catch` never sees a taken-email error, and you must not invent one. A sign-up form that responds differently to a registered email than to a fresh one is a user-enumeration oracle; closing it at the source means the action has nothing to leak.
+
+After a successful call comes the redirect to `/verify-email`, carrying the email as a query param so the next screen can show the user where the link was sent. There is no session to set here — `requireEmailVerification: true` means the account exists but nobody is signed in yet. The redirect is the win this lesson confirms: account created, email handed off to the verify screen, no cookie in sight.
+
+The form is already done — `src/app/(auth)/sign-up/sign-up-form.tsx` wires `useActionState(signUpAction, null)`, renders the top-level `userMessage` in an error card, and drops a per-field error under each input. You change no page or component code; the action is the only thing you write here.
+
+:::note
+The `Result` discriminant, the `useActionState` wiring on the form, and the Zod-at-the-boundary pattern are all carried in from the forms and Server Actions chapters — revisit those if the shape of the action is unfamiliar. This lesson reuses them as-is and spends its attention on the auth-specific decisions instead.
+:::
+
+:::tip[Why no session, no cookie]
+The combination of `requireEmailVerification: true` and `autoSignIn: false` is what makes sign-up create rows but issue nothing else — no session row, no cookie. The redirect to `/verify-email` is the entire observable result. If you find yourself looking for a `session_token` in DevTools after signing up, that absence is correct, not a bug.
+:::
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Next.js integration"
+    href="https://better-auth.com/docs/integrations/next"
+    icon="simple-icons:betterauth"
+    description="The toNextJsHandler catch-all route and the nextCookies() plugin, straight from the source."
+  />
+  <ExternalResource
+    title="Drizzle ORM adapter"
+    href="https://better-auth.com/docs/adapters/drizzle"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="drizzleAdapter with provider 'pg' and the schema-generation step the CLI runs."
+  />
+  <ExternalResource
+    title="Better Auth CLI"
+    href="https://better-auth.com/docs/concepts/cli"
+    icon="simple-icons:betterauth"
+    description="What auth:generate does — the generate command that writes your four-table schema."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's test suite:
+
+```bash
+pnpm test:lesson 2
+```
+
+The suite talks to the same local Postgres the app uses, so make sure Docker is up and the migration ran before you run it. It exercises four behaviors: a fresh sign-up writes an unverified `user` row; the same submission writes a `credential` account carrying a scrypt hash and writes no `verification` row; an invalid password and a malformed email are both rejected at the boundary with no rows created; and a second sign-up with a taken email follows the same redirect as the first, proving there is no conflict tell. Expect every test to pass:
+
+```ansi title="trimmed output"
+ ✓ tests/lessons/Lesson 2.test.ts (5 tests)
+   ✓ sign-up creates an unverified user
+   ✓ sign-up creates a credential account and no verification row
+   ✓ sign-up rejects invalid input without writing rows
+   ✓ sign-up is enumeration-safe for a taken email
+
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+```
+
+The tests cover the rows and the rejection paths, but they do not open a browser or inspect the CLI output. Confirm the rest by hand:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">After a fresh sign-up, the browser lands on `/verify-email?email=…` and DevTools (Application → Cookies) shows no `session_token` cookie — none is issued until the email is verified.</ChecklistItem>
+  <ChecklistItem chip="untested">`pnpm auth:generate` produced `src/db/schema/auth.ts` with all four tables, and Studio shows them in Postgres with their indexes and FK cascades; the `verification` table is present but empty after a sign-up.</ChecklistItem>
+  <ChecklistItem chip="untested">The generated schema file is committed, and `src/db/index.ts` spreads `authSchema` into the Drizzle client.</ChecklistItem>
+  <ChecklistItem chip="untested">`src/lib/auth.ts` starts with `'server-only'` on its first line.</ChecklistItem>
+</Checklist>
+
+With this in place the account exists, but the verify screen it sends you to is still a dead end — nothing sends the link yet. In the next lesson, *The email verification gate*, you build the verification email, wire the callback that sends it through your Resend pipeline, and prove that clicking the link flips the user to verified and signs them in — the first point in the flow where a session and cookie actually land.
