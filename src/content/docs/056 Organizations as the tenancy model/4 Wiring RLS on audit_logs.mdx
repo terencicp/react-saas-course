@@ -1,0 +1,422 @@
+---
+title: Wiring RLS on audit_logs with policies and SET LOCAL
+tagline: Enforce multi-tenant isolation at the database layer with Postgres Row-Level Security, declaring policies through Drizzle and carrying the tenant identity per request with SET LOCAL.
+chapter-id: 56
+course-progress: 0.00005
+sidebar:
+  order: 4
+  label: Wiring RLS on audit_logs
+---
+
+import RlsRequestLifetime from '../../../components/lessons/056/4/RlsRequestLifetime.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Sequence from '../../../components/exercises/sequence/Sequence.astro';
+import Step from '../../../components/exercises/sequence/Step.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The last lesson reached a verdict: of every table in this stack, `audit_logs` is the one that earns Row-Level Security. The case is closed; now we wire it. That leaves four very concrete questions an experienced engineer asks before touching the keyboard. What does the actual policy syntax look like? How does a policy learn *which* organization it is filtering for, at the moment a query runs? How does the app hand the database that organization identity per request — without the value leaking onto the next request that shares the same pooled connection? And what test proves that another org's row never comes back, *even when you forget the `where` clause entirely*?
+
+By the end of this lesson you will have built four small artifacts that answer those questions and compose into one guarantee: a `pgPolicy` block that lives next to the table in your schema, a follow-up migration that forces the policy past the table owner, a `withTenant(orgId, fn)` helper that sets the tenant identity for the duration of a single transaction, and an isolation test you can read to see exactly what "the database refuses to leak" looks like in code.
+
+:::note
+This lesson wires only the *protection* around `audit_logs`. The table itself — its columns, what events write a row, the writer function that appends entries — arrives in the lesson on audit logging in the next chapter. Here we treat the table as already existing and concern ourselves with one thing: making sure a row written for one org is invisible to every other org.
+:::
+
+## How a policy decides which rows you see
+
+Before any Drizzle syntax, you need a precise mental model of what a policy actually *is*. A <Term definition="Per-row boolean rule Postgres evaluates on every query against the table.">policy</Term> is a per-row boolean rule that Postgres evaluates on every single query against a table. When a policy exists on a table and Row-Level Security is on, the database silently rewrites your query: every `SELECT`, `INSERT`, `UPDATE`, and `DELETE` gets the policy's condition stapled onto it, and rows that fail the condition simply don't exist as far as that query is concerned. You don't opt in per query. You can't forget it. The filter is the database's, not yours.
+
+Here is the canonical shape, written in plain SQL. You won't author it this way — the next section writes it through Drizzle — but raw SQL is the clearest way to see what every piece does, and reading one of these fluently is a skill worth a few minutes.
+
+<AnnotatedCode lang="sql" code={`
+CREATE POLICY audit_logs_org_isolation ON audit_logs
+  FOR ALL
+  TO authenticated
+  USING (organization_id = current_setting('app.org_id', true)::uuid)
+  WITH CHECK (organization_id = current_setting('app.org_id', true)::uuid);
+`}>
+  <AnnotatedStep meta={`"FOR ALL"`} color="blue">
+    One policy covers all four commands — select, insert, update, delete. You only split into per-command policies when the read and write predicates need to diverge, which is rare for plain tenant isolation: the same org owns the rows it reads and the rows it writes, so one predicate serves both.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"TO authenticated"`} color="blue">
+    This names the database role the policy applies to. `authenticated` is the role your request handlers connect as. This detail is load-bearing and has a sharp edge — the policy applies to this role, *not* to the table's owner role — which gets its own section shortly.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{4}" color="green">
+    `USING` is the read filter: the set of existing rows the query is even allowed to *see*. On a `SELECT`, `UPDATE`, or `DELETE`, any row where this expression is false is invisible — it can't be returned, updated, or deleted, because as far as the query is concerned it isn't there.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5}" color="violet">
+    `WITH CHECK` is the *write* filter: the rows an `INSERT` or `UPDATE` is allowed to *produce*. This is the one students reliably conflate with `USING`. The distinction: `USING` gates rows on the way *out* (what you can see), `WITH CHECK` gates rows on the way *in* (what you can write). An insert that tries to write a row for some other org passes no rows through `WITH CHECK`, so it is refused.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"current_setting('app.org_id', true)::uuid"`} color="orange">
+    This is the heart of it. The row's own `organization_id` is compared against a *connection session variable* named `app.org_id`. That variable is how the policy learns which tenant it is currently filtering for — the app sets it per request, and we get to that. Note the two small arguments riding along: the `, true` and the `::uuid` cast. Both are deliberate fail-closed choices, and both get unpacked in their own section near the end. For now just register that they are not decoration.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Notice the inversion against the `tenantDb(orgId)` helper from earlier in this chapter. With that helper, *the application* supplies the org filter — it composes `eq(organizationId, orgId)` into every query so you can't forget it. With RLS, *the database* supplies the filter, and it refuses to be talked out of it. Every query, every connection, every code path — a Server Action, a background job, a one-off `psql` session at 2am, a hand-written SQL script someone runs to "just check something" — all of them get the org predicate, because it lives below the application entirely.
+
+This is the load-bearing idea to hold onto from the last lesson: `tenantDb` is *always*; RLS is *sometimes, and on top*. The two are additive, never either/or. `tenantDb` guards every tenant table at the application layer. The policy guards this one high-stakes table a second time at the database layer. Two independent layers, and — as you'll see — each one catches the other's bugs.
+
+A <Term definition="Connection-scoped key/value, read with current_setting, that carries the tenant id into the policy.">session variable</Term> here means a connection-scoped key/value pair, read back with `current_setting`, that carries the current tenant's id into the policy. Keep that term in mind; the second half of the lesson is almost entirely about setting it correctly.
+
+<VideoCallout videoId="vZT1Qx2xUCo" videoTitle="Everything you need to know about Postgres Row Level Security">
+  Supabase CEO Paul Copplestone's 18-minute POSETTE talk frames RLS as an implicit `WHERE` clause and walks `USING` vs `WITH CHECK`, permissive-policy OR-ing, and the owner bypass — the exact concepts this section just introduced.
+</VideoCallout>
+
+## Authoring the policy in the schema with pgPolicy
+
+You *could* write that `CREATE POLICY` statement by hand into a migration file. Don't. One of this stack's architectural principles is that the schema is the single source of truth — the table's shape, its indexes, and its policies all live together in one TypeScript file, and `drizzle-kit generate` derives the SQL migration *from* that file. If you hand-edit a generated migration to add a policy, your schema file no longer describes reality, and the next `generate` won't know the policy exists. The two drift, and drift in a security boundary is exactly the kind of bug you don't find until it's a breach.
+
+So the policy lives in the schema, declared on the table as a modifier. Here is the block.
+
+<AnnotatedCode lang="ts" code={`
+export const auditLogs = pgTable(
+  'audit_logs',
+  {
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'restrict' }),
+    // remaining columns land in the next chapter's audit-logging lesson
+  },
+  (t) => [
+    pgPolicy('audit_logs_org_isolation', {
+      as: 'permissive',
+      for: 'all',
+      to: authenticatedRole,
+      using: sql\`\${t.organizationId} = current_setting('app.org_id', true)::uuid\`,
+      withCheck: sql\`\${t.organizationId} = current_setting('app.org_id', true)::uuid\`,
+    }),
+  ],
+).enableRLS();
+`}>
+  <AnnotatedStep meta="{9-17}" color="blue">
+    The third argument to `pgTable` is a callback that returns an array of table-level extras — indexes, constraints, and policies. It receives `t`, a handle to the table's own columns, so you can reference them inside SQL templates.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{10-13}" color="blue">
+    This is the Drizzle equivalent of the `CREATE POLICY` you just read. `for: 'all'` is the `FOR ALL`; `to: authenticatedRole` is the `TO authenticated`; `as: 'permissive'` is the policy *mode*, which the next term explains.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{14-15}" color="green">
+    These are the same two predicates from the raw SQL, written as `sql` tagged templates. `${t.organizationId}` interpolates the column reference — Drizzle turns it into the correct quoted identifier — and everything else inside the backticks is raw policy SQL passed straight through. The two predicates being identical is the whole signature of tenant isolation: you read what your org owns, you write only what your org owns.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`".enableRLS()"`} color="orange">
+    This chained modifier is what tells Drizzle to emit the `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` statement alongside the policy. Without RLS enabled, a policy is inert — Postgres won't apply it. Remember this method name; it's about to matter that it enables but does not *force*.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+A <Term definition="OR-combined with other permissive policies; the default. Restrictive policies are AND-combined — not needed for single-tenant isolation.">permissive</Term> policy is the default mode. When a table has several permissive policies, they are combined with OR — a row is visible if *any* of them allows it. (The other mode, *restrictive*, combines with AND and is for layering extra constraints on top; you don't need it for single-tenant isolation, where one predicate says everything.)
+
+Now, that block is the portable way to write the policy — it works on any Postgres you might deploy to. But this course runs Neon in production, and Neon ships a one-call shortcut worth knowing. The following two tabs show the same policy authored both ways.
+
+<CodeVariants>
+  <CodeVariant label="pgPolicy (portable)">
+    ```ts
+    pgPolicy('audit_logs_org_isolation', {
+      as: 'permissive',
+      for: 'all',
+      to: authenticatedRole,
+      using: sql`${t.organizationId} = current_setting('app.org_id', true)::uuid`,
+      withCheck: sql`${t.organizationId} = current_setting('app.org_id', true)::uuid`,
+    }),
+    ```
+    **Works on any Postgres** — a Docker container locally, RDS, Supabase, Neon. This is the default for this course because portability is worth more than a few saved keystrokes, and it reads explicitly. The four CRUD commands all ride the single `for: 'all'`.
+  </CodeVariant>
+
+  <CodeVariant label="crudPolicy (Neon)">
+    ```ts
+    crudPolicy({
+      role: authenticatedRole,
+      read: sql`${t.organizationId} = current_setting('app.org_id', true)::uuid`,
+      modify: sql`${t.organizationId} = current_setting('app.org_id', true)::uuid`,
+    }),
+    ```
+    **Neon-only.** `crudPolicy` collapses the four commands into a single call when the read and write predicates are identical — which, for tenant isolation, they always are. Under the hood it expands into the equivalent of four `pgPolicy` definitions. Import `crudPolicy` and `authenticatedRole` from `drizzle-orm/neon`.
+  </CodeVariant>
+</CodeVariants>
+
+Lead with `pgPolicy`. It's the one that runs everywhere, and being explicit about each command is a feature in a security boundary, not noise.
+
+:::note
+There's a subtlety worth naming: declaring a policy on a table *auto-enables* RLS, so `.enableRLS()` is technically redundant when a policy is present. Keep it anyway. It documents intent at the call site — anyone reading the schema sees RLS is on without having to know the auto-enable rule — and the very next section needs RLS *forced*, not merely enabled, which is a separate thing entirely.
+:::
+
+:::note
+A forward note on versions. This course pins Drizzle 0.45 and drizzle-kit 0.31, where `.enableRLS()` plus `pgPolicy(...)` is the correct surface. The Drizzle 1.0 beta renames `.enableRLS()` to `pgTable.withRLS(...)`. Author against the pinned version; when you eventually upgrade, that one method moves.
+:::
+
+## Enable is not enough: forcing RLS past the table owner
+
+Here is the single highest-value gotcha in this lesson, and it is the kind that ships silently.
+
+Picture it. You wrote the policy. You ran the migration — and the migration connects as the table's *owner* role, which read and wrote every row without the policy applying to it at all. You wrote an isolation test, ran it, watched it go green. You shipped. And then, in production, a real user's request — connecting as the non-owner `authenticated` role — became the very first thing in the entire history of your app to actually exercise the policy.
+
+The reason is a default that surprises almost everyone the first time: **`ENABLE ROW LEVEL SECURITY` does not apply to the table's owner.** Owners (and superusers) bypass their own tables' policies by default. The thinking behind it is that the owner is trusted to manage the table — but in a SaaS, your migrations and admin tooling run as the owner, and so, if you're not careful, do your tests. Which means your policy can be completely broken and every owner-run code path will sail straight through it, telling you everything is fine.
+
+The fix is one more line, and you have to understand why both lines exist:
+
+- `ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY` turns the policy on. This is what `.enableRLS()` generates for you.
+- `ALTER TABLE audit_logs FORCE ROW LEVEL SECURITY` makes the policy apply to the table owner too. Without it, the owner bypasses; with it, *everyone* is subject to the policy — no exceptions, no trusted roles.
+
+And here is the load-bearing fact: **`drizzle-kit generate` emits the `ENABLE` but not the `FORCE`.** The codegen has no `force` option, so this is a real thing you must add by hand, every time, on every RLS table. The senior workflow looks like this:
+
+1. Generate the migration from your schema (`drizzle-kit generate`).
+2. **Read the generated SQL.** Never ship an unread RLS migration — this is a reflex, not a suggestion. Confirm the `ENABLE` line is present and the `FORCE` line is absent.
+3. Add the `FORCE` in a follow-up custom migration: `drizzle-kit generate --custom --name force_audit_rls` gives you an empty migration file, into which you write the single `ALTER TABLE audit_logs FORCE ROW LEVEL SECURITY` statement.
+
+The two tabs below show the difference between what Drizzle gives you and what you actually need.
+
+<CodeVariants>
+  <CodeVariant label="Enabled only">
+    <div data-mark-color="red">
+
+    ```sql {6}
+    CREATE POLICY "audit_logs_org_isolation" ON "audit_logs"
+      AS PERMISSIVE FOR ALL
+      TO "authenticated"
+      USING (...) WITH CHECK (...);
+
+    ALTER TABLE "audit_logs" ENABLE ROW LEVEL SECURITY;
+    ```
+
+    </div>
+    **Owner bypasses, tests lie.** This is exactly what `drizzle-kit generate` produces. The policy exists and is enabled, but the owner bypasses it — so your migrations, your admin scripts, and any owner-run test read and write every row regardless. The test passes for the wrong reason; the protection isn't real until a non-owner hits it.
+  </CodeVariant>
+
+  <CodeVariant label="Enabled + forced">
+    <div data-mark-color="green">
+
+    ```sql ins={2}
+    -- migration: force_audit_rls (written by hand, --custom)
+    ALTER TABLE "audit_logs" FORCE ROW LEVEL SECURITY;
+    ```
+
+    </div>
+    **Now the policy applies to everyone, owner included.** The hand-written follow-up migration adds `FORCE`. Owner-run tests and a non-owner request now exercise the exact same rules, so a passing test means something.
+  </CodeVariant>
+</CodeVariants>
+
+Make this a checklist item for every RLS table you ever add: **enable *and* force.** The bypass is invisible until the wrong role hits it, and "the wrong role" in production is a paying customer.
+
+One scope note so you don't go looking for more than belongs here. This lesson wires the *org-isolation* policy — the `FOR ALL` tenant filter. The next chapter's audit lesson adds a *second*, sibling policy on the same table: an append-only rule that denies `UPDATE` and `DELETE` at the database level, because an audit log you can edit is not an audit log. That's defense in depth on top of the app-side discipline that appends entries only through the audit writer (`logAudit(tx, event)`, whose signature forces a transaction). It's a different concern, owned next to the table where the writer lives — name it in your head, build it there.
+
+## Setting the tenant at request time: SET LOCAL and the withTenant helper
+
+The policy is inert unless the `app.org_id` session variable is set on the connection running the query. That's the dependency the whole second half hinges on: every request that touches `audit_logs` must set the variable *before* the query runs, or the policy reads an unset value and — by design — returns nothing.
+
+So how do you set it? There are two SQL forms, and the difference between them is the second of this lesson's two load-bearing footguns. Read both tabs carefully.
+
+<CodeVariants>
+  <CodeVariant label="Session-level (SET)">
+    <div data-mark-color="red">
+
+    ```sql
+    SET app.org_id = '...';
+    ```
+
+    </div>
+    **Leaks across requests on a pooled connection.** `SET` sets the variable for the *whole connection* — the entire session. Your app doesn't open a fresh connection per request; it borrows one from a pool and returns it when done. So after this request finishes, the connection goes back to the pool still carrying org A's value. The next request to borrow that connection inherits org A's `app.org_id` — and if it belongs to org B, it now reads and writes org A's rows. A cross-tenant leak, caused by a single missing keyword.
+  </CodeVariant>
+
+  <CodeVariant label="Transaction-local (SET LOCAL)">
+    <div data-mark-color="green">
+
+    ```sql "LOCAL"
+    SET LOCAL app.org_id = '...';
+    ```
+
+    </div>
+    **The only safe primitive on a pooled connection.** `SET LOCAL` scopes the variable to the *current transaction*. The moment that transaction commits or rolls back, the value is automatically discarded. The connection returns to the pool clean, carrying nothing, so the next request that borrows it starts from a blank slate.
+  </CodeVariant>
+</CodeVariants>
+
+That word *transaction* is doing real work, and it explains a design choice in the helper you're about to write. `SET LOCAL` (and its function-form cousin, which we'll get to) only persist *inside* a transaction. Run `SET LOCAL` outside one and the setting is discarded the instant the statement finishes — so the policy would see the variable unset and fail closed to zero rows. That means the helper can't just set the variable and run a query; it has to open an explicit transaction, set the variable inside it, and run the work on that same transaction. The transaction is the lifetime the variable lives within.
+
+Here's the helper that packages all of this into one call.
+
+<AnnotatedCode lang="ts" code={`
+import 'server-only';
+import { sql } from 'drizzle-orm';
+import { db } from '@/db';
+import type { Transaction } from '@/db';
+
+export const withTenant = <T>(
+  orgId: string,
+  fn: (tx: Transaction) => Promise<T>,
+): Promise<T> =>
+  db.transaction(async (tx) => {
+    await tx.execute(sql\`select set_config('app.org_id', \${orgId}, true)\`);
+    return fn(tx);
+  });
+`}>
+  <AnnotatedStep meta="{1}" color="blue">
+    This helper imports the database client, which must never reach the browser bundle. The `server-only` import makes a bundling mistake a build error rather than a runtime leak.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{6-9}" color="blue">
+    The signature is the contract, and it's written out explicitly rather than left to inference — the same discipline the `tenantDb` factory followed. `orgId` is the tenant; `fn` is the caller's work, which receives the transaction and returns whatever it returns, carried out through the `<T>` generic.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{10}" color="blue">
+    This opens the explicit transaction the previous paragraph argued for. Everything inside runs on `tx`, the transaction handle — including the variable-setting statement and the caller's work, so they share one transaction and therefore one lifetime for the variable.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{11}" color="orange">
+    Two things to see. First, `set_config(name, value, is_local)` is the function form of `SET`, and its third argument `true` means *local* — transaction-scoped, exactly like `SET LOCAL`. Second, this is why we reach for `set_config` instead of raw `SET LOCAL`: raw `SET` can't take a bind parameter, but a runtime value like `orgId` must be parameterized, never string-concatenated, or you've opened a SQL injection hole. The `${orgId}` inside the `sql` template is sent as a bound parameter — the safe way to inject a runtime value into this statement.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{12}" color="green">
+    The caller's work runs last, on the same `tx`, with the variable already set. Return its result so the transaction's value flows back out to the caller.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Now watch the two layers compose, because this is the payoff. Inside a Server Action you already have a trusted `orgId` from `requireOrgUser()` — the only sanctioned source for it. You wrap your audit write in `withTenant`, and inside, you *also* pass `organizationId` explicitly:
+
+```ts title="src/app/.../actions.ts" {5}
+const { orgId } = await requireOrgUser();
+
+await withTenant(orgId, async (tx) => {
+  await tx.insert(auditLogs).values({
+    organizationId: orgId,
+    // ...the rest of the audit row, built in the next chapter
+  });
+});
+```
+
+Count the enforcements on that one write. The application layer sets `organizationId: orgId` explicitly in `values`. The database layer's `WITH CHECK` independently refuses any row whose `organization_id` doesn't equal `app.org_id`. Now run the failure modes: if a bug in the *application* drops the explicit value — a refactor, a wrong variable — the policy still pins the row to the org the variable names. If a bug in the *policy* slips through — a typo in the predicate, a forgotten `FORCE` — the explicit `organizationId: orgId` still writes the correct org. Each layer fails independently, and a single mistake has to defeat *both* to cause a leak. That is the defense-in-depth thesis, made literal in eight lines.
+
+A couple of placement notes. The helper lands in your data layer under `db/` — alongside `tenantDb`, which is its application-layer sibling. Keep audit writes pure database work inside the transaction; the rule against awaiting an external service mid-transaction holds, but appending an audit row is exactly the kind of fast, local work transactions are for.
+
+Two terms to carry forward. <Term definition="Postgres command that sets a config value only until the current transaction ends.">SET LOCAL</Term> — the Postgres command that sets a config value only until the current transaction ends. <Term definition={"set_config(name, value, is_local).\nFunction form of SET; the third arg true makes it transaction-local.\nParameterizable, unlike raw SET."}>set_config</Term> — the function form of `SET`; its third argument `true` makes the setting transaction-local, and unlike raw `SET` it accepts a bind parameter, which is why the helper uses it.
+
+## Reading the request lifetime end to end
+
+You've now seen every piece. The thing that ties them together is *timing* — exactly when the variable is set, when it's cleared, and the fact that the connection goes back to the pool with nothing on it. Scrub through the lifetime of a single `audit_logs` write below.
+
+<RlsRequestLifetime />
+
+That last step is the whole reason the diagram exists. "The variable is gone after commit" is easy to nod along to and hard to actually believe; seeing the connection return empty is what makes it real. Now put the order in your own hands.
+
+<Sequence instructions="Order the steps of one `audit_logs` write, from the Server Action through the connection returning to the pool.">
+  <Step>`requireOrgUser()` returns the trusted `orgId`</Step>
+  <Step>`withTenant(orgId, ...)` opens an explicit transaction</Step>
+  <Step>`set_config('app.org_id', orgId, true)` sets the variable, transaction-local</Step>
+  <Step>`INSERT INTO audit_logs` runs and the policy's `WITH CHECK` validates the row</Step>
+  <Step>`COMMIT` clears the local variable automatically</Step>
+  <Step>The connection returns to the pool with no `app.org_id` set</Step>
+</Sequence>
+
+## Failing closed: why `, true` and why `::uuid`
+
+Two small arguments sit inside the policy predicate, and almost everyone copies them without knowing why. Both are deliberate, both are about *failing closed*, and getting either one wrong opens a subtle hole. They're worth understanding precisely.
+
+**`current_setting('app.org_id', true)` — the second argument `true`.** That second argument is `missing_ok`. With it, an *unset* variable returns NULL instead of raising an error. Think about who hits this branch: a request that, through a bug, reached a query without going through `withTenant` first. What should happen? The senior answer is *fail closed* — the request should quietly see zero rows, not crash. And that's exactly what NULL buys: `organization_id = NULL` evaluates to NULL, which is not true, so it excludes every row. Drop the `, true`, and `current_setting` *throws* when the variable is absent — the request surfaces as a 500, the app looks broken, and in the rush to fix the "outage" someone is tempted to make the error go away in ways that are worse than an empty result. Fail closed and quiet beats fail loud and tempting.
+
+**`::uuid` (not `::text`) — the cast.** Your `organization_id` is a uuid, so cast the variable to uuid before comparing. This isn't pedantry; it's a second fail-closed guard. If someone — a confused developer, or a curious one — sets `app.org_id` to junk like `'all'` or `'%'` hoping to "match everything," the `::uuid` cast rejects it: it's not a valid uuid, so the statement errors loudly instead of silently matching surprising rows. The rule generalizes: when the variable's domain has structure, cast to the structured type and let malformed input fail at the cast. Leaving it as `text` and comparing text to text is the anti-pattern — it works today, and the day someone changes the predicate to use `LIKE`, a value like `'%'` becomes a wildcard that matches every org. Cast to the real type and that whole class of mistake can't compile.
+
+Test your read on the first of these.
+
+<MultipleChoice>
+  An engineer ships a code path that reads from `audit_logs` with a plain `SELECT` and no `where` clause, but forgets to wrap it in `withTenant` — so `app.org_id` is never set on the connection. The policy's read filter is `organization_id = current_setting('app.org_id', true)::uuid`. What comes back?
+
+  <McqChoice correct>Nothing — an empty result set.</McqChoice>
+  <McqChoice>Every row in the table, across all organizations.</McqChoice>
+  <McqChoice>A database error that surfaces to the user as a 500.</McqChoice>
+  <McqChoice>Whatever rows belong to the last organization that borrowed this pooled connection.</McqChoice>
+
+  <McqWhy>
+    An empty result set. With the variable unset, `current_setting('app.org_id', true)` returns `NULL` (that's what the `, true` buys you). The filter becomes `organization_id = NULL`, which is `NULL` — never *true* — so every row is excluded. The read fails closed: harmless and empty, not a leak and not a crash.
+
+    Trace the wrong answers back to their real causes. "Every row" is what you'd get with `SET`-without-`LOCAL` leaking a value, or with no RLS at all. The 500 is what dropping the `, true` would do — without `missing_ok`, an unset variable *raises*. And the stale-org rows are the `SET`-without-`LOCAL` footgun specifically — but `SET LOCAL` clears on commit, so an unconfigured connection carries nothing forward, and this `SELECT` reads against `NULL` rather than against another org's leftover value. Either way, no other org's data comes back.
+  </McqWhy>
+</MultipleChoice>
+
+## Proving it: the isolation test you read, not run
+
+A policy you can't test is a policy you don't trust. So here is the canonical acceptance test — and then the two ways it can lie to you, and why, unusually for this course, you read it here rather than run it.
+
+The shape is simple. Insert two `audit_logs` rows: one for org A, one for org B — through a seed helper that connects as the owner role, since `FORCE` means even seeding two different orgs' rows is subject to the policy. Then, inside a `withTenant(A)` transaction, run `SELECT * FROM audit_logs` with **no `where` clause at all** — and assert you got back exactly one row, org A's. Repeat inside `withTenant(B)` and assert you get B's, and only B's.
+
+```ts title="audit-logs.isolation.test.ts" {7, 13}
+test('audit_logs are isolated per organization', async () => {
+  // seedAuditRow connects as the owner role to insert across both orgs
+  await seedAuditRow({ organizationId: orgA });
+  await seedAuditRow({ organizationId: orgB });
+
+  const fromA = await withTenant(orgA, (tx) =>
+    tx.select().from(auditLogs),
+  );
+  expect(fromA).toHaveLength(1);
+  expect(fromA[0].organizationId).toBe(orgA);
+
+  const fromB = await withTenant(orgB, (tx) =>
+    tx.select().from(auditLogs),
+  );
+  expect(fromB).toHaveLength(1);
+  expect(fromB[0].organizationId).toBe(orgB);
+});
+```
+
+The missing `where` is the entire point. If you scoped the query yourself, you'd be testing your own filter, not the database's. By querying *everything* and still getting back only your org's row, you prove the isolation comes from the policy — from the database — independent of any application-layer filter. That's the property RLS exists to provide, and it's the only thing this test is checking.
+
+Now, the two ways this exact test can give you a *false* pass — both of which you've already met, so this is consolidation:
+
+1. **Run it as the owner role.** The owner bypasses RLS, so both rows come back every time and the length assertion fails — or worse, if you'd written the test to expect both, it would pass while proving nothing. The test must connect as the **non-owner app role**. This is the `FORCE` lesson coming home: without `FORCE`, even the owner is subject, but you should still run the test as the role real requests use.
+
+2. **Run it against an RLS-unaware database.** If the database ignores policies, every row comes back, the policy is irrelevant, and the test passes meaninglessly. It must run against **real Postgres**.
+
+Which is exactly why there is no live coding cell in this lesson.
+
+:::caution
+The in-browser Postgres these exercises normally run on (PGlite) **does not enforce RLS**. An embedded "prove it" sandbox here would pass even with the policy *deleted* — it would teach the precise false confidence this entire lesson warns against. So this test ships as code to read; the real one lives in the integration suite (built later in the course) against a real Postgres instance. Sit with the senior lesson inside that constraint: **an RLS test that can pass without RLS is worse than no test at all**, because it converts "we're not sure" into a green checkmark.
+:::
+
+That non-owner-role requirement implies a second connection identity, which is worth naming even though you won't build it here. Request handlers connect as a non-owner app role that has no `BYPASSRLS` attribute. Migrations, admin tasks, and any legitimate cross-org read connect as the owner — through the separate unpooled client, pointed at a `DATABASE_URL_OWNER`. Most managed Postgres setups (Neon, Supabase) ship this split for you; on a vanilla Postgres you create the app role explicitly. The full least-privilege role separation — creating the role, the grants, managing the `BYPASSRLS` attribute — is its own chapter later in the course. Here, just register the two-URL shape and why it exists: one identity the policy applies to, one identity that runs the migrations which would otherwise be unable to manage the table.
+
+One practical note for the moment you clone this repo locally. You seed some data, open `psql`, query `audit_logs`, and see nothing — because *you* haven't set `app.org_id` either. That's the policy working, not a broken seed.
+
+:::tip
+For ad-hoc local exploration, connect as the owner role (which bypasses RLS), or add a `\set` to your `~/.psqlrc` that sets `app.org_id` to your seed's first org id. What you must **never** do is grant the app role `BYPASSRLS` to "make local dev easier" — that defeats the entire mechanism, and a habit formed locally is a habit that follows you to production.
+:::
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="PostgreSQL — Row Security Policies"
+    href="https://www.postgresql.org/docs/current/ddl-rowsecurity.html"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="The primary source: USING vs WITH CHECK, permissive vs restrictive, and the owner-bypass / FORCE behavior."
+  />
+  <ExternalResource
+    title="Drizzle ORM — Row-Level Security"
+    href="https://orm.drizzle.team/docs/rls"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The pgPolicy, enableRLS, and crudPolicy API surface for declaring policies in your schema."
+  />
+  <ExternalResource
+    title="Neon — Simplify RLS with Drizzle"
+    href="https://neon.com/docs/guides/neon-rls-drizzle"
+    icon="simple-icons:neon"
+    iconColor="#00E599"
+    description="Neon's guide to crudPolicy and the authenticatedRole import, plus how the role split looks on Neon."
+  />
+</CardGrid>
