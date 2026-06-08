@@ -1,0 +1,518 @@
+---
+title: The authedAction wrapper
+tagline: Build the one sanctioned Server Action factory that bundles session, role, and schema checks into a single boundary, so a privileged action can never ship with its authorization check missing.
+chapter-id: 57
+course-progress: 0.00005
+sidebar:
+  order: 2
+  label: The authedAction wrapper
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import ScriptCoding from '../../../components/live-coding/ScriptCoding/ScriptCoding.astro';
+import AuthedActionGates from '../../../components/lessons/057/2/authed-action-gates/AuthedActionGates.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Last lesson closed on a warning: a protected page is not a protected action. This lesson is where that warning gets paid off. Here is the kind of bug it was pointing at.
+
+A teammate ships `deleteCustomer` on a Friday afternoon. It's a small action, the kind you've written a dozen times. They remembered to check the session — the action obviously needs a signed-in user, so `requireOrgUser()` is right there on the first line. They remembered to validate the input — you can't run a delete without a parsed customer id, so `safeParse` is there too. The PR looks complete. It passes review. It ships.
+
+And it's a <Term definition="A user performing an action above their permission level — here, a plain member running an admin-only mutation.">privilege escalation</Term>. The third check — *is this person allowed to delete customers?* — was supposed to be on line three and quietly wasn't. Nothing errored. TypeScript was happy. The action runs fine; it just runs for everyone. Any member can now delete any customer, and nobody will notice until one of them does. The reviewer scanned the body for three checks and saw two, and two out of three reads as "looks thorough" to a tired human.
+
+The fix is not "review more carefully." Careful is a thing humans run out of, usually on Friday afternoons. The fix is structural: by the end of this lesson, that exact bug *won't compile*. The role check stops being a line you can forget in the body and becomes an argument you can't leave out of the call. You already have all the pieces — `roleAtLeast` and `requireOrgUser` from last lesson, `tenantDb` from the chapter before. This lesson assembles those three into one boundary, `authedAction(role, schema, fn)`, that every privileged action passes through. Write it once, and the action body shrinks down to nothing but the actual work.
+
+## Three checks every privileged action owes
+
+Before any wrapper, get precise about the problem, because the wrapper only looks inevitable once you've felt the shape of the thing it's preventing.
+
+Every privileged mutation owes three checks *before it touches the database*, and each one guards against a distinct failure:
+
+- **The session is valid.** Skip it and the action runs on whatever the caller handed it — no user, no org, no idea who's acting. It does the work for a ghost.
+- **The user clears the required role.** Skip it and you've shipped the Friday bug: a member doing an admin's job. This is a privilege escalation.
+- **The input parses.** Skip it and a malformed or hostile payload sails straight into your query.
+
+Three checks, three different holes. It's worth resisting the urge to blur them into one fuzzy "validation" step, because they fail in genuinely different ways and the middle one behaves differently from the other two.
+
+Here is what carrying all three inline looks like — the way you'd write `deleteCustomer` today, done correctly:
+
+```ts
+'use server';
+
+export const deleteCustomer = async (formData: FormData) => {
+  const { role, db } = await requireOrgUser();
+  if (!roleAtLeast(role, 'admin')) {
+    return err('forbidden', 'You do not have permission to do this.');
+  }
+
+  const parsed = deleteCustomerSchema.safeParse(Object.fromEntries(formData));
+  if (!parsed.success) {
+    return err('validation', 'Check the highlighted fields.', z.flattenError(parsed.error).fieldErrors);
+  }
+
+  await db.delete(customers).where(eq(customers.id, parsed.data.id));
+  revalidatePath('/customers');
+  return ok(null);
+};
+```
+
+Read it top to bottom: resolve the session, check the role, parse the input, then — finally — do the one line of work the action actually exists for. The three checks are the tax; the delete is the point.
+
+Now watch the failure. Here is the same action with one line missing.
+
+<CodeVariants>
+  <CodeVariant label="Shipped to production">
+    ```ts del={5-7}
+    'use server';
+
+    export const deleteCustomer = async (formData: FormData) => {
+      const { orgId, role, db } = await requireOrgUser();
+      if (!roleAtLeast(role, 'admin')) {
+        return err('forbidden', 'You do not have permission to do this.');
+      }
+
+      const parsed = deleteCustomerSchema.safeParse(Object.fromEntries(formData));
+      if (!parsed.success) {
+        return err('validation', 'Check the highlighted fields.', z.flattenError(parsed.error).fieldErrors);
+      }
+
+      await db.delete(customers).where(eq(customers.id, parsed.data.id));
+      revalidatePath('/customers');
+      return ok(null);
+    };
+    ```
+
+    **Compiles, passes review, ships a hole.** The role check is struck out. Notice what *didn't* happen when it went: no type error, no lint warning, no failing test. The session is still checked, the input is still validated, and `role` is even read from `requireOrgUser` — it's just never used. Every member can now delete customers, and the only signal anything is wrong is the day it gets exploited.
+  </CodeVariant>
+</CodeVariants>
+
+This is the heart of it: of the three checks, the role check is the one that *hides*. The session check tends to survive review because the action obviously needs a user — you'd notice its absence. The parse survives because you need the typed input to do the work; leave it out and the code below it doesn't even type-check. But nothing downstream depends on the role check. Delete it and everything still compiles, still runs, still looks right. Its absence is invisible until someone goes looking for it from the outside.
+
+So the defense can't be vigilance. Vigilance is exactly the resource that failed here. The defense has to be a **call shape where the role is a parameter, not a statement** — something the compiler counts, not something a reviewer has to spot.
+
+<VideoCallout videoId="N_sUsq_y10U" videoTitle="Next.js Patterns: Authentication (Best Practices for Server Components, Actions, Middleware)">
+  Delba (Vercel) walks the same boundary in 12 minutes — note the bit on Server Actions as public endpoints and "forgetting to check the user is allowed to perform a mutation," the exact bug above.
+</VideoCallout>
+
+## The signature: `authedAction(role, schema, fn)`
+
+Here's the shape of that call. Meet it as something you *use* before something you *build* — usage first, because that's how you'll actually encounter it in the codebase, and the implementation makes far more sense once you know what it's for.
+
+`authedAction` is a <Term definition="A function that builds and returns another function — here, it builds a Server Action.">factory</Term>. It takes three things and hands you back a finished Server Action:
+
+- `role` — the minimum role allowed to run this action, like `'admin'`. This is the same `Role` union from last lesson. Crucially, this is the parameter that *was* the forgettable third line of the body.
+- `schema` — the Zod schema for the action's input. (In practice this is usually a `createInsertSchema` from drizzle-zod with a `.refine` or two, but where the schema comes from isn't this lesson's concern — just know it describes the shape the input must satisfy.)
+- `fn` — the business function: `(input, ctx) => Promise<Result<T>>`. This is the only part that changes from one action to the next. It receives the already-parsed input and a ready-made context object, and returns a `Result`.
+
+That `ctx` is a kit the wrapper assembles and hands down — `{ user, orgId, role, db }`. The next section pulls it apart; for now just notice that by the time your function runs, the user, the org, the role, and a database client are all sitting there waiting.
+
+Now the payoff. Here is what a real call site looks like — the member-removal action you'll build out properly later in this chapter:
+
+<AnnotatedCode lang="ts" code={`
+export const removeMember = authedAction(
+  'admin',
+  removeMemberSchema,
+  async (input, ctx) => {
+    // just the work
+  },
+);
+`}>
+  <AnnotatedStep meta={`"authedAction"`} color="blue">
+    `authedAction` is a factory: it doesn't run anything now, it *returns* a Server Action that you export. Every privileged action in the app is declared this exact way, so they all share one shape.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"'admin'"`} color="green">
+    The role, right there in the call — a required, positional argument. This is the line you used to forget in the body. Leave it out now and the call has the wrong number of arguments; TypeScript stops you before the code can run. The bug became a type error.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"removeMemberSchema"`} color="blue">
+    The input contract. The wrapper parses incoming `FormData` against this before your function ever sees it, so by the time you're in the body the input is validated and typed.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{4-6}`} color="violet">
+    The body — `(input, ctx) => …` — is *just the work*. No session resolution, no role check, no parse. Those three lines didn't get deleted; they moved up into the wrapper, where you can't skip them.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+One naming note, because it's a deliberate choice and not an accident: the action is `removeMember`, not `removeMemberAction`. The convention for Server Actions in this codebase is plain verb-plus-noun — `createInvoice`, `removeMember`, `acceptInvitation` — with no `Action` suffix unless you genuinely need to disambiguate from a same-named non-action. The `authedAction` wrapper is named for what it *is* (a wrapper that produces an authed action); the things it produces are named for what they *do*.
+
+## What the wrapper hands you: the `ctx` payload
+
+That `ctx` argument is the wrapper's other half of the bargain. It takes the three checks off your hands, and in return it hands you everything those checks produced, pre-built, so the body never has to ask for any of it twice.
+
+Four fields, each with a clear source:
+
+```ts
+type Ctx = {
+  user: User; // who's acting, from the session
+  orgId: string; // the active org
+  role: Role; // their role in this org, read fresh by requireOrgUser
+  db: TenantDb; // tenantDb(orgId) — already scoped to this org
+};
+```
+
+The first three fall straight out of resolving the session — they're exactly what `requireOrgUser()` returned last lesson, read once at the top of the request. The fourth is the interesting one. `ctx.db` isn't the raw, app-wide database client. It's `tenantDb(orgId)` — the tenant-scoped client from the previous chapter, the one that pins every query to a single org's rows. The wrapper builds it from the `orgId` it just resolved and hands it down ready to use.
+
+The discipline this enforces is the senior reflex behind the whole wrapper: **resolve once, hand down, never re-fetch.** The body never calls `requireOrgUser` again, never re-reads the role, never reaches for the bare `db`. There is exactly one resolution per request and one source of truth, threaded through `ctx`. A body that re-queries the session is a body that can disagree with the wrapper about who's acting — and you never want two answers to that question in one request.
+
+And there's a structural gift hiding in that fourth field. Because `ctx.db` is the tenant-scoped client, the *moment* an action has authorization — it went through the wrapper — it also has tenant-scoped data access, automatically. The two safety properties arrive together, welded by construction. You cannot get an action that's been authorized but is still reaching into other tenants' rows, because the only database handle the body is given is already fenced to one org. `authedAction` carries the *who-can-act* guarantee; `tenantDb` carries the *whose-data* guarantee; `ctx` is where they meet.
+
+## Inside the wrapper: four gates in order
+
+Now you can open the wrapper up. The instinct might be to drop the whole thing on the page and annotate it, but a thirty-line factory landing all at once is a wall. So build it the way it runs — as four gates, in execution order, each one motivated before the next. A single form submission flows through them like this:
+
+<AuthedActionGates />
+
+Two things in that sequence are worth saying out loud before you read the code, because they're the decisions the wrapper encodes.
+
+The first is the **order**. Resolve, then authorize, then parse. You might reasonably expect parsing to come first — clean the input before doing anything else. But there's no reason to spend effort validating a payload for someone who isn't allowed to act in the first place. Authorizing before parsing means an unauthorized caller is turned away at the cheapest possible point, before the wrapper does any work on their input. The security gate fails fastest.
+
+The second is **how each gate exits**, and this is the real teaching beat. The *resolve* gate, on failure, redirects — `requireOrgUser` throws a Next.js redirect and the wrapper lets it fly straight out, because a missing session genuinely means "go sign in," which is a navigation, not a value. But the *authorize* and *parse* gates do not redirect. They **return** a `Result`. This is the exact point where the wrapper diverges from last lesson's `requireAdmin` guard: the guard and the wrapper run the *same* `roleAtLeast` check, but the guard `redirect`s a member off the admin page, while the wrapper *returns* `err('forbidden')`. Same check, opposite exit — because a page and an action have different jobs. A page that you're not allowed to see should bounce you elsewhere. An action that you're not allowed to run should fail *in place*, so the form you're looking at can render "you don't have permission" without throwing you off the screen.
+
+Now the implementation. Here is the whole wrapper, the four gates assembled. It's longer than anything else in the lesson — let it scroll, and walk it gate by gate.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+import 'server-only';
+import { z } from 'zod';
+import { requireOrgUser } from '@/lib/auth';
+import { roleAtLeast, type Role } from '@/lib/auth/roles';
+import { tenantDb } from '@/lib/tenant-db';
+import { err, type Result } from '@/lib/result';
+
+export const authedAction =
+  <Schema extends z.ZodType, TOut>(
+    role: Role,
+    schema: Schema,
+    fn: (input: z.infer<Schema>, ctx: Ctx) => Promise<Result<TOut>>,
+  ) =>
+  async (formData: FormData): Promise<Result<TOut>> => {
+    const { user, orgId, role: actorRole } = await requireOrgUser();
+
+    if (!roleAtLeast(actorRole, role)) {
+      return err('forbidden', 'You do not have permission to do this.');
+    }
+
+    const parsed = schema.safeParse(Object.fromEntries(formData));
+    if (!parsed.success) {
+      return err(
+        'validation',
+        'Check the highlighted fields.',
+        z.flattenError(parsed.error).fieldErrors,
+      );
+    }
+
+    const ctx = { user, orgId, role: actorRole, db: tenantDb(orgId) };
+    return fn(parsed.data, ctx);
+  };
+`}>
+  <AnnotatedStep meta={`{15}`} color="blue">
+    **Resolve.** `requireOrgUser()` reads the session and active org. If either is missing it redirects — and the wrapper does nothing to stop that. A redirect is a framework-edge exit, not a failure value, so it propagates right out. This is the one place a "throw" is the correct behavior.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{17-19}`} color="green">
+    **Authorize.** The headline gate. `roleAtLeast(actorRole, role)` compares the caller's real role against the floor passed into the factory. Below it, `return err('forbidden', …)` — a returned `Result`, *not* a redirect — so the form can render the message and stay put.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{21-28}`} color="orange">
+    **Parse.** `Object.fromEntries(formData)` flattens the form into a plain object, then `safeParse` checks it against the schema. On failure, return `err('validation', …)` with `z.flattenError(...).fieldErrors` attached — the per-field messages the form will read to highlight bad inputs.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{30-31}`} color="violet">
+    **Call.** Only now is everything safe: a real user, a sufficient role, valid input. Build `ctx` — note `db: tenantDb(orgId)`, the tenant-scoped client — and hand it plus the parsed input to `fn`. Its `Result` returns straight through; `TOut` is inferred from whatever `fn` resolves to.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+A couple of the smaller moves in there deserve a definition rather than a detour, so hover them:
+
+<CodeTooltips tooltips={{
+  'Object.fromEntries': 'Turns FormData entries (key/value pairs) into a plain object, the shape Zod can parse. The form field names become object keys.',
+  'z.flattenError': 'Zod 4 helper. Returns { formErrors, fieldErrors } from a failed parse. fieldErrors is Record<string, string[]> — the per-field messages, keyed by field name.',
+}}>
+```ts
+const parsed = schema.safeParse(Object.fromEntries(formData));
+if (!parsed.success) {
+  return err('validation', 'Check the highlighted fields.', z.flattenError(parsed.error).fieldErrors);
+}
+```
+</CodeTooltips>
+
+That's the entire wrapper. Notice it's generic over the schema and the output type but otherwise completely fixed — there's no per-action branching inside it, no feature knowledge. It is written once and never touched again. Every privileged action in the app reuses these exact four gates, which means the missing-role-check bug from the start of the lesson cannot exist in any action that goes through it: there is no body line to forget, only a factory argument the compiler insists on.
+
+One detail to flag for when you build actions on top of this: the wrapper takes `FormData`, because that's the shape a native form submission arrives in and it's the path the vast majority of your actions will use. There's room for a sibling that takes an already-parsed object instead of `FormData`, for the rarer cases where a typed object is what you have — but that's a variant, not the default. Build everything on the `FormData` path and reach for the object variant only when something forces you to.
+
+## The return contract: `Result`, not exceptions
+
+You've now seen the wrapper return `err(...)` in two places and pass `fn`'s `Result` through in a third. That's not incidental — it's a contract, and it's worth stating plainly because it governs every action you'll write from here on.
+
+Quick refresher on the shape, which you've used since the forms unit. A `Result` is a discriminated union:
+
+```ts
+type Result<T> =
+  | { ok: true; data: T }
+  | { ok: false; error: { code: ResultCode; userMessage: string; fieldErrors?: Record<string, string[]> } };
+```
+
+The rule that goes with it: **every expected failure returns through `Result`; only the genuinely exceptional throws.** Forbidden access, invalid input, and the business function's own failures — a conflict, a not-found, the `'last-owner'` refusal from last lesson — all come back as `err(...)` values the caller can read and react to. The only things that throw are framework-edge exits: a `redirect`, a `notFound`, or a truly unrecoverable programmer error. This is the same principle the codebase applies everywhere it handles failure — *return the expected, throw the unexpected* — and the wrapper is just the most disciplined place it shows up.
+
+It's worth keeping two kinds of "code" straight here, because they look similar and aren't. The `Result` error `code` — `'forbidden'`, `'validation'`, `'conflict'` — is a *transport* code: it tells the caller, in fixed vocabulary, what category of failure happened. The `'last-owner'` code from last lesson is a *domain reason* carried inside an action's own logic; it travels inside an `err` as part of the message or payload, describing *why* a specific business rule said no. The wrapper only ever produces transport codes; domain reasons belong to the body that knows the rule.
+
+That return discipline has a sharp edge that's easy to get wrong, and it's the senior anti-trap of this whole lesson:
+
+:::caution
+Authorization that can throw must throw **closed**. If `roleAtLeast` or the session read blows up unexpectedly, the action denies — full stop. Never write a `catch` around an authz check that logs "the check threw, assuming allowed" and proceeds. A gate that controls access treats *any* exception inside it as a refusal, including a bug in the gate itself. The fail-open version of this is how "we had a small error in the permission code" turns into "anyone could do anything for six hours."
+:::
+
+This is a reflex you'll meet again, in more depth, when the course gets to hardening the security baseline. For now, hold the one rule: when an access check is uncertain, the answer is no.
+
+And this is the whole reason the action seam returns `Result` instead of throwing. Because failures come back as typed values, the form's `useActionState` can read them directly — `state.error.userMessage` for the headline, `state.error.fieldErrors?.email?.[0]` for the message under a specific field. The typed error contract is *precisely* what lets the form render an inline "you don't have permission" or highlight a bad field without ever leaving the page. You won't build that form here — it's the same `useActionState` wiring you already know — but that's the loop the `Result` return closes: the wrapper speaks `Result` so the UI can speak inline errors.
+
+## The one wrapper we sanction
+
+Step back, because something just happened that contradicts a rule this course has been firm about, and the contradiction is on purpose.
+
+The course's standing stance is **consume libraries directly.** Don't build an abstraction tower around your tools for the comfort of having one. Server Actions especially: the temptation to wrap them in a tRPC-style middleware stack — chains of `.use(...)` steps every action threads through — is real, and the answer is almost always no. Most "let's add a layer here" instincts at the action boundary are weight you'll carry forever in exchange for a tidiness you imagined you needed.
+
+And yet here is `authedAction`, which is exactly such a layer. So name it for what it is: **the one sanctioned exception**, the wrapper that earns its keep, paired with `tenantDb` as its data-layer twin. If `tenantDb` from the previous chapter felt familiar a moment ago, that's why — it's the same carve-out at the other end of the request. `tenantDb` wraps the *data* path so tenant scope can't be skipped; `authedAction` wraps the *action* path so the auth and validation seams can't be skipped. Two ends, one reasoning. Both earn the exception for the same concrete reason: authorization at the action boundary has a *real, recurring bug class*, the missing role check you opened the lesson with, and a structural wrapper *closes* that bug class completely. The justification is the bug, not the elegance. Nothing else at this boundary clears that bar, which is why this is the only wrapper, not the first of many.
+
+The reflex that keeps it that way matters as much as the wrapper itself. When someone proposes adding *another* step to `authedAction` — "let's also check the plan here," "let's add rate limiting to the wrapper," "let's log every call" — the default answer is no. The wrapper is precisely session plus role plus schema, and deliberately nothing more. Each of those would-be additions belongs somewhere else: an entitlement check is a different concern handled in a later unit, rate limiting lives upstream and gets its own chapter, and so on. A wrapper that absorbs every cross-cutting concern stops being a sharp tool and becomes the middleware tower you were avoiding.
+
+The audit log is the trickiest one to place, so place it carefully now: privileged writes *do* record an audit row, but that write lives **inside the action body, not in the wrapper.** The reason is that the wrapper is entity-agnostic — it has no idea whether this action removed a member or changed a setting or deleted a customer, and an audit row needs to know exactly that, plus what changed. The wrapper carries authorization; the body carries audit. You'll build that audit write later in this chapter; for now just don't expect the wrapper to do it for you.
+
+To make the boundary concrete, sort these. Each item is something an action involves — decide whether it belongs *inside the wrapper* (the same three gates for every action) or *outside it* (in the business function, or in another layer entirely).
+
+<Buckets twoCol instructions="Sort each responsibility into where it belongs. The wrapper is session + role + schema — and deliberately nothing else.">
+  <Bucket name="in" label="In the wrapper" description="The fixed, every-action gates" />
+  <Bucket name="out" label="Not the wrapper" description="The body, or another layer" />
+
+  <Item bucket="in">Check the session is valid</Item>
+  <Item bucket="in">Check the user clears the required role</Item>
+  <Item bucket="in">Parse the input against the schema</Item>
+  <Item bucket="out">Check the org's plan allows this feature</Item>
+  <Item bucket="out">Rate-limit how often the action can run</Item>
+  <Item bucket="out">CSRF protection on the request</Item>
+  <Item bucket="out">Write the audit-log row</Item>
+  <Item bucket="out">The actual mutation (the delete, the update)</Item>
+</Buckets>
+
+That <Term definition="Cross-Site Request Forgery: tricking a logged-in user's browser into firing a state-changing request they didn't intend.">CSRF</Term> item catches people, so it's worth one sentence: it's *not the wrapper's job* because Next.js already handles it. Server Actions can only be invoked by POST, and the framework compares the request's `Origin` header against the `Host` on top of your `SameSite` cookies — a cross-site forgery fails that check before your action runs. The wrapper neither adds to this nor needs to; it's handled a layer below, by the framework, for free.
+
+## Refactor: from forgotten check to wrapped action
+
+You've seen the wrapper built and you've placed its boundary. Now close the loop the way the lesson opened it — take the vulnerable action and route it through `authedAction`, and watch the body collapse to just the work.
+
+Here is the before and after, side by side:
+
+<CodeVariants>
+  <CodeVariant label="Before — inline, vulnerable">
+    ```ts del={4-8}
+    'use server';
+
+    export const deleteCustomer = async (formData: FormData) => {
+      const { db } = await requireOrgUser();
+      const parsed = deleteCustomerSchema.safeParse(Object.fromEntries(formData));
+      if (!parsed.success) {
+        return err('validation', 'Check the highlighted fields.', z.flattenError(parsed.error).fieldErrors);
+      }
+
+      await db.delete(customers).where(eq(customers.id, parsed.data.id));
+      revalidatePath('/customers');
+      return ok(null);
+    };
+    ```
+
+    **The session and parse are inline, the role check is missing entirely.** Everything the wrapper handles is open-coded into the body — which is exactly how the role check came to be absent. The struck-out lines are the plumbing about to move out.
+  </CodeVariant>
+
+  <CodeVariant label="After — wrapped">
+    ```ts ins={3-4}
+    'use server';
+
+    export const deleteCustomer = authedAction(
+      'admin',
+      deleteCustomerSchema,
+      async (input, ctx) => {
+        await ctx.db.delete(customers).where(eq(customers.id, input.id));
+        revalidatePath('/customers');
+        return ok(null);
+      },
+    );
+    ```
+
+    **Role is an argument; the body is the work.** Session resolution and the parse left the body for the wrapper, and the role check that was *missing* is now supplied as the `'admin'` argument — the wrapper runs it on every call. What stayed in the body is the actual mutation, the revalidate, and the return. The role is impossible to forget now: it's a required argument, not a line you might skip.
+  </CodeVariant>
+</CodeVariants>
+
+Walk the diff in your head. Two things *left* the body for the wrapper — resolving the session and parsing the input — and the third gate, the role check, went from *absent* to a single argument the wrapper enforces. Three things *stayed* in the body: the mutation, the `revalidatePath`, and the `Result` return. The body went from "plumbing plus one line of work" to just the work, and the gate that used to be forgettable is now a positional argument the compiler counts.
+
+Your turn. The exercise below gives you a `deleteCustomer` that checks the session and validates input but is missing its role check — anyone can call it. A minimal `authedAction` is already wired up for you. Refactor the action to go through the wrapper so only admins can run it, and the body shrinks to just the delete.
+
+<ScriptCoding
+  runner="sandpack"
+  instructions="This deleteCustomer checks the session and validates input — but anyone can call it. The role check is missing. A minimal authedAction is wired up above it, with the same role / schema / fn shape as the real one. Refactor deleteCustomer to go through authedAction so only admins ('admin' and above) can run it, and the body shrinks to just the delete. The tests feed the action an admin context and a member context."
+  maxHeight={460}
+  starter={`// ── Shims so this runs in the sandbox (Next/Drizzle/Zod stand-ins) ──
+// roleAtLeast(have, need): is 'have' at or above 'need' on the gradient?
+const ROLE_RANK = { member: 0, admin: 1, owner: 2 };
+const roleAtLeast = (have, need) => ROLE_RANK[have] >= ROLE_RANK[need];
+
+// Result helpers — ok(data) and err(code, message, fieldErrors?).
+const ok = (data) => ({ ok: true, data });
+const err = (code, userMessage, fieldErrors) => ({ ok: false, error: { code, userMessage, fieldErrors } });
+
+// Fake tenant-scoped db over an in-memory customers store the tests assert against.
+let customers = [{ id: 'cus_1' }, { id: 'cus_2' }];
+const resetStore = () => { customers = [{ id: 'cus_1' }, { id: 'cus_2' }]; };
+const db = {
+  deleteCustomer: (id) => { customers = customers.filter((c) => c.id !== id); },
+};
+
+// Zod-free schema double: id must be a non-empty string.
+const deleteCustomerSchema = {
+  safeParse: (obj) => {
+    const id = obj.id;
+    if (typeof id !== 'string' || id.length === 0) {
+      return { success: false, error: { fieldErrors: { id: ['Required.'] } } };
+    }
+    return { success: true, data: { id } };
+  },
+};
+
+// The session the wrapper would resolve. Tests set this before each call.
+let currentCtx = { orgId: 'org_1', role: 'member', db };
+const setCtx = (role) => { currentCtx = { orgId: 'org_1', role, db }; };
+
+// ── The wrapper — already built for you, same shape as the real one. Don't change it. ──
+// authedAction(role, schema, fn) -> an action you call with formData.
+const authedAction = (role, schema, fn) => async (formData) => {
+  const ctx = currentCtx; // resolve (the real one: await requireOrgUser())
+  if (!roleAtLeast(ctx.role, role)) {
+    return err('forbidden', 'You do not have permission to do this.');
+  }
+  const parsed = schema.safeParse(formData);
+  if (!parsed.success) {
+    return err('validation', 'Check the highlighted fields.', parsed.error.fieldErrors);
+  }
+  return fn(parsed.data, ctx);
+};
+
+// ── Your task: refactor this so it goes through authedAction. ──
+// Right now it resolves the session and parses the input, but never checks the
+// role — any member can delete a customer. Rewrite it as an authedAction call:
+//   authedAction('admin', deleteCustomerSchema, async (input, ctx) => { ... })
+// so only admins (and owners) can run it, and the body is just the delete.
+
+export const deleteCustomer = async (formData) => {
+  const ctx = currentCtx;
+  const parsed = deleteCustomerSchema.safeParse(formData);
+  if (!parsed.success) {
+    return err('validation', 'Check the highlighted fields.', parsed.error.fieldErrors);
+  }
+  ctx.db.deleteCustomer(parsed.data.id);
+  return ok(null);
+};
+`}
+  tests={`
+test('a member is refused — forbidden, and the customer survives', async () => {
+  resetStore();
+  setCtx('member');
+  const result = await deleteCustomer({ id: 'cus_1' });
+  expect(result.ok).toBe(false);
+  expect(result.error.code).toBe('forbidden');
+  expect(customers.some((c) => c.id === 'cus_1')).toBe(true);
+});
+
+test('an admin with valid input deletes the customer', async () => {
+  resetStore();
+  setCtx('admin');
+  const result = await deleteCustomer({ id: 'cus_1' });
+  expect(result.ok).toBe(true);
+  expect(customers.some((c) => c.id === 'cus_1')).toBe(false);
+});
+
+test('an admin with invalid input gets a validation error, no delete', async () => {
+  resetStore();
+  setCtx('admin');
+  const result = await deleteCustomer({ id: '' });
+  expect(result.ok).toBe(false);
+  expect(result.error.code).toBe('validation');
+  expect(customers.length).toBe(2);
+});
+
+test('the role gate runs before the parse — a member with bad input is still forbidden', async () => {
+  resetStore();
+  setCtx('member');
+  const result = await deleteCustomer({ id: '' });
+  expect(result.ok).toBe(false);
+  expect(result.error.code).toBe('forbidden');
+});
+`}
+/>
+
+<details>
+<summary>Reveal solution</summary>
+
+```ts
+export const deleteCustomer = authedAction(
+  'admin',
+  deleteCustomerSchema,
+  async (input, ctx) => {
+    ctx.db.deleteCustomer(input.id);
+    return ok(null);
+  },
+);
+```
+
+The whole refactor is moving three lines *out* of the body and supplying one argument the body never had. Session resolution and the `safeParse` left for the wrapper; the role check that was *missing* became the `'admin'` first argument — the wrapper now runs `roleAtLeast(ctx.role, 'admin')` on every call. What's left in the body is the one line of actual work: the delete. Note the gate order in the last test — a member with malformed input still comes back `'forbidden'`, not `'validation'`, because authorize runs before parse. The cheapest security gate fails first.
+
+</details>
+
+## Where this discipline goes next
+
+You now have `authedAction` — one wrapper, four gates, a pre-built `ctx`, a `Result` return — and with it the bug that opened the lesson is gone. Not "less likely." Gone: the missing role check can't exist in any action that goes through the wrapper, because there's no body line to forget, only a factory argument the compiler won't let you omit. The careful thing became the only thing that compiles.
+
+The same discipline travels in three directions from here. The next lesson ports it to the route-handler seam — an `authedRoute` for the non-React callers (webhooks, mobile clients) that hit your `route.ts` files, where failures come back as HTTP status codes and Problem Details instead of a `Result`. After that, the wrapper meets its first real workload: the member-management actions — change role, remove, leave, transfer ownership — every one of them built on `authedAction`. And the lesson after lands the audit-log write that, as you now know, lives inside the action body, not the wrapper.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Data Security in Next.js"
+    href="https://nextjs.org/docs/app/guides/data-security"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The framework's own guide — note that a page-level auth check does not extend to the Server Actions inside it."
+  />
+  <ExternalResource
+    title="How to Think About Security in Next.js"
+    href="https://nextjs.org/blog/security-nextjs-server-components-actions"
+    icon="simple-icons:vercel"
+    iconColor="#000000"
+    description="Vercel's essay on why every Server Action is a public endpoint that must verify the caller itself."
+  />
+  <ExternalResource
+    title="OWASP Authorization Cheat Sheet"
+    href="https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html"
+    icon="simple-icons:owasp"
+    iconColor="#000000"
+    description="The vendor-neutral case for the wrapper: deny by default, and implement access control once and reuse it everywhere."
+  />
+  <ExternalResource
+    title="Access control & privilege escalation"
+    href="https://portswigger.net/web-security/access-control"
+    icon="simple-icons:portswigger"
+    iconColor="#FF6633"
+    description="PortSwigger's interactive deep-dive on the exact bug class this lesson opens with, with hands-on labs."
+  />
+</CardGrid>
