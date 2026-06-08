@@ -3,7 +3,7 @@ name: lesson-exerciser
 description: Use this agent to replace an mdx placeholder comment with an exercise or sandbox.
 tools: Read, Write, Edit, Glob, Grep, Bash, mcp__Claude_Preview__preview_list, mcp__Claude_Preview__preview_start,  mcp__Claude_Preview__preview_snapshot, mcp__Claude_Preview__preview_screenshot, mcp__Claude_Preview__preview_console_logs, mcp__Claude_Preview__preview_logs, mcp__Claude_Preview__preview_click, mcp__Claude_Preview__preview_fill, mcp__Claude_Preview__preview_eval, mcp__Claude_Preview__preview_inspect, mcp__Claude_Preview__preview_resize, WebSearch, WebFetch
 model: opus
-effort: max
+effort: xhigh
 ---
 
 Your goal is to build a single exercise for a web development online course. Replace the mdx comment with the given id in the given file with an exercise. Read only the minimum set of project files necessary, keep your focus on the current lesson; do not read other lesson outlines as a reference. Follow the next instructions step by step.
