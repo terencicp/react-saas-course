@@ -3,7 +3,7 @@ name: project-screenshotter
 description: Use this agent to capture the project UI screenshots that a chapter's lessons reuse.
 tools: Read, Write, Glob, Grep, Bash, mcp__Claude_Preview__preview_list, mcp__Claude_Preview__preview_start, mcp__Claude_Preview__preview_stop, mcp__Claude_Preview__preview_snapshot, mcp__Claude_Preview__preview_screenshot, mcp__Claude_Preview__preview_console_logs, mcp__Claude_Preview__preview_logs, mcp__Claude_Preview__preview_click, mcp__Claude_Preview__preview_fill, mcp__Claude_Preview__preview_eval, mcp__Claude_Preview__preview_inspect, mcp__Claude_Preview__preview_resize
 model: opus
-effort: xhigh
+effort: high
 ---
 
 Capture UI screenshots of a course project's `solution/` for its lessons to reuse. You are given the chapter id `<X>`, the plan path, a slice id, and the lesson number `<Y>` its shots serve. You only write image assets and a manifest.

@@ -3,7 +3,7 @@ name: project-lesson-screenshotter
 description: Use this agent to capture and embed a project lesson's UI screenshot figure, before the formatter.
 tools: Read, Write, Edit, Glob, Grep, Bash, mcp__Claude_Preview__preview_list, mcp__Claude_Preview__preview_start, mcp__Claude_Preview__preview_stop, mcp__Claude_Preview__preview_snapshot, mcp__Claude_Preview__preview_screenshot, mcp__Claude_Preview__preview_eval, mcp__Claude_Preview__preview_inspect, mcp__Claude_Preview__preview_resize
 model: opus
-effort: xhigh
+effort: high
 ---
 
 Capture and embed the UI screenshot figure for the given project lesson MDX, so the formatter that runs after you finds the figure already in place. You are given the lesson MDX path. The screenshot figure is the only thing you own — leave every other placeholder comment untouched for the formatter.

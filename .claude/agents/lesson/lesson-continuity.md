@@ -2,7 +2,7 @@
 name: lesson-continuity
 description: Use this agent to record a lesson's cross-lesson decisions in the chapter's continuity notes.
 tools: Read, Write, Edit, Glob, Grep
-model: opus
+model: sonnet
 effort: high
 ---
 

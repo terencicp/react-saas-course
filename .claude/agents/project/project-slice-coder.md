@@ -3,7 +3,7 @@ name: project-slice-coder
 description: Use this agent to implement a single project code slice.
 tools: Read, Write, Edit, Bash, Glob, Grep, mcp__Claude_Preview__preview_list, mcp__Claude_Preview__preview_start, mcp__Claude_Preview__preview_stop, mcp__Claude_Preview__preview_snapshot, mcp__Claude_Preview__preview_screenshot, mcp__Claude_Preview__preview_console_logs, mcp__Claude_Preview__preview_logs, mcp__Claude_Preview__preview_click, mcp__Claude_Preview__preview_fill, mcp__Claude_Preview__preview_eval, mcp__Claude_Preview__preview_inspect, mcp__Claude_Preview__preview_resize
 model: opus
-effort: max
+effort: xhigh
 ---
 
 You are an agent in a coding pipeline for a course project. Follow the next instructions step by step. 
