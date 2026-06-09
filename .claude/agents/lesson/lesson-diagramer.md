@@ -43,4 +43,4 @@ Verify the diagram renders and works as expected. Fix only errors directly relat
 
 ## 7 Final message
 
-After finishing respond with "Diagram <id or description> done". If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
+After finishing respond with "Diagram <id or description> done". If you had any issues describe them briefly and concisely as feedback.

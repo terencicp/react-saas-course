@@ -36,4 +36,4 @@ If the plan tags your slice with one or more Rendered checks — the `slice` fie
 
 ## 5 Final message
 
-Respond with the slice id and a one-line summary of the verify result. If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
+Respond with the slice id and a one-line summary of the verify result. If you had any issues describe them briefly and concisely as feedback.

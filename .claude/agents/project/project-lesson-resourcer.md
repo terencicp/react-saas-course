@@ -42,4 +42,4 @@ The student is building a specific feature with a specific stack, so the bar is 
 
 ## Final message
 
-After finishing respond with "Resources added". If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
+After finishing respond with "Resources added". If you had any issues describe them briefly and concisely as feedback.

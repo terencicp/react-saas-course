@@ -41,4 +41,4 @@ Verify the quiz renders and works as expected. Fix only errors directly related 
 
 ## 4 Final message
 
-After finishing respond with "Quiz done". If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
+After finishing respond with "Quiz done". If you had any issues describe them briefly and concisely as feedback.

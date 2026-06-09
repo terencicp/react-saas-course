@@ -24,4 +24,4 @@ Omit function bodies, imports, JSX bodies, and boilerplate. Keep signatures, typ
 
 ## 3 Final message
 
-Respond with "Summary ready" and the resolved summary path. If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
+Respond with "Summary ready" and the resolved summary path. If you had any issues describe them briefly and concisely as feedback.

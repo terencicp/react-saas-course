@@ -72,4 +72,4 @@ What this lesson does not cover, with a one-line reference to the lesson or unit
 
 ## 6 Final message
 
-Return the path of the newly created lesson outline file, its title, and the lesson **type** (`Project overview` / `Walkthrough` / `Implementation`) so the orchestrator can branch. If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
+Return the path of the newly created lesson outline file, its title, and the lesson **type** (`Project overview` / `Walkthrough` / `Implementation`) so the orchestrator can branch. If you had any issues describe them briefly and concisely as feedback.

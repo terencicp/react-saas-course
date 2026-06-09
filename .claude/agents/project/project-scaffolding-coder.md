@@ -34,4 +34,4 @@ From inside `projects/Chapter <X>/solution/`, run `pnpm install && pnpm verify`,
 
 ## 5 Final message
 
-Respond with "Scaffold ready" and the resolved solution path. If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
+Respond with "Scaffold ready" and the resolved solution path. If you had any issues describe them briefly and concisely as feedback.

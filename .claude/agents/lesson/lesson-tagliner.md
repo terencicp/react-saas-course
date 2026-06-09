@@ -29,4 +29,4 @@ Add the sentence as a `tagline:` frontmatter field, directly below `description:
 ## 4 Final message
 
 Respond with "Tagline added" and the tagline text.
-If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
+If you had any issues describe them briefly and concisely as feedback.

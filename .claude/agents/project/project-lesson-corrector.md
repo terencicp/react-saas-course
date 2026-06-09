@@ -52,4 +52,4 @@ Verify the lesson renders. Fix only errors directly related to the current lesso
 In your final message:
 - Path of the lesson file.
 - One line per issue: severity, one-line restatement, one-line fix summary, status (`fixed` / `skipped — reason` / `surfaced — belongs to lesson <n>`).
-- If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
+- If you had any issues describe them briefly and concisely as feedback.

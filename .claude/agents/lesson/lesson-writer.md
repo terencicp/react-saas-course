@@ -83,4 +83,4 @@ Re-read the file again for correctness and cohesion. Make any edits necessary to
 
 ## 8 Final message
 
-Finally, return the path of the newly created lesson file and the count of diagrams with the list of the unique name of each, and the same for the exercises and sandboxes. If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
+Finally, return the path of the newly created lesson file and the count of diagrams with the list of the unique name of each, and the same for the exercises and sandboxes. If you had any issues describe them briefly and concisely as feedback.

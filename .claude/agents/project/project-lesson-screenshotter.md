@@ -40,4 +40,4 @@ Confirm the figure renders: `preview_list` (use the running server or `preview_s
 
 ## 6 Final message
 
-Respond with "Screenshots embedded" (or "No screenshot needed" when the lesson has no UI figure). If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
+Respond with "Screenshots embedded" (or "No screenshot needed" when the lesson has no UI figure). If you had any issues describe them briefly and concisely as feedback.

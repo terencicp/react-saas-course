@@ -34,4 +34,4 @@ Delete `projects/Chapter <X>/_smoke/`.
 
 ## 5 Final message
 
-Return: "Project verified" and a list of the changes you made. If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
+Return: "Project verified" and a list of the changes you made. If you had any issues describe them briefly and concisely as feedback.

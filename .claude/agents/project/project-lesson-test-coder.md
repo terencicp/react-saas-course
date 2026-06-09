@@ -55,4 +55,4 @@ Fix any setup-level errors before returning. If you cannot resolve a setup-level
 
 ## 5 Final message
 
-Return the test file path and the list of tested-requirement ids covered. If any `[untested]` requirement looks like it should arguably be tested, surface it as feedback (do not silently promote it). If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
+Return the test file path and the list of tested-requirement ids covered. If any `[untested]` requirement looks like it should arguably be tested, surface it as feedback (do not silently promote it). If you had any issues describe them briefly and concisely as feedback.

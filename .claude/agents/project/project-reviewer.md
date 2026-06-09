@@ -35,4 +35,4 @@ Read the chapter outline at `documentation/content/chapter outlines/Chapter <X>.
 
 ## 6 Final message
 
-Respond with "Solution and start match the plan" or a single list of issues ranked by severity, one line per issue: file path, which side (solution or start), and a one-sentence summary. If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
+Respond with "Solution and start match the plan" or a single list of issues ranked by severity, one line per issue: file path, which side (solution or start), and a one-sentence summary. If you had any issues describe them briefly and concisely as feedback.

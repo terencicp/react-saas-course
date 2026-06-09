@@ -43,4 +43,4 @@ The quiz is intended to be light and quick, keep MCQ to 2-3 choices and multi-se
 
 ## 4 Final message
 
-Return the path of the quiz outline document. If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
+Return the path of the quiz outline document. If you had any issues describe them briefly and concisely as feedback.

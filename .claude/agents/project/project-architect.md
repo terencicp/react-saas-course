@@ -71,4 +71,4 @@ Re-read the plan checking it's coherent and free of errors. Make and necessary c
 
 ## 10 Final message
 
-Return the path of the newly created plan and the ordered list of slice ids. Also return the **screenshot list**: each slice whose Screenshot line names shots, with the lesson number it serves. If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
+Return the path of the newly created plan and the ordered list of slice ids. Also return the **screenshot list**: each slice whose Screenshot line names shots, with the lesson number it serves. If you had any issues describe them briefly and concisely as feedback.

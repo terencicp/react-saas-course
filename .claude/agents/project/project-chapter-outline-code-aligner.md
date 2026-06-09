@@ -28,4 +28,4 @@ Re-read the rewritten outline to confirm it's coherent and correct.
 
 ## 5 Final message
 
-Respond with "Chapter outline realigned" and the resolved path. If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
+Respond with "Chapter outline realigned" and the resolved path. If you had any issues describe them briefly and concisely as feedback.

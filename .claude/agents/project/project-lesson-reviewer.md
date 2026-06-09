@@ -37,4 +37,4 @@ Spot-check that the `Your mission` numbered functional requirements line up with
 
 ## 5 Report back
 
-Report "No serious issues" or a list of issues ranked by severity, one line each: severity, category (`pedagogy` | `outline-drift` | `code-fidelity` | `coherence`), one-sentence summary, file:line if applicable. If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
+Report "No serious issues" or a list of issues ranked by severity, one line each: severity, category (`pedagogy` | `outline-drift` | `code-fidelity` | `coherence`), one-sentence summary, file:line if applicable. If you had any issues describe them briefly and concisely as feedback.

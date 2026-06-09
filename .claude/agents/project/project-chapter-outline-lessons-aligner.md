@@ -48,4 +48,4 @@ Re-read every section you edited to confirm the edit is internally coherent with
 
 ## 7 Final message
 
-Respond with either "Outline aligned — no changes" or "Outline aligned" followed by a one-line-per-edit list (section touched, what changed, which continuity note drove it) and any significant misalignments you deliberately left for the architect to handle. If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
+Respond with either "Outline aligned — no changes" or "Outline aligned" followed by a one-line-per-edit list (section touched, what changed, which continuity note drove it) and any significant misalignments you deliberately left for the architect to handle. If you had any issues describe them briefly and concisely as feedback.

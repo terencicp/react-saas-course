@@ -30,4 +30,4 @@ From inside `projects/Chapter <X>/solution/`, run `pnpm verify`. From inside `pr
 
 ## 4 Final message
 
-Respond with one line per issue: file path, and status (`fixed` or `skipped — reason`). If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
+Respond with one line per issue: file path, and status (`fixed` or `skipped — reason`). If you had any issues describe them briefly and concisely as feedback.

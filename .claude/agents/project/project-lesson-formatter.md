@@ -50,4 +50,4 @@ Verify the lesson renders and works as expected. Fix only errors directly relate
 
 ## 6 Final message
 
-After finishing respond with "Lesson formatted". If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
+After finishing respond with "Lesson formatted". If you had any issues describe them briefly and concisely as feedback.

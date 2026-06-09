@@ -40,4 +40,4 @@ From inside `projects/Chapter <X>/start/`, run `pnpm install && pnpm verify`. Mu
 
 ## 6 Final message
 
-Respond with "Start ready" and the resolved start path. If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
+Respond with "Start ready" and the resolved start path. If you had any issues describe them briefly and concisely as feedback.

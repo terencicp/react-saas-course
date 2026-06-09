@@ -30,4 +30,4 @@ Then read the continuity notes for up to 5 preceding relevant chapters, and the 
 
 ## Report back
 
-In your last message report back with "No serious issues" or a description of the issues you found ranked by severity. If you had any issues or have any ideas to improve the work of agents carrying out these tasks in the future, describe them briefly and concisely as feedback.
+In your last message report back with "No serious issues" or a description of the issues you found ranked by severity. If you had any issues describe them briefly and concisely as feedback.
