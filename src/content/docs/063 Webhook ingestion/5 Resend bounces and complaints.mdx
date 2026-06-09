@@ -1,0 +1,426 @@
+---
+title: Resend bounces and complaints
+tagline: Reuse the chapter's webhook ingestion pattern for a second provider, ingesting Resend's bounce and complaint events to keep your email suppression list honest.
+chapter-id: 63
+course-progress: 0.00005
+sidebar:
+  order: 5
+  label: Resend webhooks
+---
+
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import DrizzleCoding from '../../../components/live-coding/DrizzleCoding/DrizzleCoding.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import PortabilityGrid from '../../../components/lessons/063/5/PortabilityGrid.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Back when you built the transactional email send path, you shipped an `email_suppressions` table and a `sendEmail` wrapper that reads it before every send: if an address is on that list, the mail never leaves the building. That was the *read* side of the discipline. But a table that gets read on every send and never written to is just an empty list — it suppresses nobody. Something has to put addresses on it.
+
+That something is this handler. When a message bounces or someone marks it as spam, Resend tells you over a webhook — `email.bounced`, `email.complained` — and the handler turns that event into a row in `email_suppressions`. The webhook is the *write* side. Two halves of one discipline, shipped a unit apart: the webhook populates the table, `sendEmail` reads it.
+
+Why bother? Two production stakes, both covered in depth when you built the email send path, so here's the one-line version. Every send to a dead or angry address pushes your complaint rate toward the 0.3% throttling cliff that gets your whole domain rate-limited by the big mailbox providers. And a single spam complaint costs you more than a single bounce, because it damages deliverability for *every* customer sharing your sending domain — one user's "report spam" makes everyone else's mail more likely to land in junk. Keeping the suppression list honest is how you stay under that cliff.
+
+Here's the good news, and the real point of this lesson: you've already built this handler. Not literally — but its *shape* is the Stripe handler from the last few lessons. Verify the signature, claim the event so retries don't double-process, do the work in a transaction, return 200. Swapping in a new provider changes three lines and nothing else. By the end you'll have wired the Resend webhook, mapped its bounce taxonomy onto the right suppression rule, and — more durably — seen that the webhook pattern is portable enough to absorb a third or fourth provider without reinventing anything structural.
+
+A bit of vocabulary you'll meet below: a mailbox provider reports a spam complaint back to you over an <Term definition={"Feedback Loop.\nThe channel by which a mailbox provider (Gmail, Outlook, etc.) reports a recipient's spam complaint back to the sender so the sender can stop mailing them."}>FBL</Term>. We'll cover Svix verification first, then the full handler, then the bounce and complaint branches.
+
+## Svix verification: the same boundary, a different SDK
+
+The Stripe handler opens with one job before anything else: verify the raw body against a signature, and refuse with a 400 if it doesn't check out. The Resend handler opens with the exact same job. The mechanics behind the scenes are even the same recipe — parse a timestamp, compute an HMAC-SHA-256 over the payload, compare it to the provided digest in constant time, and reject anything outside a few-minutes tolerance window. You wrote that recipe by hand in the first lesson of this chapter to see what's inside the box. You will not write it again. What changes between Stripe and Resend is which SDK call runs the recipe and which headers feed it.
+
+Resend doesn't roll its own signing scheme. It signs webhooks with <Term definition={"A hosted webhooks-as-a-service layer used by many SaaS providers. Standardizes the signature header format and delivery (retries, etc.) so every Svix-backed webhook verifies the same way."}>Svix</Term>, a webhooks-as-a-service layer that a lot of SaaS products use precisely so their customers don't each invent a new verification scheme. Svix sends three headers with every delivery:
+
+<CodeTooltips tooltips={{
+  'svix-id': "Unique id for this webhook delivery. The same logical email can emit several deliveries (a bounce, then later a complaint), each with its own svix-id.",
+  'svix-timestamp': "Unix seconds when Svix sent the delivery. Verification rejects anything outside a few-minutes tolerance window so a captured request can't be replayed forever.",
+  'svix-signature': "Space-separated list of versioned signatures. v1 is HMAC-SHA-256, base64-encoded.",
+}}>
+```http
+svix-id         msg_2a9f...           a unique message id for this delivery
+svix-timestamp  1714560000            unix seconds, used for the tolerance window
+svix-signature  v1,k3y8b...           the versioned, base64 HMAC-SHA-256 digest
+```
+</CodeTooltips>
+
+What gets signed is the string `${svix-id}.${svix-timestamp}.${rawBody}`, HMAC-SHA-256, base64, presented as `v1,<digest>`. That's the whole box. You don't open it — `resend.webhooks.verify` does, and it strips the `whsec_` prefix off your secret, base64-decodes the rest, and runs the compare for you. Hand-rolling it would mean re-deriving the key from that prefixed string yourself, which is exactly the kind of fiddly crypto plumbing the SDK exists to absorb.
+
+One rule carries over untouched and it's the single most-repeated webhook bug, so it's worth the reminder even though you already know it: **read the raw body once with `await request.text()`, verify it, and only parse it afterward.** Re-serializing JSON before the verify changes a byte somewhere and the HMAC stops matching. Same rule as the first lesson of this chapter; nothing new.
+
+The secret lives in your environment as `RESEND_WEBHOOK_SECRET`. Notice the prefix — `whsec_`, the same family as Stripe's local signing secret. Add it to your validated env alongside the `RESEND_API_KEY` you set up earlier:
+
+```ts title="src/env.ts" ins={3}
+server: {
+  RESEND_API_KEY: z.string().min(1),
+  RESEND_WEBHOOK_SECRET: z.string().startsWith('whsec_'),
+},
+```
+
+Now the verification call itself. Here's where the "same boundary, different SDK" point earns its keep — put the two side by side and the change is almost nothing. The following two tabs are the verify block from each handler:
+
+<CodeVariants maxLines={18}>
+  <CodeVariant label="Stripe" icon="simple-icons:stripe">
+    <div data-mark-color="blue">
+
+    ```ts "stripe.webhooks.constructEvent" "request.headers.get('stripe-signature')!"
+    try {
+      event = stripe.webhooks.constructEvent(
+        rawBody,
+        request.headers.get('stripe-signature')!,
+        env.STRIPE_WEBHOOK_SECRET,
+      );
+    } catch {
+      return problem(400, 'invalid_signature');
+    }
+    ```
+
+    </div>
+    **What you already shipped in the first lesson of this chapter** — one SDK call, the `stripe-signature` header, a 400 on failure.
+  </CodeVariant>
+
+  <CodeVariant label="Resend" icon="simple-icons:resend">
+    <div data-mark-color="green">
+
+    ```ts "resend.webhooks.verify" "request.headers.get('svix-id')!" "request.headers.get('svix-timestamp')!" "request.headers.get('svix-signature')!"
+    try {
+      event = resend.webhooks.verify({
+        payload: rawBody,
+        headers: {
+          id: request.headers.get('svix-id')!,
+          timestamp: request.headers.get('svix-timestamp')!,
+          signature: request.headers.get('svix-signature')!,
+        },
+        webhookSecret: env.RESEND_WEBHOOK_SECRET,
+      });
+    } catch {
+      return problem(400, 'invalid_signature');
+    }
+    ```
+
+    </div>
+    **Same try/catch, same 400.** It reuses the `resend` singleton you already export from `lib/email.ts`, so there's no new dependency to install — just three headers instead of one.
+  </CodeVariant>
+</CodeVariants>
+
+The surrounding `try`/`catch` and the `problem(400, ...)` return are byte-for-byte the same; only the SDK call and the header names moved. That's the lesson in miniature.
+
+A couple of footnotes that close small gaps without needing their own sections. There's a provider-agnostic way to do this — `import { Webhook } from 'svix'` and `new Webhook(secret).verify(payload, headers)` — same contract, but it's a separate npm install, and since the `resend` singleton already exists the course reaches for `resend.webhooks.verify`. And in the Node runtime, header names come back lowercased from `request.headers.get(...)`, so you read `'svix-id'`, not `'Svix-Id'`. Finally, this route runs `export const runtime = 'nodejs'` for the same reason the Stripe route did — the first lesson of this chapter owns that reasoning.
+
+## The Resend handler, end to end
+
+Time to put it together. Here's the whole route file, and then a walk through it. The thing to watch as you read is how little of it is new — the scaffold is lifted straight from the Stripe handler.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+export const runtime = 'nodejs';
+
+export async function POST(request: Request) {
+  const rawBody = await request.text();
+  const svixId = request.headers.get('svix-id')!;
+  let event: ResendWebhookEvent;
+  try {
+    event = resend.webhooks.verify({
+      payload: rawBody,
+      headers: {
+        id: svixId,
+        timestamp: request.headers.get('svix-timestamp')!,
+        signature: request.headers.get('svix-signature')!,
+      },
+      webhookSecret: env.RESEND_WEBHOOK_SECRET,
+    });
+  } catch {
+    return problem(400, 'invalid_signature');
+  }
+
+  try {
+    await db.transaction(async (tx) => {
+      const claimed = await claimEvent(tx, 'resend', svixId, event.type);
+      if (claimed.length === 0) return;
+      switch (event.type) {
+        case 'email.bounced':
+          await onBounced(tx, event, svixId);
+          break;
+        case 'email.complained':
+          await onComplained(tx, event, svixId);
+          break;
+      }
+    });
+  } catch {
+    return new Response(null, { status: 500 });
+  }
+  return new Response(null, { status: 200 });
+}
+`}>
+  <AnnotatedStep meta="{1}" color="blue">
+    The Node runtime, for the crypto the SDK needs. The first lesson of this chapter explains why this line is here.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{4-5}" color="blue">
+    Read the raw body exactly once, and grab the `svix-id` header up front — both the verify and the claim use it. Never re-read the stream.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{7-19}" color="green">
+    The Resend-specific surface, straight from the previous section: verify the raw body, 400 on failure. Note the empty `catch {}` — it deliberately ignores the error object, because we refuse to log anything from a request we haven't verified yet.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{23}" color="green">
+    The dedup key is the `svix-id` header — the Svix message id — not anything inside the body. This matters: a bounce and a *later* complaint for the same email arrive as two deliveries with two different `svix-id`s, so both must process. Dedup on the body's email id and you'd wrongly collapse them into one.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{22-24} "claimEvent"`} color="blue">
+    This block is copy-pasted from the Stripe handler. The same `claimEvent` helper claims the row in `processed_events`; a zero-row result means a duplicate delivery, so we return early and let the outer handler reply 200.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{25-32}" color="green">
+    The switch — the other Resend-specific line. Only two cases, because these are the only two events the app acts on. Everything else Resend sends (delivered, opened, clicked) is claimed and ignored.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{35,37}" color="blue">
+    The status surface, identical to the Stripe handler: any thrown error rolls the transaction back and returns 500 so Resend retries; the happy path returns 200. The full status-code table lives in the second lesson of this chapter.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Step back and count what's actually Resend-specific in that file. Three things: the verify call (`resend.webhooks.verify` instead of `stripe.webhooks.constructEvent`), the provider string in the claim (`'resend'` instead of `'stripe'`), and the two `switch` cases. The transaction, the claim, the 200/400/500 surface, the raw-body read — all identical. **A new provider is three lines.** That's the sentence to walk away with.
+
+Two small things in that code worth a clause each. `ResendWebhookEvent` is a discriminated union keyed on `type` — the course derives it once (a `z.discriminatedUnion('type', …)` parsed right after the verify, or the SDK's own return type if it's typed) so each `case` narrows `event` to the right payload shape; it's plumbing, not the lesson. And `problem(...)` is the RFC 9457 `application/problem+json` helper you built earlier in the course — it's what makes the 400 a well-formed error body instead of a bare status.
+
+Real handlers also log a line per branch through a per-seam child logger — `logger.child({ seam: 'webhook.resend' })` — recording the `svix-id` and the disposition (claimed, duplicate, suppressed, error) so you can reconstruct what happened at 3am. The logging internals come later in the course; for now, know that *where* you log is the same as everywhere else, and you never log the body before the verify passes.
+
+## Bounce, complaint, and the rule for each
+
+Now the part that *is* new: deciding what to write. A bounce and a complaint are both the mailbox provider telling you the same thing — *stop sending here* — but they differ in two ways that change your response. How severe is it, and is it permanent? Suppression is the answer to both, but the taxonomy decides whether you suppress *now* or count-and-wait. You defined this taxonomy back when you built the suppression schema; here you apply it in handler code.
+
+The `reason` column on `email_suppressions` is the vocabulary for that decision. The handler writes two of its values:
+
+| Resend signal | What the handler does |
+| --- | --- |
+| `email.bounced`, `bounce.type` `Permanent` | insert `reason: 'hard_bounce'` |
+| `email.bounced`, `bounce.type` `Transient` | log + count; suppress only after the threshold |
+| `email.bounced`, `bounce.type` `Undetermined` | log only; do not suppress |
+| `email.complained` | insert `reason: 'complaint'` |
+
+The handler writes only `'hard_bounce'` and `'complaint'`. The enum's other values — `'soft_bounce_threshold'`, `'manual_unsubscribe'`, `'invalid_address'` — belong to the same `email_suppressions` schema you built in the email unit but are written by other flows; they're named here, not redefined.
+
+### `email.bounced` — permanent suppresses, transient counts
+
+A bounce is the receiving server handing your message back. Resend classifies it for you in `data.bounce.type`, which takes one of three values, and the right action is different for each.
+
+A **`Permanent`** bounce is a hard bounce: the mailbox doesn't exist, or the domain flat-out rejects you. There is no point retrying — the address is dead. Suppress it on the first occurrence with `reason: 'hard_bounce'`, because re-sending to a known-dead address is exactly what providers punish hardest.
+
+A **`Transient`** bounce is a soft bounce: the mailbox is full, or the server is having a momentary problem. The address might be fine tomorrow. You do *not* suppress on the first one — Resend itself retries transient bounces, and suppressing a temporarily-full inbox would lock out a real, reachable user. The course's rule is to log it and bump a soft-bounce counter, and only escalate to `reason: 'soft_bounce_threshold'` after the inbox has bounced softly five or so times in a row. That counter and its exact threshold are a per-product policy owned by the email unit — don't build it here. The handler's default stance is simpler: *suppress on `Permanent` only.*
+
+An **`Undetermined`** bounce is Resend telling you it couldn't classify the failure. The conservative move is to log it and suppress nothing on the first occurrence — an ambiguous signal is not grounds to lock someone out. It's a real third value, so naming it keeps your branch honest; forget it and a vague bounce could accidentally fall through into a suppression you didn't intend.
+
+One shape detail: `data.to` is an **array**, not a string. It's almost always a single address, but the field is plural, so you iterate it. Here's `onBounced`:
+
+<CodeTooltips tooltips={{
+  'bounce.type': "Resend's classification of the failure — one of 'Permanent', 'Transient', or 'Undetermined'. The guard suppresses on 'Permanent' only.",
+  Permanent: "Hard bounce — the mailbox doesn't exist or the domain rejects mail. Suppress immediately.",
+}}>
+```ts title="src/app/api/webhooks/resend/handlers.ts"
+const onBounced = async (tx: Tx, event: BouncedEvent, svixId: string) => {
+  if (event.data.bounce.type !== 'Permanent') return;
+  for (const recipient of event.data.to) {
+    await suppress(tx, {
+      email: normalizeEmail(recipient),
+      reason: 'hard_bounce',
+      providerEventId: svixId,
+      metadata: event.data,
+    });
+  }
+};
+```
+</CodeTooltips>
+
+`normalizeEmail` lowercases and trims — the same normalization the suppression schema relies on, so the unique-on-email constraint actually catches the duplicate. `svixId` (the request header) is threaded in from the handler: the body carries no event id, so it's the only stable identifier to record in `providerEventId`, and `metadata` stores the raw `event.data` jsonb for traceability.
+
+The guard reads `if (event.data.bounce.type !== 'Permanent') return;` — which quietly handles both `Transient` and `Undetermined` in one line, since neither should suppress. In a fuller implementation the `Transient` branch is where you'd bump that soft-bounce counter before returning; the course leaves that policy to the chapter that owns the suppression schema and keeps this handler's job to the one decision that's unambiguous.
+
+### `email.complained` — always permanent
+
+A complaint is the recipient hitting "report spam." That's the FBL signal, and it has no soft version. There's no "the inbox was full" story here — someone looked at your email and called it junk. So `onComplained` is even simpler than `onBounced` — no type branch, just suppress every recipient with `reason: 'complaint'`:
+
+```ts title="src/app/api/webhooks/resend/handlers.ts"
+const onComplained = async (tx: Tx, event: ComplainedEvent, svixId: string) => {
+  for (const recipient of event.data.to) {
+    await suppress(tx, {
+      email: normalizeEmail(recipient),
+      reason: 'complaint',
+      providerEventId: svixId,
+      metadata: event.data,
+    });
+  }
+};
+```
+
+The reason there's no count-and-wait branch is worth sitting with, because it's the heart of why complaints matter more than bounces. A complaint doesn't just hurt your odds of reaching *that* person — it tells the mailbox provider your domain sends spam, which drags down deliverability for every other customer on the shared sending domain. Re-sending to someone who already reported you as spam is the single worst thing the app can do for its sender reputation. One complaint is expensive; a second send to the same complainer is reckless. That's why the rule is absolute: complaint in, suppression out, no exceptions.
+
+Before you write the suppression itself, make sure you can tell these signals apart on sight. Sort each Resend signal into what the handler should do with it:
+
+<Buckets twoCol instructions="Sort each Resend signal by what the handler should do with it.">
+  <Bucket name="suppress" label="Suppress immediately" description="Permanent — write a row now" />
+  <Bucket name="wait" label="Log or count, don't suppress yet" description="Not a permanent stop" />
+
+  <Item bucket="suppress">Hard bounce (`bounce.type` is `Permanent`)</Item>
+  <Item bucket="suppress">Spam complaint (`email.complained`)</Item>
+  <Item bucket="wait">Soft bounce (`bounce.type` is `Transient`)</Item>
+  <Item bucket="wait">Undetermined bounce</Item>
+  <Item bucket="wait">`email.delivered`</Item>
+  <Item bucket="wait">`email.opened`</Item>
+</Buckets>
+
+## Writing the suppression: `ON CONFLICT DO NOTHING`, again
+
+You've seen this exact move before, one layer up. When the handler claimed an event in `processed_events`, it used an insert that no-ops if the row already exists — an atomic claim. Writing the suppression is the same shape, on a different table. Here's `suppress`:
+
+<div data-mark-color="blue">
+
+```ts title="src/app/api/webhooks/resend/handlers.ts" {5}
+const suppress = async (tx: Tx, row: NewSuppression) =>
+  tx
+    .insert(emailSuppressions)
+    .values(row)
+    .onConflictDoNothing({ target: emailSuppressions.email });
+```
+
+</div>
+
+`row` carries `email` (normalized), `reason`, `providerEventId` (the svix-id, for traceability), and `metadata` (the raw `event.data` jsonb). The `id` defaults to `uuidv7()` and `createdAt`/`updatedAt` default too — all owned by the suppression schema, not set here.
+
+A bounce of an address that's already suppressed is a silent no-op — `ON CONFLICT DO NOTHING` sees the existing row on the unique `email` column and walks away. Exactly the `processed_events` story, different table.
+
+So now you have dedup at *two* layers, and it's fair to ask whether that's redundant. It isn't, because the two layers guard different things. The `processed_events` claim stops the **same delivery** from being processed twice — Resend retried, the same `svix-id` shows up again, the claim loses, nothing happens. The `ON CONFLICT` on `email_suppressions.email` handles a different case entirely: **different events for the same address.** A `Permanent` bounce suppresses `dead@example.com`; a week later that same address generates a complaint with a brand-new `svix-id`. The claim *succeeds* — it's a new event — so the handler runs, reaches the insert, and `ON CONFLICT` makes the second write a clean no-op. One guard for "same event again," one for "same address again." They compose.
+
+Both writes — the claim row and the suppression row — live in the **same transaction** the handler opened. They commit together or not at all, so a crash between them can't leave the event marked processed with no suppression written. That's why every helper takes `tx` as its first argument and never reaches for the global `db`: threading the transaction is what keeps the receipt and the consequence on the same commit boundary.
+
+Your turn. Write the suppression insert and watch both outcomes — a *fresh* address suppresses (one row back, you wrote it), and the *already-suppressed* address no-ops (zero rows, `ON CONFLICT` swallowed it). The seed holds one already-suppressed address, `dead@example.com`. The starter aims at a brand-new one, `angry@example.com` — a first-time complaint, so the insert lands and `RETURNING` hands you the row you just wrote.
+
+<DrizzleCoding
+  instructions="The seed already holds dead@example.com. Suppress the fresh address angry@example.com with reason 'complaint' using an insert that does nothing on conflict, and return the inserted id. Because nothing conflicts, you get one row back: the suppression landed. Then point the email at the seeded dead@example.com and re-run — zero rows come back, the no-op a duplicate webhook should take."
+  schema={`// Sandbox-only shape: explicit SQL column names, a plain text PK (no uuidv7()
+// default), text instead of the production pgEnum for reason, and a table-level
+// unique on email. The real ch048 schema uses casing: 'snake_case' + a pgEnum.
+export const emailSuppressions = pgTable(
+  'email_suppressions',
+  {
+    id: text('id').primaryKey(),
+    email: text('email').notNull(),
+    reason: text('reason').notNull(),
+    providerEventId: text('provider_event_id'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [unique('email_suppressions_email_unique').on(t.email)],
+);`}
+  seed={`INSERT INTO email_suppressions (id, email, reason, provider_event_id, created_at) VALUES
+  ('sup_1', 'dead@example.com', 'hard_bounce', 'msg_001', '2026-05-01 10:00Z');`}
+  starter={`return await db
+  .insert(emailSuppressions)
+  .values({
+    id: 'sup_2',
+    email: 'angry@example.com',
+    reason: 'complaint',
+    providerEventId: 'msg_002',
+  });
+  /* finish: ON CONFLICT DO NOTHING on email, then RETURNING id */`}
+  expectedRows={[{ id: 'sup_2' }]}
+  ordered={false}
+/>
+
+Now flip it the other way: change `email` to the seeded `'dead@example.com'` and run again. This time **zero rows** come back — the address already holds a row, so the unique constraint on `email` refuses the duplicate and `DO NOTHING` swallows it into an empty result. That's the silent no-op the handler relies on: a second event for an address you've already suppressed reaches the insert, writes nothing, and harms nothing.
+
+The full suppression insert you just completed:
+
+```ts
+return await db
+  .insert(emailSuppressions)
+  .values({
+    id: 'sup_2',
+    email: 'angry@example.com',
+    reason: 'complaint',
+    providerEventId: 'msg_002',
+  })
+  .onConflictDoNothing({ target: emailSuppressions.email })
+  .returning({ id: emailSuppressions.id });
+```
+
+:::note
+The sandbox spells out SQL column names like `text('provider_event_id')` and swaps the production `reason` pgEnum for plain `text`, because it has no client-level `casing` config and PGlite can't take the full schema. In the real project you set `casing: 'snake_case'` once and write plain camelCase keys against the ch048 `emailSuppressions` schema — same SQL, the sandbox just writes it out longhand.
+:::
+
+## The `bypassSuppression` carve-out
+
+There's one wrinkle that makes the suppression list a real production tool rather than a blunt instrument, and it's the kind of nuance that separates a working feature from a thoughtful one. Some emails *must* go out even to a suppressed address.
+
+The canonical case is a password reset. Picture a user whose email bounced once — maybe their inbox was full that day — and got suppressed. Now they're locked out and they request a password reset. If the suppression list blocks that reset, you've trapped them: the one email that could get them back into their account is the one you refuse to send. Email verification is the same story in reverse — the user may have just fixed a typo'd address, and the verification mail is precisely the thing that confirms the fix.
+
+So the send helper has a deliberate, narrow escape hatch. Recall that `sendEmail` reads `email_suppressions` before it calls Resend and returns a `'suppressed'` failure when the address is on the list — *unless* you pass `bypassSuppression: true`. You don't touch the helper's internals; you opt in at the call site:
+
+<div data-mark-color="green">
+
+```tsx title="src/app/(auth)/reset-password/actions.ts" ins={6}
+// Bypass: account recovery must reach the user even if their address bounced.
+await sendEmail({
+  to: user.email,
+  subject: 'Reset your password',
+  react: <PasswordResetEmail url={resetUrl} />,
+  bypassSuppression: true,
+});
+```
+
+</div>
+
+Treat that flag as a privilege, not a convenience. In a whole codebase there should be three or four call sites that pass it — account recovery, verification, maybe a security alert — each transactional, never marketing, and each justified in a comment right there at the call site. The reason it's a function argument and not a config flag is precisely so it shows up in code review: a reviewer scanning a diff sees `bypassSuppression: true` and knows to ask *why this one.* A hidden setting wouldn't earn that scrutiny.
+
+Notice where the exception lives. The webhook *writes* the suppression — it records the plain truth that this address bounced. The send helper *reads* it and decides what to do about that truth, and the bypass is its decision to make. The handler never second-guesses itself; it always records the fact. The judgment about when a fact can be overridden belongs to the read side, not the write side — a clean separation that keeps the handler dumb and the policy explicit. (The suppression schema also has a `bypass_until` column that scopes a bypass to a short time window, say five minutes for a verification link — a more precise mechanism for the same need. The boolean is the teachable default; the window is its refinement.)
+
+## One more provider is one more file
+
+Step all the way back. The reason this lesson was short is that almost none of it was new — and that's the payoff worth naming. You've now built the webhook pattern twice, for two providers, and the second one cost you three lines.
+
+Here's the test that proves it generalizes. Suppose next quarter you add a third webhook source — say, callbacks from a background-job service. What do you write? A new route file, one new verification SDK call, a new event-type `switch`. What do you *reuse*? The same `claimEvent(tx, provider, eventId, eventType)` claim against the same `processed_events` table, and the same outer transaction. The spine is invariant; only the edges move.
+
+You might wonder why this is two routes — `/api/webhooks/stripe` and `/api/webhooks/resend` — instead of one `/api/webhooks` endpoint that sniffs the provider from the payload and branches. The course chose two on purpose. Each provider has its own verification config and its own secret; each deserves its own observability so you can see Stripe failures separately from Resend failures; and a bug in one route can't take down the other. The thing that *is* shared — the claim, the ledger table — is shared through helpers, not through cramming two trust boundaries into one file. Unify the logic, isolate the surface.
+
+<Figure caption="The top three rows change with every provider; the bottom three never do. That fused green block is the spine you reuse — a new provider is just the amber edges.">
+  <PortabilityGrid />
+</Figure>
+
+One last thread to tie off, because a sharp reader will be holding onto it. The "Newer wins, single writer" lesson made a whole point of out-of-order delivery and the `last_event_at` predicate that makes "newer wins." Where is it here? It's deliberately absent, and the reason is the cleanest way to see what that predicate was actually for. A subscription's status is mutable *state* — `active` can flip to `canceled` and back, so a late event must not clobber a newer one, hence the ordering guard. A suppression is not state; it's an append-only **fact.** "This address bounced on May 1st" is true forever. A bounce event that arrives late is still a true bounce. There's no newer value for it to overwrite, so there's nothing to order. Facts need dedup — and they get it, from the claim and from `ON CONFLICT` — but they don't need the ordering predicate. State needs both; facts need only the one. That asymmetry is the whole reason the two handlers, identical in shape, differ in exactly this one place.
+
+## External resources
+
+When you want the exact payload fields, the full list of Svix headers, or the numbers behind the complaint cliff this lesson keeps invoking, these are the references to keep open:
+
+<CardGrid>
+  <ExternalResource
+    title="Resend — webhook event types"
+    href="https://resend.com/docs/dashboard/webhooks/event-types"
+    icon="simple-icons:resend"
+    iconColor="#000000"
+    description="The canonical list of events and the exact bounce/complaint payload your handler switches on."
+  />
+  <ExternalResource
+    title="Svix — verifying webhooks"
+    href="https://docs.svix.com/receiving/verifying-payloads/how"
+    icon="lucide:shield-check"
+    iconColor="#E5484D"
+    description="The signature header format and how verification works under the hood — the box resend.webhooks.verify opens for you."
+  />
+  <ExternalResource
+    title="Google — email sender guidelines"
+    href="https://support.google.com/a/answer/81126"
+    icon="simple-icons:gmail"
+    iconColor="#EA4335"
+    description="Where the 0.3% spam-complaint cliff comes from, straight from the mailbox provider that enforces it."
+  />
+</CardGrid>

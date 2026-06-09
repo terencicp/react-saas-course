@@ -1,0 +1,505 @@
+---
+title: Claim once, mutate once
+tagline: The webhook idempotency pattern, how a processed_events ledger and a single transaction make a Stripe handler process each event exactly once despite retries, concurrency, and crashes.
+chapter-id: 63
+course-progress: 0.00005
+sidebar:
+  order: 2
+  label: Claim once, mutate once
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Term from '../../../components/ui/Term.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import ArrowDiagram from '../../../components/figures/ArrowDiagram.astro';
+import FanIn from '../../../components/lessons/063/2/FanIn.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import ToctouRace from '../../../components/lessons/063/2/ToctouRace.astro';
+import TabbedContent from '../../../components/figures/tabbed-content/TabbedContent.astro';
+import TabbedItem from '../../../components/figures/tabbed-content/TabbedItem.astro';
+import SplitVsTransaction from '../../../components/lessons/063/2/SplitVsTransaction.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import DrizzleCoding from '../../../components/live-coding/DrizzleCoding/DrizzleCoding.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Last lesson ended at a single line: the signature passed, and your handler now trusts the event. But trust isn't the same as *done*. A verified event tells you the payload genuinely came from Stripe — it tells you nothing about whether you've already seen this exact event before.
+
+And you will see it again. Stripe's delivery contract is at-least-once: it keeps re-sending a webhook until it gets a fast `2xx` back. So the same event arrives more than once for ordinary reasons — your handler was a little slow and Stripe timed out and retried while the first attempt was still running; your handler succeeded but the `200` got lost on the wire so Stripe never heard the acknowledgement and retried; your handler crashed halfway through and Stripe retried. Three different stories, one shared ending: a `checkout.session.completed` lands twice. Process it twice and you've provisioned a customer twice — or in a billing-credit handler, *credited their account twice*. That's real money walking out the door because of a duplicate you treated as new.
+
+<VideoCallout videoId="x_jjhcDrISk" videoTitle="Top 3 Things You Should Know About Webhooks">
+  ByteByteGo's 4-minute primer (using Stripe as the example) on why webhooks beat polling and the three best practices — secure, idempotent, and queued — that this whole lesson unpacks.
+</VideoCallout>
+
+So the senior question this lesson answers: how does the handler process each event **exactly once**, even under retries, concurrent deliveries, and crashes mid-work? The whole answer fits in one sentence, and the rest of the lesson is the unpacking of it: **claim the event in a ledger row and do the business work in the same transaction — the receipt and the effect commit together, or not at all.** By the end you'll have extended last lesson's handler with a `processed_events` ledger, an atomic claim, and the full `verify → claim → mutate → 200` scaffold that the rest of this chapter and the project are built on.
+
+## At-least-once is the contract, not the exception
+
+Before any mechanism, the threat model — because every piece of code below earns its place by defending against something specific, and you should be able to see the threat first.
+
+Here's the contract, stated plainly: Stripe guarantees <Term definition="The sender promises a message arrives one or more times — never zero. Duplicates are expected and normal; your code is responsible for tolerating them.">at-least-once delivery</Term>, not exactly-once. If your endpoint doesn't return a `2xx` quickly, Stripe assumes the delivery failed and schedules a retry, backing off over hours and days. So the same `event.id` can reach your handler two, three, more times. Not as a rare glitch — as the documented, designed behavior of the system.
+
+It's worth making the three "arrives twice" stories concrete, because beginners tend to file this under "edge case" and move on, and it isn't an edge case:
+
+- **The slow handler.** Your handler takes too long. Stripe gives up waiting, marks the delivery failed, and retries — *while the first attempt is still running*. Now two copies of the same event execute at the same time, on two different server instances.
+- **The lost acknowledgement.** Your handler finishes the work perfectly and returns `200`. But the response is lost in transit — a dropped connection, a load-balancer hiccup. Stripe never hears the `200`, concludes the delivery failed, and retries an event you've *already fully processed*.
+- **The crash.** Your handler starts the work and dies partway — an unhandled exception, a deploy that kills the instance mid-request. Stripe retries.
+
+Each is a different interleaving in time, but they all demand the same defense. And here's the anchor to carry through the whole lesson: **idempotency is a property you engineer, not a guarantee the sender hands you.** Stripe promises the message arrives *at least* once. Turning that into *exactly* once is your job, and the place you do it is this boundary. (<Term definition="A property of an operation: applying it once and applying it many times produce the same result. A correctly-deduplicated webhook handler is idempotent — replaying an event changes nothing the first run didn't already do.">Idempotency</Term> is the word for that property, and it's going to come up a lot.)
+
+This shape — "the same thing could happen twice, defend against it at the boundary" — isn't unique to webhooks. It generalizes to Server Actions, background jobs, and public APIs, and a couple of lessons from now in [One pattern, four surfaces](/063-webhook-ingestion/4-one-pattern-four-surfaces) you'll see it do exactly that. For now we make it concrete for the one case in front of us.
+
+The following diagram is the whole problem in one picture: a single event fanning out into the handler several times, all of those arrivals needing to converge on one outcome.
+
+<Figure expandable={false}>
+  <ArrowDiagram
+    arrows={[
+      { from: 'src-slow', to: 'gate-in-1', color: '#ea580c', startSocket: 'right', endSocket: 'left', startSocketGravity: [70, 0], endSocketGravity: [-70, 0] },
+      { from: 'src-lost', to: 'gate-in-2', color: '#ea580c', startSocket: 'right', endSocket: 'left', startSocketGravity: [90, 0], endSocketGravity: [-50, 0] },
+      { from: 'src-crash', to: 'gate-in-3', color: '#ea580c', startSocket: 'right', endSocket: 'left', startSocketGravity: [70, 0], endSocketGravity: [-70, 0] },
+      { from: 'gate-out', to: 'effect', label: 'process once', color: '#16a34a', startSocket: 'right', endSocket: 'left', startSocketGravity: [60, 0], endSocketGravity: [-60, 0], labelOffset: [0, -16] },
+    ]}
+  >
+    <FanIn />
+  </ArrowDiagram>
+  <Fragment slot="caption">
+    One event, many arrivals — slow handler, lost `200`, crash — all hitting the same gate. The input is plural; the desired effect is singular. Closing that gap is the whole lesson.
+  </Fragment>
+</Figure>
+
+## The dedup ledger: one row per event ever seen
+
+To recognize a duplicate, you need a memory of what you've already handled. That memory is a table. One row per event you've finished, written the first time you see it and consulted forever after — `processed_events`. Build the table first, so the claim has somewhere to land.
+
+Here's the Drizzle schema. It's short, but every column is a decision, so let's walk through them one at a time.
+
+This is *production* schema, so it follows the course's `casing: 'snake_case'` client convention — camelCase keys, auto snake-case SQL — and spells out explicit SQL names only where doing so documents an external mapping.
+
+<AnnotatedCode lang="ts" code={`
+export const processedEvents = pgTable(
+  'processed_events',
+  {
+    id: bigint('id', { mode: 'number' }).primaryKey().generatedAlwaysAsIdentity(),
+    provider: text().notNull(),
+    eventId: text('event_id').notNull(),
+    eventType: text('event_type').notNull(),
+    receivedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    unique('processed_events_provider_event_id_unique').on(
+      t.provider,
+      t.eventId,
+    ),
+  ],
+);
+`}>
+  <AnnotatedStep meta="{1-4}" color="blue">
+    **The table and its surrogate key.** The identity `bigint` `id` exists only so `.returning()` has a cheap column to hand back later — no outsider ever sees it, so it's the internal-key case from the previous chapter, not a UUID. It is *not* the dedup key.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5}" color="blue">
+    **`provider`.** `'stripe'`, `'resend'`, any future sender. One table serves all of them.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{6}" color="blue">
+    **`eventId`.** The *sender's* own ID — `event.id` for Stripe. The explicit `'event_id'` documents the SQL name right at the call site (the per-column escape hatch).
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{7}" color="orange">
+    **`eventType`.** Stored for observability only — "what kind of event was this?" It is deliberately *not* part of the dedup key; only `(provider, eventId)` decides identity.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{8}" color="blue">
+    **`receivedAt`.** When we claimed it, via `defaultNow()`. This timestamp is what a scheduled retention sweep later prunes against.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{10-15}" color="green">
+    **The composite unique constraint.** *This one constraint is the entire dedup guarantee.* Postgres will physically refuse a second row with the same `(provider, eventId)`. Everything else in the lesson leans on it.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Two decisions in that schema are worth saying out loud.
+
+**Why `(provider, eventId)` and not `eventId` alone.** Stripe mints event IDs in its own namespace; Resend mints them in a completely separate one. Nothing stops the string `evt_123` from existing in both. If your unique key were just `eventId`, a Resend event could collide with a Stripe event that happens to share an ID — and one would silently mask the other, making you skip an event you never actually processed. The <Term definition="A uniqueness rule spanning two or more columns: the *combination* must be unique, while each column on its own may repeat freely.">composite unique constraint</Term> on `(provider, eventId)` gives every provider its own collision-free space inside one shared table. This is the same instinct the course applies to unique constraints everywhere — scope the key to the thing that actually defines identity, never a fragment of it.
+
+**The table is append-only.** No in-place updates. No deletes, except a scheduled retention sweep we'll mention at the end. This isn't mutable state you reconcile — it's a log of receipts. Once you've written "I handled this event," that fact is permanent (until it ages out of the retention window). That append-only shape is exactly what lets the constraint be the source of truth: a row's existence *is* the answer to "have I seen this?"
+
+## Why select-then-insert is broken
+
+Now the obvious approach — and watch it fail, because feeling the failure is the whole point of this section.
+
+If you wanted to skip duplicates, the natural shape is "check, then act": `SELECT` from `processed_events` for this `(provider, eventId)`; if a row already exists, you've seen it, so skip; otherwise do the work and `INSERT` the receipt. It reads like plain English. Here it is next to the version we're about to build toward — start on the "Broken" tab.
+
+<CodeVariants>
+  <CodeVariant label="Broken (check then act)">
+    <div data-mark-color="red">
+
+    ```ts {1} {10}
+    const existing = await tx.query.processedEvents.findFirst({
+      where: and(
+        eq(processedEvents.provider, 'stripe'),
+        eq(processedEvents.eventId, event.id),
+      ),
+    });
+    if (existing) return;
+
+    await onCheckoutCompleted(tx, event);
+    await tx.insert(processedEvents).values({
+      provider: 'stripe',
+      eventId: event.id,
+      eventType: event.type,
+    });
+    ```
+
+    </div>
+    **Reads like plain English — and races.** The check and the write are two separate moments. Between "I looked and saw nothing" and "I wrote the receipt," a concurrent retry runs the same check and also sees nothing. Both proceed.
+  </CodeVariant>
+
+  <CodeVariant label="Correct (atomic claim)">
+    <div data-mark-color="green">
+
+    ```ts {4-7}
+    const claimed = await tx
+      .insert(processedEvents)
+      .values({ provider: 'stripe', eventId: event.id, eventType: event.type })
+      .onConflictDoNothing({
+        target: [processedEvents.provider, processedEvents.eventId],
+      })
+      .returning({ id: processedEvents.id });
+
+    if (claimed.length === 0) return;
+
+    await onCheckoutCompleted(tx, event);
+    ```
+
+    </div>
+    **One statement, atomic.** Check and claim happen in a single insert the database serializes for you. `claimed.length === 0` means someone already holds this event — short-circuit. The next section explains exactly why this closes the race.
+  </CodeVariant>
+</CodeVariants>
+
+The broken version looks fine until two copies run at once. So let's run two copies at once. The following timeline steps through two workers — call them A and B — both handling the *same* `event.id` because Stripe retried while the first was still in flight. Scrub through it.
+
+<DiagramSequence>
+  <DiagramStep caption="Worker A runs SELECT for evt_123 — no row. As far as A knows, this event is new.">
+    <ToctouRace step={1} />
+  </DiagramStep>
+
+  <DiagramStep caption="Worker B runs SELECT for the same evt_123 — also no row. A hasn't inserted yet, and under read committed B genuinely can't see A's uncommitted work. The race window is open: it's the gap between A's read and A's write, and B just slipped into it.">
+    <ToctouRace step={2} />
+  </DiagramStep>
+
+  <DiagramStep caption="Worker A does the business work and inserts the receipt. A is now committing the effect — but B is already past its check, holding the answer 'nothing here.'">
+    <ToctouRace step={3} />
+  </DiagramStep>
+
+  <DiagramStep caption="Worker B — still believing the event is new — does the business work AGAIN, then inserts. Either a duplicate row or a unique-violation crash.">
+    <ToctouRace step={4} />
+  </DiagramStep>
+
+  <DiagramStep caption="Both workers passed the check. Both ran the effect. The customer was provisioned twice. The check and the act were two separate moments — concurrency slipped into the gap between them. No speed of code closes that gap, because the gap is structural.">
+    <ToctouRace step={5} />
+  </DiagramStep>
+</DiagramSequence>
+
+What you just watched has a name: a <Term definition="Time-of-check to time-of-use: a bug where you check a condition and then act on it, but the world changes in the gap between the check and the action — so you act on a fact that's no longer true.">time-of-check-to-time-of-use</Term> race, TOCTOU for short. And the fix is *never* "check faster" — there's no speed that eliminates the gap, because the gap is structural, not slow. It's also never "add a lock in application code." The fix is to collapse the check and the claim into **one atomic statement** the database serializes for you. That's the next section.
+
+One beginner intuition to kill before we move on, because it's the natural objection: *"It's one database — surely it can't actually run both of those at the same time?"* It can, and it does. The two `SELECT`s arrive on different connections, from different requests, possibly on different server instances. And `read committed` — Postgres's default isolation level, the one you met when you learned transactions — means Worker B genuinely cannot see Worker A's *uncommitted* `INSERT`. So B's check honestly returns "nothing here," because from B's vantage point there is nothing there yet. The isolation level isn't the bug, and cranking it up to `serializable` isn't the fix. The unique constraint is.
+
+## INSERT ... ON CONFLICT DO NOTHING RETURNING: check and claim in one shot
+
+Here's the fix, in one sentence: collapse "check if seen" and "record as seen" into a single statement — `INSERT ... ON CONFLICT (provider, event_id) DO NOTHING RETURNING id`. You attempt to insert the receipt unconditionally. The database evaluates the insert against the unique constraint *atomically*: exactly one of the concurrent inserts wins the row, and every other one hits the conflict and quietly does nothing. There is no gap for a second worker to slip into, because there's no longer a separate "check" step — the check *is* the insert.
+
+Now the part that makes this usable — the signal. How does your handler know whether it was the winner or a loser? That's what `RETURNING` is for. The insert returns **one row if you won the claim** (your insert is the one that happened) and **zero rows if you lost it** (the row already existed, so `DO NOTHING` did nothing, so there's nothing to return). That row count is your answer. Make this the mental hook and keep it:
+
+> **Won the claim** (one row) → I own this event, I do the work. **Lost the claim** (zero rows) → someone already owns it, I stand down.
+
+You already saw the Drizzle for this on the "Correct" tab above. The shape is `onConflictDoNothing` with the conflict `target` set to the two constraint columns, then `.returning({ id })`, then a branch on `claimed.length`. When `claimed.length === 0`, a concurrent or earlier handler beat you to it — short-circuit and let the handler return `200` (more on why `200` shortly).
+
+If `onConflictDoNothing` and `.returning()` feel familiar, they should — this is the exact idempotent-insert shape you met with upserts back in the Drizzle chapter. The only difference is that here it's in its production home: the seam where a duplicate event must be detected and discarded. Same tool, higher stakes.
+
+Sit with the senior point, because it's the thread running through this whole chapter: **the unique constraint does the concurrency work for you.** No application-level lock. No `serializable` isolation. No `SELECT ... FOR UPDATE`. You declared a constraint, and the database now enforces "at most one of these wins" across every connection, every request, every instance, atomically. This is the constraint-first reflex from the transactions chapter, and webhook dedup is where it pays off most visibly: reach for a database constraint before you reach for application cleverness.
+
+One nuance on the failure mode, since you'll hit both forms eventually. With `onConflictDoNothing`, the loser gets **zero rows and no error** — the conflict is swallowed into a quiet signal. Contrast a *bare* insert with no `ON CONFLICT` clause: that one would *raise* on a duplicate, a Postgres unique-violation error (SQLSTATE `23505`). `DO NOTHING` is precisely what converts that exception into a silent zero-row result you can branch on. When you *can't* pre-empt the conflict with `DO NOTHING` and have to detect it from a thrown error instead, that's the `isUniqueViolation` helper from the transactions chapter. Here, because we're claiming on purpose, `DO NOTHING` is the cleaner tool.
+
+## The claim and the work are one transaction
+
+The atomic claim solves the race. But there's a second, subtler way to get this wrong, and it's the one that quietly corrupts data in production — so let's break the next obvious-looking shape too.
+
+Suppose you claim the event first, return early if you lost the claim, and *then* do the business work afterward. Clean-looking control flow. Now trace the failure: the claim `INSERT` commits successfully, and *then* the business mutation fails — a transient database error, a bug, a crash, anything. What's the state of the world now? The event is **marked processed** in your ledger, but its **effect never happened**. The subscription wasn't updated, the entitlement wasn't granted. And here's the part that makes it permanent: Stripe retries, your handler runs again, the claim sees the existing row, concludes "already handled," and short-circuits to `200`. The retry that should have healed the failure instead skips it — because the receipt is lying. No future retry will ever fix it. You've recorded success for work that never completed.
+
+The fix is structural and it's small: put the claim `INSERT` *and* the business mutation inside **one `db.transaction(async (tx) => …)`**. Now the receipt and the effect share a single commit boundary. Either both land or neither does:
+
+- **Everything succeeds** → the claim and the effect commit together. Event recorded, event applied. Correct.
+- **Anything throws** → both roll back. The claim row vanishes as if it was never written. Stripe retries, the handler re-claims cleanly, and re-runs the work. Self-healing.
+
+The difference between those two worlds is entirely about *where the commit boundary sits*. The following two panels put the crash-after-claim timeline side by side — flip between them.
+
+<TabbedContent syncKey="split-vs-transaction">
+  <TabbedItem
+    label="Split commits (broken)"
+    icon="error"
+    caption="The claim commits on its own boundary. When the effect fails after, the receipt is orphaned — and the retry reads that lie and skips the work forever."
+  >
+    <SplitVsTransaction variant="split" />
+  </TabbedItem>
+
+  <TabbedItem
+    label="One transaction (correct)"
+    icon="approve-check"
+    caption="One boundary wraps the claim and the work. The crash rolls both back, so the retry finds no receipt, re-claims cleanly, and heals itself."
+  >
+    <SplitVsTransaction variant="transaction" />
+  </TabbedItem>
+</TabbedContent>
+
+Two disciplines make this work in practice, both of which you already know — restated here because this is the seam where they matter most.
+
+**Thread `tx`, never `db`, through everything inside the closure.** The claim insert and every business mutation must use the `tx` handle the transaction callback hands you, not the outer `db`. Reach for `db` inside the block and that statement runs on a *different* connection, outside the transaction — so it commits independently, and your all-or-nothing guarantee silently breaks. This is the `db`-vs-`tx` rule from the transactions chapter; the whole correctness argument above collapses if you violate it.
+
+**Let it throw.** Inside the transaction, when something genuinely fails, you *let the error propagate* — that thrown error is exactly what tells Postgres to roll back. You do not catch it and swallow it here. The outer handler will turn an uncaught throw into a `5xx` (next section), which is precisely what you want: a `5xx` tells Stripe to retry, and the retry is what heals the rolled-back event. This is the "throw the unexpected" half of the course's error contract, used deliberately: the throw is the rollback trigger *and* the retry trigger at once.
+
+## What to return to Stripe (and why 200 on a duplicate)
+
+Status codes on a webhook aren't cosmetic — Stripe *reads* them to decide whether to retry. So the handler's response is part of its logic, and there's one rule here that trips up almost everyone the first time.
+
+The rule: **losing the claim returns `200`, not a `4xx` or a `5xx`.** A duplicate is not an error. There is simply nothing left to do — the event was already handled — and "nothing to do" is a *success*, not a failure. This feels wrong, because a duplicate *feels* like something went off the rails. It didn't. Let's make the stakes concrete by walking the three responses you might be tempted to send:
+
+- **`5xx` on a duplicate** tells Stripe "I failed — retry me." So Stripe retries an event you've *already handled*, gets another `5xx`, retries again, and keeps going until it exhausts its schedule. You've created a retry storm that accomplishes nothing but load. A `5xx` is the single worst thing to return for a duplicate.
+- **`4xx` on a duplicate** tells Stripe "this request is terminally broken — stop." That does halt the retries, so it's not actively harmful the way `5xx` is. But it's a lie: the request was perfectly fine. And that lie pollutes your error dashboards and Stripe's delivery stats with failures that never happened, so when something *real* breaks you'll be hunting for it in a haystack of fake `4xx`s.
+- **`200`** is the only honest answer: received, recognized as already-processed, done.
+
+Here's the complete status surface for the handler, in one place so you can hold all of it at once:
+
+| Status | When |
+| --- | --- |
+| `200` | Claimed and processed just now — the happy path. |
+| `200` | Lost the claim / already processed — the dedup short-circuit, a **success**, not an error. |
+| `400` | Signature verification failed (from the previous lesson; problem+json body). |
+| `5xx` | A genuine server error only: the database is unreachable, an unhandled throw inside the transaction, a real bug. **The only response that should make Stripe retry.** |
+
+State the underlying rule as a principle, because it generalizes: **never use `5xx` as a soft "please retry" signal.** Retry-worthiness is the dedup ledger's job, not the status code's. The status code reports *what actually happened* — processed, duplicate, malformed, broken. The ledger decides *whether work happens at all*. Keep those two responsibilities separate and the handler stays honest: a `5xx` always means "something is genuinely wrong on my end," never "I'd like you to send that again."
+
+One operational note, because webhook handlers are uniquely painful to debug. There's no user watching, no UI to inspect, no stack trace surfaced to anyone — when one misbehaves at 2am, the log is *all you have*. So every path through the handler logs `event.id` plus its disposition: `claimed`, `duplicate`, or `error`. Route it through the per-seam child logger (`logger.child({ seam: 'webhook.stripe' })`) so every line is filterable to this one handler. The observability chapter goes deep on this; here it's enough to know the rule — log the id and what you did with it, on every branch.
+
+Quick check on the status reflexes before we move on — this is the one that costs real money when it's wrong.
+
+<MultipleChoice>
+  A teammate sketches the handler's response logic and asks you to sanity-check it against Stripe's retry behavior. **Select every line that is genuinely correct** — for the right reason, not just plausible wording.
+
+  <McqChoice correct>When `claimed.length === 0`, the handler still commits and replies `200`, treating the lost claim as a finished job rather than a fault.</McqChoice>
+  <McqChoice correct>A digest that doesn't match leaves the handler at `400` with a problem+json body, because the only sane move is to make Stripe stop resending an unforgeable request.</McqChoice>
+  <McqChoice correct>The handler reserves `5xx` for the case where it actually couldn't finish — an uncaught throw rolled the transaction back — so that the retry it triggers lands on real work to redo.</McqChoice>
+  <McqChoice>Once a duplicate is detected, replying `409 Conflict` is the clean way to tell Stripe the event is already handled and it can stop.</McqChoice>
+  <McqChoice>If you'd rather Stripe not bother re-delivering a duplicate, returning `500` for it is a harmless shortcut to that outcome.</McqChoice>
+
+  <McqWhy>
+  The three correct lines all keep the status code honest about *what happened*. A **lost claim is a success path**: the event was already processed, the transaction commits trivially, and `200` is the truthful "nothing left to do." A **failed signature is a bad request**, so `400` (a `4xx`) tells Stripe the request is terminally unacceptable and to stop retrying it. And `5xx` is the *only* response that should provoke a retry — so it must be reserved for genuine failures (a throw inside the transaction that rolled everything back), where the retry actually re-claims and heals.
+
+  Both wrong lines misread the retry semantics. **`409` on a duplicate is a lie dressed as precision** — there is no conflict to report, the event was handled cleanly, so the truthful answer is `200`, not a `4xx` that pollutes your error stats. And **`500` does the opposite of "skip"**: a `5xx` tells Stripe to *retry*, so returning it for a duplicate starts a retry storm over an event that's already done.
+  </McqWhy>
+</MultipleChoice>
+
+## The timing budget: do the minimum, queue the rest
+
+There's a reason the handler can't simply do *everything* a `checkout.session.completed` implies — send the welcome email, recompute analytics, ping a third-party CRM — all inline before returning `200`. The reason is time, and it shapes the whole structure of a webhook handler.
+
+Stripe waits only a short, bounded window for your `2xx` before treating the delivery as failed and scheduling a retry. Stripe deliberately doesn't publish that window as a fixed contractual number — the guidance is simply "return `2xx` quickly, before any complex logic that could time out" — but treat it as *on the order of a couple of seconds*, short and not guaranteed. Do heavy work synchronously and you risk blowing past it: the delivery times out, Stripe reads that as failure and retries, the retry runs the same heavy work, and that retry may itself time out. A doom loop, built entirely out of doing too much before the `200`.
+
+So the discipline: **inside the transaction, do only the minimal database mutation that must be atomic with the claim.** Everything else — the email, the analytics, the outbound API call — gets handed to the background job system and runs *after* the `200` has gone back to Stripe.
+
+What's especially nice is that you've now arrived at this same rule from two completely different directions:
+
+1. **Timing** (this section): synchronous side-effects blow the short response budget and cause retries.
+2. **Connection pool correctness** (the transactions chapter): you must *never* `await` external IO inside a `db.transaction`, because holding a pooled connection open across a slow network call starves every other request waiting for one.
+
+Two different problems, one identical conclusion: **database-only work inside the transaction, side-effects out.** When two independent lines of reasoning converge on the same shape, that's usually a sign the shape is right.
+
+So the structure is: the transaction commits the state change, the `200` goes back, and *then* you enqueue the consequences. The background-jobs chapter is where you'll actually build that enqueue step (with its own idempotency key, because — of course — jobs can run twice too). The one-line takeaway to carry forward: **the webhook's synchronous job is to record-and-apply the state change; the consequences are someone else's job.**
+
+A closing note on the ledger itself. `processed_events` only ever grows — every event you've ever seen leaves a permanent row. Left alone, it grows without bound. The answer is a scheduled retention sweep: a background job that deletes rows older than the longest retry window any provider could use (something like 30 to 90 days — comfortably past the point where a duplicate could still arrive). It's a *background* delete, not a foreground one, and it's the only delete this append-only table ever sees. The build of that sweep belongs to the background-jobs chapter; document the policy in a schema comment now so the next person knows the rows are meant to be pruned.
+
+## The full handler scaffold
+
+Time to assemble everything into the reference shape — the one the rest of this chapter and the project extend. Picking up exactly where the previous lesson stopped: the signature has passed, and you're holding a verified `event: Stripe.Event`.
+
+The verify block is elided to a single call so the focus stays on the new dedup-and-transact surface; the previous lesson's inline `try { constructEvent } catch { 400 }` lives behind that `verifyStripeEvent(request)`. The `400` signature-failure path belongs to that verify step; the `5xx` path below is for failures *inside the transaction*.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+export const runtime = 'nodejs';
+
+export const POST = async (request: NextRequest) => {
+  // verify signature on the raw body (previous lesson) — event: Stripe.Event
+  const event = await verifyStripeEvent(request);
+
+  try {
+    await db.transaction(async (tx) => {
+      const claimed = await tx
+        .insert(processedEvents)
+        .values({
+          provider: 'stripe',
+          eventId: event.id,
+          eventType: event.type,
+        })
+        .onConflictDoNothing({
+          target: [processedEvents.provider, processedEvents.eventId],
+        })
+        .returning({ id: processedEvents.id });
+
+      if (claimed.length === 0) return;
+
+      switch (event.type) {
+        case 'checkout.session.completed':
+          await onCheckoutCompleted(tx, event);
+          break;
+        // subscription, invoice, and payment events handled here too
+      }
+    });
+  } catch {
+    return new Response(null, { status: 500 });
+  }
+
+  return new Response(null, { status: 200 });
+};
+`}>
+  <AnnotatedStep meta="{4-5}" color="blue">
+    **Start from the verified event.** The previous lesson got us here — a trusted `Stripe.Event`. Everything below assumes verification already ran.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{8}" color="blue">
+    **Open one transaction.** The claim and the business work share this one commit boundary. We thread `tx`, never `db`, from here down.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{9-19}" color="green">
+    **The atomic claim.** Check-and-claim in one statement; `.returning({ id })` hands back one row if we won, zero if we lost.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{21}" color="orange">
+    **Duplicate path.** Lost the claim — return out of the callback. The transaction commits trivially, nothing changed, and the handler will `200`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{23-28}" color="blue">
+    **Dispatch to the typed handler.** Route each event type to its handler, all sharing `tx`. The bodies are stubs here — concrete Stripe handling is the next chapter and the project.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{34}" color="green">
+    **One 200 for both paths.** Processed-now and duplicate both land here. A `200` after a clean commit is the truth in both cases.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{30-32}" color="red">
+    **Genuine errors become 5xx.** A throw *inside* the transaction rolled it back; the `5xx` tells Stripe to retry, and the retry re-claims and heals. Distinct from the verify step's `400`.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Read off the canonical ordering, because *this* is the takeaway to memorize — it's the skeleton every remaining lesson in the chapter extends and the project ships:
+
+> **verify → open transaction → claim → (lost it? return → 200) → mutate → commit → 200; genuine error → 5xx.**
+
+Two things worth extracting as you build this out, so you see the portability coming. First, the claim is the same five lines for *any* provider, so it's a natural helper — something like `claimEvent(tx, provider, eventId, eventType)` returning whether you won. Second, `processedEvents` and that helper are the exact seam you'll reuse when this chapter gets to Resend webhooks: same ledger, same claim, different `provider` string. The pattern you just wrote isn't Stripe-specific — it's the dedup boundary for every webhook the app will ever take.
+
+Now write the claim yourself and watch dedup actually work. The exercise below gives you a `processedEvents` table with one event already seeded — `evt_existing`, an event that's *already been claimed*. Your job is to claim a **fresh** event (`evt_new`) with the atomic insert. Because nothing conflicts, your claim returns **one row** — you *won* the claim, exactly as the handler does the first time it sees an event.
+
+<DrizzleCoding
+  instructions="The seeded row is event evt_existing — already claimed. Claim the fresh event evt_new for provider stripe with an atomic insert that does nothing on conflict, and return the claimed id. Because nothing conflicts, your claim returns one row: you won it. Then try pointing both the id and eventId at the seeded evt_existing and re-run — you'll get zero rows back, the lost-claim path a duplicate webhook should take."
+  schema={`export const processedEvents = pgTable(
+  'processed_events',
+  {
+    id: text('id').primaryKey(),
+    provider: text('provider').notNull(),
+    eventId: text('event_id').notNull(),
+    eventType: text('event_type').notNull(),
+  },
+  (t) => [
+    unique('processed_events_provider_event_id_unique').on(
+      t.provider,
+      t.eventId,
+    ),
+  ],
+);`}
+  seed={`INSERT INTO processed_events (id, provider, event_id, event_type) VALUES
+  ('row_1', 'stripe', 'evt_existing', 'checkout.session.completed');`}
+  starter={`return await db
+  .insert(processedEvents)
+  .values({
+    id: 'row_2',
+    provider: 'stripe',
+    eventId: 'evt_new',
+    eventType: 'checkout.session.completed',
+  });
+  /* finish: ON CONFLICT DO NOTHING on (provider, eventId), then RETURNING id */`}
+  expectedRows={[{ id: 'row_2' }]}
+  ordered={false}
+/>
+
+Now flip it around: change both the `id` and the `eventId` to the seeded `evt_existing`, and run again. This time **zero rows** come back — you *lost* the claim, because the unique constraint refused the duplicate and `DO NOTHING` swallowed it into an empty result. That's the two outcomes the handler branches on, in your own hands: a returned row means "I own this, do the work," an empty result means "already handled, stand down."
+
+The full claim you just completed:
+
+```ts
+return await db
+  .insert(processedEvents)
+  .values({
+    id: 'row_2',
+    provider: 'stripe',
+    eventId: 'evt_new',
+    eventType: 'checkout.session.completed',
+  })
+  .onConflictDoNothing({
+    target: [processedEvents.provider, processedEvents.eventId],
+  })
+  .returning({ id: processedEvents.id });
+```
+
+:::note
+The sandbox above writes explicit SQL column names like `text('event_id')` because it has no client-level `casing` config. In a real project you set `casing: 'snake_case'` on the Drizzle client once and write plain camelCase keys — exactly as the production `processedEvents` schema earlier in this lesson does. The two produce identical SQL; the sandbox just spells it out.
+:::
+
+## Closing
+
+Hold onto the one idea this whole lesson was built around: **the receipt and the effect are a single commit.** A duplicate loses the claim and short-circuits to `200`; a crash mid-handler rolls back both the claim and the work, and the retry heals itself cleanly. No application locks, no clever bookkeeping — one unique constraint and one transaction carry the entire guarantee.
+
+There's one thing this *doesn't* cover, and it's the next lesson's job. Dedup protects you against the *same* event arriving twice. It says nothing about *different* events for the same entity arriving in the **wrong order** — a `subscription.updated` from yesterday landing after today's, and overwriting newer state with stale. That's [Newer wins, single writer](/063-webhook-ingestion/3-newer-wins-single-writer), and it's where this skeleton grows its next guard.
+
+## External resources
+
+Four sources to take the ideas in this lesson straight to their origins — the delivery contract, the idempotency philosophy, the Postgres statement that does the work, and a deep dive on doing all three together.
+
+<CardGrid>
+  <ExternalResource
+    title="Stripe — Receive Stripe events in your webhook endpoint"
+    href="https://docs.stripe.com/webhooks"
+    icon="simple-icons:stripe"
+    iconColor="#635BFF"
+    description="The delivery contract straight from the source: at-least-once delivery, the retry schedule, and the idempotency and fast-2xx best practices this lesson is built on."
+  />
+  <ExternalResource
+    title="Stripe — Designing robust and predictable APIs with idempotency"
+    href="https://stripe.com/blog/idempotency"
+    icon="simple-icons:stripe"
+    iconColor="#635BFF"
+    description="Stripe's own engineering essay on why retries demand idempotency and how they store idempotency keys in Postgres — the philosophy behind the claim ledger."
+  />
+  <ExternalResource
+    title="PostgreSQL — INSERT (ON CONFLICT, RETURNING)"
+    href="https://www.postgresql.org/docs/current/sql-insert.html"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="The authoritative reference for INSERT ... ON CONFLICT DO NOTHING with a conflict target and RETURNING — the exact statement the atomic claim relies on."
+  />
+  <ExternalResource
+    title="brandur.org — Implementing Stripe-like Idempotency Keys in Postgres"
+    href="https://brandur.org/idempotency-keys"
+    icon="lucide:file-text"
+    iconColor="#E07B39"
+    description="A practitioner deep dive on doing exactly-once work in Postgres with transactions and atomic phases, including the foreign-call case this lesson defers to background jobs."
+  />
+</CardGrid>

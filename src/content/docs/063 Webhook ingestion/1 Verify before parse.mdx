@@ -1,0 +1,473 @@
+---
+title: Verify before parse
+tagline: Build the Stripe webhook route as a trust boundary, verifying the HMAC signature on the raw request body before any code believes the event.
+chapter-id: 63
+course-progress: 0.00005
+sidebar:
+  order: 1
+  label: Verify before parse
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Term from '../../../components/ui/Term.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import ForgedVsVerified from '../../../components/lessons/063/1/forged-vs-verified.astro';
+import Sequence from '../../../components/exercises/sequence/Sequence.astro';
+import Step from '../../../components/exercises/sequence/Step.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+You're about to add a single file to the app: `app/api/webhooks/stripe/route.ts`. When it ships, Stripe will `POST` to it every time something happens to a customer's money — a checkout completes, a subscription renews, a card gets declined. That one route is how billing reality gets into your database.
+
+Here's the thing that should make you pause. That URL is public. There is no session cookie on the request, no bearer token, no login. Stripe's servers don't authenticate to you the way your users do — they can't, they don't have an account on your app. Which means the door is open to *everyone*. Anyone who can guess the path — and `/api/webhooks/stripe` is not a hard guess — can send a `POST` to it.
+
+So the senior question, the one this whole lesson exists to answer: an unauthenticated stranger just handed your handler a JSON body claiming a customer paid you. What lets the rest of your code trust that the body actually came from Stripe and not from that stranger?
+
+The answer is one sentence, and the entire lesson is the unpacking of it: **you verify a cryptographic signature against the exact bytes on the wire, and that is the first and only thing the handler does before any business logic runs.** Get this seam right and everything downstream — the deduplication, the database writes, the entitlement that unlocks a paid feature — is built on solid ground. Get it wrong and you've built a self-service "give me a paid plan for free" button on the public internet.
+
+By the end you'll have a working verifying handler, the Stripe SDK wired in, and the local development loop that lets you fire test events at `localhost`. One boundary, drawn sharp. This lesson stops the moment the signature passes — what happens *after* that, claiming the event and writing to the database exactly once, is the next lesson's job.
+
+## What a forged webhook would buy an attacker
+
+Let me make the threat concrete, because the stakes are the whole reason the mechanism exists, and crypto with no threat behind it is just ceremony.
+
+Suppose your handler does the obvious thing: read the JSON, look at `event.type`, and if it's `checkout.session.completed`, flip the customer's plan to "pro." Reasonable-looking code. Now picture the attacker. They don't need to break anything. They open Stripe's public documentation — the event shapes are right there, fully documented, by design — and they hand-write a JSON body that looks exactly like a real `checkout.session.completed`. They point it at their own account's ID. Then they `curl` it at your endpoint.
+
+Your handler reads the body, sees a completed checkout, and grants the pro plan. The attacker just upgraded themselves for free. No payment, no card, nothing. And it gets worse from there: with a forged `customer.subscription.updated` they could flip *someone else's* subscription, and with a forged event they could trigger whatever fulfillment your handler kicks off — a shipment, a credit, an invoice. An unverified public webhook isn't a small bug. It's a self-service entitlement grant sitting on a URL anyone can find.
+
+So what stops it? Stripe and your app share a secret — a long random string that only the two of you know. When Stripe sends a webhook, it uses that secret to compute a cryptographic <Term definition="A short fixed-length value derived from the request body and a shared secret. Anyone with the secret can recompute it from the same bytes; nobody without the secret can produce a value that matches.">signature</Term> of the request and attaches it as a header. You recompute the same signature on your side with the same secret. If they match, the request provably came from someone holding the secret — and the only other holder is Stripe. The attacker can copy the body byte for byte, but they can't produce a matching signature without the secret, so their forgery fails the check.
+
+This is the senior anchor for the entire lesson, so plant it now: **the webhook secret is the trust root. Treat it exactly like a session secret.** Everything rests on it. If it leaks, forgery is back on the table and every defense in this lesson collapses at once. So it lives in `env.ts`, validated at build time; it is never shipped to the client, never committed, and — this matters — never written to a log. The signature is the *only* proof that counts. You'll be tempted later by cheaper-looking checks: "I'll just allowlist Stripe's IP addresses." Don't. Behind a CDN those IPs are shared and spoofable; an IP allowlist is theater. The HMAC is the proof.
+
+The following diagram puts the two worlds side by side so you can see, in one glance, why verification is the load-bearing wall.
+
+<ForgedVsVerified />
+
+Two pieces of vocabulary before we open the mechanism. A <Term definition="An HTTP request a third party sends to your app when something happens on their side — a payment completes, an email bounces. You don't poll them; they call you.">webhook</Term> is the inbound callback you just saw: Stripe calling you, not you calling Stripe. And your route handler is a <Term definition="The line in a system where untrusted input meets trusted code. Everything on the far side is assumed hostile until proven otherwise; the boundary is where you prove it.">trust boundary</Term> — the precise spot where the open internet meets your database. Naming it that way is the mindset shift this chapter is built on: a webhook handler is not "just another route." It is the place where you decide what gets to be believed.
+
+## The Stripe signature scheme
+
+Now we open the box. "Verify the signature" is three moving parts, and they're easiest to hold one at a time. Let's build them up in order: the header Stripe sends, the exact string it signs, and the check you run.
+
+**One: the header.** Every Stripe webhook carries a `Stripe-Signature` header, and it looks like this:
+
+```text frame="none"
+Stripe-Signature: t=1700000000,v1=5257a869e7 ... 0a68
+```
+
+It's a comma-separated list of `key=value` pairs. The two that matter are `t`, a Unix timestamp marking when Stripe signed the request, and `v1`, the signature itself — a hex digest. (You may occasionally see more than one `v1` value, which happens during a secret rotation; we'll cover rotation at the end. There's also a legacy `v0` scheme you can ignore.) Your first job is to split this header apart and pull out `t` and `v1`.
+
+**Two: the signed payload.** This is the part people get wrong, so read it slowly. The string that Stripe ran through the signing function is *not* the body alone. It's the timestamp, a literal dot, and the raw request body, concatenated:
+
+<div data-mark-color="orange">
+
+```ts {1}
+const signedPayload = `${t}.${rawBody}`;
+```
+
+</div>
+
+The timestamp is glued in front so it's covered by the signature too — that's what makes the freshness check later trustworthy. And `rawBody` means the *exact bytes Stripe sent*, character for character. Not a parsed-and-reprinted version. Hold that thought hard; the next section is entirely about it.
+
+**Three: the verification.** You compute an <Term definition="Hash-based Message Authentication Code. A keyed hash: feed it the same bytes and the same secret key and it always returns the same digest; without the key you can't produce a matching digest. It proves both that the message wasn't altered and that the sender held the key.">HMAC</Term>-SHA-256 of that signed-payload string, keyed by your webhook secret. That gives you a <Term definition="The fixed-length output of a hash function — here, the 32 bytes (64 hex characters) HMAC-SHA-256 produces.">digest</Term>. Then you compare your digest against the `v1` value from the header. Match means the request is authentic. No match means it's forged or your config is wrong — and you treat both the same way.
+
+If this is ringing a bell, it should. You met these exact primitives in [Web Crypto: random IDs and HMAC signatures](/016-browser-capability-apis/1-web-crypto--random-ids-and-hmac-signatures) — HMAC as a keyed hash, `crypto.subtle.importKey` to load the secret, `crypto.subtle.sign` to produce the digest, and the rule that you compare digests in constant time, never with `===`. Here those primitives stop being a demo and start protecting real money.
+
+<VideoCallout videoId="fzMIjWFYQl0" videoTitle="MAC / HMAC — Message Authentication Codes explained (Practical Networking)">
+  Practical Networking's 7-minute explainer on why a plain hash can't prove authenticity and how combining the message with a secret key — exactly what Stripe does — gives you both integrity and authentication.
+</VideoCallout>
+
+The chapter's policy — and I want to be honest with you about it up front — is that in production you will *not* write this by hand. Stripe's SDK does it in one line, and that's the line you'll ship. But we're going to hand-roll it exactly once, right now, because a one-liner you don't understand is a one-liner you can't debug at 2am when every webhook is failing. Open the box, see the gears, then close it. The following annotated helper is the box, open.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+const TOLERANCE_SECONDS = 300;
+
+export const verifyStripeSignature = async (
+  rawBody: string,
+  sigHeader: string | null,
+  secret: string,
+): Promise<boolean> => {
+  if (!sigHeader) return false;
+
+  const parts = Object.fromEntries(
+    sigHeader.split(',').map((pair) => pair.split('=')),
+  );
+  const timestamp = parts.t;
+  const expected = parts.v1;
+  if (!timestamp || !expected) return false;
+
+  const signedPayload = \`\${timestamp}.\${rawBody}\`;
+
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const actual = new Uint8Array(
+    await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(signedPayload)),
+  );
+  const expectedBytes = hexToBytes(expected);
+
+  if (!constantTimeEqual(actual, expectedBytes)) return false;
+
+  const age = Math.abs(Date.now() / 1000 - Number(timestamp));
+  return age <= TOLERANCE_SECONDS;
+};
+`}>
+  <AnnotatedStep meta="{8}" color="blue">
+    **Reject a missing header.** No `Stripe-Signature` at all means the request isn't from Stripe — or your config is broken. Either way it cannot pass, so bail before touching the body.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{10-15}" color="blue">
+    **Parse `t` and `v1` out of the header.** Split on commas, then on `=`, into a small map, and pull out `timestamp` and `expected`. If either is absent the header is malformed — reject it.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{17}" color="orange">
+    **Build the signed payload.** Timestamp, a literal dot, the *exact raw body*. This is the single line beginners get wrong: it is the raw bytes off the wire, never re-stringified JSON. The whole verification hinges on it.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{19-25}" color="blue">
+    **Import the secret as an HMAC key.** The same `crypto.subtle.importKey` call from the Web Crypto lesson — `'raw'` key material, `HMAC` with `SHA-256`, not extractable, usable only to `'sign'`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{26-29}" color="blue">
+    **Sign, then decode `v1` to bytes.** `crypto.subtle.sign` returns an `ArrayBuffer`, so wrap it in a `Uint8Array` — the same view-over-bytes move from the Web Crypto lesson. The header's `v1` is hex, so `hexToBytes` decodes it to the matching `Uint8Array`, putting both sides in the same shape to compare.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{31}" color="orange">
+    **Constant-time compare the two byte buffers.** `constantTimeEqual` is the length-checked XOR loop you wrote in the Web Crypto lesson — it takes two `Uint8Array`s and always runs the full length. Never `===` here: a byte-by-byte early exit leaks timing.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{33-34}" color="green">
+    **Check the timestamp tolerance.** A digest can match and the event still be a stale replay. Rejecting anything older than 300 seconds closes that hole — the next section explains why 300.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+That's the whole mechanism: parse, rebuild the signed string, HMAC it, compare in constant time, check freshness. Five ideas. Notice the helper is `async` — Web Crypto's `crypto.subtle` returns promises, so anything built on it has to await. Hold that detail; it's exactly the wrinkle that makes the SDK's design choices make sense in a moment.
+
+:::note
+Web Crypto has no built-in constant-time comparison the way Node's `node:crypto` ships `timingSafeEqual`. That's why the hand-rolled path leans on the XOR-loop helper from the Web Crypto lesson. When we switch to the SDK, this nuance resolves itself — the SDK picks the right primitive for the runtime.
+:::
+
+## The raw body is sacred
+
+Of every rule in this lesson, this is the one that bites people in production, so it gets its own section and its full weight. Here is the trap, and it is a comfortable, reasonable-looking trap.
+
+You've parsed JSON bodies in a hundred handlers. So your hands type the familiar thing:
+
+<div data-mark-color="red">
+
+```ts {2}
+const event = await request.json();
+const recomputed = JSON.stringify(event);
+// HMAC(recomputed) ... and now nothing matches
+```
+
+</div>
+
+You read the body as JSON, and then — because the verifier needs a string to hash — you stringify it back. It feels symmetric. It is not. `JSON.parse` followed by `JSON.stringify` does **not** give you back the original bytes. The round trip silently rewrites the payload: whitespace gets normalized, object keys may reorder, numbers get reformatted (`1.0` becomes `1`, large integers can shift). Every one of those is a different byte sequence. And HMAC is a *hash* — change one byte of the input and the entire digest changes. So the digest you compute over your re-stringified version no longer matches the `v1` Stripe signed over the *original* bytes. Verification fails on perfectly legitimate events.
+
+And here's how this turns into an outage instead of a quick fix. The bug is invisible on your machine. Locally, a synthetic test payload might round-trip cleanly by luck — simple shape, no awkward numbers — so verification passes and you ship. Then in production, real Stripe bodies with their real formatting diverge on the round trip, and every event 400s. This is *the* canonical "but it works locally" webhook bug. The truly dangerous version is the panicked fix under pressure: someone sees verification failing in prod, assumes the verifier is broken, and disables it "just to unblock." Now the door is wide open. The bug didn't just break verification — it tempted you into removing it.
+
+The rule that makes the whole class of failure disappear is short: **read the body once as raw text, verify against those exact bytes, and parse only after the signature passes.**
+
+<CodeVariants>
+  <CodeVariant label="Broken: parse, then re-stringify">
+    ```ts del={1-2}
+    const event = await request.json();
+    const recomputed = JSON.stringify(event);
+    const ok = await verify(recomputed, signature, secret);
+    ```
+    **Verification fails on legitimate events.** `request.json()` discards the original bytes, and `JSON.stringify` rebuilds *a* JSON string, not *the* one Stripe signed. Whitespace, key order, and number formatting all drift, so the HMAC over `recomputed` can never match the `v1` Stripe produced over the real bytes.
+  </CodeVariant>
+
+  <CodeVariant label="Correct: text once, parse later">
+    ```ts ins={1,4}
+    const rawBody = await request.text();
+    const ok = await verify(rawBody, signature, secret);
+    if (!ok) return problem(400, 'invalid_signature');
+    const event = JSON.parse(rawBody);
+    ```
+    **The bytes you verify are the bytes you parse.** Read the body one time as text and hold the string. Verify against those exact bytes, and only once the signature passes do you `JSON.parse` the *same* string you just verified.
+  </CodeVariant>
+</CodeVariants>
+
+Two named hazards live inside this rule; both are worth knowing by name so you recognize them in a review.
+
+The first is **reading the body twice.** A request body is a <Term definition="A body you can consume exactly once. Reading it drains the stream; a second read sees an empty body, because the bytes are already gone.">one-shot stream</Term>. The moment you call `request.text()` (or `request.json()`), the bytes are drained. Call either of them a second time and you get an empty string — silently, no error. So the discipline isn't only "read text instead of JSON," it's "read *once*, hold the string in a variable, and reuse that variable" for both the verify and the later parse.
+
+The second is the **double-stringify bug** itself, which is just the first trap stated as a principle: the raw bytes on the wire are the single source of truth. Anything you compute the signature over must be those bytes, untouched. The instant the data passes through `JSON.parse`, it has become a JavaScript object, and there is no guarantee on earth that stringifying it reproduces what arrived.
+
+## The replay window: timestamp tolerance
+
+Step six of the hand-rolled verifier checked that `|now − t|` was under five minutes, and I told you to hold the "why." Here it is.
+
+Imagine the attacker can't forge a signature — they don't have the secret — but they *can* see a real, valid request go by. Maybe it sat in a proxy's access log, or a misconfigured logger captured it, or it leaked from a crash dump. They now hold a body and a matching signature that genuinely came from Stripe. Without a freshness check, that captured pair is a forever-skeleton-key: the attacker resends the exact same bytes and the exact same signature, your HMAC recomputes to the same digest, the comparison passes, and your handler processes a "valid" event — one Stripe sent once, that the attacker is now replaying at will. The signature being authentic is precisely what makes this dangerous; constant-time compare doesn't help, because the signature *is* the real one.
+
+The timestamp slams that window shut. Because `t` is baked into the signed payload, the attacker can't alter it without breaking the signature. So the handler reads `t`, compares it to the current time, and rejects anything older than the tolerance. A captured request is now useful for five minutes, not forever.
+
+Why five minutes? It's a tradeoff, and the number is a deliberate balance, not a magic constant. Tighten it and you shrink the replay window further — but your server's clock and Stripe's clock are never perfectly in sync, and a tolerance that's too tight will reject *legitimate* events whenever clock skew or normal network delay pushes a real request past the cutoff. Loosen it and you forgive skew comfortably, but you hand the attacker a bigger replay window. Five minutes (`300` seconds) is Stripe's default and the value the industry has settled on as the sweet spot. Use it — don't invent your own number.
+
+:::caution
+The tolerance check is not optional, and it's easy to leave out of a hand-rolled verifier because the signature already "passes" without it. A verifier that skips the timestamp has a forever-replay hole even though every test you write will go green. Both Stripe's SDK and the hand-rolled helper above bake the check in — that's why it's step six, not an afterthought.
+:::
+
+## `constructEvent`: the box, closed
+
+You've now seen every gear: parse the header, rebuild `` `${t}.${rawBody}` ``, HMAC it, constant-time compare, check the tolerance. Time to close the box and never open it again — because Stripe's SDK does all five of those steps in a single call.
+
+```ts
+const event = stripe.webhooks.constructEvent(rawBody, signature, secret);
+```
+
+That one line parses the `Stripe-Signature` header, recomputes the HMAC over the raw body, compares it in constant time, and enforces the 300-second tolerance. On success it returns a fully typed `Stripe.Event`. On *any* failure — bad signature, missing header, stale timestamp — it throws a `Stripe.errors.StripeSignatureVerificationError`. There's no boolean to check and forget; the failure is an exception you catch. Everything you hand-built, encapsulated and battle-tested.
+
+So let's state the chapter's policy plainly, now that you've earned it: **production code uses the SDK helper.** The hand-rolled version was the teaching device — its job was to make the one-liner legible, and it's done. From here on, Stripe webhooks verify with `constructEvent`, and when we get to Resend webhooks in [Resend bounces and complaints](/063-webhook-ingestion/5-resend-bounces-and-complaints) we'll use Svix's equivalent helper. You hand-roll the HMAC exactly once in this course — this lesson — and then you trust the maintained library, because reimplementing crypto primitives in application code is how subtle, exploitable bugs get shipped.
+
+One runtime detail to file away, and it pays off the `async` wrinkle from earlier. `constructEvent` is **synchronous** — no `await`. That's because it runs on Node's crypto, which is synchronous. Stripe also ships `constructEventAsync` for environments whose crypto is promise-based, like the Edge runtime built on Web Crypto (the same Web Crypto that forced our hand-rolled helper to be `async`). This course runs the handler on the Node runtime, so `constructEvent` — the synchronous one — is the call you'll write.
+
+### Wiring the Stripe client
+
+Before the handler can call `stripe.webhooks.constructEvent`, you need a `stripe` client. Install the SDK first.
+
+```bash
+pnpm add stripe
+```
+
+Then create one shared client and export it. Every call site in the app imports this same instance — you never write `new Stripe(...)` per request.
+
+```ts title="src/lib/stripe.ts"
+import Stripe from 'stripe';
+import { env } from '@/env';
+
+export const stripe = new Stripe(env.STRIPE_SECRET_KEY);
+```
+
+The reason this is a singleton and not a per-request constructor is the senior reflex worth internalizing: one configured client means one place to set the API version, one place that reads the key, and zero chance of config drift between call sites. A `new Stripe()` scattered across handlers is four subtly different clients waiting to disagree. This file's only job in this lesson is to expose `webhooks.constructEvent`; the deeper SDK surface — creating checkouts, reading subscriptions — arrives in the next chapter when we build the billing flow.
+
+That client reads `env.STRIPE_SECRET_KEY`, so both Stripe secrets go into your validated env. You already know this discipline from the env setup the course standardized on: server-only variables, Zod-validated, and the build *fails* if one is missing rather than blowing up at runtime in production.
+
+```ts title="src/env.ts" ins={3-4}
+server: {
+  // ...existing server vars
+  STRIPE_SECRET_KEY: z.string().startsWith('sk_'),
+  STRIPE_WEBHOOK_SECRET: z.string().startsWith('whsec_'),
+},
+```
+
+Note those are two genuinely different secrets pulling in opposite directions. `STRIPE_SECRET_KEY` authenticates *your* outbound calls to Stripe's API. `STRIPE_WEBHOOK_SECRET` is the shared trust root that verifies Stripe's inbound calls to you — it's the `secret` argument `constructEvent` needs. Confusing the two is a common first-day mistake; keeping the "who's calling whom" direction straight keeps you out of it.
+
+## The canonical handler shape
+
+Everything assembles here. This `POST` is the chapter's backbone — the next four lessons all extend this exact skeleton, so the shape is worth getting into your fingers. The structure is *verify first, return early*: nothing the handler does — no parsing, no database, no logging of the payload — happens before the signature check clears.
+
+The following annotated handler is the reference. Read it as a sequence of guard-then-proceed decisions.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+import type { NextRequest } from 'next/server';
+import Stripe from 'stripe';
+
+import { env } from '@/env';
+import { stripe } from '@/lib/stripe';
+
+export const runtime = 'nodejs';
+
+export const POST = async (request: NextRequest) => {
+  const rawBody = await request.text();
+  const signature = request.headers.get('stripe-signature');
+
+  let event: Stripe.Event;
+  try {
+    event = stripe.webhooks.constructEvent(
+      rawBody,
+      signature ?? '',
+      env.STRIPE_WEBHOOK_SECRET,
+    );
+  } catch {
+    return Response.json(
+      {
+        type: 'about:blank',
+        title: 'invalid_signature',
+        status: 400,
+        instance: '/api/webhooks/stripe',
+      },
+      { status: 400, headers: { 'content-type': 'application/problem+json' } },
+    );
+  }
+
+  // signature verified — hand off to dedup + business logic (next lesson)
+  return new Response(null, { status: 200 });
+};
+`}>
+  <AnnotatedStep meta="{7}" color="blue">
+    **Declare the Node runtime.** Next.js 16 already defaults route handlers to Node, so this line doesn't *flip* anything — it states intent. The full rationale is in the prose below.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{10}" color="green">
+    **Read the raw body once.** `request.text()` gives you the exact bytes off the wire, read a single time — the source of truth for the HMAC, exactly as the "raw body is sacred" rule demands.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{11}" color="blue">
+    **Read the signature header; treat null as failure.** A missing header gets no benefit of the doubt: `null` means not-from-Stripe or misconfigured. It flows into the same 400 via `signature ?? ''`, which `constructEvent` rejects.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{14-19}" color="blue">
+    **Verify inside try/catch.** The `try` is the trust gate, and `constructEvent` does the whole check in one call. This matches the course's error-as-refusal posture — a thrown error is the deny, and the `catch` is the fail-closed default.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{20-30}" color="red">
+    **On failure, return 400 problem+json — and leak nothing.** A bad proof is a `400`, not a `401`, so senders stop retrying. The body is RFC 9457 `{ type, title, status, instance }` and echoes none of the request — no payload fragment, no internal detail, no logging of untrusted input.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{32-33}" color="green">
+    **On success, hand off.** A deliberate stub: claiming the event and writing to the database is the next lesson. This lesson ends the moment the signature passes.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Three decisions inside that handler deserve to be said out loud rather than left as code, because each is a place reviewers push back and juniors guess wrong.
+
+**400, not 401.** Your instinct might say a request without a valid signature is "unauthorized" — a `401`. It isn't, and the distinction is operational, not pedantic. A `401` means *missing identity*: "I don't know who you are, try logging in." A signature failure is a *malformed proof*: the request claims to be from Stripe and the proof doesn't check out — that's a `400`, a bad request. Here's why the status code actually matters: third-party senders, Stripe included, treat `5xx` as "retry later" and `4xx` as "terminal, stop." A misconfigured sender that gets a `401` may interpret it as a transient auth blip and *retry*, hammering your endpoint with a storm of doomed requests. A `400` says cleanly, "this request is wrong, don't send it again." The course uses `400` for every signature failure, uniformly.
+
+**The error body carries nothing the caller controls.** The failure response follows the RFC 9457 <Term definition="RFC 9457, 'Problem Details for HTTP APIs' — the standard JSON shape for HTTP error responses: a body of { type, title, status, instance } served as application/problem+json.">problem+json</Term> contract you set up in the route-handler chapter: `Content-Type: application/problem+json` and a body of `{ type, title, status, instance }`, here titled `"invalid_signature"`. The discipline that matters at *this* boundary: the body echoes none of the request. No fragment of the payload, no internal error message, no stack detail. Remember whose request this might be — you do not reflect an attacker's input back at them, and you do not log the unverified body either. A failed verification produces a 400 and silence.
+
+**The Node runtime, named on purpose.** `export const runtime = 'nodejs'` is at the top, and it's worth one honest paragraph. In Next.js 16 the App Router already defaults route handlers to the Node runtime, so this line doesn't *change* anything — it declares intent. Both runtimes are defensible here: the Edge runtime's Web Crypto handles HMAC verification perfectly well (it's what our hand-rolled helper used). The course picks Node because the Stripe SDK and the synchronous `constructEvent` are most ergonomic there. The one consequence to know: Node gives you the full Node API surface at the cost of slightly heavier cold starts than Edge. That's the whole tradeoff — declare the choice, move on.
+
+## The local development loop
+
+You can't test any of this against real Stripe traffic, because Stripe's servers can't reach `http://localhost:3000`. They have no route to your laptop. The Stripe CLI bridges that gap, and it's the loop you'll live in while building anything webhook-shaped.
+
+First, open the tunnel. This command tells Stripe to forward every event for your account to your local handler:
+
+```bash
+stripe listen --forward-to localhost:3000/api/webhooks/stripe
+```
+
+When it starts, `stripe listen` prints something you must not skip past: a webhook signing secret, a string beginning with `whsec_`. That is the secret for *this local session*, and it's the value you paste into `STRIPE_WEBHOOK_SECRET` in your local `.env` so `constructEvent` can verify the forwarded events.
+
+With the tunnel open, fire a synthetic event through it from a second terminal:
+
+```bash
+stripe trigger checkout.session.completed
+```
+
+This makes Stripe generate a realistic `checkout.session.completed` event and send it down the tunnel to your handler — no real checkout, no real card, just a properly-signed event you can develop against. Set a breakpoint, watch it verify, iterate.
+
+Now the watch-out, because this is *the* most common "all my webhooks suddenly fail with 400" cause in the wild, and you will hit it if you don't internalize it now:
+
+:::caution
+The `whsec_` secret that `stripe listen` prints is **not** the same secret as the one configured for your endpoint in the Stripe Dashboard. Each environment has its own signing secret. Paste the local CLI secret into production (or your production secret into local dev) and every single event fails verification with a 400 — the HMAC computes a different digest because the *key* is different, and the symptom looks exactly like a broken verifier. The fix is the env discipline you already use: one `STRIPE_WEBHOOK_SECRET` value per environment, never crossed.
+:::
+
+The following card links the Stripe CLI reference if you want the full command surface.
+
+<ExternalResource
+  title="Stripe CLI"
+  href="https://docs.stripe.com/stripe-cli"
+  icon="simple-icons:stripe"
+  iconColor="#635BFF"
+  description="Install the Stripe CLI and explore the full listen / trigger command surface."
+/>
+
+## Secret rotation without downtime
+
+One last senior concern, and it follows straight from "the secret is the trust root": eventually you'll need to *rotate* that secret — on a schedule, or because you suspect it leaked. The naive picture is scary, because if `constructEvent` verifies against exactly one secret, swapping it seems to require a moment where in-flight events signed with the old secret get rejected. An outage to rotate a key.
+
+It isn't, because Stripe lets you keep more than one signing secret active during a rotation window. The pattern that exploits that is small: hold both secrets in env for the overlap period, try the new one first, and fall back to the old.
+
+```ts
+let event: Stripe.Event;
+try {
+  event = stripe.webhooks.constructEvent(rawBody, signature, env.STRIPE_WEBHOOK_SECRET);
+} catch {
+  event = stripe.webhooks.constructEvent(rawBody, signature, env.STRIPE_WEBHOOK_SECRET_OLD);
+}
+```
+
+Once traffic has fully cut over to the new secret, you delete the old env entry and the fallback `catch`, and you're back to the single-secret handler. The takeaway is the posture: rotating the trust root is a planned, zero-downtime operation, not an incident. You design for the overlap instead of fearing the swap.
+
+## Check your understanding
+
+Two quick drills to lock in the decisions before the next lesson builds on them. The first cements the *order* — verify before parse before process is a temporal invariant, and the ordering is the lesson.
+
+<Sequence instructions="Order the lines of the verifying handler. The whole point is *when* each one runs: the parse comes after the gate, not before it.">
+
+```ts
+export const POST = async (request: NextRequest) => {
+  // 1 ____
+  // 2 ____
+  let event: Stripe.Event;
+  try {
+    // 3 ____
+  } catch {
+    // 4 ____
+  }
+  // 5 ____
+  // 6 ____
+};
+```
+
+  <Step>Read the raw request body once as text — `const rawBody = await request.text()`</Step>
+  <Step>Read the `stripe-signature` header off the request</Step>
+  <Step>Verify with `constructEvent` (HMAC compare + 5-minute tolerance)</Step>
+  <Step>On a thrown error, return 400 with a problem+json body</Step>
+  <Step>Parse the verified bytes — `JSON.parse(rawBody)`</Step>
+  <Step>Hand the event off to the dedup + business logic</Step>
+</Sequence>
+
+The second drill targets the misconceptions that cost the most in production.
+
+<MultipleChoice>
+  A teammate is reviewing a draft of the webhook handler and lists the decisions they think are correct. **Select every statement that is actually true** about the verification boundary.
+
+  <McqChoice correct>When verification fails, the handler replies with a status code in the `4xx` family rather than `401`, so Stripe stops resending the event instead of retrying.</McqChoice>
+  <McqChoice correct>The bytes fed to the HMAC must be the string read straight off the wire — a value rebuilt from a parsed object can compute a different digest.</McqChoice>
+  <McqChoice correct>A request that arrives with no `stripe-signature` header takes the same rejection path as a request whose signature is wrong.</McqChoice>
+  <McqChoice correct>Even a signature that genuinely came from Stripe is refused once it is more than a few minutes old.</McqChoice>
+  <McqChoice>A plain `===` between the two hex digests is safe to use whenever the webhook secret is long and random.</McqChoice>
+  <McqChoice>If you restrict the route to Stripe's published IP ranges, you can skip recomputing the HMAC altogether.</McqChoice>
+
+  <McqWhy>
+  The four correct statements: a signature failure is a malformed proof, so it returns **400** (a `4xx`) — senders treat `4xx` as terminal but may retry on `401`/`5xx`, so 400 stops the resends. You hash the **raw text body** you read once, because `JSON.parse` → `JSON.stringify` reorders keys and reformats numbers, producing a different digest. A **missing header is a failure**, not a free pass — `null` flows into the same 400. And the **5-minute tolerance** rejects even authentic-but-stale signatures, which closes the replay hole.
+
+  The two false statements: `===` early-exits on the first mismatched byte and leaks timing no matter how strong the secret is — you need a constant-time compare. And **IP allowlisting can't replace the HMAC**: behind a CDN those source IPs are shared and spoofable, so the signature is the only proof that counts.
+  </McqWhy>
+</MultipleChoice>
+
+That's the boundary, drawn and defended: the raw bytes are the source of truth, the signature is the only proof that counts, a failed check is a 400 and silence, and the secret behind it all is a trust root you guard like a session secret. Your handler now knows how to *trust* an event. In the next lesson, [Claim once, mutate once](/063-webhook-ingestion/2-claim-once-mutate-once), we pick up exactly where the success path stubs out — because a verified event can still arrive twice, and processing it twice is its own expensive bug.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Receive Stripe events in your webhook endpoint"
+    href="https://docs.stripe.com/webhooks"
+    icon="simple-icons:stripe"
+    iconColor="#635BFF"
+    description="Stripe's canonical webhook guide — signature verification, event types, and the best practices this lesson is built on."
+  />
+  <ExternalResource
+    title="Resolve webhook signature verification errors"
+    href="https://docs.stripe.com/webhooks/signature"
+    icon="simple-icons:stripe"
+    iconColor="#635BFF"
+    description="The official troubleshooting page for the exact 400s you'll hit: wrong secret, mutated body, malformed signature header."
+  />
+  <ExternalResource
+    title="RFC 9457 — Problem Details for HTTP APIs"
+    href="https://www.rfc-editor.org/rfc/rfc9457.html"
+    icon="lucide:scroll-text"
+    iconColor="#0F2B46"
+    description="The spec behind the application/problem+json error body the handler returns on a failed signature."
+  />
+</CardGrid>

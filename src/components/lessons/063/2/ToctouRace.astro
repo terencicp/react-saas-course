@@ -1,0 +1,346 @@
+---
+// TOCTOU race timeline — Chapter 063 L2, "Why select-then-insert is broken".
+//
+// Two workers (A and B) handle the SAME event.id concurrently because Stripe
+// retried while the first was still in flight. A shared vertical time axis runs
+// down the middle; each worker has its own lane. Four moments stack down the
+// timeline, one per grid row so the two lanes share exact baselines:
+//   T1  A: SELECT  -> miss
+//   T2  B: SELECT  -> miss   (A hasn't inserted yet; read committed hides it)
+//   T3  A: work + INSERT
+//   T4  B: work + INSERT     (duplicate / unique-violation — the bug)
+// The final step fires both effects: "provisioned twice".
+//
+// The whole scaffold renders every step so the DiagramSequence stage sizes to
+// one stable height and never reflows. Only per-box STATE changes with the
+// `step` prop, which keeps the interleaving — and the race window — legible as
+// the reader scrubs.
+//
+// The amber "race window" bracket spans rows T1..T3 in lane A: it is the
+// physical gap between A's read and A's write, and it is exactly where B's
+// SELECT (row T2) slips in.
+//
+// Layout is a single CSS grid: [lane A | axis | lane B] x 4 time rows. Empty
+// cells hold the stagger so A acts on rows 1 & 3 and B on rows 2 & 4.
+//
+// Pure HTML + CSS. `margin: 0` reset defeats Starlight's prose-margin selector;
+// color-mix mid-tones read on both light and dark themes.
+
+interface Props {
+  // 1..5 — which moment in the race is active. 5 is the red payoff frame.
+  step: number;
+}
+
+const { step } = Astro.props;
+
+const blue = "#2563eb"; // worker A accent
+const violet = "#7c3aed"; // worker B accent
+const red = "#dc2626"; // the duplicate / corrupted end state
+const amber = "#d97706"; // the race-window bracket
+
+type BoxState = "pending" | "active" | "done" | "bad";
+
+// Row index per action (1-based grid rows).  A on rows 1,3 — B on rows 2,4.
+const aSelect: BoxState = step >= 1 ? (step === 1 ? "active" : "done") : "pending";
+const bSelect: BoxState = step >= 2 ? (step === 2 ? "active" : "done") : "pending";
+const aInsert: BoxState = step >= 3 ? (step === 3 ? "active" : "done") : "pending";
+const bInsert: BoxState =
+  step >= 4 ? (step === 4 ? "active" : "bad") : "pending";
+
+// The shared "now" marker sits at the row the active action is on.
+const nowRow = [1, 1, 2, 3, 4, 4][Math.min(step, 5)];
+
+// The amber race-window bracket appears once B has slipped into the gap (step 2)
+// and stays through the climax.
+const showWindow = step >= 2;
+
+// The double-effect payoff banner only on the final frame.
+const showPayoff = step >= 5;
+
+const reset = "margin: 0";
+const sans =
+  "font-family: var(--sl-font-system, ui-sans-serif, system-ui, sans-serif)";
+
+// Single grid: 3 columns (lane A | axis | lane B), header row + 4 time rows.
+const frame = [
+  reset,
+  "box-sizing: border-box",
+  "position: relative",
+  "display: grid",
+  "grid-template-columns: minmax(0, 1fr) 60px minmax(0, 1fr)",
+  "grid-template-rows: auto repeat(4, auto)",
+  "column-gap: 0",
+  "row-gap: 16px",
+  "align-items: stretch",
+  "max-width: 760px",
+  "margin: 0 auto",
+  sans,
+].join("; ");
+
+const laneHead = (accent: string, col: number) =>
+  [
+    reset,
+    "box-sizing: border-box",
+    `grid-column: ${col}`,
+    "grid-row: 1",
+    "padding: 6px 10px",
+    "border-radius: 8px",
+    "text-align: center",
+    "font-size: 13px",
+    "font-weight: 700",
+    "letter-spacing: 0.02em",
+    `color: color-mix(in srgb, ${accent} 80%, var(--sl-color-text))`,
+    `background: color-mix(in srgb, ${accent} 12%, var(--sl-color-bg))`,
+    `border: 1px solid color-mix(in srgb, ${accent} 40%, transparent)`,
+  ].join("; ");
+
+// A single action box placed at a specific grid cell.
+function actionBox(state: BoxState, accent: string, col: number, row: number) {
+  const base = [
+    reset,
+    "box-sizing: border-box",
+    `grid-column: ${col}`,
+    `grid-row: ${row}`,
+    "padding: 10px 12px",
+    "border-radius: 10px",
+    "line-height: 1.35",
+  ];
+  if (state === "pending") {
+    base.push(
+      "opacity: 0.4",
+      "border: 1px dashed var(--sl-color-gray-4)",
+      "background: transparent",
+    );
+  } else if (state === "active") {
+    base.push(
+      `border: 2px solid ${accent}`,
+      `background: color-mix(in srgb, ${accent} 16%, var(--sl-color-bg))`,
+      `box-shadow: 0 0 0 4px color-mix(in srgb, ${accent} 22%, transparent)`,
+    );
+  } else if (state === "done") {
+    base.push(
+      `border: 1px solid color-mix(in srgb, ${accent} 45%, transparent)`,
+      `background: color-mix(in srgb, ${accent} 9%, var(--sl-color-bg))`,
+    );
+  } else {
+    base.push(
+      `border: 2px solid ${red}`,
+      `background: color-mix(in srgb, ${red} 16%, var(--sl-color-bg))`,
+      `box-shadow: 0 0 0 4px color-mix(in srgb, ${red} 22%, transparent)`,
+    );
+  }
+  return base.join("; ");
+}
+
+const opLabel = (accent: string, state: BoxState) =>
+  [
+    reset,
+    "display: block",
+    "font-size: 12.5px",
+    "font-weight: 700",
+    "font-family: var(--__sl-font-mono, ui-monospace, monospace)",
+    state === "bad"
+      ? `color: ${red}`
+      : `color: color-mix(in srgb, ${accent} 82%, var(--sl-color-text))`,
+  ].join("; ");
+
+const opSub = [
+  reset,
+  "display: block",
+  "margin-top: 3px",
+  "font-size: 11.5px",
+  "color: var(--sl-color-gray-2)",
+].join("; ");
+
+const chip = (kind: "miss" | "win" | "dupe") => {
+  const c = kind === "miss" ? amber : kind === "win" ? "#16a34a" : red;
+  return [
+    reset,
+    "display: inline-block",
+    "margin-top: 7px",
+    "padding: 1px 7px",
+    "border-radius: 999px",
+    "font-size: 10.5px",
+    "font-weight: 700",
+    "letter-spacing: 0.03em",
+    `color: ${c}`,
+    `background: color-mix(in srgb, ${c} 15%, var(--sl-color-bg))`,
+    `border: 1px solid color-mix(in srgb, ${c} 40%, transparent)`,
+  ].join("; ");
+};
+
+// Center time axis spans every time row (rows 2..5 of the grid).
+const axis = [
+  reset,
+  "position: relative",
+  "grid-column: 2",
+  "grid-row: 2 / 6",
+  "justify-self: center",
+  "width: 60px",
+].join("; ");
+
+const axisLine = [
+  reset,
+  "position: absolute",
+  "left: 50%",
+  "top: 0",
+  "bottom: 0",
+  "transform: translateX(-50%)",
+  "width: 2px",
+  "background: var(--sl-color-gray-4)",
+].join("; ");
+
+const axisLabel = [
+  reset,
+  "position: absolute",
+  "top: -22px",
+  "left: 50%",
+  "transform: translateX(-50%)",
+  "font-size: 10px",
+  "font-weight: 700",
+  "letter-spacing: 0.08em",
+  "color: var(--sl-color-gray-3)",
+  "white-space: nowrap",
+].join("; ");
+
+// "now" marker — positioned at the vertical center of the active row.
+// Each of the 4 time rows occupies ~25% of the axis height.
+const nowTopPct = (nowRow - 0.5) * 25;
+const nowMarker = [
+  reset,
+  "position: absolute",
+  "left: 50%",
+  `top: ${nowTopPct}%`,
+  "transform: translate(-50%, -50%)",
+  "width: 14px",
+  "height: 14px",
+  "border-radius: 50%",
+  "z-index: 2",
+  "background: var(--sl-color-text-accent)",
+  "border: 3px solid var(--sl-color-bg)",
+  "box-shadow: 0 0 0 2px var(--sl-color-text-accent)",
+].join("; ");
+
+// Race-window bracket: an overlay pinned to lane A spanning time rows 1..3
+// (A's SELECT through A's INSERT). Placed in column 1, rows 2..4 of the grid.
+const raceWindow = [
+  reset,
+  "position: relative",
+  "grid-column: 1",
+  "grid-row: 2 / 5",
+  "z-index: 1",
+  "pointer-events: none",
+  "justify-self: end",
+  "align-self: stretch",
+  "width: 18px",
+  "margin-right: -2px",
+  `border-top: 2px solid ${amber}`,
+  `border-bottom: 2px solid ${amber}`,
+  `border-right: 2px solid ${amber}`,
+  "border-top-right-radius: 6px",
+  "border-bottom-right-radius: 6px",
+].join("; ");
+
+const raceWindowLabel = [
+  reset,
+  "position: absolute",
+  // Sit just to the LEFT of the bracket, in lane A's free middle-row gap, so it
+  // never collides with the center time axis / "now" marker.
+  "left: -6px",
+  "top: 50%",
+  "transform: translate(-100%, -50%)",
+  "padding: 2px 7px",
+  "border-radius: 6px",
+  "font-size: 10px",
+  "font-weight: 700",
+  "white-space: nowrap",
+  "background-clip: padding-box",
+  `color: ${amber}`,
+  `background: color-mix(in srgb, ${amber} 14%, var(--sl-color-bg))`,
+  `border: 1px solid color-mix(in srgb, ${amber} 45%, transparent)`,
+].join("; ");
+
+const payoff = [
+  reset,
+  "box-sizing: border-box",
+  "grid-column: 1 / -1",
+  "grid-row: 6",
+  "margin-top: 6px",
+  "padding: 12px 14px",
+  "border-radius: 10px",
+  "text-align: center",
+  `color: ${red}`,
+  "font-size: 14px",
+  "font-weight: 700",
+  `border: 2px solid ${red}`,
+  `background: color-mix(in srgb, ${red} 12%, var(--sl-color-bg))`,
+].join("; ");
+---
+
+<div
+  class="not-content toctou-race"
+  style={`${frame}; grid-template-rows: auto repeat(4, auto)${showPayoff ? " auto" : ""}`}
+>
+  {/* Headers */}
+  <div style={laneHead(blue, 1)}>Worker A</div>
+  <div style={laneHead(violet, 3)}>Worker B</div>
+
+  {/* Center time axis */}
+  <div style={axis}>
+    <span style={axisLabel}>TIME ↓</span>
+    <div style={axisLine}></div>
+    <div style={nowMarker}></div>
+  </div>
+
+  {/* Race-window bracket overlay on lane A */}
+  {showWindow && (
+    <div style={raceWindow}>
+      <span style={raceWindowLabel}>race window</span>
+    </div>
+  )}
+
+  {/* T1 — A SELECT (row 2) */}
+  <div style={actionBox(aSelect, blue, 1, 2)}>
+    <span style={opLabel(blue, aSelect)}>SELECT … evt_123</span>
+    <span style={opSub}>"have I seen this event?"</span>
+    {aSelect !== "pending" && <span style={chip("miss")}>no row → looks new</span>}
+  </div>
+
+  {/* T2 — B SELECT (row 3) */}
+  <div style={actionBox(bSelect, violet, 3, 3)}>
+    <span style={opLabel(violet, bSelect)}>SELECT … evt_123</span>
+    <span style={opSub}>same event — A hasn't committed yet</span>
+    {bSelect !== "pending" && <span style={chip("miss")}>no row → looks new</span>}
+  </div>
+
+  {/* T3 — A work + INSERT (row 4) */}
+  <div style={actionBox(aInsert, blue, 1, 4)}>
+    <span style={opLabel(blue, aInsert)}>do work + INSERT receipt</span>
+    <span style={opSub}>provisions the customer, writes the row</span>
+    {aInsert !== "pending" && <span style={chip("win")}>committed</span>}
+  </div>
+
+  {/* T4 — B work + INSERT (row 5) */}
+  <div style={actionBox(bInsert, violet, 3, 5)}>
+    <span style={opLabel(violet, bInsert)}>do work + INSERT receipt</span>
+    <span style={opSub}>provisions the customer AGAIN</span>
+    {bInsert === "active" && <span style={chip("dupe")}>duplicate insert</span>}
+    {bInsert === "bad" && <span style={chip("dupe")}>DUPLICATE EFFECT</span>}
+  </div>
+
+  {showPayoff && (
+    <div style={payoff}>
+      Both passed the check. Both ran the effect. Customer provisioned twice.
+    </div>
+  )}
+</div>
+
+<style>
+  /* On narrow screens tighten the center axis column; the two lanes + axis still
+     convey "two workers, one timeline". */
+  @media (max-width: 560px) {
+    .toctou-race {
+      grid-template-columns: minmax(0, 1fr) 40px minmax(0, 1fr) !important;
+    }
+  }
+</style>
