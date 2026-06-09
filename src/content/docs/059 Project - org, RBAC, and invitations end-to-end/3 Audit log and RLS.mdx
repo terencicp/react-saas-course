@@ -1,0 +1,430 @@
+---
+title: Append-only audit_logs with RLS
+chapter-id: 059
+course-progress: 0.00005
+sidebar:
+  order: 3
+  label: Audit log and RLS
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+A privileged action that changes who can do what inside an org leaves a trail, and that trail is compliance data: regulators, security reviews, and your own incident postmortems all assume an audit record that nobody — not even an engineer with a `psql` prompt — can quietly rewrite after the fact. This lesson builds that table. By the end, `audit_logs` is a table the database itself guarantees can only grow: an insert succeeds inside a tenant-scoped transaction and is refused outside one, and `UPDATE` and `DELETE` against it both touch zero rows even when you run them by hand as the app's database role.
+
+There is no screenshot to show here — the proof is in `psql` output, which you will produce in the verification step. The one visible change in the app is small: the inspector's raw-helpers panel, which until now rendered a placeholder, resolves a real `auditLogs` count for the active org (1 for Acme, from the single row the seed plants).
+
+## Your mission
+
+The audit log is compliance data, so it earns a defense the application layer cannot supply on its own. You could write `logAudit` carefully, code-review every mutation, and trust that no one ever issues an `UPDATE audit_logs` — and that discipline is real and worth having. But "append-only by convention" is a property you *hope* holds; it depends on every engineer's attention forever. The structural version makes it the database's job. Postgres Row-Level Security lets you attach deny-everything policies to `UPDATE` and `DELETE` so that no row ever qualifies for either, and a transaction-bound writer signature makes an off-transaction audit call fail to typecheck. Neither depends on anyone remembering anything. That is the call this lesson exists to teach: the policies are load-bearing precisely because they survive carelessness.
+
+Define the `auditLogs` table with its full column set. A few of the column types carry decisions worth pausing on. The standalone `id` primary key is a `uuid` defaulted with `uuidv7()`, but `organizationId` and `actorUserId` are `text`, not `uuid` — Better Auth generates `organization.id` and `user.id` as base62 text identifiers, so a `uuid` foreign key pointing at a `text` column emits DDL Postgres rejects. `actorIp` is `text` too: Drizzle has no first-class `inet` builder, and `text` is the deliberate simplification rather than reaching for a custom type. `payload` is `jsonb` with a `{}` default. Add the two composite indexes that serve the reads the inspector and any future audit view will run — one keyed on `(organizationId, createdAt desc)` for the per-org tail, one on `(organizationId, actorUserId, createdAt desc)` for per-actor lookups. Then call `.enableRLS()` and declare three policies: a permissive `FOR ALL` org-isolation policy that compares `organization_id` to `current_setting('app.org_id', true)` so reads and inserts are scoped to one tenant, plus two restrictive policies whose `using` predicate is `sql\`false\`` — one for `UPDATE`, one for `DELETE`. A restrictive policy intersects with the permissive one, so `false` poisons every update and delete no matter what else is allowed.
+
+Two details in those predicates are easy to get subtly wrong. The second argument to `current_setting('app.org_id', true)` — the `true` — makes a missing setting return `NULL` instead of raising an error; the policy then evaluates false and *refuses* rather than surfacing a 500 to the user. And the comparison has no `::uuid` cast on either side, because `organization_id` is `text` and the session variable is text — casting would break the match. The session variable itself is set transaction-locally, via `set_config('app.org_id', $orgId, true)`, never a plain `SET`. This is the bug that bites teams who reach for session-level `SET` on a pooled connection: the setting persists on that physical connection after the request ends, and the next request to borrow it inherits another tenant's `app.org_id`. So `withTenant(orgId, fn)` opens a transaction and runs `set_config(...)` before the work, and every audit read and write flows through it.
+
+The writer, `logAudit(tx, event)`, takes a `Transaction` as its first argument and offers no overload that accepts the bare `db`. That is on purpose: auditing happens inside the transaction that does the work, so a role change and its audit row commit or roll back together — never a fire-and-forget call that could leave a mutation recorded with no work behind it, or work done with no record. The caller passes only the event; `logAudit` derives the actor and org itself from `requireOrgUser()` and the request headers, so audit context can't be spoofed from the call site.
+
+One constraint shapes how you verify this and how the seed works: the owner and superuser roles bypass RLS by Postgres default. Migrations run as the owner, the seed runs as the superuser `postgres` (which is why it can insert a fixture audit row directly, with no `withTenant`), and a future retention job would too. The app's request handler, by contrast, runs as the `authenticated` role — that is the role the deny policies actually bite. A GDPR-style retention job that prunes old audit rows as superuser is a real year-two need, but it is out of scope here; this lesson ships the table, not its eventual cleanup. Also out of scope: no action writes to this table yet — the first writer arrives with the role-change action in the next lesson — and the `tenantDb` query facade that lives in the same `tenant.ts` file is the next lesson's work, so only `withTenant` ships here.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">The `auditLogs` table exists in the migrated schema with its full column set and both composite indexes.</ChecklistItem>
+  <ChecklistItem chip="tested">As the `authenticated` role inside a transaction that has set `app.org_id`, an `INSERT INTO audit_logs (...)` succeeds.</ChecklistItem>
+  <ChecklistItem chip="tested">The same insert outside a transaction, with `app.org_id` unset, is refused.</ChecklistItem>
+  <ChecklistItem chip="tested">`UPDATE audit_logs SET action = 'x'` matches zero rows for the `authenticated` role (`UPDATE 0`; the data is untouched).</ChecklistItem>
+  <ChecklistItem chip="tested">`DELETE FROM audit_logs WHERE id = ...` matches zero rows for the `authenticated` role (`DELETE 0`).</ChecklistItem>
+  <ChecklistItem chip="tested">A `SELECT` with `app.org_id` unset returns 0 rows rather than erroring.</ChecklistItem>
+  <ChecklistItem chip="tested">`logAudit(tx, event)` inserts exactly one row, and does not typecheck when called with the bare `db` instead of a `Transaction`.</ChecklistItem>
+  <ChecklistItem chip="untested">The inspector's raw-helpers panel resolves the `auditLogs` row count, read through `withTenant`, for the current org.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Build it against the brief and the lesson's tests first. The reference solution below is collapsed on purpose — open it once you have something running, or when you get stuck on a specific piece.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+### The table and its policies
+
+This is the heart of the lesson — one `pgTable` declaration that carries the column types, the indexes, and the three RLS policies. Step through it.
+
+<AnnotatedCode lang="ts" maxLines={16} code={`
+export const auditLogs = pgTable(
+  'audit_logs',
+  {
+    id: uuid()
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
+    organizationId: text()
+      .notNull()
+      .references(() => organization.id, { onDelete: 'cascade' }),
+    actorUserId: text().references(() => user.id, { onDelete: 'set null' }),
+    actorIp: text(),
+    actorUserAgent: text(),
+    action: text().notNull(),
+    subjectType: text().notNull(),
+    subjectId: text().notNull(),
+    payload: jsonb().$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    index('idx_audit_logs_org_created').on(
+      t.organizationId,
+      t.createdAt.desc(),
+    ),
+    index('idx_audit_logs_org_actor_created').on(
+      t.organizationId,
+      t.actorUserId,
+      t.createdAt.desc(),
+    ),
+    pgPolicy('audit_logs_org_isolation', {
+      as: 'permissive',
+      for: 'all',
+      to: authenticatedRole,
+      using: sql\`\${t.organizationId} = current_setting('app.org_id', true)\`,
+      withCheck: sql\`\${t.organizationId} = current_setting('app.org_id', true)\`,
+    }),
+    pgPolicy('audit_logs_no_update', {
+      as: 'restrictive',
+      for: 'update',
+      to: authenticatedRole,
+      using: sql\`false\`,
+    }),
+    pgPolicy('audit_logs_no_delete', {
+      as: 'restrictive',
+      for: 'delete',
+      to: authenticatedRole,
+      using: sql\`false\`,
+    }),
+  ],
+).enableRLS();
+`}>
+
+<AnnotatedStep meta="{4-6}" color="blue">
+  The lone `uuid` column. `id` is a standalone primary key with no incoming foreign key, so it stays `uuid`, defaulted with `uuidv7()` for time-ordered, index-friendly keys.
+</AnnotatedStep>
+
+<AnnotatedStep meta="{7-10}" color="orange">
+  `organizationId` and `actorUserId` are `text`. Better Auth's `organization.id` and `user.id` are base62 text, so a `uuid` foreign key pointing at them would emit invalid DDL. The org FK cascades; the actor FK is `set null` so deleting a user doesn't erase the historical record of what they did.
+</AnnotatedStep>
+
+<AnnotatedStep meta="{11}" color="orange">
+  `actorIp` is `text`. Drizzle has no first-class `inet` builder, and storing the address as text is the deliberate simplification for this project.
+</AnnotatedStep>
+
+<AnnotatedStep meta="{16}" color="blue">
+  `payload` is `jsonb`, typed `Record<string, unknown>`, defaulting to `{}`. This is where a role change stows its `{ before, after }`.
+</AnnotatedStep>
+
+<AnnotatedStep meta="{20-28}" color="green">
+  The two composite indexes. The first serves the per-org audit tail (newest first); the second serves per-actor reads. Both lead with `organizationId` because every audit query is org-scoped.
+</AnnotatedStep>
+
+<AnnotatedStep meta={`{29-35} "current_setting('app.org_id', true)"`} color="violet">
+  The org-isolation policy — permissive, `FOR ALL`, so it governs both `SELECT` and `INSERT`. It compares `organization_id` directly to the session variable with no `::uuid` cast (both sides are text), and the `true` flag means a missing setting is `NULL`, so the policy fails closed instead of erroring.
+</AnnotatedStep>
+
+<AnnotatedStep meta={`{36-47} "sql\`false\`"`} color="red">
+  The deny layer. Two restrictive policies, one for `UPDATE` and one for `DELETE`, each with a `using` predicate of `false`. A restrictive policy ANDs with the permissive one, so `false` means no row ever qualifies — every update and delete matches zero rows.
+</AnnotatedStep>
+
+</AnnotatedCode>
+
+The full file also carries the imports — note `authenticatedRole` comes from `drizzle-orm/neon`, the same role helper you will keep using once this app moves to Neon — and the type exports the rest of the audit code consumes:
+
+```ts title="src/db/audit.ts"
+import { sql } from 'drizzle-orm';
+import { authenticatedRole } from 'drizzle-orm/neon';
+import {
+  index,
+  jsonb,
+  pgPolicy,
+  pgTable,
+  text,
+  timestamp,
+  uuid,
+} from 'drizzle-orm/pg-core';
+import { uuidv7 } from 'uuidv7';
+
+import { organization, user } from '@/db/schema/auth';
+
+// ...auditLogs table (above)...
+
+export type AuditLog = typeof auditLogs.$inferSelect;
+export type NewAuditLog = typeof auditLogs.$inferInsert;
+
+// The caller-supplied half of an audit row: the actor/org context is derived by
+// logAudit from requireOrgUser + headers, so the event carries only the what.
+export type AuditEvent = {
+  action: string;
+  subjectType?: string;
+  subjectId?: string;
+  payload?: Record<string, unknown>;
+};
+```
+
+`AuditEvent` is the shape callers hand `logAudit` — only `action` is required; the actor and org are derived, never passed in. The `pgPolicy` and `withTenant` mechanics here are exactly the pattern introduced in lesson 4 of chapter 056 (*Postgres RLS through Drizzle*); this project applies it rather than re-deriving it.
+
+<VideoCallout videoId="vZT1Qx2xUCo" videoTitle="Everything you need to know about Postgres Row Level Security — POSETTE 2024">
+  Supabase CEO Paul Copplestone (18 min) walks the `USING`/`WITH CHECK` clauses and the permissive-`OR`/restrictive-`AND` rule your `sql\`false\`` deny policies rely on.
+</VideoCallout>
+
+### One migration Drizzle does not write for you
+
+When you run `pnpm db:generate`, drizzle-kit reads `.enableRLS()` and emits `ALTER TABLE "audit_logs" ENABLE ROW LEVEL SECURITY` along with the three `CREATE POLICY` statements. That is necessary but not sufficient, and the gap is the kind of thing that silently undermines an append-only guarantee.
+
+Two custom migrations fill it. The policies are authored `TO authenticated`, but that role does not exist on a vanilla Docker Postgres — Neon and Supabase provision it, plain Postgres does not. So a hand-written `--custom` migration creates the role idempotently, and it must run *before* the policy migration or the `CREATE POLICY ... TO authenticated` statements fail to apply:
+
+```sql title="drizzle/0003_create_app_role.sql"
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authenticated') THEN
+    CREATE ROLE authenticated NOLOGIN;
+  END IF;
+END
+$$;
+```
+
+The second gap is the one to internalize. `ENABLE ROW LEVEL SECURITY` does not make policies apply to the *table owner* — and migrations, including this one, run as the owner. Without `FORCE`, a `SET ROLE authenticated` session that happens to be owned by the same role would still bypass every policy, and your deny-write guarantee would be a no-op. `FORCE ROW LEVEL SECURITY` closes that. The same migration also grants the `authenticated` role the schema and table privileges it needs, because on vanilla Postgres it arrives with none — without the grants you'd hit a "permission denied" at the grant layer before any policy was even consulted, and you could never demonstrate that the *policies* are what refuse the write:
+
+```sql title="drizzle/0005_force_audit_rls.sql"
+ALTER TABLE "audit_logs" FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+GRANT USAGE ON SCHEMA "public" TO authenticated;
+--> statement-breakpoint
+GRANT SELECT, INSERT, UPDATE, DELETE ON "audit_logs" TO authenticated;
+```
+
+:::note
+You write a `--custom` migration with `pnpm db:generate --custom --name force_audit_rls`, which scaffolds an empty SQL file for you to fill. These two files are part of the same `pnpm db:migrate` run as the generated schema migration — there is no separate command.
+:::
+
+### Spreading the audit schema into the client
+
+For `db.query.auditLogs` to resolve and for the `Transaction` type to exist, the audit module has to be merged into the Drizzle client. This is a two-line change in `src/db/index.ts`: import the audit module and spread it into the schema object alongside the others.
+
+```ts title="src/db/index.ts"
+import { drizzle } from 'drizzle-orm/postgres-js';
+import postgres from 'postgres';
+import * as auditSchema from '@/db/audit';
+import * as suppressionsSchema from '@/db/schema';
+import * as authSchema from '@/db/schema/auth';
+import { env } from '@/env';
+
+// ...client...
+
+export const db = drizzle(client, {
+  schema: { ...suppressionsSchema, ...authSchema, ...auditSchema },
+  casing: 'snake_case',
+});
+
+export const dbUnpooled = db;
+
+// The transaction handle drizzle hands the db.transaction callback. withTenant and
+// logAudit type their first arg as this so off-transaction audit writes don't
+// typecheck (logAudit refuses a bare `db`).
+export type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+```
+
+The `Transaction` type is the linchpin of the whole append-only discipline: it is what `withTenant` hands its callback and what `logAudit` demands as its first argument, and it is why an off-transaction audit write doesn't compile.
+
+### The tenant-scoped transaction
+
+`withTenant` is the only path through which audit reads and writes reach the database, because it is the only place that sets `app.org_id`. It opens a transaction, runs `set_config('app.org_id', orgId, true)` before anything else, then runs your callback.
+
+```ts title="src/db/tenant.ts"
+import 'server-only';
+
+import { and, eq, type SQL, sql } from 'drizzle-orm';
+import type { PgInsertValue, PgUpdateSetSource } from 'drizzle-orm/pg-core';
+
+import type { Transaction } from '@/db';
+import { db } from '@/db';
+import { invitation, member } from '@/db/schema/auth';
+
+// The audit-bearing transaction: set_config('app.org_id', orgId, true) is
+// transaction-local (the SET LOCAL equivalent that takes a bind parameter) — never
+// plain SET, which would leak the setting onto the pooled connection. The
+// audit_logs org-isolation policy reads current_setting('app.org_id', true), so a
+// tx without this would have its audit INSERT refused by the policy.
+export const withTenant = async <T>(
+  orgId: string,
+  fn: (tx: Transaction) => Promise<T>,
+): Promise<T> =>
+  db.transaction(async (tx) => {
+    await tx.execute(sql`select set_config('app.org_id', ${orgId}, true)`);
+    return fn(tx);
+  });
+```
+
+The third argument to `set_config` — `true` — is what makes it transaction-local. That is the entire reason a transaction exists here: a session-level `SET` on a pooled connection would survive the request and leak `app.org_id` into the next request that borrows the same physical connection, silently crossing tenant boundaries. The transaction scopes the setting to exactly the work that needs it.
+
+:::caution
+The same `src/db/tenant.ts` file also declares `tenantDb` — the typed query facade — but that is stubbed for now and built in the next lesson. Don't expect `tenantDb(orgId)` to work yet; only `withTenant` ships in this lesson.
+:::
+
+### The writer
+
+`logAudit` does one thing: insert one audit row. Its signature is the discipline — `tx: Transaction`, with no overload accepting the bare `db` — so an audit write can only happen inside a transaction doing real work.
+
+```ts title="src/db/audit-log.ts"
+import 'server-only';
+
+import { headers } from 'next/headers';
+
+import type { Transaction } from '@/db';
+import type { AuditEvent } from '@/db/audit';
+import { auditLogs } from '@/db/audit';
+import { requireOrgUser } from '@/lib/auth';
+
+// The audit writer. Its first arg is the Transaction type with no bare-db overload,
+// so an off-transaction call (and the role-changed-but-no-audit-row bug it would
+// allow) does not typecheck. The caller passes only the event; actor/org context is
+// derived here from requireOrgUser + the request headers, never trusted from input.
+export const logAudit = async (
+  tx: Transaction,
+  event: AuditEvent,
+): Promise<void> => {
+  const { user, orgId } = await requireOrgUser();
+  const h = await headers();
+
+  await tx.insert(auditLogs).values({
+    organizationId: orgId,
+    actorUserId: user.id,
+    actorIp: h.get('x-forwarded-for'),
+    actorUserAgent: h.get('user-agent')?.slice(0, 512),
+    action: event.action,
+    subjectType: event.subjectType ?? '',
+    subjectId: event.subjectId ?? '',
+    payload: event.payload ?? {},
+  });
+};
+```
+
+The actor and org are derived from `requireOrgUser()`, not accepted as parameters — the call site cannot claim to be someone else. The user-agent is sliced to 512 characters because a hostile or buggy client can send an arbitrarily long header, and an unbounded write into your audit table is a small denial-of-service vector. This transaction-required writer is the same discipline taught in lesson 5 of chapter 057 (*the append-only audit log*); here it is wired into a live project.
+
+### Reading through the tenant
+
+The two read helpers exist so the inspector has something to render and so you can prove the count filters correctly. Both route through `withTenant` for the same reason the writes do: the org-isolation policy compares against `app.org_id`, and without `withTenant` setting it, the policy would match no rows and return zero.
+
+```ts title="src/db/queries/audit.ts"
+import 'server-only';
+
+import { desc } from 'drizzle-orm';
+
+import { auditLogs } from '@/db/audit';
+import { withTenant } from '@/db/tenant';
+
+// Reads through withTenant so the org-isolation policy governs the count under a
+// non-BYPASSRLS role (the predicate compares against the set app.org_id). Local dev
+// connects as the superuser postgres, which bypasses RLS, so the policy is wired
+// and demonstrable but not enforced on this path until a non-owner request role.
+export const auditLogCount = async (orgId: string): Promise<number> =>
+  withTenant(orgId, async (tx) => {
+    const rows = await tx.select({ id: auditLogs.id }).from(auditLogs);
+    return rows.length;
+  });
+
+// The audit tail the inspector renders: the org's most-recent events, newest first.
+// Reads through withTenant for the same org-isolation reason as the count.
+export const recentAuditLogs = async (orgId: string) =>
+  withTenant(orgId, async (tx) =>
+    tx
+      .select({
+        id: auditLogs.id,
+        action: auditLogs.action,
+        createdAt: auditLogs.createdAt,
+      })
+      .from(auditLogs)
+      .orderBy(desc(auditLogs.createdAt))
+      .limit(20),
+  );
+```
+
+`auditLogCount` is what the raw-helpers panel calls — the untested requirement on your checklist. Note the comment's honesty about local dev: because you connect as the superuser `postgres`, which bypasses RLS, the policy is wired and demonstrable but not *enforced* on this read path until a request runs as the `authenticated` role. That is exactly why the verification below has you `SET ROLE authenticated` by hand — it's the only way to see the policies bite locally.
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Drizzle ORM — Row-Level Security"
+    href="https://orm.drizzle.team/docs/rls"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The pgPolicy/enableRLS API you write here, including permissive vs restrictive and the authenticatedRole helper."
+  />
+  <ExternalResource
+    title="Postgres — CREATE POLICY"
+    href="https://www.postgresql.org/docs/current/sql-createpolicy.html"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="The reference for USING/WITH CHECK and the permissive-OR / restrictive-AND rule that makes your sql`false` deny policies bite."
+  />
+  <ExternalResource
+    title="Row Level Security for Tenants in Postgres"
+    href="https://www.crunchydata.com/blog/row-level-security-for-tenants-in-postgres"
+    icon="lucide:building-2"
+    iconColor="#1E8E3E"
+    description="Crunchy Data on scoping tenant access with current_setting/set_config — the exact pattern withTenant implements."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's test suite:
+
+```bash frame="none"
+pnpm test:lesson 3
+```
+
+It should pass. The suite anchors on your exported `auditLogs` table — its columns, indexes, RLS flag, and the three policy predicates — and then exercises the live Postgres as the `authenticated` role inside rolled-back transactions: an insert through `withTenant` + `logAudit` adds exactly one row, an insert with `app.org_id` unset is refused, `UPDATE` and `DELETE` each report zero affected rows, and a `SELECT` with `app.org_id` unset returns no rows rather than erroring.
+
+The no-typecheck-off-`db` half of the writer's guarantee is a compile-time property: `logAudit`'s first parameter is typed `Transaction` with no `db` overload, so an off-transaction call is rejected by `tsc`. The runner asserts the runtime-observable half — the single-row insert.
+
+A few things the tests can't reach you confirm by hand. The deny policies only bite under the `authenticated` role, so open `psql` against the Docker Postgres and `SET ROLE authenticated` first — your default connection is the superuser, which bypasses RLS:
+
+```sql title="psql session — append-only checks"
+SET ROLE authenticated;
+
+-- inside a tenant transaction, the insert clears the org-isolation policy
+BEGIN;
+SELECT set_config('app.org_id', 'org_acme', true);
+INSERT INTO audit_logs (id, organization_id, action, subject_type, subject_id)
+VALUES (gen_random_uuid(), 'org_acme', 'manual.test', 'member', 'm_test');
+-- INSERT 0 1
+COMMIT;
+
+-- with app.org_id unset, the same insert is refused
+INSERT INTO audit_logs (id, organization_id, action, subject_type, subject_id)
+VALUES (gen_random_uuid(), 'org_acme', 'manual.test', 'member', 'm_test');
+-- ERROR:  new row violates row-level security policy for table "audit_logs"
+
+-- the deny policies let no row qualify
+UPDATE audit_logs SET action = 'x';
+-- UPDATE 0
+DELETE FROM audit_logs;
+-- DELETE 0
+
+-- a read with app.org_id unset returns nothing rather than erroring
+SELECT * FROM audit_logs LIMIT 1;
+-- (0 rows)
+```
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">Inside `BEGIN; SELECT set_config('app.org_id', 'org_acme', true); ...; COMMIT;`, an `INSERT INTO audit_logs (...)` for `org_acme` succeeds.</ChecklistItem>
+  <ChecklistItem chip="untested">The same insert with `app.org_id` unset is refused with a row-level security violation.</ChecklistItem>
+  <ChecklistItem chip="untested">`UPDATE audit_logs SET action = 'x' WHERE id = ...` reports `UPDATE 0` and leaves the data untouched.</ChecklistItem>
+  <ChecklistItem chip="untested">`DELETE FROM audit_logs WHERE id = ...` reports `DELETE 0`.</ChecklistItem>
+  <ChecklistItem chip="untested">`SELECT * FROM audit_logs LIMIT 1` with `app.org_id` unset returns 0 rows.</ChecklistItem>
+  <ChecklistItem chip="untested">The inspector's raw-helpers panel shows the `auditLogs` count for the current org (1 for Acme).</ChecklistItem>
+</Checklist>
+
+No action writes to this table yet — the audit tail in the inspector stays empty. The first writer caller arrives with the role-change action in the next lesson, *Scoped data, the action wrapper, and role changes*, which is also where the `tenantDb` facade in this same file comes to life.

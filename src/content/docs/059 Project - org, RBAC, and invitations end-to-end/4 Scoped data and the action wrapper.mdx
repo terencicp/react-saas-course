@@ -1,0 +1,429 @@
+---
+title: Scoped data, the action wrapper, and role changes
+chapter-id: 059
+course-progress: 0.00005
+sidebar:
+  order: 4
+  label: Scoped data and the action wrapper
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+This lesson installs the two helpers the rest of this app is built on — the scoped-data facade and the privileged-action wrapper — and then ships the first action that uses both: an admin changing a member's role from the inspector.
+
+The two highest-frequency bugs in any multi-tenant SaaS are the same two omissions, made over and over by tired engineers at three in the afternoon: a query that forgot its `WHERE organization_id = ?`, leaking one tenant's rows to another, and a mutation that forgot to check the caller's role, letting a member do an admin's job. You can try to catch them in code review forever. The experienced move is to make both omissions impossible to express: a data path that doesn't compile without the org filter, and an action shape that runs the role gate before your code ever does. That is what `tenantDb(orgId)` and `authedAction(role, schema, fn)` are. By the end of this lesson, acting as the admin Bob you change Carol's role and watch a `member.role-changed` row appear in the inspector's audit tail with Bob as the actor and `{ before, after }` as the payload; acting as the member Carol you try the same change and get an inline `forbidden` message with nothing written; and trying to demote Alice — Acme's sole owner — you get a `conflict` that names the last-owner rule. The role-change `<Select>` renders for every identity, including Carol's, on purpose: the refusal is the server's job, not a hidden button.
+
+## Your mission
+
+You are building two reusable primitives and one action that exercises them, so the decisions here outlive this lesson — every tenant read and every privileged write in the rest of the app will go through these exact shapes.
+
+Start with the data facade. `tenantDb(orgId)` is the *only* scoped data path in the app; the bare `db` import is the cross-tenant escape hatch, and it is reserved for `scripts/`, never reached for inside an action. The facade composes the org predicate as the *outer* `and` on every operation: a read becomes `and(eq(table.organizationId, orgId), caller.where)`, an update and a delete `and`-in the same predicate, and an insert injects `organizationId` itself — and throws if the caller supplies a *different* one. Making the org predicate the outer `and` is the load-bearing detail: a caller who writes `or(...)` in their `where` gets that `or` wrapped inside the org filter, so it narrows within the tenant instead of becoming an escape hatch. There is deliberately no `.raw` or `allOrgs` bypass on the facade, because a bypass that exists is a bypass that gets used.
+
+One subtlety the facade must respect: `tenantDb` does app-layer scoping only — it does **not** set `app.org_id`. The audit table from the last lesson is guarded by an RLS policy that reads `current_setting('app.org_id', true)`, so the audit-bearing write in this lesson goes through the separate `withTenant(orgId, ...)` you shipped last time, while ordinary reads stay on the facade. Keeping those two paths distinct is the whole reason both exist.
+
+Then the wrapper. `authedAction(role, schema, fn)` is the only shape a privileged Server Action takes, and reproducing its checks inline is exactly what review flags — the import is the contract. It runs four fixed-order steps: resolve the caller with `requireOrgUser()`, authorize with `roleAtLeast(actual, role)`, parse the form with `schema.safeParse(Object.fromEntries(formData))`, then call your `fn` with a `ctx` carrying the user, org, role, an `ip`/`userAgent` pair, and `db: tenantDb(orgId)` already scoped for you. Authorize *before* parse on purpose: the role check is the cheapest gate and should fail fastest, before you spend cycles validating input from someone who was never allowed in. Every refusal returns a typed `err(...)` `Result` — never a throw. A thrown error 500s the action and loses the discriminated `Result` that the form's `useActionState` reducer renders as an inline message; the single correct throw in the whole flow is `requireOrgUser`'s redirect, which is supposed to propagate. The wrapper carries no logging, entitlement, or rate-limit step — the user-facing versus operator-facing message split is the discipline of the errors-and-security chapter near the end of the course, foreshadowed here, not built.
+
+Finally the action. `changeMemberRole` refuses owner targets — promotion to owner is an ownership-transfer flow this project does not build — and refuses the last-owner demotion with a distinct message, both as `conflict`. The role update and its `member.role-changed` audit row co-transact in one `withTenant`: if the audit insert fails, the role change rolls back with it, because a role that changed with no record is precisely the wrong direction for a compliance table. The write goes through the transaction's `tx` directly, never the Better Auth plugin's `auth.api.*` — the plugin's after-hooks run *post*-commit, which would break the one-transaction guarantee.
+
+The role-change `<Select>` is rendered to every acting identity in the inspector, including under-privileged ones, on purpose: the server-side refusal, not a client-side hide, is the defense being tested. Out of scope for this lesson: the remove, leave-org, and ownership-transfer member actions — `changeMemberRole` is the load-bearing one here.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">A `tenantDb(orgId)` read returns only rows for that org, and a caller's `where` narrows *within* the org rather than escaping it.</ChecklistItem>
+  <ChecklistItem chip="tested">A `tenantDb(orgId)` insert persists with `organizationId` set to that org even when the caller omits it, and throws when the caller supplies a mismatched one.</ChecklistItem>
+  <ChecklistItem chip="tested">`tenantDb(orgId).query.user` is a type error — global tables are unreachable through the facade.</ChecklistItem>
+  <ChecklistItem chip="tested">An `authedAction` whose required role exceeds the caller's role returns `err('forbidden', ...)` with a user-safe message and never throws.</ChecklistItem>
+  <ChecklistItem chip="tested">An `authedAction` with input that fails the schema returns `err('validation', ..., fieldErrors)` and never reaches the action body.</ChecklistItem>
+  <ChecklistItem chip="tested">As the admin, changing a member's role updates the row and appends exactly one `member.role-changed` audit row with `payload: { before, after }` and `actorUserId` matching the admin.</ChecklistItem>
+  <ChecklistItem chip="tested">As a member, a role-change attempt is refused with `forbidden`, the role row is unchanged, and no audit row is added.</ChecklistItem>
+  <ChecklistItem chip="tested">Targeting an owner returns `conflict`; targeting the sole owner returns `conflict` with the last-owner message; neither changes the database.</ChecklistItem>
+  <ChecklistItem chip="tested">The role update and the audit row land together or not at all — force-failing the audit write lands neither.</ChecklistItem>
+  <ChecklistItem chip="untested">The inspector's raw-helpers `auditLogs` count increments only on a successful role change, never on a rejected attempt.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Build it against the brief and the lesson's tests first. The reference solution below is collapsed on purpose — open it once you have something running, or when a specific piece won't come together.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+### The scoped-data facade
+
+`withTenant` shipped in the last lesson and lives in this same file; here you add `tenantDb` beside it. The facade is one object literal, but every method on it earns its place. Step through it.
+
+<AnnotatedCode lang="ts" maxLines={16} code={`
+// The org-owned tables this project scopes. The registry is the single source of
+// truth: the runtime backstop for the write methods and the type source for the
+// query surface, so tenantDb(orgId).query.user is a type error (user is a global
+// table, never tenant-scoped here).
+const TENANT_TABLES = { member, invitation } as const;
+
+type TenantTable = (typeof TENANT_TABLES)[keyof typeof TENANT_TABLES];
+
+// App-layer tenant scoping only — this facade does NOT set app.org_id. The
+// audit-bearing write uses the separate withTenant. The org predicate is always the
+// OUTER and so a caller's or(...) becomes a contradiction, not an escape hatch. There
+// is no .raw / allOrgs bypass: the only unscoped path is the separately-imported db,
+// reserved for scripts. The read wrappers forward the original method type via a cast
+// so callers keep the full generic config → BuildQueryResult inference (a naive
+// wrapper typed Promise<unknown[]> collapses the with-expansion and joined relations
+// stop resolving).
+export const tenantDb = (orgId: string) => ({
+  query: {
+    member: {
+      findMany: ((config?: { where?: SQL }) =>
+        db.query.member.findMany({
+          ...config,
+          where: and(eq(member.organizationId, orgId), config?.where),
+        })) as typeof db.query.member.findMany,
+      findFirst: ((config?: { where?: SQL }) =>
+        db.query.member.findFirst({
+          ...config,
+          where: and(eq(member.organizationId, orgId), config?.where),
+        })) as typeof db.query.member.findFirst,
+    },
+    invitation: {
+      findMany: ((config?: { where?: SQL }) =>
+        db.query.invitation.findMany({
+          ...config,
+          where: and(eq(invitation.organizationId, orgId), config?.where),
+        })) as typeof db.query.invitation.findMany,
+      findFirst: ((config?: { where?: SQL }) =>
+        db.query.invitation.findFirst({
+          ...config,
+          where: and(eq(invitation.organizationId, orgId), config?.where),
+        })) as typeof db.query.invitation.findFirst,
+    },
+  },
+  insert: <T extends TenantTable>(table: T) => {
+    const builder = db.insert(table);
+    return {
+      values: (value: Omit<T['$inferInsert'], 'organizationId'>) => {
+        const supplied = (value as { organizationId?: string }).organizationId;
+        if (supplied !== undefined && supplied !== orgId) {
+          throw new Error(
+            'tenantDb insert: organizationId may not be overridden',
+          );
+        }
+        return builder.values({
+          ...value,
+          organizationId: orgId,
+        } as PgInsertValue<T>);
+      },
+    };
+  },
+  update: <T extends TenantTable>(table: T) => {
+    const builder = db.update(table);
+    return {
+      set: (value: PgUpdateSetSource<T>) => ({
+        where: (where?: SQL) =>
+          builder.set(value).where(and(eq(table.organizationId, orgId), where)),
+      }),
+    };
+  },
+  delete: <T extends TenantTable>(table: T) => ({
+    where: (where?: SQL) =>
+      db.delete(table).where(and(eq(table.organizationId, orgId), where)),
+  }),
+});
+`}>
+  <AnnotatedStep meta="{5-7}" color="violet">
+    The single registry. It is *both* the runtime backstop for the write methods and the type source for the query surface. Because `user` is not in this object, `tenantDb(orgId).query.user` is a compile error — requirement 3 falls straight out of this one declaration.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{18-42} "as typeof db.query.member.findMany"`} color="blue">
+    Each wrapper spreads the caller's `config` and overwrites `where` with `and(eq(table.organizationId, orgId), config?.where)` — the org predicate as the *outer* `and`, so a caller's `or(...)` narrows within the org. The cast looks unusual but it is load-bearing: it forwards Drizzle's original method type, so the caller keeps the full generic config → `BuildQueryResult` inference. A naive wrapper typed `Promise<unknown[]>` would collapse the `with`-expansion, and the joined relations `listMembers` relies on would stop resolving.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{44-60}" color="green">
+    `insert` reads the supplied `organizationId`, throws if it is present *and* different from `orgId` (covering requirement 2's throw branch), otherwise injects `organizationId: orgId`. The caller's value type is `Omit<…, 'organizationId'>`, so the org is never required at the call site.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{61-73}" color="orange">
+    `update` and `delete` both compose `and(eq(table.organizationId, orgId), where)`, so a scoped mutation can never touch another org's row even if the caller's `where` is loose or omitted.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Two rationale callouts worth internalizing. First, the facade does **not** set `app.org_id` — it is app-layer scoping only; the comment in the file says so explicitly. That is why the audit write in `changeMemberRole` reaches for the separate `withTenant`, not `ctx.db`. Second, there is no `.raw` or `allOrgs` method by design: the only unscoped path is the separately-imported `db`, reserved for scripts, and keeping the bypass off the facade means an action author has to go conspicuously out of their way to write a cross-tenant query. This is the `tenantDb` pattern introduced in lesson 2 of chapter 056 (*the org-scoped data layer*); here it comes to life in the project.
+
+### The members read
+
+`listMembers` is the inspector's members-panel query, and it shows the facade in everyday use. There is no manual `where org_id` anywhere — the facade composes it as the outer `and`, so the only thing the caller writes is the join and the ordering.
+
+```ts title="src/db/queries/members.ts"
+import 'server-only';
+
+import { asc } from 'drizzle-orm';
+
+import { member } from '@/db/schema/auth';
+import { tenantDb } from '@/db/tenant';
+
+// The members panel's read. Scoped through the facade — no manual where org_id; the
+// facade composes the org predicate as the outer and. with: { user: true } returns
+// each member's joined user row (name/email) for the panel's label.
+export const listMembers = async (orgId: string) =>
+  tenantDb(orgId).query.member.findMany({
+    with: { user: true },
+    orderBy: asc(member.createdAt),
+  });
+```
+
+`with: { user: true }` returns each member's joined `user` row for the panel's name and email label — and this is exactly the relational expansion the `as typeof ...findMany` cast in the facade exists to preserve. Drop the cast and this `with` would silently stop resolving the join. `orderBy: asc(member.createdAt)` gives the panel a stable, oldest-first order.
+
+### The privileged-action wrapper
+
+`authedAction` is the second primitive. It is a factory: you hand it a required role, a Zod schema, and your action body, and it returns the `(_prev, formData)` function shape that a Server Action plugged into `useActionState` expects. The four steps run in a fixed order. Step through it.
+
+<AnnotatedCode lang="ts" maxLines={16} code={`
+type OrgUser = Awaited<ReturnType<typeof requireOrgUser>>['user'];
+
+export type AuthedCtx = {
+  user: OrgUser;
+  orgId: string;
+  role: Role;
+  db: ReturnType<typeof tenantDb>;
+  ip: string | null;
+  userAgent: string | null;
+};
+
+// The only privileged Server Action shape. Four fixed-order steps — resolve →
+// authorize → parse → call — authorizing before parse so the cheapest gate fails
+// fastest. Refusals return a Result (never throw): a throw 500s the action and loses
+// the typed contract useActionState renders. The one correct throw is requireOrgUser's
+// redirect, which propagates. No logging / entitlements / rate-limit steps live here.
+export const authedAction =
+  <TSchema extends z.ZodType, TOut>(
+    role: Role,
+    schema: TSchema,
+    fn: (input: z.infer<TSchema>, ctx: AuthedCtx) => Promise<Result<TOut>>,
+  ) =>
+  async (
+    _prev: Result<TOut> | null,
+    formData: FormData,
+  ): Promise<Result<TOut>> => {
+    const { user, orgId, role: actual } = await requireOrgUser();
+
+    if (!roleAtLeast(actual, role)) {
+      return err('forbidden', 'You do not have permission to do this.');
+    }
+
+    const parsed = schema.safeParse(Object.fromEntries(formData));
+    if (!parsed.success) {
+      return err(
+        'validation',
+        'Check the highlighted fields.',
+        z.flattenError(parsed.error).fieldErrors as Record<string, string[]>,
+      );
+    }
+
+    const h = await headers();
+    return fn(parsed.data, {
+      user,
+      orgId,
+      role: actual,
+      db: tenantDb(orgId),
+      ip: h.get('x-forwarded-for'),
+      userAgent: h.get('user-agent'),
+    });
+  };
+`}>
+  <AnnotatedStep meta="{3-10}" color="violet">
+    The context handed to the body: `user`, `orgId`, `role`, `db: ReturnType<typeof tenantDb>` (already scoped to this org), and the `ip`/`userAgent` pair. The body never constructs its own `tenantDb` — `ctx.db` is the one it should use for reads.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{17-26}" color="blue">
+    The generic signature: `<TSchema extends z.ZodType, TOut>(role, schema, fn)`. The returned function is the `(_prev, formData) => Promise<Result<TOut>>` shape `useActionState` calls.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{27} "requireOrgUser()"`} color="green">
+    Step one, resolve. Its redirect — when there is no session or no active org — is the *one* allowed throw in the whole flow: it is supposed to propagate as a navigation, not be caught.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{29-31}" color="orange">
+    Step two, authorize, *before* parse — the cheapest gate fails fastest. Returns `err('forbidden', …)` with a user-safe message (covering requirement 4), and never throws.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{33-40}" color="orange">
+    Step three, parse. On failure it returns `err('validation', …, z.flattenError(parsed.error).fieldErrors)` so the form can highlight the bad field — and crucially returns *before* `fn` runs (covering requirement 5).
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{42-50}" color="green">
+    Step four, call the body with the typed `parsed.data` and the assembled `ctx` — `ip`/`userAgent` read from `await headers()`, `db` set to `tenantDb(orgId)`.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The ordering — authorize before parse — is the decision to remember: there is no reason to validate a payload from a caller who fails the role gate, and the gate is far cheaper than schema parsing. The other decision is that every refusal returns a `Result`, never a throw. A throw escapes the action as a 500 and the form has nothing typed to render; an `err(...)` flows back through `useActionState` as the inline message the user actually sees. This is the same `authedAction` and `ctx` shape taught in lesson 2 of chapter 057 (*the action wrapper*); the project uses it as the only privileged call shape.
+
+:::note
+The wrapper has no logging, entitlement, or rate-limit step. That is deliberate — the user-facing versus operator-facing message split belongs to the errors-and-security chapter near the end of the course, and seat-counting entitlements to the billing chapter. The four steps here are the durable core those later lessons extend.
+:::
+
+### The role-change action
+
+Everything above converges on `changeMemberRole`. It is an `authedAction('admin', schema, fn)`, so the wrapper has already resolved the caller, refused anyone below admin, and parsed the form before your body runs. The body's job is the two business rules — protect owners, protect the last owner — and the co-transacted write.
+
+<AnnotatedCode lang="ts" maxLines={16} code={`
+'use server';
+
+import { and, eq } from 'drizzle-orm';
+import { revalidatePath } from 'next/cache';
+import { z } from 'zod';
+
+import { logAudit } from '@/db/audit-log';
+import { member } from '@/db/schema/auth';
+import { withTenant } from '@/db/tenant';
+import { authedAction } from '@/lib/auth/authed-action';
+import { err, ok } from '@/lib/result';
+
+// Module-local, NOT exported: a "use server" module may export only async
+// functions — Next 16.2.7's ensureServerEntryExports rejects a non-function export
+// (the Zod schema is an object) at runtime, 500-ing the action. Nothing imports the
+// schema externally, so the action's input shape is the contract.
+const changeMemberRoleSchema = z.strictObject({
+  memberId: z.string().min(1),
+  newRole: z.enum(['admin', 'member']),
+});
+
+// The only role-management action this project ships (no remove/leave/transfer).
+// 'owner' is not a settable value — promotion to owner is the transfer flow, not
+// built. Owner targets are refused, the last owner doubly so. The role change and its
+// audit row co-transact in one withTenant: if the audit insert fails the whole tx
+// rolls back — a role changed with no audit row is the wrong direction for a
+// compliance table. The write goes through tx directly, never the plugin API (whose
+// after hooks run post-commit, breaking the one-transaction audit contract).
+export const changeMemberRole = authedAction(
+  'admin',
+  changeMemberRoleSchema,
+  async ({ memberId, newRole }, ctx) => {
+    const target = await ctx.db.query.member.findFirst({
+      where: eq(member.id, memberId),
+    });
+    if (!target) {
+      return err('not_found', 'That member is no longer in this organization.');
+    }
+
+    if (target.role === 'owner') {
+      const owners = await ctx.db.query.member.findMany({
+        where: eq(member.role, 'owner'),
+      });
+      if (owners.length <= 1) {
+        return err('conflict', 'You cannot change the role of the last owner.');
+      }
+      return err(
+        'conflict',
+        "An owner's role is changed through ownership transfer, not here.",
+      );
+    }
+
+    await withTenant(ctx.orgId, async (tx) => {
+      await tx
+        .update(member)
+        .set({ role: newRole })
+        .where(
+          and(eq(member.id, memberId), eq(member.organizationId, ctx.orgId)),
+        );
+      await logAudit(tx, {
+        action: 'member.role-changed',
+        subjectType: 'member',
+        subjectId: memberId,
+        payload: { before: target.role, after: newRole },
+      });
+    });
+
+    revalidatePath('/inspector');
+    return ok({ memberId, role: newRole });
+  },
+);
+`}>
+  <AnnotatedStep meta="{17-20}" color="violet">
+    The schema is module-local and *not exported* — a `'use server'` module may export only async functions, and Next 16.2.7's `ensureServerEntryExports` 500s a non-function export at runtime. `memberId` is `z.string().min(1)`, not a `uuid`, because Better Auth member ids are base62 text; `newRole` is `z.enum(['admin', 'member'])` with no `'owner'`, so promotion to owner is rejected as a `validation` error before the body runs.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{33-38}" color="blue">
+    The wrapper has already resolved the caller, refused anyone below `admin`, and parsed the form. The body reads the target through `ctx.db` — the scoped facade — and returns `not_found` if the member is gone.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{40-51}" color="orange">
+    The owner guard. If the target is an owner, it counts the org's owners through the same facade: at one or fewer it returns the last-owner `conflict`, otherwise the generic owner-target `conflict`. Both are refusals returned before any write.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{53-66} "withTenant"`} color="green">
+    The role update and the `member.role-changed` audit row co-transact in one `withTenant`, so a failure in the audit insert rolls the update back with it. It is `withTenant`, not `ctx.db.transaction`, because only `withTenant` runs `set_config('app.org_id', …)`, which the `audit_logs` RLS policy requires for the INSERT to clear.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{68-69}" color="green">
+    After the transaction commits, `revalidatePath('/inspector')` refreshes the panels and the action returns `ok({ memberId, role: newRole })`. Every rejected path returns *before* `withTenant` is ever called, so a rejected attempt can never leave an audit row behind.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+A few choices are worth a sentence each.
+
+The Zod schema is **module-local and deliberately not exported**. A `'use server'` module may export only async functions — Next.js 16.2.7's `ensureServerEntryExports` check rejects a non-function export (the schema is an object) at runtime and 500s the action. Nothing imports the schema from outside anyway, so the action's input shape is the contract. Inside it, `memberId` is `z.string().min(1)`, not a `uuid`: Better Auth generates member ids as base62 text, so a `uuid()` validator would reject every real id. And `newRole` is `z.enum(['admin', 'member'])` with no `'owner'` — promotion to owner is the ownership-transfer flow this project does not build, so `'owner'` is not a settable value and the parse step rejects it as a `validation` error before the body ever runs.
+
+The owner guard reads the target through `ctx.db.query.member.findFirst` — the facade, scoped — and returns `not_found` if the member is gone. If the target *is* an owner, it counts the org's owners through the same facade: at one or fewer, it returns the last-owner `conflict`; otherwise the generic owner-target `conflict`. Both are refusals returned before any write.
+
+The write itself is one `withTenant(ctx.orgId, ...)` transaction doing two things: the `tx.update(member).set({ role })` (with the org predicate `and`-ed into the `where` as a belt-and-braces match), and `logAudit(tx, { action: 'member.role-changed', subjectType: 'member', subjectId: memberId, payload: { before: target.role, after: newRole } })`. Because both run inside the same transaction, a failure in the audit insert rolls the role update back with it — there is no path where a role changes without its record. The transaction is `withTenant`, not `ctx.db.transaction`, because only `withTenant` runs `set_config('app.org_id', ...)`, and the `audit_logs` RLS policy requires it for the INSERT to clear. After the transaction commits, `revalidatePath('/inspector')` refreshes the panels and the action returns `ok({ memberId, role: newRole })`. The single-owner invariant here is the same rule taught in lesson 4 of chapter 057 (*member-management invariants*); `withTenant` and `logAudit` are the helpers you shipped in the last lesson, *Append-only `audit_logs` with RLS*.
+
+That co-transaction is also why the untested requirement holds: the `auditLogs` count increments *only* inside the committed transaction. Every rejected attempt — the role gate, the validation error, the owner and last-owner conflicts — returns before `withTenant` is ever called, so a rejected attempt can never leave an audit row behind. The count moving is itself evidence the write committed.
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Drizzle — Relational Queries"
+    href="https://orm.drizzle.team/docs/rqb"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="Reference for the findMany/findFirst and with: { user: true } join the facade wraps — and why the type cast preserves it."
+  />
+  <ExternalResource
+    title="Better Auth — Organization plugin"
+    href="https://www.better-auth.com/docs/plugins/organization"
+    icon="simple-icons:betterauth"
+    iconColor="#000000"
+    description="The owner/admin/member roles, member ids, and updateRole this action operates on all come from this plugin."
+  />
+  <ExternalResource
+    title="Drizzle — Row-Level Security"
+    href="https://orm.drizzle.team/docs/rls"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="How pgPolicy and roles back the RLS-guarded audit write that withTenant — not the facade — reaches for."
+  />
+  <ExternalResource
+    title="Postgres — CREATE POLICY"
+    href="https://www.postgresql.org/docs/current/sql-createpolicy.html"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="The USING / WITH CHECK semantics behind the current_setting('app.org_id') policy guarding audit_logs inserts."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's test suite:
+
+```bash frame="none"
+pnpm test:lesson 4
+```
+
+It should pass. The suite anchors on your exported `tenantDb`, `authedAction`, and `changeMemberRole`, then exercises the live Docker Postgres against the dev seed — restoring every row it touches so it is re-runnable. It asserts org scoping on `tenantDb` reads (Acme returns its three members, Globex only Dave, a caller `where` narrows within the org) and on inserts (a missing `organizationId` is injected, a mismatched one throws). The `.query.user` type error is a compile-time check the `verify` gate enforces, paired with a runtime check that the query surface exposes exactly `member` and `invitation`. It drives `changeMemberRole` as a member (expecting `forbidden` with no write), with an invalid `newRole` (expecting `validation` before the body), and as the admin Bob (expecting Carol's row updated and one `member.role-changed` audit row whose `actorUserId` is `user_bob` and whose payload is `{ before, after }`). It refuses owner targets — the sole owner Alice with the last-owner message, a non-last owner with the generic one — and force-fails the audit write to prove the role update rolls back with it.
+
+A few things the tests can't reach you confirm by hand in the inspector. Use the acting-user switcher to change who you are, and submit role changes from the members panel.
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">As the admin (Bob), change Carol's role to `admin`: her row updates and the audit tail shows a `member.role-changed` entry attributed to Bob.</ChecklistItem>
+  <ChecklistItem chip="untested">As the member (Carol), try to change Bob's role: a `forbidden` result renders inline, with no DB change and no audit row — the `<Select>` is still shown to Carol, and the server is what refuses.</ChecklistItem>
+  <ChecklistItem chip="untested">As the admin, try to demote the owner (Alice): a `conflict` renders, and because Alice is Acme's sole owner it carries the last-owner message; the database is unchanged.</ChecklistItem>
+  <ChecklistItem chip="untested">The raw-helpers panel's `auditLogs` count increments only after the successful change — not after either rejected attempt.</ChecklistItem>
+</Checklist>
+
+The invite flow still doesn't exist: submitting the invite form does nothing useful yet, and the accept page can't load a real invitation. Building the invite send path — the signed accept link, the token hash, and the email that goes out after the transaction commits — is the next lesson.

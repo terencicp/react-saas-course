@@ -1,0 +1,518 @@
+---
+title: Organization plugin and the active-org session
+chapter-id: 059
+course-progress: 0.00005
+sidebar:
+  order: 2
+  label: Org plugin & active org
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid, Steps } from '@astrojs/starlight/components';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The starter runs, but every tenant-aware surface is hollow. Sign in, open `/inspector`, and the active-org banner reads "No active organization" — there is no `organization` table, no `member` table, and nothing on the session that says *which* org you are acting inside. The role primitives the privileged paths will lean on are stubs that always return `false`. This is the foundation lesson: by the end, `/inspector` resolves a real org context. The active-org banner shows the acting user's org name and role, and the dev acting-user and org switchers re-render it against live data — Alice as owner of Acme, with all four seeded users selectable in the acting-user dropdown.
+
+<Figure caption="The /inspector surface this lesson resolves. The active-org banner reads its name and role from real data — Acme, owner — and the org and acting-user switchers below it re-render the banner against live membership. The panels beneath (Members, Invite, Pending, Audit log) come online in later lessons.">
+  <Screenshot viewport="desktop">
+    <img
+      src="/screenshots/059/l2-desktop-1280.png"
+      alt="The /inspector page signed in as alice@acme.test. A centered Active org banner shows the eyebrow label ACTIVE ORG, the org name Acme, and the role owner beneath it, with an org switcher (Acme) and an acting-user switcher (Alice (owner)) side by side under it. Below sit the Members, Invite a member, Pending invitations, Audit log, and Raw helpers panels."
+    />
+  </Screenshot>
+</Figure>
+
+## Your mission
+
+You are wiring the tenancy spine of the app. Three pieces have to land together, and the order in which they land is the lesson. First, the `organization`, `member`, and `invitation` tables are not yours to hand-write — Better Auth's organization plugin owns them. You register the plugin, and a CLI reads your config and generates the Drizzle schema for you. This project layers two server-managed columns onto `invitation` (`tokenHash` and `acceptedAt`) through the plugin's `additionalFields`, marked so the app sets them and the API caller never can; the plugin runs with teams disabled and a seven-day invitation expiry named as a constant rather than buried as a magic number.
+
+Second, the active org belongs on the session, not in a global or a query string. Every path that mints a session — sign-in, sign-up, post-verification — converges on one Better Auth hook, and that single hook is where you seed `activeOrganizationId` from the user's membership. Scatter the setter across the individual flows and you will forget one; put it in the one structural place they all flow through and it is correct by construction.
+
+Third, the access primitives. `roleAtLeast` orders the three roles so a gate can ask "is this identity at least an admin?" without re-deriving the hierarchy each time. `requireOrgUser` resolves the active-org context for a protected request — and it reads the role *fresh from the database*, never from the session cookie cache, because that cache can carry a stale role for the `freshAge` window after a role change. The active-org id comes only from the server-validated session; a query string or route param must never decide which tenant you are acting inside.
+
+One reminder on the CLI step that trips people up: the generated schema file is machine-output. After you change the plugin config you regenerate and commit the diff. Hand-editing the generated file is the kind of thing a reviewer spots instantly and bounces.
+
+Out of scope for this lesson: the create-org onboarding page and the org / acting-user switcher client components are provided. Verify them, don't re-implement them.
+
+<Checklist>
+<ChecklistItem tested="untested">The `organization`, `member`, and `invitation` tables exist in the migrated schema, and `session` carries an `activeOrganizationId` column, once the regenerated auth schema is committed and migrated.</ChecklistItem>
+<ChecklistItem tested="untested">A newly created session has `activeOrganizationId` populated to the user's first membership, confirmed for the four seeded users.</ChecklistItem>
+<ChecklistItem tested="tested">`roleAtLeast` orders the three roles correctly: a member does not satisfy `admin`; an admin satisfies `admin` but not `owner`; an owner satisfies all three.</ChecklistItem>
+<ChecklistItem tested="tested">`requireOrgUser()` returns `{ user, orgId, role }` for a member of the active org, redirects to `/onboarding/create-org` when no active org is set, and redirects there again when no membership is found for that org.</ChecklistItem>
+<ChecklistItem tested="untested">The inspector's active-org banner renders the acting user's org name and role; switching acting users via the dev cookie re-renders the banner with the new identity.</ChecklistItem>
+<ChecklistItem tested="untested">Switching the active org via the org switcher refreshes the layout and the banner shows the new org.</ChecklistItem>
+<ChecklistItem tested="untested">A fresh signup with no orgs lands on `/onboarding/create-org`; submitting creates the org and redirects to `/dashboard` with the new org active.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Build it against the brief and `pnpm test:lesson 2` before you open the walkthrough. The TODO stubs you are filling live in `src/lib/auth/roles.ts`, `src/lib/auth.ts`, `src/lib/auth-schema.config.ts`, and `src/app/(protected)/inspector/_data.ts`, plus the `pnpm auth:generate` step that regenerates `src/db/schema/auth.ts`.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+### The role vocabulary
+
+Start with the smallest piece, because everything else references it. `src/lib/auth/roles.ts` defines the three roles and a single comparison:
+
+```ts title="src/lib/auth/roles.ts"
+// No `import 'server-only'` — pure role vocabulary, safe for client components.
+
+export type Role = 'owner' | 'admin' | 'member';
+
+export const ROLE_RANK = {
+  member: 0,
+  admin: 1,
+  owner: 2,
+} as const satisfies Record<Role, number>;
+
+export const roleAtLeast = (role: Role, required: Role): boolean =>
+  ROLE_RANK[role] >= ROLE_RANK[required];
+```
+
+Ranking the roles as integers turns "is this identity privileged enough?" into a `>=` comparison. The `satisfies Record<Role, number>` is doing real work: it forces the object to cover every role and gives you a compile error the day a fourth role is added without a rank, while keeping the literal `0 | 1 | 2` types intact for the lookup.
+
+The comment on line 1 is deliberate. There is no `import 'server-only'` here. The role select in the inspector renders client-side, and a client component that imports this module to label its options would crash the build if the module were server-only-poisoned. Role vocabulary is pure data — it is safe to share across the boundary, and keeping it that way is what lets the UI and the server agree on the same `Role` type. The `Role` type itself was provided in the starter; you are only filling `ROLE_RANK` and `roleAtLeast`.
+
+:::note
+The role hierarchy and `roleAtLeast` were introduced in [Owner, admin, member](/057-roles-action-wrappers-and-the-audit-trail/1-owner-admin-member/). This lesson is where you wire them into the running app.
+:::
+
+### Registering the organization plugin
+
+Now the plugin. In `src/lib/auth.ts` you add `organization()` to the `plugins` array. Where it sits in that array matters, and so do three of its options — this is the kind of block where one misplaced line produces a bug that looks nothing like its cause.
+
+<AnnotatedCode lang="ts" code={`
+  plugins: [
+    organization({
+      teams: { enabled: false },
+      invitationExpiresIn: INVITATION_TTL_SECONDS,
+      schema: {
+        invitation: {
+          additionalFields: {
+            tokenHash: { type: 'string', required: true, input: false },
+            acceptedAt: { type: 'date', required: false, input: false },
+          },
+        },
+      },
+    }),
+    nextCookies(),
+  ],
+`}>
+  <AnnotatedStep meta={`{15} "nextCookies()"`} color="orange">
+    `nextCookies()` MUST stay last in the array — it is the plugin that flushes the `Set-Cookie` header out of the Server Action response. Register `organization()` after it and sign-in still "works" on the server, but no session cookie ever reaches the browser, so the next request looks logged-out. The ordering bug is invisible in logs.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{3-4}" color="blue">
+    Teams are off — this project models one flat membership layer per org, no nested teams. `INVITATION_TTL_SECONDS` is the seven-day constant declared at module scope (`60 * 60 * 24 * 7`); naming it once and passing it here keeps the expiry in one place the send/accept flows can also reference.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{7-10} "input: false"`} color="green">
+    The plugin's `invitation` table is extended with two columns this project needs: `tokenHash` (the SHA-256 of the invite token) and `acceptedAt`. `input: false` means these are server-managed — the application sets them, the API caller cannot pass them in. That is what keeps an attacker from supplying their own `tokenHash`.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+### Seeding the active org once
+
+The session needs to know which org it is acting inside. Better Auth gives you exactly one structural place to set it: a `before` hook on session creation. Every flow that mints a session — sign-in, sign-up, the auto-sign-in after email verification — passes through this hook, so seeding `activeOrganizationId` here means you write the setter once and it is never forgotten.
+
+```ts title="src/lib/auth.ts — pickInitialActiveOrg"
+// The session-create hook seeds activeOrganizationId from the user's most-recent
+// membership. One org per user in this project, so findFirst is enough.
+const pickInitialActiveOrg = async (userId: string): Promise<string | null> => {
+  const membership = await db.query.member.findFirst({
+    where: eq(authSchema.member.userId, userId),
+  });
+  return membership?.organizationId ?? null;
+};
+```
+
+`pickInitialActiveOrg` reads the user's membership and returns its `organizationId`, or `null` when the user belongs to nowhere yet (a fresh signup). `findFirst` is enough because this project gives each user a single org; a multi-org product would pick a "last active" org instead, but here there is only one row to find.
+
+The hook itself spreads the session Better Auth is about to write and adds the seeded id:
+
+```ts title="src/lib/auth.ts — databaseHooks"
+  // Seed activeOrganizationId on every session mint — the one place all sign-in /
+  // sign-up / verification paths flow through, so the setter is never sprinkled
+  // across the individual flows.
+  databaseHooks: {
+    session: {
+      create: {
+        before: async (session) => ({
+          data: {
+            ...session,
+            activeOrganizationId: await pickInitialActiveOrg(session.userId),
+          },
+        }),
+      },
+    },
+  },
+```
+
+The `before` hook returns `{ data: ... }` — Better Auth takes that as the row it persists. Spreading `...session` preserves everything the plugin already computed; you are only adding one field. This is the load-bearing design decision of the lesson: there is no `setActiveOrganization` call sprinkled into the sign-in action, the sign-up action, or the verification path. There is one hook, and it is correct for all of them.
+
+:::note
+The active org as the session-scoped tenancy slot was introduced in [Organizations and the active org](/056-organizations-as-the-tenancy-model/1-organizations-and-the-active-org/). Here it becomes a column the app actually reads on every protected request.
+:::
+
+### Mirroring the config for the schema generator
+
+You did not hand-write the `organization` / `member` / `invitation` tables — the CLI generates them. But the CLI cannot import `src/lib/auth.ts`: that file starts with `import 'server-only'`, and the CLI's loader executes the whole import graph in plain Node, where `server-only` throws on sight. So the project keeps a second, server-only-free config the CLI reads: `src/lib/auth-schema.config.ts`. It mirrors only the options that shape the schema.
+
+<CodeVariants>
+  <CodeVariant label="src/lib/auth.ts (runtime)">
+    <div data-mark-color="orange">
+
+    ```ts {3-4,9-10}
+      plugins: [
+        organization({
+          teams: { enabled: false },
+          invitationExpiresIn: INVITATION_TTL_SECONDS,
+          schema: {
+            invitation: {
+              additionalFields: {
+                tokenHash: { type: 'string', required: true, input: false },
+                acceptedAt: { type: 'date', required: false, input: false },
+              },
+            },
+          },
+        }),
+        nextCookies(),
+      ],
+    ```
+
+    </div>
+    **The live instance — carries everything.** The `databaseHooks` that seed the active org, `invitationExpiresIn`, and the `input: false` flags that govern runtime write behavior. These are runtime concerns; the generator ignores them.
+  </CodeVariant>
+
+  <CodeVariant label="src/lib/auth-schema.config.ts (CLI mirror)">
+    <div data-mark-color="blue">
+
+    ```ts {13}
+    import { betterAuth } from 'better-auth';
+    import { drizzleAdapter } from 'better-auth/adapters/drizzle';
+    import { organization } from 'better-auth/plugins';
+
+    import { db } from '@/db';
+
+    export const auth = betterAuth({
+      database: drizzleAdapter(db, { provider: 'pg' }),
+      emailAndPassword: { enabled: true },
+      plugins: [
+        organization({
+          teams: { enabled: false },
+          schema: {
+            invitation: {
+              additionalFields: {
+                tokenHash: { type: 'string', required: true },
+                acceptedAt: { type: 'date', required: false },
+              },
+            },
+          },
+        }),
+      ],
+    });
+    ```
+
+    </div>
+    **The mirror — only what changes the table shape.** Teams off so no team tables emit, and the two extra `invitation` columns. No `databaseHooks`, no `invitationExpiresIn`, no `input: false` (a schema-only concern is whether the column exists, not who may write it). It imports nothing server-only, because the CLI executes everything it reaches.
+  </CodeVariant>
+</CodeVariants>
+
+Keeping two configs in sync is a real maintenance cost, so be honest about the line you are walking: the mirror exists only because the generator and the runtime have different constraints (one must be Node-safe, the other must be the live instance). The discipline is to change the plugin's *table shape* in both files, then regenerate.
+
+With the mirror in place, run the generator and commit what it produces:
+
+<Steps>
+1. `pnpm auth:generate` — the CLI reads `auth-schema.config.ts` and rewrites `src/db/schema/auth.ts` with the new tables and columns.
+2. `pnpm db:generate` — Drizzle Kit diffs the schema and emits a SQL migration.
+3. `pnpm db:migrate` — applies the migration to your local Postgres.
+4. Review and commit the generated `schema/auth.ts` and the new migration file together. Do not hand-edit the generated schema — if it is wrong, fix the config and regenerate.
+</Steps>
+
+The generated `schema/auth.ts` is long and you should not reproduce it by hand — that is the whole point of generating it. What it adds, in diff terms, is three new tables and a column:
+
+```diff title="src/db/schema/auth.ts (generated — diff shape)"
+ export const session = pgTable('session', {
+   // ...existing columns
++  activeOrganizationId: text('active_organization_id'),
+ });
+
++export const organization = pgTable('organization', {
++  id: text('id').primaryKey(),
++  name: text('name').notNull(),
++  slug: text('slug').notNull().unique(),
++  // ...
++});
++
++export const member = pgTable('member', {
++  id: text('id').primaryKey(),
++  organizationId: text('organization_id').notNull().references(() => organization.id, ...),
++  userId: text('user_id').notNull().references(() => user.id, ...),
++  role: text('role').default('member').notNull(),
++  // ...
++});
++
++export const invitation = pgTable('invitation', {
++  id: text('id').primaryKey(),
++  organizationId: text('organization_id').notNull().references(() => organization.id, ...),
++  email: text('email').notNull(),
++  role: text('role'),
++  status: text('status').default('pending').notNull(),
++  tokenHash: text('token_hash').notNull(),     // the additionalField — required
++  acceptedAt: timestamp('accepted_at'),         // the additionalField — nullable
++  // ...
++});
+```
+
+Notice `tokenHash` landed as `NOT NULL` and `acceptedAt` as nullable — exactly the `required: true` / `required: false` you set in the config. The plugin's table shape flowed through the generator into real DDL without you typing a single column by hand.
+
+<VideoCallout videoId="grvwy4qySVI" videoTitle="OrcDev — Better Auth Organizations: The Basics">
+  OrcDev walks the same loop end to end in 25 minutes — registering the org plugin, running the CLI to generate the schema, migrating, the org switcher, and seeding the active org on login.
+</VideoCallout>
+
+### `requireOrgUser`: the active-org gate
+
+This is the function every privileged read and write in the project will call to answer three questions at once: who is the user, which org are they acting inside, and what is their role there. The starter shipped a placeholder that returned an empty org so the inspector could render without redirect-looping; you are replacing it with the real thing.
+
+<AnnotatedCode lang="ts" code={`
+export const requireOrgUser = cache(
+  async (): Promise<{ user: User; orgId: string; role: Role }> => {
+    const session = await getSession();
+    if (!session) {
+      redirect('/sign-in' as Route);
+    }
+
+    const orgId = session.session.activeOrganizationId;
+    if (!orgId) {
+      redirect('/onboarding/create-org' as Route);
+    }
+
+    const activeMember = await auth.api.getActiveMember({
+      headers: await headers(),
+    });
+    if (!activeMember) {
+      redirect('/onboarding/create-org' as Route);
+    }
+
+    return { user: session.user, orgId, role: activeMember.role as Role };
+  },
+);
+`}>
+  <AnnotatedStep meta="{3-6}" color="blue">
+    No session means no signed-in user — bounce to sign-in. `getSession` is the single cached session read the whole module shares.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{8-11}" color="blue">
+    The org id comes only from the server-validated session — never a query string, never a route param. A signed-in user with no active org is one who belongs to no org yet; send them to create one.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{13-18}" color="green">
+    This is a fresh database read of the membership row. The session cookie cache can carry a stale role for the `freshAge` window after a role change, so reading the role here — not from the cookie — means a demotion takes effect within seconds, not minutes. No membership for the active org also redirects to create-org.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{1,20} "cache("`} color="orange">
+    The role is the one from the fresh read. `cache()` dedupes the whole resolution per request, so the inspector's several Suspense panels each calling `requireOrgUser` cost one set of reads, not one per panel.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The stale-role window is the subtle part, and it is worth being precise about. Better Auth caches the session (including role) in a cookie for `freshAge` to avoid a database hit on every request. That is the right default for most reads. But an authorization gate is exactly where you cannot tolerate a stale role — if an owner demotes an admin to member, the demoted user must not keep admin powers for the next ten minutes. Reading the role through `getActiveMember` trades one extra query for correctness on the path where correctness is non-negotiable.
+
+:::note
+The `freshAge` cookie-cache window was covered in [Session lifetimes and cookie hardening](/052-better-auth-setup/3-session-lifetimes-and-cookie-hardening/). That lesson explains *why* the cache exists; this is the path where you deliberately bypass it.
+:::
+
+### Resolving the inspector's identity
+
+The last stub is `src/app/(protected)/inspector/_data.ts`. The inspector is a dev verification surface, and it has a trick the rest of the app does not: a cookie that lets you render the page *as* any seeded user without a real sign-in dance, so you can eyeball each role's view in seconds. The critical design point is *where* that override lives.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+import 'server-only';
+
+import { asc, eq } from 'drizzle-orm';
+import { cookies } from 'next/headers';
+import { cache } from 'react';
+
+import { ACTING_USER_COOKIE } from '@/app/(protected)/inspector/constants';
+import { db } from '@/db';
+import { member, organization } from '@/db/schema/auth';
+import { requireOrgUser } from '@/lib/auth';
+import type { Role } from '@/lib/auth/roles';
+
+const isDev = process.env.NODE_ENV !== 'production';
+
+type SwitchableOrg = { id: string; name: string };
+type SeededUser = { id: string; name: string; role: string };
+
+type InspectorContext = {
+  userId: string;
+  orgId: string;
+  orgName: string;
+  role: Role;
+  orgs: SwitchableOrg[];
+  members: SeededUser[];
+};
+
+// Resolve the identity the inspector renders as. In production this is exactly the
+// session identity. In development, an \`inspector-acting-user\` cookie naming a seeded
+// user swaps the resolved identity/org/role to that user's active membership.
+const resolveActingIdentity = async (): Promise<{
+  userId: string;
+  orgId: string;
+  role: Role;
+}> => {
+  const sessionContext = await requireOrgUser();
+  const base = {
+    userId: sessionContext.user.id,
+    orgId: sessionContext.orgId,
+    role: sessionContext.role,
+  };
+
+  if (!isDev) {
+    return base;
+  }
+
+  const jar = await cookies();
+  const actingUserId = jar.get(ACTING_USER_COOKIE)?.value;
+  if (!actingUserId) {
+    return base;
+  }
+
+  const membership = await db.query.member.findFirst({
+    where: eq(member.userId, actingUserId),
+  });
+  if (!membership) {
+    return base;
+  }
+
+  return {
+    userId: actingUserId,
+    orgId: membership.organizationId,
+    role: membership.role as Role,
+  };
+};
+
+// \`cache\` dedupes the resolution across the page's Suspense-wrapped panels so they
+// all render against the same acting identity in one request.
+export const getInspectorContext = cache(
+  async (): Promise<InspectorContext> => {
+    const identity = await resolveActingIdentity();
+
+    const org = await db.query.organization.findFirst({
+      where: eq(organization.id, identity.orgId),
+    });
+
+    const memberships = await db.query.member.findMany({
+      where: eq(member.userId, identity.userId),
+      with: { organization: true },
+    });
+    const orgs = memberships.map((m) => ({
+      id: m.organization.id,
+      name: m.organization.name,
+    }));
+
+    const orgMembers = await db.query.member.findMany({
+      where: eq(member.organizationId, identity.orgId),
+      with: { user: true },
+      orderBy: asc(member.createdAt),
+    });
+    const members = orgMembers.map((m) => ({
+      id: m.userId,
+      name: m.user?.name ?? m.userId,
+      role: m.role,
+    }));
+
+    return {
+      userId: identity.userId,
+      orgId: identity.orgId,
+      orgName: org?.name ?? 'No active organization',
+      role: identity.role,
+      orgs,
+      members,
+    };
+  },
+);
+`}>
+  <AnnotatedStep meta="{18-25}" color="blue">
+    `InspectorContext` is the shape the banner and switchers consume: the acting identity (`userId`, `orgId`, `orgName`, `role`), the `orgs` the user can switch between, and the org's `members` for the acting-user dropdown.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{35-40}" color="green">
+    `resolveActingIdentity` starts from the real `requireOrgUser` result. In production it returns exactly that — there is no override path below this point.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{42-64}" color="orange">
+    The dev-only override lives *here*, in the read path, and nowhere else. If the `inspector-acting-user` cookie names a seeded user with a membership, it swaps the rendered identity to that user's org and role. It never touches `requireOrgUser`, so a privileged action still derives its actor from the validated session — the cookie cannot spoof a mutation.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{68} "cache("`} color="violet">
+    `getInspectorContext` fans out the data the page needs and is wrapped in `cache()` for the same reason `requireOrgUser` is — the inspector's several Suspense panels each call it, and you want them all reading one consistent identity from one set of queries per request.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+`resolveActingIdentity` starts from the real `requireOrgUser` result. In production it returns exactly that — there is no override path. In development, if the `inspector-acting-user` cookie names a seeded user with a membership, it swaps the rendered identity to that user's org and role.
+
+Here is the part to internalize. The override lives in the *read* path — this file — and nowhere else. It never touches `requireOrgUser`. So when a privileged action runs in a later lesson (`changeMemberRole`, `sendInvitation`), it resolves identity through `requireOrgUser` against the validated session, and the dev cookie has no say in it. You can render the page as Carol the member to see what she sees, but you cannot use the cookie to *perform* an admin mutation — the server derives the actor from the session, not from what you are pretending to be. A dev affordance that could spoof a real write would be a security hole; scoping it to the read path is what keeps it safe.
+
+The rest of the function fans out the data the banner and switchers need: the active org's name, the list of orgs the user can switch between, and the org's members for the acting-user dropdown. It is wrapped in `cache()` for the same reason `requireOrgUser` is — the inspector page renders several Suspense panels, each calling `getInspectorContext`, and you want them all reading one consistent identity from one set of queries per request.
+
+### The provided carry-in
+
+Two pieces you do not write, but should read so you trust the loop. `src/app/onboarding/create-org/page.tsx` is where `requireOrgUser` sends a user with no org; it calls `authClient.organization.create({ name, slug })`, which the plugin makes the new active org by default, then pushes to `/dashboard`. And `src/app/(protected)/dashboard/org-switcher.tsx` calls `authClient.organization.setActive(...)` then `router.refresh()`, so every Server Component re-reads `requireOrgUser` against the newly active org. Together they close the loop your session hook and gate opened: create lands you in an org, switch moves you between them, and the gate reads whichever one is active.
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Better Auth — Organization plugin"
+    href="https://better-auth.com/docs/plugins/organization"
+    icon="simple-icons:betterauth"
+    description="Canonical reference for the plugin you register here: additionalFields, activeOrganizationId on the session, and setActive."
+  />
+  <ExternalResource
+    title="Better Auth — CLI"
+    href="https://better-auth.com/docs/concepts/cli"
+    icon="simple-icons:betterauth"
+    description="The generate command behind pnpm auth:generate, and how it writes the Drizzle schema for you."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's test suite:
+
+```bash
+pnpm test:lesson 2
+```
+
+The suite drives the two tested requirements. It checks that `roleAtLeast` orders the three roles — a member fails the admin gate, an admin clears admin but not owner, an owner clears all three — and it drives the real `requireOrgUser` through its three branches: it returns `{ user, orgId, role }` for a member of the active org (with `orgId` taken from the session and `role` read from the membership), redirects to `/onboarding/create-org` when the session carries no `activeOrganizationId`, and redirects there again when no membership is found for the active org. A passing run reports all suites green:
+
+```
+ ✓ req 3 — roleAtLeast orders the three roles (3 tests)
+ ✓ req 4 — requireOrgUser resolves or redirects the active-org context (3 tests)
+
+ Test Files  1 passed (1)
+      Tests  6 passed (6)
+```
+
+The tests cannot reach the schema, the seeded data, or the rendered UI. Confirm those by hand and tick each off:
+
+<Checklist>
+<ChecklistItem tested="untested">After `pnpm db:migrate`, `pnpm db:studio` shows the `organization`, `member`, and `invitation` tables and the `session.activeOrganizationId` column.</ChecklistItem>
+<ChecklistItem tested="untested">`/inspector` renders the active-org banner with Alice's `owner` role for Acme, and the four seeded users appear in the acting-user switcher.</ChecklistItem>
+<ChecklistItem tested="untested">Switching acting users re-renders the banner with the new identity; switching orgs refreshes the layout and the banner shows the new org.</ChecklistItem>
+<ChecklistItem tested="untested">A fresh signup with no orgs lands on `/onboarding/create-org`, and submitting redirects to `/dashboard` with the new org active.</ChecklistItem>
+</Checklist>
+
+The Members and Pending panels and the Audit log tail still render their empty states, and that is expected — `listMembers`, the `tenantDb` read facade, `logAudit`, and the `audit_logs` table do not exist yet. You build those next: the audit log infrastructure comes first, then the tenant facade and member management on top of it.
