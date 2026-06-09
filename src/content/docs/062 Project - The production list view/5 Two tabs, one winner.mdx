@@ -1,0 +1,425 @@
+---
+title: Two tabs, one winner
+chapter-id: 62
+course-progress: 0.00005
+sidebar:
+  order: 5
+  label: Two tabs, one winner
+---
+
+Open one of your invoices in two browser tabs. Change the customer in the first tab and save. Change the status in the second tab and save. Right now the second save wins — quietly, completely, with no hint that it just buried the first edit. That is last-write-wins, and it is the most expensive bug in this whole chapter because nobody sees it happen.
+
+In this lesson you close it. You add the `version` precondition to `updateInvoice` so the second tab's stale save returns an honest conflict instead of clobbering the row, and you render a banner that shows the user exactly what the server holds now — with a **Use latest** button to pull those values in and resubmit, and an admin-only **Overwrite anyway** button for when they really do mean to force it. The first tab keeps its win; the second tab gets a recoverable surface instead of a silent loss. By the end, every behavior on the chapter's acceptance list holds.
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+<Screenshot viewport="desktop">
+  <img
+    src="/screenshots/062/l5-desktop-1280-conflict.png"
+    alt="The Edit ACME-1001 invoice form showing the user's pending edits (Customer Globex Holdings, Status Sent, Total 133.50) above the Save button. Below it, a red-bordered ConflictBanner reads 'This invoice changed elsewhere while you were editing.' and lists the server's current values — Customer Globex Industries, Status Paid, Total USD 999.00 — with an outline 'Use latest' button and a destructive-red admin-only 'Overwrite anyway' button."
+  />
+</Screenshot>
+
+## Your mission
+
+Two tabs can no longer silently clobber each other. The first submit wins; the second submit — still holding the version it loaded with — gets refused with a conflict and a surface it can recover from in place. That is the whole user-facing change, and it rests on one discipline: **every write checks three preconditions before it touches the row.** Tenancy: is this row in the acting org? Lifecycle: is this row still editable, or has it been soft-deleted out from under us? Version: is this still the row the client last saw, or did someone else move it? Miss the first and you let one tenant overwrite another's data. Miss the second and you let someone edit a deleted row back to life. Miss the third and you get exactly the silent clobber you are here to kill.
+
+Two of the three are already wired in the starter. The row loads through `findInvoice(ctx.orgId, id)`, so a row that belongs to another org is simply not found — tenancy is enforced by the lookup itself, not by a separate check. The lifecycle guard rides alongside it: a soft-deleted row (`deletedAt !== null`) takes the same not-found path. What is missing is the version check, and the way you add it matters as much as that you add it. The precondition has to run against the row you just loaded, in the same request — never a `SELECT` in one request and an `UPDATE` in a later one. Split them across two round trips and you reopen the exact race you are closing: the row can change in the gap between the read and the write. One request, one freshly-loaded row, one comparison. A mismatch is the honest conflict.
+
+When that conflict fires, the client should not have to go fetch the current row to show it — that would be a second round trip for data the server already has in hand. So the conflict result carries the server's current row inline as `current` (the refresh-and-retry shape from the lifecycle and concurrency work earlier in this unit). The banner rebuilds itself from that payload, and **Use latest** reseeds the form from it, all without a refetch.
+
+The escape hatch needs the same care as the lock. **Overwrite anyway** deliberately skips the version check, so it is a sharp edge — you show it to admins and hide it from members. But hiding a button is cosmetic. A member can forge `overwrite=true` straight into the form data, so the admin gate has to be re-checked *inside the action* with `roleAtLeast(ctx.role, 'admin')` — the hidden control is the convenience, the server check is the security. (Tampering with the hidden `version` instead just earns another conflict, with the server-side Zod parse as the front line at the FormData boundary.)
+
+One note on where the `version` number comes from. This project carries a dedicated `version` column that every write increments — cheap, unambiguous, and impossible to confuse with anything else. On an existing table that already tracks `updatedAt`, you can use that timestamp as the version token instead and avoid a migration; the trade is precision, since two writes inside the same clock tick can collide. The course default is the dedicated counter.
+
+Out of scope here: the lifecycle actions already return conflicts on a stale precondition — you built that earlier in this chapter — but they surface a *toast*, not this banner, because a table row has no editable form state to merge the server's values back into. The full banner is the edit path's affordance alone.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">Editing the same invoice in two tabs lets the first submit succeed; the second submit is refused without mutating the row, and the form renders the conflict banner showing the server's current values.</ChecklistItem>
+  <ChecklistItem chip="tested">Clicking **Use latest** pulls the server's current row into the form so the resubmit succeeds.</ChecklistItem>
+  <ChecklistItem chip="tested">Clicking **Overwrite anyway** resends the user's edits and applies them despite the stale version — and a member who forges the overwrite flag is refused, the row untouched.</ChecklistItem>
+  <ChecklistItem chip="tested">A forged submit carrying another org's invoice ID takes the not-found path in the acting org and never mutates that row.</ChecklistItem>
+  <ChecklistItem chip="untested">**Overwrite anyway** renders only for admins; members never see the button.</ChecklistItem>
+  <ChecklistItem chip="untested">A lifecycle action (archive / restore / delete) hitting a stale version surfaces a conflict toast, not the full banner.</ChecklistItem>
+  <ChecklistItem chip="untested">Forcing version drift and then archiving the same row shows the optimistic removal briefly before the row reappears, and a conflict toast fires.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Add the version precondition to `updateInvoice`, build the conflict branch in the edit form, and fill in the conflict banner — against the brief and against the tests. Try it before you open the solution below.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+### 1. The version precondition — `src/lib/invoices/actions.ts`
+
+The whole fix to the clobber bug is three guards inserted between loading the row and mutating it. The before/after makes the insertion the focus — the starter applied the edit the moment it found the row; the solution refuses to touch it until tenancy, lifecycle, the overwrite gate, and the version all clear.
+
+<CodeVariants>
+  <CodeVariant label="Before (the clobber)">
+    ```ts title="src/lib/invoices/actions.ts" {18-21}
+    const updateInvoiceSchema = z.strictObject({
+      id: z.string(),
+      customerName: z.string().min(1),
+      status: z.enum(STATUS_VALUES),
+      total: z.string().min(1),
+      version: z.coerce.number().int(),
+    });
+
+    export const updateInvoice = authedAction(
+      'member',
+      updateInvoiceSchema,
+      async (input, ctx): Promise<Result<Invoice>> => {
+        const row = findInvoice(ctx.orgId, input.id);
+        if (!row || row.deletedAt !== null) {
+          return err('not_found', 'Invoice not found.');
+        }
+
+        row.customerName = input.customerName;
+        row.status = input.status;
+        row.total = input.total;
+        row.version += 1;
+
+        pushAudit({
+          orgId: ctx.orgId,
+          actorUserId: ctx.userId,
+          action: 'invoice.update',
+          subjectId: row.id,
+        });
+
+        revalidatePath('/invoices');
+        return ok(row);
+      },
+    );
+    ```
+    **Silent last-write-wins.** The hidden `version` rides in with the form, but nothing reads it — the edit applies the instant the row is found. Two stale tabs both succeed, and the later one buries the earlier.
+  </CodeVariant>
+
+  <CodeVariant label="After (the precondition)">
+    ```ts title="src/lib/invoices/actions.ts" ins={7,18-25} {19,23}
+    const updateInvoiceSchema = z.strictObject({
+      id: z.string(),
+      customerName: z.string().min(1),
+      status: z.enum(STATUS_VALUES),
+      total: z.string().min(1),
+      version: z.coerce.number().int(),
+      overwrite: z.coerce.boolean().default(false),
+    });
+
+    export const updateInvoice = authedAction(
+      'member',
+      updateInvoiceSchema,
+      async (input, ctx): Promise<Result<Invoice>> => {
+        const row = findInvoice(ctx.orgId, input.id);
+        if (!row || row.deletedAt !== null) {
+          return err('not_found', 'Invoice not found.');
+        }
+
+        if (input.overwrite && !roleAtLeast(ctx.role, 'admin')) {
+          return err('forbidden', 'Only an admin can overwrite a conflict.');
+        }
+
+        if (!input.overwrite && row.version !== input.version) {
+          return conflict(CONFLICT_MESSAGE, row);
+        }
+
+        row.customerName = input.customerName;
+        row.status = input.status;
+        row.total = input.total;
+        row.version += 1;
+        // …audit + revalidate + ok(row) as before
+      },
+    );
+    ```
+    **Three guards before the mutation.** The not-found check is tenancy + lifecycle; the new admin gate refuses a forged overwrite; the version check returns an honest conflict carrying `current`. The row is touched only once all four clear.
+  </CodeVariant>
+</CodeVariants>
+
+The full action body, exactly as it reads in the repo (the schema fields and the unchanged audit-and-return tail are folded — expand them if you want the whole thing):
+
+```ts title="src/lib/invoices/actions.ts" collapse={6-11, 44-51}
+const CONFLICT_MESSAGE = 'This invoice changed elsewhere — refresh to retry.';
+
+// The `version` precondition is the optimistic-concurrency guard. FormData is
+// strings, so coerce; `overwrite` is the admin-only escape hatch (defaults off).
+const updateInvoiceSchema = z.strictObject({
+  id: z.string(),
+  customerName: z.string().min(1),
+  status: z.enum(STATUS_VALUES),
+  total: z.string().min(1),
+  version: z.coerce.number().int(),
+  overwrite: z.coerce.boolean().default(false),
+});
+
+export const updateInvoice = authedAction(
+  'member',
+  updateInvoiceSchema,
+  async (input, ctx): Promise<Result<Invoice>> => {
+    const row = findInvoice(ctx.orgId, input.id);
+    if (!row || row.deletedAt !== null) {
+      return err('not_found', 'Invoice not found.');
+    }
+
+    // Overwrite skips the version precondition, so it is admin-only — the RBAC
+    // gate lives HERE, not only behind the hidden UI control. A member who
+    // forges `overwrite=true` is refused at the action.
+    if (input.overwrite && !roleAtLeast(ctx.role, 'admin')) {
+      return err('forbidden', 'Only an admin can overwrite a conflict.');
+    }
+
+    // The UPDATE applies only when the row the client last saw still matches
+    // (tenancy + `deletedAt IS NULL` already hold above). A stale tab that lost
+    // the race gets an honest 409 carrying the row the server holds now — one
+    // round trip, no client refetch — never a silent clobber.
+    if (!input.overwrite && row.version !== input.version) {
+      return conflict(CONFLICT_MESSAGE, row);
+    }
+
+    row.customerName = input.customerName;
+    row.status = input.status;
+    row.total = input.total;
+    row.version += 1;
+
+    pushAudit({
+      orgId: ctx.orgId,
+      actorUserId: ctx.userId,
+      action: 'invoice.update',
+      subjectId: row.id,
+    });
+
+    revalidatePath('/invoices');
+    return ok(row);
+  },
+);
+```
+
+The decisions worth naming:
+
+- **The schema gains `overwrite: z.coerce.boolean().default(false)`.** `version` was already there. Both ride in from the form as strings — FormData has no other type — so `z.coerce` turns `"false"` and `"42"` back into a boolean and a number at the boundary. (That boundary coercion is covered where you first met Zod and server actions, earlier in the course; no need to re-derive it here.)
+- **The not-found guard is the tenancy + lifecycle pair.** `!row` is the tenancy outcome: `findInvoice(ctx.orgId, id)` scopes the lookup to the acting org, so another tenant's ID just misses. `row.deletedAt !== null` is the lifecycle guard: a soft-deleted row is not editable. Both collapse into one honest "not found".
+- **The admin gate is placed *before* the version check, on purpose.** A member forging `overwrite=true` should be refused for the forgery regardless of whether their version happens to be current — checking the role first means a stale member-overwrite still hits `forbidden`, never slips through to the mutation.
+- **The version check runs against the freshly loaded `row`, in this same call.** That is what keeps it atomic. There is no window between a read and a write for the row to drift, because the read and the comparison are the same step. A mismatch returns `conflict(CONFLICT_MESSAGE, row)` — and `conflict` from `result.ts` packs that current `row` into the result's `current` field, so the losing tab recovers in this one round trip without going back to fetch anything.
+
+### 2. The conflict branch — `src/app/(app)/invoices/[id]/edit/edit-form.tsx`
+
+The starter form already does the hard parts: it drives `updateInvoice` through `useActionState`, keeps the inputs uncontrolled with `defaultValue`, keys the field block on `${seed.id}:${seed.version}` so it can remount with fresh defaults, and routes submits through a thin `onSubmit` wrapper. Five additions turn it into a conflict-aware form. Step through them on top of that scaffold.
+
+<AnnotatedCode lang="tsx" maxLines={18} code={`
+const [state, action] = useActionState(updateInvoice, null);
+const formRef = useRef<HTMLFormElement>(null);
+
+const [seed, setSeed] = useState(invoice);
+const [conflictRow, setConflictRow] = useState<Invoice | null>(null);
+
+useEffect(() => {
+  if (!state) {
+    return;
+  }
+  if (state.ok) {
+    setSeed(state.data);
+    setConflictRow(null);
+    return;
+  }
+  setConflictRow(
+    state.error.code === 'conflict' ? (state.error.current as Invoice) : null,
+  );
+}, [state]);
+
+const onUseLatest = () => {
+  if (conflictRow) {
+    setSeed(conflictRow);
+    setConflictRow(null);
+  }
+};
+
+const onOverwrite = () => {
+  const form = formRef.current;
+  if (!form) {
+    return;
+  }
+  const formData = new FormData(form);
+  formData.set('overwrite', 'true');
+  action(formData);
+};
+`}>
+  <AnnotatedStep meta="{2}" color="blue">
+    A `formRef` on the `<form>`. **Overwrite anyway** needs to grab the user's current field values straight from the DOM, so the form needs a ref. (The `ref={formRef}` lands on the `<form>` element itself in the JSX below.)
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5}" color="blue">
+    A `conflictRow` state slot. When it holds an invoice, the banner renders; when it is `null`, the form is clean. This is the single switch that controls the whole conflict surface.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{7-19} "setConflictRow"`} color="orange">
+    The result handler, extended. On `ok` it reseeds the form to the returned row **and** clears `conflictRow` — so the next save starts from the fresh version and cannot self-conflict. On a `conflict` code it pulls `state.error.current` into `conflictRow`; any other error leaves the banner closed.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{21-26} "setSeed(conflictRow)"`} color="green">
+    **Use latest.** Swap the form's `seed` to the server's `conflictRow` and clear the banner. Because the field block is keyed on `${seed.id}:${seed.version}`, swapping the seed remounts it — which resets the uncontrolled hidden `version` input to `current.version`. The next submit now carries the matching version and succeeds.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{28-36} "formData.set('overwrite', 'true')"`} color="green">
+    **Overwrite anyway.** Read the user's edits out of the live form via `new FormData(form)`, set `overwrite` to `'true'`, and dispatch. This sends the user's own values — not the server's — with the bypass flag, so the action applies them despite the stale version. The server still re-checks the admin gate.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+And the banner is rendered conditionally below the Save button, passing the admin check down so the destructive button only appears for those allowed to use it:
+
+```tsx title="src/app/(app)/invoices/[id]/edit/edit-form.tsx"
+{conflictRow ? (
+  <ConflictBanner
+    current={conflictRow}
+    onUseLatest={onUseLatest}
+    onOverwrite={onOverwrite}
+    canOverwrite={roleAtLeast(role, 'admin')}
+  />
+) : null}
+```
+
+:::note
+One thing in the provided scaffold looks odd until you hit the bug it dodges: the form's `action` is a thin wrapper, `action={onSubmit}`, not the bare `useActionState` dispatcher. Hand React a server-action dispatcher directly and it renders its progressive-enhancement encoding — `$ACTION_*` inputs — as hidden fields. On submit those leak into the FormData, and the action's `z.strictObject` rejects them as unrecognized keys, so the save never reaches the mutation. The wrapper submits only the fields you named. Keep it.
+:::
+
+### 3. The banner — `src/app/(app)/invoices/[id]/edit/conflict-banner.tsx`
+
+A presentational component. It shows the server's current customer, status, and total so the user can compare before deciding, then offers **Use latest** to everyone and **Overwrite anyway** only when `canOverwrite` is true.
+
+```tsx title="src/app/(app)/invoices/[id]/edit/conflict-banner.tsx"
+'use client';
+
+import { Button } from '@/components/ui/button';
+import type { Invoice } from '@/server/types';
+
+// The honest-409 surface: the server returned the row it holds now as `current`,
+// so the stale tab can recover without a refetch. "Use latest" pulls those
+// values into the form (and resets the hidden version) so the resubmit succeeds.
+// "Overwrite anyway" renders ONLY for an admin — the gate is enforced again at
+// the action, this affordance is the cosmetic half of that gate.
+export const ConflictBanner = ({
+  current,
+  onUseLatest,
+  onOverwrite,
+  canOverwrite,
+}: {
+  current: Invoice;
+  onUseLatest: () => void;
+  onOverwrite: () => void;
+  canOverwrite: boolean;
+}) => (
+  <div
+    data-testid="conflict-banner"
+    className="space-y-3 rounded-lg border border-destructive/50 bg-destructive/5 p-4 text-sm"
+  >
+    <p className="font-medium text-destructive">
+      This invoice changed elsewhere while you were editing.
+    </p>
+    <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-muted-foreground">
+      <dt>Customer</dt>
+      <dd className="text-foreground">{current.customerName}</dd>
+      <dt>Status</dt>
+      <dd className="text-foreground capitalize">{current.status}</dd>
+      <dt>Total</dt>
+      <dd data-testid="conflict-current-total" className="text-foreground">
+        {current.currency} {current.total}
+      </dd>
+    </dl>
+    <div className="flex flex-wrap gap-2">
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        data-testid="conflict-use-latest"
+        onClick={onUseLatest}
+      >
+        Use latest
+      </Button>
+      {canOverwrite ? (
+        <Button
+          type="button"
+          size="sm"
+          variant="destructive"
+          data-testid="conflict-overwrite"
+          onClick={onOverwrite}
+        >
+          Overwrite anyway
+        </Button>
+      ) : null}
+    </div>
+  </div>
+);
+```
+
+Two details: the status is rendered with a `capitalize` class so the stored `'paid'` reads as "Paid" without transforming the data, and the `data-testid` hooks (`conflict-banner`, `conflict-use-latest`, `conflict-overwrite`, `conflict-current-total`) are there for the test suite — they do not change behavior, they just give the tests a stable handle.
+
+### The lifecycle conflict path is already done
+
+You don't write new code for it, but it is worth seeing how the same conflict result lands differently on the table. The archive, restore, and soft-delete actions you built earlier already return `conflict(message, row)` when their version precondition is stale. On the table, a stale lifecycle action surfaces as a **toast** — "This invoice changed elsewhere — refresh to retry." — rather than the banner, because a table row has no controlled form state to merge the server's values back into. And when an optimistic archive loses the race, the row reappears: the optimistic value was never committed, so it expires the moment the transition ends on a returned `{ ok: false }`. That is expiry, not a throw-triggered rollback — the same distinction drawn in the lifecycle and concurrency work earlier in this unit.
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Optimistic concurrency control"
+    href="https://learn.microsoft.com/en-us/azure/cosmos-db/database-transactions-optimistic-concurrency"
+    icon="simple-icons:microsoftazure"
+    iconColor="#0078D4"
+    description="The version-token-prevents-lost-updates pattern this action implements, spelled out as the canonical OCC design."
+  />
+  <ExternalResource
+    title="React — useActionState"
+    href="https://react.dev/reference/react/useActionState"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="Reference for the hook the conflict branch reads state from — including the form-action and pending shapes."
+  />
+  <ExternalResource
+    title="Zod — coercion"
+    href="https://zod.dev/api?id=coercion"
+    icon="simple-icons:zod"
+    iconColor="#3E67B1"
+    description="How z.coerce turns the FormData strings for version and overwrite back into a number and a boolean at the boundary."
+  />
+  <ExternalResource
+    title="MDN — 409 Conflict"
+    href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/409"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The HTTP semantics behind the conflict result you return when the stale version loses the race."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the suite for this lesson:
+
+```bash
+pnpm test:lesson 5
+```
+
+It should pass. The assertions drive the full version-precondition contract through the real action and store: a clean save wins and bumps the version; a second submit at the stale version is refused with code `conflict`, the row untouched; the conflict result carries the server's post-winner row as `current`; resubmitting at `current.version` (what **Use latest** loads) succeeds; an admin's `overwrite=true` applies the edit despite the drift while a member's forged `overwrite=true` is refused as `forbidden` with the row untouched; and an org-globex actor submitting an org-acme ID takes the `not_found` path and never mutates the acme row, while the globex admin can still edit its own org's row.
+
+The tests cover the precondition and the action gate. The visual recovery loop and the toast paths you confirm by hand — the inspector page has the tooling for all of it:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">Open an invoice in two tabs (the inspector's "Open in two tabs" link). Save tab one — confirm the version bumped via the inspector's audit log. Edit and save tab two: the conflict banner renders the current server values. Click **Use latest**; the form reloads with the server's values and new version; the resubmit succeeds.</ChecklistItem>
+  <ChecklistItem chip="untested">Use the inspector's **Force version drift** to make a row go stale without a second tab, then resubmit an open edit form — the banner appears just the same.</ChecklistItem>
+  <ChecklistItem chip="untested">Switch to `org-acme:member` via the inspector and trigger a conflict on the edit form: the banner renders, but the **Overwrite anyway** button is absent — members only see **Use latest**.</ChecklistItem>
+  <ChecklistItem chip="untested">Force version drift on a row, then archive it from the table: the optimistic removal shows briefly, the row reappears when the conflict returns, and a conflict toast fires — not the banner.</ChecklistItem>
+  <ChecklistItem chip="untested">As `org-globex:admin`, hand-construct an edit URL for an `org-acme` invoice ID: the detail page is not found because the read is org-scoped, and a forged submit of that ID takes the not-found path at the write.</ChecklistItem>
+  <ChecklistItem chip="untested">Walk the chapter's full acceptance list one more time — URL-driven view, RBAC-gated `all` tab, archive and restore, the two-tab conflict — and confirm every behavior holds end to end.</ChecklistItem>
+</Checklist>
+
+That last item is the real finish line: the list view is now something a coworker can paste a URL of, reload a hundred times, archive and restore rows from, and race two tabs against — and every behavior holds.
+
+A few of these threads get picked back up later, for the curious: the notification work later in the course fires an alert when an invoice is archived or restored; the caching unit adds tag-driven invalidation to these lifecycle actions; the security hardening pass tightens the audit discipline these writes lean on; and the testing unit writes integration tests for this very conflict path and the cross-tenant probe.

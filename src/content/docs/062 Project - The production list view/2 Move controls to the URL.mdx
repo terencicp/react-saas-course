@@ -1,0 +1,517 @@
+---
+title: Move every control to the URL
+chapter-id: 62
+course-progress: 0.00005
+sidebar:
+  order: 2
+  label: Move controls to the URL
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import RoundTripLoop from '../../../components/lessons/062/2/RoundTripLoop.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The list renders, but every control on it is a dead end. Set a filter, sort a column, type a search, page forward — then refresh, and it is all gone. Paste the URL to a coworker and they land on the bare list, not the view you were looking at. In this lesson you fix that at the root: filter, sort, search, the visibility tab, and the pagination cursor all move out of component state and into the URL, so any view becomes a link that survives a refresh, a share, and the back button.
+
+The finished behavior is the contract you would expect from any production list. Click a status, change the sort, or switch tabs and the URL rewrites to match. A chip appears above the table for every filter that differs from the default, each with its own clear button. Next carries a fresh cursor; the search box keeps typing smoothly while the URL settles a beat later. And the proof is the paste test: copy the URL into a fresh tab and the same list renders, down to the page you were on.
+
+<Figure caption="The /invoices list at ?status=paid&sort=-total — the status and sort controls hold non-default values, an active-filter chip for each sits above the table, and the URL carries the state, so this exact view is a paste-able link.">
+  <Screenshot viewport="desktop">
+    <img
+      src="/screenshots/062/l2-desktop-1280-filtered.png"
+      alt="The /invoices page at 1280px with a non-default filter active: a top nav reading Invoices · List · Inspector; an 'Invoices' heading above the Active, Archived, and All view tabs with Active selected; a toolbar whose status select reads 'Paid', sort select reads 'Total: high to low', and a 'Search…' box; an active-filter chip row beneath it showing 'Status: Paid ×' and 'Sort: Total: high to low ×'; the invoice table with Number, Customer, Status, and Total columns listing Paid rows from ACME-1042 (USD 687.00) downward in descending total, each ending in a '⋯' row-action menu; and an empty 'Select an invoice to see its detail.' panel on the right."
+    />
+  </Screenshot>
+</Figure>
+
+## Your mission
+
+Make the URL the single source of truth for every piece of view-state that should survive a refresh, a share, or the back button — filter, sort, search, the visibility tab, and the pagination cursor. The page already reads that URL on the server: it parses the query string through a `nuqs` `searchParamsCache` and hands the result to `listInvoices`. Your job is the write side — the toolbar, the view tabs, the chips, and pagination — plus filling in the parsers the cache reads through.
+
+A few constraints shape the solution, and they are the difference between a list that feels production-grade and one that fights the browser. Default values stay *out* of the URL: `nuqs` strips any param that equals its default, so a bare `/invoices` is the home state and only differences from default ever show in the address bar. The one invariant that keeps pagination honest is that every setter which re-orders or shrinks the result set bundles `cursor: null` in the same call — change the filter while holding a cursor and that cursor points past the end of a *different* result set, so page one is the only safe landing. You do not need to think about history mode or scroll behavior: `nuqs` already uses history `replace` and `{ scroll: false }` by default, so a fast-changing filter never buries the back button or yanks the viewport. And the search box stays responsive by writing its *deferred* value to the URL through `useDeferredValue` + `useTransition`, with `nuqs`'s own `limitUrlUpdates: debounce(300)` bounding how often that write commits — not a hand-rolled `setTimeout`.
+
+One thing is deliberately out of scope. The view tabs will write the `view` param, but every tab still returns the same rows — making the read branch on `view` (and gating the All tab to admins) is the next lesson. Lifecycle actions and the version precondition come later still. Here you are wiring the URL plumbing and nothing downstream of it.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">Clicking a status, sort, or view control rewrites the URL to reflect it, and clearing back to defaults leaves the bare `/invoices` URL with no query string.</ChecklistItem>
+  <ChecklistItem chip="tested">Copying the URL into a fresh tab reproduces the identical list, and a hard reload preserves filter, sort, cursor, and view.</ChecklistItem>
+  <ChecklistItem chip="tested">The active-filter chips render above the table for every non-default filter, and each chip's clear control removes that filter — and the cursor — from the URL.</ChecklistItem>
+  <ChecklistItem chip="tested">Clicking Next advances the list by carrying a new `cursor` in the URL; the cursor is dropped whenever status, sort, search, or view changes, so the new result set starts at page one.</ChecklistItem>
+  <ChecklistItem chip="untested">Typing a long query fast keeps the input responsive while the URL settles roughly every 300ms, leaving one or two back-button entries rather than one per keystroke.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Fill in the five parsers, the toolbar, the view-tabs setter, the chips (plus the new `ClearChip`), and the pagination control against the brief and the tests. The `TODO(L2)` comments mark every spot. Give it a real attempt before opening the walkthrough below — the round-trip clicks into place once you have wrestled with one setter yourself.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+The mental model worth holding before any code: this is a one-way loop. The URL is read on the *server*, and written from the *client*. The page parses the query string, calls `listInvoices`, and renders rows; the toolbar, tabs, chips, and pagination only ever write back to the URL, which triggers the server to read again. No client-side filtering, no duplicated state — the URL is the one place the view-state lives.
+
+<RoundTripLoop />
+
+<VideoCallout videoId="qpczQVJMG1Y" videoTitle="Type-safe URL state in Next.js with nuqs (Vercel, Next.js Conf 2025)">
+  The Vercel team's 25-minute Next.js Conf talk walks the same read-on-the-server, write-from-the-client loop you are wiring here — shallow vs. network updates, server parsing, and debounced writes.
+</VideoCallout>
+
+### The parsers and the cache
+
+Everything downstream reads through `search-params.ts`. Each parser declares how one param decodes from the query string and, crucially, what its default is — because the default is what `nuqs` strips from the URL to keep it clean.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+import {
+  createSearchParamsCache,
+  parseAsString,
+  parseAsStringEnum,
+} from 'nuqs/server';
+
+export const invoiceListSearchParams = {
+  status: parseAsStringEnum(['draft', 'sent', 'paid', 'overdue']),
+  sort: parseAsStringEnum([
+    '-createdAt',
+    'createdAt',
+    '-total',
+    'total',
+    '-customer',
+    'customer',
+  ]).withDefault('-createdAt'),
+  q: parseAsString.withDefault(''),
+  view: parseAsStringEnum(['active', 'archived', 'all']).withDefault('active'),
+  cursor: parseAsString,
+};
+
+export const invoiceListSearchParamsCache = createSearchParamsCache(
+  invoiceListSearchParams,
+);
+`}>
+  <AnnotatedStep meta="{8} {19}" color="orange">
+    `status` and `cursor` are nullable with no default. A value outside the allowed set decodes to `null`, which strips it from the URL — that is what makes "no status filter" and "page one" the implicit home state.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{16-18} ".withDefault"`} color="blue">
+    `sort`, `q`, and `view` each carry an explicit default, so whenever the live value equals it `nuqs` drops the param. A bare `/invoices` therefore parses to sort `-createdAt`, empty `q`, and view `active`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{22-24}" color="green">
+    The page calls this cache's `.parse()` on the server to turn the raw query string into the typed `ListParsed` object it hands to `listInvoices`.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The split between nullable and defaulted parsers is doing real work. `status` and `cursor` have no default, so their natural empty state is `null` and they simply do not appear in the URL until set. `sort`, `q`, and `view` each carry a `.withDefault(...)`, so they always have a value but vanish from the URL the moment that value is the default. The net effect is the home-state contract: a bare `/invoices` and `/invoices?sort=-createdAt&view=active&q=` are the same view, and only the second one is something you would never want to share. The `parseAsStringEnum` parsers also reject anything outside their allowed set, collapsing junk like `?status=banana` back to the default — which is why a hand-typed garbage URL can never break the page. The `nuqs` parser and `searchParamsCache` mechanics were covered in detail in [The list-view anatomy](/060-url-state-list-views/1-the-list-view-anatomy); here you are just declaring the five params this list needs.
+
+### The toolbar: from local state to the URL
+
+This is the change that defines the whole lesson, so it is worth seeing side by side. The starter holds status, sort, and search in `useState` — the controls render and feel interactive, but nothing reaches the URL, so a refresh wipes the lot. The solution swaps that local state for a single `useQueryStates` call that writes straight to the URL.
+
+<CodeVariants>
+  <CodeVariant label="Before · local state">
+    ```tsx {1,15-17}
+    'use client';
+
+    import { useState } from 'react';
+    import { Input } from '@/components/ui/input';
+    import {
+      Select,
+      SelectContent,
+      SelectItem,
+      SelectTrigger,
+      SelectValue,
+    } from '@/components/ui/select';
+    import type { InvoiceSort, ListParsed } from '@/lib/invoices/queries';
+
+    export const Toolbar = ({ parsed }: { parsed: ListParsed }) => {
+      const [status, setStatus] = useState<string>(parsed.status ?? 'all');
+      const [sort, setSort] = useState<InvoiceSort>(parsed.sort);
+      const [q, setQ] = useState(parsed.q);
+    ```
+    **The state is trapped in the component.** `setStatus` updates a local variable the URL never sees, so the server never re-reads and a refresh resets every control to the seed it was first rendered with.
+  </CodeVariant>
+
+  <CodeVariant label="After · URL state">
+    ```tsx {3,18-21}
+    'use client';
+
+    import { debounce, useQueryStates } from 'nuqs';
+    import { useDeferredValue, useEffect, useState, useTransition } from 'react';
+    import { Input } from '@/components/ui/input';
+    import {
+      Select,
+      SelectContent,
+      SelectItem,
+      SelectTrigger,
+      SelectValue,
+    } from '@/components/ui/select';
+    import type { InvoiceSort, ListParsed } from '@/lib/invoices/queries';
+    import { invoiceListSearchParams } from '@/lib/invoices/search-params';
+    import type { InvoiceStatus } from '@/server/types';
+
+    export const Toolbar = ({ parsed }: { parsed: ListParsed }) => {
+      const [, setQueryStates] = useQueryStates(invoiceListSearchParams, {
+        shallow: false,
+        limitUrlUpdates: debounce(300),
+      });
+    ```
+    **The state lives in the URL.** `setQueryStates` writes the query string, and `shallow: false` is what makes the server re-read — drop it and the URL updates client-side only, so the list never refreshes.
+  </CodeVariant>
+</CodeVariants>
+
+`shallow: false` is the load-bearing option here. `nuqs` defaults to `shallow: true`, which rewrites the URL on the client without notifying the server — fine for state a Client Component reads itself, useless for a list the *server* renders. Because the page re-queries on every URL change, you want that option on every setter that should change what rows come back. The rest of the component reads the current value from the `parsed` prop (the server's parse of the URL) and writes the new value on change, with `cursor: null` riding along on every setter:
+
+```tsx
+  const [q, setQ] = useState(parsed.q);
+  const deferredQ = useDeferredValue(q);
+  const [, startTransition] = useTransition();
+
+  useEffect(() => {
+    if (deferredQ === parsed.q) {
+      return;
+    }
+    startTransition(() => {
+      setQueryStates({ q: deferredQ || null, cursor: null });
+    });
+  }, [deferredQ, parsed.q, setQueryStates]);
+
+  return (
+    <div
+      data-testid="toolbar"
+      className="flex flex-wrap items-center gap-2 rounded-lg border p-2"
+    >
+      <Select
+        value={parsed.status ?? 'all'}
+        onValueChange={(value) =>
+          setQueryStates({
+            status: value === 'all' ? null : (value as InvoiceStatus),
+            cursor: null,
+          })
+        }
+      >
+        <SelectTrigger data-testid="filter-status" className="w-36">
+          <SelectValue placeholder="Status" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">All statuses</SelectItem>
+          <SelectItem value="draft">Draft</SelectItem>
+          <SelectItem value="sent">Sent</SelectItem>
+          <SelectItem value="paid">Paid</SelectItem>
+          <SelectItem value="overdue">Overdue</SelectItem>
+        </SelectContent>
+      </Select>
+
+      <Select
+        value={parsed.sort}
+        onValueChange={(value) =>
+          setQueryStates({ sort: value as InvoiceSort, cursor: null })
+        }
+      >
+        <SelectTrigger data-testid="filter-sort" className="w-44">
+          <SelectValue placeholder="Sort" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="-createdAt">Newest first</SelectItem>
+          <SelectItem value="createdAt">Oldest first</SelectItem>
+          <SelectItem value="-total">Total: high to low</SelectItem>
+          <SelectItem value="total">Total: low to high</SelectItem>
+          <SelectItem value="-customer">Customer: Z–A</SelectItem>
+          <SelectItem value="customer">Customer: A–Z</SelectItem>
+        </SelectContent>
+      </Select>
+
+      <Input
+        data-testid="search-input"
+        type="search"
+        placeholder="Search…"
+        className="w-56"
+        value={q}
+        onChange={(event) => setQ(event.target.value)}
+      />
+    </div>
+  );
+};
+```
+
+The search input is the one control that needs care, because typing is fast and a URL write per keystroke would both lag the input and flood the back button. The fix is the rhythm you learned in [Typed input, committed URL](/060-url-state-list-views/3-typed-input-committed-url): the input itself stays in plain `useState`, so every keystroke renders instantly. `useDeferredValue` produces a lagged copy of that text, and an effect writes *only the deferred value* to the URL inside `startTransition`, so the write never blocks the keystroke. On top of that, `limitUrlUpdates: debounce(300)` on the `useQueryStates` call collapses a burst of writes into one roughly every 300ms. Two layers, two jobs: the deferred value keeps the input responsive, the debounce keeps the history clean. Note `deferredQ || null` — an empty string coerces to `null` so the `q` param strips out of the URL rather than lingering as `?q=`.
+
+And every setter — status, sort, search — carries `cursor: null`. That is the invariant from the brief, made concrete: each of these changes the result set, so the cursor you were holding is meaningless against the new set, and dropping it lands you on page one.
+
+### The view tabs
+
+The tabs write the `view` param the same way, through `useQueryStates`, bundling `cursor: null` on click. They read the active tab from `parsed.view` to know which one to highlight.
+
+```tsx
+'use client';
+
+import { useQueryStates } from 'nuqs';
+import type { ListParsed } from '@/lib/invoices/queries';
+import { invoiceListSearchParams } from '@/lib/invoices/search-params';
+import { cn } from '@/lib/utils';
+import type { Role } from '@/server/types';
+
+export const ViewTabs = ({
+  parsed,
+  role,
+}: {
+  parsed: ListParsed;
+  role: Role;
+}) => {
+  const [, setQueryStates] = useQueryStates(
+    {
+      view: invoiceListSearchParams.view,
+      cursor: invoiceListSearchParams.cursor,
+    },
+    { shallow: false },
+  );
+
+  // The `all` tab is cosmetic on top of the read-layer RBAC gate: hide it from
+  // non-admins (the read already serves them active rows if they hand-type it).
+  const tabs: { value: ListParsed['view']; label: string }[] = [
+    { value: 'active', label: 'Active' },
+    { value: 'archived', label: 'Archived' },
+    ...(role === 'admin' ? [{ value: 'all' as const, label: 'All' }] : []),
+  ];
+
+  return (
+    <div data-testid="view-tabs" className="flex gap-1">
+      {tabs.map((tab) => (
+        <button
+          key={tab.value}
+          type="button"
+          data-testid={`view-tab-${tab.value}`}
+          onClick={() => setQueryStates({ view: tab.value, cursor: null })}
+          className={cn(
+            'rounded-md px-3 py-1.5 text-sm',
+            parsed.view === tab.value
+              ? 'bg-primary text-primary-foreground'
+              : 'text-muted-foreground hover:bg-muted',
+          )}
+        >
+          {tab.label}
+        </button>
+      ))}
+    </div>
+  );
+};
+```
+
+Notice that `useQueryStates` is passed a *subset* of the parser map — just `view` and `cursor`, not all five. `nuqs` lets you scope a setter to only the params it touches, which keeps the component's intent obvious and avoids accidentally writing a param it has no business changing.
+
+The `role === 'admin'` line already hides the All tab from non-admins, so you will see it wired here. That visibility toggle is only the cosmetic half, though — the half that *matters* is the read gate that serves a non-admin `active` rows even if they hand-type `?view=all`, and that lives in `listInvoices` in the next lesson. Until then, the All tab writes `view=all` but every tab returns the same rows, because the read does not branch on `view` yet.
+
+### Pagination
+
+Pagination reads and writes a single param, so it uses `useQueryState` (singular) on `cursor`. The server hands it `nextCursor` and `hasPrev` as props — it does not compute them itself.
+
+```tsx
+'use client';
+
+import { useQueryState } from 'nuqs';
+import { Button } from '@/components/ui/button';
+import { invoiceListSearchParams } from '@/lib/invoices/search-params';
+
+type PaginationProps = {
+  cursor: string | null;
+  nextCursor: string | null;
+  hasPrev: boolean;
+};
+
+export const Pagination = ({ nextCursor }: PaginationProps) => {
+  const [cursor, setCursor] = useQueryState(
+    'cursor',
+    invoiceListSearchParams.cursor.withOptions({ shallow: false }),
+  );
+
+  return (
+    <nav
+      data-testid="pagination"
+      aria-label="Pagination"
+      className="flex items-center justify-end gap-2"
+    >
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        data-testid="pagination-first"
+        disabled={cursor == null}
+        onClick={() => setCursor(null)}
+      >
+        First page
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        data-testid="pagination-next"
+        disabled={!nextCursor}
+        onClick={() => setCursor(nextCursor)}
+      >
+        Next
+      </Button>
+    </nav>
+  );
+};
+```
+
+There is a deliberate scope call here. A full pagination control would let you walk backward through every page you have visited, which means maintaining a stack of cursors and getting the first-page edge case exactly right. This list ships the simpler shape instead: **Next** advances by setting `cursor` to the server-provided `nextCursor`, and **First page** jumps home by setting `cursor` to `null`. No back-stack to keep in sync, no off-by-one on page one, and it covers the cases a list actually needs — go deeper, or start over. The keyset-cursor reasoning behind `nextCursor` was covered in [Cursor by default, offset when small](/060-url-state-list-views/4-cursor-by-default-offset-when-small).
+
+### The chips, server-rendered, with a client clear button
+
+The active-filter chips are a Server Component. They read the same `parsed` object the page already has and emit one chip per filter that differs from its default — `status` when it is set, `q` when it is non-empty, `sort` when it is not the default. Nothing here needs to run on the client, so none of it does.
+
+```tsx
+import { ClearChip } from '@/app/(app)/invoices/clear-chip';
+import type { InvoiceSort, ListParsed } from '@/lib/invoices/queries';
+
+const SORT_LABELS: Record<InvoiceSort, string> = {
+  '-createdAt': 'Newest first',
+  createdAt: 'Oldest first',
+  '-total': 'Total: high to low',
+  total: 'Total: low to high',
+  '-customer': 'Customer: Z–A',
+  customer: 'Customer: A–Z',
+};
+
+const chipClassName =
+  'inline-flex items-center rounded-full border bg-muted px-2.5 py-0.5 text-xs';
+
+export const ActiveFilterChips = ({ parsed }: { parsed: ListParsed }) => (
+  <div
+    data-testid="active-filter-chips"
+    className="flex min-h-6 flex-wrap items-center gap-2"
+  >
+    {parsed.status !== null && (
+      <span data-testid="chip-status" className={chipClassName}>
+        <span className="capitalize">Status: {parsed.status}</span>
+        <ClearChip param="status" label="Clear status filter" />
+      </span>
+    )}
+    {parsed.q !== '' && (
+      <span data-testid="chip-q" className={chipClassName}>
+        Search: “{parsed.q}”
+        <ClearChip param="q" label="Clear search" />
+      </span>
+    )}
+    {parsed.sort !== '-createdAt' && (
+      <span data-testid="chip-sort" className={chipClassName}>
+        Sort: {SORT_LABELS[parsed.sort]}
+        <ClearChip param="sort" label="Reset sort" />
+      </span>
+    )}
+  </div>
+);
+```
+
+The split is worth naming, because it is a pattern you will reach for again: enumerating which filters are active is pure server work — it is a function of the already-parsed URL, no interactivity involved — so the chip *list* renders on the server with zero client JS. Only the one interactive part, the clear button, is a Client Component. That is the new file you create, `clear-chip.tsx`:
+
+```tsx
+'use client';
+
+import { XIcon } from 'lucide-react';
+import { useQueryStates } from 'nuqs';
+import { invoiceListSearchParams } from '@/lib/invoices/search-params';
+
+type ClearableParam = 'status' | 'q' | 'sort';
+
+export const ClearChip = ({
+  param,
+  label,
+}: {
+  param: ClearableParam;
+  label: string;
+}) => {
+  const [, setQueryStates] = useQueryStates(
+    {
+      status: invoiceListSearchParams.status,
+      q: invoiceListSearchParams.q,
+      sort: invoiceListSearchParams.sort,
+      cursor: invoiceListSearchParams.cursor,
+    },
+    { shallow: false },
+  );
+
+  const clear = () => {
+    switch (param) {
+      case 'status':
+        return setQueryStates({ status: null, cursor: null });
+      case 'q':
+        return setQueryStates({ q: null, cursor: null });
+      case 'sort':
+        return setQueryStates({ sort: null, cursor: null });
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      onClick={clear}
+      className="ms-1 rounded-sm opacity-70 hover:opacity-100"
+    >
+      <XIcon className="size-3" />
+    </button>
+  );
+};
+```
+
+Clearing a filter is just setting its param to `null` — and, once more, `cursor: null` rides along, because removing a filter widens the result set just as much as adding one narrows it, and either way the held cursor is stale. Setting `sort` to `null` works because the parser has a `.withDefault('-createdAt')`: writing `null` tells `nuqs` to drop the param, and dropping it means the value falls back to the default. Clearing the sort chip therefore returns sort to "Newest first" and removes it from the URL in one move.
+
+One last thing you do *not* need to touch: the root layout is already wrapped in `<NuqsAdapter>`, which is what lets every one of these setters reach the URL. That wrapper went in back in the URL-state chapter; without it the hooks would throw, but it is provided here.
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="nuqs — Server-side parsing & caches"
+    href="https://nuqs.dev/docs/server-side"
+    icon="lucide:server"
+    iconColor="#FF6B35"
+    description="The createSearchParamsCache reference behind the parser map and the server-side .parse() the page runs."
+  />
+  <ExternalResource
+    title="nuqs — Batching with useQueryStates"
+    href="https://nuqs.dev/docs/batching"
+    icon="lucide:list-filter"
+    iconColor="#FF6B35"
+    description="How one setter writes several params at once — the pattern every cursor: null bundle in this lesson relies on."
+  />
+  <ExternalResource
+    title="Master nuqs in 1 hour — with creator François Best"
+    href="https://www.youtube.com/watch?v=_L3uM8hD1wg"
+    icon="simple-icons:youtube"
+    iconColor="#FF0000"
+    description="The maintainer's live build covering the declarative search-params pattern and the debounce 'time-safety' you wire into the search box."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's automated suite once you have wired everything up:
+
+```bash
+pnpm test:lesson 2
+```
+
+A green run means the URL is genuinely the source of truth: the suite parses query strings through your cache and asserts that controls write the URL, that defaults strip out of it, that a bare `/invoices` is the home state, that junk values collapse to defaults, that the chips render per non-default filter and clear with the cursor, that a cursor advances to a distinct next page, and — the invariant the whole lesson turns on — that every reordering or shrinking setter bundles `cursor: null`.
+
+The suite cannot click, type, or watch the address bar, so a few things only you can confirm. Walk this list with the app open, and keep `/inspector` in a second tab to sanity-check what the list is returning:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">Click status `paid`, sort by total descending, then Next; the URL reads `?status=paid&sort=-total&cursor=…`. Clear the filters and the URL collapses back to a bare `/invoices`.</ChecklistItem>
+  <ChecklistItem chip="untested">Copy any non-bare URL into a fresh tab and the list renders identically; hard-reload and filter, sort, cursor, and view all survive.</ChecklistItem>
+  <ChecklistItem chip="untested">With a cursor in the URL, change the status — the `cursor` param drops and the list shows page one of the new filter. Repeat for sort, search, and a view tab.</ChecklistItem>
+  <ChecklistItem chip="untested">Type a fast 30-character query: the input never lags, the URL writes settle roughly every 300ms, and the back button holds one or two entries rather than thirty.</ChecklistItem>
+  <ChecklistItem chip="untested">Expected partial state — every view tab writes `view` to the URL but still returns the same rows; the read does not branch on `view` yet. That is the next lesson, not a bug.</ChecklistItem>
+</Checklist>
+
+With the URL now driving the read and four Client Components writing it back, you can paste, refresh, and share any view and have it hold. Next you will make the view tabs mean something: teach the read helper to branch on `active`, `archived`, and `all`, and put the All tab behind an RBAC gate that lives at the read, not just in the UI.
