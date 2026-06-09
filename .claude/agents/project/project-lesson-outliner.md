@@ -10,7 +10,7 @@ Write the given project lesson's outline that will be used as a guide for the su
 
 ## 1 Course context
 
-Read `AGENTS.md` and `documentation/content/overview/Units.md` to understand the project at a high-level. Read §1, §2, §3 of `documentation/pedagogical approach/Pedagogical guidelines.md`. Treat them as a compass not a strict set of rules to follow.
+Read `documentation/content/overview/Units.md` to understand the project at a high-level. Read §1, §2, §3 of `documentation/pedagogical approach/Pedagogical guidelines.md`. Treat them as a compass not a strict set of rules to follow.
 
 ## 2 Project context
 

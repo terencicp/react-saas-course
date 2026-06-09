@@ -10,7 +10,7 @@ Replace comments with components and format with markdown to deliver the given p
 
 ## Understand the lesson's context
 
-Read `AGENTS.md`. Read `documentation/pedagogical approach/Project lessons.md`.
+Read `documentation/pedagogical approach/Project lessons.md`.
 
 ## 1 Locate components to replace
 

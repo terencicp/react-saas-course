@@ -10,7 +10,7 @@ Write the given lesson content based on the lesson outline document, including p
 
 ## 1 Understand the course context
 
-Start by reading `AGENTS.md`, and only the initial `Chapter framing` section of the chapter outline `documentation/content/chapter outlines/Chapter <X>.md`. Read `documentation/content/overview/Units.md` to have a high-level understanding of what the whole course covers. Read `documentation/pedagogical approach/Pedagogical guidelines.md`, but treat them as a compass not as strict rules to follow.
+Start by reading only the initial `Chapter framing` section of the chapter outline `documentation/content/chapter outlines/Chapter <X>.md`. Read `documentation/content/overview/Units.md` to have a high-level understanding of what the whole course covers. Read `documentation/pedagogical approach/Pedagogical guidelines.md`, but treat them as a compass not as strict rules to follow.
 
 ## 2 Read the lesson outline
 

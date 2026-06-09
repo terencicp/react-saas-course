@@ -14,7 +14,7 @@ Your plan drives a three-stage coding pipeline that runs after you: **project-sc
 
 ## 1 Course context
 
-Read `AGENTS.md`, `documentation/content/overview/Units.md`, `documentation/pedagogical approach/Pedagogical guidelines.md` to understand the course at a high level.
+Read `documentation/content/overview/Units.md` and `documentation/pedagogical approach/Pedagogical guidelines.md` to understand the course at a high level.
 
 ## 2 Continuity notes
 

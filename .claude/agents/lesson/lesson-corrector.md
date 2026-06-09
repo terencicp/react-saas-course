@@ -10,7 +10,6 @@ Fix the issues in the given lesson mdx, in order.
 
 ## 1 Read
 
-- `AGENTS.md`
 - `documentation/content/overview/Units.md`
 - `documentation/pedagogical approach/Pedagogical guidelines.md`
 - `documentation/content/chapter outlines/Chapter <X>.md`

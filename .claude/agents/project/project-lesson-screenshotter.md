@@ -12,7 +12,7 @@ Your working directory is the chapter's `solution/`, but the lesson MDX and the 
 
 ## 1 Locate the screenshot placeholder
 
-Read `AGENTS.md`. Read the lesson MDX, note its `chapter-id` and lesson number (from the frontmatter), and find the screenshot-figure placeholder comment.
+Read the lesson MDX, note its `chapter-id` and lesson number (from the frontmatter), and find the screenshot-figure placeholder comment.
 
 ## 2 Decide the viewports
 

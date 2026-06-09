@@ -10,7 +10,7 @@ Record the given lesson's entry in the chapter's continuity notes, a running rec
 
 ## 1 Read
 
-Read `AGENTS.md`, `documentation/content/overview/Units.md` and `documentation/pedagogical approach/Pedagogical guidelines.md` to understand the course context.
+Read `documentation/content/overview/Units.md` and `documentation/pedagogical approach/Pedagogical guidelines.md` to understand the course context.
 
 Read the current lesson MDX and its outline, and the `Lesson <Y>` section of the chapter outline `documentation/content/chapter outlines/Chapter <X>.md` — the plan the lesson was scoped against, so you can see what it cut. The chapter outline is an intentionally broad brainstorm; only record a cut a later lesson would plausibly depend on.
 

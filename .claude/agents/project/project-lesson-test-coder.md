@@ -10,7 +10,6 @@ Write the lesson's automated test file at `projects/Chapter <X>/start/lesson-ver
 
 ## 1 Read
 
-- `AGENTS.md`.
 - The **Tests** section of `documentation/pedagogical approach/Project lessons.md` — the test contract.
 - The lesson outline at the provided path. Focus on *Your mission* → **Functional requirements**; each item is tagged `[tested]` or `[untested]`. You only assert against `[tested]` ones.
 - `documentation/content/project code outlines/Chapter <X>.md` to navigate the codebase.

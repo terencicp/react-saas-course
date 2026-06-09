@@ -10,7 +10,6 @@ Review the given lesson for serious issues that should be fixed before publishin
 
 ## Read
 
-- `AGENTS.md`
 - `documentation/content/overview/Units.md`
 - `documentation/pedagogical approach/Pedagogical guidelines.md`
 - `documentation/content/chapter outlines/Chapter <X>.md`

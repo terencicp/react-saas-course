@@ -10,7 +10,7 @@ Compare the project chapter outline against what the preceding teaching lessons 
 
 ## 1 Course context
 
-Read `AGENTS.md`, `documentation/content/overview/Units.md`, and the relevant sections of `documentation/pedagogical approach/Pedagogical guidelines.md`.
+Read `documentation/content/overview/Units.md` and the relevant sections of `documentation/pedagogical approach/Pedagogical guidelines.md`.
 
 ## 2 Scope the teaching chapters to check
 

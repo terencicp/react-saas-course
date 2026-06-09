@@ -12,7 +12,6 @@ Your working directory is the chapter's `solution/`, but the lesson MDX and the 
 
 ## 1 Read
 
-- `AGENTS.md`
 - `documentation/pedagogical approach/Pedagogical guidelines.md`
 - The chapter outline at `documentation/content/chapter outlines/Chapter <X>.md` — only the sections the issues point at
 - The lesson outline at the path provided

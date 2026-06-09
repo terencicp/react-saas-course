@@ -10,7 +10,7 @@ Replace comments with components and format with markdown to deliver the given l
 
 ## Understand the lesson's context
 
-Read `AGENTS.md`, `documentation/pedagogical approach/Pedagogical guidelines.md` and the lesson's outline at `documentation/content/lesson outlines/Chapter <X>/Lesson <Y>.md`.
+Read the lesson's outline at `documentation/content/lesson outlines/Chapter <X>/Lesson <Y>.md`.
 
 ## 1 Locate components to replace
 

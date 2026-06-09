@@ -10,7 +10,7 @@ Write the questions for the end-of-chapter quiz, where the student self-assesses
 
 ## 1 Initial selection
 
-Read `AGENTS.md`, the `Chapter framing` section of `documentation/content/chapter outlines/Chapter <X>.md`, and the quizzes section of `documentation/pedagogical approach/Pedagogical guidelines.md`.
+Read the `Chapter framing` section of `documentation/content/chapter outlines/Chapter <X>.md`, and the quizzes section of `documentation/pedagogical approach/Pedagogical guidelines.md`.
 
 Read every lesson MDX in the chapter folder `src/content/docs/<X> <Chapter name>`. For each lesson write 1–2 candidate questions depending on its length and conceptual weight.
 
