@@ -1,0 +1,147 @@
+---
+// Starlight `Footer` override. Renders the stock footer untouched, then the
+// AI assistant's mount root and its loader. The loader is the only chat code
+// shipped on normal page loads (~2 KB): the React panel, markdown renderer,
+// shiki, and mermaid all live behind a dynamic import that fires on the
+// first open — via the header "?" button (see ThemeSelect.astro) or the
+// floating "Ask AI" selection button this script owns.
+import Default from '@astrojs/starlight/components/Footer.astro';
+---
+
+<Default><slot /></Default>
+
+<div id="ai-chat-root"></div>
+
+<script>
+	type OpenPayload = { quote?: string; headingText?: string };
+
+	// In dev, @vitejs/plugin-react refuses to run React modules unless its
+	// refresh preamble is installed. Astro injects it for islands; this chat
+	// mounts manually (so React never ships on plain page loads), so the
+	// preamble must be installed by hand before the first React import.
+	// Dead-code-eliminated from production builds.
+	const ensureReactPreamble = async () => {
+		if (!import.meta.env.DEV) return;
+		const RefreshRuntime = await import(/* @vite-ignore */ '/@react-refresh');
+		RefreshRuntime.default.injectIntoGlobalHook(window);
+		(window as any).$RefreshReg$ = () => {};
+		(window as any).$RefreshSig$ = () => (type: unknown) => type;
+		(window as any).__vite_plugin_react_preamble_installed__ = true;
+	};
+
+	let mounting: Promise<typeof import('../ai-chat/mount.tsx')> | null = null;
+	const openChat = (payload?: OpenPayload) => {
+		// Explicit extension: Astro hoists this script into a virtual module
+		// where extension-less .tsx resolution doesn't apply.
+		mounting ??= ensureReactPreamble()
+			.then(() => import('../ai-chat/mount.tsx'))
+			.catch((err) => {
+				// A failed chunk load (flaky network) must not brick the button —
+				// drop the memo so the next click retries.
+				mounting = null;
+				throw err;
+			});
+		mounting.then((mod) => mod.openChat(payload)).catch(console.error);
+	};
+
+	for (const toggle of document.querySelectorAll('[data-ai-chat-toggle]')) {
+		toggle.addEventListener('click', () => openChat());
+	}
+	document.addEventListener('ai-chat:open', ((e: CustomEvent<OpenPayload>) => {
+		openChat(e.detail);
+	}) as EventListener);
+
+	// Reopen across navigations (full page loads) mid-conversation.
+	try {
+		if (sessionStorage.getItem('react-saas-course:ai-chat:open') === 'true') openChat();
+	} catch {}
+
+	// --- Selection → Ask AI -------------------------------------------------
+	// Selecting lesson prose shows a floating button; clicking it opens the
+	// chat with the selection quoted and attributed to its nearest heading.
+	const MIN_SELECTION = 8;
+	let button: HTMLButtonElement | null = null;
+	let pending: OpenPayload | null = null;
+
+	const hideButton = () => {
+		if (button) button.hidden = true;
+	};
+
+	const ensureButton = (): HTMLButtonElement => {
+		if (button) return button;
+		button = document.createElement('button');
+		button.type = 'button';
+		button.className = 'ai-chat-ask-selection';
+		button.textContent = '✦ Ask AI';
+		button.hidden = true;
+		// mousedown would collapse the selection before click fires.
+		button.addEventListener('mousedown', (e) => e.preventDefault());
+		button.addEventListener('click', () => {
+			if (pending) openChat(pending);
+			pending = null;
+			hideButton();
+			getSelection()?.removeAllRanges();
+		});
+		document.body.append(button);
+		return button;
+	};
+
+	/** Last heading (h1–h4) in the content area above the selection start. */
+	const nearestHeading = (range: Range): string | undefined => {
+		const headings = document.querySelectorAll('.sl-markdown-content h2, .sl-markdown-content h3, .sl-markdown-content h4, h1');
+		let best: Element | undefined;
+		for (const h of headings) {
+			const pos = range.startContainer.compareDocumentPosition(h);
+			if (pos & Node.DOCUMENT_POSITION_PRECEDING) best = h;
+		}
+		return best?.textContent?.trim() || undefined;
+	};
+
+	const onSelectionSettled = () => {
+		const selection = getSelection();
+		if (!selection || selection.isCollapsed) return hideButton();
+		const text = selection.toString().trim();
+		if (text.length < MIN_SELECTION) return hideButton();
+		const range = selection.getRangeAt(0);
+		const container =
+			range.commonAncestorContainer instanceof Element
+				? range.commonAncestorContainer
+				: range.commonAncestorContainer.parentElement;
+		if (!container?.closest('.sl-markdown-content')) return hideButton();
+
+		pending = { quote: text, headingText: nearestHeading(range) };
+		const rect = range.getBoundingClientRect();
+		const el = ensureButton();
+		el.hidden = false;
+		const top = rect.top - 40;
+		el.style.top = `${Math.max(8, top < 8 ? rect.bottom + 8 : top)}px`;
+		el.style.left = `${Math.min(Math.max(8, rect.left + rect.width / 2 - 44), innerWidth - 96)}px`;
+	};
+
+	let settleTimer: ReturnType<typeof setTimeout> | undefined;
+	document.addEventListener('selectionchange', () => {
+		clearTimeout(settleTimer);
+		settleTimer = setTimeout(onSelectionSettled, 250);
+	});
+	addEventListener('scroll', hideButton, { passive: true });
+</script>
+
+<style is:global>
+	.ai-chat-ask-selection {
+		position: fixed;
+		z-index: 60;
+		padding: 0.35rem 0.75rem;
+		border: 1px solid var(--sl-color-gray-5);
+		border-radius: 999px;
+		background: var(--sl-color-bg-nav);
+		color: var(--sl-color-white);
+		font-size: var(--sl-text-sm);
+		font-family: var(--sl-font-system);
+		cursor: pointer;
+		box-shadow: var(--sl-shadow-md);
+	}
+	.ai-chat-ask-selection:hover {
+		border-color: var(--sl-color-accent);
+		color: var(--sl-color-accent-high);
+	}
+</style>

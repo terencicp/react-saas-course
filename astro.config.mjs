@@ -116,6 +116,12 @@ export default defineConfig({
             // localStorage before first paint. See the override file for
             // the full lifecycle.
             Sidebar: './src/components/overrides/Sidebar.astro',
+            // Replaces the theme picker with the "?" button that opens the
+            // AI assistant; the theme is forced to always-auto (OS scheme).
+            ThemeSelect: './src/components/overrides/ThemeSelect.astro',
+            // Default footer + the AI chat mount root and its lazy loader
+            // (chat code only downloads on first open).
+            Footer: './src/components/overrides/Footer.astro',
         },
         head: [
             {
