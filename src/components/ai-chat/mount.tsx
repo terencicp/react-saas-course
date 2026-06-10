@@ -7,7 +7,7 @@ import { createRoot } from 'react-dom/client';
 import ChatApp from './ChatApp';
 import './chat.css';
 
-export type OpenPayload = { quote?: string; headingText?: string };
+export type OpenPayload = { quote?: string; headingText?: string; toggle?: boolean };
 
 const queue: (OpenPayload | undefined)[] = [];
 let notify: (() => void) | null = null;

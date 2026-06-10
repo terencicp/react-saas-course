@@ -44,16 +44,24 @@ export default function ChatApp() {
 	const abortRef = useRef<AbortController | null>(null);
 	const settingsRef = useRef(settings);
 	settingsRef.current = settings;
+	// drain() is registered once but must see the live open state to toggle.
+	const openRef = useRef(open);
+	openRef.current = open;
 
 	// --- open requests from the loader (header button / selection button) ----
 	useEffect(() => {
 		const drain = () => {
 			const requests = takeOpenRequests();
 			if (requests.length === 0) return;
-			setOpen(true);
-			setPanelOpen(true);
-			if (!settingsRef.current?.apiKey) setShowSettings(true);
 			const quoted = requests.findLast((r) => r?.quote);
+			// The header button sends { toggle: true }: it closes an open panel.
+			// Any non-toggle request (selection quote, session reopen) always opens.
+			const onlyToggles = !quoted && requests.every((r) => r?.toggle);
+			const next = onlyToggles ? !openRef.current : true;
+			setOpen(next);
+			setPanelOpen(next);
+			if (!next) return;
+			if (!settingsRef.current?.apiKey) setShowSettings(true);
 			if (quoted?.quote) {
 				const attribution = quoted.headingText ? `\n*(from “${quoted.headingText}”)*\n` : '';
 				setDraft((d) => {
@@ -67,6 +75,13 @@ export default function ChatApp() {
 		drain();
 		return () => setOpenListener(null);
 	}, []);
+
+	// Reflect panel state on the header button(s) for assistive tech.
+	useEffect(() => {
+		for (const el of document.querySelectorAll('[data-ai-chat-toggle]')) {
+			el.setAttribute('aria-expanded', String(open));
+		}
+	}, [open]);
 
 	useEffect(() => {
 		const onThemeChange = () => setThemeVersion((v) => v + 1);
