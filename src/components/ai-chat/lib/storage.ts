@@ -10,6 +10,8 @@ export type ChatMessage = {
 	content: string;
 	ts: number;
 	model?: string;
+	/** What was on the student's screen when this (user) message was sent. */
+	viewport?: string;
 };
 
 export type ThreadMeta = {

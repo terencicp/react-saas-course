@@ -10,6 +10,7 @@ import SettingsModal from './SettingsModal';
 import ThreadSwitcher from './ThreadSwitcher';
 import { OpenRouterError, describeError, streamChat } from './lib/openrouter';
 import { buildSystemPrompt, getCourseContext, getLessonContext } from './lib/prompt';
+import { captureViewportContext } from './lib/viewport';
 import {
 	type ChatMessage,
 	type Settings,
@@ -105,7 +106,14 @@ export default function ChatApp() {
 			const [course, lesson] = await Promise.all([getCourseContext(), getLessonContext()]);
 			const apiMessages = [
 				{ role: 'system' as const, content: buildSystemPrompt(course, lesson) },
-				...history.map(({ role, content }) => ({ role, content })),
+				// A user message carries the viewport snapshot taken when it was
+				// sent, as a bracketed note the system prompt teaches the model
+				// to read. Persisted on the message, so the payload — and any
+				// provider prompt-prefix cache — stays stable across turns.
+				...history.map(({ role, content, viewport }) => ({
+					role,
+					content: viewport ? `[${viewport}]\n\n${content}` : content,
+				})),
 			];
 			for await (const delta of streamChat({
 				apiKey: current.apiKey,
@@ -134,7 +142,12 @@ export default function ChatApp() {
 
 	const send = useCallback(
 		(text: string) => {
-			const userMessage: ChatMessage = { role: 'user', content: text, ts: Date.now() };
+			const userMessage: ChatMessage = {
+				role: 'user',
+				content: text,
+				ts: Date.now(),
+				viewport: captureViewportContext() ?? undefined,
+			};
 			let threadId = activeId;
 			if (!threadId) {
 				const meta = createThread(text.replace(/\s+/g, ' '), location.pathname);
