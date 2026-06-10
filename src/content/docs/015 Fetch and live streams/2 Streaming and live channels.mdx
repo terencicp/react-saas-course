@@ -35,19 +35,19 @@ import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
 
 Three features land on your desk in the same week. A CSV export takes twelve seconds to build on the server, and the product wants a progress bar that actually moves. A notifications panel should light up the instant something happens, not five seconds later when the next poll fires. And an LLM endpoint streams its answer one token at a time, the way every chat UI now does.
 
-Reach for the `fetch` call you built in the last lesson and all three resist it. Not because the call is wrong — because they aren't the shape it was built for. A hardened `fetch` is a *request-response*: you send one request, you wait, you read one buffered answer, the round-trip closes. But none of these three is a round-trip. Each is a **server-to-client live update over HTTP** — the connection stays open and the server keeps writing. The export pushes progress as it computes. The notifications channel pushes whenever there's news. The LLM pushes tokens as it generates them. The answer arrives in pieces, or it never stops arriving.
+Reach for the `fetch` call you built in the last lesson and all three resist it. The call isn't wrong; it just isn't the shape these features need. A hardened `fetch` is a *request-response*: you send one request, you wait, you read one buffered answer, and the round-trip closes. None of these three is a round-trip. Each one is a **server-to-client live update over HTTP**, where the connection stays open and the server keeps writing. The export pushes progress as it computes. The notifications channel pushes whenever there's news. The LLM pushes tokens as it generates them. The answer arrives in pieces, or it never stops arriving.
 
-That reframe is the whole lesson. You already own request-response. The new shape is the one where the server keeps talking, and the senior questions it raises are: what primitive carries the bytes, what shape rides the wire, how does the client read a response that isn't finished — and the decision that matters most, **when does polling beat a live stream, and a live stream beat a WebSocket?**
+That reframe is the whole lesson. You already own request-response. What's new is the shape where the server keeps talking, and it raises a few questions: what primitive carries the bytes, what format rides the wire, and how the client reads a response that isn't finished. The decision that matters most is when polling beats a live stream, and when a live stream beats a WebSocket.
 
-We'll build this in two halves, because the second is made of the first. The substrate half: a `Response` body was *always* a stream of bytes — the `.json()` and `.text()` from last lesson just hid that by reading it to the end. Pull the stream yourself instead and you read chunks as they land. The channel half: Server-Sent Events, which turns out not to be a new transport at all, just a thin text convention layered on that same stream. You'll read one SSE stream by hand — to see, with your own eyes, that it's only framed text over `response.body` — before you ever reach for the browser API that does it for you.
+We'll build this in two halves, and the second is made of the first. The substrate half: a `Response` body was *always* a stream of bytes, and the `.json()` and `.text()` from last lesson hid that by reading it to the end. Pull the stream yourself instead and you read chunks as they land. The channel half: Server-Sent Events, which turns out not to be a new transport at all, just a thin text convention layered on that same stream. You'll read one SSE stream by hand, to see for yourself that it's only framed text over `response.body`, before you reach for the browser API that does it for you.
 
-So the first move is to stop trusting `.json()` to hide the truth from you. The body was a stream all along.
+The first move is to stop trusting `.json()` to hide the truth from you. The body was a stream all along.
 
 ## `Response.body` is a stream you can pull
 
-Last lesson, you read every response body with a consumer like `response.json()` or `response.text()`. Look closely at what those actually do: they read the body *to completion* — every byte, start to finish — and only then resolve with the whole thing. That's **buffering**. For a two-kilobyte JSON row it's exactly right; the body is tiny and you want all of it before you do anything. But aim that same `.json()` at a twelve-second export and it betrays you. The promise won't resolve until the last byte of the last row arrives — twelve seconds of a blank screen, then everything at once. You wanted the first byte *now*.
+Last lesson, you read every response body with a consumer like `response.json()` or `response.text()`. Look closely at what those do: they read the body *to completion*, every byte from start to finish, and only then resolve with the whole thing. That's **buffering**. For a two-kilobyte JSON row it's exactly right, because the body is tiny and you want all of it before you do anything. But aim that same `.json()` at a twelve-second export and it works against you. The promise won't resolve until the last byte of the last row arrives: twelve seconds of a blank screen, then everything at once. You wanted the first byte *now*.
 
-The body wasn't hiding. `response.body` is a <Term definition="A pull-based stream of chunks. response.body is one; iterate it with for await to read chunks as they arrive.">`ReadableStream`</Term> — a pull-based stream of <Term definition="One network frame of a streamed body. Its size is set by the network, not your data, so it rarely lines up with a message.">chunks</Term>, where each chunk is a <Term definition="A fixed-length array of bytes. Each stream chunk is one; TextDecoder turns it into a string.">`Uint8Array`</Term> of raw bytes. The consumer methods were reading that stream for you and handing back the assembled result. Skip them, reach for `response.body` directly, and the stream is yours to pull one chunk at a time.
+The stream was there all along. `response.body` is a <Term definition="A pull-based stream of chunks. response.body is one; iterate it with for await to read chunks as they arrive.">`ReadableStream`</Term>, a pull-based stream of <Term definition="One network frame of a streamed body. Its size is set by the network, not your data, so it rarely lines up with a message.">chunks</Term>, where each chunk is a <Term definition="A fixed-length array of bytes. Each stream chunk is one; TextDecoder turns it into a string.">`Uint8Array`</Term> of raw bytes. The consumer methods were reading that stream for you and handing back the assembled result. Skip them, reach for `response.body` directly, and the stream is yours to pull one chunk at a time.
 
 The 2026 reflex for pulling it is a `for await` loop:
 
@@ -59,10 +59,10 @@ for await (const chunk of response.body) {
 }
 ```
 
-A `ReadableStream` is async-iterable on the server runtimes this course touches — Node, the Edge runtime, the renderer behind a Server Component — and in browsers it's only just become universal: Safari was the last holdout and didn't ship it until version 26.4, so global support sits around three-quarters. On the server, or in a browser app that doesn't have to support older Safari, `for await` reads the stream directly. Each turn of the loop hands you exactly one chunk: the next slice of the body that has physically arrived over the network. You act on chunk one while chunk four is still in flight. That's the difference buffering hid. (When you do have to cover older Safari, reach for the `getReader()` loop below — it's the cross-browser-safe spelling of the same read.)
+A `ReadableStream` is async-iterable on the server runtimes this course touches: Node, the Edge runtime, and the renderer behind a Server Component. In browsers it's only just become universal. Safari was the last holdout and didn't ship it until version 26.4, so global support sits around three-quarters. On the server, or in a browser app that doesn't have to support older Safari, `for await` reads the stream directly. Each turn of the loop hands you exactly one chunk: the next slice of the body that has physically arrived over the network. You act on chunk one while chunk four is still in flight, which is the difference buffering hid. When you do have to cover older Safari, reach for the `getReader()` loop below; it's the cross-browser-safe spelling of the same read.
 
 :::note
-TypeScript types `response.body` as `ReadableStream | null` — `null` for the rare bodyless response, like a `204`. Production code guards `if (!response.body) return` before the loop; the snippets here skip that one line to keep the streaming mechanics in focus. In the same spirit, helpers like `handle`, `notificationSchema`, and the React setters in later snippets are unimported stand-ins, exactly as the last lesson left `Result`, `ok`, and the schema.
+TypeScript types `response.body` as `ReadableStream | null`, where `null` covers the rare bodyless response like a `204`. Production code guards `if (!response.body) return` before the loop; the snippets here skip that one line to keep the streaming mechanics in focus. In the same spirit, helpers like `handle`, `notificationSchema`, and the React setters in later snippets are unimported stand-ins, exactly as the last lesson left `Result`, `ok`, and the schema.
 :::
 
 Watch the two side by side in time. Scrub through the sequence below.
@@ -78,24 +78,24 @@ Watch the two side by side in time. Scrub through the sequence below.
   <DiagramStep>
     <BufferVsPull step={2} />
     <Fragment slot="caption">
-      **Pulling with `response.body`.** Each chunk reaches the consumer the moment it lands. You're acting on chunk one while chunk four is still on the wire — the progress bar can move on chunk one.
+      **Pulling with `response.body`.** Each chunk reaches the consumer the moment it lands. You act on chunk one while chunk four is still on the wire, so the progress bar can move as soon as chunk one arrives.
     </Fragment>
   </DiagramStep>
 
   <DiagramStep>
     <BufferVsPull step={3} />
     <Fragment slot="caption">
-      **A chunk is a network frame, not a message.** The network split these bytes wherever it pleased — a single message can span two chunks, and one chunk can hold pieces of two messages. Hold that thought; it's the problem two sections from now.
+      **A chunk is a network frame, not a message.** The network split these bytes wherever it pleased, so a single message can span two chunks, and one chunk can hold pieces of two messages. Hold that thought; it becomes the problem two sections from now.
     </Fragment>
   </DiagramStep>
 </DiagramSequence>
 
-That last frame plants a flag we'll come back to. A chunk's size is decided by the network — by packet sizes, buffering, and timing — not by your data. So a chunk almost never lines up with a unit of meaning. For now, just register it: **a chunk is a network frame, not a message.**
+That last frame plants a flag we'll come back to. A chunk's size is decided by the network, by packet sizes, buffering, and timing, not by your data. So a chunk almost never lines up with a unit of meaning. For now, just register that **a chunk is a network frame, not a message.**
 
-The other spelling you'll meet in existing code, inside libraries, and anywhere older Safari is still in scope: instead of `for await`, call `response.body.getReader()` and loop on `reader.read()`, which hands back `{ done, value }` each turn. It's the same stream, read the same way — more ceremony, and you have to remember to call `reader.releaseLock()` when you bail early, but it works in every browser regardless of version. So it's not merely legacy: it's the safe cross-browser choice when your support matrix still includes Safari before 26.4. Reach for `for await` when you can, and drop to `getReader()` when you must.
+There's another spelling you'll meet in existing code, inside libraries, and anywhere older Safari is still in scope. Instead of `for await`, you call `response.body.getReader()` and loop on `reader.read()`, which hands back `{ done, value }` each turn. It's the same stream read the same way, with more ceremony: you also have to remember to call `reader.releaseLock()` when you bail early. But it works in every browser regardless of version, so it's not merely legacy code. It's the safe cross-browser choice when your support matrix still includes Safari before 26.4. Reach for `for await` when you can, and drop to `getReader()` when you must.
 
 <details>
-<summary>The `getReader()` loop, for reference and older Safari</summary>
+<summary>The `getReader()` loop, for reference and for older Safari</summary>
 
 ```ts
 const reader = response.body.getReader();
@@ -109,17 +109,17 @@ while (true) {
 reader.releaseLock();
 ```
 
-`for await` does all of this for you, including releasing the lock when the loop ends. Prefer it where you can; reach for this form when you recognize it in the wild or when your browser support matrix still includes Safari before 26.4.
+`for await` does all of this for you, including releasing the lock when the loop ends. Prefer it where you can, and reach for this form when you recognize it in the wild or when your browser support matrix still includes Safari before 26.4.
 
 </details>
 
 ## Decoding chunks back to text
 
-You're holding `Uint8Array` chunks — raw bytes — and what you almost always want is text. So you need the bridge between the two, and a detail that, if you miss it, ships a bug invisible to every test you'll write.
+You're holding `Uint8Array` chunks of raw bytes, and what you almost always want is text. So you need the bridge between the two, plus one detail that ships a bug invisible to every test you'll write if you miss it.
 
 The bridge is a pair of platform objects. `TextEncoder` goes from string to bytes: `new TextEncoder().encode(s)` returns the UTF-8 bytes of a string. `TextDecoder` goes the other way: `new TextDecoder().decode(bytes)` returns the string those bytes spell. We'll use the decoder now to turn chunks into text, and the encoder later when the server writes bytes onto a stream. They're the only two byte primitives this lesson needs.
 
-Here's the detail. UTF-8 encodes most characters in a single byte, but anything beyond plain ASCII — an accented `é`, an emoji, a CJK character — takes two, three, or four bytes. And the network doesn't know or care where a character's bytes begin and end. It can cut a chunk *in the middle* of a multi-byte character: the first two bytes of a three-byte `€` ride one chunk, the last byte rides the next. Decode that first chunk on its own and the decoder sees two bytes that don't spell a complete character, gives up, and emits the replacement character `�`. The euro sign is gone, corrupted on a chunk boundary the network chose at random.
+Here's the detail. UTF-8 encodes most characters in a single byte, but anything beyond plain ASCII, such as an accented `é`, an emoji, or a CJK character, takes two, three, or four bytes. And the network doesn't know or care where a character's bytes begin and end. It can cut a chunk *in the middle* of a multi-byte character: the first two bytes of a three-byte `€` ride one chunk, and the last byte rides the next. Decode that first chunk on its own and the decoder sees two bytes that don't spell a complete character, gives up, and emits the replacement character `�`. The euro sign is gone, corrupted on a chunk boundary the network chose at random.
 
 The fix is one option:
 
@@ -134,13 +134,13 @@ for await (const chunk of response.body) {
 const tail = decoder.decode(); // flush any held-back bytes
 ```
 
-`{ stream: true }` tells the decoder it's mid-stream: when a chunk ends on an incomplete multi-byte sequence, hold those trailing bytes back instead of guessing, and prepend them to the front of the next chunk. The split `€` gets reassembled on the call that receives its final byte. The decoder *carries that state between calls*, which is why you create it once, above the loop, and reuse the same instance every iteration — a fresh decoder per chunk would have no memory of the held-back bytes. The final bare `decoder.decode()` with no argument flushes anything still buffered at the end, in case the stream's very last character was split. So the reflex: **always `{ stream: true }` on chunks, one reused decoder, one final flush.**
+`{ stream: true }` tells the decoder it's mid-stream: when a chunk ends on an incomplete multi-byte sequence, hold those trailing bytes back instead of guessing, then prepend them to the front of the next chunk. The split `€` gets reassembled on the call that receives its final byte. The decoder *carries that state between calls*, which is why you create it once, above the loop, and reuse the same instance every iteration. A fresh decoder per chunk would have no memory of the held-back bytes. The final bare `decoder.decode()` with no argument flushes anything still buffered at the end, in case the stream's very last character was split. The reflex: **always `{ stream: true }` on chunks, one reused decoder, one final flush.**
 
 :::caution
-Decode chunks *without* `{ stream: true }` and the happy path looks perfect — because your test data is pure ASCII, where every character is one byte and nothing ever splits. Then a real user's name has an `é` in it, or a message has an emoji, it lands on a chunk boundary, and renders as `�` in production. The bug is invisible until the exact byte lands on the exact edge. The flag is not optional.
+Decode chunks *without* `{ stream: true }` and the happy path looks perfect, because your test data is pure ASCII, where every character is one byte and nothing ever splits. Then a real user's name has an `é` in it, or a message carries an emoji, it lands on a chunk boundary, and it renders as `�` in production. The bug stays invisible until the exact byte lands on the exact edge. The flag is not optional.
 :::
 
-Predict what the broken version prints. The stream below delivers `"café"` in two chunks, and the `é` — two bytes in UTF-8 — is split across the boundary. The decoder is called per chunk with no `stream` option.
+Predict what the broken version prints. The stream below delivers `"café"` in two chunks, and the `é`, which is two bytes in UTF-8, is split across the boundary. The decoder is called per chunk with no `stream` option.
 
 <PredictOutput
   instructions="Each chunk is decoded with `new TextDecoder().decode(chunk)` — no stream option. What gets logged?"
@@ -162,11 +162,11 @@ for (const chunk of [chunkA, chunkB]) {
 
 ## From chunks to messages
 
-The decoder gives you correct *text*. It does nothing about the problem the diagram flagged: chunks are network frames, and your application thinks in *messages*. One message can span two chunks. Two messages can land in one chunk. You cannot assume one chunk equals one message — the network never promised that, and it routinely breaks it.
+The decoder gives you correct *text*. It does nothing about the problem the diagram flagged: chunks are network frames, and your application thinks in *messages*. One message can span two chunks. Two messages can land in one chunk. You cannot assume one chunk equals one message, because the network never promised that and routinely breaks it.
 
-So how do you read whole messages off a stream that hands you arbitrary fragments? There's one pattern, and it works for *any* framed protocol you'll ever read off a byte stream — it's the direct prerequisite for parsing SSE by hand in a moment. Named once so you recognize it forever: **accumulate the decoded text into a buffer; split the buffer on the protocol's framing token; the final fragment might be incomplete, so keep it as the tail and carry it into the next iteration; emit everything before the tail.** For the SSE we're about to meet, the framing token is the blank line — two newlines, `\n\n` — that marks the end of one event.
+So how do you read whole messages off a stream that hands you arbitrary fragments? There's one pattern, and it works for *any* framed protocol you'll ever read off a byte stream. It's the direct prerequisite for parsing SSE by hand in a moment. Here it is, named once so you recognize it later: **accumulate the decoded text into a buffer; split the buffer on the protocol's framing token; the final fragment might be incomplete, so keep it as the tail and carry it into the next iteration; then emit everything before the tail.** For the SSE we're about to meet, the framing token is the blank line, the two newlines `\n\n` that mark the end of one event.
 
-The naive version skips the tail, and it's worth seeing it fail before you trust the fix. Picture splitting *each chunk on its own* on `\n\n`. A chunk arrives carrying `event1\n\nevent2\npart` — one complete event and the start of a second. Split it and you get `["event1", "event2\npart"]`. You emit `event1`, fine — but then you emit `event2\npart` too, a half-event with no terminator yet, as if it were whole. The rest of event two is still coming in the *next* chunk, and you've already mangled it. The event spanning the boundary is corrupted, every time.
+The naive version skips the tail, and it's worth seeing it fail before you trust the fix. Picture splitting *each chunk on its own* on `\n\n`. A chunk arrives carrying `event1\n\nevent2\npart`, which is one complete event and the start of a second. Split it and you get `["event1", "event2\npart"]`. You emit `event1`, which is fine, but then you also emit `event2\npart`, a half-event with no terminator yet, as if it were whole. The rest of event two is still coming in the *next* chunk, and you've already mangled it. Every event that spans a boundary is corrupted.
 
 Buffer instead, and the boundary stops mattering. Watch the buffer and its tail move across two chunks.
 
@@ -174,19 +174,19 @@ Buffer instead, and the boundary stops mattering. Watch the buffer and its tail 
   <DiagramStep>
     <BufferAndTail step={1} />
     <Fragment slot="caption">
-      **Chunk A arrives.** The buffer now holds `event1\n\nevent2\npart`. Split on `\n\n`: everything before the last separator is complete, so emit `event1`. The trailing `event2\npart` has no terminator yet — keep it as the tail.
+      **Chunk A arrives.** The buffer now holds `event1\n\nevent2\npart`. Split on `\n\n`: everything before the last separator is complete, so emit `event1`. The trailing `event2\npart` has no terminator yet, so keep it as the tail.
     </Fragment>
   </DiagramStep>
 
   <DiagramStep>
     <BufferAndTail step={2} />
     <Fragment slot="caption">
-      **Chunk B arrives.** Prepend the kept tail, and `event2\npart` + `rest` reunite into a whole event. Now the buffer splits cleanly into two complete events — emit `event2` and `event3`. The buffer ends exactly on `\n\n`, so the new tail is empty. Nothing was lost on the boundary.
+      **Chunk B arrives.** Prepend the kept tail, and `event2\npart` plus `rest` reunite into a whole event. Now the buffer splits cleanly into two complete events, so emit `event2` and `event3`. The buffer ends exactly on `\n\n`, so the new tail is empty. Nothing was lost on the boundary.
     </Fragment>
   </DiagramStep>
 </DiagramSequence>
 
-That's the entire move: **append, split, keep the tail, parse the rest.** The tail is the one genuinely fiddly part — it's a fragment you're deliberately *not* emitting yet, holding until its other half arrives. Get that one pointer right and framed-stream parsing stops being mysterious. The two versions, side by side:
+That's the entire move: **append, split, keep the tail, parse the rest.** The tail is the one genuinely fiddly part. It's a fragment you're deliberately *not* emitting yet, held until its other half arrives. Get that one piece right and framed-stream parsing stops being mysterious. Here are the two versions side by side.
 
 <CodeVariants>
   <CodeVariant label="Loses events">
@@ -202,7 +202,7 @@ That's the entire move: **append, split, keep the tail, parse the rest.** The ta
     ```
 
     </div>
-    **Splits each chunk in isolation.** An event split across two chunks gets emitted as two half-events — the trailing fragment of one chunk is treated as complete, and its continuation in the next chunk is never joined to it. Any event that straddles a boundary is corrupted.
+    **Splits each chunk in isolation.** An event split across two chunks gets emitted as two half-events: the trailing fragment of one chunk is treated as complete, and its continuation in the next chunk is never joined to it. Any event that straddles a boundary is corrupted.
   </CodeVariant>
 
   <CodeVariant label="Buffered">
@@ -226,13 +226,13 @@ That's the entire move: **append, split, keep the tail, parse the rest.** The ta
   </CodeVariant>
 </CodeVariants>
 
-Notice this section never looked *inside* an event — it only cares about where one ends. Splitting bytes into whole messages and understanding what a message *says* are two separate jobs. The framing token is `\n\n`; what those bytes mean is the next section's problem. Keeping them apart is what keeps each piece simple.
+Notice that this section never looked *inside* an event; it only cares about where one ends. Splitting bytes into whole messages and understanding what a message *says* are two separate jobs. The framing token is `\n\n`, and what those bytes mean is the next section's problem. Keeping the two jobs apart is what keeps each piece simple.
 
 ## The Server-Sent Events wire format
 
-Here's the payoff for pulling streams by hand. <Term definition="A one-way server→client convention over a long-lived text/event-stream HTTP response: lines of data: … separated by blank lines.">Server-Sent Events</Term> (SSE) — the thing your notifications panel and your LLM token stream both want — is not a new transport, not a binary protocol, not a library. It's a *convention*: an ordinary HTTP response with the content type `text/event-stream` that stays open, down which the server writes lines of UTF-8 text. The client reads the stream — exactly the way you just learned — and dispatches one event per blank-line-terminated block. That's the entire idea. Because it's just text over a normal HTTP response, it rides every piece of infrastructure HTTP already has: it works through CDNs and proxies, it multiplexes over HTTP/2, and it carries your app's cookies for authentication with nothing extra. No new wire to stand up.
+Here's the payoff for pulling streams by hand. <Term definition="A one-way server→client convention over a long-lived text/event-stream HTTP response: lines of data: … separated by blank lines.">Server-Sent Events</Term> (SSE), the thing your notifications panel and your LLM token stream both want, is not a new transport, not a binary protocol, and not a library. It's a *convention*: an ordinary HTTP response with the content type `text/event-stream` that stays open, down which the server writes lines of UTF-8 text. The client reads the stream exactly the way you just learned and dispatches one event per blank-line-terminated block. That's the entire idea. Because it's just text over a normal HTTP response, it rides every piece of infrastructure HTTP already has: it works through CDNs and proxies, it multiplexes over HTTP/2, and it carries your app's cookies for authentication with nothing extra. There's no new wire to stand up.
 
-The text follows a tiny grammar. Each event is one or more `key: value` lines, and a blank line ends it. The block below is a literal slice of an SSE stream — every byte the server actually sent. Hover the fields to see what each one does.
+The text follows a tiny grammar. Each event is one or more `key: value` lines, and a blank line ends it. The block below is a literal slice of an SSE stream, every byte the server actually sent. Hover the fields to see what each one does.
 
 <CodeTooltips tooltips={{
   'event:': 'Optional event type. Without it, the event is delivered as the default "message" type. With it, the client listens for this name specifically.',
@@ -251,31 +251,31 @@ data: {"progress":20}
 ```
 </CodeTooltips>
 
-Read it top to bottom. The first event is bare: a `data:` line with a JSON payload, then a blank line to terminate it. With no `event:` field, the client receives it as the default type, `message`. The second event is *named* — `event: notification` — so a client can listen for `notification` events specifically rather than lumping everything into the default; it also carries `id: 42`. That `id:` is SSE's quiet superpower: the browser remembers the last id it saw, and if the connection drops it sends that id back in a <Term definition="The request header the browser sends on SSE reconnect, carrying the last id: it saw, so the server can resume from there.">`Last-Event-ID`</Term> header on reconnect, so the server can resume from event 43 instead of replaying from the top. Resilience, for the cost of numbering your events. The `retry:` field just hints how long the browser should wait before reconnecting — recognize it; you'll rarely set it.
+Read it top to bottom. The first event is bare: a `data:` line with a JSON payload, then a blank line to terminate it. With no `event:` field, the client receives it as the default type, `message`. The second event is *named*, with `event: notification`, so a client can listen for `notification` events specifically rather than lumping everything into the default. It also carries `id: 42`. That `id:` is the quiet workhorse of SSE: the browser remembers the last id it saw, and if the connection drops it sends that id back in a <Term definition="The request header the browser sends on SSE reconnect, carrying the last id: it saw, so the server can resume from there.">`Last-Event-ID`</Term> header on reconnect, so the server can resume from event 43 instead of replaying from the top. You get that resilience for the cost of numbering your events. The `retry:` field hints how long the browser should wait before reconnecting; recognize it, though you'll rarely set it.
 
-One rule governs writing the `data:` payload, and breaking it corrupts the stream. Each `data:` line is *one logical line* — a literal newline inside the payload starts what the protocol reads as a second `data:` line, and a blank line inside it terminates the event early. So you never write a raw multi-line string. You stringify:
+One rule governs writing the `data:` payload, and breaking it corrupts the stream. Each `data:` line is *one logical line*: a literal newline inside the payload starts what the protocol reads as a second `data:` line, and a blank line inside it terminates the event early. So you never write a raw multi-line string. You stringify:
 
 ```ts
 const frame = `data: ${JSON.stringify(payload)}\n\n`;
 ```
 
-`JSON.stringify` escapes any newline in the payload to `\n` *inside* the string, collapsing it to a single safe line, and you add the `\n\n` terminator yourself. The reflex: **one `JSON.stringify`'d `data:` line per event, terminated by a blank line.** Send an un-stringified payload with a newline in it and the reader either sees two `data:` lines or hits a premature terminator — the framing breaks on data you didn't sanitize.
+`JSON.stringify` escapes any newline in the payload to `\n` *inside* the string, collapsing it to a single safe line, and you add the `\n\n` terminator yourself. The reflex: **one `JSON.stringify`'d `data:` line per event, terminated by a blank line.** Send an un-stringified payload with a newline in it and the reader either sees two `data:` lines or hits a premature terminator, so the framing breaks on data you didn't sanitize.
 
 :::note
-You'll meet this exact shape again much later in the course. The streaming chat protocol the Vercel AI SDK speaks — the one behind every `streamText` token feed — is SSE underneath, this same `data:`-line convention with typed deltas layered on top. The LLM token stream from the intro isn't a parallel transport; it's this.
+You'll meet this exact shape again much later in the course. The streaming chat protocol the Vercel AI SDK speaks, the one behind every `streamText` token feed, is SSE underneath: this same `data:`-line convention with typed deltas layered on top. The LLM token stream from the intro isn't a parallel transport; it's this.
 :::
 
 ## Emitting an SSE stream from a Route Handler
 
-Now you write the server side. In Next.js, a streaming response lives in a **Route Handler** — a file at `app/api/<path>/route.ts` that exports a function per HTTP method. The handler returns a `Response`, and for SSE that `Response` wraps a `ReadableStream` you write events into.
+Now you write the server side. In Next.js, a streaming response lives in a **Route Handler**, a file at `app/api/<path>/route.ts` that exports a function per HTTP method. The handler returns a `Response`, and for SSE that `Response` wraps a `ReadableStream` you write events into.
 
 :::note
-You're seeing the bare bones of a Route Handler here — `export async function GET(request)` and a returned `Response`, nothing more. The full production shape (validating params and bodies with schemas, the auth wrapper, the status-code conventions) is owned by a later chapter on route handlers. Here the stream is the whole point, so everything else is stripped to the minimum.
+You're seeing the bare bones of a Route Handler here: `export async function GET(request)` and a returned `Response`, nothing more. The full production shape (validating params and bodies with schemas, the auth wrapper, the status-code conventions) is owned by a later chapter on route handlers. Here the stream is the whole point, so everything else is stripped to the minimum.
 :::
 
-The handler builds a `new ReadableStream` whose `start(controller)` function does the writing: `controller.enqueue(...)` pushes a chunk onto the stream, `controller.close()` ends it. And here the encoder from earlier earns its place — a `ReadableStream` carries *bytes*, not strings, so every SSE frame goes through `TextEncoder` on its way out. It's the exact inverse of the decoding you did on the client: the server encodes text to bytes to send; the client decodes bytes to text to read.
+The handler builds a `new ReadableStream` whose `start(controller)` function does the writing: `controller.enqueue(...)` pushes a chunk onto the stream, and `controller.close()` ends it. Here the encoder from earlier earns its place, because a `ReadableStream` carries *bytes*, not strings, so every SSE frame goes through `TextEncoder` on its way out. It's the exact inverse of the decoding you did on the client: the server encodes text to bytes to send, and the client decodes bytes to text to read.
 
-Step through the handler. It streams a few progress updates, then closes — and cleans up if the client leaves first.
+Step through the handler. It streams a few progress updates, then closes, and it cleans up if the client leaves first.
 
 <AnnotatedCode lang="ts" maxLines={18} code={`
 export async function GET(request: Request) {
@@ -311,7 +311,7 @@ export async function GET(request: Request) {
 }
 `}>
   <AnnotatedStep meta="{1}" color="blue">
-    The handler is a `GET` that takes the incoming `request`. That `request.signal` is the hook we'll use at the end: it's an `AbortSignal` the runtime fires the moment the client disconnects — the same `AbortSignal` you passed *into* `fetch` last lesson, now handed *to* you on the receiving side.
+    The handler is a `GET` that takes the incoming `request`. That `request.signal` is the hook we'll use at the end: it's an `AbortSignal` the runtime fires the moment the client disconnects. It's the same `AbortSignal` you passed *into* `fetch` last lesson, now handed *to* you on the receiving side.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{2}" color="blue">
@@ -319,27 +319,27 @@ export async function GET(request: Request) {
   </AnnotatedStep>
 
   <AnnotatedStep meta="{4-5}" color="blue">
-    `new ReadableStream` with a `start(controller)` function. `start` runs once when the stream is read, and the `controller` is your handle for writing into it — `enqueue` to push a chunk, `close` to end it.
+    `new ReadableStream` with a `start(controller)` function. `start` runs once when the stream is read, and the `controller` is your handle for writing into it: `enqueue` to push a chunk, `close` to end it.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{9-10}" color="green">
-    The write itself. Build one SSE frame — `data:` + the JSON-stringified payload + the `\n\n` terminator — encode it to bytes, and `enqueue` it. This is the one-line-per-event reflex from the wire-format section, now firing once a second.
+    The write itself. Build one SSE frame from `data:`, the JSON-stringified payload, and the `\n\n` terminator, then encode it to bytes and `enqueue` it. This is the one-line-per-event reflex from the wire-format section, now firing once a second.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{17-20}" color="orange">
-    Cleanup on disconnect. Subscribe to `request.signal`'s `abort` event; when the client closes the tab, clear the interval and close the controller. Skip this and every client who navigates away leaves a `setInterval` — and, in a real handler, an open database cursor — running forever on your server. One leaked timer per lost client.
+    Cleanup on disconnect. Subscribe to `request.signal`'s `abort` event, so that when the client closes the tab, you clear the interval and close the controller. Skip this and every client who navigates away leaves a `setInterval`, and in a real handler an open database cursor, running forever on your server. That's one leaked timer per lost client.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{24-29}" color="violet">
-    Return the stream as a `Response` with three headers. `Content-Type: text/event-stream` is the protocol opt-in — browsers and proxies key on it. `Connection: keep-alive` matters only on HTTP/1.1 (HTTP/2 and 3 ignore it). And `Cache-Control: no-cache, no-transform` carries the load-bearing token.
+    Return the stream as a `Response` with three headers. `Content-Type: text/event-stream` is the protocol opt-in that browsers and proxies key on. `Connection: keep-alive` matters only on HTTP/1.1, since HTTP/2 and 3 ignore it. And `Cache-Control: no-cache, no-transform` carries the load-bearing token.
   </AnnotatedStep>
 </AnnotatedCode>
 
-That `no-transform` deserves a full stop on its own, because forgetting it is the single most common way SSE breaks *only in production*. A CDN or proxy sitting between your server and the user is allowed, by default, to *buffer* a response — hold the bytes and optimize delivery. Do that to a stream and you've destroyed the entire point: the proxy collects all your events, waits for the stream to end, and delivers one twelve-second-late blob. It worked perfectly on `localhost` because there was no proxy in the way. `no-transform` is the explicit instruction to every middlebox: do not buffer, do not touch, pass these bytes through as they arrive.
+That `no-transform` deserves its own paragraph, because forgetting it is the single most common way SSE breaks *only in production*. A CDN or proxy sitting between your server and the user is allowed, by default, to *buffer* a response: hold the bytes and optimize delivery. Do that to a stream and you've destroyed the entire point. The proxy collects all your events, waits for the stream to end, and delivers one twelve-second-late blob. It worked perfectly on `localhost` because there was no proxy in the way. `no-transform` is the explicit instruction to every middlebox to not buffer, not touch, and pass these bytes through as they arrive.
 
-There's one more guard the code implies but worth stating outright: once you've called `controller.close()` — or once the abort handler has — calling `enqueue` again *throws*. So in a longer-lived handler you guard every write behind an "is this still open" check, the same way the abort listener stops the timer before anything else can fire.
+There's one more guard the code implies that's worth stating outright. Once you've called `controller.close()`, or once the abort handler has, calling `enqueue` again *throws*. So in a longer-lived handler you guard every write behind an "is this still open" check, the same way the abort listener stops the timer before anything else can fire.
 
-Order the construction. The handler is fixed above the steps; drag the build order into place.
+Order the construction. The handler is fixed above the steps, so drag the build order into place.
 
 <Sequence instructions="Put the steps of building an SSE Route Handler in the order they run.">
 
@@ -386,13 +386,13 @@ export async function GET(request: Request) {
 
 ## Consuming SSE with `EventSource`
 
-You read one SSE stream by hand to prove it's just framed text. Now meet the browser API that does the framing for you, because for most consuming you'll reach for it: <Term definition="The browser API that opens an SSE connection and auto-reconnects, replaying the last event id.">`EventSource`</Term>. You give it a URL, and it opens the connection, reads the stream, parses the `data:`/`event:`/`id:` grammar, and dispatches a clean event object per message — none of the buffer-and-tail loop, because it owns that internally.
+You read one SSE stream by hand to prove it's just framed text. Now meet the browser API that does the framing for you, since for most consuming you'll reach for it: <Term definition="The browser API that opens an SSE connection and auto-reconnects, replaying the last event id.">`EventSource`</Term>. You give it a URL, and it opens the connection, reads the stream, parses the `data:`/`event:`/`id:` grammar, and dispatches a clean event object per message. There's no buffer-and-tail loop to write, because it owns that internally.
 
-The surface is small. `new EventSource(url)` opens it. `source.onmessage` fires for default (unnamed) events, with the raw payload string on `event.data`. `source.addEventListener('<name>', ...)` fires for events that carried a matching `event:` field. `source.close()` shuts it down. And the payload is still wire data, so the reflex from last lesson holds: you `JSON.parse` it and validate the shape before you trust it — never trust the wire, even when the wire is your own server.
+The surface is small. `new EventSource(url)` opens it. `source.onmessage` fires for default (unnamed) events, with the raw payload string on `event.data`. `source.addEventListener('<name>', ...)` fires for events that carried a matching `event:` field. `source.close()` shuts it down. And the payload is still wire data, so the reflex from last lesson holds: you `JSON.parse` it and validate the shape before you trust it. Never trust the wire, even when the wire is your own server.
 
-The free win that makes `EventSource` the default: it *auto-reconnects*. If the connection drops, the browser reopens it on its own and sends back the last `id:` it saw in the `Last-Event-ID` header — so a server that numbers its events can resume exactly where it left off. You get resilient streaming for nothing.
+The win that makes `EventSource` the default is that it *auto-reconnects*. If the connection drops, the browser reopens it on its own and sends back the last `id:` it saw in the `Last-Event-ID` header, so a server that numbers its events can resume exactly where it left off. You get resilient streaming for free.
 
-Inside React, the lifecycle has one correct home. The subscription is a side effect with a setup and a teardown, so it lives in a `useEffect`, and the cleanup function closes the connection — the same setup-then-teardown discipline as the `AbortSignal` from last lesson. Step through it:
+Inside React, the lifecycle has one correct home. The subscription is a side effect with a setup and a teardown, so it lives in a `useEffect`, and the cleanup function closes the connection. It's the same setup-then-teardown discipline as the `AbortSignal` from last lesson. Step through it:
 
 <AnnotatedCode lang="tsx" maxLines={16} code={`
 useEffect(() => {
@@ -415,11 +415,11 @@ useEffect(() => {
   </AnnotatedStep>
 
   <AnnotatedStep meta="{4-7}" color="green">
-    `onmessage` handles the default events. `event.data` is the raw string the server sent, so you `JSON.parse` it and run it through a schema before using it — the parsed-and-validated value is the only one you trust.
+    `onmessage` handles the default events. `event.data` is the raw string the server sent, so you `JSON.parse` it and run it through a schema before using it. The parsed-and-validated value is the only one you trust.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{9-11}" color="orange">
-    `addEventListener('ping', ...)` handles a *named* event — one the server tagged with `event: ping`. Named and default events ride the same connection; you just listen for each separately.
+    `addEventListener('ping', ...)` handles a *named* event, one the server tagged with `event: ping`. Named and default events ride the same connection; you just listen for each separately.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{13}" color="violet">
@@ -427,23 +427,23 @@ useEffect(() => {
   </AnnotatedStep>
 </AnnotatedCode>
 
-`useEffect` is the right home for this today. A future React pattern for reading async sources directly in render lands later in the course — when you reach it, you'll recognize this as the lifecycle it replaces for some cases. For now, effect in, `close()` out.
+`useEffect` is the right home for this today. A future React pattern for reading async sources directly in render lands later in the course, and when you reach it, you'll recognize this as the lifecycle it replaces in some cases. For now, the rule is simple: open in the effect, `close()` in the cleanup.
 
 <VideoCallout videoId="_XQiU3mLNk0" videoTitle="Server-sent events are pretty cool — Web Dev Cody">
-  Web Dev Cody wires SSE into a real app end to end (16 min) — `text/event-stream`, the keep-alive ping, and an `EventSource` client updating the UI when a background OpenAI call finishes.
+  Web Dev Cody wires SSE into a real app end to end (16 min): `text/event-stream`, the keep-alive ping, and an `EventSource` client updating the UI when a background OpenAI call finishes.
 </VideoCallout>
 
 ## When `EventSource` runs out and plain `fetch` takes over
 
-`EventSource` is the default, but it has a hard ceiling, and one common requirement walks straight into it. Three limits, all baked into the API:
+`EventSource` is the default, but it has a hard ceiling, and one common requirement walks straight into it. There are three limits, all baked into the API:
 
-- It can't set custom request headers — no `Authorization`, no CSRF token.
+- It can't set custom request headers, so no `Authorization` and no CSRF token.
 - It can only issue a `GET`.
 - It can't carry a request body.
 
-Most of the time none of that bites, because the limit that matters most — authentication — has a clean answer for the common case. Browser SSE to your own server authenticates with **cookies**, and cookies travel on an `EventSource` request automatically (with `withCredentials: true` for the cross-origin case). So cookie-authenticated SSE works with `EventSource` out of the box. It's **bearer-token** auth that breaks it: there is simply no way to attach an `Authorization` header to an `EventSource`, so a stream behind a bearer token can't use the browser API at all.
+Most of the time none of that bites, because the limit that matters most, authentication, has a clean answer for the common case. Browser SSE to your own server authenticates with **cookies**, and cookies travel on an `EventSource` request automatically (with `withCredentials: true` for the cross-origin case). So cookie-authenticated SSE works with `EventSource` out of the box. It's **bearer-token** auth that breaks it: there's no way to attach an `Authorization` header to an `EventSource`, so a stream behind a bearer token can't use the browser API at all.
 
-When a hard limit bites, you already know the escape hatch — you built it. The response is still a `text/event-stream`, the exact same SSE byte protocol. So you consume it with plain `fetch` instead: set whatever headers you need, then read `response.body` and reframe the events yourself with the **append-split-keep-tail** loop from two sections ago. That loop wasn't an academic exercise; it's the thing you reach for the moment `EventSource` can't carry your auth. SSE is just framed text, and the framing token is `\n\n`.
+When a hard limit bites, you already know the escape hatch, because you built it. The response is still a `text/event-stream`, the exact same SSE byte protocol. So you consume it with plain `fetch` instead: set whatever headers you need, then read `response.body` and reframe the events yourself with the **append-split-keep-tail** loop from two sections ago. That loop wasn't an academic exercise; it's the thing you reach for the moment `EventSource` can't carry your auth. SSE is just framed text, and the framing token is `\n\n`.
 
 <CodeVariants>
   <CodeVariant label="EventSource (default)">
@@ -479,21 +479,21 @@ When a hard limit bites, you already know the escape hatch — you built it. The
     ```
 
     </div>
-    **Drop to this only when a hard limit bites** — a bearer token, a non-`GET`, a request body. Same SSE protocol, but you reframe events by hand, and you give up the automatic reconnect and `Last-Event-ID` replay — you'd reimplement those yourself. That cost is exactly why `EventSource` stays the default. (This runs in the browser, so on a support matrix that still includes Safari before 26.4, swap the `for await` for the `getReader()` loop.)
+    **Drop to this only when a hard limit bites:** a bearer token, a non-`GET`, or a request body. It's the same SSE protocol, but you reframe events by hand, and you give up the automatic reconnect and `Last-Event-ID` replay, which you'd have to reimplement yourself. That cost is exactly why `EventSource` stays the default. (This runs in the browser, so on a support matrix that still includes Safari before 26.4, swap the `for await` for the `getReader()` loop.)
   </CodeVariant>
 </CodeVariants>
 
 ## Choosing the channel: polling, SSE, or WebSockets
 
-You can now read a stream, emit one, and consume one. The last thing — and the one you'll carry longest — isn't a technique. It's a decision: of the three ways to push updates to a client, which does this feature actually need? Juniors reach for the most powerful one first and over-build. An experienced engineer asks the questions in a fixed order and lets the answer fall out, because each option costs more than the last.
+You can now read a stream, emit one, and consume one. The last thing, and the one you'll carry longest, isn't a technique. It's a decision: of the three ways to push updates to a client, which does this feature actually need? Juniors reach for the most powerful one first and over-build. An experienced engineer asks the questions in a fixed order and lets the answer fall out, because each option costs more than the last.
 
-Three options, in the order you consider them:
+Here are the three options, in the order you consider them.
 
-**Polling** is the default, and it's the one to start every "real-time" feature on. You make a normal request-response call on an interval — `setInterval`, or a polling option on a data-fetching library you'll meet later in the course — and re-fetch on a cadence. No open connections, no new infrastructure, works through every layer you already have. The trigger to leave it: the freshness the product needs is *tighter* than a cadence your server can sustain, or the fan-out — clients times cadence — becomes a load problem of its own. The 2026 reality is blunt: most SaaS features that *feel* real-time are five-to-thirty-second polling, and never need anything more.
+**Polling** is the default, and it's the one to start every "real-time" feature on. You make a normal request-response call on an interval (`setInterval`, or a polling option on a data-fetching library you'll meet later in the course) and re-fetch on a cadence. There are no open connections and no new infrastructure, and it works through every layer you already have. You leave it when the freshness the product needs is *tighter* than a cadence your server can sustain, or when the fan-out (clients times cadence) becomes a load problem of its own. The 2026 reality is blunt: most SaaS features that *feel* real-time are five-to-thirty-second polling, and never need anything more.
 
-**SSE** is the conditional reach *past* polling. You take it when the channel is server-to-client only, the payload is JSON or text, and one persistent HTTP connection per subscribed tab is a budget you're happy to pay. That's your three opening features exactly: the export progress bar, the notifications panel, the LLM token stream, a live order status. Its whole appeal is that it isn't a new transport — it rides existing HTTP infrastructure, stays CDN-friendly with `no-transform`, multiplexes over HTTP/2, and reuses your cookie auth.
+**SSE** is the conditional reach *past* polling. You take it when the channel is server-to-client only, the payload is JSON or text, and one persistent HTTP connection per subscribed tab is a budget you're happy to pay. That's your three opening features exactly: the export progress bar, the notifications panel, the LLM token stream, and a live order status. Its whole appeal is that it isn't a new transport. It rides existing HTTP infrastructure, stays CDN-friendly with `no-transform`, multiplexes over HTTP/2, and reuses your cookie auth.
 
-**WebSockets** are the conditional reach *past* SSE, and only one thing takes you there: the channel has to be **bidirectional** — the client needs to send on the same live connection it receives on. Collaborative cursors, chat with typing indicators and delivery acknowledgements, a multiplayer canvas. These are a genuinely different transport: a separate connection model, no HTTP cache, its own authentication handshake. We name the trigger so you recognize the line being crossed — the API itself is out of scope for this course. The signal that you've crossed it is simple: the moment a feature needs the client to *push* over the live channel, SSE is no longer enough.
+**WebSockets** are the conditional reach *past* SSE, and only one thing takes you there: the channel has to be **bidirectional**, meaning the client needs to send on the same live connection it receives on. Collaborative cursors, chat with typing indicators and delivery acknowledgements, a multiplayer canvas. These are a genuinely different transport, with a separate connection model, no HTTP cache, and their own authentication handshake. We name the trigger so you recognize the line being crossed; the API itself is out of scope for this course. The signal that you've crossed it is simple: the moment a feature needs the client to *push* over the live channel, SSE is no longer enough.
 
 Walk the decision. Pick a branch at each step.
 
@@ -509,22 +509,22 @@ Walk the decision. Pick a branch at each step.
   </Question>
 
   <Leaf id="leaf-polling" verdict="Polling on a sensible interval">
-    The 2026 default, and where most "real-time" features should stay. A normal request-response call on an interval — `setInterval`, or a polling option on a data-fetching library you'll meet later in the course. No open connection, no new infrastructure. Leave it only when the freshness need outpaces a sustainable cadence, or the fan-out becomes a load problem.
+    The 2026 default, and where most "real-time" features should stay. It's a normal request-response call on an interval (`setInterval`, or a polling option on a data-fetching library you'll meet later in the course). No open connection, no new infrastructure. Leave it only when the freshness need outpaces a sustainable cadence, or the fan-out becomes a load problem.
   </Leaf>
 
   <Leaf id="leaf-sse" verdict="Server-Sent Events">
-    Server-to-client, JSON or text, timely pushes — SSE's home. Rides existing HTTP infrastructure, stays CDN-friendly with `no-transform`, reuses your cookie auth, and `EventSource` gives you auto-reconnect for free. Export progress, notifications, LLM token streams, live status.
+    Server-to-client, JSON or text, with timely pushes: SSE's home. It rides existing HTTP infrastructure, stays CDN-friendly with `no-transform`, reuses your cookie auth, and `EventSource` gives you auto-reconnect for free. Export progress, notifications, LLM token streams, live status.
   </Leaf>
 
   <Leaf id="leaf-websockets" verdict="WebSockets — recognition only here">
-    The only thing that earns them is a *bidirectional* channel: the client sends on the same live connection it receives on. Collaborative cursors, chat with typing indicators, multiplayer state. A separate connection model with no HTTP cache and its own auth handshake — a deliberate reach, not a default. The API is out of scope for this course; recognize the trigger.
+    The only thing that earns them is a *bidirectional* channel: the client sends on the same live connection it receives on. Collaborative cursors, chat with typing indicators, multiplayer state. It's a separate connection model with no HTTP cache and its own auth handshake, a deliberate reach rather than a default. The API is out of scope for this course; just recognize the trigger.
   </Leaf>
 </StateMachineWalker>
 
-The value is the *order*. Direction before frequency. Ask "can the client only receive?" first, and most features answer "yes" and never get near a WebSocket. Ask "how fresh?" second, and most of *those* answer "a few seconds is fine" and stay on polling. The powerful tools sit at the end of the funnel on purpose.
+The value is the *order*: direction before frequency. Ask "can the client only receive?" first, and most features answer "yes" and never get near a WebSocket. Ask "how fresh?" second, and most of *those* answer "a few seconds is fine" and stay on polling. The powerful tools sit at the end of the funnel on purpose.
 
 <VideoCallout videoId="3Ud6Ds2abO8" videoTitle="Long Polling vs SSE vs WebSockets vs QUIC — TechPrep">
-  TechPrep contrasts long polling, SSE, and WebSockets side by side (11 min), each with a live demo — the same trade-offs that drive the decision above, seen running.
+  TechPrep contrasts long polling, SSE, and WebSockets side by side (11 min), each with a live demo: the same trade-offs that drive the decision above, seen running.
 </VideoCallout>
 
 :::tip
@@ -533,14 +533,14 @@ Default to polling. Reach for SSE when pushes must be timely and one-way. Reach 
 
 ## What this substrate is not for
 
-Two features look like they belong on a stream and don't. Naming them now keeps you from reaching wrong later.
+Two features look like they belong on a stream and don't. Naming them now keeps you from reaching for the wrong tool later.
 
 :::caution[Large file downloads aren't SSE]
-A big download streams *bytes*, not *events*. You read it with `response.blob()`, or pipe `response.body` to a save destination — there's no `data:` framing, no event grammar, none of this section's machinery. The file-handling chapters later in the course own it; recognize that it's a different job that happens to share the word "stream."
+A big download streams *bytes*, not *events*. You read it with `response.blob()`, or pipe `response.body` to a save destination. There's no `data:` framing, no event grammar, and none of this section's machinery. The file-handling chapters later in the course own it; just recognize that it's a different job that happens to share the word "stream."
 :::
 
 :::caution[Long-running work is a job, not a stream]
-SSE is for *bounded, timely* server-to-client updates — seconds, not minutes. Hold a connection open for the length of a long job and it turns fragile across proxies, mobile networks, and serverless platforms, all of which cap how long a stream may stay open. (Vercel's Fluid Compute, for instance, allows up to five minutes by default and sixty seconds on the Hobby plan — bounded either way, and billed for the whole time the connection is held.) Work that runs for minutes belongs on a background-job queue, which you'll meet later in the course. An SSE stream pushes progress *from* a job; it is not a substitute for one.
+SSE is for *bounded, timely* server-to-client updates, on the order of seconds rather than minutes. Hold a connection open for the length of a long job and it turns fragile across proxies, mobile networks, and serverless platforms, all of which cap how long a stream may stay open. (Vercel's Fluid Compute, for instance, allows up to five minutes by default and sixty seconds on the Hobby plan: bounded either way, and billed for the whole time the connection is held.) Work that runs for minutes belongs on a background-job queue, which you'll meet later in the course. An SSE stream pushes progress *from* a job; it is not a substitute for one.
 :::
 
 ## External resources
