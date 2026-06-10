@@ -1,0 +1,222 @@
+---
+title: Sign the PUT, no DB write
+chapter-id: 69
+course-progress: 0.00005
+sidebar:
+  order: 2
+  label: Sign the PUT
+---
+
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Your first job on this surface is the Server Action that hands the browser a short-lived URL to upload a file straight to R2, with not a single byte passing through the function.
+
+When it works, calling the action from the browser console returns a signed `https://<bucket>.r2.cloudflarestorage.com/...` URL alongside a server-generated upload ID and object key. `curl`-PUT a file to that URL with the right `Content-Type` and the object lands in your bucket — the transfer never touches your server. There's no UI to look at this lesson; the whole proof is a string in the console and an object that appears in the R2 dashboard. The form that drives this from a real file picker comes next.
+
+## Your mission
+
+This is the first half of the two-step write, and the action's entire job is to *authorize* one upload. It validates what the client claims about the file, decides where the object will live, and signs a time-boxed `PutObjectCommand` the browser can PUT to directly. It writes no database row. That last point is the load-bearing decision: the row belongs to `finalizeUpload` in the next lesson, after the bytes are confirmed in R2. Skip that discipline and a user who closes the tab mid-upload leaves a row in `file_metadata` pointing at an object that was never finished — the `/files` list renders a download link that 404s. A presigned PUT, by contrast, that never gets used leaves only an orphan object, which is cheap and gets swept by a lifecycle rule. An orphan object costs you a fraction of a cent; an orphan row lies to every user who looks at it.
+
+A few constraints shape the body. The object key is constructed server-side from the org and a server-generated UUID — never anything the client sends. Letting the client choose the key, or the upload ID, is the tenancy-bypass shape: a crafted value could later target another org's prefix or, worse, collide with an ID that `finalizeUpload` then inserts a row against. The content type is constrained to the same `ALLOWED_CONTENT_TYPES` allowlist the client pre-checks against, reused here at the Zod boundary, so the policy has exactly one source of truth. The signed URL expires in five minutes — long enough to push 25 MB up a slow connection (and if the upload fails, the client just asks for a fresh URL), short enough that a URL leaked from a log or a network capture grants no lasting write. And the action gates on the `member` role, which is the structural defense here: the R2 credentials are app-wide, so the only thing standing between a request and a signed write capability is the role pin at the action.
+
+One detail will look redundant and is worth flagging up front. You sign `ContentLength` from the size the client claims, even though R2 will not enforce that signed length on the actual PUT. Signing it documents intent and matches the SDK's shape, but it is not a size check — the real size boundary is the post-upload HEAD next lesson, which reads the true byte count off the stored object. Trusting the claimed size as the final word is out of scope, and so is any database write and any client-side upload UI. Reuse `buildObjectKey` and the `authedAction` wrapper rather than re-deriving either; the schema and the wrapper are already in place in the stub, so what you write is the body.
+
+<VideoCallout videoId="_PMYMJrNcME" videoTitle="How to upload files to S3 & R2 with ease (and React)">
+  Academind builds this exact flow end to end — server signs a 5-min presigned PUT, the browser uploads straight to R2, and the DB row is written only after the upload succeeds.
+</VideoCallout>
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">Calling the action with a valid file name, an allowlisted content type, and a claimed size within the cap returns a signed `https://<bucket>.r2.cloudflarestorage.com/...` URL plus the server-generated upload ID and object key, with no database row written.</ChecklistItem>
+  <ChecklistItem chip="tested">Calling the action with a disallowed content type is rejected with the `validation` error code and triggers no R2 call.</ChecklistItem>
+  <ChecklistItem chip="tested">Calling the action with a claimed size over the cap is rejected with the `validation` error code and triggers no R2 call.</ChecklistItem>
+  <ChecklistItem chip="untested">`curl`-PUT a file to the returned URL with the matching `Content-Type` returns 200 and the object appears in R2 at `org/<orgId>/files/<uploadId>.<ext>`.</ChecklistItem>
+  <ChecklistItem chip="untested">`curl`-PUT with a `Content-Type` that differs from the signed one is rejected by R2 with `403 SignatureDoesNotMatch`.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Open `src/lib/files/presigned-put.ts` and fill the body of `presignedPut` against the brief and the tests. The `'use server'` directive, the imports, the `authedAction('member', …)` wrapper, and the Zod schema are already there — you write the four lines that generate the ID, build the key, sign the URL, and return the Result. Try it before you open the walkthrough.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+Walk the body in four moves — the same file is the source for the stepped walkthrough below, so read it once here and then step through it part by part.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+'use server';
+
+import { PutObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { uuidv7 } from 'uuidv7';
+import { z } from 'zod';
+
+import { authedAction } from '@/lib/auth/authed-action';
+import { buildObjectKey } from '@/lib/files/keys';
+import { ALLOWED_CONTENT_TYPES, BUCKET, MAX_BYTES, r2 } from '@/lib/r2';
+import { ok, type Result } from '@/lib/result';
+
+export const presignedPut = authedAction(
+  'member',
+  z.strictObject({
+    fileName: z.string().min(1).max(255),
+    contentType: z.enum(ALLOWED_CONTENT_TYPES),
+    claimedSize: z.coerce.number().int().positive().max(MAX_BYTES),
+  }),
+  async (
+    input,
+    ctx,
+  ): Promise<Result<{ uploadId: string; url: string; objectKey: string }>> => {
+    const uploadId = uuidv7();
+    const objectKey = buildObjectKey({
+      orgId: ctx.orgId,
+      fileId: uploadId,
+      contentType: input.contentType,
+    });
+
+    const url = await getSignedUrl(
+      r2,
+      new PutObjectCommand({
+        Bucket: BUCKET,
+        Key: objectKey,
+        ContentType: input.contentType,
+        ContentLength: input.claimedSize,
+      }),
+      { signableHeaders: new Set(['content-type']), expiresIn: 300 },
+    );
+
+    return ok({ uploadId, url, objectKey });
+  },
+);
+`}>
+  <AnnotatedStep meta="{15-19}" color="blue">
+    The Zod schema is the boundary. `contentType` is `z.enum(ALLOWED_CONTENT_TYPES)` — the same allowlist `lib/r2.ts` exports and the client pre-checks against, so the accepted-types policy has one home. `claimedSize` is coerced to a positive integer capped at `MAX_BYTES` (25 MB). `strictObject` rejects any extra key the client tries to smuggle in. `authedAction` runs this `safeParse` before your body, so a bad content type or an over-cap size never reaches the code below.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{24-29} "uuidv7()"`} color="green">
+    The upload ID is generated here, on the server, with `uuidv7()` — time-sortable and never a value the client supplied. `buildObjectKey` derives the key from `ctx.orgId` (the authenticated org, not a field on the input) plus that ID and the validated content type: `org/<orgId>/files/<uploadId>.<ext>`. A client-chosen key or ID is the tenancy-bypass shape; building it server-side closes that door.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{31-40}" color="violet">
+    `getSignedUrl` signs a `PutObjectCommand` — an upload capability, scoped to this exact `Bucket`/`Key`/`ContentType`. `signableHeaders: new Set(['content-type'])` binds the signature to the content type, so a PUT that sends a different one is rejected by R2. `expiresIn: 300` makes the URL die in five minutes. This is pure local HMAC — no round trip to R2 — so it returns instantly.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{42}" color="orange">
+    The action returns the signed URL plus the ID and key the browser needs to PUT and then finalize. Note what is absent: no `insert`, no database touch at all. The row is the next lesson's job, written only once the bytes are confirmed in R2.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+A few of the choices here are worth the why, because they're the ones that separate this from a naive "save the file" handler.
+
+**The upload ID is server-generated.** It would be easy to let the client send an ID along with the file name and trust it. Don't — `uuidv7()` runs on the server for the same reason the key does. `finalizeUpload` inserts a row keyed by this ID next lesson; if the client picked it, a crafted value could collide with an ID that already belongs to another org's row, and the insert would either fail or, depending on the path, clobber the wrong record. The ID being unguessable and server-minted is what keeps the two-step write tenant-safe.
+
+**`signableHeaders` is the mechanism behind the content-type check.** This is the one non-obvious line. By putting `content-type` in the signable set, the signature covers the header — so R2 recomputes the signature using whatever `Content-Type` the PUT actually carries, and if it differs from the one you signed, the recomputed signature won't match and R2 answers `403 SignatureDoesNotMatch`. That's exactly the failure you'll trigger by hand in a moment. Without binding the header, a signed URL would accept any content type, and the extension in your key would no longer be guaranteed to match the bytes.
+
+**`ContentLength` is signed but R2 won't enforce it.** You pass the claimed size into the command so the SDK produces the canonical signed shape, but R2 does not reject an actual PUT that exceeds the signed length — this is the same quirk covered back in [Presigned URLs](/068-object-storage/3-presigned-urls--signing-the-upload-seam/), where the real size enforcement is deferred to the post-upload HEAD. So treat this line as documentation of intent, not a guard. The guard lands next lesson, when `finalizeUpload` HEADs the stored object and reads the true byte count.
+
+**Five minutes, not an hour.** `expiresIn: 300` is a trade-off. The window has to outlast a 25 MB upload over a weak connection, but every extra minute is extra time a leaked URL stays a live write capability. Five minutes clears the upload comfortably, and the retry story is "ask for a fresh URL," not "reuse a stale one" — the client re-signs on failure, so a short expiry costs nothing in resilience.
+
+**`member`, not `admin`.** The role pin is the defense, not a convenience. The R2 credentials in `lib/r2.ts` are app-wide; nothing about the SDK call distinguishes one org from another. The only gate is `authedAction('member', …)`, which `requireOrgUser` enforces before the body runs — the same role-pin pattern from [The authedAction wrapper](/057-roles-action-wrappers-and-the-audit-trail/2-the-authedaction-wrapper/). Anyone below `member` gets a `forbidden` Result and never reaches the sign.
+
+**No reserved row.** A tempting alternative is to insert a row with `status: 'pending'` here and flip it to `ready` after the upload. Resist it. The instant a row exists, the list can render it, and a pending upload that never completes becomes a download link to nothing. The asymmetry is the whole point: orphan objects are cheap and a lifecycle rule sweeps them; orphan rows are user-visible lies. No row until the bytes are confirmed.
+
+**`validation` is mapped at the boundary, not in your body.** You'll notice the body has no error handling for a bad content type or an over-cap size. It doesn't need any. `authedAction` runs `schema.safeParse` before calling your function, and on failure returns `err('validation', …)` itself — the [Result](/043-server-actions/3-result-or-throw/) shape and the [Zod FormData boundary](/042-zod-4---the-validation-contract/6-crossing-the-formdata-boundary/) you've used since the forms work. That's why requirements 2 and 3 short-circuit with no R2 call: a disallowed type or an over-cap claim fails the parse, and your `getSignedUrl` line never runs.
+
+The key and the extension come from two small provided helpers in `lib/files/keys.ts`, first exercised here:
+
+<div data-mark-color="blue">
+
+```ts title="src/lib/files/keys.ts" "'jpg'" "extFor(contentType)"
+import type { ALLOWED_CONTENT_TYPES } from '@/lib/r2';
+
+type AllowedContentType = (typeof ALLOWED_CONTENT_TYPES)[number];
+
+const EXT_FOR: Record<AllowedContentType, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+  'application/pdf': 'pdf',
+  'text/csv': 'csv',
+};
+
+export const extFor = (contentType: AllowedContentType): string =>
+  EXT_FOR[contentType];
+
+export const buildObjectKey = ({
+  orgId,
+  fileId,
+  contentType,
+}: {
+  orgId: string;
+  fileId: string;
+  contentType: AllowedContentType;
+}): string => `org/${orgId}/files/${fileId}.${extFor(contentType)}`;
+```
+
+</div>
+
+The one gotcha to internalize before the hand-check: `extFor('image/jpeg')` returns `'jpg'`, not `'jpeg'`. The extension comes from the validated content type through this static map, never from the user's file name — so a `.exe` renamed `.png` can't smuggle its real extension into your key. When you `curl`-PUT a JPEG in a moment, expect the object at `...<uploadId>.jpg`.
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Presigned URLs"
+    href="https://developers.cloudflare.com/r2/api/s3/presigned-urls/"
+    icon="simple-icons:cloudflare"
+    iconColor="#F38020"
+    description="Cloudflare R2 reference for signing a PutObjectCommand, including the Content-Type binding you trigger by hand."
+  />
+  <ExternalResource
+    title="aws-sdk-js v3 with R2"
+    href="https://developers.cloudflare.com/r2/examples/aws/aws-sdk-js-v3/"
+    icon="simple-icons:amazonwebservices"
+    iconColor="#FF9900"
+    description="Configuring the S3 client against R2's endpoint and the s3-request-presigner this action uses."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's test suite:
+
+```bash
+pnpm test:lesson 2
+```
+
+It drives the action's contract three ways: a valid call returns a signed URL with a server-built UUIDv7 ID and key and writes no row, a disallowed content type returns `validation` with no R2 call, and an over-cap `claimedSize` returns `validation`. A pass looks like this:
+
+```ansi title="pnpm test:lesson 2"
+ [32m✓[0m Lesson 2 — presignedPut signs a 5-min PUT and writes no DB row [2m(10)[0m
+   [32m✓[0m valid upload request → signed URL + server-built id/key, no row [2m(5)[0m
+   [32m✓[0m disallowed content type → validation, no R2 call [2m(3)[0m
+   [32m✓[0m claimed size over the cap → validation, no R2 call [2m(2)[0m
+
+ [2mTest Files[0m  [32m1 passed[0m [2m(1)[0m
+ [2m     Tests[0m  [32m10 passed[0m [2m(10)[0m
+```
+
+The tests prove the shape and the boundary, but they can't reach a live bucket — so the byte transfer and the content-type binding are yours to confirm by hand. First get a signed URL: sign in as a `member` of a seeded org, open the browser console, and call `presignedPut` (a raw `curl` to the action itself won't work — the action needs your session). Copy the returned `url`, then:
+
+```bash
+curl -X PUT -H "Content-Type: image/jpeg" --data-binary @some.jpg "<signed-url>"
+```
+
+:::note
+Read the signed object key off the action's response — it ends in `.jpg`, because `extFor('image/jpeg')` maps to `jpg`, not `jpeg`. That's where the object will land in the dashboard.
+:::
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">The `curl`-PUT above returns 200, and the object appears in the R2 dashboard at `org/<orgId>/files/<uploadId>.jpg`.</ChecklistItem>
+  <ChecklistItem chip="untested">Re-running the `curl` with a mismatched `-H "Content-Type: image/png"` against the same JPEG-signed URL is rejected by R2 with `403 SignatureDoesNotMatch`.</ChecklistItem>
+</Checklist>
+
+The second check is the payoff for `signableHeaders`: the signature is bound to `image/jpeg`, so the moment R2 recomputes it against `image/png` the mismatch surfaces as `403 SignatureDoesNotMatch`. With both green, you have a working, scoped, time-boxed write capability — and a server that never saw the bytes. Next lesson the browser drives this from a real file picker and the row finally gets written, after the upload is confirmed.

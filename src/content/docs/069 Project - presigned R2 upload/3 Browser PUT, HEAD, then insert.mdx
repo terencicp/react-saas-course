@@ -1,0 +1,689 @@
+---
+title: Browser PUT, HEAD, then insert
+chapter-id: 69
+course-progress: 0.00005
+sidebar:
+  order: 3
+  label: Browser PUT, then insert
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Last lesson left you with a signed URL and a `curl` command. This lesson turns that into the real thing: a file picked on `/files` uploads straight to R2 with a live progress bar and is recorded as a file the app actually knows about.
+
+When it works, choosing a file walks the status text through `signing → uploading → finalizing → done`, the progress bar fills as the bytes leave the browser, and one row lands in `file_metadata` — with the size and content type read back off the stored object, not taken from whatever the picker reported — plus one `file.uploaded` audit entry. The finished surface is the one from the [project overview](/069-project---presigned-r2-upload/1-project-overview/): the upload form on top, a mid-flight progress bar, and the completed rows below (those rows arrive next lesson).
+
+## Your mission
+
+This lesson lands two pieces at once, and that is deliberate. `finalizeUpload` is the second half of the two-step write you started last lesson — but it has nothing to finalize without a browser to drive the upload, and the upload form has nowhere to record its result without `finalizeUpload`. Neither reaches a confirmable state alone, so you ship both. The `file_metadata` table and its migration are already in the starter (applied by `pnpm db:migrate` back in Setup), so you are inserting into a table that exists, not authoring one.
+
+The load-bearing idea is the trust boundary. After the browser reports a successful PUT, `finalizeUpload` does **not** believe a word of it. It issues a `HeadObjectCommand` against the object the browser claims to have uploaded, reads the true content length and content type off what R2 actually stored, and inserts the row from *those* server-observed values — never from the request body. That insert and the audit write share one `tenantDb` transaction, so the row and its `file.uploaded` entry commit together or not at all; you never end up with a file the app knows about but can't account for. This is also where last lesson's layered size defense finally pays off. A client that signed a small `claimedSize` and then PUT a 50 MB body sails right past the signing step — R2 does not enforce the signed `ContentLength` — and gets caught here, at the HEAD, which sees the real bytes. The `unique` constraint on `objectKey` is the second layer: a replayed finalize trips it and comes back as a conflict, never a duplicate row.
+
+The browser side introduces exactly one new tool: `XMLHttpRequest`. You reach for it instead of `fetch` for one concrete reason — XHR is the only browser API that exposes upload progress to your code through `xhr.upload.onprogress`, and without progress there is no bar to fill. Its PUT must send the *exact* `Content-Type` that was signed, because the signature is bound to that header; the common trap is a browser normalizing a `.JPG` to something like `image/pjpeg`, which surfaces as a `403 SignatureDoesNotMatch` that looks nothing like a type problem. The client also runs its own size and type pre-checks, but understand what they are for: instant feedback so a junior dev's 50 MB drop is rejected before a single network call, never a substitute for the server boundary. The server re-validates, and the HEAD reads the true size regardless of what the client did. Two edges to keep in mind and accept: the HEAD-then-insert is not transactional with R2 — there is a microsecond gap where the object exists and the row does not, which is fine because a never-finalized object is swept by the lifecycle rules; and a 4xx on the PUT means re-running the whole flow from a fresh signed URL, not reusing the dead one. You reuse `logAudit` and the `UploadError` codes from the work you've already done. Out of scope: the rendered file list and its download links — that is next lesson — so leave a minimal empty state where the list will go.
+
+<Checklist id="mission">
+  <ChecklistItem chip="untested">Choosing a valid file on `/files` runs the status through `signing → uploading → finalizing → done` with a smooth progress bar.</ChecklistItem>
+  <ChecklistItem chip="tested">After a successful upload, one `file_metadata` row exists with `byteSize` and `contentType` taken from the post-upload HEAD and `uploadedBy` set to the current user.</ChecklistItem>
+  <ChecklistItem chip="untested">During a successful upload the function exchanges only small JSON with the two actions while the multi-MB body goes straight to `<bucket>.r2.cloudflarestorage.com`.</ChecklistItem>
+  <ChecklistItem chip="tested">A client that signs a small claimed size and then PUTs an over-cap body is rejected at finalize with `size-mismatch`, and no row is inserted.</ChecklistItem>
+  <ChecklistItem chip="untested">Picking an over-cap file is rejected in the browser before any signing call, and a disallowed type is kept out by the file picker.</ChecklistItem>
+  <ChecklistItem chip="tested">Each successful upload records exactly one `file.uploaded` audit entry, committed in the same transaction as the row.</ChecklistItem>
+  <ChecklistItem chip="untested">Serving the app on a host not in the CORS allowlist makes the browser PUT fail, while the allowed `localhost` origin succeeds.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+You have two files to write and one to wire up. Fill the body of `finalizeUpload` in `src/lib/files/finalize.ts`, build the `UploadForm` client component in `src/app/files/upload-form.tsx`, and mount it on `src/app/files/page.tsx`. Work against the brief and the tests before you open the walkthrough.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+Three files, in the order the upload flows through them: the server boundary first, then the browser form that drives it, then the page that mounts the form.
+
+### `finalizeUpload` — the HEAD-then-insert
+
+This is the trust boundary. Read it in four moves: HEAD the object and handle a missing one, reject anything that disagrees with what was signed, then insert the row and the audit entry in one transaction, and finally map a replay to a conflict.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+const isMissingObject = (e: unknown): boolean => {
+  if (typeof e !== 'object' || e === null) {
+    return false;
+  }
+  const name = (e as { name?: unknown }).name;
+  const status = (e as { $metadata?: { httpStatusCode?: unknown } }).$metadata
+    ?.httpStatusCode;
+  return name === 'NotFound' || name === 'NoSuchKey' || status === 404;
+};
+
+export const finalizeUpload = authedAction(
+  'member',
+  z.strictObject({
+    uploadId: z.uuid(),
+    objectKey: z.string().min(1),
+    originalFileName: z.string().min(1).max(255),
+    contentType: z.enum(ALLOWED_CONTENT_TYPES),
+  }),
+  async (input, ctx): Promise<Result<{ fileId: string }>> => {
+    let head: HeadObjectCommandOutput;
+    try {
+      head = await r2.send(
+        new HeadObjectCommand({ Bucket: BUCKET, Key: input.objectKey }),
+      );
+    } catch (e) {
+      if (isMissingObject(e)) {
+        return UploadError.toResult(
+          new UploadError('object-not-found', 'The upload did not complete.'),
+        );
+      }
+      throw e;
+    }
+
+    if (head.ContentType !== input.contentType) {
+      return UploadError.toResult(
+        new UploadError(
+          'size-mismatch',
+          'The uploaded file did not match what was signed.',
+        ),
+      );
+    }
+
+    const byteSize = head.ContentLength ?? 0;
+    if (byteSize > MAX_BYTES) {
+      return UploadError.toResult(
+        new UploadError('size-mismatch', 'The uploaded file is too large.'),
+      );
+    }
+
+    try {
+      await tenantDb(ctx.orgId).transaction(async (tx) => {
+        await tx.insert(fileMetadata).values({
+          id: input.uploadId,
+          organizationId: ctx.orgId,
+          uploadedBy: ctx.user.id,
+          objectKey: input.objectKey,
+          originalFileName: input.originalFileName,
+          contentType: head.ContentType ?? input.contentType,
+          byteSize,
+        });
+
+        await logAudit(tx, {
+          action: 'file.uploaded',
+          subjectType: 'file',
+          subjectId: input.uploadId,
+          payload: { byteSize, contentType: head.ContentType },
+        });
+      });
+    } catch (e) {
+      if (isUniqueViolation(e)) {
+        return err('conflict', 'This file has already been finalized.');
+      }
+      throw e;
+    }
+
+    return ok({ fileId: input.uploadId });
+  },
+);
+`}>
+  <AnnotatedStep meta="{20-32}" color="blue">
+    The HEAD is the first thing that happens — read storage before writing anything. `HeadObjectCommand` fetches the object's metadata without its body, which is exactly what you want here: you need its size and type, not its bytes. If the object isn't there, the SDK throws.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{1-9} "isMissingObject"`} color="orange">
+    A missing object means the upload never landed, so it maps to `object-not-found`. `isMissingObject` matches the SDK's `NotFound`/`NoSuchKey` name or a `404` status rather than importing the exception class — and it re-throws anything else, so a network blip or an auth failure stays a real error instead of being swallowed as "file not found."
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{34-41}" color="violet">
+    The content type the HEAD reports must equal the one that was signed. If R2 stored a different type than the URL was minted for, the object is not what you authorized — `size-mismatch`. This is the type half of the boundary, checked against `head.ContentType`, never the client's claim.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{43-48} "head.ContentLength"`} color="green">
+    The size half. `byteSize` comes off `head.ContentLength` — the real measured bytes — with a `0` fallback. A body over `MAX_BYTES` is rejected as `size-mismatch` here, *before* any insert. This is the line that catches the lying client from last lesson: the signed `ContentLength` was never enforced, but the stored object's real length is.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{50-68}" color="blue">
+    The insert and the audit write share one `tenantDb(ctx.orgId).transaction`. The row is keyed to `input.uploadId` — the same server-generated UUID baked into the object key last lesson, so the row and its object share one identity. `byteSize` and `contentType` come from the HEAD; `uploadedBy` from `ctx.user.id`, the authenticated session, never a request field. `logAudit` takes the `tx` handle, which is what binds the audit entry to the same atomic unit — both land or neither does.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{69-74} "isUniqueViolation"`} color="orange">
+    The second defense layer. If a finalize is replayed against an already-finalized upload, the `unique(objectKey)` constraint trips a `23505`; `isUniqueViolation` catches it and returns `err('conflict', …)` instead of letting a duplicate row through. Anything that isn't a unique violation re-throws.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+A few of these choices carry weight beyond what the code shows.
+
+**The HEAD is the real size boundary, not a formality.** R2 does not enforce the `ContentLength` you signed into the PUT URL — this is the same quirk from [Presigned URLs](/068-object-storage/3-presigned-urls--signing-the-upload-seam/). So a client that signs a 1 KB claim and then PUTs 50 MB succeeds at the upload. The only place the truth surfaces is here, when you HEAD the stored object and read its actual length. That is why `byteSize` must come from `head.ContentLength` and the cap check must run against it — not against anything in `input`. Pair the HEAD with the `unique(objectKey)` constraint and you have two independent guards: one against a lying body, one against a replayed finalize.
+
+**Both `size-mismatch` checks return before the insert.** Order is the boundary. The type check and the size check both `return` a Result above the transaction block, so a mismatched object leaves zero rows behind. If you inserted first and validated second, an over-cap upload would write a row and then have to delete it — and a crash in between would leave exactly the orphan row the two-step write exists to prevent.
+
+**The audit row rides the same transaction.** `logAudit(tx, …)` is passed the transaction handle, not the ambient `db`. This is the [append-only audit log](/057-roles-action-wrappers-and-the-audit-trail/5-the-append-only-audit-log/) discipline from the roles work: the writer's first argument is typed as the transaction, so an off-transaction call won't even compile. The payoff is that "a file exists" and "we recorded that it was uploaded" can never disagree — they are one write.
+
+**The HEAD-then-insert is not transactional with R2, and that's accepted.** Between the HEAD succeeding and the row committing, the object exists with no row pointing at it. That window is microseconds, and an object with no row is harmless: it never renders anywhere, and a lifecycle rule sweeps un-referenced objects. The asymmetry from last lesson holds — an orphan object is cheap, an orphan row is a lie — so the design tolerates the gap rather than reaching for a distributed transaction that R2 doesn't offer anyway.
+
+Here is the file in full, including the imports the stub already has and the `isMissingObject` helper the walkthrough skipped over:
+
+```ts title="src/lib/files/finalize.ts"
+'use server';
+
+import {
+  HeadObjectCommand,
+  type HeadObjectCommandOutput,
+} from '@aws-sdk/client-s3';
+import { z } from 'zod';
+
+import { logAudit } from '@/db/audit-log';
+import { fileMetadata } from '@/db/schema';
+import { tenantDb } from '@/db/tenant';
+import { authedAction } from '@/lib/auth/authed-action';
+import { UploadError } from '@/lib/files/errors';
+import { ALLOWED_CONTENT_TYPES, BUCKET, MAX_BYTES, r2 } from '@/lib/r2';
+import { err, isUniqueViolation, ok, type Result } from '@/lib/result';
+
+// A 404 surfaces on the HEAD as the SDK's `NotFound` exception — the object was never
+// PUT (a never-completed upload). Match on the error name / 404 status rather than
+// importing the class, so an unrelated failure (network, auth) still throws.
+const isMissingObject = (e: unknown): boolean => {
+  if (typeof e !== 'object' || e === null) {
+    return false;
+  }
+  const name = (e as { name?: unknown }).name;
+  const status = (e as { $metadata?: { httpStatusCode?: unknown } }).$metadata
+    ?.httpStatusCode;
+  return name === 'NotFound' || name === 'NoSuchKey' || status === 404;
+};
+
+// The second half of the two-step write: HEAD the object the browser just PUT, then
+// insert the row from server-observed identity — never the client's claim. byteSize
+// and contentType come off the HeadObjectCommand (R2 does not enforce the signed
+// ContentLength, so the HEAD is the real boundary); a missing object means the upload
+// never landed → object-not-found. The unique(objectKey) constraint is the second
+// defense layer: a replayed finalize trips 23505 → conflict, never a duplicate row.
+//
+// No row exists before this point — a never-completed upload leaves only an orphan
+// object (cheap, lifecycle-swept), never an orphan row that would lie in the UI.
+export const finalizeUpload = authedAction(
+  'member',
+  z.strictObject({
+    uploadId: z.uuid(),
+    objectKey: z.string().min(1),
+    originalFileName: z.string().min(1).max(255),
+    contentType: z.enum(ALLOWED_CONTENT_TYPES),
+  }),
+  async (input, ctx): Promise<Result<{ fileId: string }>> => {
+    let head: HeadObjectCommandOutput;
+    try {
+      head = await r2.send(
+        new HeadObjectCommand({ Bucket: BUCKET, Key: input.objectKey }),
+      );
+    } catch (e) {
+      if (isMissingObject(e)) {
+        return UploadError.toResult(
+          new UploadError('object-not-found', 'The upload did not complete.'),
+        );
+      }
+      throw e;
+    }
+
+    if (head.ContentType !== input.contentType) {
+      return UploadError.toResult(
+        new UploadError(
+          'size-mismatch',
+          'The uploaded file did not match what was signed.',
+        ),
+      );
+    }
+
+    const byteSize = head.ContentLength ?? 0;
+    if (byteSize > MAX_BYTES) {
+      return UploadError.toResult(
+        new UploadError('size-mismatch', 'The uploaded file is too large.'),
+      );
+    }
+
+    try {
+      await tenantDb(ctx.orgId).transaction(async (tx) => {
+        await tx.insert(fileMetadata).values({
+          id: input.uploadId,
+          organizationId: ctx.orgId,
+          uploadedBy: ctx.user.id,
+          objectKey: input.objectKey,
+          originalFileName: input.originalFileName,
+          contentType: head.ContentType ?? input.contentType,
+          byteSize,
+        });
+
+        await logAudit(tx, {
+          action: 'file.uploaded',
+          subjectType: 'file',
+          subjectId: input.uploadId,
+          payload: { byteSize, contentType: head.ContentType },
+        });
+      });
+    } catch (e) {
+      if (isUniqueViolation(e)) {
+        return err('conflict', 'This file has already been finalized.');
+      }
+      throw e;
+    }
+
+    return ok({ fileId: input.uploadId });
+  },
+);
+```
+
+### `UploadForm` — XHR PUT with a progress bar
+
+The browser side drives the same three beats from the client: sign, PUT straight to R2 with progress, finalize. The PUT itself goes over `XMLHttpRequest` because that is the only API that reports upload progress.
+
+<AnnotatedCode lang="tsx" maxLines={18} code={`
+const ALLOWED_CLIENT_TYPES = [
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'application/pdf',
+  'text/csv',
+] as const;
+const MAX_BYTES = 25 * 1024 * 1024;
+
+const ACCEPT = ALLOWED_CLIENT_TYPES.join(',');
+
+const putToR2 = (
+  url: string,
+  file: File,
+  onProgress: (percent: number) => void,
+): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('PUT', url);
+    xhr.setRequestHeader('Content-Type', file.type);
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) {
+        onProgress(Math.round((event.loaded / event.total) * 100));
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve();
+      } else {
+        reject(new Error(\`Upload failed (\${xhr.status}).\`));
+      }
+    };
+    xhr.onerror = () => reject(new Error('Upload failed.'));
+    xhr.send(file);
+  });
+
+export const UploadForm = () => {
+  const router = useRouter();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [status, setStatus] = useState<UploadStatus>('idle');
+  const [progress, setProgress] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+
+  const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setError(null);
+
+    const input = fileInputRef.current;
+    const file = input?.files?.[0];
+    if (!input || !file) {
+      setError('Pick a file to upload.');
+      return;
+    }
+    if (!isAllowedType(file.type)) {
+      setError('That file type is not supported.');
+      return;
+    }
+    if (file.size > MAX_BYTES) {
+      setError('That file is larger than the 25 MB limit.');
+      return;
+    }
+
+    setProgress(0);
+    setStatus('signing');
+
+    const signFd = new FormData();
+    signFd.set('fileName', file.name);
+    signFd.set('contentType', file.type);
+    signFd.set('claimedSize', String(file.size));
+    const signed = await presignedPut(null, signFd);
+    if (!signed.ok) {
+      setStatus('failed');
+      setError(signed.error.userMessage);
+      return;
+    }
+
+    setStatus('uploading');
+    try {
+      await putToR2(signed.data.url, file, setProgress);
+    } catch (e) {
+      setStatus('failed');
+      setError(e instanceof Error ? e.message : 'Upload failed.');
+      return;
+    }
+
+    setStatus('finalizing');
+    const finalizeFd = new FormData();
+    finalizeFd.set('uploadId', signed.data.uploadId);
+    finalizeFd.set('objectKey', signed.data.objectKey);
+    finalizeFd.set('originalFileName', file.name);
+    finalizeFd.set('contentType', file.type);
+    const finalized = await finalizeUpload(null, finalizeFd);
+    if (!finalized.ok) {
+      setStatus('failed');
+      setError(finalized.error.userMessage);
+      return;
+    }
+
+    setStatus('done');
+    input.value = '';
+    router.refresh();
+  };
+`}>
+  <AnnotatedStep meta="{1-10}" color="blue">
+    The client mirrors the server allowlist and cap as plain constants. It can't import them from `lib/r2.ts` — that module carries `server-only`, the poison pill, so importing it into a Client Component is a build error. These copies drive instant pre-checks for feedback only; the action re-validates against the real ones.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{12-35} "xhr.upload.onprogress"`} color="violet">
+    `putToR2` wraps an `XMLHttpRequest` PUT in a promise. `setRequestHeader('Content-Type', file.type)` sends the exact type that was signed. `xhr.upload.onprogress` fires as bytes leave — `event.loaded / event.total` is the percentage that drives the bar. A 2xx resolves; anything else rejects, so a 4xx from R2 surfaces as a real error you can show.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{48-61}" color="green">
+    Client pre-checks run before any network call: a file is present, its type is on the allowlist, its size is under the cap. This is defense-in-depth — a 50 MB drop is rejected here with no round trip — but it is not the boundary. The action re-validates and the HEAD reads the true size regardless.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{63-75} "presignedPut(null, signFd)"`} color="orange">
+    Beat one: build a `FormData` and call `presignedPut`. The `null` first argument is the `useActionState` shape `authedAction` exposes — the same wrapper from [The authedAction wrapper](/057-roles-action-wrappers-and-the-audit-trail/2-the-authedaction-wrapper/), called directly here rather than through a form's `action` prop. A non-`ok` Result flips the status to `failed` and surfaces `error.userMessage`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{77-84}" color="violet">
+    Beat two: PUT the bytes straight to R2 through `putToR2`, passing `setProgress` as the callback so the bar tracks the real transfer. This is the only step the multi-MB body touches — and it never crosses a Server Action.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{86-101} "router.refresh()"`} color="green">
+    Beat three: a second `FormData` carries the `uploadId`, `objectKey`, original file name, and content type into `finalizeUpload`. On success the status reaches `done`, the input clears, and `router.refresh()` re-renders the server list so the new row appears — no client cache, no store, just React state and a refresh.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The reason `putToR2` is a hand-rolled promise around `XMLHttpRequest` is the one thing to take away here. `fetch` would be shorter, but `fetch` cannot report upload progress — the `ReadableStream` request-body progress story still isn't there in browsers, so the only way to drive a real progress bar is `xhr.upload.onprogress`. This closes the thread from the [file-picker chapter](/016-browser-capability-apis/3-blob-file-and-object-urls--the-upload-primitives/), where you read a `File` but had no way to watch it leave; XHR is that way. The header line, `setRequestHeader('Content-Type', file.type)`, sends `file.type` verbatim — never a hardcoded or "cleaned up" value — because the signature is bound to the content type. If a browser ever normalizes a `.JPG` to `image/pjpeg`, the signed type and the sent type diverge and R2 answers `403 SignatureDoesNotMatch`, which is the confusing failure you avoid by passing the type through untouched.
+
+Here is the full component, with the `onSubmit` handler the walkthrough already stepped through folded away — what's left is the imports, the status type, and the rendered form, the status-machine-in-JSX with its disabled-while-busy wiring:
+
+```tsx title="src/app/files/upload-form.tsx" collapse={82-140}
+'use client';
+
+import { useRouter } from 'next/navigation';
+import { type FormEvent, useRef, useState } from 'react';
+
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Progress } from '@/components/ui/progress';
+import { finalizeUpload } from '@/lib/files/finalize';
+import { presignedPut } from '@/lib/files/presigned-put';
+
+type UploadStatus =
+  | 'idle'
+  | 'signing'
+  | 'uploading'
+  | 'finalizing'
+  | 'done'
+  | 'failed';
+
+const ALLOWED_CLIENT_TYPES = [
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'application/pdf',
+  'text/csv',
+] as const;
+const MAX_BYTES = 25 * 1024 * 1024;
+
+const ACCEPT = ALLOWED_CLIENT_TYPES.join(',');
+
+const isAllowedType = (
+  type: string,
+): type is (typeof ALLOWED_CLIENT_TYPES)[number] =>
+  (ALLOWED_CLIENT_TYPES as readonly string[]).includes(type);
+
+const putToR2 = (
+  url: string,
+  file: File,
+  onProgress: (percent: number) => void,
+): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('PUT', url);
+    xhr.setRequestHeader('Content-Type', file.type);
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) {
+        onProgress(Math.round((event.loaded / event.total) * 100));
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve();
+      } else {
+        reject(new Error(`Upload failed (${xhr.status}).`));
+      }
+    };
+    xhr.onerror = () => reject(new Error('Upload failed.'));
+    xhr.send(file);
+  });
+
+export const UploadForm = () => {
+  const router = useRouter();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [status, setStatus] = useState<UploadStatus>('idle');
+  const [progress, setProgress] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+
+  const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setError(null);
+
+    const input = fileInputRef.current;
+    const file = input?.files?.[0];
+    if (!input || !file) {
+      setError('Pick a file to upload.');
+      return;
+    }
+    if (!isAllowedType(file.type)) {
+      setError('That file type is not supported.');
+      return;
+    }
+    if (file.size > MAX_BYTES) {
+      setError('That file is larger than the 25 MB limit.');
+      return;
+    }
+
+    setProgress(0);
+    setStatus('signing');
+
+    const signFd = new FormData();
+    signFd.set('fileName', file.name);
+    signFd.set('contentType', file.type);
+    signFd.set('claimedSize', String(file.size));
+    const signed = await presignedPut(null, signFd);
+    if (!signed.ok) {
+      setStatus('failed');
+      setError(signed.error.userMessage);
+      return;
+    }
+
+    setStatus('uploading');
+    try {
+      await putToR2(signed.data.url, file, setProgress);
+    } catch (e) {
+      setStatus('failed');
+      setError(e instanceof Error ? e.message : 'Upload failed.');
+      return;
+    }
+
+    setStatus('finalizing');
+    const finalizeFd = new FormData();
+    finalizeFd.set('uploadId', signed.data.uploadId);
+    finalizeFd.set('objectKey', signed.data.objectKey);
+    finalizeFd.set('originalFileName', file.name);
+    finalizeFd.set('contentType', file.type);
+    const finalized = await finalizeUpload(null, finalizeFd);
+    if (!finalized.ok) {
+      setStatus('failed');
+      setError(finalized.error.userMessage);
+      return;
+    }
+
+    setStatus('done');
+    input.value = '';
+    router.refresh();
+  };
+
+  const busy =
+    status === 'signing' || status === 'uploading' || status === 'finalizing';
+
+  return (
+    <form
+      data-testid="upload-form"
+      onSubmit={onSubmit}
+      className="flex flex-col gap-3 rounded-lg border border-input p-4"
+    >
+      <Input
+        ref={fileInputRef}
+        type="file"
+        name="file"
+        accept={ACCEPT}
+        data-testid="file-input"
+        disabled={busy}
+      />
+
+      <div className="flex flex-col gap-2">
+        <Progress data-testid="upload-progress" value={progress} />
+        <p
+          data-testid="upload-status"
+          className="text-sm text-muted-foreground"
+        >
+          {status}
+        </p>
+      </div>
+
+      {error ? <p className="text-sm text-destructive">{error}</p> : null}
+
+      <Button type="submit" data-testid="upload-submit" disabled={busy}>
+        Upload
+      </Button>
+    </form>
+  );
+};
+```
+
+Two small things in the JSX. The `<Input type="file" accept={ACCEPT}>` is the picker-level filter — `accept` set to the joined allowlist is why an `.exe` is greyed out in the OS file dialog, the first of the two client defenses. And every control is `disabled={busy}` while the flow is in flight, so a student can't fire a second upload on top of the first; `busy` is true for exactly the three in-progress states.
+
+### `page.tsx` — mount the form
+
+The page just mounts `UploadForm` above where the list will go. A minimal empty state stands in for the list this lesson — the real rows, the per-row download links, and the keyset cursor all arrive next lesson, growing the `files-list` region rather than rewriting the page.
+
+```tsx title="src/app/files/page.tsx"
+import { UploadForm } from '@/app/files/upload-form';
+import { requireOrgUser } from '@/lib/auth';
+
+const FilesPage = async ({
+  searchParams,
+}: {
+  searchParams: Promise<{ cursor?: string }>;
+}) => {
+  await requireOrgUser();
+  await searchParams;
+
+  return (
+    <section
+      data-testid="files-page"
+      className="mx-auto flex max-w-3xl flex-col gap-6 px-6 py-10"
+    >
+      <h1 className="text-2xl font-semibold">Files</h1>
+
+      <UploadForm />
+
+      <div data-testid="files-list" className="flex flex-col gap-2">
+        <p data-testid="files-empty" className="text-sm text-muted-foreground">
+          No files yet.
+        </p>
+      </div>
+    </section>
+  );
+};
+
+export default FilesPage;
+```
+
+The `requireOrgUser()` call gates the page on an authenticated org member and is what the actions rely on for `ctx`. Keep the empty state honest — `"No files yet."` — because until next lesson wires up the list read, that is literally true even right after an upload lands a row; the row exists, the page just doesn't read it yet. The `files-list` wrapper is where the rendered rows will slot in next lesson, so leaving it in place now keeps that change a small one.
+
+One last edge worth naming before you verify. If the network drops *during* the PUT, `putToR2` rejects, the status goes to `failed`, and `finalizeUpload` is never called — so no row is written, and R2 is left holding a partial or zero object that the lifecycle rules sweep. The recovery is to pick the file again, which re-signs from scratch. You never reuse a signed URL after a failure: a 4xx means the whole flow re-runs, because the signed URL is a one-shot capability, not a retry handle.
+
+For the Result shape these actions return and the Zod-at-the-boundary validation that rejects a bad payload before your body runs, the mechanics live in [Result or throw](/043-server-actions/3-result-or-throw/) — reused here, not re-explained.
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Presigned URLs — Cloudflare R2 docs"
+    href="https://developers.cloudflare.com/r2/api/s3/presigned-urls/"
+    icon="simple-icons:cloudflare"
+    iconColor="#F38020"
+    description="The Content-Type best-practice section is the exact 403 SignatureDoesNotMatch trap this lesson warns about."
+  />
+  <ExternalResource
+    title="XMLHttpRequest.upload — MDN"
+    href="https://developer.mozilla.org/en-US/docs/Web/API/XMLHttpRequest/upload"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The upload object whose progress event drives your bar — note it forces a CORS preflight."
+  />
+  <ExternalResource
+    title="Configure CORS — Cloudflare R2 docs"
+    href="https://developers.cloudflare.com/r2/buckets/cors/"
+    icon="simple-icons:cloudflare"
+    iconColor="#F38020"
+    description="The allowed-origins/methods rules behind the localhost-vs-127.0.0.1 PUT check in Moment of truth."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's test suite:
+
+```bash
+pnpm test:lesson 3
+```
+
+The runner can't reach a live bucket or a session, so it reads the three load-bearing facts off `finalizeUpload`'s own source: the row is built from the HEAD's `ContentLength`/`ContentType` and `ctx.user.id`, not the client's claim (requirement 2); an over-cap object is caught at the HEAD with `size-mismatch` *before* any insert (requirement 4); and exactly one `file.uploaded` audit entry is written on the transaction handle, inside the same transaction as the row (requirement 6). A pass looks like this:
+
+```ansi title="pnpm test:lesson 3"
+ [32m✓[0m Lesson 3 — finalizeUpload HEADs then inserts, from server-observed truth [2m(12)[0m
+   [32m✓[0m is implemented (no longer the "Not implemented" stub)
+   [32m✓[0m req 2 — the row is written from HEAD-observed values, never the client claim [2m(4)[0m
+   [32m✓[0m req 4 — an over-cap object is caught at the HEAD with size-mismatch, before any insert [2m(3)[0m
+   [32m✓[0m req 6 — one file.uploaded audit entry, committed in the same transaction as the row [2m(4)[0m
+
+ [2mTest Files[0m  [32m1 passed[0m [2m(1)[0m
+ [2m     Tests[0m  [32m12 passed[0m [2m(12)[0m
+```
+
+Green tests prove the boundary's shape, but the four browser-only behaviors live in a real browser — the progress bar, the byte split, the client pre-check, and the CORS preflight can't be reproduced in a node test harness. With `pnpm dev` running and signed in as a `member` of a seeded org, confirm each by hand:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">A ~1 MB upload runs to `done` with a smooth progress bar.</ChecklistItem>
+  <ChecklistItem chip="untested">During that upload the Network tab shows a small POST to `presignedPut`, an MB-scale PUT to `r2.cloudflarestorage.com`, and a small POST to `finalizeUpload` — the bytes never cross a Server Action.</ChecklistItem>
+  <ChecklistItem chip="untested">Picking a 30 MB file is rejected client-side with no `presignedPut` call; an `.exe` is excluded by the file picker.</ChecklistItem>
+  <ChecklistItem chip="untested">Serving on `127.0.0.1:3000` (not in the allowlist) makes the browser PUT fail; restoring `localhost` works.</ChecklistItem>
+</Checklist>
+
+:::note
+That last check has to run in a browser — the preflight `OPTIONS` request the browser sends before a cross-origin PUT can't be reproduced with `curl`, which never preflights. Skip it and you'd ship a CORS config you never actually saw enforce itself.
+:::
+
+The Network-tab check is the one that makes the whole architecture concrete: you watch a multi-MB body leave the browser for `r2.cloudflarestorage.com` while only kilobytes of JSON touch your function. A picked file now lands in R2 and writes its row — next lesson renders those rows as a list with working download links, and proves a presigned URL is a short-lived credential, not a permanent address.

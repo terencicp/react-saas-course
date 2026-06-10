@@ -1,0 +1,193 @@
+---
+title: Real downloadUrl for the export
+chapter-id: 69
+course-progress: 0.00005
+sidebar:
+  order: 5
+  label: Export download link
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Back in the chapter on the durable CSV export, the export job ended on a lie. After it paginated every invoice into one CSV, it set `metadata.downloadUrl` to `https://example.com/exports/<runId>.csv` — a placeholder that renders as a real, clickable link on the inspector panel and rides along in the export email, and goes nowhere when you click it. That was the right shape with a stubbed payload: the email plumbing, the inspector link, the audit trail were all real; only the bytes were missing. This lesson fills in the bytes. By the end, triggering an export from `/inspector` writes the CSV to R2 and hands back a working download link — the same link on the completion panel and in the email — that downloads the file when you click it within ten minutes.
+
+<Screenshot viewport="desktop">
+  <img
+    src="/screenshots/069/l5-desktop-1280.png"
+    alt="The /inspector page after an export completes: a Run card showing a 'completed' status badge for run_seed_completed with a full pages 1/1 progress bar, below it the downloadUrl rendered as an underlined link still reading the seeded https://example.com/exports/run_seed_completed.csv placeholder, alongside the Recent exports list and the Audit log showing an export.invoices.completed entry."
+  />
+</Screenshot>
+
+## Your mission
+
+Everything you have built in this chapter signs a PUT and lets the *browser* push the bytes — the function never touches them. The export worker is the other side of that boundary. It already holds the whole CSV in memory after the page loop, and it has no browser to offload to, so it does the one thing the upload path never does: it PUTs the bytes to R2 itself. That is not a violation of the byte-pipe rule, it is the rule's other half — browser-PUT for user-facing flows, server-PUT for workers. Both PUTs go through the same `lib/r2.ts` client; you do not stand up a second one. And the export shares the same bucket as your user uploads — what separates them is the key prefix, not a separate bucket. Exports land under `exports/`, user uploads under `org/`. That single prefix is load-bearing later: a 7-day lifecycle rule (already written for you in `scripts/r2-lifecycle.ts`) sweeps everything under `exports/`, so a throwaway export CSV cleans itself up. R2 prefix matching is a literal leading string, not a glob, so the key must *lead* with `exports/` — `exports/org/<orgId>/<runId>.csv`, with the org scoping nested under the prefix — or the rule misses it.
+
+That lifecycle rule is also why the export writes no `file_metadata` row. A user upload is a long-lived artifact with an identity you list, download, and audit — it earns a row. An export is a single-consumer throwaway: the user clicks the link once, and a week later the lifecycle rule deletes it. A row for that is dead weight you would have to sweep yourself. Sign the download with `getSignedGetForKey` — the tenant-free signer the file-metadata reads expose for exactly this caller. It takes a raw key and skips the tenancy check, because the worker just wrote this key inside the trust boundary; there is no org row to scope a read against. You give that GET a ten-minute life. That is deliberately short: a user who opens the email an hour later gets a dead link, and the right answer is to re-trigger the export, not to mint a URL that lives long enough to leak. The accumulated CSV sitting in memory is bounded by page count times page size — fine at this project's scale; the escape hatch past roughly 100 MB is streaming each page straight into a multipart upload, named here, not built. One placement rule carries the chapter on durable exports forward: the R2 PUT goes *after* the page loop and *before* the close-out transaction — an external network call never sits inside a database transaction, and putting it at the tail of the resumed parent keeps that chapter's kill-resume idempotency intact. A parent retry re-PUTs the same run-keyed object, and an overwrite is idempotent.
+
+You are touching exactly one place: the block right after the page loop in `trigger/export-invoices.ts`, where the placeholder is set. Leave the pagination loop and the email template alone — reuse the `metadata.set('downloadUrl', ...)` and `sendExportEmail` plumbing that is already wired to carry the URL.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">Triggering an export writes one R2 object at `exports/org/<orgId>/<runId>.csv` via a server-side PUT.</ChecklistItem>
+  <ChecklistItem chip="tested">The export email and the inspector `downloadUrl` carry the same signed URL — they cannot drift to different links.</ChecklistItem>
+  <ChecklistItem chip="tested">The export writes no `file_metadata` row — `select count(*) from file_metadata where object_key like 'exports/%'` returns 0.</ChecklistItem>
+  <ChecklistItem chip="tested">Killing the trigger mid-run and restarting still produces exactly one CSV, one email, and one audit entry, with the R2 PUT happening once at the end of the resumed parent.</ChecklistItem>
+  <ChecklistItem chip="untested">The inspector completion panel renders the `downloadUrl` as a real R2 link that downloads the CSV when clicked, saved as `export-<day>.csv`.</ChecklistItem>
+  <ChecklistItem chip="untested">The export email arrives carrying the same URL, and clicking it within the 10-minute window downloads the CSV.</ChecklistItem>
+  <ChecklistItem chip="untested">The 7-day lifecycle rule on the `exports/` prefix is present, confirmed by logging the effective rules.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Open `trigger/export-invoices.ts`, find the placeholder block after the page loop, and replace it with a real R2 write — a server-side PUT, a signed GET, and the existing `metadata.set`. Lean on the brief and the lesson's tests; reach for the reference below once you have a version of your own.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+The whole retrofit is local. The page loop, the email child, and the close-out transaction stay exactly as the durable-export chapter left them — you swap two lines of placeholder for a PUT-sign-set block, and add three imports.
+
+<CodeVariants>
+  <CodeVariant label="Before — the placeholder">
+    <div data-mark-color="red">
+
+    ```ts {3-4}
+    console.log('export-invoices csv built', { bytes: csv.length });
+
+    const downloadUrl = `https://example.com/exports/${ctx.run.id}.csv`;
+    metadata.set('downloadUrl', downloadUrl);
+    ```
+
+    </div>
+    **The chapter-067 stub.** The link is real on the inspector panel and rides along in the email — but the bytes it points at never landed anywhere, so the click goes nowhere.
+  </CodeVariant>
+
+  <CodeVariant label="After — real R2 link" icon="cloud-download">
+    <div data-mark-color="green">
+
+    ```ts ins={1-3} collapse={9-26}
+    import { PutObjectCommand } from '@aws-sdk/client-s3';
+    import { getSignedGetForKey } from '@/db/queries/file-metadata';
+    import { BUCKET, r2 } from '@/lib/r2';
+    // ...
+    console.log('export-invoices csv built', { bytes: csv.length });
+
+    const body = Buffer.from(csv);
+    const objectKey = `exports/org/${organizationId}/${ctx.run.id}.csv`;
+    await r2.send(
+      new PutObjectCommand({
+        Bucket: BUCKET,
+        Key: objectKey,
+        Body: body,
+        ContentType: 'text/csv',
+        ContentDisposition: `attachment; filename="export-${dayBucket()}.csv"`,
+      }),
+    );
+
+    const { url: downloadUrl } = await getSignedGetForKey({
+      objectKey,
+      expiresIn: 600,
+    });
+    metadata.set('downloadUrl', downloadUrl);
+    ```
+
+    </div>
+    **The worker writes the bytes itself.** It PUTs the CSV it already holds, signs a 10-minute GET on the key it just wrote, and feeds that single URL to `metadata.set` and the unchanged email child. Three new imports come along for the ride.
+  </CodeVariant>
+</CodeVariants>
+
+Reading the block top to bottom:
+
+**`Buffer.from(csv)` and the object key.** `csv` is the string the page loop accumulated; the PUT body wants bytes, so you wrap it once. The key is constructed from the org id and `ctx.run.id` — one object per run. Because it is keyed on the run, a parent retry re-PUTs the *same* key, and overwriting an object with identical bytes is idempotent. That is what keeps the kill-resume drill honest: restart a half-finished run and you get one object, not two.
+
+**The server-side PUT.** This is the one place in the whole project where a function holds the bytes and writes them, and that is correct. The upload path offloads to the browser because the browser is where the file already is; the worker has no browser, the file is already in its memory, so presigning a PUT back to itself would be pure ceremony. The split between the two flows — browser-PUT versus worker-PUT — is the object-storage chapter's to teach; this is its worker half landing. Note the `ContentDisposition` is set *here*, at PUT time, not on the GET. The download name is baked into the stored object, which is why `getSignedGetForKey` can stay a bare-key signer with no response-header overrides. Contrast that with `getFileDownloadUrl` from the previous lesson, which *does* set `ResponseContentDisposition` on the GET — it has to, because a user file's original name is only known at read time, not when the object was stored. An export's name is yours; you write it once.
+
+**`exports/` leads, and there is no second bucket.** The key reads `exports/org/${organizationId}/${ctx.run.id}.csv`. The leading `exports/` is the part that matters. The provided `scripts/r2-lifecycle.ts` installs a single rule, `expire-exports-after-7-days`, with `Filter.Prefix: 'exports/'` — and R2 matches a literal leading string, so a key shaped `org/<id>/exports/...` would slip past the rule entirely. Lead with `exports/`, nest the org scoping under it, and one rule sweeps every org's CSVs while leaving every user upload under `org/` untouched.
+
+**Signing the GET, then publishing it once.** `getSignedGetForKey` takes the raw key and signs a ten-minute GET — no tenancy check, because the worker is inside the trust boundary and owns the key it just wrote. You destructure the URL into `downloadUrl` and that single value is what flows to both `metadata.set('downloadUrl', downloadUrl)` (the inspector panel renders this) and, a few lines down, the unchanged `sendExportEmail` child (which already accepts `downloadUrl` in its payload). One signed URL, two consumers — the panel and the email cannot drift to different links because there is only one link.
+
+**No `file_metadata` row.** The block writes nothing to the database. That is the deliberate difference from `finalizeUpload`, which inserts a row for every user upload: an export is a throwaway the lifecycle rule reaps in a week, so a row would be an orphan you would have to clean up yourself. The verification confirms this directly — the count of export-prefixed metadata rows stays zero.
+
+**Where the PUT sits.** It lands after the page loop and before the `tenantDb(...).transaction` that flips the exports row to `completed` and writes the audit entry. An external network call never belongs inside a database transaction — it would hold the transaction open across network latency and can't be rolled back if the commit fails. Keeping it outside, at the tail of the resumed parent, is also what preserves the durable-export chapter's cross-step idempotency. The mechanics of that kill-resume — the per-page idempotency keys, the cached child results on retry — are that chapter's to explain; here you just respect the placement it depends on.
+
+Once the code is in, install the lifecycle rule against your own bucket. It is a one-time setup, not part of any request:
+
+```bash
+pnpm r2:lifecycle
+```
+
+The script pushes the rule and then reads the effective configuration back, logging it — so you confirm the rule is live in seconds instead of waiting seven days for the first sweep:
+
+```bash title="r2:lifecycle output"
+[r2:lifecycle] effective rules: [
+  {
+    "ID": "expire-exports-after-7-days",
+    "Status": "Enabled",
+    "Filter": {
+      "Prefix": "exports/"
+    },
+    "Expiration": {
+      "Days": 7
+    }
+  }
+]
+```
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="R2 presigned URLs with the S3 SDK"
+    href="https://developers.cloudflare.com/r2/api/s3/presigned-urls/"
+    icon="simple-icons:cloudflare"
+    iconColor="#F38020"
+    description="Cloudflare's reference for signing GET and PUT URLs with PutObjectCommand and getSignedUrl — the glue behind getSignedGetForKey."
+  />
+  <ExternalResource
+    title="R2 object lifecycles"
+    href="https://developers.cloudflare.com/r2/buckets/object-lifecycles/"
+    icon="simple-icons:cloudflare"
+    iconColor="#F38020"
+    description="How prefix-scoped expiration rules work, so the 7-day sweep on exports/ reaps the CSVs you just wrote."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's suite:
+
+```bash
+pnpm test:lesson 5
+```
+
+The export task imports `server-only` transitively, so the runner can't execute it — there is no live R2, no bucket, no database in the test process. Instead it reads the task's own source (comments stripped, so the long prose in the file never trips an assertion) and proves the four tested outcomes structurally: the placeholder is gone; one server-side `PutObjectCommand` writes a Body of `Buffer.from(csv)` to the shared `BUCKET` at a key leading with `exports/org/<orgId>/<runId>.csv`; a single `getSignedGetForKey` URL at `expiresIn: 600` is the one value handed to both `metadata.set` and the email child; no insert into `fileMetadata` exists; the key derives from `ctx.run.id`; the PUT sits before the close-out transaction; and exactly one `export.invoices.completed` audit entry is written. A green run looks like this:
+
+```bash title="pnpm test:lesson 5"
+ ✓ Lesson 5 — the export writes a real R2 object and signs its downloadUrl
+
+ Test Files  1 passed (1)
+      Tests  11 passed (11)
+```
+
+The runner can prove the *shape* that makes kill-resume idempotent, but it can't drive a real interrupted run, a real inbox, or a real bucket. Confirm the rest by hand:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">Trigger an export from `/inspector`; the completion panel shows a real `https://<bucket>.r2.cloudflarestorage.com/...` `downloadUrl`, and clicking it downloads `export-<day>.csv`.</ChecklistItem>
+  <ChecklistItem chip="untested">The export email arrives in your Resend-verified inbox carrying the same URL; clicking it within 10 minutes downloads the CSV.</ChecklistItem>
+  <ChecklistItem chip="untested">`select count(*) from file_metadata where object_key like 'exports/%'` returns 0.</ChecklistItem>
+  <ChecklistItem chip="untested">`pnpm r2:lifecycle` logs one `expire-exports-after-7-days` rule scoped to `Filter.Prefix: 'exports/'`.</ChecklistItem>
+  <ChecklistItem chip="untested">Run the kill-resume drill: Ctrl-C the trigger CLI at `pagesDone: 2/7`, restart — the export resumes, the PUT happens once at the end, and you end with one CSV, one email, and one audit row.</ChecklistItem>
+</Checklist>
+
+That last check closes the project. Pull up the audit log — `select action, count(*) from audit_logs group by action` — and you will see two stories the chapter wrote. Every user upload left a `file.uploaded` row from `finalizeUpload`. Every export run left an `export.invoices.completed` row from the worker, written with `actorUserId: null` because a background task has no session — the null is information, not a missing value. What you will *not* see is a row for rendering `/files`: reads never audit, so the trail picks up only at writes. And `file.soft_deleted` lives in the `softDeleteFile` action but never fires, because no button calls it — the capability ships, unexercised, ready for the day a delete UI lands.
+
+Step back from the keystrokes and name what you actually decided across these five lessons. For user uploads, the function never sees the bytes — it signs a URL and the browser does the transfer. The write is two steps, sign-then-finalize, so a row never lands before the bytes it describes. Size and content type come from the post-upload HEAD, never the client's claim. The object key is server-constructed, never anything the client sends. Download URLs are signed fresh on every render and never persisted or cached, because a stored URL expires and lies. Tenancy holds at every read. One bucket per environment, with a key prefix — not a second bucket — carrying the split between throwaway exports and long-lived uploads, and one `lib/r2.ts` serving both consumers. User uploads get a `file_metadata` row; exports get no row and a lifecycle rule instead. And CORS is scoped to a specific origin, never `*`. Those are the calls. The SDK glue around them is the part an agent writes for you.
+
+A few of these threads get picked up downstream. The notification dispatcher a couple of units on can fire on `file.uploaded`. The pre-launch security audit treats the layered size defense, the CORS specificity, and the `deletedAt` reads as line items to verify. And rotating these R2 credentials under a staged-rollover discipline is part of the deployment unit near the end of the course. The shape you built here is the one those later chapters lean on.
