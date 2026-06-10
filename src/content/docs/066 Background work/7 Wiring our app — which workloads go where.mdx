@@ -1,0 +1,266 @@
+---
+title: Wiring our app — which workloads go where
+tagline: A capstone map placing every async workload in the course's SaaS at its right tier, inline await, after(), Vercel Cron, or Trigger.dev.
+chapter-id: 66
+course-progress: 0.00005
+sidebar:
+  order: 7
+  label: Wiring our app
+---
+
+import Figure from '../../../components/figures/Figure.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import DeployOrderingFrame from '../../../components/lessons/066/7/DeployOrderingFrame.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+You now own the whole ladder. Inline `await` for work the user waits on. `after()` for cleanup that has to run on the same invocation but stays invisible. Vercel Cron for schedules. And Trigger.dev for the durable, multi-step, fan-out, waitable work that the first three tiers can't reach. Six lessons of rungs. The question this lesson answers is the one that's been waiting at the top of the ladder the entire time: *where, in our actual app, does each rung get used — and, just as important, where does the cheapest rung stay the right answer?*
+
+That second half is the part juniors get wrong. Once you've learned a durable job platform, every async operation starts to look like it deserves one. It almost never does. So the thing you walk away with today isn't a new API — there's no new API in this lesson — it's a map: every recurring or asynchronous workload in the course's SaaS, sorted to the tier it lives at, with the *reason* attached to each placement. The spine of that map is the same single rule that threaded every lesson: **code stays at the lowest tier that meets the durability, latency, and time-budget requirement.** Today you apply it to a real application, end to end.
+
+## The app's workloads, on one table
+
+Here is the whole map on one screen. Seven workloads, the tier each lives at, and the one fact that decides the placement. Read it once top to bottom before we walk it — the goal is for the shape to be visible at a glance: four of seven stay on the platform default, three earn Trigger.dev.
+
+| Workload | Tier | Deciding reason |
+| --- | --- | --- |
+| Invitation email from `inviteMember` | inline `await` | one ~200&nbsp;ms Resend call; the user must know it sent |
+| Analytics event after checkout | `after()` | fire-and-log; must not roll back the DB transaction |
+| Audit-log row | inside `db.transaction` | atomic with the mutation; never deferred |
+| Hourly trial-expiry sweep | Vercel Cron | fixed UTC schedule, predicate-idempotent `UPDATE`, fits the function budget |
+| CSV export | **Trigger.dev** | every condition — multi-step, paginated, past the budget, retries, final email |
+| Stripe reconciliation sweep | **Trigger.dev** | durability — a partial reconciliation is *wrong*, it must resume on a crash |
+| Notification dispatcher fan-out | **Trigger.dev** | fan-out to N channels × N users, serialized per org |
+
+Now walk it as a single sweep up the ladder. The first three rows are the cheap tiers from the start of the chapter. The invitation email is one Resend call that finishes in a couple hundred milliseconds, and the person who clicked "Send invitation" needs to know it actually went out — so it blocks the response, inline. The analytics event after a checkout is the opposite: nobody is waiting on it, and a flaky analytics provider must never roll back the database transaction that recorded the sale, so it fires after the response with <Term definition="A same-invocation callback that runs after the response ships — no durability, no retries.">`after()`</Term>. The audit-log row isn't deferred at all; it's written *inside* the same `db.transaction` as the mutation it records, because an audit entry that can drift out of sync with the thing it audits is worse than no audit entry.
+
+Row four is the schedule tier. The hourly trial-expiry sweep runs an `UPDATE` that flips any trial past its expiry date to `past_due`. It's on a fixed UTC schedule, it finishes well inside a function's time budget, and — this is the part that keeps it on Cron — it's <Term definition="A job whose own first run invalidates its WHERE clause, so re-running it changes nothing and it needs no dedup key.">predicate-idempotent</Term>: the first run flips the matching rows, so a duplicate delivery from Cron's at-least-once scheduler matches nothing and changes nothing. No dedup key, no durability machinery, no second platform. Vercel Cron, full stop.
+
+The last three rows are the escalations, and each one trips a *specific* one of the five conditions you learned in the lesson on when Trigger.dev earns its weight. The CSV export trips all five. The Stripe reconciliation sweep trips durability — a half-finished reconciliation leaves the billing state *wrong*, so the run has to resume from where it crashed, not restart from a corrupted middle. The notification dispatcher trips <Term definition="One trigger spawning many child runs, with a cap on how many run at once.">fan-out</Term> — one event explodes into N sends across N members — and it needs per-tenant serialization so one noisy org can't starve the rest. We'll take those three one at a time in a moment.
+
+But notice what the table is really doing. The four "stays put" rows are not filler — they're the load-bearing half. Every one of them is a place a junior would over-reach: "the invite send could fail, let's make it durable"; "the trial sweep is important, let's run it on Trigger.dev for the dashboard." Both wrong. The invite send is *one* call under the time wall — no condition crossed. The trial sweep is a predicate-idempotent `UPDATE` that fits the budget — no condition crossed. The rule from earlier in the chapter holds with no exceptions: **escalate on a condition, never on a vibe.** The presence of an upgrade path is not a reason to take it.
+
+### Three workloads that earn Trigger.dev
+
+These three cross a line the platform default can't. Worth being precise about *which* condition each one trips — and equally precise about which of them you'll actually build, because only one ships in this course.
+
+**CSV export — built next.** A user asks to export their organization's invoices to CSV. On a small org that's a single query and a download. On a large org it's a paginated read of tens of thousands of rows that bursts past the function time budget, where each page is a checkpoint you don't want to redo, where a transient database or Resend hiccup should retry rather than fail the whole job, and where the finished file goes out as an "export ready" email at the end. That's every one of the five conditions at once — multi-step, past the time wall, retries, fan-out-adjacent pagination, a final notification — which is exactly why this has been the chapter's canonical "yes" since the lesson on when Trigger.dev earns its weight. The next chapter ships it end to end; this lesson only places it.
+
+**Stripe reconciliation sweep — a forward note, not a build.** A nightly job reads Stripe for any organization whose `lastEventAt` is older than 24 hours and reconciles any drift back into the `plan_entitlements` row — repairing the rare case where a webhook was missed or arrived out of order. Here's the subtlety: this one could *start* on Vercel Cron. The schedule part is trivially a cron. But the reconciliation *itself* needs durability. If the worker crashes after reconciling 200 of 500 orgs, restarting from zero re-applies work and risks re-deriving entitlements from a half-applied state — a partial reconciliation is a *wrong* reconciliation. So the cron's job shrinks to "fire the schedule," and a <Term definition="A run that survives worker crashes and redeploys by checkpointing its progress, resuming where it left off.">durable run</Term> does the work that must resume on a crash. That's the "cron schedules, Trigger.dev does the durable work" split, made concrete. This course doesn't build it; it's named so you see the pattern recurs past the one export.
+
+**Notification dispatcher fan-out — a forward note for a later chapter.** One domain event — say, "comment added" — fans out to many channels across many members of an org: an email here, an in-app inbox entry there, multiplied across everyone who should hear about it. That's fan-out by definition. And it needs per-tenant isolation: a queue keyed with <Term definition="Splits a predeclared queue's concurrency limit into one independent lane per key — here, one lane per organization.">`concurrencyKey: organizationId`</Term> serializes the sends *within* an org so one organization firing a thousand events can't starve every other tenant's notifications, while staying fully parallel *across* orgs. It's triggered from a small `notifyEvent` Server Action helper — the `notify-org-members` task you wrote a couple lessons ago was the warm-up shape for exactly this. A later chapter builds the real dispatcher; today it's here only to prove fan-out plus per-tenant isolation is a *recurring* reason to escalate, not a one-off.
+
+The point of these three together: the five conditions aren't a special case carved out for the export. They generalize. Different workloads trip different subsets, and each subset is a legitimate, defensible reason to reach past the platform default — once, and only once, a condition is genuinely crossed.
+
+### Drill: sort the workloads
+
+Before you read another word, commit. Drag each of the app's workloads into where it runs. Don't pattern-match the table you just read — run the test: does this workload cross a named condition, or does the cheapest tier still cover it?
+
+<Buckets twoCol instructions="Sort each of our app's workloads into where it runs — the platform default (inline, `after()`, or Cron) or Trigger.dev.">
+  <Bucket name="default" label="Platform default" description="inline `await`, `after()`, or Vercel Cron" />
+  <Bucket name="trigger" label="Trigger.dev" description="durable, multi-step, fan-out, or waitable" />
+
+  <Item bucket="default">Invitation email from `inviteMember`</Item>
+  <Item bucket="default">Analytics event after checkout</Item>
+  <Item bucket="default">Audit-log row inside the transaction</Item>
+  <Item bucket="default">Hourly trial-expiry sweep</Item>
+  <Item bucket="trigger">Paginated CSV export with final email</Item>
+  <Item bucket="trigger">Nightly Stripe reconciliation</Item>
+  <Item bucket="trigger">Notification fan-out to N members</Item>
+</Buckets>
+
+## Two runtimes, one codebase
+
+Here's a misconception worth killing before you reach for Trigger.dev, because it inflates the perceived cost of doing so: *Trigger.dev is not a separate codebase, repo, or service you maintain on the side.*
+
+Your tasks live in a `trigger/` directory **in the same repository** as your Next.js app. They `import` the same `lib/email.ts` and `lib/billing.ts` your Server Actions import. They use the same Drizzle schema. They call the same `tenantDb(organizationId)` and write to the same audit log. They hit the **same Postgres**. Nothing about the data layer is duplicated. The *only* thing that differs is where the code runs: a Server Action runs in a Vercel function; a task runs in a Trigger.dev worker process. Same code, same data, two runtimes. Trigger.dev is a runtime for code that already lives in your app — not a second app.
+
+There is exactly one seam that *is* different, and you already met it: a task has no Better Auth session and no tenant-db middleware wrapping the request, because there's no request. Org context is cargo, not ambient — so the org id rides in the task's payload, and tenancy is re-derived *inside* the run.
+
+<CodeVariants>
+  <CodeVariant label="App side (Server Action)">
+    ```ts "organizationId"
+    await exportCsv.trigger({ organizationId, requestedBy: user.id });
+    ```
+    **The org id is cargo.** The Server Action holds the session, so it reads `organizationId` from context and hands it to the task as payload.
+  </CodeVariant>
+
+  <CodeVariant label="Task side (trigger/)">
+    ```ts "payload.organizationId"
+    const db = tenantDb(payload.organizationId);
+    ```
+    **No ambient context to lean on.** The task has no session and no middleware, so it re-derives the tenant-scoped client from the payload it was handed — same `tenant-db.ts`, same Postgres.
+  </CodeVariant>
+</CodeVariants>
+
+Seeing the two compute surfaces sitting on one shared foundation is what makes "two runtimes, one codebase" click — and what lowers the cost of reaching for Trigger.dev once a condition genuinely trips. The following diagram draws it: two boxes that run code on top, one box that holds everything they share underneath.
+
+<Figure caption="Two runtimes run the code — one Vercel function, one Trigger.dev worker — but they sit on a single shared foundation. The app triggers a task over HTTPS, handing it the org id as cargo; both read and write the same Postgres through the same tenant-scoped client.">
+```d2
+direction: right
+
+**.style.font-size: 28
+
+classes: {
+  app: {
+    style: {
+      fill: "#dbeafe"
+      stroke: "#2563eb"
+      font-color: "#1e3a8a"
+      border-radius: 12
+    }
+  }
+  trigger: {
+    style: {
+      fill: "#ede9fe"
+      stroke: "#7c3aed"
+      font-color: "#4c1d95"
+      border-radius: 12
+    }
+  }
+  shared: {
+    style: {
+      fill: "#fef3c7"
+      stroke: "#d97706"
+      font-color: "#78350f"
+      border-radius: 12
+    }
+  }
+}
+
+runtimes: "Two runtimes" {
+  style: {
+    fill: transparent
+    stroke: transparent
+    font-color: "#64748b"
+  }
+  app: "Next.js app on Vercel\nServer Actions, route handlers" { class: app }
+  trigger: "Trigger.dev workers\ntasks in trigger/" { class: trigger }
+
+  app -> trigger: "trigger over HTTPS\n(payload carries organizationId)" { style.stroke: "#7c3aed"; style.stroke-width: 2 }
+}
+
+shared: "Shared foundation\nlib/ · Drizzle schema · tenant-db.ts · Postgres · audit log" {
+  class: shared
+  shape: cylinder
+}
+
+runtimes.app -> shared: "same tenant-db.ts,\nsame audit log" { style.stroke: "#d97706" }
+runtimes.trigger -> shared: "same tenant-db.ts,\nsame audit log" { style.stroke: "#d97706" }
+```
+</Figure>
+
+One off-ramp worth naming and not dwelling on: Trigger.dev v4 is Apache-2.0, so you can self-host the workers once a SaaS outgrows the free tier or has data-residency constraints. The code pattern doesn't change — only where the workers run. The codebase stays exactly where it is; just the runtime moves.
+
+<VideoCallout videoId="I7HRuqEDDZc" videoTitle="Next.js + Trigger.dev: background jobs architecture">
+  ByteGrad's 15-minute walkthrough — watch the architecture section for *why* long work can't live in the Next.js request-response cycle and gets handed to a separate runtime, the same "two runtimes, one codebase" split this section draws.
+</VideoCallout>
+
+## What ships alongside the app
+
+Two operational facts you have to leave with. Both are real production footguns. Both get the deep treatment in later units — here you just need to know they exist and *why* they bite.
+
+**The environment surface.** Three variables make the background-work layer go. Worth seeing them in one place so you hold the complete surface at once, instead of meeting them scattered across separate lessons.
+
+| Variable | Where it lives | What it's for |
+| --- | --- | --- |
+| `TRIGGER_SECRET_KEY` | app side, server-only | lets the SDK trigger tasks over HTTPS |
+| `TRIGGER_PROJECT_REF` | `trigger.config.ts` | the `proj_…` ref tying your local code to the cloud project |
+| `CRON_SECRET` | cron route handlers | the Bearer secret you already verify on every cron invocation |
+
+`TRIGGER_SECRET_KEY` is a server-only secret, and it must be **distinct per environment** — development, staging, production each get their own. Sharing one key across environments is the same blast-radius mistake as sharing a webhook signing secret across environments, which you saw earlier: a leaked or misused key now reaches every environment at once instead of being contained to one. `TRIGGER_PROJECT_REF` is the `proj_…` identifier that ties the code in your repo to a specific cloud project. And `CRON_SECRET` is an old friend from the Cron lesson, listed here only so the full surface is in front of you. These three foreshadow the next chapter's `.env.example` — this is a surface to recognize, not a setup tutorial.
+
+:::note
+Validating these at build time — so a missing or malformed key fails the build instead of a 2&nbsp;a.m. production request — is the same `env.ts` discipline the app already uses for `DATABASE_URL`. It's established elsewhere; here, just know these three belong in it.
+:::
+
+**Deploy ordering — the one genuinely new idea in this lesson.** When a deploy introduces a *new* task that a Server Action triggers, there's an ordering rule, and it's the kind of thing that's invisible until it bites in production.
+
+Think about the dependency direction. The app is the *caller*; the task is the *callee*. If the app ships first, there's a window where the new app code is live and calling for a task version the workers don't have yet — and that trigger call fails at runtime, on a real user's request, with nothing obviously wrong in your code. So the rule is: **deploy the callee before the caller.** Ship the task to the Trigger.dev workers first, then ship the app that references it.
+
+<DiagramSequence>
+  <DiagramStep caption="First: the new task version lands on the workers — the callee exists before anything calls it. The app isn't live yet, so nothing can reference a task that doesn't exist.">
+    <DeployOrderingFrame step="task-first" />
+  </DiagramStep>
+
+  <DiagramStep caption="Then: the app that triggers the task goes live. By now the task version is already live on the workers, so every trigger call it makes can only ever reference a version that already exists.">
+    <DeployOrderingFrame step="app-next" />
+  </DiagramStep>
+</DiagramSequence>
+
+Now the 2026 reality, because "run two CLI commands in the right order by hand" is not how you'll actually do this. Trigger.dev v4 ships **atomic deployments** and a first-party **Vercel integration** that encode exactly this ordering for you. With them enabled, the Vercel deploy is *gated* on the task build completing, the matching task version is pinned, and the two go live in lockstep — so the app can never reference a mismatched task version even if you do nothing. Treat the manual "callee before caller" rule as *the principle the automation encodes*. You're learning it not so you'll run the commands by hand, but so you understand **why** the sequencing matters when the platform is doing it silently on your behalf — and so you recognize the failure the moment automation is off or misconfigured. The deeper CI/CD machinery is a later unit's job.
+
+One last operational note, on cost — and the framing matters more than any number, because pricing is volatile. Trigger.dev bills on a *different unit* from Vercel: per run, per run-minute, per concurrency seat, where Vercel bills per function invocation. Watch your per-task run counts weekly, the same way you watch Vercel function invocations. When a task's run count spikes, the cause is almost always a missing <Term definition="A stable key that makes a retried trigger or side effect execute exactly once instead of duplicating.">idempotency key</Term> or a retry storm — not real user growth. And resist the urge to compare Trigger.dev's cost-per-run to Vercel's cost-per-invocation directly; they measure different things, so the comparison is a category error.
+
+## Check your placement instinct
+
+The skill this whole chapter has been building toward isn't reciting the table — it's defending a placement *in both directions*, including the harder direction of arguing *not* to escalate. Try this one.
+
+<MultipleChoice>
+  A teammate proposes moving the invitation email out of `inviteMember` and into a Trigger.dev task — "for consistency with the export job." What's the right call?
+
+  <McqChoice correct>Keep it where it is. The send is one sub-second call the user is actively waiting on, and matching the export's house style isn't one of the conditions that earns a task.</McqChoice>
+  <McqChoice>Move it — once you run a durable job platform, every async operation belongs on it.</McqChoice>
+  <McqChoice>Move it — Resend calls can fail, and a task hands you automatic retries the inline path doesn't have.</McqChoice>
+  <McqChoice>Move it — running every background workload on a single platform is easier to reason about.</McqChoice>
+
+  <McqWhy>Nothing here crosses a condition — it's one sub-second call, and the user needs immediate confirmation it sent. The export earns Trigger.dev because it trips five conditions, not because durable tasks are a house style, so "consistency" buys you nothing. The retry argument actually backfires: an inline send surfaces a failure to the user *right away*, so they can retry knowingly — pushing it onto a queue would *hide* that failure behind a worker they can't see. Escalate on a condition, never on a vibe.</McqWhy>
+</MultipleChoice>
+
+## Where this goes next
+
+That's the chapter. Seven workloads, one rule that placed every one of them: **code stays at the lowest tier that meets the durability, latency, and time-budget requirement.** Inline when the user waits. `after()` when nobody waits but it must run on this invocation. Cron when it's on a clock and fits the budget. Trigger.dev — and only Trigger.dev — when a real condition forces it: durability, multi-step orchestration, retries on its own clock, fan-out, or a durable pause. Four of seven stayed cheap. That ratio is the lesson.
+
+Next, you build the one that earns it. The project clones the starter and writes the `export-csv` task end to end: payload validation, one durable checkpoint per page with a per-page idempotency key, the final "export ready" email, runs verified in the dashboard — and then you kill the worker mid-run to *prove* the durability you've been placing this whole chapter is real. After that comes the chapter quiz to check what stuck.
+
+<CardGrid>
+  <ExternalResource
+    title="Trigger.dev v4 docs"
+    href="https://trigger.dev/docs"
+    icon="lucide:zap"
+    iconColor="#A78BFA"
+    description="The canonical SDK reference. Version-volatile — confirm against the latest before copying."
+  />
+  <ExternalResource
+    title="Vercel Cron Jobs"
+    href="https://vercel.com/docs/cron-jobs"
+    icon="simple-icons:vercel"
+    iconColor="#000000"
+    description="The schedule tier's reference, including the at-least-once delivery guarantee."
+  />
+  <ExternalResource
+    title="Next.js — the after() function"
+    href="https://nextjs.org/docs/app/api-reference/functions/after"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="API reference for the fire-and-log tier — scheduling work that runs after the response ships."
+  />
+  <ExternalResource
+    title="Trigger.dev — atomic deploys"
+    href="https://trigger.dev/docs/deployment/atomic-deployment"
+    icon="lucide:layers"
+    iconColor="#A78BFA"
+    description="The Vercel integration that encodes the callee-before-caller deploy ordering this lesson teaches."
+  />
+  <ExternalResource
+    title="Trigger.dev — idempotency keys"
+    href="https://trigger.dev/docs/idempotency"
+    icon="lucide:fingerprint"
+    iconColor="#A78BFA"
+    description="How a stable key makes a retried trigger run exactly once — the fix for run-count spikes."
+  />
+</CardGrid>

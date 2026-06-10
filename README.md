@@ -6,7 +6,7 @@ Imagine an AI could take that one sentence, break it into a month of work, and a
 
 A full-depth course on building a production SaaS with the minimum-viable 2026 stack, **designed and built for me — by me**, with Claude Code (Opus 4.8). I'm building it to learn from; the experiment is that I also engineered the agentic system that authors it. Authoring began May 2026.
 
-> **Status: work in progress.** 65 of a planned 108 chapters are published. Built over ~5 weeks and ~680 commits so far (first commit 2026-05-08). Not yet deployed publicly.
+> **Status: work in progress.** 66 of a planned 108 chapters are published. Built over ~5 weeks and ~680 commits so far (first commit 2026-05-08). Not yet deployed publicly.
 
 ---
 

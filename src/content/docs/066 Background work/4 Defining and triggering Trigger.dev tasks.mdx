@@ -1,0 +1,794 @@
+---
+title: Defining and triggering Trigger.dev tasks
+tagline: The core Trigger.dev v4 SDK, defining typed tasks, triggering them fire-and-forget from a Server Action, capping concurrency with predeclared queues and per-tenant keys, and scheduling work on a clock.
+chapter-id: 066
+course-progress: 0.00005
+sidebar:
+  order: 4
+  label: Tasks, queues, schedules
+---
+
+import { Code, FileTree, CardGrid } from '@astrojs/starlight/components';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import TriggerLifecycle from '../../../components/lessons/066/4/TriggerLifecycle.astro';
+import ConcurrencyLanes from '../../../components/lessons/066/4/ConcurrencyLanes.astro';
+import DashboardRunRow from '../../../components/lessons/066/4/DashboardRunRow.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import ZodCoding from '../../../components/live-coding/ZodCoding/ZodCoding.astro';
+import Sequence from '../../../components/exercises/sequence/Sequence.astro';
+import Step from '../../../components/exercises/sequence/Step.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import CodeReview from '../../../components/exercises/code-review/CodeReview.astro';
+import ReviewFile from '../../../components/exercises/code-review/ReviewFile.astro';
+import ReviewIssue from '../../../components/exercises/code-review/ReviewIssue.astro';
+import ReviewWhy from '../../../components/exercises/code-review/ReviewWhy.astro';
+import Dropdowns from '../../../components/exercises/dropdowns/Dropdowns.astro';
+import Tokens from '../../../components/exercises/Tokens.astro';
+import TrueFalse from '../../../components/exercises/true-false/TrueFalse.astro';
+import Statement from '../../../components/exercises/true-false/Statement.astro';
+import TfWhy from '../../../components/exercises/true-false/TfWhy.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+In the [previous lesson](/066-background-work/3-when-triggerdev-earns-its-weight) you built the decision layer. You walked a workload through the five conditions, decided it had earned a durable background platform, and stopped there — deliberately. Not one line of the Trigger.dev SDK got written, because the hard part was the judgment, not the keystrokes. This lesson is where you pay that debt. You've decided a piece of work belongs on Trigger.dev; now you learn the smallest API surface that lets you actually define it, type it, trigger it, queue it, and schedule it.
+
+There is one hazard that shadows every paragraph here, and it is worth naming before you write anything. Trigger.dev shipped a major version, v3 to v4, that broke a handful of things — and the broken parts are exactly the parts a search engine, a blog post, or an AI completion will hand you in their old shape. The two that bite hardest both live in this lesson: queues are now declared in your code instead of conjured at the moment you trigger, and per-tenant concurrency is split with a key rather than a dynamically-named queue. Copy the old shape and your code *deploys clean* and then behaves wrong. So the spine of this lesson is to teach you the v4 form and, at each break, show you the v3 form you'll find in the wild and why it no longer holds.
+
+By the end you'll be able to do five concrete things: scaffold a project and drop a task file in the right folder; write a typed task whose payload is validated before the body runs; fire it from a Server Action and read back its handle; put it on a queue with a concurrency limit and split that limit fairly across tenants; and declare both a fixed recurring schedule and a per-customer one created at runtime.
+
+One reflex from the last lesson carries the whole way through, so hold onto it: **a task is its own world.** It does not run inside a request. There is no session, no cookie, no signed-in user waiting on the other end. Everything the task needs to know — which organization it's acting for, above all — arrives as cargo in its payload, never as ambient context. That single fact is why the payloads you're about to write look the way they do.
+
+## The project: `trigger.config.ts` and the `trigger/` folder
+
+Before any task code, you need to know where it lives, so that every snippet below has a home. Trigger.dev is not a library you `npm install` and call — it's a platform with its own deploy pipeline, and it finds your tasks by scanning a folder.
+
+One command bootstraps the whole thing:
+
+```bash
+npx trigger.dev@latest init
+```
+
+This is a one-time setup. It asks which Trigger.dev cloud project to link, writes a `trigger.config.ts` at your repository root, and creates the `trigger/` folder where your tasks will go. You don't need to memorize the full transcript — you'll walk the generated starter when you build the real export job later. What matters now is the topology it leaves behind.
+
+The config file sits at the root of your repo, next to `package.json`, and declares a small set of things: the <Term definition="The proj_... identifier that ties your local code to a specific Trigger.dev cloud project — the link between this codebase and the dashboard.">project ref</Term>, the runtime, and — the field that decides where tasks are found — `dirs`.
+
+```ts title="trigger.config.ts"
+import { defineConfig } from '@trigger.dev/sdk';
+
+export default defineConfig({
+  project: 'proj_abcdefgh1234',
+  dirs: ['./trigger'],
+  runtime: 'node',
+});
+```
+
+That `dirs` array is the one config line worth understanding rather than copying, because of a subtlety that costs people an afternoon. Trigger.dev only registers task files that live inside the folders listed in <Term definition="The array in trigger.config.ts that lists which folders Trigger.dev scans to find your task files; files outside it are silently ignored.">`dirs`</Term>. A file outside that list is silently ignored — no error, no warning, just a task that never appears in the dashboard and never runs. The course default, and the v4 default, is a single root-level `trigger/` folder. Put your tasks there, one task per file.
+
+This is worth flagging because the wild is split on it.
+
+:::caution
+You will find plenty of examples that put tasks in `src/trigger/`. That's not wrong, exactly — it's just a non-default `dirs` value someone configured. The course uses **root-level `trigger/`**, because that's what `npx trigger.dev@latest init` generates and what the SDK auto-detects. The trap is mismatch: if your file says `src/trigger/` but your config says `./trigger`, the CLI finds nothing and tells you nothing. Pick one and let the config and the folder agree.
+:::
+
+Here is the shape to hold in your head — your tasks live beside the rest of your app, in the same repository, sharing the same database schema and the same `lib/` helpers. They are not a separate service in a separate repo. They just occupy their own folder and ship on their own pipeline.
+
+<Figure>
+<FileTree>
+- trigger.config.ts lives at the repo root
+- **trigger/** task files, found via `dirs`
+  - **notify-org-members.ts**
+  - **export-csv.ts**
+- app/ your Next.js routes and Server Actions
+- lib/ shared helpers — tasks import these too
+  - email.ts
+- db/ the Drizzle schema tasks read from
+  - schema.ts
+- package.json
+</FileTree>
+<Fragment slot="caption">
+Tasks share everything with your app — the same Drizzle schema, the same `lib/email.ts` — they just live in their own folder and deploy on their own pipeline.
+</Fragment>
+</Figure>
+
+Two commands drive the development loop, and you'll lean on them constantly once you start building. `npx trigger.dev@latest dev` runs a local worker that registers your tasks and streams their logs into your terminal as they run; `npx trigger.dev@latest deploy` ships them to the cloud. The thing to notice — and we'll come back to it when we talk about deploying for real — is that a Trigger.dev app has *two* deploy steps from one codebase: one for your tasks, one for your Next.js app on Vercel. The ordering between them matters, but that's a problem for a later lesson.
+
+## Defining the unit of work: `task` and `schemaTask`
+
+A task is the unit you define and call. At its simplest it's an object with two required things: an `id` and a `run` function. Start with the base primitive, because understanding what it *lacks* is the whole reason for the version you'll actually use.
+
+```ts title="trigger/notify-org-members.ts"
+import { task } from '@trigger.dev/sdk';
+
+export const notifyOrgMembers = task({
+  id: 'notify-org-members',
+  run: async (payload, { ctx }) => {
+    // payload is untyped here — you trust it or hand-check it
+  },
+});
+```
+
+The `id` deserves a moment, because it's doing more work than it looks. It is the task's <Term definition="The task's id string is its permanent identity — runs reference the task by it, it persists across deploys, and the dashboard groups history under it; renaming it orphans every existing run.">durable identity</Term>. Every run that has ever happened references the task by this string. It persists across deploys. The dashboard groups a task's entire history under it. The way to think about it: treat the `id` like a route path or a database table name. It's stable, it gets code-reviewed, and you do not rename it casually — rename it and you've orphaned every run that came before, the way renaming a table orphans every row that pointed at it.
+
+The `run` function is the body — it receives the `payload` and a context object. But notice the problem the comment is pointing at: on a bare `task`, the `payload` is untyped. Trigger.dev hands you whatever the caller sent, and you either trust it blindly or write a hand-check at the top of every run. That's a boundary with no guard on it, and you've spent enough of this course learning not to leave those open. Which is the whole motivation for the version the course actually uses.
+
+`schemaTask` is `task` plus one field: a `schema`. You hand it a Zod object, and Trigger.dev parses the incoming payload against it *before your run function executes*. An invalid payload throws at the moment you trigger — not three minutes into a run, after the task has already done half its work and burned the compute. This is the exact same discipline you applied to Server Actions: validate at the boundary, then trust the body completely. The difference is that here the boundary is the trigger call instead of the form submission.
+
+The two versions sit side by side below. The only difference is the `schema` key and the payload that's now typed because of it — but that difference is the reason `schemaTask` is the default for anything that takes input.
+
+<CodeVariants>
+  <CodeVariant label="Bare task">
+    <div data-mark-color="orange">
+
+    ```ts {6}
+    import { task } from '@trigger.dev/sdk';
+
+    export const notifyOrgMembers = task({
+      id: 'notify-org-members',
+      run: async (payload, { ctx }) => {
+        const orgId = payload.organizationId; // any — no guarantee it exists
+      },
+    });
+    ```
+
+    </div>
+    **You hand-validate or trust blindly.** `payload` is untyped, so `payload.organizationId` could be `undefined`, a number, anything. Nothing checked it. You're back to defending the boundary yourself, inside every run.
+  </CodeVariant>
+
+  <CodeVariant label="schemaTask (course default)">
+    <div data-mark-color="green">
+
+    ```ts {6-9,11}
+    import { schemaTask } from '@trigger.dev/sdk';
+    import { z } from 'zod';
+
+    export const notifyOrgMembers = schemaTask({
+      id: 'notify-org-members',
+      schema: z.object({
+        organizationId: z.uuid(),
+        eventType: z.string(),
+      }),
+      run: async (payload, { ctx }) => {
+        const orgId = payload.organizationId; // string, guaranteed
+      },
+    });
+    ```
+
+    </div>
+    **Parsed at the boundary, typed in the body.** The schema validates before `run` is called, so `payload` is fully typed inside it and a bad payload is rejected at trigger time. The schema also renders in the dashboard as the task's input contract.
+  </CodeVariant>
+</CodeVariants>
+
+One small note on where the schema lives. By default it sits right next to the task, inline, as you see above — the task and its contract in one file. The only time you hoist it out into `lib/triggers/<task>.schema.ts` is when a *caller* needs to import the schema too, which happens rarely. Default to inline.
+
+A word on the validator itself. Trigger.dev v4 accepts any <Term definition="A validator-agnostic interface for schemas — Zod, Valibot, and ArkType all implement it, so the choice of validation library is structural, not locked in.">Standard Schema</Term> validator, which means Zod, Valibot, and ArkType all work. The choice is structural, not forced — the course uses Zod 4, which is the same validator you've used everywhere else, so the schema you write here is the schema you already know.
+
+Now look at the canonical `schemaTask` line by line, because the structure *is* the lesson — every field is load-bearing and each one rewards a closer look.
+
+<AnnotatedCode lang="ts" maxLines={16} code={`
+import { schemaTask } from '@trigger.dev/sdk';
+import { z } from 'zod';
+
+export const notifyOrgMembers = schemaTask({
+  id: 'notify-org-members',
+  schema: z.object({
+    organizationId: z.uuid(),
+    eventType: z.string(),
+  }),
+  run: async (payload, { ctx }) => {
+    const { organizationId, eventType } = payload;
+    // ctx.run.id, ctx.attempt.number, ctx.environment — never headers()
+  },
+});
+`}>
+  <AnnotatedStep meta={`"'notify-org-members'"`} color="blue">
+    The `id` is the task's durable, public API — the string runs reference forever. Stable, reviewed, never casually renamed. This is the one field you can't change without consequences.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{6-9}`} color="green">
+    The `schema` is the input contract. Trigger.dev parses every incoming payload against it before `run` executes, so an invalid payload is rejected at trigger time — and the dashboard renders this shape as the task's documented input.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{11}`} color="blue">
+    Inside `run`, the payload is fully typed from the schema — `organizationId` is a `string`, `eventType` is a `string`, destructured with no cast and no parallel `interface`. The schema *is* the type.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{10} "ctx"`} color="orange">
+    The second argument, `ctx`, is per-run context: `ctx.run.id` (the durable run id), `ctx.attempt.number` (which retry this is), `ctx.environment`. It is **not** request context. No `headers()`, no `cookies()`, no `requireOrgUser()` — the task is its own world, which is exactly why `organizationId` had to ride in on the payload.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+That last step is the one to sit with. The <Term definition="The per-run context object Trigger.dev passes as the second argument to run — exposes run.id, attempt.number, and environment; it is not request context and carries no session or headers.">`ctx`</Term> object is tempting to read as "the request," and it is not. There is no request. `ctx.run.id` is the durable id of this specific run — you'll use it as an idempotency key in the next lesson. `ctx.attempt.number` tells you which retry you're on — also next lesson. `ctx.environment` is `dev` or `prod`. What `ctx` will never give you is a signed-in user, because nobody is signed in. The task ran because something enqueued it, possibly minutes ago, possibly while the user who triggered it has long since closed the tab. That's the whole point of moving the work here — and the reason the organization id is the first field in every payload you'll write.
+
+Your turn. The schema is the one part of a task that genuinely runs in a browser, so it's the one place a live exercise is honest. Write the Zod schema for the export task described below, and watch the scenarios flip as you get it right.
+
+<ZodCoding
+  schemaName="ExportPayload"
+  instructions="An export task needs three things in its payload: organizationId as a UUID, a since ISO date (a calendar day, not a datetime), and an optional format that is either 'csv' or 'json', defaulting to 'csv'. Write the schema using the v4 top-level builders (z.uuid(), z.iso.date(), z.enum) — not .string().x() chains. The valid-csv-default scenario passes only once the format default applies."
+  starter={`import { z } from 'zod';
+
+export const ExportPayload = z.object({
+  // organizationId: a UUID
+  // since: an ISO date (calendar day)
+  // format: 'csv' | 'json', optional, default 'csv'
+});
+
+type ExportPayload = z.infer<typeof ExportPayload>;
+//   ^?
+`}
+  fixtures={[
+    { name: 'valid csv default', input: { organizationId: '018f1a2b-3c4d-7e5f-8a9b-0c1d2e3f4a5b', since: '2026-01-01' }, expect: 'pass' },
+    { name: 'explicit json', input: { organizationId: '018f1a2b-3c4d-7e5f-8a9b-0c1d2e3f4a5b', since: '2026-01-01', format: 'json' }, expect: 'pass' },
+    { name: 'bad uuid', input: { organizationId: 'not-a-uuid', since: '2026-01-01' }, expect: 'fail', errorContains: 'UUID' },
+    { name: 'bad format', input: { organizationId: '018f1a2b-3c4d-7e5f-8a9b-0c1d2e3f4a5b', since: '2026-01-01', format: 'xml' }, expect: 'fail' },
+  ]}
+/>
+
+<details>
+<summary>Reference solution</summary>
+
+```ts
+import { z } from 'zod';
+
+export const ExportPayload = z.object({
+  organizationId: z.uuid(),
+  since: z.iso.date(),
+  format: z.enum(['csv', 'json']).default('csv'),
+});
+
+type ExportPayload = z.infer<typeof ExportPayload>;
+```
+
+`z.uuid()` and `z.iso.date()` are the Zod 4 top-level format builders — `z.iso.date()` accepts a calendar day like `'2026-01-01'` but rejects a full datetime. `z.enum(['csv', 'json']).default('csv')` makes `format` optional and supplies `'csv'` when it's absent, which is why the first scenario parses with no `format` field.
+
+</details>
+
+## Triggering a task from your app
+
+A task that's never called is dead code. Triggering is how you call it — and in v4 the cleanest way is to import the task and call a method on it directly.
+
+<div data-mark-color="blue">
+
+```ts title="app/exports/actions.ts" {9}
+'use server';
+
+import { exportCsv } from '@/trigger/export-csv';
+import { requireOrgUser } from '@/lib/auth';
+import { ok } from '@/lib/result';
+
+export const startExport = async (since: string) => {
+  const { orgId } = await requireOrgUser();
+  const handle = await exportCsv.trigger({ organizationId: orgId, since });
+  return ok({ runId: handle.id });
+};
+```
+
+</div>
+
+That one line — `await exportCsv.trigger({ organizationId: orgId, since })` — is the whole act of handing work off. Because you imported the typed task, the payload is type-checked against its schema at the call site: pass the wrong shape and TypeScript complains before you ever run it. No string id to mistype, no generic to wire by hand. This is the call you make from a Server Action the moment a workload has crossed one of the `StateMachineWalker`'s thresholds.
+
+`trigger` returns a <Term definition="The object trigger returns — it carries the run's id so you can later look the run up, cancel it, or surface its status; it is not the run's result.">handle</Term>, and the handle matters because of what it is *not*. It is not the result of the task. It's a small object — `{ id, ... }` — whose `id` is the run id you can later use to look the run up, cancel it, or show its status somewhere. You get the handle the instant the run is *enqueued*, which brings us to the single most important property of `trigger`.
+
+`trigger` is <Term definition="It returns the moment the run is enqueued, not when it finishes — the calling code does not wait for the work to complete; the task runs separately.">fire-and-forget</Term>. It returns the moment the run lands on the queue, not when the work finishes. Your Server Action gets the handle back in milliseconds and returns its `Result` to the user; the actual work happens later, off the request, in the task's own world. This is the entire reason you reached for Trigger.dev — remember the thread from the start of this chapter, that every second on the request path is the user's. Triggering is how you step off that path. The user gets an instant "your export is running" and the export itself takes whatever time it needs without anyone waiting on a spinner.
+
+So how do you wait for a task, if you ever need its result? There's a method for that — `triggerAndWait` — and the rule for it is sharp, so learn it now: **`triggerAndWait` is only ever legal inside another task's body.** It pauses the parent run until the child finishes and hands back the child's result, fully typed. It works because a task can afford to pause — it has no user waiting and no request timeout breathing down its neck. Call it from a Server Action and you've blocked the request, which will sail right past Vercel's function time limit and fail. That's the single most common way people misuse the SDK: reaching for `triggerAndWait` from request code because they want the answer right now. From a Server Action you cannot wait, full stop. (There's also `batchTriggerAndWait` for firing many children and waiting on all of them at once — useful for parallel fan-out, and a tool you'll pick up properly in the next lesson.)
+
+One escape hatch before we move on. Sometimes you can't import the task — it lives behind a service boundary, or the place doing the triggering shouldn't pull in the task's dependencies. For that case there's a string form:
+
+```ts
+import { tasks } from '@trigger.dev/sdk';
+import type { exportCsv } from '@/trigger/export-csv';
+
+await tasks.trigger<typeof exportCsv>('export-csv', {
+  organizationId: orgId,
+  since,
+});
+```
+
+The `typeof exportCsv` generic on a *type-only* import recovers the full payload type without pulling the task's runtime code into your bundle — so even the string form is type-checked. But reach for it only when you genuinely can't import the instance. The instance method is the default; this is the fallback.
+
+Here's the lifecycle of a single trigger, start to finish. Scrub through it — the goal is to make the decoupling between "your action returns" and "the work runs" concrete, because it's the conceptual core of everything in this chapter.
+
+<DiagramSequence>
+  <DiagramStep>
+    <TriggerLifecycle active="action" />
+    <Fragment slot="caption">
+      Your Server Action calls `exportCsv.trigger(payload)` — the org id rides along inside the payload, because the worker will have no other way to know it.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <TriggerLifecycle active="queue" payload="queue" handle={true} />
+    <Fragment slot="caption">
+      The payload is validated against the schema and the run is enqueued. The handle returns to the action — which returns to the user **now**, in milliseconds, long before the work runs.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <TriggerLifecycle active="worker" payload="queue" />
+    <Fragment slot="caption">
+      A Trigger.dev worker — a separate process, no request, no session — picks the run off the queue. It has crossed into the task's own world.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <TriggerLifecycle active="worker" payload="worker" />
+    <Fragment slot="caption">
+      `run()` executes in its own world. The payload is everything it has — which is exactly why `organizationId` had to be cargo, not ambient context.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <TriggerLifecycle active="dashboard" />
+    <Fragment slot="caption">
+      The run's status, logs, and payload are all visible in the dashboard — no extra wiring.
+    </Fragment>
+  </DiagramStep>
+</DiagramSequence>
+
+The two boxes that never touch in that sequence are "the user" and "the worker." The user got their response back at step 2; the worker didn't even start until step 3. They live in different processes, possibly different machines, separated in time. The only thing that crosses from one world to the other is the payload — which is the concrete, mechanical reason the organization id cannot be ambient. There is no shared memory, no shared request, no `requireOrgUser()` the worker could call. If the org id isn't in the payload, the worker simply does not know it.
+
+Put that ordering in your hands. Drag the steps of one trigger into the order they actually happen.
+
+<Sequence instructions="Order what happens when a Server Action triggers a task, from the user's click to the dashboard.">
+  <Step>The action validates the user's input and calls `requireOrgUser()`</Step>
+  <Step>`exportCsv.trigger(payload)` validates the payload and enqueues the run</Step>
+  <Step>The action returns its `Result` to the user — the work has not started yet</Step>
+  <Step>A worker dequeues the run in a separate process</Step>
+  <Step>`run()` executes, using only the payload it was given</Step>
+  <Step>The dashboard shows the run with its payload, status, and logs</Step>
+</Sequence>
+
+And one decision that trips people up constantly, because the instinct fights it:
+
+<MultipleChoice>
+  A user clicks "Export," and you'd like the Server Action's response to already include the number of rows that were exported. Which trigger call hands you that count to return from the action?
+
+  <McqChoice>
+    ```ts
+    return ok({ rows: (await exportCsv.triggerAndWait(payload)).output.rowCount });
+    ```
+  </McqChoice>
+  <McqChoice>
+    ```ts
+    return ok({ rows: (await exportCsv.trigger(payload)).rowCount });
+    ```
+  </McqChoice>
+  <McqChoice>
+    ```ts
+    return ok({ rows: (await exportCsv.run(payload)).rowCount });
+    ```
+  </McqChoice>
+  <McqChoice correct>None of them — the action can't have the count yet. Trigger it fire-and-forget, return immediately, and deliver the count once the run finishes through a separate channel (run metadata, a realtime subscription, or a follow-up fetch).</McqChoice>
+
+  <McqWhy>The count simply doesn't exist when the action returns — the run hasn't executed yet. `triggerAndWait` *would* give you a result, but it's legal only inside another task; from a Server Action it parks the request until the run completes and sails past the function time limit. `trigger` is fire-and-forget: it resolves to a handle (`{ id, ... }`), never the run's output. And `exportCsv.run(...)` isn't a callable method — `run` is the body Trigger.dev invokes on a worker, not something you call inline. Return the handle now; surface the count later.</McqWhy>
+</MultipleChoice>
+
+## Queues and concurrency: back-pressure you declare in code
+
+By default, every task you trigger runs against your environment's overall concurrency — Trigger.dev grabs a worker and goes. Most of the time that's fine. But sometimes "go as fast as you can" is exactly wrong, and you need a way to say "no more than N of these at once." That's what a queue is for.
+
+A queue caps how many runs of a task execute simultaneously. The reason you'd want a cap is almost always downstream of the task: an external API with a rate limit (Resend will throttle you), a third-party quota, your own database connection pool that falls over past a certain number of concurrent writers. The framing an experienced engineer reaches for is a single sentence — **set the concurrency limit to the smallest number that keeps the downstream happy.** And note where the limit lives: on the *queue*, never inside the run body. There is no "limit how fast I run" knob inside `run`; back-pressure is a property of the queue the task sits on.
+
+Here's the v4 break, and it's the most important sentence in this lesson. In v3, you could pass a queue *and its concurrency limit* at the moment you triggered. In v4 that is rejected. Queues are declared at module scope, in your code, before you ever run `dev` or `deploy`:
+
+<div data-mark-color="blue">
+
+```ts title="trigger/export-csv.ts" {3-6}
+import { queue, schemaTask } from '@trigger.dev/sdk';
+
+const exportQueue = queue({
+  name: 'export',
+  concurrencyLimit: 5,
+});
+
+export const exportCsv = schemaTask({
+  id: 'export-csv',
+  queue: exportQueue,
+  schema: z.object({ organizationId: z.uuid(), since: z.iso.date() }),
+  run: async (payload) => {
+    // ...
+  },
+});
+```
+
+</div>
+
+The mental model that makes this click: **treat a queue like a database table.** You declare it in code, it gets "migrated" into existence when you deploy, and it is not something you conjure at call time. You wouldn't `CREATE TABLE` in the middle of an insert; you don't declare a queue in the middle of a trigger. This is the single highest-value thing to internalize in this lesson, because the v3 shape is everywhere online and the failure is a runtime rejection, not a red squiggle in your editor. Your code looks fine, type-checks fine, and then refuses at runtime.
+
+That handles capping a task globally. But it sets up a problem that's specific to multi-tenant SaaS, and it's worth seeing the problem clearly before the fix. Say you give the export task a single `export` queue with `concurrencyLimit: 5`. Now *every* organization's exports share those five slots. One enthusiastic customer kicks off a thousand exports, and they fill the queue — every other org's exports sit behind them, waiting. You built back-pressure for your database and accidentally built a way for one tenant to starve all the others.
+
+The v4 fix is the second correction this chapter is built around, and it is a key, not a queue name. You keep the one predeclared `export` queue, and at trigger time you pass a <Term definition="The value you pass at trigger time to split a queue's concurrency limit into one independent lane per key — pass the organization id and each org gets its own lane, sequential within an org, parallel across orgs.">`concurrencyKey`</Term>:
+
+<div data-mark-color="green">
+
+```ts "concurrencyKey: organizationId"
+await exportCsv.trigger(
+  { organizationId, since },
+  { concurrencyKey: organizationId },
+);
+```
+
+</div>
+
+The `concurrencyKey` splits the queue's limit into an independent lane per key value. With `concurrencyLimit: 1` on the queue, each organization runs its exports strictly one at a time — but different organizations run in parallel with each other, because each key gets its own lane. Sequential within a tenant, parallel across tenants, from one extra option at the call site. The thing being parameterized per tenant is the *key*, not the queue's *name*.
+
+This is precisely where the v3 examples will lead you astray, so look at the two shapes directly. The left tab is what a search result or an AI completion will most likely hand you. The right tab is the v4 shape that actually does the job.
+
+<CodeVariants>
+  <CodeVariant label="v3 — rejected in v4" icon="error">
+    <div data-mark-color="red">
+
+    ```ts {5}
+    // What most search results and AI completions still produce:
+    await exportCsv.trigger(
+      { organizationId, since },
+      {
+        queue: { name: `org-${organizationId}`, concurrencyLimit: 1 },
+      },
+    );
+    ```
+
+    </div>
+    **v4 rejects this.** You can neither name a brand-new queue nor set its `concurrencyLimit` at trigger time. The queue has to be declared in code first, and a dynamically-named per-org queue isn't how v4 isolates tenants at all.
+  </CodeVariant>
+
+  <CodeVariant label="v4 — concurrencyKey" icon="approve-check">
+    <div data-mark-color="green">
+
+    ```ts {3}
+    await exportCsv.trigger(
+      { organizationId, since },
+      { concurrencyKey: organizationId },
+    );
+    ```
+
+    </div>
+    **This is the v4 shape.** One predeclared `export` queue, and `concurrencyKey` splits its limit into a per-org lane at trigger time. The queue is fixed and declared; only the *key* varies per tenant.
+  </CodeVariant>
+</CodeVariants>
+
+The lanes are easier to believe as a picture than as a sentence. The sequence below contrasts the naive shared queue with the `concurrencyKey` version — three organizations, three exports each, the same `concurrencyLimit: 1`.
+
+<DiagramSequence>
+  <DiagramStep>
+    <ConcurrencyLanes mode="shared" />
+    <Fragment slot="caption">
+      One shared queue, `concurrencyLimit: 1`: all nine runs funnel through a single lane. Org A's three exports go first; B and C wait their turn behind them. One busy tenant blocks everyone.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <ConcurrencyLanes mode="keyed" />
+    <Fragment slot="caption">
+      Same queue, same limit, plus `concurrencyKey: organizationId`: the limit splits into one lane per org. A1, B1, and C1 all run at once; each org drains its own three sequentially. Sequential within a tenant, parallel across them.
+    </Fragment>
+  </DiagramStep>
+</DiagramSequence>
+
+One honest caveat, named so you know the edge exists. `concurrencyKey` isolates the lanes, but every lane still draws from your environment's overall concurrency. A tenant who spins up a great many distinct keys can still consume real capacity — the lanes are fair to *each other* but they all share the same pool underneath. Trigger.dev's recent versions added a master-queue fairness mechanism to bound exactly this. You don't need to configure anything for it today; just know the ceiling is there.
+
+A teammate opens a PR with an export trigger. Review it the way you'd review it for real — there's a specific, plausible-looking mistake in here.
+
+<CodeReview instructions="Review this PR before it merges. It triggers a per-org export and tries to keep one org's exports from blocking another's.">
+  <ReviewFile name="app/exports/actions.ts">
+    ```ts ins={8-11}
+    'use server';
+
+    import { exportCsv } from '@/trigger/export-csv';
+    import { requireOrgUser } from '@/lib/auth';
+
+    export const startExport = async (since: string) => {
+      const { orgId } = await requireOrgUser();
+      await exportCsv.trigger(
+        { organizationId: orgId, since },
+        { queue: { name: `org-${orgId}`, concurrencyLimit: 1 } },
+      );
+    };
+    ```
+  </ReviewFile>
+
+  <ReviewIssue file="app/exports/actions.ts" line={10} kernel="queues must be predeclared in code at module scope; per-tenant isolation uses `concurrencyKey`, not a trigger-time queue name or limit">
+    This is the v3 shape, and v4 rejects it: you can neither name a brand-new queue nor set its `concurrencyLimit` at trigger time. The fix is two-part. Declare the queue once at module scope — `const exportQueue = queue({ name: 'export', concurrencyLimit: 1 })` — and attach it to the task with `queue: exportQueue`. Then, here at the call site, drop the whole `queue` option and pass the per-tenant knob instead:
+
+    ```ts
+    await exportCsv.trigger(
+      { organizationId: orgId, since },
+      { concurrencyKey: orgId },
+    );
+    ```
+
+    `concurrencyKey` splits the predeclared queue's limit into one independent lane per org — sequential within a tenant, parallel across tenants — without ever naming a queue or setting a limit at trigger time.
+  </ReviewIssue>
+
+  <ReviewWhy>
+    The shape to recognize: any queue *name* or *limit* set at trigger time is a v3 leftover that deploys clean and then behaves wrong. In v4 the queue is fixed and declared in code, like a database table; the only per-tenant knob at the call site is `concurrencyKey`.
+  </ReviewWhy>
+</CodeReview>
+
+## Scheduled tasks: static and dynamic
+
+Not all background work is triggered by a user action. Some of it runs on a clock — a nightly digest, a weekly rollup. You already met Vercel Cron earlier in this chapter as the default home for a fixed schedule. Trigger.dev offers schedules too, and they come in two flavors that differ in one fundamental way: *when the schedule is created*.
+
+The first is **static** — defined in code, deployed with the task, one global schedule. You reach for `schedules.task`. The second is **dynamic** — created at runtime, one per tenant. You'll see both side by side in a moment, but one detail has to come first, because it's the part most likely to bite.
+
+The one detail that earns its own paragraph: the `cron` expression has two forms, and the difference is daylight saving time. Written as a plain string — `cron: '0 9 * * *'` — the expression is interpreted in **UTC**. That's fine for a sweep that's genuinely anchored to UTC, but for anything tied to a human's wall clock ("9am for this customer"), UTC drifts twice a year when the clocks change, and your 9am job silently becomes an 8am or 10am job. The fix is the object form, which is timezone-aware: you give it a `pattern` and an <Term definition="A named timezone string like America/New_York — used instead of a fixed UTC offset so a schedule follows daylight saving changes automatically, keeping a wall-clock time correct year-round.">IANA timezone</Term>. The rule: **default to the object form for any business-hours or wall-clock schedule; the plain string is only for genuinely UTC-anchored work.** This is the same zone discipline you apply with Temporal — if the time means something on a human clock, name the zone.
+
+The dynamic form is `schedules.create`, and it's the primitive behind "each organization picks its own digest time." Here's the gotcha the side-by-side is built to expose: its shape is *different* from the static one. In `schedules.create`, `cron` is **always a plain string**, and the timezone is a separate top-level field — not nested inside `cron`. Getting this asymmetry wrong is the most common schedule mistake, so study the two tabs against each other.
+
+<CodeVariants>
+  <CodeVariant label="Static — schedules.task">
+    <div data-mark-color="blue">
+
+    ```ts {5-8}
+    import { schedules } from '@trigger.dev/sdk';
+
+    export const nightlyDigest = schedules.task({
+      id: 'nightly-digest',
+      cron: {
+        pattern: '0 9 * * 1-5',
+        timezone: 'America/New_York',
+      },
+      run: async (payload) => {
+        // payload.timestamp, payload.lastTimestamp, payload.upcoming
+      },
+    });
+    ```
+
+    </div>
+    **One global schedule, declared in code.** Deployed with the task, like a Vercel Cron entry — but durable and observable for free. The `cron` is an **object** here: `pattern` plus a `timezone`, so it's DST-safe.
+  </CodeVariant>
+
+  <CodeVariant label="Dynamic — schedules.create">
+    <div data-mark-color="violet">
+
+    ```ts {5-6}
+    import { schedules } from '@trigger.dev/sdk';
+
+    await schedules.create({
+      task: nightlyDigest.id,
+      cron: '0 9 * * *',
+      timezone: 'America/New_York',
+      externalId: organizationId,
+      deduplicationKey: `digest:${organizationId}`,
+    });
+    ```
+
+    </div>
+    **One schedule per tenant, created at runtime.** Note the shape flips: `cron` is a plain **string** and `timezone` is a separate **top-level** field — *not* nested in `cron`. `externalId` ties it to your org row; `deduplicationKey` makes the create idempotent.
+  </CodeVariant>
+</CodeVariants>
+
+Two fields on the dynamic form carry weight. The <Term definition="Your own domain id attached to a dynamic schedule, so you can look it up, deactivate it, or delete it later by your id rather than Trigger.dev's — e.g. schedules.list({ externalId }).">`externalId`</Term> is your domain id stapled to the schedule — pass the organization id and you can later find, deactivate, or delete *this org's* schedule with `schedules.list({ externalId })`, `schedules.deactivate`, and `schedules.del`. And the <Term definition="A key that makes schedules.create idempotent — calling create again with the same key updates the existing schedule instead of creating a duplicate, so retried calls don't pile up.">`deduplicationKey`</Term> makes the create idempotent: call it twice with the same key and the second call *updates* the existing schedule rather than creating a duplicate. Without it, a retried "set my digest time" action would leave the org with two digests firing.
+
+Here's the dynamic call as it would actually appear, inside the settings action where a customer sets their preferred time:
+
+```ts title="app/settings/actions.ts" "externalId: orgId"
+'use server';
+
+import { schedules } from '@trigger.dev/sdk';
+import { nightlyDigest } from '@/trigger/nightly-digest';
+import { requireOrgUser } from '@/lib/auth';
+import { ok } from '@/lib/result';
+
+export const setDigestTime = async (cron: string, timezone: string) => {
+  const { orgId } = await requireOrgUser();
+  await schedules.create({
+    task: nightlyDigest.id,
+    cron,
+    timezone,
+    externalId: orgId,
+    deduplicationKey: `digest:${orgId}`,
+  });
+  return ok({});
+};
+```
+
+Which closes a question left open earlier in the chapter: when does a Trigger.dev schedule beat a Vercel Cron entry? The answer is narrow and worth stating plainly. A Trigger.dev schedule earns its place when the cadence must be **dynamic or per-tenant** — exactly the "each org picks its own time" case, which Vercel Cron simply can't express — or when the work needs Trigger.dev's durability and retries anyway. A fixed daily UTC sweep that fits comfortably inside a Vercel function's time budget **stays on Vercel Cron**. Don't migrate a working cron to Trigger.dev for the sake of uniformity; the same `StateMachineWalker` that decided the rest of this chapter decides this too.
+
+Now nail the shape asymmetry down — it's the part that's easy to get backwards. Fill each blank with the token that belongs there, paying attention to which form wants an object and which wants a top-level field.
+
+<Dropdowns
+  instructions="Complete both schedule definitions. Watch the shape difference: one form nests timezone inside cron, the other keeps it top-level."
+  answers={[
+    { answer: 'pattern', options: ['pattern', 'cron', 'timezone', 'schedule'] },
+    { answer: "'0 9 * * *'", options: ["'0 9 * * *'", "{ pattern: '0 9 * * *' }"] },
+    { answer: 'timezone', options: ['timezone', 'pattern', 'cron'] },
+    { answer: 'externalId', options: ['externalId', 'deduplicationKey', 'id'] },
+  ]}
+>
+```ts
+// Static: one global, DST-safe schedule
+export const nightlyDigest = schedules.task({
+  id: 'nightly-digest',
+  cron: {
+    ___: '0 9 * * 1-5',
+    timezone: 'America/New_York',
+  },
+  run: async (payload) => {},
+});
+
+// Dynamic: one schedule per org, created at runtime
+await schedules.create({
+  task: nightlyDigest.id,
+  cron: ___,
+  ___: 'America/New_York',
+  ___: organizationId,
+});
+```
+</Dropdowns>
+
+## What the dashboard gives you for free
+
+It's worth pausing on what you got the moment you put this work on Trigger.dev, because it was part of the bargain back when you decided the platform earned its place. Every run is visible in the dashboard: its payload, its status as it moves through queued → executing → completed (or failed, or retrying), its start time, its duration, and every single log line it emitted. In the next lesson that view will also show each retry and each wait.
+
+Sit with the contrast, because it's the thing that justified the second platform. The equivalent on Vercel Cron is `console.log` and hope — you'd find out what a job did by grepping logs, and you'd build any real observability by hand. That hand-building was never free; the cost of it was part of the calculus that pushed this workload up the ladder in the first place. Here, observability is simply included. You didn't write it, and it's better than what you'd have written.
+
+Two capabilities are worth knowing by name, even though you won't use them today. The first is <Term definition={"A mutable per-run object you can write to from inside a task — the dashboard renders it live, so you can publish progress like \"47 of 200\" and watch it update in real time."}>`metadata.set(...)`</Term>, the live-progress channel — from inside a run you can write something like `"47 of 200"` to the run's metadata and watch it tick upward in the dashboard in real time. You'll wire it up properly when you build the export job. The second is per-run setup: when a task needs a resource scoped to each run — a dedicated database connection, say — v4 sets it up through middleware and the <Term definition="The v4 per-run resource container, populated in middleware via locals.create<T>() — the current mechanism for giving each run its own scoped resource, replacing the deprecated per-task init hook.">`locals`</Term> API, with a global `init.ts` at the root of `trigger/` for lifecycle hooks that apply everywhere. (If you find older code using a per-task `init:` option, that's the v3 shape — it's deprecated in v4. `locals` and middleware replaced it.)
+
+<Figure caption="A single run in the Trigger.dev dashboard — payload, status, duration, and every log line, with nothing wired up by hand. At the lower tiers you built this yourself; here it comes with the platform.">
+  <DashboardRunRow />
+</Figure>
+
+## Worked example: `notify-org-members` end to end
+
+Time to assemble the pieces into one realistic task you could actually ship. The job: when something noteworthy happens in an organization — an invoice gets paid, a member joins — notify everyone in that org by email. It touches every section of this lesson at once: a schema for its payload, a queue for back-pressure, a `concurrencyKey` for per-tenant fairness, and the cargo reflex for tenancy. Walk it step by step.
+
+<AnnotatedCode lang="ts" maxLines={16} code={`
+import { queue, schemaTask } from '@trigger.dev/sdk';
+import { z } from 'zod';
+import { tenantDb } from '@/db/tenant';
+import { sendEmail } from '@/lib/email';
+
+const notificationsQueue = queue({ name: 'notifications', concurrencyLimit: 5 });
+
+export const notifyOrgMembers = schemaTask({
+  id: 'notify-org-members',
+  queue: notificationsQueue,
+  schema: z.object({ organizationId: z.uuid(), eventType: z.string() }),
+  run: async ({ organizationId, eventType }) => {
+    const db = tenantDb(organizationId);
+    const members = await db.query.orgMembers.findMany();
+    for (const member of members) {
+      // TODO: make each send idempotent with a per-recipient key
+      await sendEmail({ to: member.email, template: eventType });
+    }
+  },
+});
+`}>
+  <AnnotatedStep meta={`{6}`} color="blue">
+    The queue is declared at module scope, in this same file — `concurrencyLimit: 5` is the back-pressure that protects your email provider from a burst. Declared in code, not at trigger time. This is the v4 rule made concrete.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{9} {11}`} color="green">
+    The task's `id` and `schema` — its durable identity and its input contract. The payload carries `organizationId` and `eventType`, validated before `run` ever executes.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{13} "tenantDb(organizationId)"`} color="orange">
+    Here's the cargo reflex executed. The task has no session, so tenancy is re-derived *from the payload* — `tenantDb(organizationId)` scopes every query that follows to this org. This line is the point the whole lesson turns on: org context arrived as data, and you turn it back into a scoped database right here.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{14-18}`} color="blue">
+    The body reads the org's members and emails each one. The loop is deliberately plain for now — making each send idempotent against retries is the next lesson's job, flagged by the comment so you don't forget it's coming.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+That's the task. The other half is the trigger — the call from the Server Action helper that fires it. (You'll generalize this helper into a reusable `notifyEvent` later in the chapter; here it's the bare call.)
+
+<div data-mark-color="violet">
+
+```ts "concurrencyKey: orgId"
+const { orgId } = await requireOrgUser();
+const handle = await notifyOrgMembers.trigger(
+  { organizationId: orgId, eventType: 'invoice.paid' },
+  { concurrencyKey: orgId },
+);
+```
+
+</div>
+
+Trace the full path once and the lesson closes on itself: the action triggers the task fire-and-forget and returns immediately; the run lands on the `notifications` queue, in this org's own `concurrencyKey` lane; a worker picks it up; `run` re-derives the tenant from the payload, reads the members, sends the emails; and the dashboard shows the whole thing — payload, status, logs — with nothing wired by hand. Every moving part you learned in this lesson is in that sentence.
+
+One last pass over the task and its trigger together, as a recognition check. Each load-bearing v4 element does a specific job — click the ones that match, and leave the decoys alone.
+
+<Tokens
+  prompt="Click the five elements that carry this task's v4 behavior: its durable identity, its payload contract, its back-pressure limit, its per-tenant key, and the line that re-derives tenancy. Skip the decoys."
+  targets={["'notify-org-members'", 'schema', 'concurrencyLimit', 'concurrencyKey', 'tenantDb(organizationId)']}
+  decoys={['console.log', 'eventType', 'sendEmail']}
+>
+```ts
+const notificationsQueue = queue({ name: 'notifications', concurrencyLimit: 5 });
+
+export const notifyOrgMembers = schemaTask({
+  id: 'notify-org-members',
+  queue: notificationsQueue,
+  schema: z.object({ organizationId: z.uuid(), eventType: z.string() }),
+  run: async ({ organizationId, eventType }) => {
+    const db = tenantDb(organizationId);
+    const members = await db.query.orgMembers.findMany();
+    console.log(`Notifying ${members.length} members`);
+    for (const member of members) {
+      await sendEmail({ to: member.email, template: eventType });
+    }
+  },
+});
+
+await notifyOrgMembers.trigger(
+  { organizationId: orgId, eventType: 'invoice.paid' },
+  { concurrencyKey: orgId },
+);
+```
+</Tokens>
+
+And a quick recall round over the version traps this lesson exists to defuse — the ones most likely to bite when you're reading old code or trusting a fast completion.
+
+<TrueFalse instructions="Each claim is one of the v3-vs-v4 traps this lesson exists to defuse. Mark it the way you'd judge it reading old code or a fast completion.">
+  <Statement answer="false">
+    In v4 you can declare a queue and set its `concurrencyLimit` at trigger time.
+    <TfWhy>**False.** That's the v3 shape, and v4 rejects it — the code deploys clean and then refuses at runtime. Queues are declared at module scope with `queue({ name, concurrencyLimit })`, like a database table that gets "migrated" at deploy; the task references the predeclared queue. The only per-tenant knob left at the call site is `concurrencyKey`.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    `triggerAndWait` is safe to call directly from a Server Action.
+    <TfWhy>**False.** `triggerAndWait` is legal only inside another task's body — it parks the parent run until the child finishes. From a Server Action it blocks the request and sails past Vercel's function time limit. From request code you fire-and-forget with `trigger` and surface the result later.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    A task's `id` can be renamed freely between deploys with no consequences.
+    <TfWhy>**False.** The `id` is the task's durable identity — every run that ever happened references it, and the dashboard groups history under it. Rename it and you orphan every prior run, the way renaming a table orphans every row that pointed at it. Treat it like a route path: stable, code-reviewed, never casually renamed.</TfWhy>
+  </Statement>
+
+  <Statement answer="true">
+    A `schemaTask` validates its payload against the schema before the `run` body executes.
+    <TfWhy>**True.** That's the whole point of `schemaTask` over a bare `task` — Trigger.dev parses the incoming payload against the schema at trigger time, so an invalid payload is rejected before the run starts (not three minutes in, after burning compute) and `payload` is fully typed inside `run`.</TfWhy>
+  </Statement>
+
+  <Statement answer="true">
+    `concurrencyKey` lets one predeclared queue run sequentially per tenant but in parallel across tenants.
+    <TfWhy>**True.** Passed at trigger time against a static queue, `concurrencyKey` splits the queue's limit into one independent lane per key value. With `concurrencyLimit: 1`, each org's runs go one at a time, but different orgs run in parallel — sequential within a tenant, parallel across tenants, from one extra option at the call site.</TfWhy>
+  </Statement>
+</TrueFalse>
+
+## Where to go deeper
+
+This topic moves fast — the v3-to-v4 break you spent this lesson navigating is exactly the kind of thing that shifts again. The most reliable place to check the current shape of any of these APIs is the official documentation, which tracks the live version.
+
+<CardGrid>
+  <ExternalResource
+    title="Trigger.dev — Tasks"
+    href="https://trigger.dev/docs/tasks/overview"
+    icon="lucide:zap"
+    iconColor="#A8FF53"
+    description="The canonical reference for task, schemaTask, triggering, and the ctx object — always on the current version."
+  />
+  <ExternalResource
+    title="Trigger.dev — Concurrency & Queues"
+    href="https://trigger.dev/docs/queue-concurrency"
+    icon="lucide:zap"
+    iconColor="#A8FF53"
+    description="Predeclared queues, concurrencyKey, and the fairness model, straight from the source."
+  />
+  <ExternalResource
+    title="Trigger.dev — Upgrading to v4"
+    href="https://trigger.dev/docs/upgrade-to-v4"
+    icon="lucide:zap"
+    iconColor="#A8FF53"
+    description="The official migration guide for the exact v3→v4 break this lesson navigates — queues, concurrency, and lifecycle hooks."
+  />
+  <ExternalResource
+    title="Trigger.dev — Scheduled tasks"
+    href="https://trigger.dev/docs/tasks/scheduled"
+    icon="lucide:zap"
+    iconColor="#A8FF53"
+    description="schedules.task vs schedules.create, the cron and timezone forms, and managing per-tenant schedules by externalId."
+  />
+</CardGrid>
