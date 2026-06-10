@@ -1,0 +1,237 @@
+---
+title: Project overview
+chapter-id: 67
+course-progress: 0.00005
+sidebar:
+  order: 1
+  label: Project overview
+---
+
+import Figure from '../../../components/figures/Figure.astro';
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import { FileTree, CardGrid, Card, Steps } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Over the next three lessons you'll build a durable, paginated CSV export of an organization's invoices, fired from a Server Action and built on Trigger.dev v4. From the user's seat it's one button: they click **Export invoices** in the inspector, and a background run counts the org's invoices, streams them out a page at a time, emails the requester a download link, and writes an audit record — all while the request that started it returned in milliseconds. Behind that button the run survives a worker being killed and replayed, serializes per organization while running different orgs in parallel, sends the email exactly once even if the parent retries, and reports its progress live to the panel watching it. The inspector and the Trigger.dev dashboard let you watch the whole thing happen.
+
+<Figure caption="The finished inspector showing a completed export: the run panel with the progress bar full, the `export.invoices.completed` row in the audit-log tail, the rendered `downloadUrl`, and a note that the `ExportReadyEmail` has arrived in the requester's inbox.">
+  <Screenshot viewport="desktop">
+    <img
+      src="/screenshots/067/l1-desktop-1280.png"
+      alt="The inspector after a completed invoice export: the run panel shows status completed with the progress bar full at 7 of 7 pages, the rendered downloadUrl and a Trigger.dev dashboard deep-link, the recent-exports table lists the completed run, and the audit-log tail shows the export.invoices.completed row."
+    />
+  </Screenshot>
+</Figure>
+
+## What we'll practice
+
+This project is the canonical shape every durable background job in a SaaS app will copy. By the end you'll have practiced:
+
+- **Modeling a long-running job as a fire-and-forget task.** A Server Action triggers a Trigger.dev `schemaTask` and returns immediately — the user never waits on the export to finish.
+- **Designing for durability.** You'll place checkpoints at step boundaries so a worker that dies mid-run resumes from the last completed step instead of starting over.
+- **Reasoning about multi-tenant back-pressure.** One predeclared queue plus a per-tenant `concurrencyKey` lane keeps each org's exports serialized without letting one org starve the others.
+- **Guarding side effects with idempotency keys.** A duplicate trigger and a re-sent email are both prevented with keys at two different scopes.
+- **Streaming live progress to a watching client.** The worker writes its page-by-page progress to `run.metadata`, and the inspector polls it to drive the progress bar.
+
+## Architecture
+
+The export crosses a boundary that prose carries badly: the app fires the job and then polls it from the outside, while the actual work runs in the Trigger.dev worker. Here's the whole path, end to end.
+
+<Figure caption="The app fires and polls; the Trigger.dev worker executes. startExport triggers exportInvoices fire-and-forget and returns the runId, the parent awaits one paginatePage child per page then the sendExportEmail child and closes the run in one tenant transaction, while the inspector polls run state back across the boundary (Unit 12).">
+```d2
+direction: right
+
+**.style.font-size: 44
+
+classes: {
+  app: {
+    style: { fill: "#dbeafe"; stroke: "#2563eb"; font-color: "#1e3a8a"; border-radius: 12 }
+  }
+  trigger: {
+    style: { fill: "#ede9fe"; stroke: "#7c3aed"; font-color: "#4c1d95"; border-radius: 12 }
+  }
+  store: {
+    style: { fill: "#fef3c7"; stroke: "#d97706"; font-color: "#78350f" }
+  }
+  region: {
+    style: { fill: transparent; stroke: "#94a3b8"; stroke-dash: 3; font-color: "#475569" }
+  }
+  edge: {
+    style: { font-size: 38 }
+  }
+}
+
+app: "App" {
+  class: region
+
+  inspector: "Inspector\nServer Component" { class: app }
+  start: "startExport\nServer Action" { class: app }
+  exports: "exports\nrow" { class: store; shape: cylinder }
+
+  inspector -> start: "calls" { class: edge; style.stroke: "#2563eb" }
+  start -> exports: "writes" { class: edge; style.stroke: "#d97706" }
+}
+
+worker: "Trigger.dev worker" {
+  class: region
+
+  parent: "exportInvoices\nparent task\n· export queue\n· concurrencyKey: orgId\n· limit 1" { class: trigger }
+  page: "paginatePage\nchild task" { class: trigger }
+  email: "sendExportEmail\nchild task" { class: trigger }
+  close: "exports row\n+ audit log" { class: store; shape: page }
+
+  parent -> page: "triggerAndWait,\none per page" { class: edge; style.stroke: "#7c3aed" }
+  parent -> email: "triggerAndWait" { class: edge; style.stroke: "#7c3aed" }
+  parent -> close: "one tenant\ntransaction" { class: edge; style.stroke: "#d97706" }
+}
+
+app.start -> worker.parent: "tasks.trigger\nfire-and-forget,\nreturns runId" { class: edge; style.stroke: "#7c3aed"; style.stroke-width: 2 }
+worker.parent -> app.inspector: "poll run state 1s\n(status, metadata)" { class: edge; style.stroke: "#64748b"; style.stroke-dash: 4 }
+```
+</Figure>
+
+Read it left to right. The inspector, a Server Component, calls the `startExport` Server Action. `startExport` fires `exportInvoices` fire-and-forget with `tasks.trigger`, records a row in the `exports` table, and returns the `runId` straight away — it does not wait for the export. Over in the worker, `exportInvoices` runs on the predeclared `export` queue, in this org's `concurrencyKey` lane at concurrency 1. It counts the pages, then loops, awaiting one `paginatePage` child run per page through `triggerAndWait` and accumulating CSV as it goes. When the loop finishes it awaits the `sendExportEmail` child, then updates the `exports` row and writes the audit log in a single tenant transaction. Meanwhile the inspector polls `GET /api/exports/[runId]`, which reads the run's state structurally from the Trigger.dev REST API — `status`, `attemptCount`, and the `pagesDone / pagesTotal` progress the task carries on `metadata`. The app fires and polls; the worker executes. That split is the whole design.
+
+## Starting file tree
+
+The starter is a complete Better Auth + Drizzle + Trigger.dev app, not a bare scaffold. The export is the only unfinished slice. Four files ship as stubs — they're the only files you'll write across the whole chapter — and everything else is provided and explained in the lesson that first touches it.
+
+<FileTree>
+- docker-compose.yml `postgres:18` for local dev
+- trigger.config.ts Trigger.dev v4 config: `dirs: ['./trigger']`, retries
+- .env.example copy to `.env` (see Setup)
+- package.json `db:migrate`, `db:seed`, `trigger:dev`, `dev`, `test:lesson`
+- trigger/ root-level task folder, registered via `dirs: ['./trigger']`
+  - **export-invoices.ts** the parent task — *you write this*
+  - **paginate-page.ts** child task: one page → CSV fragment — *you write this*
+  - **send-export-email.ts** child task: look up recipient, render + send — *you write this*
+- scripts/
+  - seed.ts 4 orgs (3 with invoices, one empty), 6 users, fixed ids
+- src/
+  - env.ts T3 env boundary, validates every server + client var
+  - db/
+    - index.ts
+    - schema.ts `invoices`, `exports`, `emailSuppressions` tables
+    - schema/auth.ts Better Auth generated schema (`user`, `organization`, `member`, …)
+    - audit.ts `auditLogs` table + RLS policies
+    - audit-log.ts `logAudit()`
+    - tenant.ts `tenantDb()` facade + transaction helper
+    - queries/
+      - invoices.ts `listInvoices()` (cursor) + `countInvoices()`
+      - audit.ts
+  - lib/
+    - result.ts `Result<T>`, `ok()`, `err()`
+    - auth/authed-action.ts `authedAction()` factory
+    - email.ts `sendEmail()` with suppression check
+    - suppressions.ts
+    - trigger-client.ts `retrieveRun()` + `listRunsForOrg()` over the Trigger.dev REST API
+    - exports/
+      - to-csv.ts `rowsToCsv()`: RFC-4180 string
+      - day-bucket.ts `dayBucket()` → `'YYYY-MM-DD'` (UTC)
+      - errors.ts `ExportError` class
+      - **start.ts** the `startExport` action — *you write this*
+  - emails/
+    - ExportReadyEmail.tsx React Email template
+  - app/
+    - (protected)/inspector/
+      - page.tsx the inspector: export controls, run panel, audit tail
+      - _data.ts `getInspectorContext()`, `recentExports()`, `latestExport()`
+      - actions.ts dev-only simulate / reset / switch-identity helpers
+      - _components/ run console, run panel (1s poller), debug controls
+    - api/exports/[runId]/route.ts `GET` → reads run state, returns it as JSON
+</FileTree>
+
+A handful of provided pieces do most of the heavy lifting, and each gets a proper introduction in the lesson that first leans on it: `src/lib/email.ts` for the Resend send, `src/db/queries/invoices.ts` for the `listInvoices` and `countInvoices` reads, `src/lib/exports/to-csv.ts` for turning rows into RFC-4180 CSV, `src/emails/ExportReadyEmail.tsx` for the template, `src/lib/trigger-client.ts` for reading run state over the Trigger.dev REST API, the inspector page that fires and watches runs, and the `exports` table in `src/db/schema.ts`. That table carries `id`, `organizationId`, `requestedBy`, `status`, `runId`, `rowCount`, `idempotencyKey`, `dayBucket`, `pagesDone`, `pagesTotal`, `downloadUrl`, `requestedAt`, and `completedAt`, with a unique index on `(organizationId, requestedBy, dayBucket)`. It exists for the app's own audit and deduplication; Trigger.dev's run record is the operational source of truth, and the `exports` row is the app's reference to it.
+
+## Roadmap
+
+Here's how the three implementation lessons build the export, one slice at a time.
+
+<CardGrid>
+  <Card title="Lesson 2 — The task boundary">
+    Confirm the shipped `exportInvoices` task boundary (its Zod payload and predeclared queue), then write the `startExport` action that fires it with `concurrencyKey: orgId` and a daily idempotency key.
+  </Card>
+  <Card title="Lesson 3 — One checkpoint per page">
+    Spawn each page as a durable `paginatePage` child run, drive the progress bar through `metadata`, and abort permanently on an empty resultset.
+  </Card>
+  <Card title="Lesson 4 — Send the email, write the audit log">
+    Add the `sendExportEmail` child guarded by a per-run key, then close the run by updating the `exports` row and writing the audit log in one transaction.
+  </Card>
+</CardGrid>
+
+## Setup
+
+Local development for this project needs two terminals: the Trigger.dev worker and the Next.js dev server. The worker is what actually executes the tasks, so without it your triggered runs would queue forever. One extra wrinkle compared to earlier projects: the Trigger.dev cloud project has to exist first, because `npx trigger.dev@latest init` links your local folder to it. Work through these in order.
+
+<Steps>
+1. Get the starter codebase from the [project repository](https://github.com/terencicp/react-saas-course-projects), under `Chapter 067/start/`. You'll find the file tree above, with the four task files shipped as stubs and everything else complete.
+
+2. Install dependencies:
+
+   ```bash
+   pnpm install
+   ```
+
+   The repo pins pnpm through `only-allow`, so `npm` or `yarn` will refuse. Expect a clean install.
+
+3. Copy the env template, fill in the secrets you already have, then start Postgres:
+
+   ```bash
+   cp .env.example .env
+   docker compose up -d
+   ```
+
+   `docker-compose.yml` ships `postgres:18`. The container should report healthy within a few seconds.
+
+4. Apply the schema and seed the data:
+
+   ```bash
+   pnpm db:migrate && pnpm db:seed
+   ```
+
+   The seed creates four organizations — three with 200–240 invoices each, plus an empty `org_empty` — and six users with fixed, readable ids. It truncates and re-inserts deterministically, so re-running it is safe. Trigger.dev's run history lives in the cloud and is separate, so the seed never touches it.
+
+5. Create a Trigger.dev account, then link your project folder to a cloud project:
+
+   ```bash
+   npx trigger.dev@latest init
+   ```
+
+   The interactive flow writes the `trigger.config.ts` defaults, registers the root-level `trigger/` folder via `dirs: ['./trigger']`, and prints your project ref. The starter already ships a `trigger.config.ts` matching what `init` produces, so you're confirming it, not generating it from scratch.
+
+6. Paste `TRIGGER_SECRET_KEY` and `TRIGGER_PROJECT_REF` into `.env`. Both come from the Trigger.dev dashboard for the project you just created. The secret key is per-environment (dev / staging / production) — use the dev key.
+
+7. Start the worker in one terminal:
+
+   ```bash
+   pnpm trigger:dev
+   ```
+
+   It prints the dashboard URL and shows **Waiting for tasks**. Open that dashboard once to confirm the project is linked and shows zero runs.
+
+8. Start the app in a second terminal:
+
+   ```bash
+   pnpm dev
+   ```
+
+   Visit `/inspector` (it sits behind the auth guard) and you should see the export controls.
+</Steps>
+
+Three of the environment variables are new this chapter; the rest carry over from earlier projects and are already in `.env.example`.
+
+| Variable | Purpose | How to obtain |
+| --- | --- | --- |
+| `TRIGGER_SECRET_KEY` | Authenticates the worker and the REST reads (validated `startsWith 'tr_'`). | Trigger.dev dashboard, per environment — use the dev key. |
+| `TRIGGER_PROJECT_REF` | Identifies the linked project (validated `startsWith 'proj_'`). | Trigger.dev dashboard. |
+| `APP_URL` | The app's base URL, used to build the export download link base. | `http://localhost:3000` locally. |
+
+The carried-over variables are `DATABASE_URL` (and `DATABASE_URL_UNPOOLED`), `RESEND_API_KEY`, `EMAIL_FROM` / `EMAIL_REPLY_TO`, `BETTER_AUTH_SECRET` / `BETTER_AUTH_URL`, `INVITATION_SIGNING_SECRET`, and the public `NEXT_PUBLIC_APP_NAME` / `NEXT_PUBLIC_APP_URL`. One convenience worth knowing: the starter's `.env.example` already contains placeholder `tr_…` and `proj_…` values that satisfy the env validation, so `next build` passes without ever reaching the Trigger.dev cloud — you only need the real values for the live run loop.
+
+:::note
+The Trigger.dev free tier covers everything this chapter runs, so the kill-and-retry drills won't hit a usage cap.
+:::
+
+You're set up when the inspector shows the export controls and the worker terminal reads **Waiting for tasks**. Click **Export invoices** now and you'll get an error — `startExport` still returns `err('internal', 'Not implemented')`. That error is exactly where the next lesson begins.

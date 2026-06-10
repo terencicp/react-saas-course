@@ -1,0 +1,305 @@
+---
+title: "The task boundary: schemaTask and the per-org queue"
+chapter-id: 67
+course-progress: 0.00005
+sidebar:
+  order: 2
+  label: The task boundary
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Right now, clicking **Export invoices** in the inspector throws an error. By the end of this lesson it fires a real run — validated, scoped to one org, deduped per day — and returns to the user instantly.
+
+That last word is the whole point. Generating a CSV of every invoice an org owns can take seconds or minutes; a SaaS request has neither to spare. So the click does not *do* the export. It *requests* one: it writes a `queued` row, hands the work to a durable Trigger.dev task, and hands the user back their page before the worker has even picked the job up. When you wire it correctly, the inspector switches its run panel to the brand-new `runId` and starts polling, the Trigger.dev dashboard shows a fresh run with the payload `{ organizationId, requestedBy }`, and that run reaches `completed` against the placeholder body you'll fill in over the next two lessons. Click it twice in the same day and the second click returns the *first* run's id — no duplicate work, no second row. Fire it for two different orgs and both runs go at once, each in its own lane. The progress bar sits at `0/0` for now, because the real page count lands in the next lesson, but the boundary you build here is the seam everything else in this chapter hangs off.
+
+## Your mission
+
+The decision you're installing is the line between your app and its long-running work. On one side sits a Server Action, running inside the user's request, which can do exactly one cheap thing: fire a task and return. On the other side sits a durable task with no request context, no session, no `requireOrgUser` — just a payload it was handed and a queue it lands on. Everything expensive lives over there. The action's job is to *start* the work safely and get out of the way; the task's real body — the pagination, the email, the audit write — is the next two lessons.
+
+The task boundary itself is already shipped, and you only need to *read* it, not write it. Open `trigger/export-invoices.ts` and confirm the four things that make it a boundary: the queue declared once at module scope with `queue({ name: 'export', concurrencyLimit: 1 })`, the `schemaTask` whose `schema` is a `z.strictObject` over the two payload ids, the `queue: exportQueue` binding, and `retry: { maxAttempts: 3 }`. Its `run` body is a placeholder for now (`metadata.set('pagesDone', 0)` then `return { ok: true }`) — leave it. Because a task has no request context, the org and the user can't be read from a session inside it; they travel *in the payload*, and `schemaTask` validates that payload at the trigger edge — before the body runs, before a single retry is spent. Validation at the boundary, never in the body, is the rule the whole chapter rides on.
+
+The file you actually write is `src/lib/exports/start.ts` — the `startExport` action. A handful of non-functional constraints shape it, and each one is a trap inexperienced engineers fall into. The payload ids are `z.string().min(1)`, **not** `z.uuid()`: the seed (and Better Auth) assign base62 text ids like `org_acme` and `user_alice`, which a uuid schema would reject outright. Per-org serialization comes from *one* predeclared queue at `concurrencyLimit: 1` plus `concurrencyKey: organizationId` passed at the trigger call — runs within an org go one at a time, runs across orgs go in parallel. This is the v4-native shape; the v3 habit of naming a queue dynamically or setting its limit at trigger time no longer works, and you'll see exactly why in the walkthrough. You fire with `tasks.trigger`, not `triggerAndWait` — waiting on the task from inside the action would block the request past its `maxDuration`, which is precisely what you're trying to avoid. A same-day duplicate is collapsed by a 24-hour global idempotency key built from `(orgId, userId, dayBucket())`. And the action is pinned to the `member` role through `authedAction`, so the question of *who may export* is answered structurally, before any work begins.
+
+Out of scope for this lesson: the body does no pagination, no email, and no audit write yet. The shipped placeholder sets `pagesDone: 0` and returns `{ ok: true }`; the per-step idempotency keys and the real work arrive in the next two lessons.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">Firing the export inserts one `queued` exports row, then fires `export-invoices` with the payload `{ organizationId, requestedBy }`, and stamps the row with the returned `runId`.</ChecklistItem>
+  <ChecklistItem chip="tested">A second trigger on the same day for the same org and user returns the first run's `runId` and leaves a single exports row.</ChecklistItem>
+  <ChecklistItem chip="tested">A malformed payload — an empty `organizationId`, or an unexpected extra key — fails at the schema boundary before the body runs.</ChecklistItem>
+  <ChecklistItem chip="tested">A caller the `member` gate refuses is turned away before any row is written or any task is fired.</ChecklistItem>
+  <ChecklistItem chip="untested">Clicking Export switches the inspector's run panel to the new `runId` and the run reaches `completed` in the dashboard.</ChecklistItem>
+  <ChecklistItem chip="untested">Exports across different orgs run in parallel, each in its own `concurrencyKey` lane on the shared `export` queue.</ChecklistItem>
+  <ChecklistItem chip="untested">You can explain how a per-org lane at `concurrencyLimit: 1` serializes two genuinely-distinct same-org runs, even though the daily key collapses two same-org *clicks* into one.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Confirm the boundary in `trigger/export-invoices.ts` (already shipped — you're reading, not editing), then implement `src/lib/exports/start.ts` against the brief and the tests. Once you have a green run, or you're stuck, open the walkthrough.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+### The shipped boundary
+
+Start by reading the boundary you're triggering. This is the starter's `trigger/export-invoices.ts` with its placeholder body — the queue, the schema, the binding, and the retry. Step through it; each part carries a decision you'll lean on for the rest of the chapter.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+import { metadata, queue, schemaTask } from '@trigger.dev/sdk/v3';
+import { z } from 'zod';
+
+// The per-org back-pressure lane, declared ONCE at module scope (the v4-native
+// shape). \`concurrencyLimit: 1\` serializes runs within a lane; the per-org split
+// comes from \`concurrencyKey: organizationId\` passed at the trigger call in
+// startExport, NOT from a dynamically-named queue (the v3 shape v4 rejects).
+export const exportQueue = queue({ name: 'export', concurrencyLimit: 1 });
+
+// The durable parent task. \`schemaTask\` validates the strict payload at the trigger
+// edge — never inside the body. organizationId/requestedBy ride in the payload
+// because a task has no request context (no requireOrgUser); tenancy is re-derived
+// from organizationId via tenantDb inside the run.
+export const exportInvoices = schemaTask({
+  id: 'export-invoices',
+  schema: z.strictObject({
+    organizationId: z.string().min(1),
+    requestedBy: z.string().min(1),
+  }),
+  queue: exportQueue,
+  retry: { maxAttempts: 3 },
+  run: async (_payload) => {
+    metadata.set('pagesDone', 0);
+    return { ok: true };
+  },
+});
+`}>
+  <AnnotatedStep meta="{8}" color="blue">
+    The queue is declared once, at module scope, in code — not in `trigger.config.ts`, not minted per request. `concurrencyLimit: 1` is the serialization knob: at most one run executes per *lane* at a time. What splits the single queue into per-tenant lanes isn't here — it's the `concurrencyKey` the action passes at trigger time, which you'll see in the next block.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"id: 'export-invoices',"`} color="violet">
+    This string is the task's durable identity. Trigger.dev keys on the string, not the exported symbol, so the task survives a redeploy and a crashed run resumes against the same definition. The action you write fires `'export-invoices'` by exactly this string; rename the symbol freely, but this id is the contract. The v4 primitives were taught in [*Defining and triggering Trigger.dev tasks*](/066-background-work/4-defining-and-triggering-triggerdev-tasks).
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{16-19}" color="green">
+    This is the boundary's teeth. `schemaTask` runs this parse at the trigger edge, before the body and before any retry. `z.strictObject` rejects an unexpected extra key; `.min(1)` rejects an empty id. And the ids are `z.string().min(1)`, not `z.uuid()` — the seed's base62 ids (`org_acme`) would never pass a uuid schema.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{20,21}" color="blue">
+    Binding the task to the predeclared queue is what puts every run on the shared `export` lane. `retry` is declared on the task, in code, so a transient failure re-runs the body up to three times — the durability guarantee you'll exploit in the next lesson.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{22-25}" color="orange">
+    This `run` body is a placeholder. It sets a zero progress value and returns. It is deliberately empty so that the run *completes* the moment you wire the trigger, proving the boundary works before any real work exists. The pagination loop replaces this in the next lesson.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+:::note
+The import is from `@trigger.dev/sdk/v3` even though this project runs Trigger.dev v4. That's not a mistake — the v4 package kept `/v3` as its entry path, so every import in this chapter reads `/v3`.
+:::
+
+### Writing `startExport`
+
+Now the file you own. `startExport` is a Server Action wrapped by `authedAction`, which resolves the session, enforces the role, parses the (empty) input schema, and hands your body an `AuthedCtx` with `orgId`, `user`, and an org-scoped `db`. Inside, the shape is: write the row, fire the task, stamp the row, return.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+'use server';
+
+import { idempotencyKeys, tasks } from '@trigger.dev/sdk/v3';
+import { eq } from 'drizzle-orm';
+import { revalidatePath } from 'next/cache';
+import { z } from 'zod';
+
+import { exports } from '@/db/schema';
+import { authedAction } from '@/lib/auth/authed-action';
+import { dayBucket } from '@/lib/exports/day-bucket';
+import { err, ok, type Result } from '@/lib/result';
+
+import type { exportInvoices } from '../../../trigger/export-invoices';
+
+export const startExport = authedAction(
+  'member',
+  z.strictObject({}),
+  async (_input, ctx): Promise<Result<{ runId: string }>> => {
+    const bucket = dayBucket();
+
+    const inserted = await ctx.db
+      .insert(exports)
+      .values({
+        requestedBy: ctx.user.id,
+        status: 'queued',
+        dayBucket: bucket,
+        runId: null,
+      })
+      .returning({ id: exports.id });
+    const row = inserted[0];
+    if (!row) {
+      return err('internal', 'Could not record the export request.');
+    }
+
+    const handle = await tasks.trigger<typeof exportInvoices>(
+      'export-invoices',
+      { organizationId: ctx.orgId, requestedBy: ctx.user.id },
+      {
+        concurrencyKey: ctx.orgId,
+        idempotencyKey: await idempotencyKeys.create(
+          [ctx.orgId, ctx.user.id, bucket],
+          { scope: 'global' },
+        ),
+        idempotencyKeyTTL: '24h',
+        tags: [\`org:\${ctx.orgId}\`],
+      },
+    );
+
+    await ctx.db
+      .update(exports)
+      .set({ runId: handle.id })
+      .where(eq(exports.id, row.id));
+
+    revalidatePath('/inspector');
+    return ok({ runId: handle.id });
+  },
+);
+`}>
+  <AnnotatedStep meta="{15-17}" color="violet">
+    `authedAction('member', ...)` is the structural answer to *who may export*. The wrapper resolves the session and rejects any caller below `member` before your body runs at all — a refused caller never reaches the insert or the trigger. The empty `z.strictObject({})` says the action takes no form input; the org and user come from the session, not the request body.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{21-29}" color="blue">
+    The row is written *before* the trigger fires, with `status: 'queued'` and `runId: null`. Two reasons it goes first: the daily idempotency key needs a row to dedup against, and you want a durable record of the request even if the trigger call itself fails. `ctx.db` is the org-scoped tenant handle, so `organizationId` is stamped for you — that's why it's absent from `.values`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{35-37}" color="green">
+    This is the fire. `tasks.trigger` — *not* `triggerAndWait` — returns the moment the run is enqueued; waiting here would block the request past `maxDuration`. The `<typeof exportInvoices>` type argument makes the payload type-checked against the task's schema, so a typo in a key is a compile error, not a runtime reject. The ids ride in the payload because the task has no session to read them from.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{39}" color="orange">
+    This is the per-tenant lane. The queue declares `concurrencyLimit: 1`, and that limit applies *per `concurrencyKey`* — so `org_acme`'s runs serialize among themselves, `org_globex`'s serialize among themselves, and the two orgs run in parallel. The limit and the queue are fixed in code; only the key varies per call. This is the v4 shape — contrast it with v3 just below.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{40-44}" color="blue">
+    This is the business dedup. The key is derived from `(org, user, day)`, so two clicks by the same user for the same org on the same day produce the *same* key — and Trigger.dev returns the first run's handle for the second call instead of minting a new run. `scope: 'global'` means the key is yours, app-level, not namespaced to a parent run. The 24h TTL lets the next day export again. Idempotency-key scopes were taught in [*Retries, waits, idempotency*](/066-background-work/5-retries-waits-idempotency).
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{49-52,55}" color="blue">
+    The trigger returns a handle carrying the run's id; you stamp it onto the queued row and return it. The inspector reads that returned `runId` and switches its poller to the new run. Note the two-step write — insert, then update — discussed below.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+A few decisions in that file deserve their own moment.
+
+**The v3-to-v4 queue break.** In Trigger.dev v3 the common shape was to set concurrency per trigger, or to name a queue dynamically per tenant. v4 rejects both: a queue is a declared, named resource, and per-tenant back-pressure is a `concurrencyKey` *on a fixed queue*, not a fabricated queue. Here's the contrast.
+
+<CodeVariants>
+  <CodeVariant label="v3 (rejected)">
+    <div data-mark-color="red">
+
+    ```ts
+    // A new queue name per tenant, limit set at the trigger call — v4 rejects this.
+    await tasks.trigger('export-invoices', payload, {
+      queue: { name: `export-${orgId}`, concurrencyLimit: 1 },
+    });
+    ```
+
+    </div>
+    **The shape v4 rejects.** v3 let you fabricate a queue per org at trigger time and set its limit there. It scaled badly — one queue resource per tenant — and v4 removed it.
+  </CodeVariant>
+
+  <CodeVariant label="v4 (this project)">
+    <div data-mark-color="green">
+
+    ```ts
+    // One queue, declared once in code.
+    export const exportQueue = queue({ name: 'export', concurrencyLimit: 1 });
+
+    // Per-org isolation is the key, not the queue name.
+    await tasks.trigger('export-invoices', payload, {
+      concurrencyKey: orgId,
+    });
+    ```
+
+    </div>
+    **The shape the project ships.** One named queue at `concurrencyLimit: 1`, and the org id as the `concurrencyKey`. The limit applies per key, so each org gets its own serial lane on the shared queue. [*Defining and triggering Trigger.dev tasks*](/066-background-work/4-defining-and-triggering-triggerdev-tasks) covers the primitive in depth.
+  </CodeVariant>
+</CodeVariants>
+
+**Why `tasks.trigger`, not `triggerAndWait`.** `triggerAndWait` blocks until the child finishes and returns its result — perfect inside a *task* body, fatal inside a Server Action. The action runs in the user's request, which has a hard `maxDuration`; waiting on a multi-second export there would hang the request and time out. The in-task waits all live in the parent task body, which you build next lesson. From the action you only ever fire and return.
+
+**The two-step write.** You insert the row, then update it with the `runId` after the trigger returns. That's two writes around a network call, and a trigger failure *after* the insert leaves a rare orphan `queued` row that never gets a run. Production hardening would wrap the trigger inside the transaction and accept that orphan only on a genuine trigger failure; this project keeps it simple — two statements, no transaction — because the failure window is small and the orphan is harmless. Naming the hardening is the point; building it is not.
+
+**Why string ids, not uuids.** It's worth saying twice because it bites people: the payload schema is `z.string().min(1)`. The seed and Better Auth assign base62 ids like `org_acme` and `user_alice`. A `z.uuid()` schema would reject every one of them at the boundary, and you'd debug a "valid" payload that mysteriously fails to parse. Match the schema to the ids you actually produce.
+
+**`metadata` is a module import.** The boundary file imports `metadata` from `@trigger.dev/sdk/v3` at module scope and calls `metadata.set(...)`. It is *not* a field on the run's second argument — destructuring `{ metadata }` off the run params fails the type-checker. The placeholder barely uses it; the full live-progress story is the next lesson.
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Trigger.dev — schemaTask"
+    href="https://trigger.dev/docs/tasks/schemaTask"
+    icon="lucide:workflow"
+    iconColor="#A78BFA"
+    description="Validating a strict payload at the trigger edge — the boundary you read before writing the action."
+  />
+  <ExternalResource
+    title="Trigger.dev — Concurrency & queues"
+    href="https://trigger.dev/docs/queue-concurrency"
+    icon="lucide:workflow"
+    iconColor="#A78BFA"
+    description="concurrencyLimit on a declared queue plus concurrencyKey — the per-org lane this lesson installs."
+  />
+  <ExternalResource
+    title="Trigger.dev — Idempotency"
+    href="https://trigger.dev/docs/idempotency"
+    icon="lucide:workflow"
+    iconColor="#A78BFA"
+    description="idempotencyKeys.create with global scope and a TTL — the same-day dedup key."
+  />
+  <ExternalResource
+    title="Trigger.dev — Triggering"
+    href="https://trigger.dev/docs/triggering"
+    icon="lucide:workflow"
+    iconColor="#A78BFA"
+    description="tasks.trigger vs triggerAndWait — why the action fires and returns instead of waiting."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's test suite:
+
+```bash
+pnpm test:lesson 2
+```
+
+The suite never spins up a real worker — the Trigger.dev runtime is out of process. Instead it drives `startExport` through the *real* `authedAction` with only its infrastructure faked, and it parses the shipped payload schema directly. Expect all four requirements green: the action inserts the queued row and fires `export-invoices` with the validated payload, the daily key short-circuits a same-day duplicate to the same `runId`, a malformed payload is rejected at the schema boundary, and the `member` gate refuses a caller before any work happens.
+
+```ansi title="pnpm test:lesson 2"
+ ✓ tests/lessons/Lesson 2.test.ts (11 tests)
+   ✓ Requirement 1 — insert → trigger → runId update (3)
+   ✓ Requirement 2 — the daily key short-circuits a duplicate (2)
+   ✓ Requirement 3 — the schemaTask payload boundary rejects bad input (4)
+   ✓ Requirement 4 — the member gate fires nothing when refused (2)
+
+ Test Files  1 passed (1)
+      Tests  11 passed (11)
+```
+
+Green tests prove the in-process seams. The rest of the boundary only shows itself with a live worker, the dashboard, and a browser — so run the local worker (`npx trigger.dev@latest dev`) alongside the app and walk this by hand.
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">Click **Export invoices** for the active org. The inspector switches its run panel to the new `runId`; the dashboard shows one run, `status: completed`, payload `{ organizationId, requestedBy }`; the progress bar reads `0/0` (the page count lands next lesson).</ChecklistItem>
+  <ChecklistItem chip="untested">Click Export twice quickly. The second click returns the *same* `runId`; there is one exports row and one dashboard run.</ChecklistItem>
+  <ChecklistItem chip="untested">From the dashboard's run-task tool, fire `export-invoices` with `{ organizationId: '' }` or an extra key. It fails immediately at the Zod parse — the body never runs.</ChecklistItem>
+  <ChecklistItem chip="untested">Click **Trigger 2 (same org)**. Both submits share the daily key and collapse to one run. Watch the dedup, then reason through how a `concurrencyKey` lane at limit 1 *would* serialize two genuinely-distinct same-org runs.</ChecklistItem>
+  <ChecklistItem chip="untested">Switch the acting org with the dev switcher and fire **Trigger 3 (cross org)**. Each org's run reaches `executing` in its own lane on the shared queue, in parallel.</ChecklistItem>
+</Checklist>

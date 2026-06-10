@@ -1,0 +1,297 @@
+---
+title: Send the email, write the audit log
+chapter-id: 67
+course-progress: 0.00005
+sidebar:
+  order: 4
+  label: Email and audit log
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The page loop is done: the parent counts invoices, walks the pages, and parks a placeholder `downloadUrl` on `metadata`. What it never does is *finish*. The run sits at `running` forever, no email lands, and the audit log has no idea the export happened. In this lesson you close the run with its two terminal side effects — a transactional email and an append-only audit row — and you make each one fire exactly once, even when the parent retries.
+
+When you click Export now, the run drives to completion, the export-ready email shows up in your inbox within about ten seconds carrying the right org name, row count, and download URL, the inspector's run panel flips to `completed` with the `downloadUrl` rendered, and the audit-log tail gains exactly one `export.invoices.completed` row.
+
+<Figure caption="The finished run — email sent, status flipped, one new audit row.">
+  <Screenshot viewport="desktop">
+    <img
+      src="/screenshots/067/l4-desktop-1280.png"
+      alt="The inspector after a completed export: the run panel at completed with the progress bar full at 7/7 and the downloadUrl and dashboard deep-link rendered, the recent-exports table showing the completed row, and the audit-log tail with a fresh export.invoices.completed row."
+    />
+  </Screenshot>
+</Figure>
+
+## Your mission
+
+You are closing the run with two side effects, and the whole lesson turns on one word: *exactly*. A durable task can retry — the runtime re-runs the parent body from the top after a crash or a transient failure — so any side effect you write inline runs again on every attempt. That is fine for an idempotent `UPDATE`. It is a bug for an email. So the export-ready email is not an inline `sendEmail` call in the parent; it is its own `triggerAndWait` child task, keyed by a run-scoped idempotency key. The child gets two things from being a child that an inline call can't have: its own retry policy (a Resend hiccup retries on the child, not the whole export) and per-step deduplication (a parent retry re-issues the same key, the platform returns the cached child result, and Resend is never touched a second time). Inlining the call throws both away. This is the single most important decision in the lesson, so hold onto it.
+
+The child re-derives tenancy the same way every task in this project does — it has no request context, so it reads `tenantDb(organizationId)` from its payload. The recipient email comes through a tenant-scoped `member`→`user` join, not a bare user lookup, so an id that isn't a member of this org can never reach a send. The org name comes from the global `organization` row. The recipient itself is `requestedBy` — whoever clicked Export. (You could let an org owner override that and receive every export; that's a future variant, out of scope here.)
+
+A Resend suppression — the recipient bounced before, or unsubscribed — is an *expected* outcome, not a crash. The `sendEmail` adapter reads the suppression list at its edge and returns an `err('forbidden', …)` Result for a suppressed address. The child forwards that Result rather than throwing: a suppressed recipient is a deliverability fact about the user, not a fault in the export, and the run should still complete. The alternative — let the suppression bubble up as an error so the run shows `failed` — would mark a perfectly good export as broken because one person can't receive mail. You record the skip instead, in the audit payload, and move on.
+
+That audit row is the second side effect, and where it sits matters. It is written *after* the email step, inside one `tenantDb` transaction alongside the exports-row update, so the two writes commit or roll back together. You audit the outcome you shipped, not the intent you had — the row records whether the email went out, not that you were about to try. It is written as the system actor: `actorUserId: null`, because a task has no session, and `null` here is information ("no human did this"), not a missing value you forgot to fill. The `downloadUrl` you email is the one the parent already put on `metadata` last lesson — consumed, not re-derived (it becomes a real download link when you wire object storage in the next chapter). And the structured logs you leave behind carry a `messageId` and a `disposition` only; no recipient address, no PII.
+
+One thing this lesson does *not* do: there is no failure-email path. A permanently-failed export logs the failure but does not notify anyone — channel choice and failure notifications belong to the notification dispatcher you'll build later, which eventually makes this direct child redundant.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">A full export run ends at `status: completed`, the `downloadUrl` rendered, and one new `export.invoices.completed` row in the audit-log tail.</ChecklistItem>
+  <ChecklistItem chip="tested">Forcing a parent retry after the email step sends no second email — the child returns the cached result and never calls Resend again.</ChecklistItem>
+  <ChecklistItem chip="tested">When the recipient is on the suppression list, the run still completes, no email is sent, and the audit payload records `emailSuppressed: true`.</ChecklistItem>
+  <ChecklistItem chip="untested">The export-ready email arrives in your Resend-verified inbox with the right org name, row count, and download URL, within about ten seconds of completion.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Implement the `sendExportEmail` child in `trigger/send-export-email.ts` and the parent's two closing steps in `trigger/export-invoices.ts` against the brief and the tests. Try it before you open the walkthrough.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+Before the implementation, here is the decision the whole lesson rests on, side by side. The wrong shape calls `sendEmail` inline in the parent body; the right shape triggers a child task and waits for its Result.
+
+<CodeVariants>
+  <CodeVariant label="Inline send (wrong)">
+    <div data-mark-color="red">
+
+    ```ts {2-8}
+    // ...inside the parent run body, after the page loop:
+    const result = await sendEmail({
+      to: recipientEmail,
+      subject: 'Your invoice export is ready',
+      react: ExportReadyEmail({ orgName, rowCount: total, downloadUrl }),
+      idempotencyKey: `export-email:${organizationId}`,
+    });
+    const emailSuppressed = !result.ok;
+    ```
+
+    </div>
+    **Loses durability and per-step idempotency.** The send runs in the parent's body, so a parent retry re-runs it from the top — and Resend's own idempotency key only dedups within a short window, not across an arbitrary retry gap. A transient Resend failure also takes the whole export down with it instead of retrying just the email.
+  </CodeVariant>
+
+  <CodeVariant label="Child task (right)">
+    <div data-mark-color="green">
+
+    ```ts {2-14}
+    // ...inside the parent run body, after the page loop:
+    const emailResult = await sendExportEmail
+      .triggerAndWait(
+        { organizationId, recipientUserId: requestedBy, rowCount: total, downloadUrl },
+        {
+          idempotencyKey: await idempotencyKeys.create([
+            organizationId,
+            'export-email',
+          ]),
+        },
+      )
+      .unwrap();
+    const emailSuppressed = !emailResult.ok;
+    ```
+
+    </div>
+    **Durable and deduplicated.** The email is a separate child run with its own retry policy; the run-scoped `[organizationId, 'export-email']` key means a parent retry re-issues the same key and the platform serves the cached child result — Resend is never called twice.
+  </CodeVariant>
+</CodeVariants>
+
+### The child task
+
+Here is `trigger/send-export-email.ts` in full. Step through it — the member-join guard, the suppression-returns-a-Result branch, and the no-PII log fields are the parts that matter.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+export const sendExportEmail = schemaTask({
+  id: 'send-export-email',
+  schema: z.strictObject({
+    organizationId: z.string().min(1),
+    recipientUserId: z.string().min(1),
+    rowCount: z.int(),
+    downloadUrl: z.string(),
+  }),
+  run: async ({
+    organizationId,
+    recipientUserId,
+    rowCount,
+    downloadUrl,
+  }): Promise<Result<{ id: string }>> => {
+    const recipient = await tenantDb(organizationId).query.member.findFirst({
+      where: eq(member.userId, recipientUserId),
+      with: { user: true },
+    });
+    if (!recipient?.user) {
+      return err('not_found', 'The export recipient is no longer a member.');
+    }
+
+    const org = await db.query.organization.findFirst({
+      where: eq(organization.id, organizationId),
+    });
+
+    const result = await sendEmail({
+      to: recipient.user.email,
+      subject: 'Your invoice export is ready',
+      react: ExportReadyEmail({
+        orgName: org?.name ?? 'your organization',
+        rowCount,
+        downloadUrl,
+      }),
+      idempotencyKey: \`export-email:\${organizationId}:\${recipientUserId}:\${rowCount}\`,
+    });
+
+    if (!result.ok) {
+      console.info('send-export-email skipped', {
+        disposition: result.error.code,
+      });
+      return result;
+    }
+
+    console.info('send-export-email sent', {
+      messageId: result.data.id,
+      disposition: 'sent',
+    });
+    return result;
+  },
+});
+`}>
+  <AnnotatedStep meta="{2-8}" color="blue">
+    A `schemaTask` with a strict object payload — the ids are `z.string().min(1)`, not `z.uuid()`, because the seed assigns base62 text ids like `org_acme`. `rowCount` and `downloadUrl` ride in from the parent; the parent owns the URL, the child only delivers it.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{15-21} "member" "with: { user: true }"`} color="green">
+    The recipient is read through the tenant-scoped `member`→`user` join. This is the guard: `tenantDb(organizationId)` scopes the lookup to this org's members, so an arbitrary user id can never resolve to an email. No member, no send — return an `err('not_found', …)` Result and stop.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{23-25}" color="blue">
+    The org name comes from the *global* `organization` row — it isn't tenant data the join would carry, so it's a plain `db.query`. The `?? 'your organization'` fallback keeps the email sensible if the row somehow vanished mid-run.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{27-36} "idempotencyKey"`} color="orange">
+    The render goes to `sendEmail` as `react`, with a stable per-recipient `idempotencyKey` baked from the org, recipient, and row count. This guards the Resend call against a *child*-level retry — the outer run-scoped key in the parent guards the *parent* retry; this inner one guards the child re-running itself.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{38-43} "return result"`} color="violet">
+    The suppression branch. `sendEmail` returns `err('forbidden', …)` for a suppressed address; the child *returns that Result*, it does not throw. A throw would fail the run over a deliverability fact about the user. The log records the `disposition` only — never the address.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{45-49} "messageId" "disposition"`} color="violet">
+    The happy-path log, same discipline: a `messageId` and a `disposition: 'sent'`, no recipient PII. Then return the `ok` Result for the parent to unwrap.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+A few things worth pinning down. The `sendEmail` adapter and the `ExportReadyEmail` template are both provided — `sendEmail` is the same Resend convenience layer from the email chapter, and it is the piece that reads the suppression list and hands back the `err('forbidden', …)` Result the child forwards. You're not re-implementing either; you're wiring them into a task. And the two idempotency keys are doing different jobs: the per-recipient key here (`export-email:org:recipient:rowCount`) dedups a child re-running itself, while the run-scoped key the parent passes dedups the parent re-triggering the child. Both have to be present for the email to be truly exactly-once.
+
+### The parent's closing steps
+
+The parent body was built last lesson, up through the page loop and the `metadata.set('downloadUrl', …)`. You append two things to it: the email child, then the close-out transaction.
+
+```ts collapse={1-7, 26-32}
+    // Side effect #1 — the ready email, as its own triggerAndWait child keyed by
+    // [organizationId, 'export-email'] (run-scoped: a parent retry re-issues the same
+    // key, so the child returns its cached result and Resend is never called twice).
+    // It is a child task — not an inline sendEmail call — for that durability +
+    // idempotency. The recipient is `requestedBy` (the user who clicked Export); an
+    // org-owner override is named-not-built. A suppression returns an err Result from
+    // the child (the run still completes, the audit note records the skip).
+    const emailResult = await sendExportEmail
+      .triggerAndWait(
+        {
+          organizationId,
+          recipientUserId: requestedBy,
+          rowCount: total,
+          downloadUrl,
+        },
+        {
+          idempotencyKey: await idempotencyKeys.create([
+            organizationId,
+            'export-email',
+          ]),
+        },
+      )
+      .unwrap();
+    const emailSuppressed = !emailResult.ok;
+
+    // Side effect #2 — close the run: update the exports row to `completed` and write
+    // the export.invoices.completed audit entry in ONE tenantDb transaction (the audit
+    // INSERT needs the transaction-local app.org_id the facade sets, and the two writes
+    // commit or roll back together). The audit write comes AFTER the email — we audit
+    // the outcome we shipped, not the intent. logAudit is called with explicit context
+    // (organizationId + actorUserId: null): a task has no session, so the system-actor
+    // null is information, not a missing value.
+    await tenantDb(organizationId).transaction(async (tx) => {
+      await tx
+        .update(exports)
+        .set({
+          status: 'completed',
+          rowCount: total,
+          completedAt: new Date(),
+        })
+        .where(eq(exports.runId, ctx.run.id));
+
+      await logAudit(tx, {
+        action: 'export.invoices.completed',
+        subjectType: 'export',
+        subjectId: ctx.run.id,
+        organizationId,
+        actorUserId: null,
+        payload: { rowCount: total, emailSuppressed },
+      });
+    });
+
+    return { ok: true, runId: ctx.run.id, rowCount: total };
+```
+
+The email step triggers the child with `recipientUserId: requestedBy` and the run-scoped `[organizationId, 'export-email']` key, then `.unwrap()`s the child's Result. `const emailSuppressed = !emailResult.ok` derives the flag straight from that Result — it is never hard-coded, so it reads `true` only when the child actually skipped.
+
+The close-out is one transaction on purpose. The audit `INSERT` needs the transaction-local `app.org_id` that the `tenantDb` facade sets for row-level security; outside that transaction the insert has no tenant context to write under. Putting the exports-row update and the audit write in the same transaction also means they commit or roll back as a unit — you never get a row flipped to `completed` with no audit trail, or an audit row for a completion that didn't persist. The `logAudit` writer here takes its explicit-context shape — `{ …, organizationId, actorUserId }` — because a session-less task can't derive org or actor the way a Server Action can. `actorUserId: null` is the system actor.
+
+The order is deliberate: the email step runs first, the audit write second. You audit the outcome you shipped, not the intent — by the time the audit row is written, `emailSuppressed` already reflects what really happened to the email, and the row records that fact. This gives you at-least-once audit semantics tied to the real result rather than a hopeful note written before the side effect ran.
+
+The `logAudit` writer, the `auditLogs` table, and how the `tenantDb` facade sets `app.org_id` for row-level security were all built when you wired the audit log and tenancy — see that chapter rather than re-deriving them here. The `downloadUrl` is still the placeholder the parent set; it becomes a real, working object-storage link in the next chapter.
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Trigger.dev — Idempotency"
+    href="https://trigger.dev/docs/idempotency"
+    icon="lucide:repeat"
+    iconColor="#A78BFA"
+    description="The run/attempt/global scopes behind idempotencyKeys.create — the exactly-once guard this lesson rests on."
+  />
+  <ExternalResource
+    title="Trigger.dev — triggerAndWait & unwrap"
+    href="https://trigger.dev/docs/triggering"
+    icon="lucide:workflow"
+    iconColor="#A78BFA"
+    description="How a parent triggers a child, waits for its Result, and unwraps it — the shape of the email step here."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's test suite:
+
+```bash
+pnpm test:lesson 4
+```
+
+The worker runs out of process, so these tests don't hit the live platform — they execute your task bodies in-process and fake only the seams this lesson is about. Expect every test green: the run closes with the exports row flipped to `completed` and exactly one `export.invoices.completed` audit row written as the system actor; the email child is triggered with the run-scoped `[organizationId, 'export-email']` key and a parent retry on the same run id serves the cached child result without re-sending; a suppressed recipient still completes the run with `emailSuppressed: true` in the audit payload; and the child itself sends once, forwards a suppression as a Result rather than throwing, and never reaches a send for a non-member recipient.
+
+The tests assert the child's Result and the audit payload, not real delivery or a real platform run. Confirm the rest by hand against a live worker and a seeded org:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">Running a full export against a seeded org drives the progress bar to completion, flips the run panel to `completed` with the `downloadUrl` rendered, adds one `export.invoices.completed` row to the audit tail, and lands the `ExportReadyEmail` in your inbox within about ten seconds.</ChecklistItem>
+  <ChecklistItem chip="untested">Forcing a parent retry (the dashboard's "Replay run", or a debug throw right after the email step returns) re-issues the same `[organizationId, 'export-email']` key, serves the cached `{ id }`, and lands no second email.</ChecklistItem>
+  <ChecklistItem chip="untested">Inserting the seeded recipient's email into `emailSuppressions` and running an export makes `sendEmail` return a `forbidden` Result, the run still completes, and the audit payload records `emailSuppressed: true`.</ChecklistItem>
+</Checklist>
+
+That closes the run, and with it the export. You now have a durable CSV export that counts its pages, survives a parent retry, emails the right person exactly once, and leaves an audit trail — every side effect guarded where it sits. The project is feature-complete; only the wrap-up remains.
