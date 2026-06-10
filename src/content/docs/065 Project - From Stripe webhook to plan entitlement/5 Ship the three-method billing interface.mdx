@@ -1,0 +1,407 @@
+---
+title: Ship the three-method billing interface
+chapter-id: 65
+course-progress: 0.00005
+sidebar:
+  order: 5
+  label: Billing interface
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The inbound half of this project is done: a webhook lands, projects three Stripe events into one `plan_entitlements` row, and writes an audit line. But that row is the *end* of the story — nobody has started a subscription yet. This lesson builds the outbound half: the three methods that let a user begin paying, manage what they're paying for, and gate the pages only paying users should see.
+
+By the end the whole loop closes against a test-mode Stripe account. Clicking **Upgrade to Pro** in the inspector opens Stripe-hosted Checkout; paying with the test card `4242 4242 4242 4242` drops you on `/billing/success`, which shows "Finalizing your subscription…" for a beat and then flips to "You are all set" / "Your plan is now pro" the moment the webhook lands and the entitlement panel updates. **Manage billing** opens the Customer Portal in a new tab — cancel there and `cancelAtPeriodEnd: true` shows up on the panel within a moment. And `/inspector/pro-only`, which was rendering an "Upgrade to Pro" wall this whole time, finally serves its protected content.
+
+<Screenshot viewport="desktop">
+  <img
+    src="/screenshots/065/l5-desktop-1280.png"
+    alt="The /inspector page at a seeded free plan: header reads ACTIVE ORG Acme with Customer: null, the Upgrade to Pro and Upgrade to Team Checkout buttons render beside a disabled Manage billing button, and the Entitlement panel shows plan free, status active, seats 1."
+  />
+</Screenshot>
+
+## Your mission
+
+Everything the app says to Stripe goes through `lib/billing/`, and that is the whole point of this lesson. The Stripe SDK is imported in exactly one file — `lib/billing/stripe.ts`, which re-exports a configured `stripe` singleton — and every other call site in the codebase either reads the entitlement row or calls one of three methods you're about to write: `upgrade`, `openPortal`, `requirePlan`. There's no lint rule enforcing that boundary; it's a convention held by the single re-export and by code review. The payoff is that the day Stripe ships a breaking SDK change, or you swap billing providers entirely, the blast radius is one directory instead of a grep across the app. This is the interface [The thin billing interface](/064-stripe-billing-and-plan-entitlements/6-the-thin-billing-interface) designed in the teaching chapter; here you build it for real against the running app.
+
+Two of the three are mutations and one is a gate, and the split is deliberate. `upgrade` and `openPortal` are `authedAction('admin', …)` Server Actions: they validate input, do a privileged thing, and return the canonical `Result<{ url }>` — a Stripe-hosted URL the client island navigates to. `requirePlan` is not an action. It starts with `import 'server-only'` rather than `'use server'`, it's called from inside Server Components before any data read, and it *throws* a `BillingError` instead of returning a `Result`. That asymmetry is deliberate: actions return a `Result` the caller branches on, but a gate has nothing useful to return — it either lets the render proceed or it doesn't, and a throw caught by the segment's `error.tsx` is exactly the right shape for "stop rendering this page." Treat a missing `requirePlan` on a paywalled component the way you'd treat a missing `authedAction` on a mutation: same audit class, same severity.
+
+The one genuine cross-system write lives in `upgrade`. The first time an org upgrades it has no Stripe Customer, so you create one — and the *ordering* matters more than it looks. The Stripe-side `customers.create` must happen **before** the local `setStripeCustomerId`, never the reverse. Think about the failure: if the local write lands first and the Stripe call then fails, your database holds a pointer to a Customer that doesn't exist, and nothing you write later can repair it. Flip the order and the worst case on a failed retry is a *duplicate* Customer on Stripe's side — an orphan, but a harmless one you can clean up. Pick the recoverable failure. The production hardening here is an idempotency key on `customers.create` so the retry reuses the first Customer instead of orphaning one; this project ships the simpler path for clarity and names the hardening rather than building it.
+
+A few Checkout details carry weight. The org's id rides on both the Customer's `metadata` and the session's `subscription_data.metadata` as `organization_id` — that's the carry-channel the webhook reads back off `sub.metadata` to figure out which tenant the subscription belongs to. You set `trial_period_days: 14` and `payment_method_collection: 'always'` together on purpose: collecting a card at trial start means the trial-end transition is a charge, not a "now go chase the customer for a card" downgrade dance. `allow_promotion_codes: false` is the conservative default — turn it on deliberately, not by accident. And the Price is resolved from the catalog `lookup_key` through `stripe.prices.list`, never a hardcoded `price_id` string; `lookup_key` is the only stable handle Stripe IDs should travel by in your code. The `success_url` carries `{CHECKOUT_SESSION_ID}`, but notice what the success page does *not* do with it: it never calls `sessions.retrieve`. The webhook owns the write; the page reads the entitlement and polls until it flips. Reading-and-polling is structurally cleaner than trusting a `session_id` the browser handed you. [Starting subscriptions with Checkout](/064-stripe-billing-and-plan-entitlements/2-starting-subscriptions-with-checkout) covers the session shape and the trial mechanics if you want the deeper Checkout background.
+
+`openPortal` is smaller. Its job is to open a Billing Portal session for the org's Customer, with one guard: if the org has no `stripeCustomerId` yet there's no Portal to open, so it returns `err('forbidden', …)`. The Portal opens in a *new tab* — its `return_url` navigation would otherwise fight your SPA's back button — and `STRIPE_PORTAL_RETURN_URL` is the default return target the action can override per call. [Managing subscriptions with the Portal](/064-stripe-billing-and-plan-entitlements/3-managing-subscriptions-with-the-portal) is where the Portal session and its graceful-cancel flow are taught in full.
+
+<VideoCallout videoId="t2XJ7u-rTZ0" videoTitle="How to Add Stripe Subscriptions to Next.js Apps — Checkout, Webhooks, Portal">
+  FullStacked walks the same Checkout-session and Billing-Portal calls end to end in Next.js (46 min) — different ORM and API-route surface than ours, but the exact Stripe SDK shape you're wiring here.
+</VideoCallout>
+
+What you are explicitly **not** building: any `cancel` or `changePlan` method. The Stripe Customer Portal owns every user-initiated mutation — cancellation, plan switches, card updates — and wrapping more methods "for symmetry" is the named failure mode here. The interface stays at exactly three. The forged-`organization_id` cross-check is the next lesson's hardening, not this one's.
+
+<Checklist id="mission">
+  <ChecklistItem chip="untested">Clicking "Upgrade to Pro" opens Stripe-hosted Checkout; paying with `4242 4242 4242 4242` lands on `/billing/success`, which shows "Finalizing your subscription…" then "You are all set" / "Your plan is now pro" as the entitlement panel flips.</ChecklistItem>
+  <ChecklistItem chip="untested">A first-time upgrade creates the Stripe Customer and persists `stripeCustomerId` on the org; the inspector header shows the id populated where it was null before.</ChecklistItem>
+  <ChecklistItem chip="tested">`upgrade` returns a successful `Result` carrying a Checkout `url` for a valid plan, and resolves the Price from the catalog `lookup_key` rather than a hardcoded id.</ChecklistItem>
+  <ChecklistItem chip="tested">`upgrade` for a plan with no configured Price returns `err('not_found', …)`.</ChecklistItem>
+  <ChecklistItem chip="untested">Clicking "Manage billing" opens the Customer Portal in a new tab; cancelling there returns to the app and the entitlement panel shows `cancelAtPeriodEnd: true` within a moment.</ChecklistItem>
+  <ChecklistItem chip="tested">`openPortal` with no Stripe Customer yet returns `err('forbidden', …)`, and the inspector's Portal button is disabled with its tooltip until a Checkout has run.</ChecklistItem>
+  <ChecklistItem chip="tested">`requirePlan('pro')` resolves when the org's entitlement is active and ranks at or above pro; throws `BillingError('no_access')` when the entitlement is inactive; throws `BillingError('plan_required')` when the tier is too low.</ChecklistItem>
+  <ChecklistItem chip="untested">`/inspector/pro-only` renders the "Upgrade to Pro" fallback before the upgrade, the protected content after, and reverts to the fallback once the subscription is deleted.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Implement the three method bodies against the brief and the lesson's tests before you open the solution. The surrounding scaffolding ships complete in the starter — `BillingError`, the `index.ts` barrel, and the `pro-only/error.tsx` gate are already written, and this lesson only removes their `TODO(L5)` markers. Your real work is the three bodies in `upgrade.ts`, `portal.ts`, and `require-plan.ts`.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+### `lib/billing/upgrade.ts`
+
+This is the decision-dense file. It's an `authedAction('admin', …)` whose input schema is a strict object with a single `planSlug` enum, and its body runs four steps: read the org, ensure the Customer, resolve the Price, create the session.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+'use server';
+
+import { z } from 'zod';
+
+import {
+  getOrgWithOwnerEmail,
+  setStripeCustomerId,
+} from '@/db/queries/organizations';
+import { env } from '@/env';
+import { authedAction } from '@/lib/auth/authed-action';
+import { loadCatalog } from '@/lib/billing/catalog';
+import { stripe } from '@/lib/billing/stripe';
+import { err, ok, type Result } from '@/lib/result';
+
+export const upgrade = authedAction(
+  'admin',
+  z.strictObject({ planSlug: z.enum(['pro', 'team']) }),
+  async ({ planSlug }, ctx): Promise<Result<{ url: string }>> => {
+    const org = await getOrgWithOwnerEmail(ctx.orgId);
+
+    let customerId = org.stripeCustomerId;
+    if (!customerId) {
+      const customer = await stripe.customers.create({
+        email: org.ownerEmail,
+        metadata: { organization_id: ctx.orgId },
+      });
+      customerId = customer.id;
+      await setStripeCustomerId(ctx.orgId, customerId);
+    }
+
+    const catalog = loadCatalog();
+    const lookupKey = Object.keys(catalog.lookupKeys).find(
+      (key) => catalog.lookupKeys[key] === planSlug,
+    );
+    if (!lookupKey) {
+      return err('not_found', 'No price is configured for that plan.');
+    }
+    const prices = await stripe.prices.list({
+      lookup_keys: [lookupKey],
+      active: true,
+      limit: 1,
+    });
+    const price = prices.data[0];
+    if (!price) {
+      return err('not_found', 'No price is configured for that plan.');
+    }
+
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      customer: customerId,
+      line_items: [{ price: price.id, quantity: 1 }],
+      subscription_data: {
+        metadata: { organization_id: ctx.orgId },
+        trial_period_days: 14,
+      },
+      payment_method_collection: 'always',
+      allow_promotion_codes: false,
+      success_url: \`\${env.APP_URL}/billing/success?session_id={CHECKOUT_SESSION_ID}\`,
+      cancel_url: \`\${env.APP_URL}/inspector\`,
+    });
+
+    if (!session.url) {
+      return err('internal', 'Stripe did not return a Checkout URL.');
+    }
+    return ok({ url: session.url });
+  },
+);
+`}>
+  <AnnotatedStep meta={`{15-18} "admin"`} color="blue">
+    An `authedAction('admin', …)` whose input schema is a strict object with a single `planSlug` enum, returning the canonical `Promise<Result<{ url: string }>>` — admin-only, validated, and handing back a Stripe-hosted URL the client island navigates to.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{21-29} "stripe.customers.create" "setStripeCustomerId"`} color="orange">
+    Ensure the Customer behind an `if (!customerId)` guard. `stripe.customers.create` runs **before** `setStripeCustomerId` — a duplicate orphan Customer on a failed retry is fixable, a local pointer to a non-existent Customer is not. The `organization_id` metadata is the carry-channel the webhook reads back to resolve the tenant.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{31-37} "not_found"`} color="green">
+    Resolve the Price by `lookup_key`, never a hardcoded `price_id`: reverse-scan `catalog.lookupKeys` for the slug. No key for the plan is the first `err('not_found', …)` exit — a misconfiguration the admin can act on, so an `err`, not a throw.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{38-46} "price.id"`} color="green">
+    Ask Stripe to list active Prices for that key with `limit: 1`. An empty list is the second `err('not_found', …)` exit (a seed that never ran). The chosen `price.id` is what flows into `line_items` — proof the `lookup_key` indirection is real, not decorative.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{48-60} "trial_period_days" "payment_method_collection" "allow_promotion_codes"`} color="violet">
+    Create the subscription-mode session. `subscription_data.metadata` repeats the carry-channel; `trial_period_days: 14` paired with `payment_method_collection: 'always'` turns trial-end into a silent charge; `allow_promotion_codes: false` is the conservative default. The `success_url` carries `{CHECKOUT_SESSION_ID}` — but the success page reads-and-polls, it never retrieves the session.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Two of the four steps deserve a second look. The Price resolution is a two-stage indirection on purpose: the catalog maps `lookup_key → slug`, so resolving a Price means reverse-scanning the catalog for the requested slug to get its `lookup_key`, then asking Stripe to list Prices by that key. There are two distinct `not_found` exits — one when the catalog has no `lookup_key` for the plan, one when the catalog knows the key but Stripe's account has no active Price for it (a seed that never ran). Both are recoverable misconfigurations the admin can act on, so they're `err`, not throws. And the `line_items` price is `price.id` returned by `stripe.prices.list`, not a literal — proof the `lookup_key` indirection is real and not decorative.
+
+The `trial_period_days: 14` and `payment_method_collection: 'always'` pairing is the trial-flow default worth internalizing. A trial without a collected card means that when the trial ends Stripe has nothing to charge, and you're left downgrading the account and emailing the user. Collecting the card up front turns trial-end into a silent successful charge. `allow_promotion_codes: false` keeps the Checkout page from showing a promo field you haven't set up promos for.
+
+### `lib/billing/portal.ts`
+
+Smaller and simpler. An `authedAction('admin', …)` taking an optional `returnPath`, with a single guard and a single Stripe call.
+
+```ts
+'use server';
+
+import { z } from 'zod';
+
+import { getOrgWithOwnerEmail } from '@/db/queries/organizations';
+import { env } from '@/env';
+import { authedAction } from '@/lib/auth/authed-action';
+import { BillingError } from '@/lib/billing/billing-error';
+import { stripe } from '@/lib/billing/stripe';
+import { err, ok, type Result } from '@/lib/result';
+
+// 'use server' — the Portal client island imports and calls this. Opens a Stripe
+// Billing Portal session for the org's Customer and returns its URL (the island opens
+// it in a new tab). Plan changes and cancellation happen in the Portal, never via
+// stripe.subscriptions.update from app code.
+export const openPortal = authedAction(
+  'admin',
+  z.strictObject({ returnPath: z.string().optional() }),
+  async ({ returnPath }, ctx): Promise<Result<{ url: string }>> => {
+    const org = await getOrgWithOwnerEmail(ctx.orgId);
+
+    // No Customer → no Portal to open. The inspector already disables the button when
+    // stripeCustomerId is null, so this is belt-and-suspenders; the BillingError carries
+    // the machine-readable distinction the Result's userMessage cannot.
+    if (!org.stripeCustomerId) {
+      const reason = new BillingError(
+        'no_customer',
+        'Start a Checkout to create a billing account first.',
+      );
+      return err('forbidden', reason.userMessage);
+    }
+
+    const session = await stripe.billingPortal.sessions.create({
+      customer: org.stripeCustomerId,
+      return_url: returnPath ?? env.STRIPE_PORTAL_RETURN_URL,
+    });
+
+    return ok({ url: session.url });
+  },
+);
+```
+
+The no-Customer branch looks redundant — the inspector already disables the button when there's no Customer — and that's the point of building a `BillingError('no_customer')` and returning its `userMessage` through `err('forbidden', …)`. The UI guard is convenience; the action guard is the real boundary, because a `Result`'s `userMessage` is a human string with no machine-readable code, and the `BillingError` carries the `no_customer` distinction the `Result` alone can't express. Belt and suspenders: never trust the client to have disabled the dangerous path.
+
+### `lib/billing/require-plan.ts`
+
+The load-bearing gate. Note the very first line.
+
+```ts
+import 'server-only';
+
+import { getEntitlement, hasActiveAccess } from '@/db/queries/entitlements';
+import { requireOrgUser } from '@/lib/auth';
+import { BillingError } from '@/lib/billing/billing-error';
+import type { PlanSlug } from '@/lib/billing/catalog';
+
+// The tier order, free < pro < team. A higher tier admits a lower-tier gate, so the
+// gate compares ranks rather than equality. `satisfies` keeps the map exhaustive over
+// PlanSlug — a new tier without a rank is a tsc error.
+const PLAN_RANK = { free: 0, pro: 1, team: 2 } as const satisfies Record<
+  PlanSlug,
+  number
+>;
+
+// The load-bearing Server-Component gate. `import 'server-only'` (NOT 'use server') —
+// it is called from server components, never client-callable. A failure throws a
+// BillingError, which the segment error.tsx catches and renders as the upgrade
+// fallback; the gate is fail-closed (a thrown error inside the check is a refusal).
+//
+// Two distinct refusals carry distinct codes: an inactive entitlement throws
+// 'no_access', a too-low tier throws 'plan_required'. error.tsx switches on the code to
+// render the right message.
+export const requirePlan = async (planSlug: 'pro' | 'team'): Promise<void> => {
+  const { orgId } = await requireOrgUser();
+  const e = await getEntitlement(orgId);
+
+  if (!hasActiveAccess(e)) {
+    throw new BillingError(
+      'no_access',
+      'Your subscription is no longer active.',
+    );
+  }
+
+  if (PLAN_RANK[e.plan] < PLAN_RANK[planSlug]) {
+    throw new BillingError(
+      'plan_required',
+      `This area requires the ${planSlug} plan.`,
+    );
+  }
+};
+```
+
+`import 'server-only'`, not `'use server'`. The distinction is load-bearing: `'use server'` would mark this a Server Action and make it client-callable over the network, which is wrong for a gate that only ever runs inside a Server Component render. `import 'server-only'` does the opposite — it's a build-time tripwire that fails the bundle if this module is ever pulled into client code.
+
+The gate compares *ranks*, not equality. `PLAN_RANK` orders the tiers `free < pro < team`, so a `team` entitlement satisfies a `requirePlan('pro')` gate — a higher tier admits a lower-tier requirement, the way you'd expect. The `satisfies Record<PlanSlug, number>` keeps that table honest: add a fourth tier to `PlanSlug` without giving it a rank and TypeScript fails the build instead of silently treating it as rank zero.
+
+The two refusals are intentionally distinct. An inactive entitlement (a canceled or incomplete subscription) throws `no_access`; a perfectly active subscription on too low a tier throws `plan_required`. They mean different things to the user — "your subscription lapsed, reactivate it" versus "this is a Pro feature, upgrade" — and the gate keeps them separate so the fallback can show the right message.
+
+:::caution
+`requirePlan` is the same kind of load-bearing as `authedAction`: it's the one line standing between an unauthorized user and protected content. Forgetting it on a paywalled Server Component is a real vulnerability, not a cosmetic bug — the page just renders for everyone. Audit paywalled components for it the way you audit mutations for their auth wrapper.
+:::
+
+### The pieces the starter already ships
+
+These three are provided complete; you only delete their `TODO(L5)` comments. They're worth reading to see how the three methods fit together.
+
+`billing-error.ts` carries the full `code` vocabulary the whole billing domain throws — the gate uses `no_access` and `plan_required`, `openPortal` uses `no_customer`, and the webhook handlers use `unknown_customer` and `unknown_plan`:
+
+```ts
+export class BillingError extends Error {
+  override readonly name = 'BillingError' as const;
+  readonly code:
+    | 'no_access'
+    | 'plan_required'
+    | 'no_customer'
+    | 'unknown_customer'
+    | 'unknown_plan';
+
+  constructor(
+    code: BillingError['code'],
+    public readonly userMessage: string,
+  ) {
+    super(userMessage);
+    this.code = code;
+  }
+}
+```
+
+`index.ts` is the sanctioned barrel — exactly the three methods, no wildcard, and pointedly no `stripe` / `BillingError` / `catalog` re-export, so the SDK and the error class stay internal to the directory:
+
+```ts
+// The sanctioned billing barrel: re-export EXACTLY the three interface methods.
+// No wildcard re-export, and no stripe / BillingError / catalog re-export — the SDK
+// and the error class stay internal to lib/billing. Surfaces import
+// `billing.upgrade`/`billing.openPortal`/`billing.requirePlan` from here.
+export { openPortal } from '@/lib/billing/portal';
+export { requirePlan } from '@/lib/billing/require-plan';
+export { upgrade } from '@/lib/billing/upgrade';
+```
+
+`pro-only/error.tsx` is the segment boundary that catches what `requirePlan` throws. It switches on the error's `code` to choose the message — and note *why* it reads `error.code` off a plain shape rather than `instanceof BillingError`:
+
+```tsx
+// error.tsx must be a Client Component. The thrown BillingError arrives as a plain
+// Error here (its prototype is lost across the boundary), so the code is read off the
+// serialized shape rather than `instanceof`. The discrimination is on BillingError.code:
+// 'no_access' (the subscription is inactive) vs 'plan_required' (the tier is too low) —
+// the two refusals requirePlan throws against this gate.
+type BillingErrorLike = Error & { code?: string };
+
+const ProOnlyGate = ({
+  error,
+}: {
+  error: BillingErrorLike;
+  reset: () => void;
+}) => {
+  const code = error.code ?? 'plan_required';
+  const message =
+    code === 'no_access'
+      ? 'Your subscription is no longer active. Reactivate to regain access.'
+      : 'This area requires the Pro plan. Upgrade to continue.';
+```
+
+When an error crosses the server-to-client boundary in React, only a serialized shape survives — the prototype chain is gone, so `instanceof BillingError` would be `false` on the other side. Discriminating on a plain `code` property is the pattern that survives the crossing. This is the same `error.tsx` interop you saw with `Result` and Server Actions in [Result, or throw](/043-server-actions/3-result-or-throw/); the gate leans on it instead of re-deriving it.
+
+Two client islands wire the buttons, both provided. `CheckoutButton` calls `upgrade(null, formData)` and, on `ok`, does a full `window.location.assign(result.data.url)` — a real navigation off to Stripe's domain, not a `router.push`. `PortalButton` calls `openPortal` and `window.open`s the URL in a new tab; when `hasCustomer` is false it renders a disabled button wrapped in a `<span>`, because a disabled button fires no pointer events and the tooltip needs a live element to hover.
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Create a Checkout Session"
+    href="https://docs.stripe.com/api/checkout/sessions/create"
+    icon="simple-icons:stripe"
+    iconColor="#635BFF"
+    description="API reference for the checkout.sessions.create call in upgrade — subscription mode, subscription_data, and metadata."
+  />
+  <ExternalResource
+    title="Create a Billing Portal Session"
+    href="https://docs.stripe.com/api/customer_portal/sessions/create"
+    icon="simple-icons:stripe"
+    iconColor="#635BFF"
+    description="API reference for billingPortal.sessions.create in openPortal — customer, return_url, and the returned url."
+  />
+  <ExternalResource
+    title="Customer Portal overview"
+    href="https://docs.stripe.com/customer-management"
+    icon="simple-icons:stripe"
+    iconColor="#635BFF"
+    description="Why the Portal owns cancellation and plan switches — the reason the interface stays at three methods."
+  />
+  <ExternalResource
+    title="Reference prices with lookup keys"
+    href="https://docs.stripe.com/products-prices/manage-prices"
+    icon="simple-icons:stripe"
+    iconColor="#635BFF"
+    description="Resolving a Price by lookup_key via prices.list instead of a hardcoded price_id — the indirection upgrade relies on."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's automated suite:
+
+```bash
+pnpm test:lesson 5
+```
+
+It exercises the seam behavior each method owns without a live Stripe call — `upgrade`'s Price resolution and its two `not_found` exits, `openPortal`'s no-Customer `err('forbidden')` and its success path, and `requirePlan`'s three dispositions driven by the entitlement row. The Stripe SDK, the auth context, and the database reads are replaced with inert stand-ins so the assertion lands on each method's returned `Result` or thrown error, never on a Stripe fixture. Expect green:
+
+```
+ ✓ FR3: upgrade resolves a Price from the catalog lookup_key and returns a Checkout url (3)
+ ✓ FR4: upgrade returns not_found when no Price is configured for the plan (2)
+ ✓ FR6: openPortal refuses with forbidden when the org has no Stripe Customer (2)
+ ✓ FR7: requirePlan gates on the entitlement row (active / inactive / too-low tier) (4)
+
+ Test Files  1 passed (1)
+      Tests  11 passed (11)
+```
+
+The suite can't reach a live Stripe-hosted round-trip, so the rest is yours to confirm by hand. With `pnpm dev` running and `pnpm stripe:listen` forwarding events, walk the inspector through each of these:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">Click "Upgrade to Pro", complete Checkout with `4242 4242 4242 4242` (any future expiry, any CVC), and confirm `/billing/success` shows "Finalizing your subscription…" then flips to "You are all set" / "Your plan is now pro" within a second or two as the entitlement panel updates.</ChecklistItem>
+  <ChecklistItem chip="untested">Before that first upgrade the inspector header shows `stripeCustomerId` as null; after it, the header shows a populated `cus_…` id — the Customer was created on the first Checkout.</ChecklistItem>
+  <ChecklistItem chip="untested">Click "Manage billing", cancel the subscription in the Portal tab, return to the inspector, and confirm the entitlement panel shows `cancelAtPeriodEnd: true` within a moment.</ChecklistItem>
+  <ChecklistItem chip="untested">With a freshly reseeded org that has no Stripe Customer, the Portal button is disabled and hovering it shows the "start a Checkout to create one" tooltip.</ChecklistItem>
+  <ChecklistItem chip="untested">`/inspector/pro-only` renders the "Upgrade to Pro" fallback before upgrading, the protected content after upgrading, and reverts to the fallback once the subscription is deleted (fire `stripe trigger customer.subscription.deleted`, or cancel and let the period end).</ChecklistItem>
+</Checklist>
+
+<Screenshot viewport="desktop">
+  <img
+    src="/screenshots/065/l5-desktop-1280-pro-only-gate.png"
+    alt="The /inspector/pro-only gate fallback at a seeded free plan: an Upgrade to Pro card reading 'This area requires the Pro plan. Upgrade to continue.' above a Back to the inspector button — the page requirePlan('pro') renders before any subscription exists."
+  />
+</Screenshot>

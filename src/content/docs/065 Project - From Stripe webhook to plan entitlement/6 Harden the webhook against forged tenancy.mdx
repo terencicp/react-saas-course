@@ -1,0 +1,163 @@
+---
+title: Harden the webhook against forged tenancy
+chapter-id: 65
+course-progress: 0.00005
+sidebar:
+  order: 6
+  label: Harden against forged tenancy
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Right now your webhook can be tricked into writing a paid plan onto the wrong organization. By the end of this lesson it can't.
+
+Here is the shape of the problem, made concrete. Your inspector has a **Forge metadata** probe that fires a real Checkout whose `metadata.organization_id` names org B, while the Stripe Customer behind that Checkout belongs to org A. Today the handler reads nothing from that metadata, so the question of which org it trusts has simply never been asked — and a field an attacker can set is one event away from deciding it. After this lesson, that forged Checkout gets rejected: nothing is written, a `metadata_org_mismatch` line lands in the dev log, and the `stripe listen` terminal shows a 500 for the delivery. A legitimate **Upgrade to Pro** Checkout, where the metadata agrees with the Customer's owner, still flips the entitlement to Pro cleanly. The reason this is its own lesson rather than a line buried in lesson 4 is that the value being forged here — metadata you stamped during `upgrade`, on the way out — is exactly the kind of value an inexperienced engineer trusts and an experienced one cross-checks.
+
+## Your mission
+
+Harden `onCheckoutCompleted` so a forged `organization_id` in the Subscription's metadata can never write an entitlement onto an org other than the one that owns the Stripe Customer. The threat is specific. That `sub.metadata.organization_id` is the carry-channel you set during `upgrade` in **Ship the three-method billing interface**; it rides through Stripe and back, and anything on that path — a bug in your own action, or an attacker replaying a crafted Checkout — can influence it. The org that owns the Stripe Customer is a different kind of value entirely: your app created that Customer and stored the `customerId ↔ org` mapping in **Project three events into one entitlement row**, so the event payload cannot forge it. That asymmetry is the whole lesson. `resolveOrgIdFromCustomer` is the authority on which org gets the entitlement; the metadata is, at most, a corroborating signal that you check against the authority — never the decision itself.
+
+A few constraints shape how you handle a disagreement. When the metadata is present and names a different org than the Customer's owner, that is not a "pick the more trustworthy source and move on" situation — a present, mismatched value means either your `upgrade` action has a bug or someone is probing the boundary, and both deserve to surface loudly. So a mismatch is a hard failure: log it and throw. Because you are already inside the route's transaction, throwing is the entire rollback mechanism — the entitlement UPSERT and the audit write that come after never execute, and Postgres discards everything when the transaction unwinds. There is no manual cleanup to write. Keep the cross-check confined to `onCheckoutCompleted`, the only handler that reads metadata at all; the update and delete handlers resolve their org from the matched row's own `subscriptionId`, so there is no untrusted metadata for them to distrust. And reuse what's already there: a mismatch reuses `BillingError('unknown_customer')` and the `metadata_org_mismatch` log key rather than inventing a new failure surface, because "no org owns this Customer" and "metadata names the wrong org" are the same thing to the caller — a Customer-to-org resolution that failed.
+
+This is a small, surgical addition on one existing path. You are not touching the schema, the projection, the ordering predicate, or the billing interface — those landed in lessons 2 through 5. You are not adding webhook-secret rotation either; that hardening drill is a forward reference to a later chapter on errors and security.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">A Checkout whose `metadata.organization_id` names a different org than the Customer's owner is rejected: no `plan_entitlements` write and no `audit_logs` row are produced.</ChecklistItem>
+  <ChecklistItem chip="tested">The rejection rolls the transaction back and surfaces as a thrown `BillingError('unknown_customer')`, so the route 500s and Stripe sees the delivery fail.</ChecklistItem>
+  <ChecklistItem chip="untested">A mismatch emits a structured `metadata_org_mismatch` log line keyed by the event id.</ChecklistItem>
+  <ChecklistItem chip="tested">A legitimate Checkout — metadata equals the Customer-resolved org, or metadata is absent — still flips the entitlement to Pro and writes its audit row exactly as before.</ChecklistItem>
+  <ChecklistItem chip="tested">An event for a Stripe Customer your app never created resolves to no org and is rejected, rather than provisioning or mutating any row.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Open `src/lib/webhooks/stripe.ts`, find the `TODO(L6)` between the `resolveOrgIdFromCustomer` call and the UPSERT in `onCheckoutCompleted`, and add the cross-check. Build against the brief and the lesson 6 tests, then open the walkthrough below to compare.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+The change is a single guard, and where it sits matters as much as what it does. It belongs between the authoritative resolve and the write — after you know which org actually owns the Customer, before you commit anything to that org. Here is the region of `onCheckoutCompleted` around the new code; everything outside this slice is unchanged from **Project three events into one entitlement row**.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+  // The one allowed reach: retrieve the Subscription the Session points at.
+  const sub = await stripe.subscriptions.retrieve(subscriptionId);
+
+  // The Customer-owned org is authoritative: the app created the Customer and stored
+  // the mapping, so this cannot be forged through the event payload. Throws
+  // BillingError('unknown_customer') for a Customer the app never created.
+  const orgId = await resolveOrgIdFromCustomer(tx, customerId);
+
+  // Cross-check the carry-channel metadata against the Customer-owned org. They must
+  // agree; a present-but-mismatched organization_id is a forged tenancy attempt — log
+  // and throw so the transaction rolls back and nothing is written to the wrong tenant.
+  const claimedOrgId = sub.metadata.organization_id;
+  if (claimedOrgId && claimedOrgId !== orgId) {
+    log.warn(
+      { eventId: event.id, orgId, claimedOrgId, customerId },
+      'metadata_org_mismatch',
+    );
+    throw new BillingError(
+      'unknown_customer',
+      \`metadata organization_id \${claimedOrgId} does not own customer \${customerId}\`,
+    );
+  }
+
+  const patch = subscriptionToEntitlement(sub, loadCatalog());
+  const eventAt = new Date(event.created * 1000);
+
+  await tx
+    .insert(planEntitlements)
+    .values({ organizationId: orgId, ...patch, lastEventAt: eventAt })
+    .onConflictDoUpdate({
+      target: planEntitlements.organizationId,
+      set: { ...patch, lastEventAt: eventAt },
+    });
+`}>
+  <AnnotatedStep meta="{4-7}" color="violet">
+    Resolve the authority first. The app created the Stripe Customer and stored the `customerId ↔ org` mapping, so the org this returns cannot be forged through the event payload.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{9-22}" color="orange">
+    The new cross-check. A `claimedOrgId` that is *both present and different* from the Customer-owned org is a forged tenancy attempt — log it and throw, so the transaction rolls back. Absent metadata passes through untouched.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{24-33}" color="green">
+    The downstream UPSERT the throw skips. When the guard fires, this write — and the audit row after it — never runs, and Postgres discards everything as the transaction unwinds.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Three moments to follow in order: resolve the authority, cross-check the claim against it, then write. The decisions worth dwelling on are why it rejects rather than corrects, and why it rejects so narrowly.
+
+**Why a mismatch throws instead of "preferring the Customer-resolved org."** It would be easy to write this as "they disagree, so use the org I trust and ignore the metadata." Resist that. A present, mismatched `organization_id` is not noise to be cleaned up — it is a signal that something is wrong upstream, either a bug in your `upgrade` action or an attacker testing the boundary. Silently overriding it would write the correct entitlement *and* swallow the evidence. Failing loudly turns that silent cross-tenant write into a 500 that surfaces the bug or the attack. That is also why the `metadata_org_mismatch` log line carries both `orgId` and `claimedOrgId`: when this fires in production, those two values are the entire story.
+
+**Why `claimedOrgId &&` guards the comparison.** Absent metadata is legitimate. The Customer reverse-lookup is the real safety net here — it resolves the org with or without metadata — so a Checkout that simply doesn't carry an `organization_id` is fine and must still land Pro. Only a value that is *both present and wrong* gets rejected. Drop the `claimedOrgId &&` and you would reject every metadata-less Checkout, which is most of them.
+
+**Why throwing is the whole rollback.** You are running inside the route's `db.transaction`. The `throw` propagates out of the `tx` callback, the transaction unwinds, and the UPSERT and `logAudit` calls below — which never executed, because the throw came first — have nothing to undo. There is no compensating delete to write, no "did I leave a partial row?" to reason about. This is the payoff of doing the dedup claim and the entitlement write in one transaction back in **Claim the event inside one transaction**: a rejection late in the handler costs you nothing earlier in it.
+
+**Why the cross-check lives only here.** `onCheckoutCompleted` is the only handler that reads `sub.metadata`. The update and delete handlers find their row by `subscriptionId` — the Subscription id is the join key, and the row it matches already belongs to a known org — so there is no attacker-influenceable tenancy claim in those paths to distrust. Adding a metadata check there would guard against a value those handlers never read.
+
+**Why reuse `BillingError('unknown_customer')`.** To the route, "no org owns this Customer" and "the metadata names an org that doesn't own this Customer" are indistinguishable: both are a Customer-to-org resolution that didn't produce a trustworthy org, and both should become the same 500. A new error code would force `error.tsx` to learn a distinction the caller doesn't care about. You wired that `BillingError`-to-fallback interop in **Ship the three-method billing interface** on top of the Result and error-mapping conventions from the Server Actions chapters; this reuses it as-is.
+
+:::note
+The committed file labels this hardening with an internal slice tag in a couple of comments. Ignore the tag — it is bookkeeping from how the codebase was assembled. The cross-check is its own lesson on purpose: trusting a value that arrived through an attacker-influenceable channel is one of the most common ways a multi-tenant write goes wrong, and it earns its own beat.
+:::
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Stripe — Metadata"
+    href="https://docs.stripe.com/metadata"
+    icon="simple-icons:stripe"
+    iconColor="#635BFF"
+    description="How subscription_data[metadata] is set by your integration — the caller-controlled carry-channel this guard distrusts."
+  />
+  <ExternalResource
+    title="Stripe — Receive events in your webhook endpoint"
+    href="https://docs.stripe.com/webhooks"
+    icon="simple-icons:stripe"
+    iconColor="#635BFF"
+    description="Handler design and best practices: idempotency, returning a non-2xx so Stripe sees the delivery fail."
+  />
+  <ExternalResource
+    title="OWASP — Insecure Direct Object Reference"
+    href="https://owasp.org/www-community/attacks/insecure_direct_object_reference"
+    icon="simple-icons:owasp"
+    iconColor="#000000"
+    description="The vulnerability class this cross-check defends: trusting a client-influenceable reference instead of a server-side authorization check."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's test suite.
+
+```bash
+pnpm test:lesson 6
+```
+
+The suite drives the real `onCheckoutCompleted` against a recording transaction and asserts the observable outcomes: a forged-metadata Checkout throws and records no write, a legitimate Checkout (agreeing or absent metadata) lands `plan: 'pro'` with one `billing.subscription.activated` audit row, and an event for a Customer your app never created throws `unknown_customer` and writes nothing. A green run looks like this:
+
+```
+ ✓ tests/lessons/Lesson 6.test.ts (7 tests)
+
+ Test Files  1 passed (1)
+      Tests  7 passed (7)
+```
+
+The tests deliberately don't assert the live log line or the end-to-end probe — a log assertion is brittle, and the Stripe CLI may not be installed in every environment. Confirm those two by hand. Note that the inspector's `forgeMetadata` action returns an instruction note rather than shelling out to the CLI, so this last probe is genuinely manual.
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">With `stripe listen` forwarding and `pnpm dev` running, follow the **Forge metadata** probe's note to trigger a Checkout that stamps a mismatched `organization_id` in `subscription_data.metadata` against a Customer owned by another org. Confirm the `stripe listen` terminal shows a 500 for that delivery, the entitlement panel gains no new `plan_entitlements` change, no new `audit_logs` row appears, and a `metadata_org_mismatch` line shows up in the dev log.</ChecklistItem>
+  <ChecklistItem chip="untested">Run a normal **Upgrade to Pro** Checkout (metadata agrees) and confirm the entitlement still flips to Pro with its `billing.subscription.activated` audit row — the hardening did not break the happy path.</ChecklistItem>
+</Checklist>
+
+With this guard in place the chapter's webhook is complete: it verifies before it parses, claims and writes in one transaction, projects the three subscription events into one entitlement row with the ordering predicate, drives Checkout and the Portal and the paywall through one billing interface, and now refuses to write a paid plan onto an org a forged event names.
