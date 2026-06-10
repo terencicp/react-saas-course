@@ -70,12 +70,7 @@ Reread the edited lesson start to finish as a first-time student.
 Fix any sentence you'd stumble on or reread, any transition your edits broke, and any spot where two of your rewrites now repeat a phrase.
 Grep the file for `—` and fix any you missed in prose; em dashes in frontmatter, code blocks, JSX props, and exercise components stay.
 
-## 5 Verify it renders
-
-Navigate to the lesson URL with `preview_eval` (`window.location.href = ...`), then confirm the page renders with `preview_snapshot` and has no errors in `preview_console_logs`.
-Fix only MDX syntax errors your edits introduced.
-
-## 6 Final message
+## 5 Final message
 
 Respond with "Done".
 If you had any issues describe them briefly and concisely as feedback.
