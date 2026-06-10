@@ -1,0 +1,296 @@
+---
+title: Defending the no — when object storage earns its weight
+tagline: A senior-mindset decision lesson on when a SaaS actually needs object storage, and why Cloudflare R2 is the call once it does.
+chapter-id: 68
+course-progress: 0.00005
+sidebar:
+  order: 1
+  label: When R2 earns its weight
+---
+
+import Figure from '../../../components/figures/Figure.astro';
+import R2VsS3Cost from '../../../components/lessons/068/1/R2VsS3Cost.astro';
+import OwnershipSplit from '../../../components/lessons/068/1/OwnershipSplit.astro';
+import BytePathContrast from '../../../components/lessons/068/1/BytePathContrast.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { CardGrid, Aside } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The invoicing app is nearly ready to ship. Forms, lists, a dashboard, org-scoped data, auth, billing, a soft-delete archive — the surface of a real B2B SaaS. Somewhere in the planning you hit a line item that every "how to build a SaaS" tutorial seems to assume you'll need: file storage. Avatars. A bucket. An upload widget. And the senior question lands before you write a line of it: *does this app actually need object storage?*
+
+For most B2B SaaS the answer is **no** — and that surprises people, because the internet is loud about S3 and buckets and presigned URLs. But look at what you've built. Every byte that matters has lived in Postgres this whole time, and that has been exactly right. The product is records: invoices, organizations, members, subscriptions. Records belong in a database. Adding a second place to put bytes, before anything forces you to, is operational complexity you'd be paying for nothing.
+
+So this is a decision lesson, not a build lesson — there's almost no code in it, and there's no project at the end of this chapter; the project comes in the next one. The thing you walk away with is a test. By the end you'll be able to stand at the fork and argue both directions: "no, Postgres covers this, here's why," and "yes, R2, because this exact condition crossed." You'll know the three conditions that put a bucket on the table, why a database is the wrong home for the bytes once one of them fires, and why an experienced engineer reaches for <Term definition={"Cloudflare R2 — object storage that speaks the S3 API and charges nothing for data leaving the bucket."}>Cloudflare R2</Term> specifically — not S3, not a managed upload service — when it does.
+
+There's one concrete thread to pull through. Back in the previous chapter you built a durable CSV export on Trigger.dev, and its finished file ended at a `console.log` placeholder where a download link should be. That export is the cleanest example in this whole course of a workload that *does* cross the line — and wiring it to a real download is one of the things the next chapter delivers. Keep it in mind; we'll come back to it.
+
+## The default is no object storage
+
+Start by validating the reflex you already have, because it's correct. After five units of Postgres and Drizzle, your instinct when a new piece of data shows up is "what's the column type?" — and for the overwhelming majority of what a SaaS stores, that instinct ends the conversation. A user's name is `text`. An invoice total is `numeric`. A set of preferences is `jsonb`. The database is the source of truth, it's the thing you back up, it's the thing every query already reaches into. One store, one mental model.
+
+<Term definition={"Bucket-of-blobs storage addressed by a key over HTTP. Not a database (no queries, no schema) and not a filesystem (no directories, just keys). You PUT bytes at a key and GET them back."}>Object storage</Term> is a *second* store, and a second store is never free. It's a second set of credentials to issue, scope, and rotate. It's a CORS configuration so the browser is allowed to talk to it. And — the cost people underestimate most — it's a synchronization problem: now there are two systems that can disagree about what exists, and keeping them in step becomes your job. None of that buys the product anything until the product has bytes that genuinely don't belong in the database.
+
+<VideoCallout videoId="AV4Ei1qW89o" videoTitle="File Storage vs Object Storage — System Design">
+  System Design School's 5-minute explainer on what makes object storage a flat keyspace of bytes-plus-metadata, and how that differs from the hierarchical file storage you already know.
+</VideoCallout>
+
+Which gives us the threshold this whole lesson turns on, and it's worth reading slowly:
+
+:::note
+Object storage earns its weight only when the app handles user-supplied or app-generated **binary payloads** that would be wrong to put in Postgres.
+:::
+
+Every word in that sentence is load-bearing, and the rest of the lesson unpacks it. But before we name what crosses the line, let's be precise about what *doesn't* — because the most common real-world mistake here isn't missing a real trigger, it's reaching for a bucket when nothing has actually crossed. These are the cases that feel like they might need storage and don't:
+
+- **A 2 KB JSON document** — user preferences, a saved filter, a small config object. That's a <Term definition={"Postgres's binary-JSON column type. Stores a JSON value you can index and query into, met back in the Postgres unit."}>`jsonb`</Term> column. It's structured, it's tiny, it belongs with the row it describes.
+- **A handful of static marketing images** — the hero image, a few icons, an illustration on the pricing page. Those ship *with* the Next.js build as static assets, and the CDN serves them. You met this back in the Next.js unit with `next/image`; nothing about it changed.
+- **A few hundred KB of binary config** — a feature-flag blob, a small encoded artifact tied to one record. Postgres has a <Term definition={"Postgres's raw-bytes column type — stores arbitrary binary data inline in the row."}>`bytea`</Term> column for raw bytes, and at this size it's completely fine. (Hold that thought — "at this size" is doing real work, and the next section is about what happens when the size grows.)
+- **"I'd like a separate bucket just to keep things clean."** This is the seductive one, because it sounds like good architecture. It isn't a threshold. Cleanliness is not a cost the app is paying yet, and "separation for its own sake" buys you a second store, a second credential surface, and a sync problem in exchange for a feeling. Separation you can't tie to a real binary payload is cost with no return.
+
+Notice the shape of all four: structured, or tiny, or static. None of them is a *file* the app has to accept from the outside or hand back out. That's the line. Let's name the three ways a workload crosses it.
+
+## Three conditions that put R2 on the table
+
+There are exactly three, and they're named so you can hold a real feature up against each one and get a yes-or-no answer. That's the whole point — not a vibe about whether something "feels like a file," but a checklist you can run.
+
+**Condition 1 — user uploads.** The moment the app accepts a file *from* a user, object storage is on the table. Avatars. Document attachments on a record. A contract PDF dragged into a deal. An organization logo set in settings. These are <Term definition={"Raw bytes — an image, a PDF, a CSV — as opposed to structured rows or JSON. The app can't meaningfully query into it; it just stores and serves it whole."}>binary payloads</Term> arriving from outside your system, and you have nowhere good to put them except a store built for bytes.
+
+**Condition 2 — generated assets the app must serve back.** The app itself produces a file and has to hand it back later. The CSV export from the previous chapter. Generated PDF invoices. Server-rendered images for social-card previews. Exported reports. The rule of thumb: *if the file is too large to inline in an email and it lives longer than the request that made it, object storage wins.* That export you built is the textbook case — it's far too big to attach to an email, and it has to survive long after the request that triggered it, sitting somewhere a download link can point at.
+
+**Condition 3 — third-party media.** Files arriving from somewhere other than your user or your own code: a partner import, an artifact downloaded from an external API, a cached copy of a remote asset. From your backend's point of view this has the *same shape* as condition 1 — bytes arrive that must be persisted and served back — so it lands in the same place.
+
+Read those three back and notice what unifies them: each is a **binary payload that outlives the request and would be wrong to inline in Postgres.** That single sentence is the test. The three conditions are just the three doorways a workload walks through to meet it.
+
+A list is one thing; running the test is another. The walker below makes you ask the questions in the order an experienced engineer asks them — *is there a binary payload at all? → where does it come from? → is it actually big enough or long-lived enough to matter?* Walk it one branch at a time. The lesson lives in the order of the questions, not in any single answer at the bottom.
+
+<StateMachineWalker title="Does this need object storage?">
+  <Question id="payload" prompt="Does this feature handle a binary payload — an actual file, not a record?">
+    <Branch label="No — it's structured data (fields, JSON, a number)" to="leaf-pg-structured" />
+    <Branch label="Yes — there are raw bytes (a file)" to="source" />
+  </Question>
+
+  <Question id="source" prompt="Where do the bytes come from, or go to?">
+    <Branch label="A user uploads them" to="size" />
+    <Branch label="The app generates them to serve back later" to="size" />
+    <Branch
+      label="They're tiny and static — they ship with the app"
+      to="leaf-build"
+      rationale="Marketing images, icons — known at build time."
+    />
+    <Branch
+      label="We ingest them from a third party"
+      to="size"
+      rationale="Same shape as a user upload from here."
+    />
+  </Question>
+
+  <Question id="size" prompt="Is it small (a few KB), short-lived, and tied to a single record?">
+    <Branch label="Yes — tiny and bound to one row" to="leaf-pg-bytea" />
+    <Branch label="No — it's a real file, or it outlives the request, or there are many" to="leaf-r2" />
+  </Question>
+
+  <Leaf id="leaf-pg-structured" verdict="Keep it in Postgres">
+    It's not a file. A column or a `jsonb` value holds it, the database stays the single source of truth, and you've added nothing to run.
+  </Leaf>
+
+  <Leaf id="leaf-build" verdict="Ship it with the build + CDN">
+    Static assets known at build time live in the Next.js build and are served by the CDN — `next/image` territory. No bucket, no second store.
+  </Leaf>
+
+  <Leaf id="leaf-pg-bytea" verdict="Postgres `bytea` is fine — for now">
+    A small, short-lived blob tied to one row sits in the database without trouble. Re-run this test if it grows or multiplies — that's the moment it crosses the line.
+  </Leaf>
+
+  <Leaf id="leaf-r2" verdict="Object storage (R2)">
+    The bytes are too big or too many for the database backup to carry, and they need HTTP delivery without a function streaming them. This is where R2 earns its weight.
+  </Leaf>
+</StateMachineWalker>
+
+Most features never reach the `leaf-r2` leaf — they fall out at "it's structured data" or "it's tiny and static" long before. That's the lesson restated as a procedure: the bucket wins at the very bottom of the funnel, which is exactly why it's a conditional tool and not a default reach.
+
+## Why Postgres is the wrong home for blobs
+
+The walker has a leaf that says "Postgres `bytea` is fine — for now," and a junior reading that will reasonably ask: if the database *can* hold bytes, why not just keep everything there and skip the second store entirely? It's the most natural instinct in the world, and it's the single most common beginner mistake with file storage — base64-encoding an avatar into a `text` column, or dropping a PDF into `bytea` and calling it done. It works perfectly in the demo. Then it springs, all at once, at real volume. Here's the mechanism, because "don't do it" never stops anyone — knowing *why* does.
+
+**Backups balloon.** Postgres backups pull every byte in every row. A database that should be a few hundred megabytes of records becomes gigabytes the moment it's carrying files, and your backup and restore windows blow out with it. The thing you most need to be fast and reliable — restoring after an incident — becomes the thing that's slowest.
+
+**`pg_dump` becomes unusable.** <Term definition={"Postgres's logical backup tool. It serializes the entire database — schema and every row — into a single portable file."}>`pg_dump`</Term> is the everyday tool for snapshotting and moving a database. At any real blob volume the logical dump now carries every file inline, and the operation that used to take seconds takes hours, if it finishes at all.
+
+**Connection-pool memory pressure.** Reading a row drags the *whole* blob into the function's memory. A handful of concurrent requests each pulling a multi-megabyte row puts real pressure on the connection pool you're sharing across all your traffic — the database's working memory is now competing with the bytes it shouldn't have been storing.
+
+**No built-in HTTP delivery.** This is the quiet one. A database has no way to hand a file to a browser. Every single read becomes a function invocation that pulls the bytes out of Postgres and streams them back out — you're paying compute and bandwidth on every download, and the function is on the critical path of something it has no business touching. (That last point comes back at the end of this chapter, when we look at how files get *out* of storage — the function should be nowhere near the bytes.)
+
+Now the contrast that makes the whole decision obvious: object storage is *built* for exactly this. It serves bytes over HTTP natively — that's its entire job — and it lives **outside** the database's backup boundary, so your records stay small and fast while the files sit where files belong. The split isn't an inconvenience you tolerate. It's the point.
+
+## R2 over S3 — the unit-economics call
+
+So a condition has crossed and you need a bucket. The instinct here is reflexive: "use S3, it's the standard." It *is* the standard — and for a read-heavy SaaS it's often the wrong call, for a reason that has nothing to do with features and everything to do with the bill. This is a decision you should be able to defend with numbers, so let's do the mechanism first, then look at the actual money.
+
+The mechanism is one word: <Term definition={"Data transferred OUT of the storage provider to the internet — every file served back to a browser. On most providers this is the line item that dominates a read-heavy bill."}>egress</Term>. Every time a user downloads a file, those bytes leave the storage provider and travel to the browser — that's egress, and S3 charges for it (roughly $0.09 per GB after the first 100 GB each month, tiering down a little at high volume). **Cloudflare R2 charges zero for egress.** Storage costs about the same on both (R2 is around $0.015 per GB per month), and both bill small per-operation fees for writes and reads. The entire difference is the thing a read-heavy product does *most*: serve files back.
+
+Watch what that does to a realistic workload. Picture a SaaS holding **10 TB of files** and serving **50 TB of downloads a month** — a perfectly ordinary shape for a product where users upload documents and then their teams read them back over and over.
+
+<R2VsS3Cost />
+
+The blue is the same on both bars — both providers store the same files for roughly the same price. The red is the entire story. On S3 the egress alone runs into the low thousands a month; on R2 it's zero, and the total stays in the low hundreds. Same files, same downloads, same API — a roughly twenty-fold difference in the bill, made entirely of the one thing R2 doesn't meter.
+
+That reframes the choice cleanly: it's **operational unit economics, not a feature gap.** Both store blobs, both serve them, both speak the same API. R2 just doesn't bill you for the thing a read-heavy SaaS does most.
+
+And here's what neutralizes the lock-in fear that usually pushes people back toward the name they know. R2 speaks the <Term definition={"The de-facto-standard object-storage HTTP API, originated by AWS S3. Multiple providers implement it, so one SDK talks to all of them."}>S3-compatible API</Term>, which means the official AWS SDK — the `@aws-sdk/client-s3` package — works against R2 unchanged. You point it at a different endpoint with different credentials, and that's it. The same code that talks to R2 talks to S3, or Backblaze B2, or any S3-compatible provider. So the off-ramp is *structural*, not a rewrite: if R2 ever stops being the right call, you change two config values, not your application. Choosing R2 is not a one-way door. (You'll construct that client in the next lesson — for now, just know the package name and that the portability is real.)
+
+## R2 over the upload-SaaS wrappers
+
+R2 versus S3 is the comparison that matters most, but it's not the only fork. The moment you search "file upload Next.js" you'll meet a cluster of managed services that wrap storage behind a friendlier developer experience, and each wins demos. An experienced engineer knows them by name and can say precisely why they're not the default for this product:
+
+- **UploadThing** wraps S3 behind a managed upload widget with a per-GB markup. It's the fastest path to a working upload button, so it genuinely wins for prototypes — but at SaaS scale it's the retail S3 egress bill *plus* a margin, and you've taken on a dependency you don't control.
+- **Vercel Blob** is a clean fit if your app lives tightly inside Vercel, but it *bills data transfer* (storage around $0.023 per GB-month plus roughly $0.05 per GB egress as of its 2026 pricing). Cheaper than raw S3 egress, still the wrong shape for a read-heavy product next to R2's zero.
+- **Supabase Storage** is a good choice *if Supabase is already your database*. It isn't — you're on Postgres on Neon — so reaching for it would pull a whole second platform into the stack for one feature.
+
+None of these is a bad tool; each is the right answer inside its own niche. But for a self-owned 2026 SaaS stack with a read-heavy surface and a Postgres-on-Neon database underneath it, **R2 wins on cost, and the S3-compatible API keeps you un-locked-in.** Name the alternatives so you can defend the choice in a code review — then pick R2.
+
+## Postgres owns identity, R2 owns bytes — the shape
+
+You've decided R2 belongs in the app. Before any code, you need the architectural shape in your head — at the simplest possible level, just the nouns and who owns what. This is the model the rest of the chapter builds on, so it's worth getting crisp now. There are three nouns.
+
+- **The bucket** — a namespace inside R2 with its own scoped credentials and a CORS rule allowing your app's origin to talk to it. Think of it as a dumb box that holds bytes. (Standing one up is the next lesson.)
+- **The object key** — the path that addresses one object inside the bucket. The SaaS pattern keys objects by tenancy: `org/${organizationId}/files/${fileId}`. The org id is right there in the path, which is how the bucket stays organized by tenant. (The details of constructing that key safely come later in this chapter.)
+- **The metadata row** in Postgres — the canonical record of the file: `id`, `organizationId`, `objectKey`, `contentType`, `byteSize`, `uploadedBy`, `uploadedAt`. This row is the source of truth for the question "does this file exist for this user?" The object in R2 is just the bytes the row points at.
+
+Put those together and you get the single sentence that runs through every remaining lesson in this chapter:
+
+:::note
+**Postgres owns identity, ownership, and lifecycle. R2 owns the bytes. The join between them is the object key. The Postgres row is the source of truth.**
+:::
+
+The direction matters, and it's the part beginners get backwards. The app *never* lists the bucket to find a user's files — it queries Postgres, gets the rows, and uses each row's <Term definition={"The unique path string that addresses one object inside a bucket, e.g. org/42/files/abc.pdf. It's the join key between the database row and the bytes."}>object key</Term> to reach the bytes. The bucket is dumb storage keyed by the row's path; the row is in charge. Hold that picture:
+
+<OwnershipSplit />
+
+Every lesson left in this chapter zooms into one of those three nouns. Standing up the bucket and its credentials is next. The mechanics of safely getting bytes into and out of it is the lesson after. The full design of that metadata row is the one after that. Right now you only need the split itself: two stores, one key, the row in charge.
+
+## The function is never a byte pipe
+
+There's a second rule, just as load-bearing as the ownership split, and it answers a question you might already be forming: if the browser has a file and R2 is the store, how does the file actually get there? The obvious answer — and the wrong one — is the one almost everyone reaches for first.
+
+The naive shape goes like this: the browser POSTs the file to your Next.js function, the function receives the bytes, and the function forwards them on to R2. The file travels *through* your backend. It's the intuitive design because it's how every form submission you've ever written works — the data goes to the server, the server handles it. So it's worth being explicit about why it's wrong here, because nothing about it looks wrong until it breaks:
+
+- **It doubles the bandwidth.** Every byte travels twice — once from the browser to your function, then again from your function to R2. You pay for both legs.
+- **It doubles the time.** Two network hops instead of one. The user waits through both.
+- **It hits the function timeout.** Serverless functions have hard execution limits. A multi-hundred-megabyte upload streamed through the function will simply run out of time and die mid-transfer — and now you've burned compute *and* failed the upload.
+
+:::caution
+The naive upload — browser → your function → R2, with the file streaming through your backend — looks correct and breaks at scale. Doubled bandwidth, doubled latency, and a hard timeout on any large file. Do not route bytes through the function.
+:::
+
+The correct shape gets the bytes *off* your function's critical path entirely. The upload endpoint is a **seam**: the function **signs a URL** that grants permission to upload to one specific object key, hands that URL back to the browser, and the **browser transfers the bytes directly to R2**. The function records the metadata row afterward. The bytes never touch your backend — so the function's CPU and bandwidth bill is identical whether the upload is 5 KB or 5 GB. The function does a tiny, fast, cheap thing (sign a URL, write a row); the storage provider does the heavy thing it's built for (receive bytes over HTTP).
+
+<BytePathContrast />
+
+This is the structural reason object storage gets reached for *at all* in a serverless app: the entire point is to move the bytes off the function's critical path. You've actually seen this exact principle before — it's Architectural Principle #3, the one from the thin-actions and authed-route lessons, where the function is the seam that *issues permission* and validates rather than the pipe that does the heavy lifting. Here it's that same principle applied to bytes: the function signs, the transfer happens around it. The mechanics of *how* a function signs that URL — presigned URLs, the topic that makes this whole pattern work — is the lesson after next. For now, lock in the rule: **the function signs, the browser transfers; bytes go around the function, never through it.**
+
+<VideoCallout videoId="wwKCURWnjto" videoTitle="Presigned URLs explained — system design">
+  ByteMonk walks the presigned-URL handshake in 5 minutes: the client asks the server for a short-lived signed URL, then uploads the bytes straight to storage — the exact "function signs, browser transfers" shape above.
+</VideoCallout>
+
+## What this chapter does and doesn't build
+
+You've now got both load-bearing rules — the ownership split and the function-as-seam — so let's set expectations for the next three lessons and, just as importantly, name what's deliberately *out* of scope. A junior dropped into "file storage" will expect a lot of machinery; most of it is a different product or a later concern, and naming it now keeps you (and the prose) from wandering into it.
+
+Out of scope for this chapter — named once so you recognize the surface, not taught:
+
+- **Image resizing and transformation.** Resizing avatars, generating thumbnails, format conversion — that's a separate product (Cloudflare Images), and you reach for it when the product actually calls for it, not by default.
+- **Streaming multipart uploads for very large files.** A presigned PUT caps out around 5 GB; past that there's a streaming-multipart pattern. It exists; this chapter doesn't build it.
+- **Virus scanning.** The production hardening that lives in the gap between "uploaded" and "available to others." Real, named, not built here.
+- **CDN cache-invalidation tactics and public buckets.** R2 has a public-bucket mode, but this course's default is **private buckets with presigned reads** — every download gets a fresh, short-lived signed URL. That keeps tenant files private by construction.
+
+And the payoff this chapter is building toward:
+
+- The next lesson stands up the bucket, its CORS rule, and a scoped token.
+- The one after builds the presigned URL mechanics — the signing the previous section promised.
+- The one after that designs the `file_metadata` row.
+- Then the next chapter's project builds the user-upload path end to end **and** circles back to that CSV export from the previous chapter — so the email finally carries a real R2 download link instead of a `console.log`.
+
+Here's the detail worth holding onto: the user-upload path and the export download use the *same* signing helpers. One mechanism, two consumers. That's the shape of a system designed once and reused, and it's why this "should we?" lesson is worth the careful decision — everything downstream leans on getting this call right.
+
+## Check your threshold
+
+Two checks. The first makes you *apply* the threshold to concrete payloads; the second verifies you can articulate the one quantitative argument from this lesson. Take them slowly — the threshold judgment is the entire deliverable here.
+
+First, the classification. Sort each payload into where it belongs. The trap is the tempters — a payload that *feels* like it needs a bucket but doesn't (or vice versa) is exactly the premature-adoption mistake this lesson targets.
+
+<Buckets twoCol instructions="Sort each payload into where it belongs. Run the test on each one: is it a binary payload that outlives the request and would be wrong to inline in Postgres?">
+  <Bucket name="r2" label="Object storage (R2)" description="binary payload, outlives the request" />
+  <Bucket name="pg" label="Keep it in Postgres / ship with the build" description="structured, tiny, or static" />
+
+  <Item bucket="r2">A user's uploaded contract PDF</Item>
+  <Item bucket="pg">A 2 KB JSON document of user preferences</Item>
+  <Item bucket="r2">Generated PDF invoices the app emails and stores</Item>
+  <Item bucket="pg">Marketing hero images for the landing page</Item>
+  <Item bucket="r2">The CSV export download from the previous chapter</Item>
+  <Item bucket="pg">A few hundred KB of binary feature-flag config</Item>
+  <Item bucket="r2">An org logo uploaded in settings</Item>
+  <Item bucket="pg">An invoice's line items</Item>
+  <Item bucket="r2">Partner-imported media files</Item>
+</Buckets>
+
+Then the cost argument. This one checks that you internalized the *mechanism*, not just "R2 is cheaper."
+
+<MultipleChoice>
+  A read-heavy SaaS serves 50 TB of user files back to browsers every month. Why does an experienced engineer pick R2 over S3 for it?
+
+  <McqChoice correct>The bill for this product is dominated by the bytes leaving the store on every download, and that's the one line item R2 doesn't meter while S3 does.</McqChoice>
+  <McqChoice>R2 sits closer to users than S3, so each download finishes with lower latency.</McqChoice>
+  <McqChoice>50 TB of files would exceed S3's maximum object size, and R2 raises that ceiling.</McqChoice>
+  <McqChoice>R2 is open source and S3 is proprietary, so choosing R2 avoids the licensing fees baked into S3.</McqChoice>
+
+  <McqWhy>The call is unit economics, not latency, capacity, or licensing. Both providers store the same files behind the same S3-compatible API and charge roughly the same for storage; the difference is **egress** — bytes leaving the store to reach a browser — which is the dominant line item for a read-heavy product, and R2 prices it at zero. The portability win is the shared S3 API, not a licensing one: R2 is a managed service, not open source.</McqWhy>
+</MultipleChoice>
+
+If both of those felt obvious, you've got the skill this lesson set out to give you: a repeatable test for when a bucket earns its place, and a number to defend the choice of R2 when it does. That's the "no" defended and the "yes" earned — exactly the judgment the rest of the chapter assumes you're walking in with.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Cloudflare R2 — Overview & pricing"
+    href="https://developers.cloudflare.com/r2/pricing/"
+    icon="simple-icons:cloudflare"
+    iconColor="#F38020"
+    description="The primary source for the zero-egress claim and the per-operation pricing tiers."
+  />
+  <ExternalResource
+    title="Cloudflare R2 — pricing calculator"
+    href="https://r2-calculator.cloudflare.com/"
+    icon="simple-icons:cloudflare"
+    iconColor="#F38020"
+    description="Run your own storage and egress numbers against the example workload from this lesson."
+  />
+  <ExternalResource
+    title="R2 with the AWS SDK for JavaScript v3"
+    href="https://developers.cloudflare.com/r2/examples/aws/aws-sdk-js-v3/"
+    icon="simple-icons:cloudflare"
+    iconColor="#F38020"
+    description="The proof that @aws-sdk/client-s3 talks to R2 unchanged — same SDK, different endpoint. Includes presigned URL generation."
+  />
+  <ExternalResource
+    title="PostgreSQL wiki — Binary files in the database"
+    href="https://wiki.postgresql.org/wiki/BinaryFilesInDB"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="The authoritative case for keeping blobs out of Postgres — backups, memory, and the metadata-row pattern this lesson lands on."
+  />
+</CardGrid>
