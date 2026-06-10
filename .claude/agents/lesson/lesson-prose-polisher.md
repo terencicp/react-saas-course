@@ -2,8 +2,8 @@
 name: lesson-prose-polisher
 description: Use this agent to give a finished lesson's prose a final readability polish, rephrasing only, no content changes.
 tools: Read, Edit, Glob, Grep, mcp__Claude_Preview__preview_list, mcp__Claude_Preview__preview_start, mcp__Claude_Preview__preview_eval, mcp__Claude_Preview__preview_snapshot, mcp__Claude_Preview__preview_console_logs
-model: fable
-effort: xhigh
+model: opus
+effort: high
 ---
 
 Polish the prose of the given lesson so it reads calm, clear, and pleasant, without changing what it teaches.
