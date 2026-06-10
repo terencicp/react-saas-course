@@ -26,15 +26,15 @@ import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
 
 <CourseProgressBar value={frontmatter['course-progress']} />
 
-Picture a `chargeInvoice(invoiceId)` Server Action. It calls Stripe to charge the card, writes an invoice row to Postgres, and enqueues a confirmation email. The whole thing sits inside one `try`/`catch`. Three different failures can arrive at that catch, and each one wants a different response.
+Picture a `chargeInvoice(invoiceId)` Server Action. It calls Stripe to charge the card, writes an invoice row to Postgres, and enqueues a confirmation email. The whole thing sits inside one `try`/`catch`. Three different failures can arrive at that catch, and each one needs a different response.
 
-A Stripe network error — Stripe's API was unreachable. The catch should let it bubble; the operator log needs to know, and the framework boundary will render the global error page. A Stripe `card_declined` — the issuer rejected the card. The catch should turn it into "Your card was declined." for the user. An `AbortError` — the user navigated away mid-charge. The catch should silently no-op; there's no user left to apologize to. Three failures, one `catch (err)`, and `err` is typed `unknown`. How does the catch tell them apart, and how does it carry the original failure forward so the operator log gets the full chain?
+A Stripe network error means Stripe's API was unreachable. The catch should let it bubble: the operator log needs to know, and the framework boundary will render the global error page. A Stripe `card_declined` means the issuer rejected the card. The catch should turn it into "Your card was declined." for the user. An `AbortError` means the user navigated away mid-charge. The catch should silently no-op, because there's no user left to apologize to. Three failures, one `catch (err)`, and `err` is typed `unknown`. How does the catch tell them apart, and how does it carry the original failure forward so the operator log gets the full chain?
 
-The previous lesson left you with that exact question. The catch parameter is `unknown` under `strict` + `useUnknownInCatchVariables` — `err.message` is a compile error before any narrowing happens. This lesson installs the four moves that turn an `unknown` catch into a discrimination ladder: **narrow** with `instanceof Error`, **discriminate** with `error.name` (or a literal-typed `name` on a custom subclass), **normalize** with `ensureError` at vendor seams, and **walk** `Error.cause` when the structured log needs the chain. By the end, you'll have a payoff snippet — a canonical catch ladder for `chargeInvoice` — that puts all four moves in order.
+The previous lesson left you with that exact question. Under `strict` plus `useUnknownInCatchVariables`, the catch parameter is `unknown`, so `err.message` is a compile error before any narrowing happens. This lesson installs the four moves that turn an `unknown` catch into a discrimination ladder: **narrow** with `instanceof Error`, **discriminate** with `error.name` (or a literal-typed `name` on a custom subclass), **normalize** with `ensureError` at vendor seams, and **walk** `Error.cause` when the structured log needs the chain. By the end you'll have a canonical catch ladder for `chargeInvoice` that puts all four moves in order.
 
 ## The `instanceof Error` narrow
 
-The cheapest narrow on an `unknown` value is `instanceof Error`. After the check, the compiler knows everything on the standard `Error` surface — `message`, `name`, `stack`, `cause` — is readable. Look at the wrong shape next to the right one.
+The cheapest narrow on an `unknown` value is `instanceof Error`. After the check, the compiler knows that everything on the standard `Error` surface is readable: `message`, `name`, `stack`, and `cause`. Compare the wrong shape with the right one.
 
 <CodeVariants syncKey="catch-narrow">
   <CodeVariant label="Wrong">
@@ -49,7 +49,7 @@ The cheapest narrow on an `unknown` value is `instanceof Error`. After the check
     ```
 
     </div>
-    The catch parameter is `unknown`. The compiler refuses `err.message` — it has no proof that `err` is even an object, let alone one with a `message` field. Reading without narrowing is the same trap the previous lesson named for `useUnknownInCatchVariables`.
+    The catch parameter is `unknown`. The compiler refuses `err.message` because it has no proof that `err` is even an object, let alone one with a `message` field. Reading without narrowing is the same trap the previous lesson named for `useUnknownInCatchVariables`.
   </CodeVariant>
 
   <CodeVariant label="Right">
@@ -66,25 +66,25 @@ The cheapest narrow on an `unknown` value is `instanceof Error`. After the check
     ```
 
     </div>
-    `err instanceof Error` <Term definition="A TypeScript control-flow check that refines a value type from broader to more specific — unknown to Error, string | undefined to string. After the narrow, the compiler reasons about the refined type inside the guarded block.">narrows</Term> `err` from `unknown` to `Error`. Inside the `if`, every standard property — `message`, `name`, `stack`, `cause` — is typed and readable. Because the project obeys the "only throw `Error`" rule from the previous lesson, this narrow catches everything thrown by the project's own code.
+    `err instanceof Error` <Term definition="A TypeScript control-flow check that refines a value type from broader to more specific — unknown to Error, string | undefined to string. After the narrow, the compiler reasons about the refined type inside the guarded block.">narrows</Term> `err` from `unknown` to `Error`. Inside the `if`, every standard property is typed and readable: `message`, `name`, `stack`, and `cause`. Because the project obeys the "only throw `Error`" rule from the previous lesson, this narrow catches everything thrown by the project's own code.
   </CodeVariant>
 </CodeVariants>
 
-That's the minimum surface the narrow gives you. `message` is the operator-facing string the throw site wrote. `name` is the constructor's name by default (the literal `'Error'` for `new Error(...)`, or whatever a subclass set it to). `stack` is the trace captured at construction. `cause` is whatever the constructor's second-argument options object set — `undefined` if nothing was passed. Custom subclasses add their own typed fields on top, which is the next section but one.
+That's the minimum surface the narrow gives you. `message` is the operator-facing string the throw site wrote. `name` is the constructor's name by default: the literal `'Error'` for `new Error(...)`, or whatever a subclass set it to. `stack` is the trace captured at construction. `cause` is whatever the constructor's second-argument options object set, or `undefined` if nothing was passed. Custom subclasses add their own typed fields on top, which is the subject of the section after next.
 
 <VideoCallout videoId="xdQkEn3mx1k" videoTitle="Better error handling with unknown type in TypeScript">
-  Benny Code walks the `unknown` catch from `instanceof Error` to custom type guards and the `useUnknownInCatchVariables` flag — 11 minutes, the same narrowing reflex from a second angle.
+  Benny Code walks the `unknown` catch from `instanceof Error` to custom type guards and the `useUnknownInCatchVariables` flag. Eleven minutes, the same narrowing approach from a second angle.
 </VideoCallout>
 
 ## `Error.isError()` and the cross-realm gotcha
 
-`instanceof Error` works inside a single JavaScript <Term definition="A JavaScript execution context with its own global object and its own copy of every built-in constructor — Web Worker, vm context, iframe, the Next.js edge runtime. instanceof fails across realms because each side holds a different constructor reference for the same built-in name.">realm</Term>. The moment a thrown value crosses a realm boundary — a Web Worker, a `vm` sandbox, the Next.js edge/Node split — the catching side and the throwing side hold different `Error` constructors, and `err instanceof Error` returns `false` on a real `Error` instance.
+`instanceof Error` works inside a single JavaScript <Term definition="A JavaScript execution context with its own global object and its own copy of every built-in constructor — Web Worker, vm context, iframe, the Next.js edge runtime. instanceof fails across realms because each side holds a different constructor reference for the same built-in name.">realm</Term>. The moment a thrown value crosses a realm boundary, such as a Web Worker, a `vm` sandbox, or the Next.js edge/Node split, the catching side and the throwing side hold different `Error` constructors, and `err instanceof Error` returns `false` on a real `Error` instance.
 
 That feels exotic until you see it drawn out.
 
 <RealmBoundary />
 
-The 2026 fix is `Error.isError()` — a Stage 4 (ES2026) helper that ships unflagged in Node 24 LTS (the course's pinned runtime; V8 13.6 enables it) and in modern browsers. It checks the internal `[[ErrorData]]` slot instead of constructor identity, so it returns `true` for any real `Error` regardless of which realm constructed it.
+The 2026 fix is `Error.isError()`, a Stage 4 (ES2026) helper that ships unflagged in Node 24 LTS (the course's pinned runtime, where V8 13.6 enables it) and in modern browsers. It checks the internal `[[ErrorData]]` slot instead of constructor identity, so it returns `true` for any real `Error` regardless of which realm constructed it.
 
 <div data-mark-color="blue">
 
@@ -100,21 +100,21 @@ try {
 
 </div>
 
-The shape is identical to the `instanceof Error` version — the difference is that `Error.isError(err)` is realm-safe. Inside a single realm — most application code — `instanceof Error` is still fine; the reach for `Error.isError()` is when the catch is on the receiving side of a worker, a `vm` context, an iframe, or the edge/Node split in Next.js.
+The shape is identical to the `instanceof Error` version; the difference is that `Error.isError(err)` is realm-safe. Inside a single realm, which covers most application code, `instanceof Error` is still fine. Reach for `Error.isError()` when the catch is on the receiving side of a worker, a `vm` context, an iframe, or the edge/Node split in Next.js.
 
-Three sites where this bites in 2026 SaaS code.
+Three sites where this matters in 2026 SaaS code:
 
 - **Web Workers and `MessageChannel` boundaries.** Rare in app code, common in observability libraries and heavy-compute offload.
 - **The `vm` module in Node.** Test runners, sandbox evaluators, anything that runs untrusted code in an isolated context.
 - **The Next.js edge / Node runtime split.** An error thrown in middleware (edge runtime) and caught in a Server Component (Node runtime) crosses realms.
 
-If `Error.isError()` isn't available — older runtimes, or as a discriminator that works across module boundaries where the *class* isn't importable — the `error.name` string fallback is the durable form. That's the next section.
+When `Error.isError()` isn't available, on older runtimes or where you need a discriminator that works across module boundaries the *class* isn't importable from, the `error.name` string is the durable fallback. The next section covers it.
 
 ## The `error.name` discriminant
 
-Every `Error` subclass sets `name`. Strings are values, not constructor references — so `err.name === 'AbortError'` works across realms, across module boundaries, even when the class itself isn't importable from the catching code. That portability is why `name` is the durable contract for cross-cutting errors.
+Every `Error` subclass sets `name`. Strings are values, not constructor references, so `err.name === 'AbortError'` works across realms, across module boundaries, and even when the class itself isn't importable from the catching code. That portability is why `name` is the durable contract for cross-cutting errors.
 
-Two canonical sites in 2026 — both from the cancellation surface the previous chapter installed.
+Two canonical sites in 2026, both from the cancellation surface the previous chapter installed.
 
 <CodeVariants syncKey="error-name-sites">
   <CodeVariant label="AbortError">
@@ -133,7 +133,7 @@ Two canonical sites in 2026 — both from the cancellation surface the previous 
     ```
 
     </div>
-    `AbortError` is what `fetch`, `AbortSignal.timeout`, and most cancellable APIs throw when the signal aborts. In browsers it's a `DOMException`; in Node it varies by API. The shape that always works is `err.name === 'AbortError'` — the string is the contract, and the catching code returns silently because there's no user left to surface anything to.
+    `AbortError` is what `fetch`, `AbortSignal.timeout`, and most cancellable APIs throw when the signal aborts. In browsers it's a `DOMException`; in Node it varies by API. The shape that always works is `err.name === 'AbortError'`: the string is the contract, and the catching code returns silently because there's no user left to surface anything to.
   </CodeVariant>
 
   <CodeVariant label="TimeoutError">
@@ -152,17 +152,17 @@ Two canonical sites in 2026 — both from the cancellation surface the previous 
     ```
 
     </div>
-    `AbortSignal.timeout(ms)` fires a distinct `TimeoutError` (a `DOMException` with `name === 'TimeoutError'`) when the deadline hits — not an `AbortError`. The discrimination matters: a timeout is recoverable with a retry; a user cancellation is not. The previous chapter's lesson on `AbortController` named the discrimination at the source; the realm-safe form is the durable contract.
+    When the deadline hits, `AbortSignal.timeout(ms)` fires a distinct `TimeoutError` (a `DOMException` with `name === 'TimeoutError'`), not an `AbortError`. The difference matters: a timeout is recoverable with a retry, but a user cancellation is not. The previous chapter's lesson on `AbortController` drew this distinction at the source; the realm-safe form here is the durable contract.
   </CodeVariant>
 </CodeVariants>
 
-When the catch and the throw live in different modules — or worse, different bundles — the class may not be importable but the `name` string always reads. That's exactly why the next section's custom subclasses pin `name` as a `readonly ... as const` literal: the literal is the discriminant; the class is the implementation. Either narrow works because both stay in lockstep.
+When the catch and the throw live in different modules, or worse, different bundles, the class may not be importable, but the `name` string always reads. That's exactly why the next section's custom subclasses pin `name` as a `readonly ... as const` literal: the literal is the discriminant, and the class is the implementation. Either narrow works because the two stay in lockstep.
 
 ## Authoring a custom `Error` subclass
 
-When a failure rides the throw channel and the catch needs to read *structured data* — a Stripe decline code, a retry-after duration, a tenant ID — reach for a small custom `Error` subclass. The 2026 shape is deliberately minimal: extends `Error` directly, a literal-typed `name`, typed structured fields, and `{ cause }` passed through to `super`. No abstract base classes. No taxonomy trees.
+When a failure rides the throw channel and the catch needs to read *structured data*, such as a Stripe decline code, a retry-after duration, or a tenant ID, reach for a small custom `Error` subclass. The 2026 shape is deliberately minimal: extend `Error` directly, give it a literal-typed `name`, add typed structured fields, and pass `{ cause }` through to `super`. No abstract base classes, and no taxonomy trees.
 
-Here's the canonical shape, four moves at a glance, then walked one at a time.
+Here's the canonical shape with its four moves at a glance, then walked one at a time.
 
 <AnnotatedCode lang="ts" code={`
 // lib/errors.ts
@@ -181,29 +181,29 @@ export class BillingError extends Error {
 }
 `}>
   <AnnotatedStep meta="{2}" color="blue">
-    **Extends `Error` directly.** No abstract base class. No `AppError` parent. Domain errors are a flat namespace — one class per domain concern (`BillingError`, `RateLimitError`, `TenancyError`), all extending `Error`. The taxonomy is the *literal `name` set*, not an inheritance tree. A base class adds shared behavior; the catch only needs to read a tag.
+    **Extends `Error` directly.** No abstract base class, no `AppError` parent. Domain errors are a flat namespace: one class per domain concern (`BillingError`, `RateLimitError`, `TenancyError`), all extending `Error`. The taxonomy is the *set of literal `name` values*, not an inheritance tree. A base class would add shared behavior, but the catch only needs to read a tag.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{3}" color="green">
-    **The literal-typed `name`.** This is the discriminant. `readonly` so the field can't be reassigned after construction. `'BillingError' as const` so the type is the string literal `'BillingError'`, not the wider `string`. Combined with `instanceof Error`, `err.name === 'BillingError'` narrows the type at the catch — and across realm or module boundaries where `instanceof BillingError` would fail. Watch-out: don't write `super('BillingError', ...)` to set the name; that puts `'BillingError'` into `message`.
+    **The literal-typed `name`.** This is the discriminant. Mark it `readonly` so the field can't be reassigned after construction, and write `'BillingError' as const` so the type is the string literal `'BillingError'`, not the wider `string`. Combined with `instanceof Error`, `err.name === 'BillingError'` narrows the type at the catch, including across realm or module boundaries where `instanceof BillingError` would fail. One thing to avoid: don't write `super('BillingError', ...)` to set the name, because that puts `'BillingError'` into `message`.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{4} {7} {12}`} color="orange">
-    **Structured fields.** The class carries the data the catch needs to branch — `code` is the per-failure-mode discriminant inside the class. Typed as a string-<Term definition='A TypeScript type that is a specific string, number, or boolean value rather than the wider category. "BillingError" is a literal type; string is the wider type. Use as const (or explicit annotation) to keep a value at its literal type instead of widening to string.'>literal</Term> union so the consumer's `switch` is exhaustive. Other shapes add fields freely: `RateLimitError` carries `retryAfter: Temporal.Duration`, `TenancyError` carries `expectedOrgId` / `actualOrgId`. The catch reads `err.code`, not a parsed substring of `err.message`.
+    **Structured fields.** The class carries the data the catch needs to branch: here, `code` is the per-failure-mode discriminant inside the class. It's typed as a string-<Term definition='A TypeScript type that is a specific string, number, or boolean value rather than the wider category. "BillingError" is a literal type; string is the wider type. Use as const (or explicit annotation) to keep a value at its literal type instead of widening to string.'>literal</Term> union so the consumer's `switch` is exhaustive. Other classes add fields freely: `RateLimitError` carries `retryAfter: Temporal.Duration`, and `TenancyError` carries `expectedOrgId` and `actualOrgId`. The catch reads `err.code`, not a parsed substring of `err.message`.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{9} {11}`} color="violet">
-    **`{ cause }` passes through.** The `Error` constructor's second-argument options object accepts a `cause` field. Passing it through to `super` (rather than ignoring it) preserves the chain — the next section's rewrap pattern depends on this. Without the passthrough, `err.cause` is `undefined` even when callers tried to set it.
+    **`{ cause }` passes through.** The `Error` constructor's second-argument options object accepts a `cause` field. Passing it through to `super` rather than ignoring it preserves the chain, which the next section's rewrap pattern depends on. Without the passthrough, `err.cause` is `undefined` even when callers tried to set it.
   </AnnotatedStep>
 </AnnotatedCode>
 
-Four senior moves, one class. Flat inheritance. Literal `name`. Typed structured fields. `cause` passthrough. Reach for this shape every time you need a domain error class.
+That's four moves in one class: flat inheritance, a literal `name`, typed structured fields, and a `cause` passthrough. Reach for this shape every time you need a domain error class.
 
-A small note on naming. Use `PascalCase` matching the class name (`BillingError`, `RateLimitError`, `TenancyError`). One class per domain concern. The flat namespace lives at `/lib/errors.ts` next to the `Result` helpers from the previous lesson and the `ensureError` normalizer you'll meet two sections from now.
+A small note on naming. Use `PascalCase` matching the class name (`BillingError`, `RateLimitError`, `TenancyError`), one class per domain concern. The flat namespace lives at `/lib/errors.ts`, next to the `Result` helpers from the previous lesson and the `ensureError` normalizer you'll meet two sections from now.
 
 ## `Error.cause`: rewrap at the seam
 
-`Error.cause` is the 2026-current standard for "this failure was caused by that one." Two patterns matter. **Rewrap at the seam** — a function catches a vendor error and throws a domain error carrying the original. **Walk the chain** — the structured logger reads `cause` recursively to log every link. The first is the daily reach; the second lives inside the logger.
+`Error.cause` is the 2026-current standard for saying "this failure was caused by that one." Two patterns matter. The first is **rewrap at the seam**: a function catches a vendor error and throws a domain error carrying the original. The second is **walk the chain**: the structured logger reads `cause` recursively to log every link. The first is the one you reach for daily; the second lives inside the logger.
 
 Look at the rewrap first.
 
@@ -224,11 +224,11 @@ try {
 
 </div>
 
-The vendor's `StripeCardError` becomes the project's `BillingError`. The user-facing branch in the action reads `err instanceof BillingError && err.code === 'card_declined'` and renders a message. The operator log walks `err.cause` and gets the full Stripe response — request ID, decline code, network timing — without any string parsing. The chain *is* the contract.
+The vendor's `StripeCardError` becomes the project's `BillingError`. The user-facing branch in the action reads `err instanceof BillingError && err.code === 'card_declined'` and renders a message. The operator log walks `err.cause` and gets the full Stripe response, including the request ID, decline code, and network timing, without any string parsing. The chain *is* the contract.
 
 Notice the catch parameter is `e`, not `err`. That's deliberate: the previous lesson named `err` as the failure-factory helper from `lib/result.ts` (`err({ code: 'CARD_DECLINED', ... })`), and shadowing it inside the catch would force every reference back to fully-qualified imports. When the catch body uses the `err` factory, use `e` for the caught value. Otherwise `err` is fine.
 
-The other pattern — walking the chain — is what the structured logger does behind the scenes.
+The other pattern, walking the chain, is what the structured logger does behind the scenes.
 
 <div data-mark-color="blue">
 
@@ -243,13 +243,13 @@ while (current instanceof Error && !causes.includes(current)) {
 
 </div>
 
-The walker reads `err.cause` recursively, stops when `cause` is undefined, and stops if it ever sees a cause it's already pushed (cause cycles are rare but they crash an unguarded walker). A later chapter owns the production logger; this lesson installs the *pattern*. The takeaway is the discipline: any catch that wants the full chain reads `cause` in a loop, not via a single `err.cause.cause.cause` access. Production stack traces have surprised more than one engineer that way.
+The walker reads `err.cause` recursively, stops when `cause` is undefined, and also stops if it ever sees a cause it's already pushed. Cause cycles are rare, but they crash an unguarded walker. A later chapter owns the production logger; this lesson installs the *pattern*. The discipline is what matters: any catch that wants the full chain reads `cause` in a loop, not through a single `err.cause.cause.cause` access. Production stack traces have surprised more than one engineer that way.
 
-One watch-out worth naming. Setting `cause` to a non-`Error` value (a string, a plain object, `null`) is legal but loses the structured chain. Inside the project's own code, `cause` is always an `Error` or `undefined`. Vendor seams may set it to anything — which is exactly why the walker checks `current instanceof Error` before reading `current.cause`.
+One more thing worth naming. Setting `cause` to a non-`Error` value (a string, a plain object, `null`) is legal but loses the structured chain. Inside the project's own code, `cause` is always an `Error` or `undefined`. Vendor seams may set it to anything, which is exactly why the walker checks `current instanceof Error` before reading `current.cause`.
 
 ## The `ensureError` normalizer
 
-The "only throw `Error`" rule from the previous lesson is absolute inside the project's own code. At third-party seams — legacy callback adapters, some browser APIs, certain SDK rejections — a thrown value may be a string, a plain object, even `null`. The `ensureError` helper normalizes any `unknown` into an `Error` so the rest of the catch can treat it uniformly.
+The "only throw `Error`" rule from the previous lesson is absolute inside the project's own code. At third-party seams, such as legacy callback adapters, some browser APIs, and certain SDK rejections, a thrown value may be a string, a plain object, or even `null`. The `ensureError` helper normalizes any `unknown` into an `Error` so the rest of the catch can treat it uniformly.
 
 <div data-mark-color="blue">
 
@@ -268,13 +268,13 @@ export const ensureError = (value: unknown): Error =>
 
 If `value` is already an `Error`, return it untouched. Otherwise, wrap it in a fresh `Error` whose `message` is a sensible string and whose `cause` is the original value (so the structured logger can still see what came in). The catch becomes `catch (err) { const error = ensureError(err); ... }` and the rest of the block treats `error` as `Error` safely.
 
-`ensureError` lives at `/lib/errors.ts` next to the custom subclasses, imported at every catch that touches a vendor seam. Inside the project's own code — where the "only throw `Error`" rule holds — the catch doesn't need it; `instanceof Error` is enough. The call lives at the *bottom* of the canonical catch ladder, which is the next section, where it acts as the catch-all for the third-party-threw-a-string case after the specific-subclass and `error.name` branches have already had their turn.
+`ensureError` lives at `/lib/errors.ts` next to the custom subclasses, imported at every catch that touches a vendor seam. Inside the project's own code, where the "only throw `Error`" rule holds, the catch doesn't need it, because `instanceof Error` is enough. The call lives at the *bottom* of the canonical catch ladder in the next section, where it acts as the catch-all for the case where a third party threw a string, after the specific-subclass and `error.name` branches have already had their turn.
 
 ## The canonical catch ladder
 
-Put the four moves together. The canonical 2026 catch reads top to bottom from most specific to least: specific subclasses first (the cheapest, type-safest narrows), then `error.name` for cross-realm errors the catch can recognize by string, then a generic `Error` branch for everything else the project threw, then `ensureError` as the final catch-all for vendors that broke the rule.
+Now put the four moves together. The canonical 2026 catch reads top to bottom, from most specific to least: specific subclasses first (the cheapest, most type-safe narrows), then `error.name` for cross-realm errors the catch can recognize by string, then a generic `Error` branch for everything else the project threw, then `ensureError` as the final catch-all for vendors that broke the rule.
 
-The lesson opened with the `chargeInvoice` Server Action. Here's the payoff snippet.
+The lesson opened with the `chargeInvoice` Server Action. Here's where it all comes together.
 
 <AnnotatedCode lang="ts" maxLines={18} code={`
 // app/(app)/invoices/actions.ts
@@ -304,31 +304,31 @@ export const chargeInvoice = async (invoiceId: string) => {
 };
 `}>
   <AnnotatedStep meta="{7-16}" color="blue">
-    **Specific subclass first.** The `instanceof BillingError` narrow gives the typed `e.code` discriminant. The `switch` runs the per-code branches and converts each one into a `Result.err` with a stable code and a user-facing message — the channel-conversion pattern from the previous lesson, applied at the seam. The switch only covers the `BillingError` cases; anything that isn't a `BillingError` falls through to the next branch in the ladder.
+    **Specific subclass first.** The `instanceof BillingError` narrow gives the typed `e.code` discriminant. The `switch` runs the per-code branches and converts each one into a `Result.err` with a stable code and a user-facing message: the channel-conversion pattern from the previous lesson, applied at the seam. The switch only covers the `BillingError` cases; anything that isn't a `BillingError` falls through to the next branch in the ladder.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{17-19}" color="orange">
-    **Cross-realm `name` check next.** `AbortError` may arrive from a different realm — an edge-runtime middleware that cancelled, a worker that aborted — and the `error.name` string is the portable discriminant. The combined `instanceof Error && e.name === '...'` shape works inside the same realm; for true cross-realm code, swap `instanceof Error` for `Error.isError(e)`.
+    **Cross-realm `name` check next.** `AbortError` may arrive from a different realm, such as an edge-runtime middleware that cancelled or a worker that aborted, and the `error.name` string is the portable discriminant. The combined `instanceof Error && e.name === '...'` shape works inside the same realm; for true cross-realm code, swap `instanceof Error` for `Error.isError(e)`.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{20-22}" color="violet">
-    **Generic `Error` branch.** Everything that's an `Error` but isn't a `BillingError` and isn't an `AbortError` is operational — Stripe's API is down, the database is unreachable, an invariant tripped. Rethrow and let the framework boundary handle it. The boundary owns the user-vs-operator split, which a later unit will deepen.
+    **Generic `Error` branch.** Everything that's an `Error` but isn't a `BillingError` or an `AbortError` is operational: Stripe's API is down, the database is unreachable, or an invariant tripped. Rethrow and let the framework boundary handle it. The boundary owns the user-versus-operator split, which a later unit will deepen.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{23}" color="red">
-    **`ensureError` as the catch-all.** If `e` isn't an `Error` at all — a third-party adapter threw a string — `ensureError` normalizes it. Then rethrow. Two things land at the boundary: a real `Error` instance (so the boundary's narrowing reads), and the original value preserved on `cause` (so the operator log can still see exactly what came in).
+    **`ensureError` as the catch-all.** If `e` isn't an `Error` at all, because a third-party adapter threw a string, `ensureError` normalizes it, and then you rethrow. Two things land at the boundary: a real `Error` instance (so the boundary's narrowing reads) and the original value preserved on `cause` (so the operator log can still see exactly what came in).
   </AnnotatedStep>
 </AnnotatedCode>
 
-Order matters. The ladder reads top to bottom because narrows get less specific as you descend. `instanceof BillingError` is the most specific; `instanceof Error` matches everything `BillingError` would have matched and more; `ensureError` matches *anything*. Putting `instanceof Error` before `instanceof BillingError` would swallow `BillingError`s into the generic branch and lose the discriminant. The trailing `ensureError` exists only for the "third party broke the rules" case; inside the project's own code, it would never fire.
+Order matters. The ladder reads top to bottom because the narrows get less specific as you descend. `instanceof BillingError` is the most specific, `instanceof Error` matches everything `BillingError` would have matched and more, and `ensureError` matches *anything*. Putting `instanceof Error` before `instanceof BillingError` would swallow `BillingError`s into the generic branch and lose the discriminant. The trailing `ensureError` exists only for the case where a third party broke the rules; inside the project's own code, it would never fire.
 
 :::note
-The `Temporal.Now.instant()` call returns the current instant. The course's data layer is built around the `Temporal` API; native Temporal is enabled in Node 26 and polyfilled on Node 24 LTS. A later lesson installs the substrate.
+The `Temporal.Now.instant()` call returns the current instant. The course's data layer is built around the `Temporal` API: native Temporal is enabled in Node 26 and polyfilled on Node 24 LTS. A later lesson installs the substrate.
 :::
 
 ## `AggregateError`, named once
 
-The previous chapter installed `Promise.any` as the "first to succeed" combinator. When *all* inputs reject, `Promise.any` rejects with an `AggregateError` carrying every individual rejection on an `errors` array.
+The previous chapter installed `Promise.any` as the "first to succeed" combinator. When *all* inputs reject, `Promise.any` rejects with an `AggregateError` that carries every individual rejection on an `errors` array.
 
 <div data-mark-color="blue">
 
@@ -346,23 +346,23 @@ try {
 
 </div>
 
-Narrow with `e instanceof AggregateError`. Read `e.errors` to decide on the response — log every rejection, surface a "no sources available" message, or trigger a fallback. Each entry in `errors` is itself a value the catch can narrow with the same ladder (specific subclass, `error.name`, generic `Error`).
+Narrow with `e instanceof AggregateError`, then read `e.errors` to decide on the response: log every rejection, surface a "no sources available" message, or trigger a fallback. Each entry in `errors` is itself a value the catch can narrow with the same ladder (specific subclass, `error.name`, generic `Error`).
 
 ## `Error.message` is for operators
 
-One last rule before the practice. The `message` field on an `Error` is for *operators*, not users. It carries the technical detail the structured log needs — the SQL constraint name, the Stripe decline code, the Zod path, the request ID.
+One last rule before the practice. The `message` field on an `Error` is for *operators*, not users. It carries the technical detail the structured log needs: the SQL constraint name, the Stripe decline code, the Zod path, the request ID.
 
-The user-facing message lives elsewhere. On the `Result.err.code` discriminant from the previous lesson, the UI maps the code to a translation key. At framework boundaries, the `error.tsx` boundary's user-visible chrome carries the apology. The rule, restated tight: **don't render `err.message` to users.** The technical detail leaks information and reads as gibberish; the localized, audience-appropriate message lives on the `code` the type system already forced the caller to inspect.
+The user-facing message lives elsewhere. The UI maps the `Result.err.code` discriminant from the previous lesson to a translation key, and at framework boundaries the `error.tsx` boundary's user-visible chrome carries the apology. So the rule is simple: **don't render `err.message` to users.** The technical detail leaks information and reads as gibberish, whereas the localized, audience-appropriate message lives on the `code` the type system already forced the caller to inspect.
 
-A later chapter owns the two-audience split — the wrapper that produces the user-visible message from the `code` and the operator-visible log line from `err.message` + `err.cause`. The rule lands here so you keep `err.message` out of the UI from the start.
+A later chapter owns the two-audience split: the wrapper that produces the user-visible message from the `code` and the operator-visible log line from `err.message` plus `err.cause`. The rule lands here so you keep `err.message` out of the UI from the start.
 
 ## Practice
 
-Two exercises. The first checks discrimination — can you spot a broken catch when you see one. The second checks authoring — can you write a custom subclass and the matching catch.
+Two exercises. The first checks discrimination: can you spot a broken catch when you see one. The second checks authoring: can you write a custom subclass and the matching catch.
 
 ### Exercise 1 — Review three broken catches
 
-Three files, one defect each. Leave inline review comments naming what's wrong. The grader scores each against the issue's kernel.
+Three files, one defect each. Leave inline review comments naming what's wrong. The grader scores each comment against the issue's kernel.
 
 <CodeReview instructions="Three catches, one defect each. Leave an inline comment on the line that breaks the lesson's narrowing reflex.">
   <ReviewFile name="lib/billing/charge.ts">
@@ -517,13 +517,13 @@ Four moves: `extends Error` directly, `readonly name = 'RateLimitError' as const
 
 ## Wrapping up
 
-The `unknown` catch is a discrimination ladder. **Narrow** with `instanceof Error` (or `Error.isError()` across realms), **discriminate** with `error.name` for cross-realm or cross-module errors, **normalize** with `ensureError` at vendor seams, and **walk** `Error.cause` when the structured log needs the chain. Custom subclasses pin a literal-typed `name` and structured fields so the catch reads tagged data, not parsed substrings.
+The `unknown` catch is a discrimination ladder. **Narrow** with `instanceof Error` (or `Error.isError()` across realms), **discriminate** with `error.name` for cross-realm or cross-module errors, **normalize** with `ensureError` at vendor seams, and **walk** `Error.cause` when the structured log needs the chain. Custom subclasses pin a literal-typed `name` and structured fields so the catch reads tagged data instead of parsed substrings.
 
 <VideoCallout videoId="ovnyeq-Xxrc" videoTitle="How To Handle Errors Like A Senior Dev">
-  Web Dev Simplified builds the same junior-to-senior catch ladder end to end — typed branches at the seam, then a `Result`-style library solution — in a 32-minute walkthrough that mirrors this lesson's arc.
+  Web Dev Simplified builds the same junior-to-senior catch ladder end to end, from typed branches at the seam to a `Result`-style library solution, in a 32-minute walkthrough that mirrors this lesson's arc.
 </VideoCallout>
 
-That closes the error substrate. A later chapter turns the `err.message`-is-for-operators rule into the wrapper that produces user-visible and operator-visible audiences from one throw. Another turns the `Error.cause` walker into the structured-log pipeline. Both ride on the moves this lesson installed.
+That closes the error substrate. A later chapter turns the "`err.message` is for operators" rule into the wrapper that produces both a user-visible and an operator-visible message from one throw. Another turns the `Error.cause` walker into the structured-log pipeline. Both build on the moves this lesson installed.
 
 ## External resources
 
