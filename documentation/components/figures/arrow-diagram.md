@@ -70,6 +70,7 @@ import ArrowDiagram from '../../../components/figures/ArrowDiagram.astro';
 | `startSocketGravity` | `number \| [number, number] \| 'auto'` | no | `'auto'` | How strongly the arrow pulls away from `startSocket` before bending. Tuple form `[x, y]` lets you push in a specific direction. |
 | `endSocketGravity` | same as above | no | `'auto'` | Same, for the landing side. |
 | `labelOffset` | `[number, number]` | no | `[0, 0]` | Pixel nudge for the label, applied to the midpoint between the two sockets. Useful when the label collides with the arrow body. |
+| `labelStyle` | `string` | no | — | Inline CSS appended to the label badge, overriding the theme-aware defaults. Use to pin a background/border/text color that survives dark mode — e.g. when the label floats over a figure that pins `color-scheme: light`, where the default `--sl-color-bg`-derived background would go dark. |
 
 ## Slot
 
@@ -247,8 +248,8 @@ Use per-arrow color when it carries meaning: distinguishing parallel mappings, c
 
 Set `label` to render a small badge near the midpoint between the two sockets. Notes:
 
-- Label color tracks the arrow color (theme default or per-arrow `color`).
-- Labels are positioned in `document.body` (not inside the stage), so parent `overflow: hidden` does **not** clip them.
+- Label color tracks the arrow color (theme default or per-arrow `color`); the badge background derives from `--sl-color-bg`, so it follows the page theme. Inside figures that pin `color-scheme: light`, override with `labelStyle` so the badge doesn't go dark in dark mode.
+- Labels are positioned in `document.body` (not inside the stage), so parent `overflow: hidden` does **not** clip them. They paint at `z-index: 99999` — **above** the arrow lines; this is also the only way to float a badge over the arrows, since page content lives inside Starlight stacking contexts that body-appended SVGs always cover.
 - `labelOffset: [x, y]` nudges the badge if it collides with the arrow body. Negative Y lifts it above the curve; positive Y drops it below.
 - Very short or zero-length arrows can stack labels on top of each other — give those arrows more gravity to spread them out.
 
