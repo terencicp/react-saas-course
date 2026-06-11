@@ -1,0 +1,184 @@
+---
+title: Project overview
+chapter-id: 71
+course-progress: 0.00005
+sidebar:
+  order: 1
+  label: Overview
+---
+
+import { Card, CardGrid, FileTree, Steps } from '@astrojs/starlight/components';
+import Figure from '../../../components/figures/Figure.astro';
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import DispatcherFlow from '../../../components/lessons/071/1/DispatcherFlow.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Three things happen in your SaaS that a user genuinely wants to hear about: someone invites them to an organization, an admin changes their role, and their billing goes past due. Each of those has to reach the person two ways — an email in their inbox and a row in the in-app notification feed. The naive version scatters a `sendEmail(...)` and a `db.insert(notifications)` at every call site that triggers one of these events, and within a month nobody can answer "what can this app notify about, and through which channels?" without grepping the whole codebase.
+
+This project builds the alternative: a single `dispatch(event)` seam every call site hands off to. You will reproduce one demo loop end to end. Fire `invite-sent` and watch the inbox panel tick up by one and the email counter tick up by one. Hit `Rapid-fire 5x` and watch the inbox grow by exactly one while the dedup badge reads `4 deduped` — a burst collapsed to a single notification. Then toggle the email channel off and refire: the inbox keeps growing, the email counter does not. By the end you will have written the dispatcher, the registry of notifiable events, the two channel functions, the preference and dedup logic, three database tables, and the wiring at three real call sites. The notification inspector and the email templates are handed to you.
+
+<Figure caption="The notification inspector — the single page that drives and verifies every behavior you will build.">
+  <Screenshot viewport="desktop">
+    <img
+      src="/screenshots/071/l1-desktop-1280-finished.png"
+      alt="The /inspector page in its finished state: a Fire events panel with Fire invite-sent, Fire role-changed, and Fire billing-past-due buttons plus a Rapid-fire invite-sent ×5 variant; a Preferences panel with per-category email and inbox channel toggles; an Inbox panel populated with three notification rows (Payment past due for Acme, Your role in Acme changed, Invitation to Acme); and a Counters panel where Emails sent (mock) reads 3."
+    />
+  </Screenshot>
+</Figure>
+
+## What we'll practice
+
+- **The dispatcher seam** — one named entry point every call site and every channel routes through, the canonical shape every later notification feature copies.
+- **The registry as the source of truth** — adding an event is one entry; adding a channel later is one function with the same signature.
+- **Preference resolution** read once per dispatch, default-on, with the critical-channel override that keeps billing email flowing even when a user has opted out.
+- **Time-windowed dedup** keyed per recipient, so a burst of the same event collapses to a single notification.
+- **Fire-after-commit discipline** at three real call sites, so work that later rolls back never notifies anyone.
+- **Channel independence** under per-channel `try/catch`, so one failing channel never takes the other down with it.
+
+## Architecture
+
+The whole project is one seam with a backing store. Read this as the shape you are about to fill in — no signatures, no SQL; those land in the lessons that own them.
+
+- **Call sites** (`sendInvitation`, `changeMemberRole`, the Stripe billing webhook) build a `NotificationEvent` and `await dispatch(...)` *after* their transaction commits.
+- **`dispatch(event)`** looks up the registry entry, reads preferences once for all recipients, then for each recipient resolves which channels to use, claims the dedup window, and fans out.
+- **Channel functions** (`sendEmailChannel`, `writeInboxChannel`) share one signature — `({ recipient, event, payload, rendered })` — and each runs behind its own `try/catch`.
+- **The registry** maps each event type to its preference category, its channels, its dedup window, its templates, and its optional critical channel.
+- **Three tables** back the seam: `notifications` (the inbox feed), `user_notification_preferences` (per-category channel toggles), and `notification_dedup` (the time window).
+- **`/inspector`** drives every behavior from one page; **`/inbox`** is the plain server-rendered read of the `notifications` table.
+
+<Figure caption="Every event enters through dispatch, which reads from the registry, loads preferences once, then per recipient resolves channels, claims the dedup window, and fans out to the channel functions. Three tables back the behavior.">
+  <DispatcherFlow />
+</Figure>
+
+Notice what this shape buys you. Adding a fourth event is one entry in the registry. Adding a third channel — push, say — is one new function with the exact same signature, registered in one place. And because `dispatch` is the only door, a single grep tells you everything the app can notify about.
+
+## Starting file tree
+
+The starter is a fork of the billing project from *From Stripe webhook to plan entitlement* — the org auth, the invitation actions, the Stripe webhook, the audit log, and the plan-entitlements row all already work. This project layers the dispatcher on top rather than rewriting any of it. The notifications module already exists on disk as a scaffold: the types, the error class, and the barrel are written for you, and every other file ships as a no-op or throwing stub you fill in.
+
+The highlighted files are the ones carrying a `TODO` — your work for the next three lessons lives there. Everything uncommented is provided and you can read it as needed but you will not author it.
+
+<FileTree>
+- src/
+  - lib/
+    - notifications/
+      - types.ts provided — shared types (`NotificationEvent`, `DispatchResult`, `ChannelFn`, …)
+      - errors.ts provided — `NotificationError` (`REGISTRY_MISS` | `RECIPIENT_NOT_FOUND`)
+      - index.ts provided — barrel: re-exports `dispatch` and the public types
+      - **registry.ts** the `notifiableEvents` map (source of truth)
+      - **dispatcher.ts** `dispatch(event)`: the seam
+      - **dedup.ts** `isDuplicate` / `recordDedup` / `computeDedupKey`
+      - **prefs.ts** `readPrefsForCategory` + `resolveChannels`
+      - **get-user-email.ts** resolve a recipient's email from the user table
+      - channels/
+        - **email.ts** `sendEmailChannel`
+        - **inbox.ts** `writeInboxChannel`
+    - invitations/
+      - **send.ts** `sendInvitation`: dispatch after commit
+      - **manage.ts** `changeMemberRole`: dispatch after commit
+    - webhooks/
+      - **stripe.ts** push a `billing-past-due` event in the past-due branch
+    - email.ts provided — `sendEmail` wrapper; `EMAIL_MOCK` mode bumps the counter
+  - db/
+    - **schema.ts** three notification tables, commented out under `// TODO(L2)`
+    - schema/auth.ts provided — Better Auth tables (`user`, `organization`, `member`, …)
+  - emails/
+    - InviteSentEmail.tsx provided — React Email template
+    - RoleChangedEmail.tsx provided
+    - BillingPastDueEmail.tsx provided
+  - app/
+    - api/webhooks/stripe/
+      - **route.ts** drain pending dispatches after `db.transaction` commits
+    - (protected)/
+      - inbox/page.tsx provided — server-rendered notifications list for the session user
+      - inspector/ provided in full — page, actions, reads, and panels
+- docker-compose.yml provided — Postgres 18
+- drizzle.config.ts provided
+- .env.example provided
+- package.json provided — `db:migrate`, `db:seed`, `dev`, `test:lesson`, …
+</FileTree>
+
+The three notification tables live as a commented-out block under a `// TODO(L2)` marker in `db/schema.ts`; the billing-project tables around them are untouched. The three React Email templates in `src/emails/` are complete components — you never write email JSX.
+
+## Roadmap
+
+<CardGrid>
+  <Card title="Lesson 2 — Registry, dispatcher, and dedup">
+    Define the three events, write `dispatch()` with stubbed channels, and prove the 60-second dedup window from the inspector.
+  </Card>
+  <Card title="Lesson 3 — Channels and preferences live">
+    Replace the stubs with the inbox writer, the email channel, and a batched preferences read with default-on and the critical-channel override.
+  </Card>
+  <Card title="Lesson 4 — Wire the three call sites">
+    Add `dispatch()` after commit in `sendInvitation`, `changeMemberRole`, and the Stripe past-due webhook branch.
+  </Card>
+</CardGrid>
+
+## Setup
+
+The starter runs on a local Postgres 18 container. Email is mocked by default, so you do not need a live Resend account to verify your work.
+
+<Steps>
+
+1. Get the starter codebase from the [project repository](https://github.com/terencicp/react-saas-course-projects), under `Chapter 071/start/`. The fastest way is `degit`, which copies the directory without its git history:
+
+   ```sh
+   npx degit terencicp/react-saas-course-projects/Chapter\ 071/start notification-dispatcher
+   cd notification-dispatcher
+   ```
+
+2. Install dependencies:
+
+   ```sh
+   pnpm install
+   ```
+
+3. Start Postgres 18:
+
+   ```sh
+   docker compose up -d
+   ```
+
+4. Copy the environment template and fill in the two secrets:
+
+   ```sh
+   cp .env.example .env
+   openssl rand -base64 32   # paste into BETTER_AUTH_SECRET
+   openssl rand -base64 32   # paste into INVITATION_SIGNING_SECRET
+   ```
+
+   Leave `EMAIL_MOCK=1` as it ships.
+
+5. Run the migrations and seed the two organizations and four users:
+
+   ```sh
+   pnpm db:migrate && pnpm db:seed
+   ```
+
+6. Start the dev server:
+
+   ```sh
+   pnpm dev
+   ```
+
+</Steps>
+
+The environment variables you need, and where each value comes from:
+
+| Variable | Purpose | How to obtain |
+| --- | --- | --- |
+| `DATABASE_URL` (+ `DATABASE_URL_UNPOOLED`) | Postgres connection | Already set to the Docker container in `.env.example` |
+| `BETTER_AUTH_SECRET` | Signs session cookies and tokens | `openssl rand -base64 32` |
+| `INVITATION_SIGNING_SECRET` | Signs the invitation accept URL | `openssl rand -base64 32` |
+| `RESEND_API_KEY` | Resend API key | Mocked under `EMAIL_MOCK=1` — any non-empty value works locally |
+| `STRIPE_WEBHOOK_SECRET` | Verifies Stripe webhook signatures | The `whsec_…` value `stripe listen` prints — needed only for the live billing-past-due path |
+| `APP_URL` / `NEXT_PUBLIC_APP_URL` | App origin | `http://localhost:3000` (already set) |
+| `EMAIL_MOCK` | Short-circuits Resend and bumps the inspector's email-sent counter | Leave at `1` |
+
+:::note
+`EMAIL_MOCK=1` is the inspector's verification proxy. A real Resend round-trip during development is slow and rate-limited, so under the mock the `sendEmail` wrapper increments a deterministic counter instead of sending — and you never touch `lib/email.ts`. The `stripe listen` setup carried over from the billing project enables the *live* billing-past-due path; without it running, the inspector's `Fire billing-past-due` button stands in for the real webhook.
+:::
+
+When `pnpm dev` is up, open `http://localhost:3000`. You should see the billing project's dashboard working as before. Navigate to `/inspector`: the page loads, but every fire button errors with `dispatch not implemented` — the dispatcher is the first thing you write. Its notification reads return empty, and `/inbox` renders an empty feed. That is the expected starting state. In the next lesson you make the first fire button do something real.

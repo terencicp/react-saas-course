@@ -1,0 +1,539 @@
+---
+title: Registry, dispatcher, and dedup
+chapter-id: 71
+course-progress: 0.00005
+sidebar:
+  order: 2
+  label: Registry & dedup
+---
+
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Your first job is the spine of the whole project: name the three events the app can notify about, and ship a `dispatch()` that collapses a burst of the same event down to a single notification.
+
+By the end of this lesson the inspector tells the story. Hit `Fire invite-sent` and the dispatch result reads `{ sent: 2, deduped: 0, suppressedByPrefs: 0 }` — one increment per stubbed channel — and a single row lands in `notification_dedup`. Fire it again inside sixty seconds and the result reads `{ sent: 0, deduped: 1, suppressedByPrefs: 0 }`, with no second dedup row: the window is holding. Hit `Rapid-fire invite-sent ×5` and the aggregate reads `deduped: 4` — five clicks, one notification, four duplicates swallowed. Wait past the sixty-second window and the next fire dedups from zero again, the window released.
+
+<Screenshot viewport="desktop">
+  <img
+    src="/screenshots/071/l2-desktop-1280.png"
+    alt="The Notification inspector after a Rapid-fire invite-sent ×5: the Fire events panel shows the four event buttons and the Rapid-fire ×5 button, and below them the dispatch result reads 'sent: 2  deduped: 4  suppressedByPrefs: 0'. The Counters panel reads 'Emails sent (mock) 0' and 'Deduped (last) 4'. The Inbox panel reads 'No notifications yet.' because the channels are still stubs."
+  />
+</Screenshot>
+
+The channels are deliberately stubbed for now — they only bump the `sent` count, they write no inbox rows and send no email. That is on purpose: the thing you are verifying this lesson is the dedup behavior, and dedup is only observable through a `dispatch()` that consults the registry. The real channels and the real preference logic land in the next lesson.
+
+## Your mission
+
+The three pieces you write here — the registry that names what is notifiable, the dedup helper that collapses a burst, and the `dispatch()` that ties them together — only reach a confirmable state as a unit, so they ship together. The registry is typed `as const satisfies Record<string, NotifiableEvent>` so the event-type union is *inferred* from the keys and an unknown event type becomes a compile error rather than a runtime surprise; the payoff is that adding a fourth event later stays a one-entry change. Dedup lives *inside* the dispatcher — after the (still-stubbed) preference step, before the channels — keyed by the triple `(eventType, dedupKey, recipientUserId)`. That `recipientUserId` is load-bearing: two different people receiving the same event is not a duplicate, so the recipient has to be part of the key. The sixty-second window is per-event, configured in the registry, so a high-frequency event can widen it and a financial one can reconsider it without touching the dispatcher. You accept the check-then-insert race in this version — a rare concurrent burst can slip one duplicate through the gap between the `isDuplicate` read and the `recordDedup` write — and you note the unique-constraint upgrade as the next reach, not something to build today. One thing that is *not* a dedup concern: a registry miss. Firing an event type that is not in the registry is a programmer error, not a channel failure, so the dispatcher throws `NotificationError('REGISTRY_MISS')` and never swallows it — which means the `try/catch` you scaffold wraps each channel, not the whole dispatch. The dispatcher seam itself, the notifiable-vs-logged line, and the dedup-window theory are taught in [One seam, many channels](/070-the-notification-dispatcher/1-one-seam-many-channels/) and [Dedup the rapid duplicates](/070-the-notification-dispatcher/4-dedup-the-rapid-duplicates/); this lesson applies them. Out of scope this lesson: the real channels and the real preference resolution both stay as the starter's no-op stubs — the no-op channels still increment `sent`, and the stub `resolveChannels` returns every channel — and so does the call-site wiring. Those are the next two lessons.
+
+<Checklist id="mission">
+  <ChecklistItem chip="untested">The three tables (`notifications`, `user_notification_preferences`, `notification_dedup`) exist after migration, with the dedup composite index on `(eventType, dedupKey, recipientUserId, firedAt desc)` and the partial unread index on `notifications`, confirmable in Drizzle Studio.</ChecklistItem>
+  <ChecklistItem chip="tested">`Fire invite-sent` from the inspector returns `{ sent: 2, deduped: 0, suppressedByPrefs: 0 }` and writes exactly one `notification_dedup` row.</ChecklistItem>
+  <ChecklistItem chip="tested">Firing the same event again within sixty seconds returns `deduped: 1` and writes no second dedup row.</ChecklistItem>
+  <ChecklistItem chip="tested">`Rapid-fire invite-sent (5x in 2s)` aggregates to one delivery with `deduped: 4`.</ChecklistItem>
+  <ChecklistItem chip="tested">Waiting past the sixty-second window and refiring returns a fresh dispatch with `deduped: 0` — the window has released.</ChecklistItem>
+  <ChecklistItem chip="tested">Firing an unknown event type surfaces `NotificationError('REGISTRY_MISS')` rather than a silent no-op.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Implement the three notification tables in `db/schema.ts`, the registry in `registry.ts`, the dedup helpers in `dedup.ts`, and the `dispatch()` body in `dispatcher.ts`, against the reference signatures and the lesson's tests. The inspector's three fire buttons already call `dispatch()` through provided server actions, and the barrel `index.ts` already re-exports it — there is no wiring to do. Attempt the brief, then open the walkthrough below.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+### The three tables
+
+Open `db/schema.ts` and find the `// TODO(L2)` block near the bottom — the three notification tables ship commented out. Uncomment them and add `user` to the auth import (the FKs reference it) and `index` to the `drizzle-orm/pg-core` import. The columns are already written for you in the comment; here is what you uncomment.
+
+```ts title="src/db/schema.ts" collapse={31-44, 65-78, 102-110}
+import { sql } from 'drizzle-orm';
+import {
+  bigint,
+  boolean,
+  index,
+  integer,
+  jsonb,
+  pgEnum,
+  pgTable,
+  text,
+  timestamp,
+  unique,
+  uuid,
+} from 'drizzle-orm/pg-core';
+import { uuidv7 } from 'uuidv7';
+
+import { timestamps } from '@/db/columns';
+import { organization, user } from '@/db/schema/auth';
+
+// ...email_suppressions, processed_events, plan_entitlements unchanged...
+
+// The in-app inbox feed. One row per delivered in-app notification, written ONLY by
+// writeInboxChannel (the dispatcher's inbox channel); any direct write to this table
+// outside lib/notifications/ is a regression. title/body are rendered once at dispatch and
+// frozen here (render-at-dispatch), so the inbox UI is a pure read with no joins, immune to
+// later actor-name drift. userId/orgId are `text` (Better Auth ids); ids default to uuidv7
+// in app code, never a database-side default. readAt null = unread.
+export const notifications = pgTable(
+  'notifications',
+  {
+    id: uuid()
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
+    userId: text()
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    orgId: text().references(() => organization.id, { onDelete: 'cascade' }),
+    eventType: text().notNull(),
+    subjectId: text().notNull(),
+    title: text().notNull(),
+    body: text().notNull(),
+    payload: jsonb().$type<Record<string, unknown>>().notNull().default({}),
+    readAt: timestamp({ withTimezone: true }),
+    createdAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    index('idx_notifications_user_created').on(t.userId, t.createdAt.desc()),
+    index('idx_notifications_user_unread')
+      .on(t.userId)
+      .where(sql`read_at is null`),
+  ],
+);
+
+export type Notification = typeof notifications.$inferSelect;
+export type NewNotification = typeof notifications.$inferInsert;
+
+// Per-category, per-channel opt-out. Read once per dispatch (batched) and applied
+// default-on (`?? true` — a missing row receives everything). NO orgId: prefs are
+// user-scoped, they follow the user across orgs, so the tenant-leading-column rule does
+// not apply. The named (userId, category) unique is what the inspector's UPSERT conflicts
+// on. push is reserved at the column with no channel consumer in this project.
+export const userNotificationPreferences = pgTable(
+  'user_notification_preferences',
+  {
+    id: uuid()
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
+    userId: text()
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    category: text().notNull(),
+    email: boolean().notNull().default(true),
+    inbox: boolean().notNull().default(true),
+    push: boolean().notNull().default(true),
+    updatedAt: timestamp({ withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (t) => [
+    unique('user_notification_preferences_user_id_category_unique').on(
+      t.userId,
+      t.category,
+    ),
+  ],
+);
+
+export type UserNotificationPreference =
+  typeof userNotificationPreferences.$inferSelect;
+export type NewUserNotificationPreference =
+  typeof userNotificationPreferences.$inferInsert;
+
+// The time-windowed dedup ledger. One row per (eventType, dedupKey, recipientUserId)
+// fan-out; the dispatcher's isDuplicate selects the most-recent row inside the registry's
+// window before fanning out, collapsing a burst to one. recipientUserId is load-bearing in
+// the key (two recipients getting the same event is not a duplicate). NO orgId
+// (user-scoped bookkeeping). The composite index leads with the lookup columns and sorts
+// firedAt desc for the most-recent probe.
+export const notificationDedup = pgTable(
+  'notification_dedup',
+  {
+    id: uuid()
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
+    eventType: text().notNull(),
+    dedupKey: text().notNull(),
+    recipientUserId: text()
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    firedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    index('idx_notification_dedup_lookup').on(
+      t.eventType,
+      t.dedupKey,
+      t.recipientUserId,
+      t.firedAt.desc(),
+    ),
+  ],
+);
+
+export type NotificationDedup = typeof notificationDedup.$inferSelect;
+export type NewNotificationDedup = typeof notificationDedup.$inferInsert;
+```
+
+Three things in that schema earn their keep. `userId` is `text`, not `uuid` — Better Auth's `user.id` is a text id, so every FK that points at it has to be `text` too; using `uuid()` here would fail the migration. The `notifications` table carries `title` and `body` as plain columns because they are rendered once at dispatch and frozen onto the row — the inbox UI reads them directly with no join, which keeps it a pure read and immune to a later actor-name change. And the dedup composite index leads with the three lookup columns and sorts `firedAt desc`, exactly the shape the duplicate probe walks: match the triple, take the most recent. The partial index `where read_at is null` on `notifications` is the unread-count index — small, because it only covers the rows that are actually unread.
+
+Generate and apply the migration:
+
+```sh
+pnpm db:generate --name add_notifications
+```
+
+Open the file Drizzle Kit writes (`drizzle/0011_add_notifications.sql`) before you run it — you should see three `CREATE TABLE` statements, the three foreign keys to `user`/`organization`, the dedup composite index, and the one partial index ending in `WHERE read_at is null`.
+
+```sql title="drizzle/0011_add_notifications.sql"
+CREATE INDEX "idx_notification_dedup_lookup" ON "notification_dedup" USING btree ("event_type","dedup_key","recipient_user_id","fired_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX "idx_notifications_user_created" ON "notifications" USING btree ("user_id","created_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX "idx_notifications_user_unread" ON "notifications" USING btree ("user_id") WHERE read_at is null;
+```
+
+```sh
+pnpm db:migrate
+```
+
+Drizzle setup, FK shape, and composite-index discipline are covered back in the data-layer chapters; this is the applied version. That satisfies the first checklist item — the schema and indexes you confirm by hand in Drizzle Studio, since the tests assert behavior, not table shape.
+
+### The registry
+
+The registry is the source of truth for what is notifiable. Each entry names the channels the event fans out to, its templates, its preference category, and its dedup configuration. The `as const satisfies Record<string, NotifiableEvent>` does two jobs at once: `satisfies` checks every entry against the `NotifiableEvent` shape, and `as const` freezes the keys so `EventType = keyof typeof notifiableEvents` infers the exact union of the three string literals — an unknown event type is then a compile error at every call site. This is the same `as const satisfies` move from [Derive types from values](/005-typescript-bug-class-moves/5-derive-types-from-values/), applied to a real registry.
+
+```ts title="src/lib/notifications/registry.ts" collapse={7-14, 18-24, 31-37, 44-50}
+import BillingPastDueEmail from '@/emails/BillingPastDueEmail';
+import InviteSentEmail from '@/emails/InviteSentEmail';
+import RoleChangedEmail from '@/emails/RoleChangedEmail';
+
+import type { NotifiableEvent } from './types';
+
+// The registry is the source of truth: it enumerates what is notifiable and how. Adding
+// an event is one entry; adding a channel later is one function of the same signature.
+// `as const satisfies Record<string, NotifiableEvent>` makes an unknown key a compile
+// error and infers EventType. Each entry's email template declares its own typed payload —
+// the permissive `(props: any) => ReactElement` field accepts every one. The inbox
+// formatter renders title/body from the payload (frozen onto the row at dispatch). The
+// dedup window is per-event; org.billing.past_due names email its critical channel so it
+// flows even when the user toggled billing email off.
+export const notifiableEvents = {
+  'org.invitation.sent': {
+    channels: ['email', 'inbox'],
+    templates: {
+      email: InviteSentEmail,
+      inbox: (payload) => ({
+        title: `Invitation to ${String(payload.orgName)}`,
+        body: `${String(payload.inviterName)} invited you to join ${String(payload.orgName)} as a ${String(payload.role)}.`,
+      }),
+    },
+    preferenceCategory: 'team',
+    dedup: { windowSeconds: 60, keyBy: ['subjectId'] },
+    description: 'A member was invited to the organization.',
+  },
+  'org.member.role_changed': {
+    channels: ['email', 'inbox'],
+    templates: {
+      email: RoleChangedEmail,
+      inbox: (payload) => ({
+        title: `Your role in ${String(payload.orgName)} changed`,
+        body: `${String(payload.actorName)} changed your role from ${String(payload.before)} to ${String(payload.newRole)}.`,
+      }),
+    },
+    preferenceCategory: 'team',
+    dedup: { windowSeconds: 60, keyBy: ['subjectId', 'newRole'] },
+    description: "A member's role in the organization changed.",
+  },
+  'org.billing.past_due': {
+    channels: ['email', 'inbox'],
+    templates: {
+      email: BillingPastDueEmail,
+      inbox: (payload) => ({
+        title: `Payment past due for ${String(payload.orgName)}`,
+        body: `The latest payment for ${String(payload.orgName)}'s ${String(payload.plan)} plan did not go through.`,
+      }),
+    },
+    preferenceCategory: 'billing',
+    criticalChannel: 'email',
+    dedup: { windowSeconds: 60, keyBy: ['subjectId'] },
+    description: 'An organization subscription went past due.',
+  },
+} as const satisfies Record<string, NotifiableEvent>;
+
+export type EventType = keyof typeof notifiableEvents;
+```
+
+Notice the per-event dedup config. Two of the events key by `['subjectId']` alone, but `org.member.role_changed` keys by `['subjectId', 'newRole']` — promoting someone and then demoting them are two distinct notifications even within the window, so the new role is part of the identity. `org.billing.past_due` carries `criticalChannel: 'email'`; that field has no effect in this lesson but is consumed next lesson, where it lets a billing email through even if the user has toggled billing email off.
+
+The one thing in this file that looks odd at a glance is over in `types.ts`: the email-template field is typed `(props: any) => ReactElement`, not the tighter `(props: Record<string, unknown>) => ReactElement` you would reach for. That looseness is required. Each shipped template — `InviteSentEmail`, `RoleChangedEmail`, `BillingPastDueEmail` — declares its own typed props, and a component with typed props does *not* assign to a field whose parameter is `Record<string, unknown>` under TS 6 strict. That is parameter contravariance (a `TS2322`): a function that demands a specific shape is not a valid stand-in for one that must accept any object. The permissive `any` form is the only one that accepts every typed template while staying callable with the rendered props, and it carries a `biome-ignore` with that rationale.
+
+### The dedup helpers
+
+Three small functions back the window. `computeDedupKey` builds the key string by joining the registry entry's `keyBy` values with `:` — `subjectId` read off the event, every other key read off the payload. `isDuplicate` selects the most-recent row for the triple where `firedAt` is inside the window, and returns `true` on a hit. `recordDedup` inserts one row marking the triple as fired now.
+
+<AnnotatedCode lang="ts" maxLines={16} code={`
+import 'server-only';
+
+import { and, desc, eq, gt, sql } from 'drizzle-orm';
+
+import { db } from '@/db';
+import { notificationDedup } from '@/db/schema';
+
+import { notifiableEvents } from './registry';
+import type { NotificationEvent } from './types';
+
+type DedupArgs = {
+  event: NotificationEvent;
+  userId: string;
+  payload: Record<string, unknown>;
+};
+
+// Build the dedup key by joining the registry entry's keyBy field values with ':'.
+// subjectId is read off the event; every other key is read off the payload.
+export const computeDedupKey = (
+  event: NotificationEvent,
+  payload: Record<string, unknown>,
+): string => {
+  const eventDef = notifiableEvents[event.type];
+  return eventDef.dedup.keyBy
+    .map((key) =>
+      key === 'subjectId' ? event.subjectId : String(payload[key]),
+    )
+    .join(':');
+};
+
+export const isDuplicate = async ({
+  event,
+  userId,
+  payload,
+}: DedupArgs): Promise<boolean> => {
+  const eventDef = notifiableEvents[event.type];
+  const dedupKey = computeDedupKey(event, payload);
+  const since = sql\`now() - make_interval(secs => \${eventDef.dedup.windowSeconds})\`;
+  const row = await db
+    .select({ id: notificationDedup.id })
+    .from(notificationDedup)
+    .where(
+      and(
+        eq(notificationDedup.eventType, event.type),
+        eq(notificationDedup.dedupKey, dedupKey),
+        eq(notificationDedup.recipientUserId, userId),
+        gt(notificationDedup.firedAt, since),
+      ),
+    )
+    .orderBy(desc(notificationDedup.firedAt))
+    .limit(1);
+  return row.length > 0;
+};
+
+export const recordDedup = async ({
+  event,
+  userId,
+  payload,
+}: DedupArgs): Promise<void> => {
+  await db.insert(notificationDedup).values({
+    eventType: event.type,
+    dedupKey: computeDedupKey(event, payload),
+    recipientUserId: userId,
+  });
+};
+`}>
+  <AnnotatedStep meta="{17-29}" color="blue">
+    `computeDedupKey` builds the key string by joining the registry entry's `keyBy` field values with `:`. `subjectId` is read off the event itself; every other key is read off the payload, so `role_changed` can fold its `newRole` into the identity.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{31-53} "make_interval"`} color="green">
+    `isDuplicate` returns `true` when a matching row was fired inside the window — `firedAt > now() - make_interval(secs => windowSeconds)`. The `orderBy firedAt desc` + `limit 1` walks the composite index's lookup columns to the most-recent probe.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{55-65}" color="violet">
+    `recordDedup` inserts one row marking this `(eventType, dedupKey, recipientUserId)` triple as fired now — landing only after a successful fan-out, so a fully-suppressed recipient never opens a window.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The window predicate is the heart of it: `firedAt > now() - make_interval(secs => windowSeconds)`. Postgres computes the cutoff at query time, so a row stamped sixty-one seconds ago falls outside a sixty-second window and stops counting as a duplicate — which is exactly how the window "releases." `make_interval(secs => …)` takes the registry's `windowSeconds` directly, so widening the window for a chatty event is a one-number change in the registry.
+
+About that check-then-insert race: between the `isDuplicate` read and the `recordDedup` write there is a gap, and two truly concurrent fires can both read "not a duplicate" and both send. You accept that here — it is one duplicate per rare concurrent burst, not a correctness hole. The hardening, when throughput justifies it, is a partial unique constraint on the key plus `onConflictDoNothing`, which moves the dedup decision into the database where it is atomic. That is named, not built.
+
+### The dispatcher
+
+The dispatcher is the one seam. Every call site builds a `NotificationEvent` and `await dispatch(...)`; nothing imports a channel or writes the `notifications` table directly. The body runs in phases: look up the registry entry (a miss throws), read preferences once for all recipients, render the content once, then loop per recipient — resolve channels, check dedup, fan out behind a per-channel `try/catch`, and record the dedup row last.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+import 'server-only';
+
+import { logger } from '@/lib/logger';
+
+import { sendEmailChannel } from './channels/email';
+import { writeInboxChannel } from './channels/inbox';
+import { isDuplicate, recordDedup } from './dedup';
+import { NotificationError } from './errors';
+import { readPrefsForCategory, resolveChannels } from './prefs';
+import { notifiableEvents } from './registry';
+import type {
+  ChannelFn,
+  ChannelName,
+  DispatchResult,
+  NotificationEvent,
+  RenderedContent,
+} from './types';
+
+// The uniform channel table: the dispatcher loops \`await channelFns[channel](args)\` with no
+// branch on channel name. Adding a channel later is one entry of the same signature.
+const channelFns = {
+  email: sendEmailChannel,
+  inbox: writeInboxChannel,
+} satisfies Record<ChannelName, ChannelFn>;
+
+export const dispatch = async (
+  event: NotificationEvent,
+): Promise<DispatchResult> => {
+  const eventDef = notifiableEvents[event.type];
+  if (!eventDef) {
+    throw new NotificationError('REGISTRY_MISS', event.type);
+  }
+
+  const result: DispatchResult = { sent: 0, deduped: 0, suppressedByPrefs: 0 };
+
+  // One batched read across all recipients (never per-recipient). // TODO(L3)
+  const prefsByUser = await readPrefsForCategory(
+    event.recipientUserIds,
+    eventDef.preferenceCategory,
+  );
+
+  // Rendered once per dispatch, frozen onto every inbox row / passed to the email template.
+  const rendered: RenderedContent = {
+    emailProps: event.payload,
+    inbox: eventDef.templates.inbox(event.payload),
+    orgId: null,
+  };
+
+  for (const userId of event.recipientUserIds) {
+    const channels = resolveChannels(eventDef, prefsByUser.get(userId));
+    result.suppressedByPrefs += eventDef.channels.length - channels.length;
+    if (channels.length === 0) {
+      continue;
+    }
+
+    const duplicate = await isDuplicate({
+      event,
+      userId,
+      payload: event.payload,
+    });
+    if (duplicate) {
+      result.deduped++;
+      continue;
+    }
+
+    for (const channel of channels) {
+      try {
+        await channelFns[channel]({
+          recipient: { userId },
+          event,
+          payload: event.payload,
+          rendered,
+        });
+        result.sent++;
+      } catch (e) {
+        logger.error(
+          { seam: 'notifications.channel', channel, err: e },
+          'channel failed',
+        );
+      }
+    }
+
+    await recordDedup({ event, userId, payload: event.payload });
+  }
+
+  logger.info({ seam: 'notifications.dispatch', ...result }, 'dispatch settled');
+  return result;
+};
+`}>
+  <AnnotatedStep meta={`{19-24} "satisfies Record<ChannelName, ChannelFn>"`} color="blue">
+    `channelFns` is a plain object typed `satisfies Record<ChannelName, ChannelFn>`, so the inner loop is `await channelFns[channel](args)` with no `if (channel === 'email')` branch anywhere. Adding a third channel later is one new key.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{29-32} "REGISTRY_MISS"`} color="red">
+    The registry lookup runs first, and a miss throws `REGISTRY_MISS` *before* the loop — an unknown event type is a programmer error in the calling code, the one failure the dispatcher never swallows.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{36-47} "// TODO(L3)"`} color="orange">
+    The batched `readPrefsForCategory` and the render-once both run against the starter's stubs this lesson — `readPrefsForCategory` returns an empty map and the no-op channels ignore `rendered`. The `// TODO(L3)` marks where they go live next lesson.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{49-64}" color="violet">
+    The per-recipient loop. The stub `resolveChannels` returns every channel, so nothing is suppressed yet; `isDuplicate` skips a recipient already inside the window, incrementing `deduped` and `continue`-ing past the fan-out.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{66-81}" color="green">
+    The fan-out is wrapped in a *per-channel* `try/catch`, not a per-dispatch one: a failing channel (email down, address won't resolve) is logged and walked past so the other channel still fires, and each success bumps `sent` once.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{83}" color="blue">
+    `recordDedup` lands last, after a successful fan-out, opening the window that the next fire inside sixty seconds will dedup against.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Two decisions in that body are the senior moves. First, the registry miss throws *before* the loop and is the one error the dispatcher does not catch — an unknown event type is a bug in the calling code, and swallowing it would turn a programmer error into a silent dropped notification. The `try/catch` is therefore scoped to each channel, not to the dispatch: a failing channel is an expected operational reality (email is down, an address won't resolve) that gets logged and walked past so the other channel still fires; a registry miss is not. Second, `channelFns` is a plain object typed `satisfies Record<ChannelName, ChannelFn>`, which lets the inner loop be `await channelFns[channel](args)` with no `if (channel === 'email')` branch anywhere — adding a third channel later is one new key, and the loop never changes.
+
+Now, the honest part. This dispatcher body is the *finished* one — it already calls `readPrefsForCategory`, `resolveChannels`, and renders content, all of which go fully live next lesson. For this lesson those run against the starter's stubs: `resolveChannels` returns every channel unchanged, `readPrefsForCategory` returns an empty map, and the rendered content is built but the no-op channels ignore it. That is why `Fire invite-sent` reads `sent: 2` — two channels resolved, two stub sends, each incrementing the count — with `suppressedByPrefs: 0`, because nothing is suppressed yet. The dedup path is the only part fully wired this lesson, and it is the part the tests check. The preference-resolution and render-once behavior carries a `// TODO(L3)` and is the next lesson's payoff.
+
+One last note on the dedup window itself. Sixty seconds is the right default for these org events — a rage-clicked invite or a double-submitted role change. For chattier surfaces like comments or mentions you would widen it to five or ten minutes; for financial events you would either skip dedup or discriminate the key by payload (as `role_changed` does with `newRole`) so a genuinely different state always notifies. The window is per-event in the registry precisely so each event can make that call on its own.
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Drizzle ORM — Indexes & Constraints"
+    href="https://orm.drizzle.team/docs/indexes-constraints"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The .on(...) composite index, the .where(sql`...`) partial index, and the unique() constraint you write into the three tables."
+  />
+  <ExternalResource
+    title="Postgres — Date/Time Functions (make_interval)"
+    href="https://www.postgresql.org/docs/current/functions-datetime.html"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="make_interval(secs => …) is the function the dedup window predicate builds its now()-relative cutoff from."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's test suite:
+
+```sh
+pnpm test:lesson 2
+```
+
+The suite drives your `dispatch()` against the same local Postgres the app uses and reads the dedup ledger directly to confirm what landed, so the Lesson 2 migration must already be applied. It covers the `DispatchResult` shape on a first fire, the deduped refire, the five-fire burst, the window release, and the `REGISTRY_MISS` throw. A green run looks like this:
+
+```bash title="Expected output" frame="code"
+ ✓ tests/lessons/Lesson 2.test.ts (5)
+   ✓ a first fire delivers and opens the dedup window
+   ✓ a refire inside the window is deduped
+   ✓ a rapid burst of five collapses to one delivery
+   ✓ a fire after the window has elapsed delivers fresh
+   ✓ an unknown event type surfaces a REGISTRY_MISS
+
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+```
+
+Then confirm by hand the things the tests do not reach:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">Drizzle Studio shows the three tables and their indexes — including the dedup composite index and the partial unread index — after the migration.</ChecklistItem>
+  <ChecklistItem chip="untested">`Fire invite-sent` in the inspector shows `{ sent: 2, deduped: 0, suppressedByPrefs: 0 }` and one new `notification_dedup` row.</ChecklistItem>
+  <ChecklistItem chip="untested">A second fire within sixty seconds shows `deduped: 1` with no second dedup row.</ChecklistItem>
+  <ChecklistItem chip="untested">`Rapid-fire invite-sent ×5` shows `deduped: 4`.</ChecklistItem>
+  <ChecklistItem chip="untested">After waiting past sixty seconds, a fresh fire shows `deduped: 0` — the window has released.</ChecklistItem>
+</Checklist>
+
+That closes the lesson runnable: `dispatch()` works end to end with dedup. The channels are still no-op stubs — no real inbox rows appear and the email-sent counter does not move yet. Wiring them up, with real preferences and the critical-channel override, is the next lesson.
