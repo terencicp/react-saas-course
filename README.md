@@ -34,7 +34,7 @@ The content is written by a fleet of agents; I designed the system that writes i
 
 ## How I built it
 
-The method, in order — and the git history backs up that this is really how it went:
+The method, in order:
 
 1. **Decide the tech.** Pick the minimum-viable 2026 stack and fix it up front.
 2. **Define the audience and goals.** Who it's for, what "done" means.
@@ -44,10 +44,6 @@ The method, in order — and the git history backs up that this is really how it
 6. **Define a canonical lesson structure** — so every lesson has the same skeleton.
 7. **Decompose authoring into specialized subagents** and add coherence mechanisms so the agents don't drift.
 8. **Write an orchestrator** that runs the right pipeline per chapter, **sequentially**, one chapter after the next, to keep the whole course internally consistent.
-
-That commit order is visible in the history: `Initial AGENTS and SPEC` → a burst of component work → the authoring subagents → the project pipeline → then chapters landing one per commit (`Chapter 015 — Fetch and live streams`).
-
-**The lesson that shaped the architecture.** Early on I tried running authoring agents *in parallel* to go faster. They collided: the git log from 2026-05-14 is a string of commits like `Remove stray Chapter X outline created by Y subagent` and `Restore outline files reverted by parallel agent`. Two agents writing the course at once couldn't keep it coherent. That's why the orchestrator now runs strictly sequentially, one chapter at a time. It's slower, but the course stays consistent.
 
 ## The authoring pipeline
 
