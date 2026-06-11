@@ -1,0 +1,513 @@
+---
+title: Picking the right invalidation call
+tagline: A decision tree for choosing among Next.js's four cache invalidation calls, updateTag, revalidateTag, revalidatePath, and router.refresh, at any mutation site.
+chapter-id: 72
+course-progress: 0.00005
+sidebar:
+  order: 2
+  label: Picking the invalidation call
+---
+
+import { CardGrid, Card } from '@astrojs/starlight/components';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import TwoAxisGrid from '../../../components/lessons/072/2/TwoAxisGrid.astro';
+import PlanFlipRace from '../../../components/lessons/072/2/PlanFlipRace.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import Sequence from '../../../components/exercises/sequence/Sequence.astro';
+import Step from '../../../components/exercises/sequence/Step.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+In the previous lesson you tagged every cached read in the app. Each one now carries a string from `lib/tags.ts` that names exactly what it holds — `invoiceTags.list(orgId)` for a list, `invoiceTags.record(orgId, id)` for a single record. That was the read side. This lesson is the write side: a mutation just landed, and something has to tell the cache that one of those reads is now wrong.
+
+The mutation could come from anywhere you've already built. A user edits an invoice through a Server Action. Stripe fires a webhook that flips a plan (the pattern from the billing chapters). A nightly job rebuilds a summary (the background work from the Trigger.dev chapters). Each of those is a place where data changes, and each one needs to invalidate the cache — but the call you reach for is not the same in all three.
+
+Next.js gives you four invalidation calls, and the honest truth is that picking between them trips up most people for longer than it should. By the end of this lesson you'll run a two-question decision on any mutation site and land on the right call without guessing. The four calls themselves are one-liners. The skill is the order of questions that makes the answer obvious.
+
+## The four calls at a glance
+
+Before the reasoning, the vocabulary. Here are the four calls, each with the one situation it's built for. Don't memorize the table — read it once so the names mean something when the decision tree resolves to them later.
+
+<CardGrid>
+  <Card title="updateTag(tag)">
+    Server Actions only. Expires the entry immediately; the next read blocks and refetches. For when the user who triggered the change is about to see it. Takes a tag and nothing else.
+  </Card>
+  <Card title="revalidateTag(tag, profile)">
+    Anywhere on the server — actions, route handlers, background jobs. Marks the entry stale; the next visitor to a page using that tag is served the stale value once, then it refreshes. `profile` is a `cacheLife` preset; `'max'` is the default. The single-argument form is a type error in Next.js 16.
+  </Card>
+  <Card title="revalidatePath(path)">
+    Invalidates by URL path or route pattern instead of by tag. Coarser than a tag. The escape hatch for when the affected surface has no clean tag to name it.
+  </Card>
+  <Card title="router.refresh()">
+    Client-side, from `useRouter()`. Re-runs the current route's server render in the browser. Does not invalidate cached reads — only re-renders the route. For a fresh render after a non-action interaction on the client.
+  </Card>
+</CardGrid>
+
+Card four is the one to slow down on, because it hides the single most common misconception in this whole topic.
+
+:::caution
+`router.refresh()` does **not** refresh the cache. It re-runs the current route's server render — but any cached read inside that render whose tag is still valid serves the same cached value it served before. The render is fresh; the data is not. Only invalidating a tag expires a cached read. Keep this flag planted; you'll see exactly why it matters when we trace the plan-upgrade case at the end.
+:::
+
+Two words from those cards do a lot of work, so let's pin them down. The behavior `revalidateTag` produces is <Term definition="Serve the cached value one more time while the next read recomputes in the background. The first reader after invalidation sees stale data once; everyone after sees fresh.">stale-while-revalidate</Term>: the cache hands out the old value one last time and refreshes underneath. The behavior `updateTag` produces is <Term definition="The user who made a change sees that exact change reflected on their very next view, with no stale flash in between.">read-your-writes</Term>: the user who just made the change sees it immediately, no stale value in between. That distinction — does the next reader eat one stale render, or not — is the whole game.
+
+<VideoCallout videoId="lkB15d-JCEw" videoTitle="Cache Components in depth: cacheTag, updateTag and revalidateTag (Next.js 16)">
+  Cules Coding's Next.js 16 walkthrough demos the exact `updateTag` vs `revalidateTag` split — read-your-write versus stale-while-revalidate — live in a running app; the tagging-and-revalidation segment starts around 17:40.
+</VideoCallout>
+
+## Two axes, then one question
+
+Four calls sounds like four things to remember. It isn't. The four are the product of two yes-or-no questions, and once you see the questions, the calls stop being a list and start being coordinates.
+
+**Axis one is the one that matters: read-your-writes or eventual.** Phrase it as a question about a human: *is a specific person sitting on the screen right now, expecting to see this exact change?*
+
+When you edit your own profile and the form redirects, you are staring at the result, expecting your new name. When you post a comment, you expect it in the thread. When you upgrade your plan, you expect "Pro" on the next screen. Someone is watching — that's read-your-writes, and it means `updateTag` or `router.refresh()`.
+
+Now flip it. A Stripe webhook flips an invoice to paid: nobody is sitting on a screen waiting for that specific HTTP request to finish. A nightly job rebuilds a summary at 3am: there is no audience. An admin in one org touches shared reference data that a hundred other users will read tomorrow: none of them is watching this write land. That's eventual, and it means `revalidateTag` or `revalidatePath`. The next person to load the page eats one stale render, then it's fresh — and that's completely fine, because nobody was waiting.
+
+Most of your decisions end right here, on axis one. Roughly four out of five mutation sites never need the second question.
+
+**Axis two is the tiebreaker: tag or path.** A tag names one entity's reads precisely — `invoiceTags.record(orgId, id)` is exactly the reads for that one invoice. A path names a whole route or subtree, coarsely. In a codebase with a real `lib/tags.ts`, the answer is almost always "tag" — that's the entire point of having built the scheme. Path is the rare fallback for when no tag can name the surface that changed.
+
+Put the two axes on a grid and the four calls fall into the four corners. Each call is just "which row, which column."
+
+<Figure caption="The four calls are two binary choices, not a flat list to memorize.">
+  <TwoAxisGrid />
+</Figure>
+
+Here's the headline rule, and it's worth saying out loud: **axis one decides the call; you only reach for axis two to break the tag-versus-path tie.** And there's a shortcut that often answers axis one before you even finish asking it — *where am I?* A webhook is never read-your-writes for a specific watcher, because no specific person triggered it interactively. So the moment you notice you're in a webhook, you already know it's `revalidateTag`. Where you are is not a constraint fighting you; it's a signal that's already narrowed the choice.
+
+That "where am I" signal is so reliable that it deserves its own section, because one of the four calls enforces it at the language level.
+
+## Why `updateTag` is Server-Action-only
+
+`updateTag` throws if you call it outside a Server Action. The first time you hit that, it reads like an arbitrary restriction. It isn't — it's the API telling you something true about where you are.
+
+Read-your-writes is a promise: the user will see fresh data on the *very next render*, with no stale flash. To keep that promise, the framework has to sequence three things inside one request — mutate the data, expire the tag, then render fresh. A Server Action is the one place that path exists. The action mutates, calls `updateTag`, and then `redirect()`s; the redirect's render happens in the same request, after the tag was expired, so it reads fresh data. That tight loop is the <Term definition="An action mutates, invalidates, then redirects within the same request, so the redirect's render reads the freshly-expired data. The mechanism that makes read-your-writes possible.">in-band redirect</Term>.
+
+A route handler, a background job, a client callback — none of them owns a redirect the framework controls in that way. So `updateTag` can't keep its promise there, and rather than keep it badly, it throws. When you see that throw, don't reach for a workaround. Hear what it's saying: *read-your-writes isn't physically available here, so you don't want it — you want eventual.* Switch to `revalidateTag`.
+
+The two snippets below are the same invalidation in the two places. The left one works; the right one throws, with the fix sitting right under it.
+
+<CodeVariants maxLines={12}>
+  <CodeVariant label="Server Action — works">
+    <div data-mark-color="green">
+
+    ```ts {7} title="app/invoices/[id]/actions.ts"
+    'use server';
+    import { updateTag } from 'next/cache';
+    import { invoiceTags } from '@/lib/tags';
+
+    export const updateInvoice = authedAction(async ({ orgId }, input) => {
+      // ...validate, then write the row inside a transaction...
+      updateTag(invoiceTags.record(orgId, input.id));
+      redirect(`/invoices/${input.id}`);
+    });
+    ```
+
+    </div>
+    **Read-your-writes, in band.** Inside an action, `updateTag` expires the tag and the `redirect` that follows renders fresh.
+  </CodeVariant>
+
+  <CodeVariant label="Route handler — throws">
+    ```ts del={6} ins={7} title="app/api/stripe/route.ts"
+    import { updateTag, revalidateTag } from 'next/cache';
+    import { invoiceTags } from '@/lib/tags';
+
+    export async function POST(request: Request) {
+      // ...verify signature, claim event, write the row...
+      updateTag(invoiceTags.record(orgId, id)); // throws at runtime
+      revalidateTag(invoiceTags.record(orgId, id), 'max'); // the fix
+    }
+    ```
+    **No in-band redirect, so `updateTag` throws.** Nobody is waiting on this request anyway — `revalidateTag(tag, 'max')` is correct here.
+  </CodeVariant>
+</CodeVariants>
+
+Both `updateTag` and `revalidateTag` import from `next/cache`. With that boundary understood, the rest of the lesson is just running the two axes on real cases — starting with the simplest one.
+
+## Worked case: the list after an edit
+
+A user opens an invoice's detail page, edits the amount, and saves. The Server Action writes the new amount and redirects to the list. Two cached reads are now wrong: the list read, tagged `invoiceTags.list(orgId)`, still shows the old amount, and the detail read, tagged `invoiceTags.record(orgId, id)`, does too.
+
+Run the axes. We're in a Server Action, and the editor is the viewer — they're about to land on the list expecting their new number. That's read-your-writes with tags: `updateTag`, fired after the write, before the redirect.
+
+Notice we fire it *twice* — once per affected read. This is the **fan-out**, and it's the discipline that separates a cache that works from one that goes silently stale. One mutation touched two cached reads, so two `updateTag` calls: the list, so the new amount shows, and the record, so that a back-button to the detail page is fresh too. Because both tag strings come from the same `lib/tags.ts` helper, listing them is mechanical — you're not inventing strings, you're naming reads.
+
+Step through the action body below. Watch how the five seams of a Server Action — parse, authorize, mutate, invalidate, redirect — put the invalidation in exactly one place: after the write, before the redirect.
+
+<AnnotatedCode lang="ts" maxLines={16} code={`
+'use server';
+import { redirect } from 'next/navigation';
+import { updateTag } from 'next/cache';
+import { invoiceTags } from '@/lib/tags';
+import { updateInvoiceSchema } from './schema';
+
+export async function updateInvoice(formData: FormData) {
+  const input = updateInvoiceSchema.parse(Object.fromEntries(formData));
+  const { orgId } = await requireOrgUser();
+  await tenantDb(orgId)
+    .update(invoices)
+    .set({ amount: input.amount })
+    .where(eq(invoices.id, input.id));
+  updateTag(invoiceTags.list(orgId));
+  updateTag(invoiceTags.record(orgId, input.id));
+  redirect(\`/invoices/\${input.id}\`);
+}
+`}>
+  <AnnotatedStep meta="{1,7}" color="blue">
+    The `'use server'` directive and the action signature. This is what makes `updateTag` legal here at all — outside an action it would throw.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{8-13}" color="blue">
+    Parse the input, authorize, then write the row. Nothing about the cache yet — this is just the change landing in the database.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{14-15}" color="green">
+    After the write, before the redirect: one `updateTag` per affected cached read. The list so the new amount shows; the record so the detail page is fresh too. This is the fan-out.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{16}" color="green">
+    The redirect's render runs in the same request, after the tags expired, so the list it renders reads fresh. Read-your-writes, delivered.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+That's the shape every read-your-writes action follows. The next case keeps the same call but bends the intuition behind it.
+
+## Worked case: an admin changes a member's role
+
+An admin demotes a teammate from admin to member. The Server Action runs in the *admin's* session — but the change affects two different people, and that's what makes this case worth your attention.
+
+Two cached reads go stale. The org's membership read, tagged `orgTags.all(orgId)`, is what the admin is looking at on the members page. And the demoted member has their own cached read — the "orgs I'm in" data keyed to *their* user, tagged `userTags.all(memberUserId)`.
+
+Here's the wrinkle on axis one. The admin is watching — they're on the members list expecting the role to flip. Read-your-writes for them. But the demoted member is not watching the admin's redirect; they might be asleep. So is their read eventual? It doesn't matter, and this is the insight: we're already in a Server Action firing `updateTag` for the admin's read, so we fire `updateTag` for the member's read too. `updateTag` expires the entry. The member isn't watching *now*, but the *next time they load any page*, their cached read is gone and the new role is already in effect. You don't need someone watching for `updateTag` to be correct — you need to be in an action.
+
+So: one action, two tags, each scoping a different person's data. That's the multi-recipient pattern — "who triggered it" and "whose data changed" are different questions, and the tags answer the second one.
+
+<div data-mark-color="green">
+
+```ts {2-3} title="app/settings/members/actions.ts"
+// ...inside the demoteMember action, after the role write commits...
+updateTag(orgTags.all(orgId)); // the admin's members list, refreshed on redirect
+updateTag(userTags.all(memberUserId)); // the member's own data, expired for their next load
+redirect('/settings/members');
+```
+
+</div>
+
+One more thing, so you're not surprised later: expiring the member's *cached data* is not the same as revoking their *session*. Their authorization — whether they can still act as an admin — resolves separately, through the session and its short staleness window covered in the organizations and RBAC chapters. The cache tag handles their cached reads; the session handles their permissions. Two systems, two mechanisms.
+
+You've now seen both ends of the read-your-writes corner. Time to make the decision machine itself the thing you carry to every mutation site.
+
+## The decision tree
+
+Everything so far built the vocabulary and the intuition. This is the artifact — the tree you actually run. Walk it one question at a time. The order of the questions is the lesson; notice that the *first* question is "where does the mutation run?", because where you are pre-answers so much.
+
+<StateMachineWalker kind="decision" title="Which invalidation call?">
+  <Question id="where" prompt="Where does the mutation run?" description="Start here. Where you are usually decides most of the answer.">
+    <Branch label="In a Server Action" to="watching" />
+    <Branch label="In a webhook or route handler" to="leaf-webhook" />
+    <Branch label="In a background job (Trigger.dev / cron)" to="leaf-job" />
+    <Branch label="On the client, after a non-action interaction" to="leaf-client" />
+  </Question>
+
+  <Question id="watching" prompt="Is the user who triggered it about to see the change?" description="They're sitting on the redirect, expecting their own change.">
+    <Branch label="Yes — they're on the redirect" to="tag-or-not" />
+    <Branch label="No — nobody specific is waiting" to="leaf-eventual-action" rationale="Eventual is the right UX even inside an action." />
+  </Question>
+
+  <Question id="tag-or-not" prompt="Can a tag from lib/tags.ts name the affected reads?">
+    <Branch label="Yes (almost always)" to="leaf-update" />
+    <Branch label="No tag — it's a whole route pattern" to="leaf-path" rationale="Rare; means the tag scheme has a gap." />
+    <Branch label="No tag, and it's just this route" to="leaf-refresh-rare" />
+  </Question>
+
+  <Leaf id="leaf-update" verdict="updateTag(tag)">
+    Read-your-writes with tags. Fire one per affected read, after the commit, before the redirect. `updateTag(invoiceTags.list(orgId))`.
+  </Leaf>
+
+  <Leaf id="leaf-refresh-rare" verdict="router.refresh() (rare)">
+    A coarse re-render of the current route when no tag fits. This is a smell — the work almost always wants a tag. `useRouter().refresh()`.
+  </Leaf>
+
+  <Leaf id="leaf-eventual-action" verdict="revalidateTag(tag, 'max')">
+    Even inside an action, if nobody's waiting, eventual is the right call. `revalidateTag(orgTags.all(orgId), 'max')`.
+  </Leaf>
+
+  <Leaf id="leaf-webhook" verdict="revalidateTag(tag, 'max')">
+    `updateTag` would throw here. No specific user is waiting, so stale-while-revalidate is correct. `revalidateTag(invoiceTags.record(orgId, id), 'max')`.
+  </Leaf>
+
+  <Leaf id="leaf-job" verdict="revalidateTag(tag, 'max')">
+    Same reasoning as a webhook. The job imports `revalidateTag` from `next/cache` and calls it directly. `revalidateTag(orgTags.all(orgId), 'max')`.
+  </Leaf>
+
+  <Leaf id="leaf-client" verdict="router.refresh()">
+    Re-renders the current fully-dynamic route from the browser. It does not touch cached-with-TTL entries — it only re-runs the render. `useRouter().refresh()`.
+  </Leaf>
+
+  <Leaf id="leaf-path" verdict="revalidatePath(path)">
+    The affected surface is a route pattern, not an entity. Rare in a tagged codebase — usually a sign the tag scheme has a gap. `revalidatePath('/(marketing)', 'layout')`.
+  </Leaf>
+</StateMachineWalker>
+
+Every worked case in this lesson is a path through that tree. The two you've already seen both land on `updateTag` — walk them again in your head and confirm: Server Action, user watching, tag exists. The three cases coming up land on the other leaves, one branch at a time.
+
+## Worked case: a webhook updates an invoice's status
+
+Stripe sends `invoice.payment_succeeded`. The webhook handler — which, per the billing chapters, is the <Term definition="The rule that exactly one code path owns writes to a given entity. For Stripe-driven state, that owner is the webhook handler, not a Server Action.">single writer</Term> for this invoice's payment state — verifies the signature, claims the event, and updates the invoice row. Then it invalidates.
+
+Run the tree. First question: where are we? A route handler. That branch terminates immediately at `revalidateTag` — we don't even ask about a watcher, because a route handler can't be read-your-writes for anyone. `updateTag` here would throw, exactly as the boundary section promised. So: `revalidateTag(invoiceTags.record(orgId, id), 'max')` for the detail read, and `revalidateTag(invoiceTags.list(orgId), 'max')` for the list. The fan-out applies here just as it did in the action — two affected reads, two calls.
+
+Now the precision point that matters for understanding what `'max'` actually does. `revalidateTag(tag, 'max')` does **not** eagerly refetch. It marks the tag stale and walks away. The refresh happens on the *next visit* to a page using that tag — the next viewer is served the stale value once, and their request triggers the recompute behind the scenes. So "eventual" is literal: the next reader pays exactly one stale render, and everyone after them gets fresh. When nobody is waiting on the screen — and for a webhook, nobody is — that's precisely the trade you want. You don't burn a refetch for data no one is looking at yet.
+
+<div data-mark-color="blue">
+
+```ts {2-3} title="app/api/stripe/route.ts"
+// ...signature verified, event claimed in processed_events, invoice row updated...
+revalidateTag(invoiceTags.record(orgId, id), 'max');
+revalidateTag(invoiceTags.list(orgId), 'max');
+return new Response(null, { status: 200 });
+```
+
+</div>
+
+Invalidation is just one more line on the webhook checklist from the billing chapters — verify, claim, write, **invalidate**, acknowledge. Forget it and the user pays their invoice but the UI shows "unpaid" until something else happens to expire the read.
+
+One narrow escape hatch worth naming and then forgetting: a webhook can pass `revalidateTag(tag, { expire: 0 })` to hard-expire a tag immediately from a route handler, for the rare case where even one stale render is unacceptable. But `'max'` is the default you reach for, and if you genuinely need read-your-writes immediacy, that belongs in a Server Action with `updateTag` — not in a webhook straining to fake it.
+
+## Worked case: a nightly job rebuilds the org summary
+
+A Trigger.dev job runs at 3am and recomputes each org's analytics summary. It writes the summary row and needs to invalidate the dashboard's cached read of it.
+
+This is the webhook case with a different trigger, so the tree path is short: background job → `revalidateTag`. The job calls `revalidateTag(orgTags.all(orgId), 'max')` (or a dedicated summary tag, if the project defines one — keep it consistent with the helper). No user is waiting at 3am; the first person to open the dashboard in the morning sees yesterday's summary once, then it's fresh on the next load. Eventual is exactly right.
+
+The one new detail: the job imports `revalidateTag` from `next/cache` and calls it directly, even though it runs in a separate process from your web server. The framework routes the invalidation through the deployment's shared cache backend, so a tag expired by a background process is expired for the web requests too. You don't wire anything up for this — name it and move on; the backend semantics are beyond this lesson.
+
+<div data-mark-color="blue">
+
+```ts {2} title="src/trigger/rebuild-org-summary.ts"
+// ...inside the nightly task's run(), after the summary row is written...
+revalidateTag(orgTags.all(orgId), 'max');
+```
+
+</div>
+
+That's two of the three non-action leaves. The last case is the one where `router.refresh()` finally earns its place — and where the "it doesn't refresh the cache" warning from the top of the lesson becomes concrete.
+
+## Worked case: the post-purchase plan flip
+
+A user clicks "Upgrade to Pro," goes through Stripe Checkout, and lands on a success page. The natural assumption is that the success page now shows "Pro." It often doesn't — not yet — and the reason is a race you need to design around, not a bug to fix.
+
+The plan flip itself happens in the *webhook*, not in any action — the webhook is the single writer for billing state, per the billing chapters. When that webhook lands, it calls `revalidateTag(orgTags.all(orgId), 'max')` to expire the entitlement read. But the redirect to the success page and the webhook delivery are two independent events racing each other. By the time the user is looking at the success page, the webhook may not have arrived. The cached entitlement still says "Free."
+
+So the success page is a client component that polls: it calls `router.refresh()` on an interval until the entitlement flips to "Pro," then stops. Scrub through the sequence below to watch the race resolve.
+
+<PlanFlipRace />
+
+Now look hard at steps 2 and 4, because this is the whole point. In step 2, `router.refresh()` re-ran the render and the page *still said Free*. The refresh did not expire anything. It was the *webhook's* `revalidateTag` in step 3 that made the read stale. Then in step 4, `router.refresh()` re-ran the render again and *this time* picked up the now-stale-then-fresh value. The two calls are complementary, not interchangeable: the webhook invalidates, and `router.refresh()` re-renders so the client gets a chance to observe the result. This is the exact context where people believe `router.refresh()` refreshes the cache — and it's exactly the context where you can see that it doesn't.
+
+The poll is not papering over a bug. The redirect-versus-webhook race is inherent — two systems, no shared transaction — and polling is the honest way to bridge it. But hear the smell underneath: if you reach for `router.refresh()` *outside* this kind of redirect-race, the work almost certainly belongs in a Server Action where `updateTag` would be cleaner and instant. `router.refresh()` is the right tool here precisely because there's no action to put the invalidation in.
+
+## Invalidate after commit, then redirect
+
+You've now seen the calls. Two ordering bugs turn correct calls into broken behavior, and both are frequent code-review catches — worth burning in before you write a single invalidation.
+
+The canonical sequence inside a Server Action is the one the five seams already give you: the write **lands** — and when several rows change together, that means the transaction **commits** — *then* the invalidation calls fire, *then* `redirect`. Two ways to get it wrong:
+
+**Invalidating inside the transaction.** When a mutation spans several rows it runs inside a `db.transaction`. If you call `updateTag` before that transaction commits and it then rolls back, you've expired the cache against a change that never happened. The next read repopulates with the old value, and your invalidation was wasted — or worse, for a moment the cache served a view of state that doesn't exist. Invalidation describes a committed fact, so it belongs after the commit.
+
+**Redirecting before invalidating** — or trusting the redirect to "refresh" things on its own. The destination's cached read still has a valid tag, so it serves the old value, and the user lands on stale data. *The redirect is not an invalidation signal.* Invalidate first, then redirect.
+
+You met this exact principle as the after-commit rule for the notification dispatcher and the no-external-calls-in-a-transaction rule in the transactions chapter. It's the same discipline, pointed at the cache: side effects that depend on a committed change run *after* the commit, never inside it.
+
+Drag the steps below into the order a correct action runs them. One of them is a trap that wants to go too early.
+
+<Sequence instructions="Order the steps of a Server Action that edits an invoice and its line items, then sends the user to the detail page.">
+  <Step>Update the invoice and its line items inside one `db.transaction`</Step>
+  <Step>The transaction commits</Step>
+  <Step>`updateTag(invoiceTags.list(orgId))`</Step>
+  <Step>`updateTag(invoiceTags.record(orgId, id))`</Step>
+  <Step>`redirect` to the detail page</Step>
+</Sequence>
+
+## Listing the cached reads a mutation touches
+
+The fan-out showed up in almost every case, so let's make it a repeatable habit instead of something you remember sometimes. The discipline is one sentence: **before writing the invalidation tail, list every cached read whose underlying data this mutation changes, then fire the narrowest tag for each.**
+
+Editing one line item on an invoice changes the invoice record read *and* the org's invoice list read — two reads, two tags. Miss one and that read stays stale until its TTL expires. And here's the sting: because `'max'` is the profile these reads carry, they effectively never expire on their own. "Silently stale" can mean "stale until someone happens to edit the same entity again." The bug doesn't announce itself; it just quietly serves wrong data for a long time.
+
+This is the write-side half of a split you saw in the previous lesson. Reads are *generous*: a cached read attaches the union of every tag that could apply to it. Writes are *precise*: a mutation fires the narrowest set of tags that covers what it actually changed. Both sides import the same `lib/tags.ts` helper, which is what makes the discipline safe — the write-site string is the same function call as the read-site string, so a typo can't drift them apart. You're never matching strings by eye; you're matching function calls the compiler checks.
+
+Try the exercise below. An admin removes a member from the org. Sort the tags into the ones this mutation must fire and the ones it must not touch — the decoys are reads this change doesn't affect.
+
+<Buckets twoCol instructions="An admin removes a member from the org. Sort each cached read into the bucket for whether this one mutation must invalidate it.">
+  <Bucket name="fire" label="Must fire" description="Reads whose underlying data this removal actually changed" />
+  <Bucket name="leave" label="Leave alone" description="Decoys — reads this removal doesn't touch" />
+
+  <Item bucket="fire">`orgTags.all(orgId)`</Item>
+  <Item bucket="fire">`userTags.all(removedUserId)`</Item>
+  <Item bucket="leave">`invoiceTags.list(orgId)`</Item>
+  <Item bucket="leave">`invoiceTags.record(orgId, someInvoiceId)`</Item>
+  <Item bucket="leave">`userTags.all(adminUserId)`</Item>
+</Buckets>
+
+The two on the left are the fan-out: the org's membership read (`orgTags.all(orgId)`) and the removed member's own "orgs I'm in" read (`userTags.all(removedUserId)`) both changed. The three decoys are the trap — the invoice reads have nothing to do with membership, and the *admin's* own membership didn't change, so firing `userTags.all(adminUserId)` would expire a read this mutation never touched.
+
+One last thing to file away, so a later chapter doesn't surprise you: when a list is *also* read on the client through TanStack Query, the action has to invalidate that client cache too, with `queryClient.invalidateQueries(...)`. That's a second cache with its own invalidation, and the TanStack chapter owns it. Everything in *this* lesson is about the Next.js server cache only.
+
+## Run the tree on novel cases
+
+The tree is only useful if you can run it on a case you've never seen. So here's a short battery on cases this lesson didn't walk. For each, decide the call *and* the reasoning before you reveal the answer — the reasoning is what transfers, not the answer key.
+
+The thread tying these together: notice in the first two that the *same kind of mutation* — a profile change — resolves to *different calls* depending on the trigger. That contrast is the framing that lets you handle anything the course never explicitly covered. Name the trigger, name who's watching, pick the corner.
+
+<MultipleChoice>
+  A user opens their account settings, edits their own display name in a form backed by a Server Action, and the form re-renders the same settings page on success. Which call invalidates the name they're staring at?
+
+  <McqChoice correct>
+    ```ts
+    updateTag(userTags.all(userId));
+    ```
+  </McqChoice>
+  <McqChoice>
+    ```ts
+    revalidateTag(userTags.all(userId), 'max');
+    ```
+  </McqChoice>
+  <McqChoice>
+    ```ts
+    router.refresh();
+    ```
+  </McqChoice>
+
+  <McqWhy>The call is `updateTag(userTags.all(userId))`. Axis one: a specific person — the editor — is about to look at the re-render expecting their new name, so this is read-your-writes. Axis two: a tag names the read, so it's `updateTag`, not `revalidatePath`. `revalidateTag` would mark the entry stale-on-next-visit, flashing the old name for that one render. `router.refresh()` re-runs the render but leaves the cached read untouched, so the name wouldn't change at all.</McqWhy>
+</MultipleChoice>
+
+<MultipleChoice>
+  Your external identity provider pushes a display-name change for one of your users to a webhook route handler, which updates the user row. Which call invalidates that user's cached read?
+
+  <McqChoice>
+    ```ts
+    updateTag(userTags.all(userId));
+    ```
+  </McqChoice>
+  <McqChoice correct>
+    ```ts
+    revalidateTag(userTags.all(userId), 'max');
+    ```
+  </McqChoice>
+  <McqChoice>
+    ```ts
+    router.refresh();
+    ```
+  </McqChoice>
+
+  <McqWhy>The call is `revalidateTag(userTags.all(userId), 'max')`. Same data as the previous question, different trigger. Axis one starts with "where am I?" — a route handler, where no specific person is sitting on a redirect, so it's eventual. `updateTag` would throw here because there's no in-band redirect to keep the read-your-writes promise. The single-argument form is a type error in Next.js 16, so the `'max'` profile is required.</McqWhy>
+</MultipleChoice>
+
+<MultipleChoice>
+  An embedded third-party maps widget fires an `onSave` callback — plain client code, not a Server Action — after the user repositions a pin. The route is fully dynamic with no cached read, and you just need its server render re-run. Which call?
+
+  <McqChoice>
+    ```ts
+    updateTag(/* ... */);
+    ```
+  </McqChoice>
+  <McqChoice>
+    ```ts
+    revalidatePath('/map');
+    ```
+  </McqChoice>
+  <McqChoice correct>
+    ```ts
+    router.refresh();
+    ```
+  </McqChoice>
+
+  <McqWhy>The call is `router.refresh()`. You're on the client, outside any action, so `updateTag` isn't even available. There's no cached-with-TTL read to expire, so `revalidatePath` has nothing to invalidate — the route is already fully dynamic. All you need is a fresh server render in the browser, which is exactly what `router.refresh()` does.</McqWhy>
+</MultipleChoice>
+
+<MultipleChoice>
+  A sitewide footer config row changes. The affected surface is every page under the `(marketing)` route group, and none of those pages carries a per-entity tag from `lib/tags.ts`. Which call?
+
+  <McqChoice>
+    ```ts
+    revalidateTag('marketing', 'max');
+    ```
+  </McqChoice>
+  <McqChoice correct>
+    ```ts
+    revalidatePath('/(marketing)', 'layout');
+    ```
+  </McqChoice>
+  <McqChoice>
+    ```ts
+    router.refresh();
+    ```
+  </McqChoice>
+
+  <McqWhy>The call is `revalidatePath('/(marketing)', 'layout')`. Axis one: a config edit nobody is watching land — eventual. Axis two is the tiebreaker that finally bites: no tag names a whole route tree, so you fall back to the path. Inventing a `'marketing'` tag string by hand defeats the point of `lib/tags.ts`, and reaching for path often would mean the tag scheme has a gap worth closing.</McqWhy>
+</MultipleChoice>
+
+## Make invalidations visible
+
+One habit to close on, because it turns "my change isn't showing" from a mystery into a one-minute check. Every invalidation call should emit a structured log line — something like `{ event: 'invalidate', call: 'updateTag', tag, source }`. That single line is the first place you look when a change doesn't appear: did the invalidation for the expected tag actually fire?
+
+The signal is in the pattern. A flatline on a tag whose entity is being actively edited means the wiring is wrong — the write is firing a different tag than the read carries, or firing none at all. A spike means a hot mutation path worth a second look. You don't need a dashboard for this yet — that surface comes later, in the observability chapters. For now, the log line is enough to make the invisible visible.
+
+:::tip
+When a "my change isn't showing" bug lands, check the invalidation log before anything else. Nine times out of ten the answer is right there: the expected tag never fired, because the write site and the read site drifted apart — which is exactly the drift `lib/tags.ts` exists to prevent.
+:::
+
+## External resources
+
+The two load-bearing calls each have a focused docs page, and both spell out the read-your-writes versus stale-while-revalidate distinction this lesson is built around.
+
+<CardGrid>
+  <ExternalResource
+    title="Next.js — updateTag"
+    href="https://nextjs.org/docs/app/api-reference/functions/updateTag"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The read-your-writes call. Why it's Server-Action-only, with a side-by-side comparison to revalidateTag."
+  />
+  <ExternalResource
+    title="Next.js — revalidateTag"
+    href="https://nextjs.org/docs/app/api-reference/functions/revalidateTag"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The eventual, stale-while-revalidate call. Spells out the required profile argument and the deprecated single-argument form."
+  />
+  <ExternalResource
+    title="Next.js — Revalidating data"
+    href="https://nextjs.org/docs/app/getting-started/revalidating"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="All four calls on one page, with the where/behavior/use-case table that mirrors this lesson's two axes."
+  />
+  <ExternalResource
+    title="web.dev — stale-while-revalidate"
+    href="https://web.dev/articles/stale-while-revalidate"
+    icon="simple-icons:google"
+    iconColor="#4285F4"
+    description="The HTTP-level origin of the SWR pattern revalidateTag implements — serve stale once, refresh underneath."
+  />
+</CardGrid>

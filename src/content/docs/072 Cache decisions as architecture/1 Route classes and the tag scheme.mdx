@@ -1,0 +1,491 @@
+---
+title: Route classes and the tag scheme
+tagline: The judgment behind Next.js caching, deciding which routes to cache and designing a tag scheme that invalidates exactly the right entries.
+chapter-id: 72
+course-progress: 0.00005
+sidebar:
+  order: 1
+  label: Route classes and tags
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import RouteClassGradient from '../../../components/lessons/072/1/route-class-gradient.astro';
+import DataCacheMirror from '../../../components/lessons/072/1/data-cache-mirror.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Open the `app/` directory of the application you've been building across this course. There's the dashboard, the invoices list with its URL-driven filters, the invoice detail page, the settings screens, the public marketing and pricing pages. You already know every caching mechanic that could touch these routes — `'use cache'`, `cacheLife`, `cacheTag`, the four invalidation calls, the `cacheComponents: true` default. What you don't yet have is the decision that sits one step earlier, before you type a single `'use cache'`: for each of these routes, what is the right caching posture, and once a route caches anything, what tag does each cached read carry so that the mutation which changes its data invalidates exactly the right entries — and nothing else?
+
+That decision is what separates a cache that quietly makes the app faster from one that silently serves a customer last week's invoice. This lesson teaches almost no new API. It teaches the judgment that goes in front of the API, and it produces two artifacts you'll commit to the repo: a one-page table that classifies every route, and a single `lib/tags.ts` file where every tag string lives. Get those two right and the actual cache code writes itself.
+
+## Caching is opt-in, and dynamic is the right default
+
+Start from what `cacheComponents: true` already does for you. Under that config, every route is dynamic until you add a `'use cache'` boundary. Nothing gets cached by accident — caching is something you reach for deliberately, never something that happens behind your back.
+
+So here's a Server Component that reads the signed-in user's invoices and renders them:
+
+```tsx title="app/invoices/page.tsx"
+export default async function InvoicesPage() {
+  const { orgId } = await requireOrgUser();
+  const invoices = await listInvoices(orgId);
+  return <InvoiceTable invoices={invoices} />;
+}
+```
+
+Notice there is no `'use cache'` here, and that is correct, not unfinished. The instinct that "uncached means I haven't optimized this yet" is the first thing to unlearn. For an authenticated, per-user, per-org surface like this one, leaving it dynamic is the experienced call, and here's the reasoning you need to internalize.
+
+A cache only pays off when the same value gets read many times between writes. The invoices list is read by one user, scoped to one org, and the underlying rows change whenever anyone on the team edits an invoice. If you cached it, the <Term definition="The share of reads served from the cache instead of recomputed. Near-zero means almost every read misses the cache, so caching that read buys you nothing.">hit rate</Term> would hover near zero — almost every read would recompute anyway, because the audience is tiny and the data keeps moving. You'd pay the full cost of a cache (one more thing that can go stale, one more thing to invalidate correctly) and get almost none of the benefit.
+
+The question that decides whether a route is even a candidate is the <Term definition="Read frequency divided by write frequency. A high ratio — read by many, written rarely — is what makes a cache worth it. A low ratio means stay dynamic.">read-to-write ratio</Term>: how often is this read, divided by how often the underlying data changes? A high ratio — read by many users, written rarely — is the green light. A low ratio is the signal to stay dynamic.
+
+:::note
+The rule to carry: prove the cache is worth it, don't assume it. The burden of proof is on caching, not on leaving things dynamic.
+:::
+
+This quietly reframes the question most people ask. The instinct is "is this page slow?" — and slowness pushes you toward caching whatever is heaviest. The better question is "is this value shared and stable?" Caching the app chrome that every single user loads on every page beats caching one deep, slow, per-user widget, even though the widget is the slower of the two. Shared and stable wins over slow-but-personal every time.
+
+## The three route classes
+
+With that default in mind, every route in the app lands in one of three classes. Think of it as a checklist you run on each new route, and read the classes as a gradient: on one end, everything renders at request time; on the other, everything renders at build time; in the middle, a mix.
+
+**Fully dynamic** is the left end: every read happens at request time, no `'use cache'` anywhere. The dashboard, the inbox, the settings page, the invoices list you built with its URL-driven filters — anything whose contents can change from one second to the next, scoped to one user or one org. Most authenticated routes live here, and that is healthy, not a failure to optimize.
+
+**Fully static** is the right end: no dynamic signal anywhere, so the whole page prerenders at build time and ships as flat HTML. The marketing pages, the pricing page (the plan copy is written at build time, not read per request), a docs site. Every visitor gets the identical bytes.
+
+**Partially cached** is the middle, and it's the shape you already met as Partial Prerendering: a dynamic outer shell wraps cached subtrees behind Suspense boundaries. The static shell streams instantly; the cached holes fill in. The invoice detail page is the classic case — the invoice itself mutates rarely, so you cache that subtree, while the surrounding chrome (the "last viewed by you" line, a live activity feed) stays dynamic and streams.
+
+The following diagram lays the three classes out as that gradient, left to right, with example routes under each and a one-line note on what renders when.
+
+<RouteClassGradient />
+
+The middle column is the one to sit with: it is literally a static shell with a cached hole punched in it. That's why "partially cached" is the same picture as PPR — it *is* PPR, just viewed through the question "which subtree did we choose to cache?"
+
+<VideoCallout videoId="MTcPrTIBkpA" videoTitle="Next.js Explained: Partial Prerendering (PPR)">
+  Delba from the Next.js team walks through the static-dynamic spectrum and how a Suspense boundary isolates the dynamic hole inside a static shell — the picture behind "partially cached" (11 min).
+</VideoCallout>
+
+## The cacheable shortlist, and the not-cacheable list
+
+The read-to-write ratio is the right principle, but in practice you won't recompute a ratio for every route. You'll pattern-match. So commit two short lists to memory, because in a SaaS the cacheable surfaces cluster in predictable places.
+
+The **cacheable shortlist** — high ratio, the same value read by many users many times between writes:
+
+- Plan <Term definition="The plan-derived row that says what an org is allowed to do — seat count, feature access, limits. Read on nearly every request, changed only when the plan changes.">entitlements</Term> — read on nearly every authenticated request, changed only when a subscription changes.
+- Org membership lists and role definitions — read constantly, edited rarely.
+- <Term definition="A configuration toggle that turns a feature on or off without shipping a deploy. Read on every request, flipped occasionally during a rollout.">Feature flags</Term> — read every request, toggled maybe weekly.
+- Public marketing, pricing, and docs pages — the same bytes for everyone.
+- OG image generators and route-shell metadata — computed once, served to everyone who shares the link.
+
+The unifying property across all of them: the same value is read by many people, many times, between rare writes.
+
+The **not-cacheable list** — the reflex here is "don't bother":
+
+- Personalized lists where the URL state owns the filter. Your invoices list with `?status=overdue&sort=-amount` is a different payload for every filter combination; the hit rate fragments to nothing across all the combinations users actually type.
+- Real-time dashboards and inbox feeds — the whole point is freshness.
+- Anything behind `cookies()` or `headers()` that depends on the request.
+- Anything whose payload includes `now()` or a per-action counter — it's different on every read by construction.
+
+Trying to cache something from the second list isn't just wasted effort. It actively adds a staleness bug to a surface that had none, because now there's an entry that can go stale and a mutation somewhere that has to remember to invalidate it.
+
+The following exercise gives you eight concrete surfaces from an app like yours. For each one, decide the caching posture — cache it because the ratio earns it, or keep it dynamic.
+
+<Buckets twoCol instructions="Decide the caching posture for each surface — cache it only if the read-to-write ratio earns it.">
+  <Bucket name="cache" label="Cache it" description="High read-to-write ratio, shared value" />
+  <Bucket name="dynamic" label="Keep it dynamic" description="Per-user, per-request, or fast-changing" />
+
+  <Item bucket="cache">An org's plan-entitlements row, hit on the layout of every authenticated page</Item>
+  <Item bucket="cache">The public pricing page, identical for every visitor</Item>
+  <Item bucket="cache">Feature flags consulted on each request, flipped during a rollout once a week</Item>
+  <Item bucket="cache">Published help-center articles served straight from build output</Item>
+  <Item bucket="dynamic">An invoices view rendered from `?status=overdue&sort=-amount` query state</Item>
+  <Item bucket="dynamic">The dashboard's live revenue counter that ticks as orders land</Item>
+  <Item bucket="dynamic">A single user's notification feed, keyed to their session</Item>
+  <Item bucket="dynamic">A page header that prints the current server time on each load</Item>
+</Buckets>
+
+## `cacheLife` is a product decision, not a performance knob
+
+For every route you do decide to cache, you pick a `cacheLife` profile. The three numbers behind a profile — stale, revalidate, expire — all describe one thing: **how long the user tolerates slightly-old data.** That's a product question, not a performance one. "How fresh does this need to feel?" is something you answer by thinking about the user, not the server.
+
+The 2026 built-in profiles run from "barely cached" to "effectively static": `'seconds'`, `'minutes'`, `'hours'`, `'days'`, `'weeks'`, `'max'`. Picking one is a judgment call you make per cached read. A few worked examples to calibrate against:
+
+<CodeVariants>
+  <CodeVariant label="Membership: 'hours'">
+    <div data-mark-color="blue">
+
+    ```ts {3}
+    export async function listMembershipsForUser(userId: string) {
+      'use cache';
+      cacheLife('hours');
+      cacheTag(userTags.all(userId));
+      return db.query.orgMembers.findMany({
+        where: eq(orgMembers.userId, userId),
+      });
+    }
+    ```
+
+    </div>
+    **Membership changes rarely, so an hour of staleness is invisible to the user.** Someone joining or leaving an org is a once-in-a-while event; serving an hour-old list costs nothing perceptible.
+  </CodeVariant>
+
+  <CodeVariant label="Feature flags: 'minutes'">
+    <div data-mark-color="blue">
+
+    ```ts {3}
+    export async function listFeatureFlags(orgId: string) {
+      'use cache';
+      cacheLife('minutes');
+      cacheTag(orgTags.all(orgId));
+      return tenantDb(orgId).select().from(featureFlags);
+    }
+    ```
+
+    </div>
+    **Rollouts move on a minute scale, so a flag should reflect a flip within minutes.** You don't want a feature you just enabled to stay dark for an hour, so the floor is tighter even though the read is just as hot.
+  </CodeVariant>
+</CodeVariants>
+
+Plan entitlements read inside an action path are the interesting case: you'd pick `'minutes'` *and* invalidate explicitly the moment the plan changes. The profile is the floor — the longest you'd ever serve a stale value if nothing pushed it — and the tag is the push that refreshes it the instant the truth changes. The experienced shape you saw in the chapter on Cache Components is `'max'` plus precise tags: for data that only ever changes through a known mutation you can tag, let the entry live effectively forever and rely on the tag to invalidate it on the dot.
+
+One watch-out, stated plainly: `'seconds'` on a frequently-read public page barely lifts the hit rate and pays constant revalidation churn for the privilege. When the data permits, reach for `'hours'` or `'days'`.
+
+## The tag scheme is the contract between read and write
+
+Now the heart of the lesson. A cached read declares its tags with `cacheTag(...)`. A mutating write — a Server Action, later a webhook — calls `updateTag` or `revalidateTag` with the *same string*. Those two strings, written in two different files by possibly two different people, must line up exactly. The tag is the named contract between the read that produces a value and the write that changes its data.
+
+Here's what happens without a scheme. Tags become free-form strings, invented at each call site. The read tags itself `'invoice-list'`; weeks later, someone writes the edit action and tags `'invoices'`, because that's the obvious name to *them*. Watch what TypeScript does about it:
+
+<CodeVariants>
+  <CodeVariant label="Free-form strings">
+    <div data-mark-color="red">
+
+    ```ts "'invoice-list'" "'invoices'"
+    // read site — db/queries/invoices.ts
+    cacheTag('invoice-list');
+
+    // write site — app/invoices/actions.ts
+    updateTag('invoices'); // never matches the read's tag
+    ```
+
+    </div>
+    **No error, no warning — the strings simply never match, so the cached list never invalidates and serves stale data indefinitely.** Each site reads as correct on its own; only together do they reveal the silent drift.
+  </CodeVariant>
+
+  <CodeVariant label="Through the scheme">
+    <div data-mark-color="green">
+
+    ```ts "invoiceTags.list(orgId)"
+    // read site — db/queries/invoices.ts
+    cacheTag(invoiceTags.list(orgId));
+
+    // write site — app/invoices/actions.ts
+    updateTag(invoiceTags.list(orgId)); // same function, same string
+    ```
+
+    </div>
+    **Both sides call the same function, so the string is identical by construction — a typo becomes a compile error, not a stale-data bug.** Misremember the function name and the build fails before the bug can ship.
+  </CodeVariant>
+</CodeVariants>
+
+This is the failure mode worth fearing, because it is invisible. Nothing crashes. No type error. No log line. The cached entry simply never invalidates and serves the old value forever — until a user files a ticket that says "I edited the invoice but it still shows the old amount." By then the bug is days old and lives in two files that look individually correct.
+
+With a scheme, the tag stops being a string you invent and becomes a *function of the entity and its scope* — something you derive mechanically. That's the whole idea, and the rest of the lesson is just working out the shape.
+
+## Four tag scopes — entity, record, org, user
+
+The scheme produces four shapes of tag. You'll use two of them constantly and the other two situationally, so let's build up in that order.
+
+The two you'll reach for on almost every entity:
+
+- The **org-scoped list tag** — `invoiceTags.list(orgId)` — invalidates every cached invoice-list read *for one org*. In a multi-tenant SaaS, reads are always tenant-bound, so this "entity" tag is org-scoped by construction; there is no useful global "all invoices everywhere" tag, because no read ever wants all invoices everywhere.
+- The **record tag** — `invoiceTags.record(orgId, id)` — invalidates a single invoice's cached read, and nothing else.
+
+Then the two situational scopes:
+
+- The **whole-org tag** — `orgTags.all(orgId)` — a coarse switch that invalidates *everything* cached for an org at once. Reach for it on org-wide events: an org rename or a plan change that cascades across many cached surfaces.
+- The **user-scoped tag** — `userTags.all(userId)` — for user-private data like a user's "orgs I'm in" list or personal notifications. Flag this one to yourself immediately: user-scoped *caches* are usually low-value (a per-user read has a near-zero hit rate, as you saw), so this tag mostly exists to invalidate the rare shared-but-user-keyed read, not as an invitation to cache per-user data.
+
+The rule that ties them together is the <Term definition="A single cached entry can carry several tags. Invalidating any one of those tags invalidates the whole entry. So a read attaches every tag a writer might use to reach it.">tag union</Term>: a cached read attaches *all* the tags by which any writer might want to invalidate it. Walk through the invoice detail read with that lens.
+
+<AnnotatedCode lang="ts" maxLines={12} code={`
+export async function getInvoice(orgId: string, id: string) {
+  'use cache';
+  cacheLife('max');
+  cacheTag(invoiceTags.record(orgId, id));
+  cacheTag(invoiceTags.list(orgId));
+  const [invoice] = await tenantDb(orgId)
+    .select()
+    .from(invoices)
+    .where(eq(invoices.id, id));
+  return invoice;
+}
+`}>
+  <AnnotatedStep meta={`{4} "invoiceTags.record(orgId, id)"`} color="green">
+    The record tag. A writer that edits *this one invoice* fires this, and only this read refreshes.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{5} "invoiceTags.list(orgId)"`} color="blue">
+    The list tag, attached to the *same* read. Now a writer that invalidates the whole org's list — say, after an archive sweep — also reaches this detail read, so it can't go stale behind a coarser write.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{4-5}" color="blue">
+    The union: this one cached entry carries both tags. Invalidating *either* invalidates the entry. The read attaches every tag a writer might use; the writer later picks the narrowest one that covers its change.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+That last point is the symmetry to hold onto: the read attaches the union of every tag that could matter to it; the write picks the single narrowest tag that captures what it changed. Reads are generous, writes are precise.
+
+## Tag-string conventions and the `lib/tags.ts` helper
+
+The functions produce strings, and the strings follow conventions — so let's name the conventions first, because they explain the helper's shape, then build the helper.
+
+The string format: lowercase, colon-delimited, scope first, entity next, id last — `org:${orgId}:invoices` for the list, `org:${orgId}:invoice:${id}` for the record. No interpolated user input that isn't already a validated id; no PII in tags (they show up in logs and traces); under the framework's 256-character cap, which you'll never approach in practice. But here's the thing: you'll rarely write these raw strings, because the helper produces them.
+
+The helper is one file, `lib/tags.ts`, sitting next to your other shared `lib/` utilities. It exports namespaced objects whose methods return the strings. Cached reads import them; write sites import the exact same functions. The string exists in **exactly one place.** Refactoring a tag becomes a one-line edit to a function body instead of a project-wide grep-and-pray. A typo becomes a type error — you misremember `invoiceTags.lst` and the build fails — instead of a silent miss that surfaces as a customer complaint.
+
+The following three tabs show the one source of truth and the two sites that share it.
+
+<CodeVariants>
+  <CodeVariant label="lib/tags.ts">
+    ```ts title="lib/tags.ts"
+    export const invoiceTags = {
+      list: (orgId: string) => `org:${orgId}:invoices`,
+      record: (orgId: string, id: string) => `org:${orgId}:invoice:${id}`,
+    };
+
+    export const orgTags = {
+      all: (orgId: string) => `org:${orgId}`,
+    };
+
+    export const userTags = {
+      all: (userId: string) => `user:${userId}`,
+    };
+    ```
+    **The only file where tag strings exist — every scope is a small function of its arguments.** Read sites and write sites both reach for these, so the string can only be defined once.
+  </CodeVariant>
+
+  <CodeVariant label="Cached read">
+    <div data-mark-color="blue">
+
+    ```ts title="db/queries/invoices.ts" "invoiceTags.list(orgId)"
+    import { invoiceTags } from '@/lib/tags';
+
+    export async function listInvoices(orgId: string) {
+      'use cache';
+      cacheLife('max');
+      cacheTag(invoiceTags.list(orgId));
+      return tenantDb(orgId).select().from(invoices);
+    }
+    ```
+
+    </div>
+    **The read imports the helper and tags itself by calling it.** No literal string anywhere — just the function and its `orgId`.
+  </CodeVariant>
+
+  <CodeVariant label="Server Action write">
+    <div data-mark-color="blue">
+
+    ```tsx title="app/invoices/actions.ts" "invoiceTags.list(orgId)"
+    import { invoiceTags } from '@/lib/tags';
+
+    export async function archiveInvoice(orgId: string, id: string) {
+      await tenantDb(orgId)
+        .update(invoices)
+        .set({ archivedAt: new Date() })
+        .where(eq(invoices.id, id));
+      updateTag(invoiceTags.list(orgId));
+    }
+    ```
+
+    </div>
+    **The write imports the same function — the string can't drift, because there's only one.** Read side and write side resolve to the identical `org:${orgId}:invoices`.
+  </CodeVariant>
+</CodeVariants>
+
+## Org-scoped tags mirror the org-scoped data layer
+
+Look again at those tags and you might feel a small echo. `org:${orgId}:invoices`. Where have you scoped reads by `orgId` before?
+
+`tenantDb(orgId)`, the org-scoped data layer. It injects the org predicate into every query so the missing-`where` bug — the one that leaks one tenant's rows into another's response — can't even compile. The org-scoped tag is the *cache-layer mirror* of that exact boundary. `org:${orgId}:invoices` covers precisely the scope that `tenantDb(orgId)` reads. The same `orgId` runs through both sides.
+
+The following diagram puts them side by side. The shared key — `orgId` — is what makes the two halves line up.
+
+<DataCacheMirror />
+
+The payoff is concrete. A mutation inside an org's scope calls `updateTag(invoiceTags.list(orgId))`, and only *that* org's cached list reads invalidate. Every other org's cached reads survive untouched — no cross-tenant invalidation, no collateral cache misses for orgs that changed nothing. One scope shape, enforced identically on both sides.
+
+:::tip
+The design principle to carry out of this lesson: when you scope the data, scope the cache the same way.
+:::
+
+## The closure rule, with tenancy stakes
+
+That principle has a sharp edge, and it's the most dangerous mistake in this lesson. You already know the rule from the chapter on Cache Components: a `'use cache'` function cannot read `cookies()`, `headers()`, or the session inside its body, and the outer-scope values it captures get folded into the cache key — so they must be serializable. Restated for tags: **the tags a cached function emits can only be functions of its arguments.**
+
+The implication for multi-tenancy is the whole point. Org scoping has to arrive as an explicit `orgId` *argument*, never get read from `auth()` inside the cached body. Look at what goes wrong if you forget.
+
+<CodeVariants>
+  <CodeVariant label="Leaks across tenants">
+    <div data-mark-color="red">
+
+    ```ts {3}
+    export async function listInvoices() {
+      'use cache';
+      const { orgId } = await auth(); // baked into ONE shared entry
+      cacheLife('max');
+      cacheTag(invoiceTags.list(orgId));
+      return tenantDb(orgId).select().from(invoices);
+    }
+    ```
+
+    </div>
+    **Reading `orgId` from the session inside the cached body bakes the *first* org's data into a single cross-request entry — the next org to hit this route reads org A's invoices.** A tenant data leak that compiles fine.
+  </CodeVariant>
+
+  <CodeVariant label="Scoped correctly">
+    <div data-mark-color="green">
+
+    ```ts "orgId: string"
+    export async function listInvoices(orgId: string) {
+      'use cache';
+      cacheLife('max');
+      cacheTag(invoiceTags.list(orgId));
+      return tenantDb(orgId).select().from(invoices);
+    }
+    ```
+
+    </div>
+    **`orgId` arrives as an argument, so it's part of the cache key — each org gets its own entry, and the caller (a Server Component that *can* read the session) passes it in.** The session read stays outside the cached boundary, where it belongs.
+  </CodeVariant>
+</CodeVariants>
+
+Sit with the failure in the first tab, because you will see it in a code review someday. It compiles. It passes type-checking. It even works in development with one logged-in user. Then in production, the first org to hit the route computes the entry, its `orgId` and its invoices get baked into a single <Term definition="The compiler-built identity of a cached entry, derived from a function's arguments, captured variables, and source. Same key means the same shared entry is served across all requests.">cache key</Term> that has no org in it, and every subsequent request — from every other org — reads that first org's invoices. That's a tenant data leak, the highest-stakes failure in the entire chapter, and it hides inside code that looks completely reasonable.
+
+The rule to carry, and to watch for in review: tags are arguments, not ambient state. Pass `orgId` in.
+
+## The granularity decision — tag for the read, not the finest grain
+
+One judgment call remains: at what scope should a given read tag itself? The answer is mechanical once you ask the right question — *what change should refresh this read?*
+
+An invoice **list** read should tag `invoiceTags.list(orgId)`, because *any* invoice in the org changing — created, edited, archived — should refresh the list. An invoice **detail** read should tag `invoiceTags.record(orgId, id)`, because only *that* invoice matters to it.
+
+```ts title="db/queries/invoices.ts"
+// list read — any invoice in the org should refresh it
+cacheTag(invoiceTags.list(orgId));
+
+// detail read — only this one invoice matters
+cacheTag(invoiceTags.record(orgId, id));
+```
+
+The experienced call: **tag at the granularity the cached read needs, not at the finest granularity available.** It's tempting to tag the list with per-record tags too — "be precise, tag every row it contains." Don't. That forces every mutation to remember and fire every record tag the list happens to depend on. And it has a specific, nasty failure: a brand-new invoice is *created*, but there was no per-record tag for it yet (it didn't exist when the list was cached), so nothing fires for the list — and the list goes stale, missing the new row, even though you were being "careful." The org-scoped list tag has no such hole: the create fires `invoiceTags.list(orgId)` and the list refreshes regardless of which rows it contained.
+
+Test that understanding before moving on.
+
+<MultipleChoice>
+  A teammate creates a brand-new invoice in their org. The cached invoices-list read is tagged `invoiceTags.list(orgId)`, and the create action fires that same tag. Does the list pick up the new invoice?
+
+  <McqChoice correct>Yes — that tag keys off the org, not any one invoice, so a row that never existed when the entry was built still falls inside its scope.</McqChoice>
+  <McqChoice>No — the framework can only invalidate rows the cached entry already knew about, and this one wasn't among them.</McqChoice>
+  <McqChoice>Only once the create also fires `invoiceTags.record(orgId, id)` for the new row, since the list rebuilds from its record tags.</McqChoice>
+  <McqChoice>No — the create has to add the new id to the list's tag set first, then fire it, before the list can refresh.</McqChoice>
+
+  <McqWhy>An org-scoped list tag covers *any* change within the org, inserts included — there's no per-record tag needed for a row that didn't exist when the entry was built. That's precisely why a list tags at org grain instead of collecting per-record tags: a per-record scheme has a hole exactly for freshly created rows.</McqWhy>
+</MultipleChoice>
+
+This sets up the write side you'll work through next: reads tag at the grain they need; writes fire the *narrowest* tag that captures the change. Two halves of the same symmetry.
+
+## The `fetchedAt` discipline — proving the cache works
+
+Last piece, and it's the diagnostic you'll lean on for every cache decision you make. Every cached read emits a timestamp captured *inside* the cached function, and the render surfaces it — always in development, behind a flag in production.
+
+<div data-mark-color="blue">
+
+```ts title="db/queries/invoices.ts" "fetchedAt: new Date().toISOString()"
+export async function getInvoice(orgId: string, id: string) {
+  'use cache';
+  cacheLife('max');
+  cacheTag(invoiceTags.record(orgId, id));
+  const [invoice] = await tenantDb(orgId)
+    .select()
+    .from(invoices)
+    .where(eq(invoices.id, id));
+  return { ...invoice, fetchedAt: new Date().toISOString() };
+}
+```
+
+</div>
+
+Reading it is simple. `fetchedAt` **stable across page loads → the cache is hitting**, and you're seeing the same entry each time. `fetchedAt` **advancing → the entry was refreshed or invalidated** since the last load. It's the first thing to look at for any cache-related bug, because it answers the most basic question — "is this even caching?" — before you go hunting for a tag mismatch.
+
+You might flinch at this, because it looks like exactly the `now()`-in-a-cached-function trap from the not-cacheable list. It's the opposite, and the difference is deliberate. A freshness read computes `now()` to *defeat* the cache — it changes on every read, so the entry can never be reused. `fetchedAt` is captured *once*, the moment the entry is computed, and frozen into the entry. It doesn't change on a cache hit — that stability is the whole signal. It tells you *when this entry was built*, which is exactly what you want to know.
+
+## The classification document
+
+You now have both artifacts. The second one — `lib/tags.ts` — you've seen in full. The first one is the table, and the experienced move is to **write it before the cache code.** Each route gets a row: its path, its class, the cached subtrees if it's partial, its tag set, and its `cacheLife` profile.
+
+Here's that table filled out for the app you know.
+
+| Route | Class | Cached subtrees | Tag set | cacheLife |
+| --- | --- | --- | --- | --- |
+| `/dashboard` | Dynamic | — | — | — |
+| `/invoices` | Dynamic | — | — | — |
+| `/invoices/[id]` | Partial | the invoice entity | `invoiceTags.record(orgId, id)`, `invoiceTags.list(orgId)` | `'max'` |
+| `/pricing` | Static | whole page | — | build-time |
+| `/settings/members` | Partial | the membership list | `orgTags.all(orgId)` | `'hours'` |
+
+This table lives next to `next.config.ts`, as part of the project's architecture docs — not buried in a code comment, but somewhere the team reviews and agrees on. The reason to write it *first* is the reason any architecture doc comes first: classifying after the fact is when the wrong decisions have already calcified into the codebase, and the audit that would have caught them never happens. A route that "just happened" to get cached without a row in this table is exactly the route that leaks or goes stale.
+
+These two artifacts — this table and `lib/tags.ts` — are what the next chapter implements on the live invoices list. The official docs in the next section keep the underlying mechanics one click away.
+
+## Recap
+
+Two rules carry the weight of this lesson. First, dynamic is the default; cache only the reads you can prove have a high read-to-write ratio and a value shared across users — and leave authenticated, per-user surfaces dynamic without apology. Second, tags are scoped arguments funneled through `lib/tags.ts`, never inline strings and never read from the session, so they mirror the same org boundary your data layer already enforces.
+
+You've classified every route and tagged every cached read. The open question is the other side of the contract: now that reads are tagged, which of the four invalidation calls does each mutation fire — and how does "did this user expect to see their own change" decide it? That's next.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Next.js — Caching with Cache Components"
+    href="https://nextjs.org/docs/app/getting-started/caching"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The architectural guide: how use cache, Suspense, and tags combine into the static-shell-plus-cached-holes model this lesson classifies."
+  />
+  <ExternalResource
+    title="Next.js — use cache directive"
+    href="https://nextjs.org/docs/app/api-reference/directives/use-cache"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The directive, cacheLife, and cacheTag reference — the mechanics behind every decision here, including the cache-key rules behind the closure trap."
+  />
+  <ExternalResource
+    title="Next.js — cacheTag reference"
+    href="https://nextjs.org/docs/app/api-reference/functions/cacheTag"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The tagging API your lib/tags.ts wraps — multiple tags per entry, the 256-character cap, and on-demand invalidation."
+  />
+  <ExternalResource
+    title="Our Journey with Caching"
+    href="https://nextjs.org/blog/our-journey-with-caching"
+    icon="simple-icons:vercel"
+    iconColor="#000000"
+    description="Sebastian Markbåge on why caching became opt-in — the reasoning behind this lesson's 'dynamic is the default' thesis."
+  />
+</CardGrid>
