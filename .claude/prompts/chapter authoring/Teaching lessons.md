@@ -30,7 +30,6 @@ Step 1 is a round-robin; steps 2–6 each launch one agent per lesson.
 4 **lesson-reviewer**: chapter id `<X>`, lesson outline path, lesson MDX path, the continuity notes paths for this chapter and the two preceding chapters. Returns the list of issues.
 5 **lesson-corrector**: chapter id `<X>`, lesson outline path, lesson MDX path, the reviewer's issue list inline, preview port. Its goal is to fix the current lesson only, if there's an issue with a previous lesson surface it in the chat, do not share them with the corrector.
 6 **lesson-tagliner**: lesson MDX path.
-7 **lesson-prose-polisher**: lesson MDX path.
 
 ## Phase C — Continuity review
 
