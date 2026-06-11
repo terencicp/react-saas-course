@@ -42,48 +42,48 @@ import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
 Picture the invoices dashboard from the last lesson.
 It renders three independent widgets stacked down the page: a `ProfileCard` showing who's signed in, an analytics chart summarising the month, and an `ActivityFeed` of recent events.
 Each one reads from the database, and the reads are wildly uneven.
-The profile is a single indexed row — call it ~10ms.
-The chart aggregates a few hundred rows — ~300ms.
-The activity feed joins across three tables and sorts — ~800ms.
+The profile is a single indexed row, so call it ~10ms.
+The chart aggregates a few hundred rows, around 300ms.
+The activity feed joins across three tables and sorts, around 800ms.
 
-Now ask the old question: when the request comes in, what does the user see, and *when*?
+When the request comes in, what does the user see, and *when*?
 
-With the classic server-rendering model the answer is brutal.
+With the classic server-rendering model, the answer is costly.
 The server has to finish rendering the whole page before it can send a single byte, and rendering the page means resolving every `await` on it.
-So the server waits for the profile, and the chart, and the feed — and only once the slowest of those, the ~800ms feed, comes back can it send anything at all.
+So the server waits for the profile, the chart, and the feed, and only once the slowest of those (the ~800ms feed) comes back can it send anything at all.
 The user stares at a blank tab for 800ms to see a profile card that was ready in 10.
 The slowest query on the page sets the <Term definition="Time to first byte: when the very first byte of the response reaches the browser. The metric this whole lesson is about moving.">time-to-first-byte</Term> for everything on it.
 
-That coupling is the problem this lesson kills.
-You already know from the previous lesson *where* to draw your `<Suspense>` boundaries — around the smallest piece of UI that loads as one concept.
-This lesson shows you the machinery that makes those boundaries pay off, and in doing so it quietly upgrades boundary placement from a UX decision into a performance decision.
-By the end you'll be able to read why a page is slow, name the two code shapes that secretly defeat streaming, and confirm from the network panel that your page actually streamed.
+That coupling is the problem this lesson solves.
+You already know from the previous lesson *where* to draw your `<Suspense>` boundaries: around the smallest piece of UI that loads as one concept.
+This lesson shows you the machinery that makes those boundaries pay off, which turns boundary placement from a UX decision into a performance decision as well.
+By the end you'll be able to read why a page is slow, name the two code shapes that quietly defeat streaming, and confirm from the network panel that your page actually streamed.
 
 ## What streaming sends down the wire
 
 Here is the whole idea in one sentence: instead of building a complete HTML document and sending it at the end, the server **opens the response and writes it in pieces over time**, sending the parts that are ready while it's still working on the rest.
 
-That's streaming. Let's walk the sequence the server actually runs, in order.
+That's streaming. Here is the sequence the server actually runs, in order.
 
-First, it renders everything that is *not* behind a Suspense boundary — the static <Term definition="The shell: the immediately-rendered outer UI of the page — the parts that do not wait on any slow data.">shell</Term>. That's the `<html>` and `<body>`, the `Header`, the layout chrome, anything that doesn't `await` slow data. This part is fast because nothing holds it up.
+First, it renders everything that is *not* behind a Suspense boundary, the static <Term definition="The shell: the immediately-rendered outer UI of the page — the parts that do not wait on any slow data.">shell</Term>. That's the `<html>` and `<body>`, the `Header`, the layout chrome, anything that doesn't `await` slow data. This part is fast because nothing holds it up.
 
-Second, it writes the **first <Term definition="Chunk: a partial write to an open HTTP response, sent before the whole response is finished. Writing one is called a flush.">chunk</Term>**. That chunk is the shell, plus — in the exact spot where each suspended boundary lives — that boundary's `fallback`. So the activity feed isn't in this chunk; its skeleton is, sitting in the feed's place. The browser receives this chunk and paints it immediately. The user sees the full page layout, with skeletons standing in for the slow regions, within milliseconds.
+Second, it writes the **first <Term definition="Chunk: a partial write to an open HTTP response, sent before the whole response is finished. Writing one is called a flush.">chunk</Term>**. That chunk is the shell, plus, in the exact spot where each suspended boundary lives, that boundary's `fallback`. So the activity feed isn't in this chunk; its skeleton is, sitting in the feed's place. The browser receives this chunk and paints it immediately. The user sees the full page layout, with skeletons standing in for the slow regions, within milliseconds.
 
-Third, as each suspended boundary finishes resolving on the server, the server writes a **follow-up chunk** for it. That chunk carries two things: the boundary's now-resolved HTML, and a tiny inline `<script>` whose only job is to find the fallback's placeholder in the DOM and swap the real content into its slot. The browser runs the script, the skeleton vanishes, the real widget appears in place. No flicker of the rest of the page — just that one region updating.
+Third, as each suspended boundary finishes resolving on the server, the server writes a **follow-up chunk** for it. That chunk carries two things: the boundary's now-resolved HTML, and a tiny inline `<script>` whose only job is to find the fallback's placeholder in the DOM and swap the real content into its slot. The browser runs the script, the skeleton disappears, and the real widget appears in place. The rest of the page doesn't flicker; only that one region updates.
 
 Fourth, the connection **stays open** the entire time. The server holds the response open until every boundary has settled and its chunk has been written, then it closes.
 
-A few things about this are worth saying out loud, because they're where the intuition usually goes wrong.
+A few things about this are worth stating directly, because they're where the intuition usually goes wrong.
 
-There is **one response**, not many. The browser made a single request for the document and is receiving a single response — it just arrives in installments. This is not the browser polling, not separate fetches per widget, not client-side data loading. It's one HTTP response written over time.
+There is **one response**, not many. The browser made a single request for the document and is receiving a single response; it just arrives in installments. This is not the browser polling, not separate fetches per widget, not client-side data loading. It's one HTTP response written over time.
 
-The fallbacks ship *with* the shell. The user doesn't wait to see *something*; the page looks complete-with-loading-states from the first paint. The slow data fills in; the layout never appears empty.
+The fallbacks ship *with* the shell. The user doesn't wait to see *something*: the page looks complete, with loading states, from the first paint. The slow data fills in, and the layout never appears empty.
 
 Boundaries stream in **whatever order they finish**, not source order. If the chart resolves before the feed, the chart's chunk goes down first, regardless of which appears higher in your JSX. Each boundary is independent.
 
-And the swap is a **DOM patch, not a re-fetch**. The follow-up chunk already contains the rendered HTML; the inline script just moves it into place. The browser never asks the server for anything a second time.
+And the swap is a **DOM patch, not a re-fetch**. The follow-up chunk already contains the rendered HTML, and the inline script just moves it into place. The browser never asks the server for anything a second time.
 
-The following trace animates exactly this for the dashboard. Drag the scrubber through the three phases and watch the order of events — the shell and skeletons appear together, then each feed streams into its own slot.
+The following trace animates exactly this for the dashboard. Drag the scrubber through the three phases and watch the order of events: the shell and skeletons appear together, then each feed streams into its own slot.
 
 <RequestTrace title="Streaming the invoices dashboard" url="/dashboard" phases="server-render,shell,stream">
   <TraceNode id="page" label="DashboardPage" kind="server" cache="static">
@@ -105,14 +105,14 @@ The following trace animates exactly this for the dashboard. Drag the scrubber t
     with skeletons holding the slow regions.
   </Phase>
   <Phase id="stream">
-    Each feed streams into its slot the moment its own query resolves — in whatever order they finish,
+    Each feed streams into its slot the moment its own query resolves, in whatever order they finish,
     not source order.
   </Phase>
 </RequestTrace>
 
 Watch the `stream` phase a second time: the two feeds don't arrive together. Each one's chunk is written the instant *its* query comes back, independent of the other. That independence is the entire payoff, and the next section is about not throwing it away.
 
-Before that, lock in the order with a quick drill.
+First, a quick drill to lock in the order.
 
 <Sequence instructions="A request hits the dashboard below. The profile read takes ~10ms and the activity read ~800ms. Drag the events into the order they happen on the wire.">
 
@@ -138,7 +138,7 @@ export default function DashboardPage() {
   <Step>Every boundary has settled, so the server closes the response.</Step>
 </Sequence>
 
-What's actually moving down that connection isn't only plain HTML. Alongside the markup, the server writes the <Term definition="RSC payload: the React-specific serialized stream that describes the rendered tree and lets the browser reconnect it to your components.">RSC payload</Term>. You met that wire format when you learned the server/client boundary; here it's the thing being flushed in chunks. You'll see it in DevTools later in this lesson, which is why it's worth being able to name.
+What's actually moving down that connection isn't only plain HTML. Alongside the markup, the server writes the <Term definition="RSC payload: the React-specific serialized stream that describes the rendered tree and lets the browser reconnect it to your components.">RSC payload</Term>. You met that wire format when you learned the server/client boundary; here it's the thing being flushed in chunks. You'll see it in DevTools later in this lesson, so it's worth being able to name.
 
 ## Streaming is the App Router default
 
@@ -146,11 +146,11 @@ There is a question lurking under all of this: how do you *turn on* streaming?
 
 You don't. There is no export, no config flag, no opt-in.
 
-A `page.tsx` in the App Router does not return a finished HTML document — it returns a **stream**. As the renderer walks your tree, every time it hits a suspended boundary it writes the fallback into the output and keeps going rather than stopping to wait. That behaviour is the renderer's default. The moment you wrap an async child in `<Suspense>`, that route streams.
+A `page.tsx` in the App Router does not return a finished HTML document; it returns a **stream**. As the renderer walks your tree, every time it hits a suspended boundary it writes the fallback into the output and keeps going rather than stopping to wait. That behaviour is the renderer's default. The moment you wrap an async child in `<Suspense>`, that route streams.
 
-A route with *zero* suspended boundaries still "streams" in the trivial sense — it just writes one chunk, because nothing was ever held back, and the response is complete on the first flush. Streaming isn't a mode you enter; it's simply what happens when there's a boundary to flush around.
+A route with *zero* suspended boundaries still "streams" in the trivial sense: it writes one chunk, because nothing was ever held back, and the response is complete on the first flush. Streaming isn't a mode you enter; it's simply what happens when there's a boundary to flush around.
 
-So the streaming behaviour of a page is decided entirely by **where its boundaries are**. There's no separate streaming config to get right — the boundaries *are* the config. This is why the previous lesson's placement decision is load-bearing: when you chose where to draw a boundary, you were also choosing what streams independently and what waits.
+So the streaming behaviour of a page is decided entirely by **where its boundaries are**. There's no separate streaming config to get right, because the boundaries *are* the config. This is why the previous lesson's placement decision matters so much: when you chose where to draw a boundary, you were also choosing what streams independently and what waits.
 
 ```tsx title="app/dashboard/page.tsx" {5-7, 8-10}
 export default function DashboardPage() {
@@ -168,15 +168,15 @@ export default function DashboardPage() {
 }
 ```
 
-No export, no flag — these two boundaries are the entire streaming configuration.
+No export, no flag: these two boundaries are the entire streaming configuration.
 
 :::note
-The next chapter adds **Partial Prerendering**, which extends streaming with a static shell built at build time: the unchanging parts of the page ship from the CDN instantly and the dynamic parts stream in over these same Suspense boundaries — same boundaries, the shell just comes from a cache instead of a fresh server render. This lesson is the runtime mechanics of a single live request; the decision of what's static versus dynamic is the next chapter's job.
+The next chapter adds **Partial Prerendering**, which extends streaming with a static shell built at build time. The unchanging parts of the page ship from the CDN instantly and the dynamic parts stream in over these same Suspense boundaries; the shell just comes from a cache instead of a fresh server render. This lesson covers the runtime mechanics of a single live request; the decision of what's static versus dynamic is the next chapter's job.
 :::
 
 ## Two independent reads, two boundaries: fetching in parallel
 
-Now the pattern that decides whether streaming actually buys you anything.
+This is the pattern that decides whether streaming actually buys you anything.
 
 The rule is the one the previous lesson set up, extended one step: **each unit of UX owns its own data fetch *and* its own Suspense boundary.** Concretely, you write two boundaries, and inside each one you put an `async` Server Component that kicks off its own query in its body:
 
@@ -192,13 +192,13 @@ const ActivityFeed = async () => {
 };
 ```
 
-When the server renders the dashboard tree, it reaches `ProfileCard`, which starts `getProfile()`, and reaches `ActivityFeed`, which starts `listActivity()`. Both queries are now in flight — running <Term definition="Concurrently / in parallel: both reads are in progress at the same time, rather than one finishing before the other starts.">concurrently</Term> — because nothing made the server wait for the first before it got to the second. Each boundary streams the instant its own query resolves. The profile shows up at ~10ms, the feed at ~800ms, and the user never waited on the feed to see the profile.
+When the server renders the dashboard tree, it reaches `ProfileCard`, which starts `getProfile()`, and reaches `ActivityFeed`, which starts `listActivity()`. Both queries are now in flight, running <Term definition="Concurrently / in parallel: both reads are in progress at the same time, rather than one finishing before the other starts.">concurrently</Term>, because nothing made the server wait for the first before it got to the second. Each boundary streams the instant its own query resolves. The profile shows up at ~10ms, the feed at ~800ms, and the user never waited on the feed to see the profile.
 
 <VideoCallout videoId="bKm1rNaCFOo" videoTitle="This Next.js Data Fetching Pattern Is CRITICAL For Every Developer">
-  ByteGrad walks the same move on a live dashboard (first ~15 min) — watch the shell paint instantly while the slow read streams in behind a `<Suspense>` boundary, then confirms it in the Network tab.
+  ByteGrad walks the same move on a live dashboard (first ~15 min): watch the shell paint instantly while the slow read streams in behind a `<Suspense>` boundary, then confirm it in the Network tab.
 </VideoCallout>
 
-Now the trap — and this is the single most common latency bug you will ship. It looks like a perfectly reasonable Server Component, and it's wrong:
+Now the trap, and it's the single most common latency bug you will ship. It looks like a perfectly reasonable Server Component, and it's wrong:
 
 <div data-mark-color="red">
 
@@ -217,21 +217,21 @@ const Dashboard = async () => {
 
 </div>
 
-Two serial awaits in one component — the second never starts until the first returns.
+Two serial awaits in one component: the second never starts until the first returns.
 
-Read the two `await`s carefully. The second one — `await listActivity()` — does not even *begin* until the first has resolved, because `await` pauses the function until its promise settles. So the chart read finishes at 300ms, and only *then* does the activity read start, finishing at 300 + 800 = **1100ms**. And because there's only one component and one render, nothing streams: the whole thing waits for both reads and ships at the end.
+Read the two `await`s carefully. The second one, `await listActivity()`, does not even *begin* until the first has resolved, because `await` pauses the function until its promise settles. So the chart read finishes at 300ms, and only *then* does the activity read start, finishing at 300 + 800 = **1100ms**. And because there's only one component and one render, nothing streams: the whole thing waits for both reads and ships at the end.
 
-Neither read depends on the other. The activity feed doesn't need the chart. You paid 1100ms for work that, run together, takes 800. This is the reflex worth burning in: **before you write a second `await`, ask whether it needs the result of the first.** If it doesn't, the two reads must not go serial.
+Neither read depends on the other. The activity feed doesn't need the chart. You paid 1100ms for work that, run together, takes 800. So the habit worth building is this: before you write a second `await`, ask whether it needs the result of the first. If it doesn't, the two reads must not run serially.
 
-The picture makes the cost obvious. The following timeline puts both shapes on the same clock.
+The cost is clearer in a picture. The following timeline puts both shapes on the same clock.
 
-<Figure caption="Same data, same queries — the difference is the shape of the code. Sequential awaits sum to 1100ms and nothing reaches the user until the last one returns; parallel boundaries overlap to 800ms, the shell flushes near zero, and each widget streams in when its own read ends.">
+<Figure caption="Same data, same queries; the difference is the shape of the code. Sequential awaits sum to 1100ms and nothing reaches the user until the last one returns; parallel boundaries overlap to 800ms, the shell flushes near zero, and each widget streams in when its own read ends.">
   <GanttSequentialVsParallel />
 </Figure>
 
-The top section is a sum: `300 + 800`, and the first byte doesn't land until the very end. The bottom section is an overlap: the bars start together, the shell flushes at near-zero, and each widget appears when its own bar ends. Same data, same queries — the difference is entirely in the shape of the code.
+The top section is a sum: `300 + 800`, and the first byte doesn't land until the very end. The bottom section is an overlap: the bars start together, the shell flushes at near-zero, and each widget appears when its own bar ends. Same data, same queries; the difference is entirely in the shape of the code.
 
-The two-components split isn't the only way to run reads in parallel; if the data is consumed together, `Promise.all` does it inside one component, which is the next section. But splitting into separate boundaries is the right move when each piece can render on its own.
+Splitting into two components isn't the only way to run reads in parallel. If the data is consumed together, `Promise.all` runs them in parallel inside one component, which is the next section. But splitting into separate boundaries is the right move when each piece can render on its own.
 
 <CodeVariants maxLines={12}>
   <CodeVariant label="Sequential await (serialized)">
@@ -251,7 +251,7 @@ The two-components split isn't the only way to run reads in parallel; if the dat
     ```
 
     </div>
-    **One component, two serial awaits — total latency is the *sum*, and nothing streams.** The second read can't start until the first settles, so `300ms + 800ms = 1100ms`, and the single render ships only once both are done.
+    **One component, two serial awaits: total latency is the *sum*, and nothing streams.** The second read can't start until the first settles, so `300ms + 800ms = 1100ms`, and the single render ships only once both are done.
   </CodeVariant>
 
   <CodeVariant label="Two async children, two boundaries (parallel)">
@@ -273,21 +273,21 @@ The two-components split isn't the only way to run reads in parallel; if the dat
     ```
 
     </div>
-    **Each child starts its own query and owns its own boundary — the reads run concurrently, the shell ships now, and each widget streams when it's ready.** `ChartCard` and `ActivityFeed` are async children that each await their own read, exactly as the trace played out.
+    **Each child starts its own query and owns its own boundary: the reads run concurrently, the shell ships now, and each widget streams when it's ready.** `ChartCard` and `ActivityFeed` are async children that each await their own read, exactly as the trace played out.
   </CodeVariant>
 </CodeVariants>
 
 :::tip
-This generalises to parallel routes. Each `@slot` in a parallel route is its own independent subtree with its own Suspense boundary, so a list-plus-detail surface streams the list and the detail in parallel — neither waits on the other. The list-plus-detail project at the end of these App Router chapters leans on exactly that.
+This generalises to parallel routes. Each `@slot` in a parallel route is its own independent subtree with its own Suspense boundary, so a list-plus-detail surface streams the list and the detail in parallel, and neither waits on the other. The list-plus-detail project at the end of these App Router chapters leans on exactly that.
 :::
 
 ## When the data is consumed together: `Promise.all`
 
-Splitting into separate boundaries is right when each piece renders on its own. But sometimes it isn't — sometimes a single piece of UI needs *all* of several reads before it can render anything meaningful.
+Splitting into separate boundaries is right when each piece renders on its own. But sometimes a single piece of UI needs *all* of several reads before it can render anything meaningful.
 
 Don't pick by reflex. Pick by how the data is consumed.
 
-**Consumed together.** A summary card that aggregates across the profile, the chart, and the feed — a header that prints "12 invoices, $48k, last activity 3 minutes ago." This card can't render half of itself; it needs every read before it shows anything. Here, splitting into three boundaries would be pointless — there's only one thing to reveal. So you fetch all three reads inside **one** component, with **one** boundary, using `Promise.all`:
+**Consumed together.** Picture a summary card that aggregates across the profile, the chart, and the feed: a header that prints "12 invoices, $48k, last activity 3 minutes ago." This card can't render half of itself; it needs every read before it shows anything. Here, splitting into three boundaries would be pointless, because there's only one thing to reveal. So you fetch all three reads inside **one** component, with **one** boundary, using `Promise.all`:
 
 ```tsx title="app/dashboard/summary.tsx" {2-6}
 const DashboardSummary = async () => {
@@ -301,19 +301,19 @@ const DashboardSummary = async () => {
 };
 ```
 
-Concurrent reads, one fallback — correct when the summary can't render until all three are in.
+Concurrent reads, one fallback: correct when the summary can't render until all three are in.
 
-`Promise.all` starts all three reads at once and waits for the group, so the reads still run concurrently — you get the `max(...)` cost, not the sum. The difference from the previous section isn't parallelism; *both* shapes are parallel. The difference is the **reveal granularity**: `Promise.all` gives you one fallback covering one combined unit, because there's one thing to reveal.
+`Promise.all` starts all three reads at once and waits for the group, so the reads still run concurrently and you get the `max(...)` cost, not the sum. The difference from the previous section isn't parallelism, since *both* shapes are parallel. The difference is the **reveal granularity**: `Promise.all` gives you one fallback covering one combined unit, because there's one thing to reveal.
 
-**Consumed adjacently.** The three dashboard widgets sitting side by side, each rendering independently. Here you want three boundaries, one per widget, so each reveals on its own schedule — the fast profile doesn't wait on the slow feed.
+**Consumed adjacently.** Picture the three dashboard widgets sitting side by side, each rendering independently. Here you want three boundaries, one per widget, so each reveals on its own schedule and the fast profile doesn't wait on the slow feed.
 
-The discriminator is one question: **do these reads feed one rendered thing, or several?** One thing → `Promise.all` plus one boundary. Several things → several boundaries. Both run the reads in parallel; the only thing that changes is how many fallbacks the user sees and when each region fills in — which follows the UX, exactly as the unit-of-UX rule from the previous lesson predicts.
+The decision comes down to one question: **do these reads feed one rendered thing, or several?** One thing means `Promise.all` plus one boundary. Several things means several boundaries. Both run the reads in parallel; the only thing that changes is how many fallbacks the user sees and when each region fills in, which follows the UX, exactly as the unit-of-UX rule from the previous lesson predicts.
 
 :::caution
-`Promise.all` rejects the moment *any* of its reads rejects, discarding the others. That's correct for an aggregate summary — a half-built total is meaningless, so if one read fails the whole thing should fail. When you instead want the surviving reads to render even if one fails, reach for `Promise.allSettled`, which resolves with a result per promise regardless of individual failures.
+`Promise.all` rejects the moment *any* of its reads rejects, discarding the others. That's correct for an aggregate summary: a half-built total is meaningless, so if one read fails the whole thing should fail. When you instead want the surviving reads to render even if one fails, reach for `Promise.allSettled`, which resolves with a result per promise regardless of individual failures.
 :::
 
-The decision walker below drills the call. Walk it on the consumption axis — not "is this slow?" but "does the UI need all of this before it can render anything?"
+The decision walker below drills the call. Walk it on the consumption axis: not "is this slow?" but "does the UI need all of this before it can render anything?"
 
 <StateMachineWalker kind="decision" title="One boundary or several?">
   <Question
@@ -326,27 +326,27 @@ The decision walker below drills the call. Walk it on the consumption axis — n
   </Question>
 
   <Leaf id="leaf-promise-all" verdict="Promise.all in one component, one Suspense boundary">
-    The reads still run concurrently — `Promise.all` starts them all at once and the component
+    The reads still run concurrently: `Promise.all` starts them all at once and the component
     awaits them as a group, so you pay `max(...)`, not the sum.
     One fallback covers the combined unit because there's a single thing to reveal.
   </Leaf>
 
   <Leaf id="leaf-boundaries" verdict="One async child + one Suspense boundary per piece">
     Each child starts its own read in its body and owns its own boundary, so the reads run
-    concurrently and each region streams in independently — the fast piece reveals the moment its
+    concurrently and each region streams in independently. The fast piece reveals the moment its
     query resolves, without waiting on the slow one.
   </Leaf>
 </StateMachineWalker>
 
 ## What blocks the first byte
 
-There's a subtler consequence of how the shell is assembled, and it's where a lot of real-world TTFB goes to die.
+There's a subtler consequence of how the shell is assembled, and it's where a lot of real-world TTFB is lost.
 
-Everything *above* every Suspense boundary runs to completion **before any chunk flushes**. The server cannot send the shell until it has finished rendering the shell — and the shell is, by definition, everything that isn't behind a boundary. So a slow `await` in the root layout, or in the page body before the first boundary, isn't streamed. It's pure blank-screen time, paid up front, on *every* request that renders that layout.
+Everything *above* every Suspense boundary runs to completion **before any chunk flushes**. The server cannot send the shell until it has finished rendering the shell, and the shell is, by definition, everything that isn't behind a boundary. So a slow `await` in the root layout, or in the page body before the first boundary, isn't streamed. It's pure blank-screen time, paid up front, on *every* request that renders that layout.
 
-Concretely: a 50ms global query in the root layout adds 50ms to TTFB for every single page under it. The same 50ms query inside a Suspense-wrapped widget is invisible to TTFB — it streams in after the shell, while the user is already looking at the page.
+Concretely, a 50ms global query in the root layout adds 50ms to TTFB for every single page under it. The same 50ms query inside a Suspense-wrapped widget is invisible to TTFB: it streams in after the shell, while the user is already looking at the page.
 
-This is why a layout is a dangerous place to put data: its cost is paid by every child route, all the time. So the reflex is to keep above-boundary work cheap and fast — the auth check, the layout chrome — and push every slow read *below* a boundary where it can stream.
+This is why a layout is a risky place to put data: its cost is paid by every child route, all the time. So the habit is to keep above-boundary work cheap and fast, such as the auth check and the layout chrome, and push every slow read *below* a boundary where it can stream.
 
 <div data-mark-color="red">
 
@@ -369,51 +369,51 @@ export default async function DashboardLayout({
 
 </div>
 
-`requireUser()` gates the whole subtree and must run before the shell — keep it cheap. The dashboard stats belong below a boundary, not here: `getDashboardStats()` is a slow read that blocks the first byte for every route under this layout.
+`requireUser()` gates the whole subtree and must run before the shell, so keep it cheap. The dashboard stats belong below a boundary, not here: `getDashboardStats()` is a slow read that blocks the first byte for every route under this layout.
 
-Look back at the trace from the start of the lesson: the `server-render` phase *is* the "before first byte" window. Anything awaiting in that phase that isn't behind a boundary stalls the shell flush — which is exactly why that component refuses to render an awaiting node outside a `<Suspense>` and instead shows a "needs `<Suspense>`" error. There is no such thing in the App Router as a slow `await` above every boundary that doesn't cost you blank screen.
+Look back at the trace from the start of the lesson: the `server-render` phase *is* the "before first byte" window. Anything awaiting in that phase that isn't behind a boundary stalls the shell flush. That's exactly why the trace refuses to render an awaiting node outside a `<Suspense>` and instead shows a "needs `<Suspense>`" error. In the App Router, a slow `await` above every boundary always costs you blank screen.
 
 ## Confirming it streamed: reading the network panel
 
-Here's a habit that separates engineers who *think* their page streams from ones who *know*: don't infer what's in the first chunk from your render order — read it.
+Here's a habit that separates engineers who *think* their page streams from ones who *know*: don't infer what's in the first chunk from your render order. Read it.
 
-Open DevTools, go to the **Network** panel, and select the document request — the one for the page URL itself. Watch the response arrive over time. The initial chunk carries the shell markup and the fallback HTML; subsequent chunks carry each boundary's resolved HTML and its swap script. The response timing shows the connection held open across the boundary resolutions rather than completing in one shot.
+Open DevTools, go to the **Network** panel, and select the document request, the one for the page URL itself. Watch the response arrive over time. The initial chunk carries the shell markup and the fallback HTML; subsequent chunks carry each boundary's resolved HTML and its swap script. The response timing shows the connection held open across the boundary resolutions rather than completing in one shot.
 
 The concrete tells to look for:
 
 - The document response shows a **growing, streamed body** rather than a single atomic payload that lands all at once.
-- The "waiting" versus "content download" split on the document request is unusually long on the download side — because the download genuinely spans the boundary settles, not just the network transfer.
+- The "waiting" versus "content download" split on the document request is unusually long on the download side, because the download genuinely spans the boundary settles, not just the network transfer.
 
-The simplest sniff test is just the lesson's own question: **did the first chunk arrive while later chunks were still in flight?** If the whole body lands at once at the very end, streaming didn't happen — and the rest of this section is about the most common reason why, even when your code is perfect.
+The simplest sniff test is the lesson's own question: **did the first chunk arrive while later chunks were still in flight?** If the whole body lands at once at the very end, streaming didn't happen, and the rest of this section is about the most common reason why, even when your code is perfect.
 
-What's actually traveling here is ordinary HTTP — <Term definition="Chunked transfer encoding: the HTTP/1.1 mechanism for sending a response body in pieces without committing to a total length up front.">chunked transfer encoding</Term> on HTTP/1.1, or the equivalent on HTTP/2. No special infrastructure. Vercel and a plain Node server both stream out of the box.
+What's actually traveling here is ordinary HTTP: <Term definition="Chunked transfer encoding: the HTTP/1.1 mechanism for sending a response body in pieces without committing to a total length up front.">chunked transfer encoding</Term> on HTTP/1.1, or the equivalent on HTTP/2. No special infrastructure. Vercel and a plain Node server both stream out of the box.
 
-But — and this is the production gotcha that costs people an afternoon — **something in the network path can buffer the whole response before forwarding it**, and that silently collapses streaming back into one-shot delivery. Your code is correct. The boundaries are right. The user still waits for everything, because a piece of infrastructure between your server and the browser held the chunks until the response was complete and then sent them as one.
+But here is the production gotcha that costs people an afternoon: **something in the network path can buffer the whole response before forwarding it**, and that silently collapses streaming back into one-shot delivery. Your code is correct. The boundaries are right. The user still waits for everything, because a piece of infrastructure between your server and the browser held the chunks until the response was complete and then sent them as one.
 
 Two culprits worth naming:
 
-- **A reverse proxy or CDN tier that buffers by default** — Nginx, Traefik, an application load balancer. The fix is proxy-side (for example, Nginx's `proxy_buffering off`, or the `X-Accel-Buffering: no` response header that tells it not to buffer this response).
-- **Response compression that buffers content before it flushes** — a compression layer that waits to see more of the body before it emits anything defeats the chunk-by-chunk write.
+- **A reverse proxy or CDN tier that buffers by default**, such as Nginx, Traefik, or an application load balancer. The fix is proxy-side (for example, Nginx's `proxy_buffering off`, or the `X-Accel-Buffering: no` response header that tells it not to buffer this response).
+- **Response compression that buffers content before it flushes.** A compression layer that waits to see more of the body before it emits anything defeats the chunk-by-chunk write.
 
-You aren't going to configure Nginx in this lesson — deployment and self-hosting config is out of scope — so the goal is just to know *where to look*. When someone says "streaming works locally but not in production," this is the first thing to check, and the diagnostic is the same sniff test: if the Network panel shows one large response landing at the end instead of incremental chunks, something in the path is buffering.
+You aren't going to configure Nginx in this lesson, since deployment and self-hosting config is out of scope, so the goal is just to know *where to look*. When someone says "streaming works locally but not in production," this is the first thing to check, and the diagnostic is the same sniff test: if the Network panel shows one large response landing at the end instead of incremental chunks, something in the path is buffering.
 
 ## Streaming is HTTP, not a socket
 
-One conflation to clear up before it takes root, because it's a natural one.
+There's one conflation to clear up before it takes root, because it's a natural one.
 
-Streaming the RSC payload is **HTTP response streaming** — one response, written in chunks. It is *not* Server-Sent Events, and it is *not* WebSockets. It flows server→browser exactly once, for one render, and the connection closes when the page is done. It is not a live channel. It cannot push you an update after the page has settled.
+Streaming the RSC payload is **HTTP response streaming**: one response, written in chunks. It is *not* Server-Sent Events, and it is *not* WebSockets. It flows server→browser exactly once, for one render, and the connection closes when the page is done. It is not a live channel, so it cannot push you an update after the page has settled.
 
-So if your product needs real-time push — notifications appearing, a chat message arriving, presence dots going green — page streaming is the wrong tool, and reaching for it is a category error. The SaaS answer for live push is a dedicated channel: a hosted service like Pusher or Ably, or your own Server-Sent Events route handler. That's a different concern entirely and out of scope here. The one sentence to leave with: **page streaming and real-time push are different tools.**
+So if your product needs real-time push, such as notifications appearing, a chat message arriving, or presence dots going green, page streaming is the wrong tool. The SaaS answer for live push is a dedicated channel: a hosted service like Pusher or Ably, or your own Server-Sent Events route handler. That's a different concern entirely and out of scope here. The point to leave with is that page streaming and real-time push are different tools.
 
 :::note
-One related edge: when the user navigates away mid-stream, Next.js aborts the request — but in-flight server work like a database query or a `fetch` does **not** automatically cancel. You either thread an `AbortSignal` through the read or accept the wasted work. The full cancellation surface is covered in the next chapter; for now, just know the connection closing doesn't magically stop the query behind it.
+One related edge: when the user navigates away mid-stream, Next.js aborts the request, but in-flight server work like a database query or a `fetch` does **not** automatically cancel. You either thread an `AbortSignal` through the read or accept the wasted work. The full cancellation surface is covered in the next chapter; for now, just know the connection closing doesn't stop the query behind it on its own.
 :::
 
 ## Diagnose what defeats streaming
 
-The durable skill from this lesson isn't writing a `<Suspense>` — you can do that already. It's *spotting* the shapes that quietly defeat streaming in code that looks completely fine on the page. So let's do that, on a real dashboard.
+The durable skill from this lesson isn't writing a `<Suspense>`, which you can do already. It's *spotting* the shapes that quietly defeat streaming in code that looks completely fine on the page. Let's do that on a real dashboard.
 
-The file below renders a dashboard with a summary header and an activity feed. It compiles, it runs, and it's slower than it should be. Review it like a teammate's PR: click the lines where streaming is being defeated and leave a comment explaining the problem and the fix. Two defects are hiding here — and they don't have the same fix.
+The file below renders a dashboard with a summary header and an activity feed. It compiles, it runs, and it's slower than it should be. Review it like a teammate's PR: click the lines where streaming is being defeated and leave a comment explaining the problem and the fix. Two defects are hiding here, and they don't have the same fix.
 
 <CodeReview instructions="This dashboard works but wastes time. Click the lines where streaming is defeated and say why — and how you'd fix it. Two defects are hiding here, and they don't have the same fix.">
   <ReviewFile name="app/dashboard/page.tsx">
@@ -474,7 +474,7 @@ The file below renders a dashboard with a summary header and an activity feed. I
 
 ## Recall check
 
-Three quick checks on the specific things this lesson is easy to get wrong.
+Three quick checks on the things this lesson is easy to get wrong.
 
 <MultipleChoice>
   A streamed dashboard page has a fast `ProfileCard` and a slow `ActivityFeed`, each wrapped in its own `<Suspense>`. What lands in the browser in the *very first* chunk of the response?
