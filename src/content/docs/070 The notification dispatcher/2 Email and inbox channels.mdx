@@ -1,0 +1,408 @@
+---
+title: Email and inbox, independent channels
+chapter-id: 70
+course-progress: 0.00005
+tagline: Build the two channel functions that deliver a notification, a thin email adapter over the Resend wrapper and a single inbox row insert, sharing one uniform signature so the dispatcher fans out without branching.
+sidebar:
+  order: 2
+  label: Email and inbox channels
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import Sequence from '../../../components/exercises/sequence/Sequence.astro';
+import Step from '../../../components/exercises/sequence/Step.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import Term from '../../../components/ui/Term.astro';
+import ChannelLayering from '../../../components/lessons/070/2/ChannelLayering.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The last lesson left a debt. The dispatcher resolved that a member who got promoted should hear about it on *both* email and the in-app inbox — and then it stopped at "the dispatcher decides, then acts." It owned the decision; it never showed you the act. This lesson is the *act* half: the two functions that actually deliver a message once the dispatcher has chosen the channels.
+
+The good news is how little new machinery there is. The email channel is a thin call into the `sendEmail` wrapper you already built for the welcome email — the one that owns suppression, the `from` address, and idempotency. The inbox channel is a single `INSERT` into the `notifications` table you designed last lesson. This is composition, not invention. Three takeaways carry the lesson: every channel is a function with the *same* signature, so the dispatcher loops over them without an `if email … else inbox` in sight; each channel is a thin adapter that hands its work to a lower layer instead of re-doing it; and one channel failing never takes down the other. Hold one sentence in your head as you read: **the dispatcher resolves channels, renders the content once, then calls one uniform function per channel — and the channels are independent.**
+
+## One signature, every channel
+
+Start with the shape, because the shape is the whole argument. Both channels export a single function, and both functions have the *identical* signature. Each one takes the resolved recipient, the registry entry for the event, the typed payload, and the already-rendered content.
+
+```ts title="lib/notifications/channels.ts"
+type ChannelFn = (args: {
+  recipient: Recipient;
+  event: NotificationEvent;
+  payload: Record<string, unknown>;
+  rendered: RenderedContent;
+}) => Promise<void>;
+
+export const sendEmailChannel: ChannelFn = async (args) => {
+  // …calls the sendEmail wrapper
+};
+
+export const writeInboxChannel: ChannelFn = async (args) => {
+  // …inserts one notifications row
+};
+```
+
+The comments here are the kind that earn their place — they name what each stub *will* do without narrating syntax. `NotificationEvent` is the dispatch input from last lesson — `{ type, recipientUserIds, subjectId, payload }` — so a channel reads `event.type` to look its registry entry up (`notifiableEvents[event.type]`) and `event.subjectId` for the idempotency key. `Recipient` and `RenderedContent` are introduced in the prose below.
+
+Two details in that signature deserve a beat. The first is the return type: `Promise<void>`, not `Promise<Result<T>>`. A channel doesn't hand failure back as a value — the dispatcher wraps each call in its own `try`/`catch` and owns what happens when one throws. That's the same deliberate choice the dispatcher's `DispatchResult` made last lesson: counts, not a discriminated union, because there's no fail path here for the *caller* to branch on. The second is `rendered`: the dispatcher computes the display content once and passes it down, so neither channel re-derives it. You'll see exactly why that field exists a little further down; for now, take it as given that the work is done before the channel function runs.
+
+Now the payoff — the reason the signatures are uniform at all. The dispatcher keeps a lookup object keyed by channel name and loops over whichever channels this recipient gets:
+
+```ts title="lib/notifications/dispatch.ts"
+const channelFns = {
+  email: sendEmailChannel,
+  inbox: writeInboxChannel,
+} satisfies Record<ChannelName, ChannelFn>;
+
+for (const channel of channels) {
+  await channelFns[channel](args);
+}
+```
+
+`ChannelName` is the union of channel keys (`'email' | 'inbox'`); `channels` is the recipient's resolved list.
+
+Look at what is *not* there: no branch on the channel type. The loop doesn't know or care whether it's calling email or inbox — it looks the function up by name and awaits it. That is the entire reason for the uniform signature. When you add push notifications later, you write one new file with the same `ChannelFn` shape, add one entry to `channelFns`, and the loop never changes. A channel becomes a *new file*, not a new branch threaded through code that already works. Branchless fan-out is cheap to extend precisely because there's nothing in the middle to edit.
+
+One more thing the signature quietly tells you. The dispatcher hands each channel a *resolved recipient*, but "resolved" means resolved to a user — at minimum a `userId`. It is not resolved to an email address, because the inbox channel doesn't need one and the dispatcher has no business knowing which channel wants which identifier. Each channel resolves the rest itself: email turns a `userId` into an address, the inbox needs nothing beyond the id. That split is exactly what the next two sections build.
+
+## The layering: dispatcher, channel, sink
+
+Before you write either function, get the picture of *where* it sits. This is the single most important diagram in the lesson, because nearly every beginner mistake here comes from getting it wrong — re-checking suppression inside the channel, re-resolving the `from` address, re-rendering content a lower layer already produced. Every one of those bugs is the same bug: doing a job that belongs to the layer below you.
+
+The call stack has three layers. The dispatcher is on top. Below it sit the two channel functions. Below *them* sit the sinks — the `sendEmail` wrapper (which calls Resend) and the raw `db.insert`. Scrub through the sequence below to watch one `dispatch` call descend through those layers, one at a time.
+
+<DiagramSequence>
+  <DiagramStep caption="The dispatcher has already resolved this recipient's channels and rendered the content once. It owns the loop and the try/catch. It knows nothing about Resend or SQL — only that it calls one function per channel.">
+    <ChannelLayering highlight="dispatcher" />
+  </DiagramStep>
+
+  <DiagramStep caption="Each channel function is a thin adapter. It translates 'registry entry + payload + recipient' into the exact shape its sink expects — and adds no policy of its own.">
+    <ChannelLayering highlight="channels" />
+  </DiagramStep>
+
+  <DiagramStep caption="The sinks already own the hard parts. The email sink is the wrapper you built: it reads the suppression list, defaults the from address, requires an idempotency key. The inbox sink is one indexed insert. The channel uses these; it never duplicates them.">
+    <ChannelLayering highlight="sinks" />
+  </DiagramStep>
+
+  <DiagramStep caption="The whole stack, two parallel paths. The channel function is the thin seam between what happened and how this sink wants it — nothing more.">
+    <ChannelLayering highlight="none" />
+  </DiagramStep>
+</DiagramSequence>
+
+Keep that picture in front of you for the rest of the lesson. When you catch yourself about to write a suppression check inside a channel function, look at the diagram: suppression lives in the sink, one layer down. The wrapper already does it. Your channel's only job is to call the sink with the right shape.
+
+## The email channel: a thin call into the send wrapper
+
+Here's the whole email channel. It's short, and the brevity is the point — read it as a sequence of decisions, not as a wall of logic. Step through it.
+
+<AnnotatedCode lang="ts" maxLines={16} code={`
+import 'server-only';
+
+export const sendEmailChannel: ChannelFn = async ({
+  recipient,
+  event,
+  payload,
+  rendered,
+}) => {
+  const to = await getUserEmail(recipient.userId);
+  const { templates, subject } = notifiableEvents[event.type];
+
+  const result = await sendEmail({
+    to,
+    subject: subject(payload),
+    react: templates.email(rendered.emailProps),
+    idempotencyKey: \`\${event.type}:\${event.subjectId}:\${recipient.userId}\`,
+  });
+
+  if (!result.ok) {
+    logger.warn({ eventType: event.type, code: result.error.code }, 'email channel failed');
+  }
+};
+`}>
+  <AnnotatedStep meta={`{9} "getUserEmail"`} color="blue">
+    The dispatcher passed a *user id*; email needs an *address*. `getUserEmail` resolves one from Better Auth's `user` table. This is the channel-specific resolution the signature hinted at — the inbox channel skips it entirely because it works in user ids.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{10} "notifiableEvents" "templates" "subject"`} color="blue">
+    The template and the subject come from the registry entry, not from here. Subjects live in the registry per event type, with payload interpolation for the actor or org name. Keeping them there means a rephrase or a translation is a one-file edit, not a hunt through channel code.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{12-17} "sendEmail"`} color="green">
+    The send itself. Notice what's *absent*: no `from`, no suppression check, no deliverability handling. Those are the wrapper's job — it defaults `from` from the env and reads the suppression list internally. Passing a `from` here would re-implement what the layer below already owns. The `react` prop takes the email component element; the wrapper renders it.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{16} "idempotencyKey"`} color="green">
+    The wrapper *requires* an idempotency key. Derive it from the event's identity — type, subject, recipient — so a retried dispatch collapses at Resend too, rather than mailing the same person twice.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{19-21} "!result.ok"`} color="orange">
+    The wrapper returns a `Result`; an expected failure (`forbidden`, `internal`) is logged and *swallowed*, not thrown. The channel returns `Promise<void>` regardless. A bad email send must not erase the inbox row — that independence is the next section. Retries belong to the durable-queue upgrade, not here.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+A word on the subject and the sender, because there's a nuance worth naming correctly. Subjects are registry-driven, as the walkthrough showed. The sender follows the split you learned with the email wrapper: dispatcher notifications are <Term definition={"Email triggered by a user's own action or account state — a receipt, a password reset, a role change. The user can't opt out of it and keep using the product, which is why it carries no unsubscribe header."}>transactional</Term> mail, so they go out on the transactional sender the wrapper already defaults from the env. And because they're transactional, they carry **no** `List-Unsubscribe` header. You can't unsubscribe from being told your password changed and still have a working account. The opt-out path for notifications isn't an email header at all — it's the per-category preference a user toggles in settings ("mute team email"), which lives in the dispatcher and is the next lesson's subject. If you ever feel the urge to add an unsubscribe link to a notification email, that's the signal you've confused the marketing channel with the transactional one.
+
+<VideoCallout videoId="cQy24szSsBw" videoTitle="Modern emails using React — Zeno Rocha, React Conf">
+  Zeno Rocha (Resend's founder) on why email rendering is hard and how React Email's component model fixes it — the `react`-prop path this channel hands off to (11 min).
+</VideoCallout>
+
+## The inbox channel: one row, rendered at dispatch
+
+The inbox channel is even thinner. It writes exactly one row to `notifications` and returns. No joins, no fan-out, no second statement.
+
+```ts title="lib/notifications/channels.ts"
+import 'server-only';
+
+export const writeInboxChannel: ChannelFn = async ({
+  recipient,
+  event,
+  payload,
+  rendered,
+}) => {
+  await db.insert(notifications).values({
+    userId: recipient.userId,
+    orgId: rendered.orgId,
+    eventType: event.type,
+    subjectId: event.subjectId,
+    title: rendered.inbox.title,
+    body: rendered.inbox.body,
+    payload,
+  });
+};
+```
+
+`createdAt` is omitted because the column defaults to `now()`.
+
+The two columns that carry the decision are `title` and `body`, and they come from `rendered.inbox` — the output of the registry's **inbox formatter**, a small `(payload) => { title, body }` function declared per event type. This is where last lesson's render-at-dispatch rule becomes concrete: the formatter ran in the dispatcher, the strings it produced are frozen onto this row, and the inbox UI is now a pure render of stored text. `payload` still goes in as raw structured data — the stable ids the UI needs to navigate when the user clicks through. The snapshot rule from last lesson holds: the display text is captured at the moment the event fired; the ids stay live for linking.
+
+There's one production reflex to apply while you're here. The inbox feed query is `where userId = ? order by createdAt desc` — and on a table that only grows, that ordering without an index is a sort over the whole thing every time the inbox loads. Ship the index *with* the table:
+
+```ts title="lib/db/schema/notifications.ts" ins={4}
+export const notifications = pgTable('notifications', {
+  // …columns from the previous lesson
+}, (t) => [
+  index('idx_notifications_user_created').on(t.userId, t.createdAt.desc()),
+]);
+```
+
+The name is explicit (`idx_notifications_user_created`) because auto-generated index names drift on schema reorderings and make migration diffs noisy. The columns lead with `userId` — the column you filter on — then `createdAt.desc()`, matching the feed's sort so Postgres reads straight down the index instead of sorting afterward.
+
+The rest of the inbox is read queries, which the inbox UI — built in the next chapter's starter — will use. They're worth a sketch so you see how little the table has to do:
+
+```ts title="lib/notifications/queries.ts"
+// Unread badge: one count, no join
+db.$count(notifications, and(eq(notifications.userId, userId), isNull(notifications.readAt)));
+
+// Mark as read: one update, stamped by the database
+db.update(notifications).set({ readAt: sql`now()` }).where(eq(notifications.id, id));
+
+// Inbox feed: indexed scan, newest first, cursor-paginated for older pages
+db.select().from(notifications).where(eq(notifications.userId, userId))
+  .orderBy(desc(notifications.createdAt)).limit(50);
+```
+
+The unread badge is a single count of rows where `readAt` is null. Mark-as-read is a single update stamping `readAt`. The feed reads newest-first off that composite index, fifty at a time, cursor-paginated for older pages the same way the list views did it. None of these need a join, because the text was snapshotted. That's the render-at-dispatch decision paying rent: the inbox is cheap to read because it never reaches for live data.
+
+## Render once, pass the result
+
+Now back to that `rendered` field, and the trap it exists to prevent. The naive version of this code renders the message *inside each channel* — the email function resolves the actor's name and formats the role, and so does the inbox function. Two problems fall out of that immediately. You've duplicated the message logic, so the email and the inbox can drift apart — one says "Promoted to admin," the other says "Role changed to Admin." And you've doubled the work, resolving the same names twice per notification.
+
+The fix is the field you've been carrying since the signature: the **dispatcher renders the display content once**, then passes the result to every channel. Compute the truth in one place, fan it out.
+
+<CodeVariants>
+  <CodeVariant label="Rendered per channel">
+    <div data-mark-color="red">
+
+    ```ts del={2,7}
+    export const sendEmailChannel: ChannelFn = async ({ payload }) => {
+      const actorName = await getUserName(payload.changedBy);
+      // …builds the email from actorName
+    };
+
+    export const writeInboxChannel: ChannelFn = async ({ payload }) => {
+      const actorName = await getUserName(payload.changedBy);
+      // …builds the inbox row from actorName
+    };
+    ```
+
+    </div>
+    **Duplicated and drift-prone.** Each channel re-derives `actorName` from a fresh read. Two code paths build the same message, so they can disagree, and the lookup runs twice per notification.
+  </CodeVariant>
+
+  <CodeVariant label="Rendered once">
+    <div data-mark-color="green">
+
+    ```ts ins={2-3}
+    // in the dispatcher, before the channel loop:
+    const actorName = await getUserName(payload.changedBy);
+    const rendered = buildRenderedContent({ ...payload, actorName });
+
+    for (const channel of channels) {
+      await channelFns[channel]({ ...args, rendered });
+    }
+    ```
+
+    </div>
+    **Resolved once, fanned out.** The dispatcher derives `actorName` a single time and hands every channel the same `rendered` content. The channels can't disagree, because they read the same values.
+  </CodeVariant>
+</CodeVariants>
+
+Be precise about *what* gets rendered once, because email and inbox don't render identically. The shared, resolved values — the actor's name, the org's name, a formatted amount — are computed once in the dispatcher and handed to both channels through `rendered`. From there each channel shapes its own artifact: the **email body** is a React Email component handed to the wrapper's `react` prop, and the **inbox body** is the formatter's plain string. Different outputs, but both consume the *same already-resolved values* — neither one goes back to the database to re-derive a name. This is the same discipline as render-at-dispatch from last lesson, pointed at a different axis: render-at-dispatch fixes the message in *time*, render-once fixes it across *channels*. Same instinct — resolve the truth once, then fan it out.
+
+:::caution
+Passing the raw payload into a React Email template is safe because React Email escapes its output by default — a malicious org name renders as text, not markup. The one way to reopen the hole is a template that takes a raw-HTML prop (`dangerouslySetInnerHTML`). The security baseline is to refuse raw HTML in templates and let the default escaping do its job.
+:::
+
+## Independent channels: one failure doesn't sink the other
+
+This is the rule that separates a notification system that survives a bad afternoon from one that doesn't. State it sharply: **the dispatcher calls each channel inside its own `try`/`catch`, logs the failure, and continues.** An email send that hits a Resend 5xx leaves the inbox row standing. An inbox `INSERT` that hits a database hiccup leaves the email already sent. Notifications are *eventually consistent across channels by design* — and, above all, a single channel's failure must never fail the user action that triggered the notification in the first place.
+
+Here's the loop from the signature section, now with the boundary that enforces it:
+
+<div data-mark-color="orange">
+
+```ts title="lib/notifications/dispatch.ts" {5-7}
+for (const channel of channels) {
+  try {
+    await channelFns[channel]({ ...args, rendered });
+    sent += 1;
+  } catch (error) {
+    logger.error({ channel, eventType: event.type, error }, 'channel send failed');
+  }
+}
+```
+
+</div>
+
+Each channel gets its own attempt. One throws, the `catch` logs a structured line an operator can act on, and the loop moves to the next channel — the dispatch as a whole still returns its `DispatchResult` reporting what actually went out. There are no retries here, and that's deliberate: in this version a failed channel is logged and dropped. When you need retries that survive a process crash — not just a logged-and-forgotten failure — the channel sends move behind Trigger.dev, the durable-queue upgrade that was named last lesson and stays deferred. Don't build it now; a logged failure is enough for the volume this handles.
+
+Two rules from last lesson get restated here because this is where they bite. The first: **fire after commit.** A notification for an action that *rolled back* is worse than a missed one — telling a user their role changed when the transaction actually failed is a lie the system told. So `dispatch` runs *after* the action's `db.transaction` commits, never inside it. (This is the same no-external-calls-in-a-transaction rule you already follow; the transactional-outbox pattern is the heavier alternative for when even a missed dispatch is unacceptable, and it stays deferred.) The second is a softer preference: when you can, insert the inbox row *before* sending the email. A user who reads the email and clicks through shouldn't land on an empty inbox. Both channels are independent and best-effort, so this is an ordering nicety, not a hard guarantee — but order the inbox first when it's free to do so.
+
+Put that whole pipeline in order. Drag these steps into the sequence the dispatcher actually follows, from the action's mutation through to the returned report.
+
+<Sequence instructions="Order the steps for one notification, from the triggering action through to the dispatcher's report. Watch the two rules that bite here: dispatch fires after commit, and the inbox row goes in before the email.">
+
+```ts
+// the action's server function
+await db.transaction(async (tx) => {
+  await tx.update(members).set({ role }).where(/* … */);
+});
+
+// only now, outside the transaction:
+await dispatch({ type: 'org.member.role_changed', subjectId, payload });
+```
+
+  <Step>The action mutates rows inside `db.transaction`</Step>
+  <Step>The transaction commits</Step>
+  <Step>The dispatcher renders the display content once</Step>
+  <Step>`writeInboxChannel` inserts the inbox row</Step>
+  <Step>`sendEmailChannel` sends the email via the wrapper</Step>
+  <Step>The dispatcher logs and returns the `DispatchResult`</Step>
+</Sequence>
+
+## Worked example: a role change fires both channels
+
+Time to thread it all through one concrete event. Reuse `'org.member.role_changed'` — the same event whose action call site you saw last lesson. Its registry entry declares both channels, references the email template, and now carries the inbox formatter alongside it. Three short files, each contributing one thing; flip between the tabs.
+
+<CodeVariants>
+  <CodeVariant label="Registry entry">
+    ```ts {3-9}
+    'org.member.role_changed': {
+      channels: ['email', 'inbox'],
+      templates: {
+        email: roleChangedEmail,
+        inbox: ({ newRole }) => ({
+          title: `Your role changed to ${newRole}`,
+          body: `An admin updated your role in the organization.`,
+        }),
+      },
+      subject: ({ newRole }) => `Your role is now ${newRole}`,
+      preferenceCategory: 'team',
+      dedup: { windowSeconds: 60, keyBy: ['subjectId'] },
+      description: 'A member’s role changed',
+    },
+    ```
+    **The source of truth.** `templates` now groups both renderers — the `email` component and the `inbox` formatter — under one key, extending last lesson's single-`template` sketch. The subject lives here too, so a rephrase is a one-line edit.
+  </CodeVariant>
+
+  <CodeVariant label="sendEmailChannel">
+    ```ts {4-9}
+    export const sendEmailChannel: ChannelFn = async ({ recipient, event, payload, rendered }) => {
+      const to = await getUserEmail(recipient.userId);
+      const { templates, subject } = notifiableEvents[event.type];
+      const result = await sendEmail({
+        to,
+        subject: subject(payload),
+        react: templates.email(rendered.emailProps),
+        idempotencyKey: `${event.type}:${event.subjectId}:${recipient.userId}`,
+      });
+      if (!result.ok) logger.warn({ eventType: event.type }, 'email channel failed');
+    };
+    ```
+    **The email side.** Resolves the address, pulls subject and template from the registry, and hands the rest to the wrapper. No `from`, no suppression — the wrapper owns those.
+  </CodeVariant>
+
+  <CodeVariant label="writeInboxChannel">
+    ```ts {3-9}
+    export const writeInboxChannel: ChannelFn = async ({ recipient, event, payload, rendered }) => {
+      await db.insert(notifications).values({
+        userId: recipient.userId,
+        orgId: rendered.orgId,
+        eventType: event.type,
+        subjectId: event.subjectId,
+        title: rendered.inbox.title,
+        body: rendered.inbox.body,
+        payload,
+      });
+    };
+    ```
+    **The inbox side.** One row, with the formatter's `title` and `body` already rendered. The `payload` keeps live ids so the UI can link back.
+  </CodeVariant>
+</CodeVariants>
+
+Trace the fan-out for one recipient. The dispatcher renders `{ newRole, changedBy }` into `rendered` once. Then `writeInboxChannel` inserts the snapshot row — `title: 'Your role changed to admin'` and a one-line body, frozen as text. Then `sendEmailChannel` calls the wrapper with the `roleChangedEmail` element and the registry's subject. End state: one inbox row written, one email queued. Every piece in that trace was built in the sections above — the worked example only assembles them. That's the shape of the whole lesson: thin functions, a uniform signature, and a dispatcher that resolves channels, renders once, and fans out.
+
+## Where this goes next
+
+One sentence, again, because it's the thing to keep: **the dispatcher resolves channels, renders once, then calls one uniform thin function per channel — and the channels are independent and best-effort.** What's still missing is the part that decides *which* channels a recipient actually gets. The next lesson adds notification preferences — read once inside the dispatcher, with a default-on rule so a new event type doesn't launch silent — and that's where the notification opt-out really lives, not in an email header. The lesson after adds the 60-second dedup so a burst of duplicate events collapses into one notification. And the next chapter wires the full dispatcher body into three real call sites across the app.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    href="https://resend.com/docs/api-reference/emails/send-email"
+    title="Resend — Send Email API reference"
+    description="The send endpoint behind the email wrapper, including the react and idempotency-key fields the email channel relies on."
+    icon="simple-icons:resend"
+    iconColor="#000000"
+  />
+  <ExternalResource
+    href="https://react.email/docs/integrations/resend"
+    title="React Email — Send with Resend"
+    description="How a React Email component reaches Resend through the react prop — the exact path the email channel takes."
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+  />
+  <ExternalResource
+    href="https://orm.drizzle.team/docs/indexes-constraints"
+    title="Drizzle ORM — Indexes & Constraints"
+    description="The reference behind the notifications composite index: .on() with column order and .desc() to match the feed's sort."
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+  />
+  <ExternalResource
+    href="https://www.magicbell.com/blog/notification-system-design"
+    title="Notification System Design — Architecture & Best Practices"
+    description="The wider picture this dispatcher is a slice of: channels, fan-out, preferences, and delivery reliability."
+    icon="lucide:bell-ring"
+    iconColor="#F59E0B"
+  />
+</CardGrid>

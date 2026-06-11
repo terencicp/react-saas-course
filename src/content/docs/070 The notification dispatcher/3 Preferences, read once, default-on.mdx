@@ -1,0 +1,341 @@
+---
+title: Preferences, read once, default-on
+tagline: How the notification dispatcher resolves per-user, per-channel notification preferences, with a default-on rule that treats a missing row as opted in.
+chapter-id: 70
+course-progress: 0.00005
+sidebar:
+  order: 3
+  label: Notification preferences
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import ChipRow from '../../../components/lessons/070/3/ChipRow.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import Term from '../../../components/ui/Term.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The dispatcher loop you built last lesson runs over a `channels` array — `for (const channel of channels)` — and fans the event out to each one. But that array arrived already filtered, and the loop never asked where the filtering happened. Some recipient gets `['email', 'inbox']`, another gets `['inbox']` because they muted email, and a third who turned everything off gets `[]`. Somebody decides that, before the loop ever runs. That somebody is this lesson. The last lesson closed on a promise: the notification opt-out really lives here, not in an email header. This is where it lives.
+
+The job is small and the stakes are not. A user wants to control which kinds of events reach them, and on which channels — keep the in-app inbox, stop the email; or mute team chatter entirely while still hearing about billing. The dispatcher has to turn the event's *default* channels into a *per-recipient* list before it sends anything. So three questions decide the whole design: where do preferences live, what shape do they take, and — the one that trips everyone — what happens for a user who never opened their settings, or for an event type that didn't exist when they signed up? The answers are one Postgres table, one resolver function of about fifteen lines, and a single default rule that has to be the right one. This is where the dispatcher pattern earns most of its weight: one read, one place, every channel decided.
+
+## The preferences table: one row per category, per-channel booleans
+
+The resolver's shape follows from the table's shape, so the table comes first. And two decisions determine that shape — neither is obvious, and both are easier to see through the wrong version first.
+
+**Decide on categories, not events.** The instinct is a row per `(userId, eventType)`: one preference per kind of notification. Walk that forward. Your registry has a handful of events today, but it grows — a real app accumulates dozens of event types. A row per event type means the settings screen becomes a wall of twenty individual toggles nobody reads, let alone manages. Worse, every time you ship a new event, you have a migration problem: existing users have no preference row for an event type that didn't exist when they last touched settings, so you're backfilling rows or special-casing the gap on every release. The fix is to aggregate. A <Term definition={"A group of related event types that share one user toggle — for example, every team-activity event lives under the 'team' category."}>category</Term> is a bundle of related events the user toggles as a unit: `team`, `billing`, `security`, `product` — four to six of them, matched to how a user actually thinks ("I want billing stuff, I don't care about team noise"). Each registry entry already declares which category it belongs to. That's the `preferenceCategory` field you saw in the registry last chapter:
+
+<div data-mark-color="green">
+
+```ts title="lib/notifications/registry.ts" {4}
+'org.member.role_changed': {
+  channels: ['email', 'inbox'],
+  templates: { email: roleChangedEmail, inbox: roleChangedInbox },
+  preferenceCategory: 'team',
+  // …subject, dedup, description
+},
+```
+
+</div>
+
+That `preferenceCategory` is the join key between the registry and the preferences table — it's the string the resolver will look the user's row up by.
+
+The payoff is the part that makes this the right call: a new event in an existing category ships with *zero* preference migration. Add `org.comment.mentioned` to the `team` category and it inherits whatever the user already chose for `team` — no backfill, no gap. The category is the unit of user choice precisely so that new events can join one without asking the user anything.
+
+**Decide on per-channel booleans, not one switch.** The second instinct is a single `enabled` flag per row — on means notify, off means don't. But think about the most common real-world request you will get, almost verbatim: *"I see it in the app, just stop emailing me."* A single `enabled` flag can't say that. It collapses two independent decisions — do I want this in my inbox, do I want this in my email — into one. So the row carries one boolean *per channel*: `email`, `inbox`, and a `push` you're reserving for later. Muting email leaves the inbox untouched, because they're separate columns.
+
+Here's the table. Read it column by column — the walkthrough stops on each decision.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+export const userNotificationPreferences = pgTable(
+  'user_notification_preferences',
+  {
+    id: uuid().primaryKey().$defaultFn(() => uuidv7()),
+    userId: text()
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    category: text().notNull(),
+    email: boolean().notNull().default(true),
+    inbox: boolean().notNull().default(true),
+    push: boolean().notNull().default(true),
+    updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('user_notification_preferences_user_id_category_unique').on(
+      t.userId,
+      t.category,
+    ),
+  ],
+);
+`}>
+  <AnnotatedStep meta={`{5-9} {16-19}`} color="violet">
+    One row per `(user, category)` pair. The named composite `unique` is what makes "this user's billing preferences" a single addressable row you can upsert into. `userId` is `text` because it points at Better Auth's `user.id`, which is text — a foreign key always matches the type of the column it references.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{10-12}`} color="blue">
+    Three independent toggles, one per channel. Muting `email` leaves `inbox` untouched — that's the "keep the inbox, stop the email" case, in the schema. `push` has no consumer yet (last lesson shipped only email and inbox); it's a reserved column the schema keeps ready for the channel the `ChannelName` union will grow into.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{7} /\\.default\\(true\\)/`} color="green">
+    Default-on starts at the column level — a row created without specifying a channel is created with that channel allowed. And `cascade` means a user's preferences are owned children: delete the user, their preference rows go with them.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Notice there is no `orgId` on this table. Preferences are the user's, not the organization's — the same person carries them across every org they belong to — so the tenant-scoping discipline you apply to org data doesn't apply here. This is a user-scoped table, and that's deliberate.
+
+One framing to carry into the next section. The only thing that ever *writes* a row to this table is a deliberate <Term definition={"The user action of turning a channel off. In this system it is the only thing that ever writes a preferences row — silence is never the stored default, it's the absence of a row."}>opt-out</Term> — a user opening settings and turning something off. A user who never touches their settings has no row at all. Which means the most important question about this whole table isn't "what's in a row" — it's "what do we do when there *is* no row." That question is the next section, and it's the one that matters most.
+
+## Default-on: a missing row means every channel is allowed
+
+A brand-new user just signed up. They have never opened notification settings. There is no row in `userNotificationPreferences` for them, for any category. An event fires that targets them — say a team invitation. The resolver looks for their `team` preferences and finds nothing. What do they get?
+
+This is the single most important decision in the lesson, and it's counterintuitive enough that smart people get it backwards on instinct. So look at both answers.
+
+**The wrong default: off.** It feels responsible. "Don't send anything unless the user explicitly opted in — that's privacy-respecting, that's the GDPR-friendly posture." It sounds right in a meeting. Now watch it fail. Six months after launch you ship a new event — `org.comment.mentioned` — into the `team` category. Every existing user has no preference row for it, or a row that predates the event mattering. Default-off means *every one of them silently gets nothing*. The feature ships, looks broken, and nobody can say why — there's no error, no log, just a quiet wall of users who never hear about being mentioned. Generalize the failure: default-off turns every absent row into silence, and an absent row is the *normal state* for the overwhelming majority of users, because most people never open settings. You haven't built a privacy control. You've built a system that mutes itself on every release.
+
+**The right default: on.** A missing row is treated as *opted-in on every channel*. The only thing that subtracts a channel is a deliberate opt-out the user typed in with their own hands. New event types in an existing category inherit whatever the user already chose for that category; a brand-new category defaults on. The system's resting state is "the user hears about things," and it stays that way until the user says otherwise.
+
+**The honest trade — name it, because you'll have to defend it in a review.** Default-on isn't free. It risks *one* user per category who is mildly annoyed and has to click "stop emailing me." Default-off risks a *whole class* of users who never learn an event type exists at all. One is a recoverable annoyance the user can fix in five seconds; the other is systemic silence the user can't fix because they don't know there's anything to fix. A recoverable annoyance beats invisible silence every time. That's the call, and that's how you justify it: these are transactional product notifications the user *expects* — invitations, billing alerts, security signals — not marketing blasts. The real privacy control is the per-category opt-out, plus the email suppression you'll meet at the end of this lesson. Defaulting to silence to *look* privacy-respecting just breaks the product quietly.
+
+Hold the rule as a picture, because the picture makes the code obvious later. A preference row can only ever *subtract* channels from what the event sends by default. It can't add one the event never declared, and a missing row subtracts nothing at all. Scrub through it:
+
+<DiagramSequence>
+  <DiagramStep caption="The registry default. The event declares the channels it sends on — here, both email and the inbox. This is the starting set, before any preference is consulted.">
+    <ChipRow
+      label="registry default"
+      chips={[
+        { name: 'email', state: 'lit', icon: 'lucide:mail' },
+        { name: 'inbox', state: 'lit', icon: 'lucide:inbox' },
+      ]}
+    />
+  </DiagramStep>
+
+  <DiagramStep caption="The user's preference row. This user opted out of email for this category, so the email chip is struck out. The row can only ever subtract — it greys a channel the default declared; it can never add one.">
+    <ChipRow
+      label="user's preference row: email off"
+      chips={[
+        { name: 'email', state: 'muted', icon: 'lucide:mail' },
+        { name: 'inbox', state: 'lit', icon: 'lucide:inbox' },
+      ]}
+    />
+  </DiagramStep>
+
+  <DiagramStep caption="Resolved. What the recipient actually gets — one lit chip, inbox. This is the array the dispatcher's loop will iterate. The email channel never runs for this recipient.">
+    <ChipRow
+      label={"resolved → ['inbox']"}
+      chips={[{ name: 'inbox', state: 'lit', icon: 'lucide:inbox' }]}
+    />
+  </DiagramStep>
+
+  <DiagramStep caption="No row at all. The default case for most users — nothing is subtracted, so both chips stay lit. Absence means allowed. This is the default-on rule as a picture.">
+    <ChipRow
+      label={"no preference row → nothing subtracted → ['email', 'inbox']"}
+      chips={[
+        { name: 'email', state: 'lit', icon: 'lucide:mail' },
+        { name: 'inbox', state: 'lit', icon: 'lucide:inbox' },
+      ]}
+    />
+  </DiagramStep>
+</DiagramSequence>
+
+Keep that last frame in mind: *no row looks exactly like the full default.* When you read the resolver in a moment, the line that produces this behaviour will be three tokens long, and it will read as obvious because you've already seen the picture.
+
+Before that, check the rule against the case that started the section.
+
+<MultipleChoice>
+  A user has never opened their notification settings, so they have no preference row for any category. A `billing.invoice.failed` event fires in the `billing` category with default channels `['email', 'inbox']`. What does `resolveChannels` return for this recipient?
+
+  <McqChoice correct>`['email', 'inbox']`</McqChoice>
+  <McqChoice>`[]`</McqChoice>
+  <McqChoice>`['inbox']`</McqChoice>
+  <McqChoice>`['email']`</McqChoice>
+
+  <McqWhy>With no row, `prefs` is `undefined`, so the predicate `prefs?.[channel] ?? true` reads `true` for every channel — nothing is subtracted and the event's full default set stands. That is default-on. The empty-array answer is the default-off trap: opting in by default would mute every user who never touched settings, which is most users, and this billing failure would go silently undelivered. Neither single-channel answer holds either, because a channel is only ever removed by an explicit `false` the user typed in — absence keeps both.</McqWhy>
+</MultipleChoice>
+
+## Resolving channels inside the dispatcher
+
+Now the function the whole lesson has been building toward. Before a line of it, re-anchor the rule that's run through this entire chapter, because this is the third time it matters and the third place it's easy to break: **the preference check happens in exactly one place — the dispatcher.** Not at the call site that fired the event. Not inside the channel functions from last lesson. Resolution happens once per dispatch, in the gap between the registry lookup and the fan-out loop. The regression to grep for is the same shape as before: a preference read anywhere outside `lib/notifications/` is a leak in the seam. Call sites describe what happened; the dispatcher decides who hears it.
+
+The function takes the event and the user's preference row — which may be `undefined`, because most users have no row — and returns the resolved channel list. It encodes all four rules from this lesson in about fifteen lines. Step through it.
+
+<AnnotatedCode lang="ts" maxLines={16} code={`
+type NotificationPrefRow = typeof userNotificationPreferences.$inferSelect;
+
+export const resolveChannels = (
+  event: NotifiableEvent,
+  prefs: NotificationPrefRow | undefined,
+): ChannelName[] => {
+  const allowed = event.channels.filter(
+    (channel) => prefs?.[channel] ?? true,
+  );
+
+  const critical = event.criticalChannel;
+  if (critical && !allowed.includes(critical)) {
+    allowed.push(critical);
+  }
+
+  return allowed;
+};
+`}>
+  <AnnotatedStep meta={`{7-9} "event.channels"`} color="blue">
+    Start from the registry's default set. The resolver never invents a channel; it can only narrow what the event already declared. `event.channels` is the starting set, and the user can only subtract from it — exactly the picture from the diagram.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`/prefs\\?\\.\\[channel\\] \\?\\? true/`} color="green">
+    The entire default-on rule is these three moves. Optional-chain the row (`prefs?.`) so a missing row reads as `undefined`. Index the channel column off the row (`[channel]`). Then `?? true`, so that `undefined` — a missing row, or a missing column — means *allowed*. This single line is the subtraction from the diagram, in code: absence keeps the channel; only an explicit `false` drops it.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{11-14}`} color="orange">
+    Some channels can't be fully muted. If the event marks a critical channel and the filter dropped it, force it back on. Security email is the example — a user who turned off all email must still receive "your password was changed." The override is the one thing that can put a channel *back* into the set after the filter removed it.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+That third step is a product-safety decision, and it deserves a word of its own. Some notifications are not fully optional. Security events — a password changed, a login from a new device, a payment action the user must take now — have to reach the person even if they've muted everything else, because the alternative writes the support ticket for you: *"I disabled all email and never got my password-reset code."* The registry is where this lives. A category or event that carries a `criticalChannel: 'email'` is declaring "this channel is not yours to fully silence":
+
+```ts title="lib/notifications/registry.ts" ins={4}
+'auth.password.changed': {
+  channels: ['email', 'inbox'],
+  preferenceCategory: 'security',
+  criticalChannel: 'email',
+  // …templates, subject, dedup, description
+},
+```
+
+The field is optional — `criticalChannel?: ChannelName` on the entry type — so most events omit it; only the security and act-now-billing events carry it.
+
+Which categories qualify is a small, deliberate list: `security`, and the act-now subset of `billing` like "payment action required." Everything else is fully mutable. And because the user *can't* actually turn these off, the settings UI has to be honest about it — the toggle for a critical channel renders **disabled, with a tooltip explaining why** ("security alerts can't be turned off"). That UI is the project chapter's surface, so name it and move on; the point here is that the override is encoded once, in the registry, as a property of the event — not scattered as a special case across the resolver.
+
+So that's resolution for *one* recipient. But a dispatch usually has several — billing past-due goes to every owner, a mention might hit a handful of people. Which raises a reflex you've drilled before: do **not** read preferences inside the per-recipient loop. That's the N+1 query the list-views work taught you to refuse — one resolver call per recipient is fine, but one *database round-trip* per recipient is the trap. The dispatcher reads every recipient's preferences in a single batched query, keyed by the event's category, then resolves each recipient against an in-memory lookup.
+
+```ts title="lib/notifications/dispatch.ts" {1-11}
+const rows = await db
+  .select()
+  .from(userNotificationPreferences)
+  .where(
+    and(
+      inArray(userNotificationPreferences.userId, recipientUserIds),
+      eq(userNotificationPreferences.category, event.preferenceCategory),
+    ),
+  );
+
+const prefsByUser = new Map(rows.map((row) => [row.userId, row]));
+
+// per recipient, in memory — no further queries:
+// resolveChannels(event, prefsByUser.get(userId))
+```
+
+One query for five recipients, then a `Map` lookup per recipient — and a recipient who has no row simply isn't in the `Map`, so `prefsByUser.get(userId)` returns `undefined`, which is precisely the value `resolveChannels` reads as "default-on." The whole no-extra-query discipline drops out cleanly because the missing-row case is already the resolver's happy path. The query itself is indexed and bounded to one category across a known set of users; its cost is negligible.
+
+Now the convergence — three lessons meeting in one place. The resolved array `resolveChannels` returns is exactly what feeds last lesson's `for (const channel of channels)` loop. And when preferences shrink that array, the channels that got dropped are the ones that increment `suppressedByPrefs` in the dispatcher's report — the counter the first lesson declared, that this lesson finally makes real.
+
+<div data-mark-color="green">
+
+```ts title="lib/notifications/dispatch.ts" {5}
+for (const userId of recipientUserIds) {
+  const channels = resolveChannels(event, prefsByUser.get(userId));
+
+  const suppressed = event.channels.length - channels.length;
+  result.suppressedByPrefs += suppressed;
+
+  for (const channel of channels) {
+    // last lesson's branchless fan-out, inside its own try/catch
+    await runChannel(channel, { recipient: { userId }, event, payload, rendered });
+  }
+}
+```
+
+</div>
+
+`suppressed` is how many of the event's default channels this recipient's preferences removed — the default length minus the resolved length; summed across recipients it's the `suppressedByPrefs` the `DispatchResult` reports. `runChannel` stands in for last lesson's `channelFns[channel](...)` wrapped in its per-channel try/catch — not re-shown here.
+
+Read the loop top to bottom and the three lessons line up: the first defined `suppressedByPrefs` and never filled it; the second built the inner fan-out; this one resolves the channel list per recipient and tallies what the resolution dropped. The dispatcher does the subtraction once, in one place, batched across every recipient — which is the whole sentence this lesson set out to earn.
+
+## Where the inbox-only pattern and the prefs UI live, and where preferences stop
+
+Three short pieces of orientation close the lesson — not new mechanics, just drawing the boundary around what you've built so it doesn't blur into what it isn't.
+
+**The common case is already handled.** The single most-requested notification setting in any SaaS is "keep the in-app notifications, just stop emailing me." You don't write a line of new code for it. It's a row with `email: false, inbox: true`, and `resolveChannels` already turns that into `['inbox']` and drops the email channel. That's the per-channel-boolean decision from the top of the lesson paying off — the schema was shaped, on purpose, so the most common user request is data, not a code change.
+
+**The settings UI belongs to the project chapter.** A `/settings/notifications` page renders the registry's categories, each with a toggle per channel reflecting the user's current row — a Server Component reads `userNotificationPreferences`, and a Server Action upserts a row when the user flips a toggle. That upsert is the moment a row first comes into existence, which is exactly why missing-row default-on is the steady state: most users never trigger the upsert, so most users never have a row. Critical-channel toggles render disabled, as you saw. The full page — the rendering, the toggle widgets, the upsert action — is the next chapter's surface; the project starter ships a simplified inspector for it. Name it, don't build it.
+
+**Two opt-out pathways, one outcome, no overlap.** This is the one genuinely confusable idea in the lesson, so be precise. A user can stop receiving email two different ways, and they live in two different layers:
+
+- **Preferences** (this lesson): the user toggles the `email` boolean off for a category. This short-circuits *before* the email channel ever runs — `resolveChannels` removes `email` from the array, so the loop never calls the email channel for that recipient.
+- **Email suppression** (from your Resend and deliverability work): a hard bounce, a spam complaint, or an unsubscribe writes the address into the suppression list. This short-circuits *inside* the email channel's wrapper — the send is attempted, but the wrapper refuses it because the address is suppressed.
+
+Both end at "no email," but they are complementary, not redundant. Preferences are the user's *product* choice — "I don't want these." Suppression is the *deliverability and compliance* backstop — "this address must not be mailed, regardless of preference." Different layers, different reasons, and they don't fight: a preference opt-out saves the work of even attempting the send; suppression catches what slips past at the wrapper. Note one thing this means concretely: these transactional notification emails carry **no in-email unsubscribe link** — last lesson deliberately left the `List-Unsubscribe` header off, because the opt-out is the per-category preference, not an email header. (Signed, single-click unsubscribe links are a real pattern, but they belong to *marketing* bulk email — a different sender entirely — not to the transactional notifications the dispatcher sends.)
+
+Sort the two pathways apart yourself, because this distinction is the one worth cementing.
+
+<Buckets twoCol instructions="Which layer owns each outcome?">
+  <Bucket
+    name="prefs"
+    label="Preferences row"
+    description="The user's product choice — resolved before the email channel runs"
+  />
+  <Bucket
+    name="suppression"
+    label="Email suppression"
+    description="The deliverability backstop — enforced inside the email wrapper"
+  />
+
+  <Item bucket="prefs">User unchecks `email` for the `team` category</Item>
+  <Item bucket="suppression">User clicks unsubscribe in a marketing email</Item>
+  <Item bucket="prefs">A new event type should still reach a user who never touched settings</Item>
+  <Item bucket="suppression">A hard bounce stops all future sends to an address</Item>
+  <Item bucket="prefs">User mutes billing email but keeps the `inbox` row</Item>
+  <Item bucket="suppression">A spam complaint blocks an address regardless of preferences</Item>
+</Buckets>
+
+Two patterns get a one-line mention and a deliberate deferral, because they're the right next reach but not this lesson's. *Quiet hours* and *digest mode* — hold non-urgent notifications until morning, or roll a noisy day into one summary — are what you build when user research shows the inbox has gotten loud; they live in the dispatcher or a downstream digest worker, reached for when the noise is real, not before. And *per-org admin overrides* on a member's preferences — an admin forcing security alerts on across the org — are out of scope here entirely. Name them so you know the shape of where this goes; don't build them yet.
+
+## Where this goes next
+
+Here's the whole lesson in one breath: the registry says what an event sends by default; a user's preference row can only ever *subtract* from that set — a missing row subtracts nothing, a critical channel can't be subtracted — and the dispatcher does that subtraction once, in one place, batched across every recipient. Defaults, minus the user's opt-outs, minus nothing-when-the-row-is-missing, except critical-on. That's the `?? true`, the named composite unique, and the one `resolveChannels` call, all saying the same thing.
+
+Preferences decided *whether* a recipient hears about an event. One piece of the dispatcher is still missing: what happens when the *same* event fires five times in two seconds — an importer that re-runs, a webhook delivered twice, a user who clicks "save" three times. Without a guard, that's five identical notifications in someone's inbox. The next lesson adds the 60-second dedup window that collapses a burst into a single notification, keyed so call sites can fire as freely as they like and trust the dispatcher to sort out the duplicates.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    href="https://www.magicbell.com/blog/notification-system-design"
+    title="MagicBell — Notification System Design"
+    description="A wider tour of the dispatcher's world: preference storage, categories, per-channel routing, and opt-out handling — the architecture this lesson designs one slice of."
+    icon="simple-icons:magic"
+    iconColor="#7C3AED"
+  />
+  <ExternalResource
+    href="https://www.ftc.gov/business-guidance/resources/can-spam-act-compliance-guide-business"
+    title="FTC — CAN-SPAM Act Compliance Guide"
+    description="Why these transactional notifications need no in-email unsubscribe link: the legal line between commercial email and transactional or relationship messages."
+    icon="lucide:scale"
+    iconColor="#1D4ED8"
+  />
+  <ExternalResource
+    href="https://orm.drizzle.team/docs/indexes-constraints#unique"
+    title="Drizzle ORM — Unique constraints"
+    description="The unique() and composite-constraint syntax behind the one-row-per-(user, category) rule the resolver relies on."
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+  />
+  <ExternalResource
+    href="https://www.nngroup.com/articles/indicators-validations-notifications/"
+    title="Nielsen Norman Group — Indicators, Validations, and Notifications"
+    description="The UX framing for when a system should notify a user at all — the question every registry entry's category has to answer."
+    icon="lucide:bell"
+    iconColor="#F59E0B"
+  />
+</CardGrid>
