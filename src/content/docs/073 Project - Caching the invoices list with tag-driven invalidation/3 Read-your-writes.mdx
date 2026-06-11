@@ -1,0 +1,273 @@
+---
+title: Read-your-writes invalidation
+chapter-id: 073
+course-progress: 0.00005
+sidebar:
+  order: 3
+  label: Read-your-writes
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+In the last lesson you cached the three reads the invoices surface depends on, and the `<FetchedAtStrip />` proved they hold steady across reloads. That stability has a sharp edge: a write now leaves the cache stale until its `cacheLife` window expires. Edit an invoice and the list keeps serving the old amount for minutes. This lesson closes that gap for the path where it matters most — the user who just made the change and is staring at the result.
+
+The goal in plain terms: a user who edits or moves an invoice and lands back on the list sees their own change on that very render, not after a stale window.
+
+You confirm it from the inspector. "Edit one invoice" runs the real `updateInvoice` flow against a seeded row and redirects back, and on that redirected render `listFetchedAt` and `summaryFetchedAt` have both advanced and the edited amount is reflected. Archive, restore, and soft-delete behave the same against their seeded rows. The invalidation log tail shows three fresh `action`-sourced entries for each write — one for the list, one for the record, one for the summary. There's no new UI here; the whole observable is the `fetchedAt` strip moving and the log tail growing.
+
+## Your mission
+
+The four lifecycle actions already commit correctly — they passed through chapter 62's version precondition, write the row, and push the audit entry. What they don't do yet is tell the cache anything changed. Your job is to make each action invalidate every cached read it touches, so the user who triggered the write reads their own change on the redirect instead of a snapshot from minutes ago.
+
+A single invoice mutation touches three cached entries, not one. The change moves a row in or out of the org's active list, it changes that one invoice's record as shown on its detail page, and it shifts the org's summary totals. So each action invalidates all three. This is the part inexperienced engineers get wrong: they invalidate the obvious read — the list — and forget the summary or the record, and the result is a silent stale-read bug that only shows up when someone notices the totals don't add up. Three is the minimum complete set for an invoice mutation; treat it as a unit.
+
+Ordering is the discipline this lesson exists to teach, and it's load-bearing. The write commits, then the invalidations fire, then the redirect runs — in exactly that order. Both inversions are real bugs with names. Invalidate before you commit and you risk busting the cache for a change that then fails its precondition and rolls back, so you've thrown away good cached data to refresh nothing. Redirect before you invalidate and the user lands on the destination reading a cache entry that still predates their write — a one-render stale view, the exact symptom you're here to kill. Commit, invalidate, redirect.
+
+Which invalidation primitive you reach for is decided by one question: who is waiting on the result. Here a specific user is sitting on the redirect and expects to read their own write the instant they arrive. That is the read-your-writes case, and the framework gives you a primitive for it that it permits *only* inside Server Actions — by design, because outside an action there's no one sitting on a redirect for it to serve. You'll call it from the four actions, and you'll route every tag through the helpers you built last lesson, never a raw string.
+
+Two more constraints. Every invalidation is also recorded through the logging helper the starter provides, and that recording call goes *after* the real invalidation returns — never before — so a throwing invalidation can never leave a log row that lies about having succeeded. And the three lifecycle actions share one fan-out routine rather than each repeating the same three calls; the edit action carries one extra branch on top, controlled by an inspector toggle, that deliberately routes the list invalidation through the wrong primitive when flipped on. That branch is a teaching surface, not production code — it exists so you can watch the failure mode happen on demand.
+
+Out of scope: the summary-recompute job and its eventual-path invalidation, which is the next lesson. Everything here is the in-band, user-facing path.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">Editing an invoice and returning to the list shows a fresh `listFetchedAt` and the new value on the same render.</ChecklistItem>
+  <ChecklistItem chip="tested">That same edit advances `summaryFetchedAt` on the redirected render — the totals shifted.</ChecklistItem>
+  <ChecklistItem chip="tested">Editing invoice A advances invoice A's detail `fetchedAt` while leaving invoice B's detail `fetchedAt` stable — the record invalidation scopes to the affected invoice only.</ChecklistItem>
+  <ChecklistItem chip="tested">Archive, restore, and soft-delete each advance both `listFetchedAt` and `summaryFetchedAt`, and the row correctly enters or leaves the active set.</ChecklistItem>
+  <ChecklistItem chip="tested">An edit in one org leaves another org's `listFetchedAt` unchanged — the org-scoped tags are distinct.</ChecklistItem>
+  <ChecklistItem chip="tested">With the misuse toggle off, an edit advances `listFetchedAt` and shows the new amount; with it on, the redirect shows `listFetchedAt` stale and the old amount while the record and summary stay correct.</ChecklistItem>
+  <ChecklistItem chip="untested">The invalidation log tail shows three entries per write — list, record, summary — each sourced as `action`.</ChecklistItem>
+  <ChecklistItem chip="untested">Each action's source reads in order: the in-store commit, then the invalidation calls, then the redirect.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Only `src/lib/invoices/actions.ts` changes. Wire the three-tag fan-out into all four actions and the misuse branch into the edit, against the brief above and the lesson's test suite. Reach for the reference below once you've made your attempt.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+The whole change lives in `src/lib/invoices/actions.ts`. Start with the imports — you're pulling in two more `next/cache` primitives and the helpers from last lesson:
+
+```ts title="src/lib/invoices/actions.ts" {1,3,7}
+'use server';
+
+import { revalidatePath, revalidateTag, updateTag } from 'next/cache';
+import { z } from 'zod';
+import { type AuthedCtx, authedAction } from '@/lib/authed-action';
+import { logCacheInvalidation } from '@/lib/cache/log';
+import { invoiceTags } from '@/lib/cache/tags';
+import { conflict, err, ok, type Result } from '@/lib/result';
+import { findInvoice, misuseFlag, pushAudit } from '@/server/store';
+import { type Invoice, roleAtLeast } from '@/server/types';
+```
+
+### The shared fan-out
+
+The three lifecycle actions all need the identical three-tag fan-out, so it lives in one helper rather than being copy-pasted three times. Each invalidation is immediately followed by its log call:
+
+<div data-mark-color="blue">
+
+```ts title="src/lib/invoices/actions.ts" "updateTag" "logCacheInvalidation"
+// The minimum complete invalidation set for an invoice mutation: the row moved
+// in/out of the list, its record display changed, and the totals shifted, so
+// list + record + summary all go stale. `updateTag` (read-your-writes — a
+// specific user sits on the redirect) is Server-Action-only and is called only
+// through the `tags.ts` helpers, never a raw string. `logCacheInvalidation`
+// runs AFTER each `updateTag` returns so a throwing invalidation never leaves a
+// log row claiming success.
+const invalidateInvoice = (orgId: string, id: string): void => {
+  const listTag = invoiceTags.list(orgId);
+  updateTag(listTag);
+  logCacheInvalidation(listTag, 'action');
+
+  const recordTag = invoiceTags.record(orgId, id);
+  updateTag(recordTag);
+  logCacheInvalidation(recordTag, 'action');
+
+  const summaryTag = invoiceTags.summary(orgId);
+  updateTag(summaryTag);
+  logCacheInvalidation(summaryTag, 'action');
+};
+```
+
+</div>
+
+Two things in this helper carry the whole lesson. First, the three tags are derived through the `invoiceTags` helpers from `tags.ts` — there is not a single raw `org:` string in this file, which is the rule that lets a write site and a read site stay in agreement about what a tag means. Second, `logCacheInvalidation(tag, 'action')` is called *after* its `updateTag` returns, never before. If `updateTag` ever threw, the log would correctly show no entry for that tag rather than a row claiming an invalidation that never happened. The `updateTag` and `revalidateTag` semantics themselves are owned by "Invalidating after a mutation" in chapter 32 and lesson 2 of the previous chapter — the point here is purely the call placement.
+
+:::note
+The `updateTag` calls are synchronous — `updateTag(listTag);`, with no `await`. The framework fires the invalidation inline against the current request's cache scope; there's no promise to wait on. You'll sometimes see these written with `await` in prose that predates the final API, but follow the source: no `await`.
+:::
+
+### The edit action's after-commit block
+
+`updateInvoice` keeps everything it had — the not-found guard, the admin-only `overwrite` gate, the version precondition, the row write, and the `pushAudit` commit. The new work all sits *below* `pushAudit` and *above* `revalidatePath`, which is the after-commit, before-redirect slot. The edit doesn't call the shared helper because it carries one extra branch on the list tag:
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+    pushAudit({
+      orgId: ctx.orgId,
+      actorUserId: ctx.userId,
+      action: 'invoice.update',
+      subjectId: row.id,
+    });
+
+    // After commit, before redirect: fan the three tags out with \`updateTag\`
+    // (read-your-writes — a specific user sits on the redirect). The row moved
+    // in/out of the list, its record display changed, and the totals shifted, so
+    // list + record + summary is the minimum complete set. \`updateTag\` is
+    // Server-Action-only and is called only through the \`tags.ts\` helpers.
+    const listTag = invoiceTags.list(ctx.orgId);
+    if (misuseFlag.misuseRevalidateFromAction) {
+      // Deliberate failure-mode demo. Production code NEVER reads a flag like
+      // this — it exists only as the teaching surface for the
+      // read-your-writes-vs-eventual distinction. Routing the LIST tag through
+      // \`revalidateTag(tag, 'max')\` (the eventual primitive) where \`updateTag\`
+      // belongs is the misuse: cross-process this leaves the submitting render
+      // stale (the chapter-074 reality), and the in-app signal is the logged
+      // \`action\`-sourced \`revalidateTag\` list row. Record + summary stay correct.
+      revalidateTag(listTag, 'max');
+      logCacheInvalidation(listTag, 'action');
+    } else {
+      updateTag(listTag);
+      logCacheInvalidation(listTag, 'action');
+    }
+
+    const recordTag = invoiceTags.record(ctx.orgId, row.id);
+    updateTag(recordTag);
+    logCacheInvalidation(recordTag, 'action');
+
+    const summaryTag = invoiceTags.summary(ctx.orgId);
+    updateTag(summaryTag);
+    logCacheInvalidation(summaryTag, 'action');
+
+    revalidatePath('/invoices');
+    return ok(row);
+`}>
+  <AnnotatedStep meta="{1-6}" color="green">
+    The commit. `pushAudit` is the last write — in real Postgres this and the row mutation are one `db.transaction`. Everything below runs only because the commit landed.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{13-14}" color="blue">
+    The list tag, derived through the helper. The misuse branch lives only on this tag — the record and summary below are unconditional.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{14-27}" color="orange">
+    The misuse branch. When the inspector flag is on, the list tag routes through `revalidateTag` (the eventual primitive) instead of `updateTag` — the deliberate wrong call. Off (the `else`), it's `updateTag`, the read-your-writes primitive. Production code never reads such a flag.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{29-35}" color="blue">
+    Record and summary, always `updateTag` — the misuse swap touches the list tag only. The record scopes to `row.id` so a sibling invoice's detail stays cached; the summary because the totals moved.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{37-38}" color="green">
+    `revalidatePath` stays from chapter 62, and redirect happens after the action returns. The order top-to-bottom is commit, invalidate, redirect — the lint an experienced engineer runs by eye.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Walk the branch carefully, because it's the one piece of this file that would look wrong in a code review if you didn't know why it's there. When `misuseFlag.misuseRevalidateFromAction` is on, the list tag — and *only* the list tag — routes through `revalidateTag(listTag, 'max')`, the eventual primitive, where `updateTag` belongs. The record and summary tags below stay on `updateTag` no matter what the flag says. That asymmetry is deliberate: it lets the inspector show you a redirect where the summary and the record are correct but the list is stale, isolating the symptom to exactly the tag whose primitive you broke. Production code never reads a flag like this. It exists so you can flip a switch and watch read-your-writes fail, which is a far better teacher than a paragraph claiming it would.
+
+Why is `updateTag` the right call and `revalidateTag` the wrong one here? Because a specific user is sitting on the redirect and expects to read their own write immediately. `updateTag` is read-your-writes and the framework only permits it inside a Server Action — outside one, no user is waiting on a redirect, so the semantic is meaningless and the call throws. That Server-Action-only restriction is the API enforcing the architectural rule, not a limitation to route around. The inspector's "Force `updateTag` from a Route Handler" island demonstrates the throw directly. The eventual counterpart, `revalidateTag` from a background job where no one is waiting, is the next lesson.
+
+:::caution
+The misuse branch calls `revalidateTag(listTag, 'max')` with a second argument. In Next.js 16 the single-argument `revalidateTag(tag)` form is deprecated — every call must pass a `cacheLife` profile, and `'max'` is the sensible default. The chapter-end note covers this.
+:::
+
+### The lifecycle actions
+
+`archive` keeps its guard and commit exactly as chapter 62 shipped them, then calls the shared helper in the after-commit slot:
+
+<div data-mark-color="blue">
+
+```ts title="src/lib/invoices/actions.ts" {29} "invalidateInvoice(ctx.orgId, row.id)" "pushAudit"
+const archive = async (
+  input: z.infer<typeof lifecycle>,
+  ctx: AuthedCtx,
+): Promise<Result<Invoice>> => {
+  const row = findInvoice(ctx.orgId, input.id);
+  if (!row) {
+    return err('not_found', 'Invoice not found.');
+  }
+  if (
+    row.version !== input.version ||
+    row.archivedAt !== null ||
+    row.deletedAt !== null
+  ) {
+    return conflict(CONFLICT_MESSAGE, row);
+  }
+
+  row.archivedAt = new Date().toISOString();
+  row.version += 1;
+  pushAudit({
+    orgId: ctx.orgId,
+    actorUserId: ctx.userId,
+    action: 'invoice.archive',
+    subjectId: row.id,
+  });
+
+  // After commit, before redirect: fan list + record + summary out with
+  // `updateTag` (read-your-writes — the user is on the redirect). Log after each
+  // call returns so a throwing invalidation never leaves a success row.
+  invalidateInvoice(ctx.orgId, row.id);
+
+  revalidatePath('/invoices');
+  return ok(row);
+};
+```
+
+</div>
+
+`restore` and `softDelete` are the identical shape — guard, commit, `invalidateInvoice(ctx.orgId, row.id)`, `revalidatePath`, `return ok(row)` — so they aren't reproduced here. It's worth being explicit about why all three lifecycle actions need the full three-tag fan-out and not just the list: archiving moves a row out of the active set (list changes), changes how that invoice reads on its detail page (record changes), and drops its amount from the org totals (summary changes). Restore is the same three changes in reverse, and soft-delete the same as archive. Every lifecycle change is a list-plus-record-plus-summary event, which is exactly why one shared helper is the right factoring.
+
+Note that `revalidatePath('/invoices')` stays in every action, carried from chapter 62. It is not a replacement for the tag invalidation — it's the path-level belt next to the tag-level suspenders. The tags invalidate the specific cached reads by identity; the path invalidation is a coarser net over the whole route.
+
+On the two requirements the tests don't reach: the log tail shows three `action` entries per write because `logCacheInvalidation(tag, 'action')` is called once after each of the three `updateTag` calls returns, and the after-commit ordering is visible by eye because the invalidation block sits below `pushAudit` and above `revalidatePath` in every action, with the shared helper keeping that order identical across the three lifecycle paths. The four-call decision tree and the after-commit-then-redirect rule those rest on are owned by lesson 2 of the previous chapter; here you're applying them.
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Next.js docs — updateTag"
+    href="https://nextjs.org/docs/app/api-reference/functions/updateTag"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The read-your-writes primitive you call from the four actions — Server-Action-only, and why."
+  />
+  <ExternalResource
+    title="Next.js docs — revalidateTag"
+    href="https://nextjs.org/docs/app/api-reference/functions/revalidateTag"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The eventual counterpart the misuse branch reaches for, plus the deprecated single-argument form the caution note warns about."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's test suite:
+
+```bash
+pnpm test:lesson 3
+```
+
+Expect every assertion green. The suite drives each action directly and asserts the observable cache behavior: that an edit commits the new value and fires the list tag, that the summary tag fires alongside it, that the record tag scopes to the edited invoice and never a sibling, that archive, restore, and soft-delete each fire list and summary, that an org-A edit never fires an org-B tag, that the misuse toggle swaps only the list primitive while the record and summary stay on read-your-writes, and that every invalidation is logged as `action`-sourced.
+
+Then confirm by hand what the suite can't see — the inspector observations and the code-shape requirement:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">Inspector "Edit one invoice": the redirect lands with `listFetchedAt` and `summaryFetchedAt` advanced, the edited amount visible on `/invoices`, and the log tail showing three `action` entries.</ChecklistItem>
+  <ChecklistItem chip="untested">Edit invoice A, open invoice B's detail (its `fetchedAt` is stable), then invoice A's detail (its `fetchedAt` advanced).</ChecklistItem>
+  <ChecklistItem chip="untested">Archive a row — it drops from `view=active` and both timestamps advance; restore it — it returns and both advance; soft-delete as admin and confirm under `view=all` that the row shows and the summary excludes it.</ChecklistItem>
+  <ChecklistItem chip="untested">Edit as admin in org A, switch the inspector identity to org B, and confirm org B's `listFetchedAt` is unchanged.</ChecklistItem>
+  <ChecklistItem chip="untested">Flip the misuse toggle on, edit, and observe a stale `listFetchedAt` and the old amount; flip it off, edit again, and observe an advanced `listFetchedAt` and the new amount.</ChecklistItem>
+  <ChecklistItem chip="untested">Read `updateInvoice`'s source top to bottom: the in-store commit, then the invalidation calls, then the redirect.</ChecklistItem>
+</Checklist>
+
+Both the read-your-writes path and its deliberate failure mode are now wired. The eventual path — the recompute job's `revalidateTag` for the summary, where no user is waiting — is the next lesson.
