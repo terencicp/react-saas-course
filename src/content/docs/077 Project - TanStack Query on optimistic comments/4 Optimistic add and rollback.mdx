@@ -1,0 +1,472 @@
+---
+title: Optimistic add and rollback with useMutation
+chapter-id: 77
+course-progress: 0.00005
+sidebar:
+  order: 4
+  label: Optimistic add & rollback
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Type a comment, hit post, and it lands at the top of the thread the instant you submit — no spinner, no wait. A beat later it quietly settles into the canonical row the server actually stored. And if the server rejects it, the row vanishes and an error banner tells you why, the thread snapping back exactly as it was. That round trip — instant, then canonical, with a clean rollback on failure — is the reflex this whole chapter has been building toward, and it's the entire reason you pulled TanStack Query onto this surface instead of a plain `<form action>`.
+
+<Figure caption="The optimistic row at the head of the thread, painted the instant you submit — the action POST is still in flight, the textarea is dimmed and the button disabled, and the temporary row's id still begins with optimistic- until the settle swaps in the canonical server row.">
+  <Screenshot viewport="desktop">
+    <img
+      src="/screenshots/077/l4-desktop-1280-optimistic-row.png"
+      alt="Invoice ACME-1001 detail page at 1280px. A freshly posted comment, 'Looping in legal before this goes out — will confirm by EOD.', sits at the top of the comment thread above the seeded rows. The comment textarea above it is dimmed and the 'Post comment' button is disabled because the submit is mid-flight."
+    />
+  </Screenshot>
+</Figure>
+
+The read side is already live from the last two lessons — the seeded thread paints with no loading state, "Load older" pages back through the route handler, and a 10-second poll surfaces a coworker's insert. What's still dead is the write path. `addCommentAction` is a stub that returns `Not implemented`, the form is a static disabled shell with no props, and the thread has no mutation. Posting a comment does nothing. By the end of this lesson the write seam is closed and the full project is verifiable end to end.
+
+## Your mission
+
+You are wiring the post path, and the shape of it is a deliberate call. The write goes through a Server Action — `addCommentAction`, the plain-object twin you can call straight from a mutation as `addCommentAction({ invoiceId, body })` — which owns the input parse, the comment insert, the audit write, and the cache-tag invalidation. But the client does not post through `<form action>` with `useActionState`. When TanStack Query already owns the read side, the write composes through `useMutation`, because the optimistic lifecycle needs `onMutate`, `onError`, and `onSettled` — three hooks `useActionState` simply does not have. `useActionState` is the redirect-and-revalidate tool, the one the invoice edit and lifecycle forms still use; reaching for it here would put two sources of truth on one form. One surface, one mechanism.
+
+The optimistic update has to be the **cache-update** shape, not the via-variables shape. The new row does not get rendered inline next to the form — it gets written *into* the infinite query's cache, prepended to `data.pages[0].comments`, so it sits in the same list the read side renders from and survives the next poll. That means `onMutate` reaches into the cache by hand: it cancels any in-flight read first, snapshots the whole query, writes the optimistic row, and hands the snapshot back so `onError` can restore it. The cancel is not optional. A poll resolving in the window between your optimistic write and the settle would overwrite your fresh row with a server response that does not know the comment exists yet — so you cancel before you write, every time. And the snapshot is the entire `InfiniteData`, every page, restored exactly on failure, because invalidation can reshape the page array between the write and the error.
+
+There are two caches holding this one row now, and that is the price tag of bringing TanStack Query in — pay it deliberately rather than paper over it. The action's `updateTag` invalidates the Server Component's cached thread; the mutation's `invalidateQueries` invalidates the TanStack cache. Both layers hold the data, so both must fire. `invalidateQueries` belongs in `onSettled`, which runs on success and failure alike: on success it pulls the canonical row in and the temporary id flips to the real store id; on failure it refetches the genuine post-rollback state. Skip it and the optimistic row lingers in the cache until the next poll — a quiet, real bug. One more guard on the action: the inspector's forced failure is consumed *before* any insert or audit write, so a rejected post leaves the audit tail spotless.
+
+Out of scope, and worth naming so you don't over-build: no comment edit, delete, or moderation; no @-mention notifications; no rich-text — `body` is a plain string capped by a Zod `min(1).max(2000)`; and no fanning the optimistic write out to other queries. There is one query and one optimistic write here.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">Submitting a comment shows the new row at the top of the thread synchronously, before the server responds, and the form clears.</ChecklistItem>
+  <ChecklistItem chip="tested">Once the action returns, the optimistic row is replaced by the canonical server row — its temporary `optimistic-<uuid>` id becomes the server-generated store id. The accompanying new `comment.added` row in the inspector's comment audit tail is an inspector hand-check.</ChecklistItem>
+  <ChecklistItem chip="tested">When the server rejects the submit (the inspector's "Force 500 on next POST"), the optimistic row disappears, the prior thread state is restored exactly, an inline error banner surfaces, and the audit tail is unchanged.</ChecklistItem>
+  <ChecklistItem chip="untested">A successful add invalidates both caches — the thread refetches the canonical row and the Server Component's cached thread refreshes; skipping either is observable as a stale layer.</ChecklistItem>
+  <ChecklistItem chip="tested">A coworker's comment arriving mid-submit does not produce a duplicate once the dust settles — the canonical rows replace the optimistic placeholder.</ChecklistItem>
+  <ChecklistItem chip="untested">Every query-key reference across the read and write paths comes from `commentKeys`; no raw key arrays exist anywhere outside it.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Implement the write seam against the brief and the lesson's tests — `addCommentAction`, the controlled form, and the optimistic mutation — then open the walkthrough below to check your work.
+
+<details>
+<summary>Reference solution</summary>
+
+Three files, in the order they sit in the repo: the action that does the write, the form that captures the input, and the mutation that drives the optimism.
+
+### The write seam
+
+`addCommentAction` is built on `authedInputAction` — the plain-object factory, not the FormData `authedAction` — so the mutation can call it directly with an object and `await` a `Result` back. The order inside is load-bearing.
+
+```ts title="src/lib/comments/actions.ts"
+'use server';
+
+import { updateTag } from 'next/cache';
+import { authedInputAction } from '@/lib/authed-action';
+import { consumeForceFailure } from '@/lib/comments/force-failure';
+import { addCommentInput } from '@/lib/comments/schema';
+import { invoiceCommentsTag } from '@/lib/tags';
+import { findUser, pushAudit, pushComment } from '@/server/store';
+
+export const addCommentAction = authedInputAction(
+  'member',
+  addCommentInput,
+  async (input, ctx) => {
+    if (consumeForceFailure(ctx.userId)) {
+      return {
+        ok: false as const,
+        error: {
+          code: 'internal' as const,
+          userMessage: 'Forced failure for verification',
+        },
+      };
+    }
+
+    const authorName = findUser(ctx.userId)?.name ?? ctx.userId;
+    const row = pushComment({
+      orgId: ctx.orgId,
+      invoiceId: input.invoiceId,
+      authorId: ctx.userId,
+      authorName,
+      body: input.body,
+    });
+
+    pushAudit({
+      orgId: ctx.orgId,
+      actorUserId: ctx.userId,
+      action: 'comment.added',
+      subjectId: row.id,
+    });
+
+    await updateTag(invoiceCommentsTag(input.invoiceId));
+
+    return {
+      ok: true as const,
+      data: { id: row.id, createdAt: row.createdAt },
+    };
+  },
+);
+```
+
+`consumeForceFailure(ctx.userId)` runs first and returns before a single write. That is what keeps the forced-failure path honest: the inspector arms a one-shot flag, the action reads-and-clears it, and if it was set, the action bails with an `internal` Result having touched neither the comment store nor the audit log. Move that check below `pushComment` and a rejected post would still leave a row behind — the rollback would no longer be exact.
+
+The invalidation is `updateTag(invoiceCommentsTag(input.invoiceId))`, the read-your-writes form. This is an in-app mutation whose author is sitting there waiting on the result, so you want the Server Component's cached thread refreshed synchronously, not eventually — that is the standard the closing note below names. `revalidateTag(tag, 'max')` is the eventual-consistency variant you'd reach for from a webhook or a background job, where no user is blocked on the response.
+
+:::note
+There is no database transaction here because the store is in-memory. In a real Postgres app the `pushComment` and `pushAudit` pair would run inside one `tenantDb(orgId).transaction` so a half-written comment can never leave an orphaned audit row, or vice versa.
+:::
+
+### The form
+
+The form is fully controlled and entirely props-driven. It is a child of `<CommentThread />` so it lives inside the same query-client scope, but it owns no query state itself — it takes `body`, `onBodyChange`, `onPost`, `isPending`, and `error` from the parent and renders them. It is a `<form onSubmit>`, deliberately not a `<form action>`.
+
+```tsx title="src/app/(app)/invoices/[id]/comment-form.tsx"
+'use client';
+
+import type { FormEvent } from 'react';
+import { Button } from '@/components/ui/button';
+
+export const CommentForm = ({
+  body,
+  onBodyChange,
+  onPost,
+  isPending,
+  error,
+}: {
+  body: string;
+  onBodyChange: (body: string) => void;
+  onPost: (body: string) => void;
+  isPending: boolean;
+  error: string | null;
+}) => {
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const trimmed = body.trim();
+    if (!trimmed) {
+      return;
+    }
+    onPost(trimmed);
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-2">
+      {error ? (
+        <p
+          data-testid="post-error"
+          className="rounded-md border border-destructive/50 px-3 py-2 text-sm text-destructive"
+        >
+          {error}
+        </p>
+      ) : null}
+      <textarea
+        name="body"
+        value={body}
+        onChange={(event) => onBodyChange(event.target.value)}
+        disabled={isPending}
+        placeholder="Add a comment…"
+        className="w-full resize-none rounded-md border bg-background px-3 py-2 text-sm disabled:opacity-50"
+        rows={3}
+      />
+      <Button
+        type="submit"
+        size="sm"
+        disabled={isPending}
+        data-testid="comment-submit"
+      >
+        Post comment
+      </Button>
+    </form>
+  );
+};
+```
+
+Keeping `body` in the parent is what lets the mutation's `onSuccess` clear the textarea — the state has to live wherever the mutation can reach it. `onPost(trimmed)` is the only line that fires the write; everything else here is presentation. The error banner carries `data-testid="post-error"` and the button carries `data-testid="comment-submit"` so the tests and your hand-checks can find them.
+
+### The optimistic mutation
+
+This is the heart of the lesson. The `useInfiniteQuery` block at the top is the read shape you wired last lesson; the new code is the `useMutation` below it. Read it as a sequence — the correctness is entirely in the ordering of the four callbacks.
+
+<AnnotatedCode lang="tsx" maxLines={16} title="src/app/(app)/invoices/[id]/comment-thread.tsx" code={`
+'use client';
+
+import {
+  type InfiniteData,
+  useInfiniteQuery,
+  useMutation,
+  useQueryClient,
+} from '@tanstack/react-query';
+import { Loader2Icon } from 'lucide-react';
+import { useState } from 'react';
+import { CommentForm } from '@/app/(app)/invoices/[id]/comment-form';
+import { addCommentAction } from '@/lib/comments/actions';
+import { fetchCommentsPage } from '@/lib/comments/fetcher';
+import { commentKeys } from '@/lib/comments/keys';
+import type { Comment, CommentsPage } from '@/lib/comments/schema';
+
+export type Session = { userId: string; userName: string };
+
+export const CommentThread = ({
+  invoiceId,
+  session,
+}: {
+  invoiceId: string;
+  session: Session;
+}) => {
+  const queryClient = useQueryClient();
+  const [body, setBody] = useState('');
+
+  const {
+    data,
+    isError,
+    isFetching,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useInfiniteQuery({
+    queryKey: commentKeys.lists(invoiceId),
+    queryFn: ({ pageParam }) =>
+      fetchCommentsPage({ invoiceId, cursor: pageParam }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
+    getPreviousPageParam: (first) => first.prevCursor ?? undefined,
+    refetchInterval: 10_000,
+    refetchIntervalInBackground: false,
+    maxPages: 10,
+  });
+
+  const mutation = useMutation({
+    mutationFn: async (text: string) => {
+      const result = await addCommentAction({ invoiceId, body: text });
+      if (!result.ok) {
+        throw new Error(result.error.userMessage);
+      }
+      return result.data;
+    },
+    onMutate: async (text) => {
+      await queryClient.cancelQueries({
+        queryKey: commentKeys.lists(invoiceId),
+      });
+
+      const snapshot = queryClient.getQueryData<InfiniteData<CommentsPage>>(
+        commentKeys.lists(invoiceId),
+      );
+
+      const optimistic: Comment = {
+        id: \`optimistic-\${crypto.randomUUID()}\`,
+        invoiceId,
+        authorId: session.userId,
+        authorName: session.userName,
+        body: text,
+        createdAt: new Date().toISOString(),
+      };
+
+      queryClient.setQueryData<InfiniteData<CommentsPage>>(
+        commentKeys.lists(invoiceId),
+        (old) => {
+          if (!old) {
+            return old;
+          }
+          const [firstPage, ...restPages] = old.pages;
+          const headPage: CommentsPage = {
+            comments: [optimistic, ...(firstPage?.comments ?? [])],
+            nextCursor: firstPage?.nextCursor ?? null,
+            prevCursor: firstPage?.prevCursor ?? null,
+          };
+          return { ...old, pages: [headPage, ...restPages] };
+        },
+      );
+
+      return { snapshot };
+    },
+    onError: (_error, _text, context) => {
+      if (context?.snapshot) {
+        queryClient.setQueryData(
+          commentKeys.lists(invoiceId),
+          context.snapshot,
+        );
+      }
+    },
+    onSuccess: () => {
+      setBody('');
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({
+        queryKey: commentKeys.lists(invoiceId),
+      });
+    },
+  });
+
+  const comments = data?.pages.flatMap((page) => page.comments) ?? [];
+  const postError =
+    mutation.isError && mutation.error instanceof Error
+      ? mutation.error.message
+      : null;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex h-5 items-center justify-end">
+        {isFetching ? (
+          <span
+            data-testid="poll-indicator"
+            className="flex items-center gap-1 text-xs text-muted-foreground"
+          >
+            <Loader2Icon className="size-3 animate-spin" />
+            Updating…
+          </span>
+        ) : null}
+      </div>
+
+      <CommentForm
+        body={body}
+        onBodyChange={setBody}
+        onPost={(text) => mutation.mutate(text)}
+        isPending={mutation.isPending}
+        error={postError}
+      />
+
+      {isError ? (
+        <p
+          data-testid="thread-error"
+          className="rounded-md border border-destructive/50 px-3 py-2 text-sm text-destructive"
+        >
+          Couldn’t load comments. Retrying…
+        </p>
+      ) : null}
+
+      <div data-testid="comment-thread" className="space-y-3">
+        {comments.map((comment) => (
+          <article
+            key={comment.id}
+            data-testid="comment-row"
+            data-comment-id={comment.id}
+            className="rounded-md border px-3 py-2 text-sm"
+          >
+            <div className="font-medium">{comment.authorName}</div>
+            <p className="text-muted-foreground">{comment.body}</p>
+          </article>
+        ))}
+      </div>
+
+      <button
+        type="button"
+        data-testid="load-older"
+        onClick={() => fetchNextPage()}
+        disabled={!hasNextPage || isFetchingNextPage}
+        className="flex w-full items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm text-muted-foreground disabled:opacity-60"
+      >
+        {isFetchingNextPage ? (
+          <Loader2Icon className="size-4 animate-spin" />
+        ) : hasNextPage ? (
+          'Load older'
+        ) : (
+          'End of thread'
+        )}
+      </button>
+    </div>
+  );
+};
+`}>
+  <AnnotatedStep meta={`{49-55} "addCommentAction" "throw new Error"`} color="blue">
+    The `mutationFn` calls `addCommentAction` with a plain object and `await`s a `Result`. A `{ ok: false }` result is not a thrown exception, so you raise one yourself — `throw new Error(...)` routes a rejected post to `onError`, while `return result.data` (the canonical id) routes a success to `onSuccess`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{56-59} "cancelQueries"`} color="orange">
+    The load-bearing first line of `onMutate`. `cancelQueries` cancels any in-flight read on this thread's key, so a poll resolving mid-flight can't overwrite the optimistic row with a server page that hasn't heard of the comment yet. Cancel before you write, every time.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{61-63} "getQueryData"`} color="green">
+    Snapshot wide. `getQueryData<InfiniteData<CommentsPage>>` grabs the entire query — every page, not just page 0 — because invalidation can reshape the page array mid-flight. This is exactly what `onError` restores.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{65-72} "optimistic-" "crypto.randomUUID()"`} color="green">
+    Build the placeholder `Comment`. The `optimistic-<uuid>` id renders instantly and is recognisable as a temporary — it's the id that `onSettled`'s refetch swaps for the real store id, and the dedup anchor if a coworker's poll lands mid-flight.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{74-90} "setQueryData"`} color="green">
+    `setQueryData` prepends the optimistic row to the head of `pages[0].comments`, preserving the page cursors and every other page untouched, then returns `{ snapshot }` as the mutation context that the later callbacks receive.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{92-99} "setQueryData" "context.snapshot"`} color="red">
+    `onError` restores wide. If the context carries a `snapshot`, `setQueryData` writes the entire pre-mutation `InfiniteData` back — the optimistic row vanishes and no older pages are lost. Restore exactly what was there.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{100-102} "setBody"`} color="blue">
+    `onSuccess` clears the form body. The textarea state lives in the parent precisely so the mutation can reach it from here.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{103-107} "invalidateQueries"`} color="violet">
+    `onSettled` always runs, on success and failure alike. `invalidateQueries` refetches the canonical first page — flipping the `optimistic-` placeholder to the real store id on success, and pulling the genuine post-rollback state on failure. Skip it and the optimistic row lingers until the next poll.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+A few calls deserve a sentence each.
+
+The `mutationFn` translates the Server Action's `Result` into the shape `useMutation` expects: a thrown error routes to `onError`, a returned value routes to `onSuccess`. That is why `if (!result.ok) throw new Error(...)` is there — a refused post is not an exception inside the action, it is a `{ ok: false }` value, so you raise it yourself to trip the failure path.
+
+`cancelQueries` is the first line of `onMutate` for a reason worth repeating: without it, a poll that resolves in the gap between your `setQueryData` and the settle would clobber the optimistic row with a server page that has never heard of the comment. The cancel closes that window. The subsequent `invalidateQueries` in `onSettled` is what brings the canonical row back in once the action lands.
+
+The snapshot is taken wide — `getQueryData<InfiniteData<CommentsPage>>` grabs every page, not just page 0 — and `onError` restores it wide. If you only snapshotted the head page, a restore would lose any older pages the user had loaded, or any reshaping that happened mid-flight. Restore exactly what was there.
+
+The `optimistic-` prefix does double duty. It is the temporary id that `onSettled`'s refetch swaps out for the real store id, and it is the dedup anchor: if a coworker's poll lands while your add is in flight, the settle rebuilds the page from server rows and the placeholder — which never matched a store id — simply drops. In production you might key on a true UUID and compare; here the prefix is enough. Don't fan the write out to other queries — name the capability if you need it later, but there is one query and one optimistic write on this surface.
+
+And the key arrays. Every `cancelQueries`, `getQueryData`, `setQueryData`, and `invalidateQueries` call addresses the cache through `commentKeys.lists(invoiceId)` — the same factory the read side and the page's prefetch use. That single source is the structural enforcement, the same discipline `tags.ts` enforces for cache tags: a raw `['comments', 'list', invoiceId]` array dropped in any one of these spots is a silent miss waiting to happen.
+
+<VideoCallout videoId="_EuPZrr3faU" videoTitle="TanStack React Query v5 — Full Guide (Coding in Flow)">
+  Coding in Flow walks the same `cancelQueries` → snapshot → `setQueryData` → rollback → `invalidateQueries` sequence on an infinite comments list; jump to 1:09:27 for the `InfiniteData` cache write and 1:19:35 for the optimistic-with-rollback build.
+</VideoCallout>
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Optimistic Updates"
+    href="https://tanstack.com/query/latest/docs/framework/react/guides/optimistic-updates"
+    icon="simple-icons:reactquery"
+    iconColor="#FF4154"
+    description="The 'via the cache' recipe this lesson follows — cancel, snapshot, setQueryData, roll back in onError."
+  />
+  <ExternalResource
+    title="updateTag"
+    href="https://nextjs.org/docs/app/api-reference/functions/updateTag"
+    icon="simple-icons:nextdotjs"
+    description="Why the action uses read-your-writes updateTag rather than the stale-while-revalidate revalidateTag."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's test suite:
+
+```bash frame="terminal"
+pnpm test:lesson 4
+```
+
+The write-seam half runs for real — the tests call `addCommentAction` directly with a plain object, exactly as the mutation does, and assert the happy path persists a row with a server id, the forced-failure path leaves both tails untouched, and a concurrent coworker insert settles into distinct canonical rows with no duplicate. The optimistic-transform half lives inside the component's mutation callbacks, which only run in a live mounted component, so the runner asserts its load-bearing source shape instead. A green run looks like this:
+
+```bash frame="terminal" title="Expected output"
+ ✓ lesson-verification/Lesson 4.ts (7 tests)
+
+ Test Files  1 passed (1)
+      Tests  7 passed (7)
+```
+
+The tests can't drive a real `.mutate()`, so the rest is on you. Run each deliberate-failure demo below as a single named change and revert it before the next — flip several at once and you can't tell which one moved the needle.
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">Type a comment and submit. The row appears at the top synchronously — the React Query devtools show an `optimistic-...` id inside `data.pages[0].comments`. After the action settles, `invalidateQueries` refetches and that id flips to the server-generated store id; the form clears; the inspector's comment audit tail shows the new `comment.added` row.</ChecklistItem>
+  <ChecklistItem chip="untested">Click "Force 500 on next POST" in the inspector, then submit. The optimistic row appears briefly, then `onError` restores the snapshot and the inline banner shows the error. The audit tail is unchanged, and devtools show the pre-mutation snapshot fully restored.</ChecklistItem>
+  <ChecklistItem chip="untested">Delete the `await updateTag(...)` call in the action and post a comment: the Server Component thread stays stale until you next navigate to the page, while the client thread still updates. Restore it. Then delete `invalidateQueries` in `onSettled` and post: the optimistic row lingers with its `optimistic-...` id until the next poll. Restore it. Both layers must invalidate.</ChecklistItem>
+  <ChecklistItem chip="untested">With a debug delay on the action while it's in flight, fire the inspector's "Insert coworker comment". On settle the refetch returns both rows from the store and no duplicate shows — the optimistic placeholder is replaced by the canonical row.</ChecklistItem>
+  <ChecklistItem chip="untested">Grep for raw `['comments', ...]` arrays outside `src/lib/comments/keys.ts`. Zero hits: every hook and cache call imports `commentKeys`.</ChecklistItem>
+</Checklist>
+
+With the write side closed, the project is done. Re-run the chapter's project goals end to end and confirm each one holds: instant first paint with no loading state, an optimistic post that persists, a clean rollback on a forced failure, a coworker's insert arriving within the poll window, "Load older" paging without re-fetching the head, and polling that pauses on a hidden tab.
+
+One thread you have not pulled, and shouldn't here: production should clear the client cache at the tenancy boundary. When the active org changes, the TanStack cache still holds the previous org's comments, so the real fix wires `queryClient.clear()` — or a per-org `removeQueries` — into the identity-switch action. This project's stand-in is the inspector's "Clear client cache" button, which redirects with `?clearCache=1` and lets the `ClearCacheOnFlag` child make that call once. Name where it goes; don't reach into the switch action from this lesson.

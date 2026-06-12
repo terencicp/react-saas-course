@@ -1,0 +1,452 @@
+---
+title: Provider, per-request factory, and the SSR-hydrated first page
+chapter-id: 77
+course-progress: 0.00005
+sidebar:
+  order: 2
+  label: Provider and SSR hydration
+---
+
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Open an invoice detail page and the seeded comment thread is already there on the very first paint — no skeleton, no spinner, no loading flash. The chapter 062 page renders exactly as before; below the customer and total cards, the first twenty seeded comments appear instantly, served from a cache the Server Component populated and handed to the client.
+
+This is the foundation the rest of the project stands on. Get TanStack Query mounted on the App Router the way an experienced engineer does, and prove it by making the seeded thread paint with no client loading state. Every later lesson — the route handler, the polling, the optimistic post — builds on the seam you wire here.
+
+## Your mission
+
+The hard part is not the provider. It's the seam between the server cache and the client cache, and there is one decision in it that, gotten wrong, ships a multi-tenant data-isolation bug. On the server the `QueryClient` has to be created fresh per request. A single module-scoped client is shared across every concurrent render, so one org's prefetched comments leak into the next org's page — a textbook tenancy leak that no test in your invoices suite would catch, because it only shows up under concurrency. The fix is the factory you carried in from the TanStack Query chapter: branch on `typeof window`, wrap the server path in React's `cache()` so the instance is scoped to the current request, and keep one long-lived singleton on the client where exactly one client per tab is correct. That handful of lines is the most important code in the project.
+
+The rest follows from the read/write split this project keeps throughout. The invoice page stays a Server Component: it prefetches the thread's first page by reading the store *directly*, in-process, through the server-only `listCommentsPage` — not through the client fetcher, which must never touch server-only code. It dehydrates that cache and wraps only the thread subtree in a hydration boundary. The chapter 062 header and cards above it stay Server Components and stay outside the boundary, because `'use client'` belongs at the leaf, not the page. The one rule that makes hydration actually work: the server prefetch and the client hook must address the cache through the exact same key — `commentKeys.lists(invoiceId)`, the single place query-key arrays are allowed to exist. Import that key in both spots and the structure enforces the match; hand-write a raw array in either and the hydration silently misses, the client refetches cold, and your instant paint quietly turns into a spinner. The provider also installs the SaaS defaults that keep an authenticated surface from refetch-storming itself — a `staleTime` and `gcTime`, and `refetchOnWindowFocus: false` — and gates the devtools behind `NODE_ENV` so they tree-shake out of the production bundle.
+
+One thing to resist: building too much. The client fetch, the polling, the infinite scroll, and the posting are all out of scope this lesson. The client fetcher stays a throwing stub, the thread is read-only, and the form does nothing yet. You only need the server-side prefetch path working to land the first paint — the next two lessons bring the rest of the thread alive.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">Opening an invoice detail page renders the seeded thread's first page immediately on first paint — no skeleton, spinner, or fetch fired on initial render.</ChecklistItem>
+  <ChecklistItem chip="tested">The dehydrated cache ships in the page's RSC payload — the comment bodies are present in the raw HTML, not fetched after hydration.</ChecklistItem>
+  <ChecklistItem chip="tested">Hard-refreshing the page reproduces the instant first paint every time, with the cache rebuilt per request.</ChecklistItem>
+  <ChecklistItem chip="tested">Hitting two different orgs' focal invoices in quick succession shows each org only its own comments — no rows leak from the first request into the second.</ChecklistItem>
+  <ChecklistItem chip="untested">The React Query devtools are reachable in development and absent from a production build.</ChecklistItem>
+  <ChecklistItem chip="untested">Nothing outside the comment-thread leaf and the provider uses TanStack Query — the chapter 062 toolbar, table, pagination, and lifecycle actions stay Server-Component / Server-Action shape.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+<VideoCallout videoId="XcUpTPbY4Wg" videoTitle="Combining React Query With Server Components (Next.js) — Cosden Solutions">
+  Cosden Solutions (17 min) builds the exact bridge you're wiring here — the per-request `getQueryClient` factory, the provider, the server-component `prefetchQuery`, and `HydrationBoundary` + `dehydrate`.
+</VideoCallout>
+
+Implement against the brief and the lesson's tests, then open the walkthrough below.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+We'll go in dependency order: the query-client factory, the keys, the provider, then the prefetch on the page and the minimal client thread that reads the hydrated cache.
+
+### The per-request query-client factory
+
+This is the load-bearing file. Two functions: `makeQueryClient` builds a configured client, `getQueryClient` decides whether to hand back a fresh per-request instance or the long-lived singleton.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+import {
+  defaultShouldDehydrateQuery,
+  QueryClient,
+} from '@tanstack/react-query';
+import { cache } from 'react';
+
+export const makeQueryClient = (): QueryClient =>
+  new QueryClient({
+    defaultOptions: {
+      queries: {
+        staleTime: 60_000,
+        gcTime: 5 * 60_000,
+        refetchOnWindowFocus: false,
+      },
+      dehydrate: {
+        shouldDehydrateQuery: (query) =>
+          defaultShouldDehydrateQuery(query) ||
+          query.state.status === 'pending',
+      },
+    },
+  });
+
+// On the server a single module-level client would be shared across every
+// concurrent request, leaking one tenant's prefetched comments into another's
+// render. \`cache()\` scopes the client to the current request, so each render
+// gets its own. In the browser there is exactly one client per tab, so a module
+// singleton is correct and avoids tearing the cache down on every navigation.
+let browserClient: QueryClient | undefined;
+
+export const getQueryClient = (): QueryClient => {
+  if (typeof window === 'undefined') {
+    return cache(makeQueryClient)();
+  }
+  browserClient ??= makeQueryClient();
+  return browserClient;
+};
+`}>
+  <AnnotatedStep meta={`{7-21} "staleTime" "gcTime" "refetchOnWindowFocus"`} color="blue">
+    `makeQueryClient` sets the SaaS defaults. `staleTime: 60_000` means a query stays fresh for a minute, so a remount or focus inside that window reads the cache instead of refetching — the cure for the 2022-era refetch-on-every-mount storm. `gcTime: 5 * 60_000` keeps an unobserved cache around for five minutes before garbage collection. `refetchOnWindowFocus: false` because alt-tabbing back to an invoice thread is not a meaningful data event.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{15-19} "shouldDehydrateQuery" "pending"`} color="green">
+    The dehydrate override. The default ships only settled queries; this also ships pending ones, so an in-flight prefetch streams to the client and resolves there rather than being dropped from the dehydrated payload. The standard App Router SSR-streaming setup.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{30-36} "typeof window" "cache(makeQueryClient)()"`} color="orange">
+    The branch — the whole reason this file exists. On the server (`typeof window === 'undefined'`) it returns `cache(makeQueryClient)()`: React's `cache()` memoizes per render pass, so each request gets its own client. A shared module-scoped client would leak one tenant's prefetched comments into the next tenant's render.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{28,34}`} color="violet">
+    In the browser there is one client per tab, so a module-scoped singleton is correct — and it's the point of a cache, surviving across navigations instead of being torn down each render. Note what is deliberately absent: no `import 'server-only'`, because the browser branch has to ship in the client bundle.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The comment above the branch is there for a reason — name the failure mode at the call site so the next person who reads this file knows why a one-line `getQueryClient` would be wrong. This is the same `getQueryClient` rule the *Wiring TanStack Query without leaking the cache across requests* lesson in the TanStack Query chapter established; if the `cache()` / `typeof window` mechanics feel fuzzy, that's the place to re-read. Here you're applying it to a real tenancy boundary.
+
+:::caution
+Do **not** add `import 'server-only'` to this file. That import throws the moment a Client Component pulls the module into the browser bundle, and the provider — a Client Component — calls `getQueryClient()` to build the browser singleton. The whole design depends on this one file being importable from both sides; the `typeof window` branch is what keeps the two paths apart at runtime.
+:::
+
+### The query-key factory
+
+Every query key in the project comes from one place. Lock the hierarchy now so the read hook, the prefetch, and next lesson's mutation all address the cache through the same identity.
+
+```ts title="src/lib/comments/keys.ts"
+export const commentKeys = {
+  all: ['comments'] as const,
+  lists: (invoiceId: string) =>
+    [...commentKeys.all, 'list', invoiceId] as const,
+  detail: (id: string) => [...commentKeys.all, 'detail', id] as const,
+};
+```
+
+`lists` and `detail` both derive from `all`, so every key shares the `['comments', ...]` prefix. That hierarchy is what lets a coarse `invalidateQueries({ queryKey: commentKeys.all })` match *every* comment list at once while `commentKeys.lists(invoiceId)` targets one thread — a distinction next lesson's invalidation leans on. The `as const` keeps each tuple a narrow readonly type rather than a widened `string[]`, so a typo in a key shape is a compile error. This is the same structural enforcement as the `tags.ts` cache-tag builders from the *Route classes and the tag scheme* lesson in the cache chapter: one module owns the identifiers, so they can never drift apart across the files that use them.
+
+### The provider
+
+The chapter 062 `ThemeProvider` stays. You wrap the tree in a `<QueryClientProvider>`, mount the devtools gated on `NODE_ENV`, and run the cache-clear flag effect inside its own `<Suspense>`.
+
+```tsx title="src/app/_components/providers.tsx"
+'use client';
+
+import { QueryClientProvider, useQueryClient } from '@tanstack/react-query';
+import dynamic from 'next/dynamic';
+import { useSearchParams } from 'next/navigation';
+import { ThemeProvider } from 'next-themes';
+import { type ReactNode, Suspense, useEffect, useRef } from 'react';
+import { getQueryClient } from '@/lib/query-client';
+
+const ReactQueryDevtools =
+  process.env.NODE_ENV === 'production'
+    ? null
+    : dynamic(() =>
+        import('@tanstack/react-query-devtools').then(
+          (mod) => mod.ReactQueryDevtools,
+        ),
+      );
+
+// The inspector's "Clear client cache" button redirects here with
+// `?clearCache=1`; this reads the flag once and wipes the browser cache.
+// `useSearchParams` is an uncached request-time read, so under
+// `cacheComponents: true` it must live inside a `<Suspense>` boundary or
+// `next build` prerender fails — hence its own child below.
+const ClearCacheOnFlag = () => {
+  const searchParams = useSearchParams();
+  const queryClient = useQueryClient();
+  const cleared = useRef(false);
+
+  useEffect(() => {
+    if (searchParams.get('clearCache') === '1' && !cleared.current) {
+      cleared.current = true;
+      queryClient.clear();
+    }
+  }, [searchParams, queryClient]);
+
+  return null;
+};
+
+export const Providers = ({ children }: { children: ReactNode }) => {
+  const queryClient = getQueryClient();
+
+  return (
+    <ThemeProvider
+      attribute="class"
+      defaultTheme="system"
+      enableSystem
+      disableTransitionOnChange
+    >
+      <QueryClientProvider client={queryClient}>
+        <Suspense fallback={null}>
+          <ClearCacheOnFlag />
+        </Suspense>
+        {children}
+        {ReactQueryDevtools ? (
+          <ReactQueryDevtools initialIsOpen={false} />
+        ) : null}
+      </QueryClientProvider>
+    </ThemeProvider>
+  );
+};
+```
+
+Three details earn their place. The devtools are imported through `next/dynamic` and the whole `ReactQueryDevtools` binding collapses to `null` when `NODE_ENV === 'production'`, so the bundler tree-shakes the devtools package out of the production build entirely — you get the floating inspector in development and zero bytes in production. The `getQueryClient()` call inside `Providers` runs in the browser, so it returns the singleton — this is exactly why `query-client.ts` cannot import `server-only`. And the `<Suspense fallback={null}>` around `ClearCacheOnFlag` is mandatory, not stylistic: `useSearchParams()` is an uncached request-time read, and under `cacheComponents: true` an uncached read must sit under a Suspense boundary or `next build` fails to prerender the page. The `clearCache` effect itself is the inspector's "Clear client cache" hook — you don't drive it this lesson, but it's wired now so the SSR-first-paint demonstration has a clean slate to start from.
+
+### The layout — no change
+
+`src/app/layout.tsx` already renders `<Providers>` around `{children}`. The starter's `TODO(L2)` marker there is documentation only — there is no diff to make. Don't go hunting for one.
+
+### The client fetcher stays a stub
+
+`src/lib/comments/fetcher.ts` keeps throwing this lesson. The first paint reads the store *in the page*, not through this client-only module, so the fetcher isn't on the path yet. You wire it in the next lesson when the client read seam goes live.
+
+```ts title="src/lib/comments/fetcher.ts"
+// The CLIENT-safe fetcher. `comment-thread.tsx` imports this module, so it must
+// never import `getSession`, the store, or `queries.ts` — any transitive
+// `server-only` reach fails `next build` from a Client Component. The server
+// prefetch reads the store directly in the page, not through this module.
+
+import type { CommentsPage } from '@/lib/comments/schema';
+
+export type FetchCommentsArgs = {
+  invoiceId: string;
+  cursor: string | null;
+};
+
+// TODO(L2) — in-process branch
+// TODO(L3) — client fetch branch
+//
+// The real client branch builds `new URL('/api/invoices/<id>/comments',
+// window.location.origin)`, sets the `cursor` search param when present,
+// `fetch(url, { credentials: 'same-origin' })`, throws on `!res.ok`, then
+// validates `commentsPageSchema.parse(json.data)`.
+export const fetchCommentsPage = (
+  _args: FetchCommentsArgs,
+): Promise<CommentsPage> => {
+  throw new Error('TODO(L3) — client fetcher not wired yet');
+};
+```
+
+### The prefetch on the invoice page
+
+This is the server half of the bridge. Above the chapter 062 render, build the per-request client, prefetch the thread's first page, and wrap only the thread `<section>` in a hydration boundary carrying the dehydrated cache.
+
+<AnnotatedCode lang="tsx" maxLines={18} code={`
+import { dehydrate, HydrationBoundary } from '@tanstack/react-query';
+import { notFound } from 'next/navigation';
+import { CommentThread } from '@/app/(app)/invoices/[id]/comment-thread';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Separator } from '@/components/ui/separator';
+import { commentKeys } from '@/lib/comments/keys';
+import { listCommentsPage } from '@/lib/comments/queries';
+import { getInvoiceDetail } from '@/lib/invoices/queries';
+import { getQueryClient } from '@/lib/query-client';
+import { getSession } from '@/server/session';
+import { findUser } from '@/server/store';
+
+type DetailPageProps = {
+  params: Promise<{ id: string }>;
+};
+
+const InvoiceDetailPage = async ({ params }: DetailPageProps) => {
+  const { id } = await params;
+  const session = await getSession();
+
+  const invoice = getInvoiceDetail({
+    orgId: session.orgId,
+    id,
+    role: session.role,
+  });
+
+  if (!invoice) {
+    notFound();
+  }
+
+  const userName = findUser(session.userId)?.name ?? session.userId;
+
+  // The page is a Server Component, so it reads the store in-process (no client
+  // fetcher, no route handler round-trip) to seed the cache. The thread's
+  // \`useInfiniteQuery\` reads this hydrated first page and never shows a loading
+  // state on first paint. Key MUST equal the hook's \`commentKeys.lists(id)\`.
+  const queryClient = getQueryClient();
+  await queryClient.prefetchInfiniteQuery({
+    queryKey: commentKeys.lists(id),
+    queryFn: ({ pageParam }) =>
+      listCommentsPage({
+        orgId: session.orgId,
+        invoiceId: id,
+        cursor: pageParam,
+        pageSize: 20,
+      }),
+    initialPageParam: null as string | null,
+  });
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-semibold">{invoice.number}</h1>
+        <span className="text-sm capitalize text-muted-foreground">
+          {invoice.status}
+        </span>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Customer</CardTitle>
+          </CardHeader>
+          <CardContent className="text-sm">{invoice.customerName}</CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Total</CardTitle>
+          </CardHeader>
+          <CardContent className="text-sm tabular-nums">
+            {invoice.currency} {invoice.total}
+          </CardContent>
+        </Card>
+      </div>
+
+      <Separator />
+
+      <section className="space-y-4">
+        <h2 className="font-medium">Comments</h2>
+        <HydrationBoundary state={dehydrate(queryClient)}>
+          <CommentThread
+            invoiceId={invoice.id}
+            session={{ userId: session.userId, userName }}
+          />
+        </HydrationBoundary>
+      </section>
+    </div>
+  );
+};
+
+export default InvoiceDetailPage;
+`}>
+  <AnnotatedStep meta={`{37} "getQueryClient()"`} color="orange">
+    Because this runs on the server, `getQueryClient()` returns a fresh `cache()`-scoped client for this request. Every concurrent invoice render gets its own — the tenancy guarantee from `query-client.ts` cashed in right here.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{38-48} "prefetchInfiniteQuery" "commentKeys.lists(id)" "initialPageParam"`} color="green">
+    `prefetchInfiniteQuery` seeds the cache under the exact key the client hook will read — `commentKeys.lists(id)`. The `queryFn` calls the server-only `listCommentsPage` directly, in-process, scoped to `session.orgId` — no HTTP hop, no client fetcher. `initialPageParam: null` is the first-page cursor and must match the hook's value exactly.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{40-46} "listCommentsPage"`} color="blue">
+    The read here is the server-only path: it reads the store and projects `orgId` off each row for the strict wire shape. The client will reach the same data through a route handler next lesson; the server reads it directly because it can.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{80-85} "HydrationBoundary" "dehydrate(queryClient)"`} color="violet">
+    Only the thread `<section>` is wrapped. `dehydrate(queryClient)` serializes the seeded cache into the RSC payload; `<HydrationBoundary>` rehydrates it on the client so the leaf's hook starts in a success state. The header and cards above stay Server Components, outside the boundary — `'use client'` goes only as deep as it must.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Two things about this read path are worth holding onto. The prefetch `queryFn` calls `listCommentsPage` *directly*, not the client fetcher — that's the in-process read the project keeps reserved for the server, with zero HTTP round-trip, while client reads go through a public route handler you build next lesson. And the boundary wraps only the `<section>`, not the whole page. It would *work* if you wrapped the entire `<div>` — but it'd be sloppy. A hydration boundary only needs to enclose the subtree that actually runs a hook on those keys, and keeping it tight is the boundary discipline from *Client Components and pushing the boundary down* in the server/client boundary chapter: push the client boundary as deep into the tree as it'll go, and leave everything above it as a Server Component.
+
+### The minimal client thread
+
+For this lesson the thread is read-only. It mounts the cache the page seeded and renders it — nothing else. `useInfiniteQuery` keyed on the same `commentKeys.lists(invoiceId)`, a `queryFn` pointing at the still-stubbed fetcher, and a render of the flattened pages.
+
+```tsx title="src/app/(app)/invoices/[id]/comment-thread.tsx"
+'use client';
+
+import { useInfiniteQuery } from '@tanstack/react-query';
+import { fetchCommentsPage } from '@/lib/comments/fetcher';
+import { commentKeys } from '@/lib/comments/keys';
+
+export type Session = { userId: string; userName: string };
+
+export const CommentThread = ({
+  invoiceId,
+  session,
+}: {
+  invoiceId: string;
+  session: Session;
+}) => {
+  // The page seeded this exact key with `prefetchInfiniteQuery`, so `data` is
+  // already `success` on first paint and the thread renders with no loading
+  // state. The `queryFn` below is never called on initial render — the hydrated
+  // cache satisfies it — which is why the still-stubbed fetcher is harmless here.
+  void session;
+  const { data } = useInfiniteQuery({
+    queryKey: commentKeys.lists(invoiceId),
+    queryFn: ({ pageParam }) =>
+      fetchCommentsPage({ invoiceId, cursor: pageParam }),
+    initialPageParam: null as string | null,
+    getNextPageParam: () => undefined,
+  });
+
+  const comments = data?.pages.flatMap((page) => page.comments) ?? [];
+
+  return (
+    <div data-testid="comment-thread" className="space-y-3">
+      {comments.map((comment) => (
+        <article
+          key={comment.id}
+          data-testid="comment-row"
+          data-comment-id={comment.id}
+          className="rounded-md border px-3 py-2 text-sm"
+        >
+          <div className="font-medium">{comment.authorName}</div>
+          <p className="text-muted-foreground">{comment.body}</p>
+        </article>
+      ))}
+    </div>
+  );
+};
+```
+
+The thing to notice is what *doesn't* happen here: the `queryFn` is never called on first render. Because the page prefetched this exact key, the hydration boundary hands the client a cache that's already in a `success` state, so `useInfiniteQuery` reads `data` straight away and skips the fetch. That's the whole payoff — and it's also why the still-throwing fetcher does no damage. The instant you mistype the key, that hydrated match breaks, the query falls back to `loading`, the `queryFn` fires, and the stub throws — which is exactly the loud failure you want when the cache misses. The `session` prop is threaded through (the page passes it) but unused until the optimistic post in the last lesson; `void session` keeps the stub honest without an unused-binding error. `getNextPageParam: () => undefined` is a placeholder — real cursor paging arrives next lesson.
+
+That's the bridge. The server prefetches in-process, dehydrates into the RSC payload, the client rehydrates, and the leaf reads a cache that's already warm — no skeleton, no waterfall, no client round-trip on first paint.
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="TanStack Query — Advanced Server Rendering"
+    href="https://tanstack.com/query/latest/docs/framework/react/guides/advanced-ssr"
+    icon="simple-icons:reactquery"
+    iconColor="#FF4154"
+    description="The canonical spec for this lesson's bridge: the getQueryClient factory, prefetch, dehydrate, and HydrationBoundary."
+  />
+  <ExternalResource
+    title="React — cache()"
+    href="https://react.dev/reference/react/cache"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="Why cache(makeQueryClient)() scopes one client per request — the API the server branch of the factory leans on."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's test suite:
+
+```sh
+pnpm test:lesson 2
+```
+
+The suite reproduces the bridge in-process — exactly what the page does. It obtains a server `QueryClient`, prefetches the thread's first page under `commentKeys.lists(id)` through the server-only read, dehydrates, then renders your `<CommentThread />` inside a `<HydrationBoundary>` carrying that state and asserts on the static markup. It spies on the client fetcher so a fetch firing on first paint — the symptom of a hydration miss — becomes a hard failure rather than a silent one. All four suites pass when the first paint renders twenty seeded rows with a known seeded body present and **zero** client fetches fired, the dehydrated bodies and author names ride along in the rendered HTML, two independent prefetch-and-render cycles each reproduce the full thread, and an org-acme render and an org-globex render each carry only their own tenant's rows — the org isolation that the per-request `cache()` branch exists to guarantee.
+
+The tests run in a node env and can't open a browser, build for production, or grep your tree, so confirm the rest by hand:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">Open a focal invoice (for example `/invoices/inv-0001`); the first twenty seeded comments render immediately — no skeleton, no flicker. View source: a seeded comment body appears in the raw HTML, proving the dehydrated state rode along in the RSC payload.</ChecklistItem>
+  <ChecklistItem chip="untested">Open the React Query devtools (the floating icon, development only); the `['comments', 'list', invoiceId]` query is present with `state: 'success'` and `fetchStatus: 'idle'` — no fetch fired on first paint.</ChecklistItem>
+  <ChecklistItem chip="untested">Hard-refresh the page; the SSR-hydrated cache rebuilds per request and the first paint stays instant.</ChecklistItem>
+  <ChecklistItem chip="untested">In the inspector, switch the acting identity from an org-acme user to an org-globex user, then immediately open the globex focal invoice (`glx-0001`); it shows globex comments only, no acme rows leaked. To watch the leak the branch prevents, temporarily collapse `getQueryClient` to a single module-scoped client, restart, and repeat — you'll see acme rows bleed in; restore the `cache()` branch and confirm it's gone.</ChecklistItem>
+  <ChecklistItem chip="untested">Build for production (`pnpm build`) and inspect the bundle — `@tanstack/react-query-devtools` is not in the chunks, because the `next/dynamic` import collapses to `null` under `NODE_ENV === 'production'`.</ChecklistItem>
+  <ChecklistItem chip="untested">Grep for `useQuery`, `useMutation`, `useInfiniteQuery`, and `useQueryClient`; the only hits are `comment-thread.tsx` and `providers.tsx` — everything else on the page stays Server-Component / Server-Action shape.</ChecklistItem>
+</Checklist>
+
+With the provider mounted and the bridge wired, the seeded thread now paints instantly with no client loading state — the architectural foundation is in place. The next lesson makes the read side come alive: a public route handler the client polls and scroll-fetches against, `useInfiniteQuery` with cursor paging so "Load older" pages in earlier comments, and a ten-second poll that surfaces a coworker's comment on its own and pauses while the tab is hidden.
