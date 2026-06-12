@@ -1,0 +1,503 @@
+---
+// The cache-update optimistic sequence as a single horizontal pipeline with a
+// live "cache" panel underneath. One stage is lit per step (the `active` prop);
+// the panel shows the call running this step prominently plus the state of the
+// cached comment list at that exact moment — so the abstract call lands on a
+// concrete cache. The load-bearing beat is step 1 (cancel): the panel paints an
+// in-flight background refetch and shows it being halted *before* the write, so
+// cancel-before-write reads as a correctness requirement, not a nicety.
+//
+// Pure HTML + CSS, devtools-inspectable, inline styles so it survives Starlight's
+// prose-margin injection. Stage chips use Starlight gray tokens at rest; the
+// active chip gets the sequence accent (blue). The error step (restore) tints
+// red and the success/reconcile step tints green so the branch each step belongs
+// to reads at a glance. Rendered once per DiagramStep, so every variant occupies
+// the same footprint and the DiagramSequence stage never reflows.
+
+type Active =
+  | "cancel"
+  | "snapshot"
+  | "write"
+  | "handoff"
+  | "restore"
+  | "reconcile";
+
+interface Props {
+  active: Active;
+}
+
+const { active } = Astro.props;
+
+const reset = "margin: 0";
+const sans =
+  "font-family: var(--sl-font-system, ui-sans-serif, system-ui, sans-serif)";
+const mono =
+  "font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
+
+const ACCENT = "hsl(217, 91%, 60%)"; // matches the DiagramSequence slider accent
+const SUCCESS = "#16a34a"; // green-600 — reconcile / success
+const ERROR = "#dc2626"; // red-600 — restore / error branch
+
+// Which lifecycle callback owns each stage, shown as a small label over the rail.
+const STAGES: { id: Active; label: string; phase: string }[] = [
+  { id: "cancel", label: "cancelQueries", phase: "onMutate" },
+  { id: "snapshot", label: "getQueryData", phase: "onMutate" },
+  { id: "write", label: "setQueryData", phase: "onMutate" },
+  { id: "handoff", label: "return { prev }", phase: "onMutate" },
+  { id: "restore", label: "setQueryData", phase: "onError" },
+  { id: "reconcile", label: "invalidateQueries", phase: "onSettled" },
+];
+
+const activeIndex = STAGES.findIndex((s) => s.id === active);
+
+// Per-step accent: the error branch is red, the reconcile branch green, the rest
+// blue — so the lit chip and panel border carry the right semantic colour.
+const accentFor = (id: Active) =>
+  id === "restore" ? ERROR : id === "reconcile" ? SUCCESS : ACCENT;
+const litColor = accentFor(active);
+
+// ---- the pipeline rail --------------------------------------------------
+
+const root = [
+  reset,
+  sans,
+  "width: 100%",
+  "box-sizing: border-box",
+  "display: flex",
+  "flex-direction: column",
+  "gap: 16px",
+].join("; ");
+
+const rail = [
+  reset,
+  "display: flex",
+  "align-items: stretch",
+  "gap: 3px",
+  "flex-wrap: nowrap",
+  "width: 100%",
+].join("; ");
+
+const stageCol = [
+  reset,
+  "display: flex",
+  "flex-direction: column",
+  "align-items: center",
+  "gap: 5px",
+  "flex: 1 1 0",
+  "min-width: 0",
+].join("; ");
+
+const phaseTag = (state: "rest" | "lit", color: string) =>
+  [
+    reset,
+    mono,
+    "font-size: 9.5px",
+    "font-weight: 700",
+    "letter-spacing: 0.02em",
+    "line-height: 1",
+    "white-space: nowrap",
+    state === "lit" ? `color: ${color}` : "color: var(--sl-color-gray-4)",
+  ].join("; ");
+
+const chip = (state: "rest" | "done" | "lit", color: string) => {
+  const base = [
+    reset,
+    mono,
+    "display: flex",
+    "align-items: center",
+    "justify-content: center",
+    "text-align: center",
+    "width: 100%",
+    "padding: 8px 4px",
+    "border-radius: 8px",
+    "font-size: 11px",
+    "font-weight: 700",
+    "line-height: 1.15",
+    "box-sizing: border-box",
+    "min-width: 0",
+  ];
+  if (state === "lit")
+    return [
+      ...base,
+      `background: ${color}`,
+      "color: #ffffff",
+      `border: 1px solid ${color}`,
+      `box-shadow: 0 0 0 4px color-mix(in srgb, ${color} 22%, transparent)`,
+    ].join("; ");
+  if (state === "done")
+    return [
+      ...base,
+      `background: color-mix(in srgb, ${ACCENT} 12%, var(--sl-color-gray-6))`,
+      "color: var(--sl-color-gray-2)",
+      `border: 1px solid color-mix(in srgb, ${ACCENT} 35%, var(--sl-color-gray-5))`,
+    ].join("; ");
+  return [
+    ...base,
+    "background: var(--sl-color-gray-6)",
+    "color: var(--sl-color-gray-3)",
+    "border: 1px solid var(--sl-color-gray-5)",
+  ].join("; ");
+};
+
+const arrow = (lit: boolean) =>
+  [
+    reset,
+    sans,
+    "align-self: center",
+    "flex: 0 0 auto",
+    "font-size: 13px",
+    "font-weight: 700",
+    "padding-top: 14px", // drop below the phase tag so it sits on the chip row
+    lit ? `color: ${ACCENT}` : "color: var(--sl-color-gray-4)",
+  ].join("; ");
+
+// ---- the cache panel ----------------------------------------------------
+
+const panel = [
+  reset,
+  "display: grid",
+  "grid-template-columns: minmax(0, 1fr) minmax(0, 1fr)",
+  "gap: 14px",
+  "align-items: stretch",
+  "padding: 14px",
+  "border-radius: 10px",
+  `border: 1px solid color-mix(in srgb, ${litColor} 45%, var(--sl-color-gray-5))`,
+  `background: color-mix(in srgb, ${litColor} 6%, var(--sl-color-bg-sidebar))`,
+].join("; ");
+
+const panelHead = [
+  reset,
+  sans,
+  "font-size: 10.5px",
+  "font-weight: 700",
+  "letter-spacing: 0.04em",
+  "text-transform: uppercase",
+  "line-height: 1",
+  "color: var(--sl-color-gray-3)",
+  "margin-bottom: 9px",
+].join("; ");
+
+const callLine = [
+  reset,
+  mono,
+  "display: block",
+  "font-size: 12px",
+  "font-weight: 600",
+  "line-height: 1.45",
+  "color: var(--sl-color-white)",
+  "word-break: break-word",
+].join("; ");
+
+const col = [reset, "display: flex", "flex-direction: column", "min-width: 0"].join(
+  "; ",
+);
+
+const stateNote = [
+  reset,
+  sans,
+  "font-size: 12px",
+  "line-height: 1.45",
+  "color: var(--sl-color-gray-2)",
+  "margin-top: 10px",
+].join("; ");
+
+// ---- the mini cache view (the cached comment list) ----------------------
+
+const cacheBox = [
+  reset,
+  "display: flex",
+  "flex-direction: column",
+  "gap: 5px",
+  "padding: 9px",
+  "border-radius: 7px",
+  "border: 1px solid var(--sl-color-gray-5)",
+  "background: var(--sl-color-bg)",
+  "flex: 1 1 auto",
+  "justify-content: center",
+].join("; ");
+
+const cacheLabel = [
+  reset,
+  mono,
+  "font-size: 10px",
+  "font-weight: 700",
+  "color: var(--sl-color-gray-3)",
+  "margin-bottom: 2px",
+].join("; ");
+
+// A settled (real, persisted) comment row.
+const row = (w: string) =>
+  [
+    reset,
+    "height: 9px",
+    "border-radius: 4px",
+    `width: ${w}`,
+    "background: var(--sl-color-gray-3)",
+  ].join("; ");
+
+// The optimistic comment row — dashed accent outline, "pending" feel.
+const optimisticRow = (color: string) =>
+  [
+    reset,
+    "display: flex",
+    "align-items: center",
+    "gap: 6px",
+    "height: 14px",
+    "padding: 0 6px",
+    "border-radius: 5px",
+    `border: 1px dashed ${color}`,
+    `background: color-mix(in srgb, ${color} 12%, transparent)`,
+  ].join("; ");
+
+const optimisticBar = (color: string) =>
+  [reset, "height: 7px", "border-radius: 4px", "width: 60%", `background: ${color}`].join(
+    "; ",
+  );
+
+const optimisticTag = (color: string) =>
+  [
+    reset,
+    sans,
+    "font-size: 8.5px",
+    "font-weight: 700",
+    "line-height: 1",
+    "margin-left: auto",
+    `color: ${color}`,
+  ].join("; ");
+
+// A floating chip representing the in-flight background refetch (step 1).
+const inflightChip = (halted: boolean) =>
+  [
+    reset,
+    sans,
+    "display: inline-flex",
+    "align-items: center",
+    "gap: 5px",
+    "align-self: flex-start",
+    "padding: 3px 8px",
+    "border-radius: 999px",
+    "font-size: 10px",
+    "font-weight: 700",
+    "line-height: 1",
+    halted
+      ? `border: 1px solid ${ACCENT}; background: color-mix(in srgb, ${ACCENT} 14%, transparent); color: var(--sl-color-white)`
+      : "border: 1px dashed var(--sl-color-gray-4); background: transparent; color: var(--sl-color-gray-3)",
+    halted ? "text-decoration: line-through" : "",
+  ].join("; ");
+
+// The snapshot card held off to the side (steps 2–5).
+const snapCard = (held: boolean) =>
+  [
+    reset,
+    "display: flex",
+    "flex-direction: column",
+    "gap: 4px",
+    "padding: 7px 8px",
+    "border-radius: 6px",
+    held
+      ? `border: 1px solid ${ACCENT}; background: color-mix(in srgb, ${ACCENT} 8%, transparent)`
+      : "border: 1px dashed var(--sl-color-gray-5); background: transparent",
+  ].join("; ");
+
+const snapTitle = (held: boolean) =>
+  [
+    reset,
+    mono,
+    "font-size: 9.5px",
+    "font-weight: 700",
+    held ? "color: var(--sl-color-white)" : "color: var(--sl-color-gray-4)",
+  ].join("; ");
+
+// ---- per-step content ---------------------------------------------------
+
+type Step = {
+  call: string;
+  note: string;
+  // cache view flags
+  showInflight: boolean;
+  inflightHalted: boolean;
+  showOptimistic: boolean;
+  optimisticColor: string;
+  optimisticLabel: string;
+  snapshotHeld: boolean;
+  reconciled: boolean;
+};
+
+const STEP: Record<Active, Step> = {
+  cancel: {
+    call: "await queryClient.cancelQueries({ queryKey })",
+    note: "A background refetch is in flight. Stop it now — left running, it could resolve after your write and overwrite it with stale data.",
+    showInflight: true,
+    inflightHalted: true,
+    showOptimistic: false,
+    optimisticColor: ACCENT,
+    optimisticLabel: "",
+    snapshotHeld: false,
+    reconciled: false,
+  },
+  snapshot: {
+    call: "const prev = queryClient.getQueryData(key)",
+    note: "Copy the current cached list aside. This is the value you restore if the write fails — grab it while it is still correct.",
+    showInflight: false,
+    inflightHalted: false,
+    showOptimistic: false,
+    optimisticColor: ACCENT,
+    optimisticLabel: "",
+    snapshotHeld: true,
+    reconciled: false,
+  },
+  write: {
+    call: "queryClient.setQueryData(key, (old) => /* prepend */)",
+    note: "Replace the cached list with the new shape — the optimistic row on top. The UI re-renders from the cache at once; the user sees their comment immediately.",
+    showInflight: false,
+    inflightHalted: false,
+    showOptimistic: true,
+    optimisticColor: ACCENT,
+    optimisticLabel: "optimistic",
+    snapshotHeld: true,
+    reconciled: false,
+  },
+  handoff: {
+    call: "return { prev }",
+    note: "Return the snapshot from onMutate so it becomes context — it now rides forward to onError, the rollback channel from the lifecycle diagram.",
+    showInflight: false,
+    inflightHalted: false,
+    showOptimistic: true,
+    optimisticColor: ACCENT,
+    optimisticLabel: "optimistic",
+    snapshotHeld: true,
+    reconciled: false,
+  },
+  restore: {
+    call: "queryClient.setQueryData(key, ctx.prev)",
+    note: "On failure, onError writes the snapshot back — the optimistic row vanishes. The cache is exactly as it was before the user clicked.",
+    showInflight: false,
+    inflightHalted: false,
+    showOptimistic: false,
+    optimisticColor: ERROR,
+    optimisticLabel: "",
+    snapshotHeld: true,
+    reconciled: false,
+  },
+  reconcile: {
+    call: "queryClient.invalidateQueries({ queryKey })",
+    note: "Win or lose, invalidate so the cache refetches the server's truth — the optimistic row is swapped for the real persisted one (or the rollback is confirmed).",
+    showInflight: false,
+    inflightHalted: false,
+    showOptimistic: false,
+    optimisticColor: SUCCESS,
+    optimisticLabel: "",
+    snapshotHeld: false,
+    reconciled: true,
+  },
+};
+
+const s = STEP[active];
+---
+
+<div class="not-content" style={root}>
+  {/* The six-call pipeline. The active stage is lit; earlier stages read as done. */}
+  <div style={rail}>
+    {
+      STAGES.map((stage, i) => (
+        <Fragment>
+          {i > 0 && <span style={arrow(i <= activeIndex)}>›</span>}
+          <div style={stageCol}>
+            <span
+              style={phaseTag(
+                stage.id === active ? "lit" : "rest",
+                accentFor(stage.id),
+              )}
+            >
+              {stage.phase}
+            </span>
+            <span
+              style={chip(
+                stage.id === active
+                  ? "lit"
+                  : i < activeIndex
+                    ? "done"
+                    : "rest",
+                accentFor(stage.id),
+              )}
+            >
+              {stage.label}
+            </span>
+          </div>
+        </Fragment>
+      ))
+    }
+  </div>
+
+  {/* The cache panel: the call on the left, the cache's state on the right. */}
+  <div style={panel}>
+    <div style={col}>
+      <div style={panelHead}>The call</div>
+      <code style={callLine}>{s.call}</code>
+      <p style={stateNote}>{s.note}</p>
+    </div>
+
+    <div style={col}>
+      <div style={panelHead}>The cache</div>
+      <div style={cacheBox}>
+        <span style={cacheLabel}>{"['comments', 'list', invoiceId]"}</span>
+
+        {
+          s.showInflight && (
+            <span style={inflightChip(s.inflightHalted)}>
+              <svg
+                width="11"
+                height="11"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="3"
+                stroke-linecap="round"
+                aria-hidden="true"
+                style="margin: 0; display: block; flex: none;"
+              >
+                <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+              </svg>
+              background refetch
+            </span>
+          )
+        }
+
+        {
+          s.showOptimistic && (
+            <div style={optimisticRow(s.optimisticColor)}>
+              <span style={optimisticBar(s.optimisticColor)} />
+              <span style={optimisticTag(s.optimisticColor)}>
+                {s.optimisticLabel}
+              </span>
+            </div>
+          )
+        }
+
+        <div style={row("88%")} />
+        <div style={row("70%")} />
+        {!s.reconciled && <div style={row("80%")} />}
+        {
+          s.reconciled && (
+            <div style={optimisticRow(SUCCESS)}>
+              <span style={optimisticBar(SUCCESS)} />
+              <span style={optimisticTag(SUCCESS)}>persisted</span>
+            </div>
+          )
+        }
+      </div>
+
+      {
+        s.snapshotHeld && (
+          <div style={[snapCard(true), "margin-top: 9px"].join("; ")}>
+            <span style={snapTitle(true)}>prev — snapshot held</span>
+            <div style={[reset, "display: flex", "gap: 5px"].join("; ")}>
+              <span style={row("30%")} />
+              <span style={row("24%")} />
+            </div>
+          </div>
+        )
+      }
+    </div>
+  </div>
+</div>
