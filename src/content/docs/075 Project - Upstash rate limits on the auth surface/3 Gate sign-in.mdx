@@ -1,0 +1,430 @@
+---
+title: Gate sign-in with dual-keying and swap out Better Auth's built-in
+chapter-id: 75
+course-progress: 0.00005
+sidebar:
+  order: 3
+  label: Gate sign-in
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Last lesson stood up the machinery: the Redis client, the three `Ratelimit` instances, and an inspector that reads each limiter's remaining budget straight from Upstash.
+But no endpoint is gated yet — the "Remaining tokens" panel reports state, it never moves.
+This lesson is where the limiter first meets traffic.
+
+Your job is to gate the sign-in action so the eleventh rapid attempt is rejected with an opaque `rate_limited` `Result`, and to make your application limiter the *single* enforcement point by turning Better Auth's own built-in limiter off.
+Sign-in is the endpoint that matters most — it's the one an attacker hammers with a stolen credential dump — so it gets the most careful key design in the whole project: a gate per IP *and* a gate per email.
+
+Here is the feedback loop you are building toward.
+On `/inspector`, "Spam sign-in" against the active identity fires eleven sign-in calls with a wrong password.
+The first ten come back `unauthorized` (Better Auth rejecting the bad password) with the per-IP `remaining` readout counting `9 → 0`; the eleventh flips to `rate_limited` with the message `Too many attempts. Please try again later.` and `remaining: 0`.
+The "Distinct IPs runner" hammers the same email from a fresh synthetic IP every call, and it's still caught — on the per-email gate.
+Flip "Force Upstash down" on and sign-ins keep working, while the structured-log tail fills with `rate_limit_unavailable` rows.
+
+<Figure caption="The inspector after a Spam sign-in: ten unauthorized rows with the per-IP remaining counting 9 → 0, the 11th rate_limited, and the honest rate_limit_rejected row in the structured-log tail.">
+  <Screenshot viewport="desktop">
+    <img
+      src="/screenshots/075/l3-desktop-1280.png"
+      alt="The /inspector page after Spam sign-in — green Upstash-up badge, a Remaining tokens panel reading rl:signin ip 0/10 and email 0/10, a Recent responses log whose top row is rate_limited 'Too many attempts. Please try again later.' above ten unauthorized rows, and a Structured log tail showing rate_limit_rejected ip ::1."
+    />
+  </Screenshot>
+</Figure>
+
+## Your mission
+
+Wrapping sign-in pulls in three small helper files — `keys.ts`, `safe-limit.ts`, and `rate-limit-headers.ts` — because none of them become observable until a gated action exercises them, plus the deliberate swap of Better Auth's built-in limiter.
+The two limiter checks run on one shared limiter with two keys: `ip:<addr>` first, then `email:<normalized>`, the cheaper one first.
+Both must pass.
+Per-IP alone misses credential stuffing spread across a botnet — each request comes from a different host, so no single IP bucket ever fills — and per-email alone is a lockout vector that lets an attacker freeze a victim out of their own account by spamming their address.
+You need both, and the structural enforcement is an early return on each gate that fails.
+Crucially, the two checks run *before* `auth.api.signInEmail`: gating after the call pays the password-hash cost on every request even past the budget, which is exactly the work the limiter exists to avoid.
+
+The rejection has to be identical whichever gate tripped.
+Returning "IP rate-limited" versus "email rate-limited" leaks which gate fired, and the per-email variant quietly confirms that an account with that address exists — a free enumeration oracle.
+So the user-facing message is one opaque string, while the honest gate-and-key land only in the structured `rate_limit_log` row, the operator-only surface.
+The budget — `limit`, `remaining`, and `reset` — travels *inside* the success `Result`, not in HTTP response headers, because a Server Action's `headers()` is read-only and cannot set them.
+The literal `RateLimit-*` headers exist only on the read-only route-handler twin at `/api/limit-demo`, present for parity.
+The limiter fails open: a Redis outage logs an alertable event and lets the request through, because auth must not go down just because Redis is unreachable — and that fail-open decision lives in exactly one place, so flipping to fail-closed later is a one-line change.
+Finally, Better Auth's built-in limiter goes off, because two limiters with different budgets and keys competing over one surface is a debugging trap; the application wrapper is the one enforcement point.
+
+A couple of trust calls are worth naming before you start.
+`getClientIp` trusts the platform's `x-forwarded-for` header — correct on Vercel, where the platform sets it, so its first entry is the real client.
+`normalizeEmail` is trim-and-lowercase only; it does *not* strip `+`-aliases, and the same normalization runs at the database lookup so the limiter key and the lookup count one identifier.
+Out of scope here: the sign-up and reset gates, which are the next two lessons.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">The eleventh sign-in from the same IP within one minute returns `rate_limited`; calls 1–10 return `unauthorized` with the per-IP `remaining` counting `9 → 0`.</ChecklistItem>
+  <ChecklistItem chip="tested">The same email hammered across distinct IPs is throttled on the per-email gate — the eleventh cross-IP attempt returns `rate_limited` with the logged `key: 'email:<active-email>'`, while each per-IP key stays fresh.</ChecklistItem>
+  <ChecklistItem chip="tested">The action carries its budget inside the `ok` payload's `rateLimit` field (`limit` / `remaining` / `reset`); it sets no `RateLimit-*` HTTP headers — those exist only on `/api/limit-demo`.</ChecklistItem>
+  <ChecklistItem chip="tested">The rejection message reads exactly `Too many attempts. Please try again later.`, identical whichever gate tripped; the gate and key surface only in the `rate_limit_log` row.</ChecklistItem>
+  <ChecklistItem chip="tested">With "Force Upstash down" on, fifteen spammed sign-ins all proceed (fail-open) and the structured log shows fifteen `rate_limit_unavailable` rows.</ChecklistItem>
+  <ChecklistItem chip="tested">After the window resets (or counters are cleared), the next sign-in returns `unauthorized` again with `remaining: 9`.</ChecklistItem>
+  <ChecklistItem chip="untested">`src/lib/auth.ts` carries `rateLimit: { enabled: false }` as its only `rateLimit` entry, and a successful sign-in still lands on `/dashboard`.</ChecklistItem>
+  <ChecklistItem chip="untested">With "Gate after work" off, the eleventh-and-later calls skip the password hash (`verify_ms ≈ 0`); with it on, every call pays the hash even past the budget.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Implement `src/lib/keys.ts`, `src/lib/safe-limit.ts`, and `src/lib/rate-limit-headers.ts`, then wrap `src/app/(auth)/sign-in/actions.ts` and flip `src/lib/auth.ts` — against the brief above and the lesson tests.
+Open the walkthrough once you've made your attempt.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+The files build on each other, so we'll go in dependency order: the pure helpers first, then the fail-open wrapper, then the budget-and-reject helpers, then the action that composes all three, and finally the one-line auth flip.
+
+### The key helpers
+
+`src/lib/keys.ts` is two pure functions with no I/O — they just parse a `Headers` object and a string into the identifiers the limiter keys on.
+
+```ts title="src/lib/keys.ts"
+// The limiter-key parse helpers. `x-forwarded-for` is the trust boundary: on
+// Vercel the platform sets it, so the first entry is the real client IP. The
+// 'unknown' fallback is deliberately loose — strict rejection of a missing/spoofed
+// forwarded chain is Chapter 081. `normalizeEmail` is trim+lowercase only (no
+// +-alias stripping); the same normalization runs at the limiter key and the DB
+// lookup, so an alias and its base address stay distinct keys on purpose.
+export const getClientIp = (headers: Headers): string => {
+  const forwardedFor = headers.get('x-forwarded-for');
+  const first = forwardedFor?.split(',')[0]?.trim();
+  if (first) {
+    return first;
+  }
+  return headers.get('x-real-ip') ?? 'unknown';
+};
+
+export const normalizeEmail = (email: string): string =>
+  email.trim().toLowerCase();
+```
+
+`x-forwarded-for` is a comma-separated chain of every proxy the request passed through; the leftmost entry is the original client.
+You read the first segment, fall back to `x-real-ip`, and only then to `'unknown'`.
+That `'unknown'` fallback is intentionally loose: it means a request with no forwarded chain shares one bucket rather than crashing, and the strict rejection of a missing or spoofed chain is a security-hardening concern deferred to the security-baseline chapter's *The abusable-endpoint matrix*.
+The decision *not* to strip `+`-aliases is the same call carried in from *Dual-keying the auth endpoints*: stripping `alice+spam@example.com` down to `alice@example.com` closes a Gmail bypass but breaks on the many providers that treat aliases as genuinely distinct mailboxes, so an alias and its base stay distinct keys — and because the database lookup normalizes the same way, the limiter and the lookup never disagree about which account is which.
+
+### The fail-open wrapper
+
+`safeLimit` is the single seam every gate calls through, and it's the one place the fail-open policy lives.
+
+```ts title="src/lib/safe-limit.ts"
+import 'server-only';
+
+import type { Ratelimit } from '@upstash/ratelimit';
+
+import { logRateLimit } from '@/lib/rate-limit-log';
+
+// The fail-open wrapper — the one place the fail-open policy lives. On a Redis
+// outage `limiter.limit` throws; we log `rate_limit_unavailable` and return a
+// success result so the auth path stays up. Flipping to fail-closed is changing
+// the returned `success` to false here, once. The `prefix` is a param because
+// `Ratelimit.prefix` is `protected readonly` in @upstash/ratelimit 2.0.8 (reading
+// `limiter.prefix` from outside the class is TS2445); call sites pass the limiter's
+// prefix literal alongside it.
+export type RateLimitResult = Awaited<ReturnType<Ratelimit['limit']>>;
+
+export const safeLimit = async (
+  limiter: Ratelimit,
+  prefix: string,
+  key: string,
+): Promise<RateLimitResult> => {
+  try {
+    return await limiter.limit(key);
+  } catch {
+    await logRateLimit({
+      event: 'rate_limit_unavailable',
+      limiter: prefix,
+      key,
+    });
+    return {
+      success: true,
+      limit: 0,
+      remaining: 0,
+      reset: 0,
+      pending: Promise.resolve(),
+    };
+  }
+};
+```
+
+Two details earn their keep here.
+First, `RateLimitResult` is *derived* from the library — `Awaited<ReturnType<Ratelimit['limit']>>` — not a hand-written interface that parallels it.
+A parallel interface silently rots the day Upstash adds a field; this one tracks the real return shape for free.
+Second, notice that `prefix` is a parameter rather than something we read off the limiter.
+`Ratelimit.prefix` is `protected readonly` in `@upstash/ratelimit@2.0.8`, so reading `limiter.prefix` from outside the class is a compile error (`TS2445`).
+The call sites pass the literal — `'rl:signin'` — alongside the limiter, and that literal is what lands in the outage log so an operator can see which surface lost Redis.
+
+:::note
+Fail-open is the right default *for auth*: a sign-in form that 500s because a cache is down is worse than a sign-in form that briefly accepts a few unthrottled attempts. The decision is centralized here on purpose — for an endpoint where the cost of letting traffic through is higher than the cost of a brief outage, you'd flip the returned `success` to `false` in this one spot.
+:::
+
+### The budget and reject helpers
+
+`rate-limit-headers.ts` holds four exports with two distinct audiences — the action path and the route-handler twin. The walkthrough below steps through which is which.
+
+<AnnotatedCode lang="ts" maxLines={15} title="src/lib/rate-limit-headers.ts" code={`
+import 'server-only';
+
+import { logRateLimit } from '@/lib/rate-limit-log';
+import { err, type Result } from '@/lib/result';
+import type { RateLimitResult } from '@/lib/safe-limit';
+
+// \`reset\` from the library is a Unix ms timestamp; the budget and headers carry it
+// as delta-seconds via Math.ceil((reset - Date.now()) / 1000) — raw ms is a bug.
+//
+// The budget rides the action \`Result\` (no HTTP headers on the action path —
+// headers() is read-only in a Server Action). \`RateLimit-*\` headers + Retry-After +
+// the JSON 429 body exist only on the route-handler twin (\`/api/limit-demo\`),
+// present for parity. \`rateLimited\` is the action reject helper: it logs the honest
+// \`rate_limit_rejected\` event (gate + key) and returns the same opaque message
+// regardless of which gate tripped — no information leak.
+export type RateLimitBudget = {
+  limit: number;
+  remaining: number;
+  reset: number;
+};
+
+export const rateLimitBudget = (r: RateLimitResult): RateLimitBudget => ({
+  limit: r.limit,
+  remaining: r.remaining,
+  reset: Math.ceil((r.reset - Date.now()) / 1000),
+});
+
+export const rateLimitHeaders = (
+  r: RateLimitResult,
+): Record<string, string> => ({
+  'RateLimit-Limit': String(r.limit),
+  'RateLimit-Remaining': String(r.remaining),
+  'RateLimit-Reset': String(Math.ceil((r.reset - Date.now()) / 1000)),
+});
+
+export const rateLimited = async (
+  r: RateLimitResult,
+  gate: 'ip' | 'email',
+  key: string,
+): Promise<Result<never>> => {
+  await logRateLimit({
+    event: 'rate_limit_rejected',
+    limiter: gate,
+    key,
+    remaining: r.remaining,
+    reset: r.reset,
+  });
+  return err('rate_limited', 'Too many attempts. Please try again later.');
+};
+
+export const rateLimitedResponse = (r: RateLimitResult): Response =>
+  Response.json(
+    { error: 'Too many attempts. Please try again later.' },
+    {
+      status: 429,
+      headers: {
+        ...rateLimitHeaders(r),
+        'Retry-After': String(Math.ceil((r.reset - Date.now()) / 1000)),
+      },
+    },
+  );
+`}>
+  <AnnotatedStep meta="{1-16}" color="blue">
+    The file imports `logRateLimit` and the `Result` helpers, and re-uses the library-derived `RateLimitResult` from `safe-limit`. The header comment states the rule: `reset` is delta-seconds, the budget rides the action `Result`, and the literal headers live only on the route-handler twin.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{22-26} "rateLimitBudget"`} color="green">
+    `rateLimitBudget` is what rides the success `Result`. The library hands you `reset` as a Unix-millisecond timestamp; you convert it to delta-seconds with `Math.ceil((r.reset - Date.now()) / 1000)`. Shipping the raw ms is the documented bug — a 60-second window must read ~60, not a 13-digit number.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{36-49} "rateLimited"`} color="orange">
+    `rateLimited` is the action's reject helper. It logs the honest `rate_limit_rejected` row carrying the real gate and key, then returns the opaque `err('rate_limited', 'Too many attempts. Please try again later.')`. The user-safe contract lives here, in one function — not at each call site — so every gate that rejects is byte-identical to the user while the operator still sees which gate fired.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{28-34,51-61} "rateLimitHeaders" "rateLimitedResponse"`} color="violet">
+    These two are the route-handler twin, used only by `/api/limit-demo`. `rateLimitHeaders` builds the literal `RateLimit-*` header set; `rateLimitedResponse` wraps a JSON 429 with those headers plus `Retry-After`. A Server Action can't set response headers, so the action never touches these — they exist so the read-only demo route shows the real HTTP shape for parity.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The split between the action path and the route-handler twin is the whole point of this file.
+The action carries its budget *in the `Result`* via `rateLimitBudget`, and rejects *through* `rateLimited` so the opaque message is defined once.
+The two header functions are dead weight on the action path — they're only there so the demo route can show the literal `RateLimit-*` headers and a real 429 for parity, since you genuinely cannot produce those from inside a Server Action.
+
+### The sign-in action
+
+Now the action that composes everything. This is the shape every other gated endpoint in the project copies.
+
+<AnnotatedCode lang="ts" maxLines={15} title="src/app/(auth)/sign-in/actions.ts" code={`
+'use server';
+
+import { headers } from 'next/headers';
+import { after } from 'next/server';
+import { z } from 'zod';
+
+import { auth } from '@/lib/auth';
+import { mapAuthError } from '@/lib/auth/error-mapping';
+import { getClientIp } from '@/lib/keys';
+import { signInLimiter } from '@/lib/rate-limit';
+import {
+  type RateLimitBudget,
+  rateLimitBudget,
+  rateLimited,
+} from '@/lib/rate-limit-headers';
+import { safeNext } from '@/lib/redirects';
+import { err, ok, type Result } from '@/lib/result';
+import { safeLimit } from '@/lib/safe-limit';
+
+const SignInSchema = z.strictObject({
+  email: z.string().trim().toLowerCase().pipe(z.email()),
+  password: z.string().min(1),
+  next: z.string().optional(),
+});
+
+// Gate before work, dual-keyed: per-IP then per-email (cheaper first), both
+// through \`safeLimit\`, both before \`auth.api.signInEmail\`. The budget rides the
+// success \`Result\` (no HTTP headers — headers() is read-only here); the reject
+// path returns the opaque \`rateLimited(...)\`. \`pending\` analytics flush via
+// \`after()\`, never awaited on the path.
+export const signInAction = async (
+  _state: Result<{ redirectTo: string; rateLimit: RateLimitBudget }> | null,
+  formData: FormData,
+): Promise<Result<{ redirectTo: string; rateLimit: RateLimitBudget }>> => {
+  const parsed = SignInSchema.safeParse(Object.fromEntries(formData));
+  if (!parsed.success) {
+    return err(
+      'validation',
+      'Check the highlighted fields.',
+      z.flattenError(parsed.error).fieldErrors,
+    );
+  }
+
+  const ip = getClientIp(await headers());
+  const email = parsed.data.email;
+
+  const ipLimit = await safeLimit(signInLimiter, 'rl:signin', \`ip:\${ip}\`);
+  if (!ipLimit.success) {
+    return rateLimited(ipLimit, 'ip', ip);
+  }
+
+  const emailLimit = await safeLimit(
+    signInLimiter,
+    'rl:signin',
+    \`email:\${email}\`,
+  );
+  if (!emailLimit.success) {
+    return rateLimited(emailLimit, 'email', email);
+  }
+
+  try {
+    await auth.api.signInEmail({
+      body: { email, password: parsed.data.password },
+    });
+  } catch (e) {
+    after(ipLimit.pending);
+    after(emailLimit.pending);
+    return mapAuthError(e);
+  }
+
+  after(ipLimit.pending);
+  after(emailLimit.pending);
+  const next = safeNext(parsed.data.next);
+  return ok({
+    redirectTo: next ?? '/dashboard',
+    rateLimit: rateLimitBudget(ipLimit),
+  });
+};
+`}>
+  <AnnotatedStep meta={`{20-24} "strictObject"`} color="blue">
+    Parse the form with a `strictObject` — the email is trimmed and lowercased in the schema and then piped to `z.email()`, so the normalized address is what flows downstream. A strict object rejects any field the form shouldn't send.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{44-45} "getClientIp"`} color="blue">
+    Resolve the two identifiers: the client IP off the request headers via `getClientIp`, and the already-normalized email from the parsed data. These are the keys both gates will use.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{47-59} "safeLimit" "rateLimited"`} color="green">
+    The dual gate, before any credential work. The per-IP check runs first (cheaper), then per-email; each goes through `safeLimit`, and the first to fail returns the opaque `rateLimited(...)` and stops. This early-return structure is what makes "both must pass" the enforced rule.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{61-69} "signInEmail" "mapAuthError"`} color="orange">
+    Only once both gates pass do we call `auth.api.signInEmail`. We never invent the credential outcomes inline — a wrong password or unverified email throws, and `mapAuthError` translates the Better Auth error into the right `Result` code (`unauthorized` / `forbidden`). On that branch we still flush both pending promises before returning.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{71-77} "after" "rateLimitBudget"`} color="violet">
+    On success, `after(pending)` hands each limiter's analytics write to Next.js's `after()` so it flushes off the response path rather than blocking the user (awaiting it on the path costs 5–10ms per call). We return `ok` with `redirectTo` — not `redirect()` — keeping the `(state, formData)` `useActionState` shape this auth surface already uses, so the form navigates client-side; the per-IP budget rides along in the `rateLimit` field.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+A few decisions are worth pausing on.
+The gates run before `signInEmail` because the password hash is the expensive part — verifying a bcrypt-class hash is deliberately slow, and an attacker past the budget should pay nothing.
+`mapAuthError` is doing real work on the failure branch: it's the pre-provided translator that maps Better Auth's `INVALID_EMAIL_OR_PASSWORD` to `unauthorized` and `EMAIL_NOT_VERIFIED` to `forbidden`, so the action never hand-rolls credential outcomes.
+And the action returns `ok({ redirectTo })` rather than calling `redirect()`: the form keeps the `(state, formData)` `useActionState` shape this auth surface already uses and navigates client-side off `state.data.redirectTo`, which is also how the budget gets back to the UI — it rides inside the success payload.
+The `after()` calls appear on *both* the success and the failure branch, because the analytics write should flush regardless of whether the credentials were good; for the full story on `after()`, see *Inline, then after()*.
+
+### Turn off the built-in limiter
+
+The last change is one line in `src/lib/auth.ts` — the architectural swap.
+
+```ts title="src/lib/auth.ts" {3}
+  // The app-level limiters are the single enforcement point; leaving the built-in
+  // on means two limiters competing over the same surface.
+  rateLimit: { enabled: false },
+```
+
+Better Auth ships an in-memory limiter of its own.
+Left on, you'd have two limiters with different budgets, different keys, and different storage racing on the same sign-in surface — and when a request gets throttled you wouldn't know which one did it.
+Turning it off makes your application wrapper the one place rate limiting happens.
+The alternative — pointing Better Auth's built-in at Upstash through its `secondaryStorage` adapter — is the road not taken, covered as the named alternative in *Dual-keying the auth endpoints*; we chose the application-wrapper seam because it gives one consistent budget, one opaque message, and one fail-open policy across every endpoint, auth and non-auth alike.
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Upstash Ratelimit — limit() and response shape"
+    href="https://upstash.com/docs/redis/sdks/ratelimit-ts/methods"
+    icon="simple-icons:upstash"
+    iconColor="#00E9A3"
+    description="The exact return shape your safeLimit and rateLimitBudget helpers wrap: success, limit, remaining, and reset as a Unix-ms timestamp."
+  />
+  <ExternalResource
+    title="Better Auth — Rate limiting"
+    href="https://www.better-auth.com/docs/concepts/rate-limit"
+    icon="simple-icons:betterauth"
+    iconColor="#000000"
+    description="The built-in limiter you turn off here, plus the secondary-storage-Redis path this lesson chose not to take."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's test suite:
+
+```sh
+pnpm test:lesson 3
+```
+
+The suite drives your real helpers — `getClientIp`, `normalizeEmail`, `safeLimit`, `rateLimited`, and `rateLimitBudget` — composed exactly the way the sign-in action composes them: per-IP gate then per-email gate, both before any credential work, against a deterministic in-test limiter so the run never waits on a live Upstash window.
+It reads back the honest `rate_limit_log` rows your helpers write through the same database and table the inspector's log-tail reads, and checks the opaque `Result` they return, so it needs `DATABASE_URL` set just as the inspector does.
+All eleven tests pass when the eleventh rapid call from one IP returns `rate_limited` while calls 1–10 surface `remaining` counting `9 → 0`, the same email across fresh IPs trips on the per-email gate and leaves a `rate_limit_rejected` row keyed on `email:<addr>`, the carried budget converts `reset` to delta-seconds, both gates return the byte-identical opaque message while the honest rows still distinguish them, fifteen calls against a throwing limiter all fail open and log fifteen `rate_limit_unavailable` rows, and a fresh key reads back at `remaining: 9`.
+
+The tests can't reach into `auth.ts` config, drive a real login, or read the inspector's timing readout, so confirm the rest by hand on `/inspector`:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">Click "Reset counters", then "Spam sign-in" against the active identity with a wrong password. The recent-responses log shows ten `unauthorized` rows with the per-IP `remaining` declining `9 → 0`, then an eleventh `rate_limited` row carrying the opaque message and `remaining: 0`; the "Remaining tokens" panel reads `signin → ip:<addr> → 0/10`, and the structured-log tail shows the honest `rate_limit_rejected` row keyed on `ip:<addr>`.</ChecklistItem>
+  <ChecklistItem chip="untested">Run the "Distinct IPs runner" (`spoof-ip-runner`). Each iteration uses a fresh synthetic `ip:` key but the same `email:<active-email>` key, so every per-IP key stays fresh while the per-email gate counts down; the eleventh returns `rate_limited` with the logged `key: 'email:<active-email>'`. This cross-IP per-email catch is the chapter's load-bearing result.</ChecklistItem>
+  <ChecklistItem chip="untested">Toggle "Gate after work" on and spam sign-in: the timing readout shows every call paying the ~80–150ms hash cost even past the budget. Toggle it off and the eleventh-and-later calls collapse to ~5–15ms — the Upstash round-trip alone, no hash.</ChecklistItem>
+  <ChecklistItem chip="untested">Toggle "Force Upstash down" on and spam sign-in fifteen times: all proceed and the structured-log tail shows fifteen `rate_limit_unavailable` rows. Toggle it back off.</ChecklistItem>
+  <ChecklistItem chip="untested">After a rejection, click "Reset counters", then "Send one": the call returns `unauthorized` with `remaining: 9`, confirming a reset releases the budget.</ChecklistItem>
+  <ChecklistItem chip="untested">Toggle "Await pending instead of after()" on: the per-call timing readout inflates 5–10ms. Toggle off to return to baseline.</ChecklistItem>
+  <ChecklistItem chip="untested">Open `src/lib/auth.ts` and confirm `rateLimit: { enabled: false }` is the only `rateLimit` entry; then sign in for real as `alice` and confirm you still land on `/dashboard`.</ChecklistItem>
+  <ChecklistItem chip="untested">Open `/api/limit-demo` repeatedly: after the budget is spent it returns a real 429 with literal `RateLimit-*` headers, a `Retry-After` header, and the opaque JSON body — the one place in the project those HTTP headers exist.</ChecklistItem>
+</Checklist>
+
+With sign-in gated and Better Auth's built-in off, the application limiter is now the single enforcement point on the highest-value endpoint.
+The next lesson reuses every helper you just wrote — `keys.ts`, `safe-limit.ts`, and `rate-limit-headers.ts` ship unchanged — to gate sign-up, where one limiter and one wrap is the entire diff.

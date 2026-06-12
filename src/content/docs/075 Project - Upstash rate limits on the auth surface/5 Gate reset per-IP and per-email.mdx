@@ -1,0 +1,268 @@
+---
+title: Gate reset per-IP and per-email
+chapter-id: 75
+course-progress: 0.00005
+sidebar:
+  order: 5
+  label: Gate the reset action
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+This is the last gate. You wire the password-reset action per-IP and per-email so that neither a single noisy host nor a campaign rotating IPs against one victim's address can flood that inbox with reset emails.
+
+Reset is your second dual-keyed endpoint — same shape as sign-in — but the per-email gate is here for a different reason, and that reason is the whole lesson. On sign-in, a per-email gate stops credential stuffing against one account. On reset, every accepted request *sends real mail*: a verification link goes out through Resend, on your domain, on your dime. So the cost of abuse isn't an attacker burning their own time — it lands on a **third party**, the person whose address is being targeted, and on your sender reputation and your email budget. The per-IP gate stops one host hammering. The per-email gate is the one that protects the targeted address even as the attacker hops hosts, and surviving that IP switch is its load-bearing property.
+
+Here's the feedback loop you're building toward. On `/inspector`, "Spam reset" fires four reset requests against `eve@example.com`, each from a different synthetic IP — a cross-host campaign. The first three come back `ok`; the fourth flips to `rate_limited` with the opaque `Too many attempts. Please try again later.`, and its structured-log row records `limiter: 'reset'`, `key: 'email:eve@example.com'`. Run "Distinct IPs runner (reset)" to switch to one more never-seen IP, and it's *still* rejected — on the per-email gate, because that gate is keyed on the victim, not the requester. The mock-email counter ticks up only by the three that got through; the blocked one sent nothing.
+
+<Figure caption="The /inspector page after a Spam reset against eve@example.com: three ok resets and a fourth rate_limited row keyed email:eve@example.com, the Remaining tokens panel reading rl:reset email:eve@example.com → 0/3 while the per-IP buckets stay fresh at 3/3, the honest rate_limit_rejected email row in the structured-log tail, and the mock-email counter reading 3.">
+  <Screenshot viewport="desktop">
+    <img
+      src="/screenshots/075/l5-desktop-1280.png"
+      alt="The /inspector page after a 'Spam reset' run against eve@example.com: a green 'Upstash up' badge and 'mock emails: 3' in the header; a 'Remaining tokens' panel whose rl:reset rows read ip:::1 → 3/3 and email:eve@example.com → 0/3; a 'Recent responses' log whose top row is reset / rate_limited / email:eve@example.com / Too many attempts. Please try again later. above three reset / ok rows; and a 'Structured log (rate_limit_log)' tail showing one rate_limit_rejected / email / email:eve@example.com row."
+    />
+  </Screenshot>
+</Figure>
+
+## Your mission
+
+Gate the password-reset request so a victim's inbox — and your Resend cost — stay protected even when the attacker rotates IPs. This is the second dual-keyed endpoint in the project, and structurally it is the sign-in gate again: parse, per-IP check, per-email check, then the work, with the budget riding the `Result`. What's worth holding in your head is *why* the per-email gate earns its place here. Per-IP alone stops one host but misses a campaign spread across many; per-email alone would be a lockout vector if reset did anything stateful, but reset's per-email gate isn't about lockout at all — it's about the email send. Every reset that passes both gates fires one real message, so the gate that survives an IP change is the one standing between an IP-rotating attacker and a victim's flooded inbox. That survival is the property the tests hammer on, and it's what makes a same-IP burst a poor demonstration: per-IP is checked first, both gates share the tightest budget in the project, so a same-IP burst trips the per-IP gate before the per-email gate is ever consulted. To watch the per-email gate fire you have to spread the spam across distinct IPs, which is exactly what the inspector's "Spam reset" does.
+
+Everything you need already exists. `resetLimiter` (three per fifteen minutes — the tightest budget in the project, because the abuse here is the most expensive), `safeLimit`, and the reject helper all shipped in the earlier lessons of this chapter; adding this endpoint is one limiter and one wrap, the payoff promised back in the overview. Reuse them, don't re-declare them — that one-wrap economy is the point. The carried rules are the same ones the sign-in gate already established: both checks run *before* `auth.api.requestPasswordReset` so a blocked attacker never triggers the send, the rejection goes back through the opaque `rateLimited(...)` helper so it reads identically whichever gate tripped, `safeLimit` keeps the fail-open policy, and `pending` analytics flush through `after()` rather than blocking the response. One shape note so you don't fight the form: reset has no redirect. Sign-in and sign-up returned an `ok({ redirectTo })` so the form could navigate; reset returns `ok({ sent: true })` — a marker, not a destination — because the form renders an enumeration-uniform confirmation in place. The one thing explicitly out of scope is real email delivery: it's mocked here so the inspector can count sends, and the live Resend send path is the concern of [The welcome email send path](/050-project---the-welcome-email-send-path/4-the-send-path/).
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">Four resets against `eve@example.com` across distinct IPs return `rate_limited` on the fourth, with `limiter: 'reset'` and the logged `key: 'email:eve@example.com'` — every per-IP bucket stays fresh, so the per-email gate is what trips.</ChecklistItem>
+  <ChecklistItem chip="tested">After one more IP switch, a further reset against `eve@example.com` is still `rate_limited` on the per-email gate — the gate survives the IP change.</ChecklistItem>
+  <ChecklistItem chip="tested">A burst from one IP against distinct addresses is rejected on the per-IP gate once the per-IP budget is spent — the mirror case, and why the per-email demonstration needs distinct IPs.</ChecklistItem>
+  <ChecklistItem chip="tested">The mock-email counter rises by exactly the number of successful resets; rate-limited attempts send no mail.</ChecklistItem>
+  <ChecklistItem chip="tested">The success path returns `ok({ sent: true })`; a rejection returns the opaque `rate_limited` message, with the gate and key surfacing only in the `rate_limit_log` row.</ChecklistItem>
+  <ChecklistItem chip="untested">With "Force Upstash down" on, spammed resets all proceed (fail-open) and the structured log fills with `rate_limit_unavailable` rows.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Fill in `src/app/(auth)/reset/actions.ts` against the brief and the tests, reusing `resetLimiter`, `safeLimit`, and the `rateLimited` reject helper — per-IP gate then per-email gate, both before the reset request, the marker on the success `Result`. Try it before you open the solution.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+The whole file. Set it next to the sign-in action from [Gate sign-in with dual-keying](/075-project---upstash-rate-limits-on-the-auth-surface/3-gate-sign-in/) and the import surface is identical — `resetLimiter` in place of `signInLimiter`, the same `getClientIp`, the same `safeLimit`, the same `rateLimited` — which is the "one wrap" claim made concrete.
+
+```ts title="src/app/(auth)/reset/actions.ts" collapse={3-13, 19-26}
+'use server';
+
+import { headers } from 'next/headers';
+import { after } from 'next/server';
+import { z } from 'zod';
+
+import { auth } from '@/lib/auth';
+import { mapAuthError } from '@/lib/auth/error-mapping';
+import { getClientIp } from '@/lib/keys';
+import { resetLimiter } from '@/lib/rate-limit';
+import { rateLimited } from '@/lib/rate-limit-headers';
+import { err, ok, type Result } from '@/lib/result';
+import { safeLimit } from '@/lib/safe-limit';
+
+const ResetSchema = z.strictObject({
+  email: z.string().trim().toLowerCase().pipe(z.email()),
+});
+
+// Gate before work, dual-keyed: per-IP then per-email (cheaper first), both
+// through `safeLimit`, both before `auth.api.requestPasswordReset`. The per-email gate
+// is the load-bearing one here — it survives an IP switch, so a campaign against
+// one victim's address can't flood their inbox (and our Resend cost) by rotating
+// hosts. Tightest budget in the project (3/15m). Reset has no redirect: the form
+// renders an enumeration-uniform confirmation in place, so the ok payload is a
+// marker, not a navigation. `pending` analytics flush via `after()`, never awaited
+// on the path.
+export const resetAction = async (
+  _state: Result<{ sent: true }> | null,
+  formData: FormData,
+): Promise<Result<{ sent: true }>> => {
+  const parsed = ResetSchema.safeParse(Object.fromEntries(formData));
+  if (!parsed.success) {
+    return err(
+      'validation',
+      'Check the highlighted fields.',
+      z.flattenError(parsed.error).fieldErrors,
+    );
+  }
+
+  const ip = getClientIp(await headers());
+  const email = parsed.data.email;
+
+  const ipLimit = await safeLimit(resetLimiter, 'rl:reset', `ip:${ip}`);
+  if (!ipLimit.success) {
+    return rateLimited(ipLimit, 'ip', ip);
+  }
+
+  const emailLimit = await safeLimit(
+    resetLimiter,
+    'rl:reset',
+    `email:${email}`,
+  );
+  if (!emailLimit.success) {
+    return rateLimited(emailLimit, 'email', email);
+  }
+
+  try {
+    // Enumeration-uniform by default: an unknown email returns success without
+    // sending. `redirectTo` is only the link target baked into the email; the
+    // token-consume page is named-not-built — the project verifies the gate.
+    await auth.api.requestPasswordReset({
+      body: { email, redirectTo: '/sign-in' },
+    });
+  } catch (e) {
+    after(ipLimit.pending);
+    after(emailLimit.pending);
+    return mapAuthError(e);
+  }
+
+  after(ipLimit.pending);
+  after(emailLimit.pending);
+  return ok({ sent: true });
+};
+```
+
+Walk the four moves that matter, in order.
+
+<AnnotatedCode lang="ts" maxLines={14} code={`
+export const resetAction = async (
+  _state: Result<{ sent: true }> | null,
+  formData: FormData,
+): Promise<Result<{ sent: true }>> => {
+  const parsed = ResetSchema.safeParse(Object.fromEntries(formData));
+  if (!parsed.success) {
+    return err(
+      'validation',
+      'Check the highlighted fields.',
+      z.flattenError(parsed.error).fieldErrors,
+    );
+  }
+
+  const ip = getClientIp(await headers());
+  const email = parsed.data.email;
+
+  const ipLimit = await safeLimit(resetLimiter, 'rl:reset', \`ip:\${ip}\`);
+  if (!ipLimit.success) {
+    return rateLimited(ipLimit, 'ip', ip);
+  }
+
+  const emailLimit = await safeLimit(
+    resetLimiter,
+    'rl:reset',
+    \`email:\${email}\`,
+  );
+  if (!emailLimit.success) {
+    return rateLimited(emailLimit, 'email', email);
+  }
+
+  try {
+    await auth.api.requestPasswordReset({
+      body: { email, redirectTo: '/sign-in' },
+    });
+  } catch (e) {
+    after(ipLimit.pending);
+    after(emailLimit.pending);
+    return mapAuthError(e);
+  }
+
+  after(ipLimit.pending);
+  after(emailLimit.pending);
+  return ok({ sent: true });
+};
+`}>
+  <AnnotatedStep meta={`{5-12} "strictObject"`} color="blue">
+    Parse the form with the `strictObject` first, and return on failure before any gate runs. The schema trims and lowercases the email, then pipes it to `z.email()`, so the normalized address is what flows into the per-email key — and a malformed email short-circuits with a `validation` result without ever burning a token. This early return is the one part of the wired action a test can call directly without a live request scope, which is why the suite probes it.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{17-29} "safeLimit" "rateLimited"`} color="green">
+    The dual gate, before the send. Per-IP runs first because it's the cheaper rejection — a noisy host gets stopped without ever touching the shared per-email bucket — then per-email. Both go through `safeLimit` on the same `resetLimiter` with the same `'rl:reset'` prefix; the keys differ (`ip:` versus `email:`). The first to fail returns the opaque `rateLimited(...)` and stops. That early-return-per-gate structure is what enforces "both must pass."
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{31-39} "requestPasswordReset"`} color="orange">
+    Only once both gates pass do we call `auth.api.requestPasswordReset`. This is the line that sends mail, so it lives strictly *after* the gates — a blocked attacker never reaches it. We don't hand-roll the unknown-email case: Better Auth returns success without sending for an address it doesn't recognize, so the response is uniform whether or not the account exists, and a thrown error is translated by `mapAuthError`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{41-43} "after" "ok({ sent: true })"`} color="violet">
+    Flush analytics off-path and return the marker. `after(pending)` hands each limiter's analytics write to Next.js's `after()` so it runs after the response is on its way rather than blocking the user — and it sits on the catch branch too, because the write should happen whether or not the send threw. The success payload is `ok({ sent: true })`, not `redirect()` and not `redirectTo`: reset has no destination, so the form shows its confirmation in place.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+A few decisions worth naming.
+
+**Why reset carries a per-email gate at all.** Said plainly: every accepted reset sends a real email, so the abuse you're defending against is a flooded third-party inbox plus Resend cost, not a brute-forced account. The per-IP gate stops one host; the per-email gate is keyed on the victim's address, so it keeps counting down no matter which host the request comes from. That cross-host survival is the gate's whole reason for existing here — and the inspector's "Distinct IPs runner (reset)" exists to prove it by switching to a fresh IP after the budget is spent and watching the email gate reject anyway.
+
+**Why the budget is the tightest in the project.** Sign-in is ten per minute, sign-up five per ten minutes, reset three per fifteen minutes. The tighter the legitimate frequency *and* the higher the abuse cost, the tighter the budget should be — and reset sits at the extreme of both: nobody legitimately requests four password resets in a quarter hour, and every request past the limit is a real email you'd rather not send. Low legitimate frequency plus high abuse cost equals the smallest window.
+
+**Why the demonstration needs distinct IPs.** Per-IP is checked first, and both gates draw on the same three-per-fifteen-minutes budget. A same-IP burst therefore trips the per-IP gate on its fourth call, before the per-email gate is ever consulted — that's requirement three, the mirror case. To make the per-email gate the thing that fires, the spam has to keep every per-IP bucket fresh, which means a new synthetic IP each call. That's precisely what "Spam reset" does, and it's why the cross-host scenario is the one the lesson is built around.
+
+**Why `after(pending)` appears on the catch branch too.** The analytics write is bookkeeping about the limiter, not about the credential outcome, so it must flush whether or not `requestPasswordReset` throws — which is why it appears on both the catch and the success branch. And it goes through `after()` rather than being awaited inline because awaiting the analytics round-trip on the response path would add latency to every reset for no user benefit; for the full story on `after()`, see [Inline, then after()](/066-background-work/1-inline-then-after/).
+
+**Why the `ok` is a marker, not navigation.** Reset deliberately doesn't redirect. An unknown email and a known one return the identical `ok({ sent: true })`, and the form renders one enumeration-uniform confirmation in place — "if that address exists, a link is on its way." The `redirectTo: '/sign-in'` in the call is not navigation for the requester; it's only the link target baked into the email the recipient receives. Consuming that token on a reset-completion page is named-not-built here: this project verifies the *gate*, not the full reset flow.
+
+For the parts this lesson leans on but doesn't own — dual-keying, gate-before-work, the opaque message, and `safeLimit`'s fail-open — see [Gate sign-in with dual-keying](/075-project---upstash-rate-limits-on-the-auth-surface/3-gate-sign-in/) where they were first wired, and the Upstash primitives in [the rate-limiting chapter's dual-keying lesson](/074-rate-limiting-with-upstash-redis/3-dual-keying-the-auth-endpoints/).
+
+:::note
+Both gates use the *same* `resetLimiter` and the *same* `'rl:reset'` prefix — what differs is the key (`ip:<addr>` versus `email:<addr>`). This is dual-keying, not two limiters: one limiter, one budget definition, two buckets carved out by the key. Reaching for a second `Ratelimit` instance to gate the same endpoint is the mistake this pattern exists to avoid.
+:::
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Upstash Ratelimit — algorithms"
+    href="https://upstash.com/docs/redis/sdks/ratelimit-ts/algorithms"
+    icon="simple-icons:upstash"
+    iconColor="#00E9A3"
+    description="The sliding-window algorithm behind resetLimiter's 3-per-15-minutes budget, and what .limit() hands back."
+  />
+  <ExternalResource
+    title="Better Auth — email & password"
+    href="https://better-auth.com/docs/authentication/email-password"
+    icon="simple-icons:betterauth"
+    description="The requestPasswordReset server API this gate wraps, including its enumeration-uniform reset behaviour."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's suite:
+
+```bash
+pnpm test:lesson 5
+```
+
+The suite drives your real helpers — `safeLimit`, `rateLimited`, and the live `sendEmail` mock — composed exactly the way the reset action composes them: per-IP gate then per-email gate, both before the send, against a deterministic in-test limiter at reset's budget of three, so the run never waits on a live Upstash window. It also calls `resetAction` directly to confirm the parse early-return returns a `validation` result rather than the stub's `internal`, and reads back the honest `rate_limit_log` rows through the same database and table the inspector's log-tail reads, so it needs `DATABASE_URL` set just as the inspector does. All seven tests pass when the cross-IP campaign trips on the per-email gate on its fourth call and leaves a row keyed `email:eve@example.com`, the per-email gate still rejects after one more IP switch, a same-IP burst trips on the per-IP gate, the mock-email counter moves by exactly the three that passed, and both gates return the byte-identical opaque message while their honest rows still record which gate fired.
+
+```ansi frame="terminal"
+ ✓ tests/lessons/Lesson 5.test.ts (7 tests)
+
+ Test Files  1 passed (1)
+      Tests  7 passed (7)
+```
+
+The tests drive the helpers but can't reach the inspector or force a Redis outage. Confirm the rest by hand on `/inspector`:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">Click "Reset counters", then "Spam reset": the recent-responses log shows three `ok` resets against `eve@example.com` and a fourth `rate_limited` row carrying the opaque `Too many attempts. Please try again later.` and `key: email:eve@example.com`.</ChecklistItem>
+  <ChecklistItem chip="untested">The "Remaining tokens" panel reads `rl:reset → email:eve@example.com → 0/3`, while the `rl:reset → ip:<addr>` row stays fresh — proof the per-email gate, not the per-IP gate, did the blocking.</ChecklistItem>
+  <ChecklistItem chip="untested">Run "Distinct IPs runner (reset)": from a fresh, never-seen IP the reset is still `rate_limited` on the per-email gate. This cross-host survival is the chapter's load-bearing reset result.</ChecklistItem>
+  <ChecklistItem chip="untested">The "mock emails" counter in the header reads exactly `3` after the spam run — the three accepted resets each sent one, the blocked fourth sent nothing.</ChecklistItem>
+  <ChecklistItem chip="untested">The structured-log tail shows the honest `rate_limit_rejected` row keyed on `email:eve@example.com` — the gate and key the opaque user message hides.</ChecklistItem>
+  <ChecklistItem chip="untested">Toggle "Force Upstash down" on and "Spam reset" again: every call proceeds and the structured-log tail fills with `rate_limit_unavailable` rows (the fail-open path). Toggle it back off.</ChecklistItem>
+</Checklist>
+
+With reset gated, the surface is complete. Every "Done when" clause the overview set out now has an owning lesson, confirmed in its own Moment of truth: sign-in dual-keyed against credential stuffing and lockout, sign-up gated per-IP against mass registration, reset gated per-IP and per-email against inbox flooding — all of them fail-open under an outage, all of them speaking one opaque message to the user while the honest gate and key land in the log. Better Auth's built-in limiter is off, and your application wrapper is the single enforcement point across the whole auth surface.
+
+The shape you wrote five times here is the shape every future enforcement point reuses. A webhook receiver keyed by source, an upload endpoint keyed per-user, an AI-generation route keyed per-org or per-user against a daily token budget — each is the same parse, gate-before-work, opaque-reject, fail-open wrap you now have in muscle memory, with a different key and a different budget. You've built the pattern; from here, protecting a new endpoint is one limiter and one wrap.

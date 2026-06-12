@@ -1,0 +1,223 @@
+---
+title: Gate sign-up per-IP
+chapter-id: 75
+course-progress: 0.00005
+sidebar:
+  order: 4
+  label: Sign-up gate
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Sign-in is gated. Now you gate the other door into your app: sign-up. The goal is one limit on the sign-up action so a single host can't sit there and mass-register accounts, while every call still carries its rate-limit budget back on the `Result`.
+
+You already know where to watch this happen. On `/inspector`, hit **Spam sign-up**: it fires six sign-up calls, each with a different random-suffix email. The first five come back accepted; the sixth comes back `rate_limited`, and its structured-log row records `key: 'ip:<addr>'`. Five distinct emails got through and the sixth was blocked — that's the tell that the gate is counting hosts, not addresses. The **Remaining tokens** panel settles on `signup → ip:<addr> → 0/5`.
+
+<Figure caption='The /inspector page after a "Spam sign-up" run: the recent-responses log shows five accepted sign-ups with distinct random-suffix emails and a sixth row marked rate_limited keyed ip:<addr>; the "Remaining tokens" panel reads signup → ip → 0/5.'>
+  <Screenshot viewport="desktop">
+    <img
+      src="/screenshots/075/l4-desktop-1280.png"
+      alt="The /inspector page after a Spam sign-up run: the recent-responses log shows five accepted sign-ups with distinct random-suffix emails and a sixth row marked rate_limited keyed ip:<addr>, and the Remaining tokens panel reads signup → ip → 0/5."
+    />
+  </Screenshot>
+</Figure>
+
+## Your mission
+
+Here's the call that makes sign-up different from sign-in, and it's the whole reason this is a separate lesson. On sign-in you keyed two gates — one on the IP, one on the email — because both are stable identities an attacker is trying to abuse. On sign-up the email is whatever the attacker types into the form. If you keyed the gate on it, a script would cycle a fresh address on every request and never touch the same bucket twice; your limit would count to one, forever. The only identity the attacker can't trivially rotate is the IP the request came from, so sign-up gets a single **per-IP** gate and nothing else. Keying on the email here isn't a smaller version of the right thing — it's a free bypass.
+
+Everything else you reach for is already built. The `signUpLimiter` (five per ten minutes), `safeLimit`, and the reject and budget helpers all shipped in the earlier lessons of this chapter; adding this endpoint is one limiter plus one wrap, which is the payoff the first lesson promised. Reuse them, don't re-declare them. The gate runs *before* `auth.api.signUpEmail`, the rejection goes back through the opaque `rateLimited(...)` helper so it reads identically to every other throttle, the success path returns its budget on the `ok` payload's `rateLimit` field, `safeLimit` keeps the fail-open policy, and `pending` analytics flush through `after()` instead of blocking the response. Deliberately out of scope: any per-email keying on this endpoint — and the requirement that five distinct emails get through is exactly what stops you from sneaking one in.
+
+A couple of shape notes so you don't fight the form. `signUpAction` keeps the `(state, formData)` signature `useActionState` handed you back in the auth chapter; its return type is `Result<{ redirectTo: string; rateLimit: RateLimitBudget }>`. On success it returns `ok({ redirectTo: '/verify-email?email=…', … })` rather than calling `redirect()` — the form navigates client-side off `state.data.redirectTo`. And the budget rides inside that payload because a Server Action's `headers()` is read-only; you can't ship `RateLimit-*` headers from here, so the numbers travel on the `Result` (the reasoning is in [Build the dual-keyed sign-in gate](/075-project---upstash-rate-limits-on-the-auth-surface/3-gate-sign-in/)).
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">The sixth sign-up from one IP inside the window comes back `rate_limited`, and its structured-log row carries `key: 'ip:<addr>'` on the `ip` gate.</ChecklistItem>
+  <ChecklistItem chip="tested">Five sign-ups with five different random-suffix emails are all accepted — varying the email never moves the budget, because the gate counts the IP.</ChecklistItem>
+  <ChecklistItem chip="tested">A successful sign-up carries `{ limit, remaining, reset }` on its `rateLimit` field; the rejection returns the opaque `Too many attempts. Please try again later.`</ChecklistItem>
+  <ChecklistItem chip="tested">With Upstash forced down, spammed sign-ups all proceed (fail-open) and each logs a `rate_limit_unavailable` event.</ChecklistItem>
+  <ChecklistItem chip="untested">A malformed body (missing or short fields) short-circuits with a `validation` result before the gate runs, so it never burns a token.</ChecklistItem>
+  <ChecklistItem chip="untested">The `pending` analytics flush through `after()` rather than being awaited on the response path.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Fill in `src/app/(auth)/sign-up/actions.ts` against the brief and the tests, reusing `signUpLimiter`, `safeLimit`, and the reject and budget helpers — one per-IP gate before the sign-up call, the budget on the success `Result`. Try it before you open the solution.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+The whole file:
+
+```ts title="src/app/(auth)/sign-up/actions.ts"
+'use server';
+
+import { headers } from 'next/headers';
+import { after } from 'next/server';
+import { z } from 'zod';
+
+import { auth } from '@/lib/auth';
+import { mapAuthError } from '@/lib/auth/error-mapping';
+import { getClientIp } from '@/lib/keys';
+import { signUpLimiter } from '@/lib/rate-limit';
+import {
+  type RateLimitBudget,
+  rateLimitBudget,
+  rateLimited,
+} from '@/lib/rate-limit-headers';
+import { err, ok, type Result } from '@/lib/result';
+import { safeLimit } from '@/lib/safe-limit';
+
+const SignUpSchema = z.strictObject({
+  name: z.string().min(1).max(80),
+  email: z.string().trim().toLowerCase().pipe(z.email()),
+  password: z.string().min(12),
+});
+
+// Gate before work, per-IP only: one limiter check on `ip:` before
+// `auth.api.signUpEmail`. Keying on the email is wrong here — the address is the
+// attacker's choice, so a per-email gate lets one host cycle fresh addresses past
+// it. The budget rides the success `Result` (no HTTP headers — headers() is
+// read-only here); the reject path returns the opaque `rateLimited(...)`.
+// `pending` analytics flush via `after()`, never awaited on the path.
+export const signUpAction = async (
+  _state: Result<{ redirectTo: string; rateLimit: RateLimitBudget }> | null,
+  formData: FormData,
+): Promise<Result<{ redirectTo: string; rateLimit: RateLimitBudget }>> => {
+  const parsed = SignUpSchema.safeParse(Object.fromEntries(formData));
+  if (!parsed.success) {
+    return err(
+      'validation',
+      'Check the highlighted fields.',
+      z.flattenError(parsed.error).fieldErrors,
+    );
+  }
+
+  const ip = getClientIp(await headers());
+
+  const ipLimit = await safeLimit(signUpLimiter, 'rl:signup', `ip:${ip}`);
+  if (!ipLimit.success) {
+    return rateLimited(ipLimit, 'ip', ip);
+  }
+
+  const { name, email, password } = parsed.data;
+  try {
+    // No taken-email branch: under autoSignIn:false a duplicate returns generic
+    // success, so enumeration is closed at the source (Ch053 L1).
+    await auth.api.signUpEmail({ body: { name, email, password } });
+  } catch (e) {
+    after(ipLimit.pending);
+    return mapAuthError(e);
+  }
+
+  after(ipLimit.pending);
+  return ok({
+    redirectTo: `/verify-email?email=${encodeURIComponent(email)}`,
+    rateLimit: rateLimitBudget(ipLimit),
+  });
+};
+```
+
+Walk the four moves that matter, in order.
+
+<AnnotatedCode lang="ts" maxLines={12} code={`
+export const signUpAction = async (
+  _state: Result<{ redirectTo: string; rateLimit: RateLimitBudget }> | null,
+  formData: FormData,
+): Promise<Result<{ redirectTo: string; rateLimit: RateLimitBudget }>> => {
+  const parsed = SignUpSchema.safeParse(Object.fromEntries(formData));
+  if (!parsed.success) {
+    return err(
+      'validation',
+      'Check the highlighted fields.',
+      z.flattenError(parsed.error).fieldErrors,
+    );
+  }
+
+  const ip = getClientIp(await headers());
+
+  const ipLimit = await safeLimit(signUpLimiter, 'rl:signup', \`ip:\${ip}\`);
+  if (!ipLimit.success) {
+    return rateLimited(ipLimit, 'ip', ip);
+  }
+
+  const { name, email, password } = parsed.data;
+  try {
+    await auth.api.signUpEmail({ body: { name, email, password } });
+  } catch (e) {
+    after(ipLimit.pending);
+    return mapAuthError(e);
+  }
+
+  after(ipLimit.pending);
+  return ok({
+    redirectTo: \`/verify-email?email=\${encodeURIComponent(email)}\`,
+    rateLimit: rateLimitBudget(ipLimit),
+  });
+};
+`}>
+  <AnnotatedStep meta="{5-13}" color="violet">
+    Parse first, return before anything else. A body with a missing name or a ten-character password fails `safeParse` and returns a `validation` result immediately — above the gate. This is what keeps a malformed request from burning a token: the limiter never runs unless the input is well-formed. That's untested requirement five, paid for by the ordering alone.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{16-17} "signUpLimiter" "\`ip:\${ip}\`"`} color="green">
+    The single gate. One `safeLimit` call on `signUpLimiter`, keyed `ip:${ip}` and nothing else, before any sign-up work happens. Sign-in had two of these stacked; sign-up has exactly one, and the email never enters the key — that's the per-IP-only decision made concrete. Same limiter import, same `safeLimit`, one line of gate.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{18} "rateLimited(ipLimit, 'ip', ip)"`} color="orange">
+    When the gate trips, hand off to `rateLimited`. Its signature is `(result, gate, key)` — `gate` is `'ip'`, and the third argument is the **bare** `ip`, not `ip:${ip}`, because the helper composes the logged `ip:` / `email:` key itself. The message it returns is the same opaque `Too many attempts. Please try again later.` every gate returns — a sign-up reject must be indistinguishable from a sign-in reject, or the response itself leaks which limit you hit.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{29-33} "after(ipLimit.pending)" "rateLimitBudget(ipLimit)"`} color="blue">
+    The success path carries the budget and flushes analytics off-path. `rateLimitBudget(ipLimit)` reads `limit` / `remaining` / `reset` off the limiter result and rides them home on the `ok` payload, since this action can't set headers. `after(ipLimit.pending)` ships the limiter's analytics write to Upstash *after* the response is on its way — and notice it sits on the catch branch too, so a failed sign-up still records its analytics without making the user wait. That's untested requirement six.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+A few decisions worth naming.
+
+**Why per-IP only.** Said once more because it's the entire lesson: the email on a sign-up request is the attacker's choice, so a per-email gate is a free bypass — rotate the address, get a fresh bucket. The IP is the only identity that costs the attacker something to change, so it's the only thing worth counting here.
+
+**Why there's no "email already taken" branch.** You might expect a check that rejects duplicate sign-ups. There isn't one, on purpose. Your `auth` instance runs with `autoSignIn: false`, so a sign-up against an address that already exists returns a generic success — the same response a brand-new address gets. That closes account enumeration at the source: an attacker can't probe which emails are registered by watching sign-up responses, because they all look alike. The reasoning is owned by [Password sign-up](/053-authentication-flows/1-password-sign-up/); the gate doesn't need to re-litigate it.
+
+**How little a new endpoint costs.** Set this file next to the sign-in action and the diff is almost nothing: the same `signUpLimiter` import in place of `signInLimiter`, the same `safeLimit`, the same reject and budget helpers, and one gate instead of two. That's the seam doing its job — once the limiter and the helper trio exist, protecting another action is a few lines, not a redesign.
+
+For the parts this lesson leans on but doesn't own — dual-keying, fail-open, gate-before-work, the budget riding the `Result`, and `after()` — see [Build the dual-keyed sign-in gate](/075-project---upstash-rate-limits-on-the-auth-surface/3-gate-sign-in/), and the Upstash primitives in [the rate-limiting chapter's dual-keying lesson](/074-rate-limiting-with-upstash-redis/3-dual-keying-the-auth-endpoints/).
+
+</details>
+
+## Moment of truth
+
+Run the lesson's suite:
+
+```bash
+pnpm test:lesson 4
+```
+
+All four suites should pass — the sixth-call rejection and its `ip` log row, five distinct emails getting through, the budget on the success `Result` with `reset` in seconds, and the fail-open-with-`rate_limit_unavailable` outage path.
+
+```ansi frame="terminal"
+ ✓ tests/lessons/Lesson 4.test.ts (6 tests)
+
+ Test Files  1 passed (1)
+      Tests  6 passed (6)
+```
+
+The tests drive the same helpers the action drives, but they can't see the inspector. Confirm the rest by hand on `/inspector`:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">Click **Reset counters**, then **Spam sign-up**: the recent-responses log shows five accepted sign-ups with distinct random-suffix emails and the sixth as `rate_limited`.</ChecklistItem>
+  <ChecklistItem chip="untested">That sixth row carries the logged `key: 'ip:<addr>'` and the opaque `Too many attempts. Please try again later.` — never the address it blocked or which gate fired.</ChecklistItem>
+  <ChecklistItem chip="untested">The **Remaining tokens** panel reads `signup → ip:<addr> → 0/5` after the spam run.</ChecklistItem>
+  <ChecklistItem chip="untested">Toggle **Force Upstash down** on and **Spam sign-up** again: every call proceeds and the structured-log tail fills with `rate_limit_unavailable` rows. Toggle it back off.</ChecklistItem>
+</Checklist>
+
+:::note
+The mocked-email counter on the page moves when sign-ups go through — that's the verify-email send path firing, not anything this gate asserts. Ignore it here; it belongs to the auth flow, not the rate limit.
+:::

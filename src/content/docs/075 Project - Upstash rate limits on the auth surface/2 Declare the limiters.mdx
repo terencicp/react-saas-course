@@ -1,0 +1,213 @@
+---
+title: Declare the Redis client and three module-scope limiters
+chapter-id: 75
+course-progress: 0.00005
+sidebar:
+  order: 2
+  label: Declare the limiters
+---
+
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+You stand up the Redis client and the three `Ratelimit` instances so the inspector reports each limiter's live remaining budget straight from Redis instead of `n/a`. Nothing gets gated yet — by the end of this lesson the limiter infrastructure is standing and reporting, but every auth endpoint behaves exactly as it does now.
+
+The finished result is a single panel coming alive. Open `/inspector` and the "Upstash up?" badge reads green, because the health-check reaches the live database. The "Remaining tokens" panel, which read `n/a` on every row when you left the overview, now shows five live readouts at full budget: `signin → ip:<addr> → 10/10`, `signin → email:<active-email> → 10/10`, `signup → ip:<addr> → 5/5`, `reset → ip:<addr> → 3/3`, and `reset → email:eve@example.com → 3/3`. That last row tracks the reset spam target `eve@example.com`, not whichever identity you are signed in as, because that is the address the reset spam runner hammers in later lessons. The panel is reading state, not spending it — refresh the page as many times as you like and no number moves.
+
+<Figure caption="The /inspector after this lesson: the 'Upstash up?' badge green, and the 'Remaining tokens' panel reading five live rows at full budget — signin ip 10/10, signin email 10/10, signup ip 5/5, reset ip 3/3, reset email:eve@example.com 3/3. No endpoint is gated; the panel reads budgets via getRemaining and consumes nothing.">
+  <Screenshot viewport="desktop">
+    <img
+      src="/screenshots/075/l2-desktop-1280.png"
+      alt="The /inspector page with the 'Upstash up?' badge green and the 'Remaining tokens' panel showing five rows at full budget: signin ip at 10/10, signin email at 10/10, signup ip at 5/5, reset ip at 3/3, and reset email:eve@example.com at 3/3."
+    />
+  </Screenshot>
+</Figure>
+
+## Your mission
+
+This lesson stands up the limiter infrastructure without wiring it to a single endpoint, so the only thing you should be able to observe afterward is the inspector reporting live budgets where it used to report `n/a`. That narrow surface hides the actual lesson, which is a set of decisions about *where* limiters are allowed to exist and *how* they are read. The limiter is a named seam: `lib/rate-limit.ts` is the one and only place `new Ratelimit(...)` may appear. Construct one inline inside a handler or a route and you get a fresh instance per call, which defeats the in-memory `ephemeralCache` the library keeps and risks two call sites writing under colliding prefixes. Module scope is the other half of that rule and it is load-bearing: the library caches counters and the `pending` analytics writes in process memory, and that cache only survives across hot invocations when the same instance is reused, so a limiter declared inside a function body throws away its cache on every request and sends a sustained hot key back to Redis every single time. Each limiter also gets its own `ephemeralCache: new Map()` — sharing one map across all three works but blurs which limiter is evicting what — and a distinct prefix (`rl:signin`, `rl:signup`, `rl:reset`) so two limiters can never collide on a shared key; collisions *across* applications are already prevented for you by per-database scope, so the prefix is purely about keeping these three apart inside one database.
+
+A few smaller decisions ride along. `analytics: true` adds one rolling-counter write per call to feed the Upstash dashboard; that write returns a `pending` promise which is the deferral seam a later lesson wires through `after()` — you set the flag here and ignore the promise. The inspector reads every budget through `getRemaining(key)`, which does **not** consume a token, and that is the whole reason it works: wire a readout to `limit(key)` instead and the panel would burn a token every time it rendered, eventually locking a user out through the very page meant to observe them. The budgets themselves are deliberate calls carried in from *Dual-keying the auth endpoints* — sign-in is the most lenient at 10 per minute because legitimate users fat-finger passwords, sign-up sits at 5 per ten minutes, and reset is the tightest in the project at 3 per fifteen minutes because its abuse cost is concrete: every accepted reset sends real mail, so flooding it means inbox noise for a victim and a dent in your Resend deliverability. Finally, the env boundary is the prerequisite gate. The Zod-validated `env` you built in *Type-safe environment variables with @t3-oss/env-nextjs* is where the two new Upstash variables get declared, so a missing credential fails the boot with a named error rather than surfacing as a cryptic throw at the first Redis call. Out of scope: gating, the `RateLimit-*` headers, and fail-open handling all arrive once an action actually exercises a limiter, in the next lesson.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">Restarting the dev server with either Upstash variable missing fails the boot with a Zod error naming the variable; with both present, it boots.</ChecklistItem>
+  <ChecklistItem chip="untested">The inspector's "Upstash up?" badge reads green — the health-check succeeds against the live database.</ChecklistItem>
+  <ChecklistItem chip="tested">The "Remaining tokens" panel reads five live rows at full budget: `signin → ip → 10/10`, `signin → email → 10/10`, `signup → ip → 5/5`, `reset → ip → 3/3`, `reset → email:eve@example.com → 3/3`.</ChecklistItem>
+  <ChecklistItem chip="tested">Re-rendering the inspector never decrements a budget — reading the panel consumes no token.</ChecklistItem>
+  <ChecklistItem chip="tested">Each limiter's keys carry its own prefix in Redis (`rl:signin`, `rl:signup`, `rl:reset`), with no collision between limiters.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Implement the two Upstash entries in `src/env.ts`, then `src/lib/redis.ts` and `src/lib/rate-limit.ts`, against the brief and the tests. This lesson gates no endpoint, so the inspector's "Remaining tokens" panel is the only surface that confirms the work — there is no behavior change anywhere else to look for.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+Three short files, in the order the data flows: the env boundary that must validate before anything reads Redis, the client itself, then the limiters built on top of it.
+
+**`src/env.ts`** — the file is provided; you add two pairs of lines. Each new variable goes in both the `server` schema (so it is validated) and the `runtimeEnv` map (so the validated value is actually read from `process.env`). The URL is a `z.url()` and the token is a non-empty string:
+
+```ts title="src/env.ts" ins={17-18, 33-34} collapse={4-16, 25-32}
+import { createEnv } from '@t3-oss/env-nextjs';
+import { z } from 'zod';
+
+// The single env boundary: application code imports `env`, never `process.env`.
+// createEnv validates at build time — a missing/invalid DATABASE_URL fails
+// `next build` with a message naming the variable.
+export const env = createEnv({
+  server: {
+    DATABASE_URL: z.url(),
+    DATABASE_URL_UNPOOLED: z.url(),
+    SEED: z.coerce.number().default(1),
+    BETTER_AUTH_SECRET: z.string().min(32),
+    BETTER_AUTH_URL: z.url(),
+    RESEND_API_KEY: z.string().min(1),
+    EMAIL_FROM: z.string().min(1),
+    EMAIL_REPLY_TO: z.email(),
+    UPSTASH_REDIS_REST_URL: z.url(),
+    UPSTASH_REDIS_REST_TOKEN: z.string().min(1),
+  },
+  client: {
+    NEXT_PUBLIC_APP_NAME: z.string().min(1),
+    NEXT_PUBLIC_APP_URL: z.url(),
+  },
+  runtimeEnv: {
+    DATABASE_URL: process.env.DATABASE_URL,
+    DATABASE_URL_UNPOOLED: process.env.DATABASE_URL_UNPOOLED,
+    SEED: process.env.SEED,
+    BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET,
+    BETTER_AUTH_URL: process.env.BETTER_AUTH_URL,
+    RESEND_API_KEY: process.env.RESEND_API_KEY,
+    EMAIL_FROM: process.env.EMAIL_FROM,
+    EMAIL_REPLY_TO: process.env.EMAIL_REPLY_TO,
+    UPSTASH_REDIS_REST_URL: process.env.UPSTASH_REDIS_REST_URL,
+    UPSTASH_REDIS_REST_TOKEN: process.env.UPSTASH_REDIS_REST_TOKEN,
+    NEXT_PUBLIC_APP_NAME: process.env.NEXT_PUBLIC_APP_NAME,
+    NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
+  },
+});
+```
+
+Adding the variables here, rather than reading `process.env.UPSTASH_REDIS_REST_URL` directly at the call site, is what turns a missing credential into a boot failure that names the offending variable instead of a cryptic error on the first Redis round-trip. The `@t3-oss/env-nextjs` mechanics are the subject of *Type-safe environment variables with @t3-oss/env-nextjs* — the only new thing here is which two keys to add.
+
+**`src/lib/redis.ts`** — the client plus a health-check the badge reads:
+
+```ts title="src/lib/redis.ts"
+import 'server-only';
+
+import { Redis } from '@upstash/redis';
+
+export const redis = Redis.fromEnv();
+
+export const pingRedis = async (): Promise<boolean> => {
+  try {
+    await redis.ping();
+    return true;
+  } catch {
+    return false;
+  }
+};
+```
+
+`Redis.fromEnv()` is the connectionless HTTP/REST client you met in *The @upstash/ratelimit API surface* — it reads `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` itself, which is exactly why the env boundary had to validate them first. The `import 'server-only'` at the top is a tripwire: it throws if this module is ever pulled into a client bundle, keeping the token server-side. `pingRedis` deliberately swallows any failure down to `false` so the "Upstash up?" badge degrades to red instead of throwing and crashing the inspector — a health-check that can take down the page it reports on is worse than no health-check.
+
+**`src/lib/rate-limit.ts`** — the three limiters, the one place in the codebase `new Ratelimit(...)` is allowed:
+
+```ts title="src/lib/rate-limit.ts"
+import 'server-only';
+
+import { Ratelimit } from '@upstash/ratelimit';
+
+import { redis } from '@/lib/redis';
+
+export const signInLimiter = new Ratelimit({
+  redis,
+  limiter: Ratelimit.slidingWindow(10, '1 m'),
+  prefix: 'rl:signin',
+  analytics: true,
+  ephemeralCache: new Map(),
+});
+
+export const signUpLimiter = new Ratelimit({
+  redis,
+  limiter: Ratelimit.slidingWindow(5, '10 m'),
+  prefix: 'rl:signup',
+  analytics: true,
+  ephemeralCache: new Map(),
+});
+
+export const resetLimiter = new Ratelimit({
+  redis,
+  limiter: Ratelimit.slidingWindow(3, '15 m'),
+  prefix: 'rl:reset',
+  analytics: true,
+  ephemeralCache: new Map(),
+});
+
+export const LIMITER_MAX = { signin: 10, signup: 5, reset: 3 } as const;
+```
+
+These three `export const` declarations live at module scope, evaluated once when the module first loads and reused on every import. That is what lets each `ephemeralCache` survive across hot invocations: the same `Map` is consulted before Redis is, so a hot key served from the cache costs zero round-trips. Declare a limiter inside a handler and the `Map` is born and discarded on every call, so the cache never holds anything and every request pays a Redis round-trip. The `Ratelimit` constructor, `slidingWindow`, `ephemeralCache`, and the `{ success, limit, remaining, reset, pending }` shape are all covered in *The @upstash/ratelimit API surface*; what this file adds is the specific three-limiter layout.
+
+Each limiter carries its own `ephemeralCache: new Map()` rather than sharing one — a shared map works, but it muddies which limiter is responsible for evicting which entry, and separate maps keep eviction legible. The distinct prefixes (`rl:signin`, `rl:signup`, `rl:reset`) namespace the keys inside Redis so the three can never collide: hand all three the identical key `ip:1.2.3.4` and they still write to three separate Redis keys, which is what the prefix-isolation test confirms by spending a token on one limiter and reading the same identifier at full budget on another.
+
+`analytics: true` is the one line worth a second look. It writes a rolling counter to Redis on every `limit()` call to feed the Upstash dashboard, and that write hands back a `pending` promise. This lesson never calls `limit()`, so the promise never appears yet — but when an action does start gating in the next lesson, that `pending` is the seam handed to `after()` so the analytics write happens off the response path. You are setting the flag now and wiring its deferral later.
+
+`LIMITER_MAX` was already present in the stub and stays exactly as it is. It is the static cap the inspector pairs with the live `getRemaining(key).remaining` to render a fraction. `getRemaining` returns the remaining count but not the ceiling, so the panel reads the live remaining from Redis, takes the denominator from `LIMITER_MAX`, and prints `10/10`. The tests lean on the same pairing — they assert the live limiter's reported `limit` equals `LIMITER_MAX.signin`, never a constant re-declared in the test — so the cap and the configured `slidingWindow` budget have to agree.
+
+One thing you will *not* find here is any reading of budget — the inspector handles that in its provided `inspector-reads.ts`, calling `getRemaining(key)` on each of these limiters. `getRemaining` is the non-consuming read; a readout wired to `limit()` would spend a token per render. That is the reason the panel can refresh forever without moving a number, and the reason this lesson can stand up live budgets without gating anything.
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Upstash Ratelimit — Features"
+    href="https://upstash.com/docs/redis/sdks/ratelimit-ts/features"
+    icon="simple-icons:upstash"
+    iconColor="#00E9A3"
+    description="Official reference for slidingWindow, ephemeralCache, and analytics — the exact options the three limiters configure."
+  />
+  <ExternalResource
+    title="Next.js with Upstash Redis"
+    href="https://upstash.com/docs/redis/tutorials/nextjs_with_redis"
+    icon="simple-icons:upstash"
+    iconColor="#00E9A3"
+    description="Setting up the database and the connectionless Redis.fromEnv() client this lesson's src/lib/redis.ts builds on."
+  />
+  <ExternalResource
+    title="@t3-oss/env-nextjs — Next.js"
+    href="https://env.t3.gg/docs/nextjs"
+    icon="lucide:shield-check"
+    iconColor="#E8B339"
+    description="How createEnv validates server vars and why every key needs a runtimeEnv entry — the pattern behind the two Upstash additions."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's test suite:
+
+```sh
+pnpm test:lesson 2
+```
+
+The suite loads your real `.env`, re-evaluates the env boundary with a credential removed to prove the boot fails, and calls each limiter's `getRemaining` against the same live Upstash the inspector reads — so it needs both Upstash variables set, exactly as the inspector does at runtime. Its reads are non-consuming and every write uses a unique per-run key, so running it never burns a real user's budget. All tests pass when the env boundary names a missing Upstash variable, each limiter reads full budget on a fresh key (`10`, `5`, `3`), two reads of one key never decrement, and spending on one limiter leaves another untouched on the same identifier.
+
+The tests cannot reach the live inspector page or the boot itself, so confirm these by hand and tick each off as you go:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">Comment out `UPSTASH_REDIS_REST_URL` in `.env` and restart `pnpm dev` → the boot fails with the Zod error naming the variable. Uncomment it and restart → the server boots.</ChecklistItem>
+  <ChecklistItem chip="untested">Open `/inspector` → the "Upstash up?" badge is green, and the "Remaining tokens" panel reads the five full-budget rows.</ChecklistItem>
+  <ChecklistItem chip="untested">Click "Spam sign-in" → the recent-responses log records `internal` / "Not implemented" outcomes, confirming this lesson stood up state only — the sign-in action is still unwrapped, so nothing is gated.</ChecklistItem>
+  <ChecklistItem chip="untested">Watch the timing readout: the first read hits Redis, and subsequent reads within the cache window are served from `ephemeralCache` with no round-trip.</ChecklistItem>
+</Checklist>
+
+With the limiters standing and the inspector reading live budgets, the next lesson puts the first one to work — wrapping sign-in with per-IP and per-email gates and making the application limiter the single enforcement point.
