@@ -500,7 +500,8 @@
 - 3 The authedRoute twin (Teaches the route-handler port of the same discipline as `authedRoute(role, schema, fn)`, the 401 / 403 / 422 / 404 status map, RFC 9457 Problem Details responses, and sharing one business function across the Server Action and route handler seams through `/lib`.)
 - 4 The five member-management flows (Teaches the listing query and the four privileged actions — change role, remove member, leave org, transfer ownership — the invariants that live in the helpers, the multi-row transactions they run inside, and how a removed member's stale session resolves itself on the next request.)
 - 5 The append-only audit_logs table (Teaches the audit table's column shape, the three-layer append-only enforcement (RLS policy, table grants, application discipline), the `logAudit(tx, event)` helper whose signature forces a transaction, the canonical event set, and the retention story.)
-- 6 Quiz
+- 6 API keys for machine callers (Teaches issuing and verifying the app's own API keys for non-browser callers — a high-entropy secret stored as a SHA-256 hash and shown once, a second `Authorization: Bearer` identity branch in `authedRoute` that resolves to the same `ctx`, org-scoped keys gated by `roleAtLeast` with `api-key.created` / `api-key.revoked` audit events and scopes as the key's ceiling, the personal-access-token variant, and Better Auth's `apiKey` plugin as the production path.)
+- 7 Quiz
 
 ### Chapter 058 — Invitations and the seat-handoff lifecycle
 - 1 The seat reservation that outlives the request (Model Better Auth's `invitation` table with `tokenHash` and `acceptedAt` additions, the `pending` -> `accepted` / `canceled` state machine, the seven-day expiry as a security primitive, and the partial unique index on `(orgId, lower(email))` where `status = 'pending'`.)

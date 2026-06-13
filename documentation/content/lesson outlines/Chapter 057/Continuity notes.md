@@ -140,3 +140,45 @@
 **Misc.**
 - Composition example uses lesson 4's `member.removed` flow verbatim (`payload: { previousRole }`) — confirms L4 call sites compile under the shipped `AuditEvent` type.
 - A total-ordering `seq` column for sub-ms tie-breaking was dropped (outline's optional reach); `createdAt` ordering is the year-1 default. No `DrizzleSchemaCoding` exercise (PGlite can't enforce RLS — would give false confidence); judgment `Buckets` + two MCQs carry active recall.
+
+## Lesson 6 — API keys for machine callers
+
+**Taught** — The `api_keys` table (prefix + keyHash split, `revokedAt`-not-delete, no RLS), the hash-and-show-once storage model, admin-gated `createApiKey`/`revokeApiKey` actions with in-transaction `logAudit`, a `resolveApiKey(request)` helper that adds a Bearer branch ahead of the cookie path in `authedRoute` producing the identical `ctx`, `hasScope(ctx, scope)` as a post-role ceiling gate, machine actor representation in the audit trail, the PAT variant (owner-column swap), and Better Auth's `apiKey` plugin as the production replacement.
+
+**Cut** — Settings UI for listing/creating/revoking keys (contract described, page not built); OAuth 2.1 client-credentials (named once, not built); per-key rate limiting depth (seam to ch074 named only); key rotation/expiry schedules (named once); outbound webhook signing.
+
+**Debts**
+- Ch058 reuses the hash-and-show-once posture for invitation tokens — forward-pointed explicitly; no debt.
+- Ch074 owns per-key rate limiting (`safeLimit` keyed per API key); named, not built.
+- Ch081 L3 owns the full four-actor-kinds catalog and `api-key.created`/`api-key.revoked` audit event entries — this lesson ships the calls, ch081 L3 owns the catalog. Audit payload for key events is `{ name, scopes }`.
+- Ch081 L4 owns the PAT hard-delete in the account-erasure job.
+
+**Terminology / contracts**
+- **`api_keys` table** (Drizzle `pgTable`): `id` uuid pk uuidv7 · `prefix` text notNull unique (`uniqueIndex('api_keys_prefix_unique')`) · `keyHash` text notNull (SHA-256 of the secret half) · `organizationId` uuid notNull FK→`organization` `onDelete:'cascade'` · `createdByUserId` uuid nullable FK→`user` `onDelete:'set null'` · `name` text notNull · `scopes` `text().array().notNull().default([])` · `lastUsedAt` `timestamp({ withTimezone: true })` nullable · `revokedAt` `timestamp({ withTimezone: true })` nullable · `createdAt` `timestamp({ withTimezone: true })` notNull defaultNow(). Index: `idx_api_keys_org_created` on `(organizationId, createdAt desc)`. **No RLS** — ordinary tenant data, scoped via `tenantDb(orgId)`; contrast with `audit_logs`.
+- **Key format:** `${prefix}.${secret}` — prefix `rsk_live_<8-char>`, secret 32 bytes CSPRNG base64url. `rsk_test_` prefix for sandbox keys (convention, not enforced by schema).
+- **`ResolvedKey` type** returned by `resolveApiKey`: `{ orgId: string; createdByUserId: string | null; scopes: string[] }`. The wrapper then calls `ctxFromKey(resolved)` to read the creating member's role and produce the full `ctx`.
+- **`resolveApiKey(request: Request): Promise<ResolvedKey | null>`** at `lib/auth/resolve-api-key.ts` (`import 'server-only'`): no Bearer header → return `null` (fall through to cookie path); malformed `prefix.secret` shape → throw `ApiKeyError` (401) **before any DB read**; lookup by `prefix` uses bare `db` (not `tenantDb` — no ctx yet, this IS the ctx-establishment step); missing row or `revokedAt` set → throw; constant-time compare `sha256Hex(secret)` vs `row.keyHash` via `timingSafeEqualHex` (never `===`); on match bump `lastUsedAt`, return `ResolvedKey`.
+- **`authedRoute` diff:** one branch inserted before `requireOrgUser`: `const resolved = await resolveApiKey(request); const { user, orgId, role, scopes } = resolved ? await ctxFromKey(resolved) : await requireOrgUser({ headers: request.headers });` — everything after `ctx` is byte-for-byte unchanged.
+- **`ctx` gains optional `scopes?: string[]`** — present for key callers (the key's granted scopes), absent for cookie callers (no ceiling). `hasScope(ctx, scope): boolean` returns `ctx.scopes === undefined || ctx.scopes.includes(scope)` — undefined means unrestricted (cookie path unchanged).
+- **Action names:** `createApiKey` and `revokeApiKey` (verb+noun, no suffix — ch057 L2 convention).
+- **Schemas:** `createApiKeySchema = z.object({ name: z.string().min(1), scopes: z.array(z.enum(['invoices:read','invoices:write'])) })` (scope as enum, not free-text); `revokeApiKeySchema = z.object({ id: z.uuid() })`.
+- **Audit events:** `'api-key.created'` payload `{ name, scopes }` · `'api-key.revoked'` (no payload beyond subjectId). These are the exact strings ch081 L3's catalog must match.
+- **Machine actor in audit rows:** `actorUserId = key.createdByUserId` (or `null` for unattended key); `payload` carries `{ viaApiKey: prefix }` so the credential is traceable. No `actorType` column — distinction is null-or-not + action string, per existing schema.
+- **PAT variant:** same table shape, `userId` owner instead of `organizationId`; hard-deleted with user (vs `revokedAt` soft-revoke for org keys).
+- **Bearer key must be read from `Authorization` header only** — never a query param or custom header (URL leaks into logs/caches).
+
+**Patterns and best practices**
+- Revoke is a **state change** (`revokedAt = new Date()`), never a row delete — preserves `lastUsedAt` and the audit trail's subject row.
+- The `prefix` lookup during verify is the **one sanctioned bare-`db` read** in the whole app — it runs before `ctx` exists; all other queries use `tenantDb(orgId)` or `ctx.db`.
+- Scopes **narrow, never widen** the role — role is the ceiling, scope carves a smaller box beneath it. `hasScope` returning `true` for absent `scopes` preserves the existing cookie-path behavior exactly.
+- Constant-time compare (`timingSafeEqualHex`, not `===`) is required for any secret comparison; inline comment `// constant-time compare to prevent timing attack` is the sanctioned form.
+- SHA-256 (fast) for high-entropy API key secrets; slow hash (bcrypt/argon) only for human-chosen passwords — same rule as ch058 invite tokens.
+- Better Auth `apiKey` plugin (`better-auth/plugins`) is the **production replacement** for the hand-built table; configuring it replaces the hand-built schema. Plugin uses structured permissions object (`{ invoices: ['read'] }`) vs this lesson's flat string array — the flat array is the teaching simplification.
+
+**Misc.**
+- Lesson 6 was **inserted after lesson 5** (the audit log) and before the chapter quiz (now lesson 7); quiz already covers API-key identity in its topic list.
+- **Key-authenticated audit writes are a direct `tx.insert(auditLogs).values({…})`, NOT a `logAudit(tx, …)` call.** `logAudit` derives actor + org by calling `requireOrgUser()` and `await headers()`, which both read the session cookie — a key caller has no cookie, so `logAudit` would throw. The discipline (ride inside `withTenant` transaction) is unchanged; only the mechanism changes: source `organizationId` and `actorUserId` from the resolved key's `ctx` directly. Ch081 writers must NOT call `logAudit` for key-authenticated paths.
+- `ScriptCoding runner="sandpack"` exercise: student implements `resolveApiKey(authHeader)` against an in-memory store with six test cases (null header, malformed, valid, revoked, wrong secret, unknown prefix). The malformed case asserts zero store hits — structural check before DB read.
+- `KeyTrustBoundaries` custom component (three-zone figure): database (hash only), logs (prefix only), create response (raw secret, shown once). Deliberate parallel to ch058's token-trust-boundaries figure.
+- `TwoDoorsOneCtx` custom component (branch-flow diagram): Bearer branch + cookie branch converging on single `ctx` box, then unchanged gates. Echo of L3's "two doors, one room."
+- `ScopeCeiling` custom component (intersection strip): role-allows bar ∩ key-scoped bar = effective bar; "narrowest wins."
