@@ -1,0 +1,363 @@
+---
+title: Coverage as a diagnostic, not a target
+tagline: Reading Vitest coverage reports as a tool for locating untested code, not a score to chase.
+chapter-id: 86
+course-progress: 0.00005
+sidebar:
+  order: 3
+  label: Coverage as a diagnostic
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Term from '../../../components/ui/Term.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import BranchVsLine from '../../../components/lessons/086/3/BranchVsLine.astro';
+import ReportTable from '../../../components/lessons/086/3/ReportTable.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import CodeReview from '../../../components/exercises/code-review/CodeReview.astro';
+import ReviewFile from '../../../components/exercises/code-review/ReviewFile.astro';
+import ReviewIssue from '../../../components/exercises/code-review/ReviewIssue.astro';
+import ReviewWhy from '../../../components/exercises/code-review/ReviewWhy.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The last lesson left you with a hard line: "we have tests" is not the bar — "do the tests fail on the bugs that ship" is the bar. A green suite that sails past the cross-tenant leak hasn't earned the confidence it projects; it has manufactured it. So you need an instrument that tells you whether the suite is real, and the one everyone reaches for is <Term definition="The percentage of your code that ran while the tests executed — a record of what was reached, not a quality score.">coverage</Term>. It is also the single most misread number in testing.
+
+Here is the misreading, made concrete. The report says **87% lines, 72% branches**, and two engineers look at it. The first reads it as a single grade: 87% is a passing number, set the CI gate at "≥80% lines," and the next push is to nudge it toward 100%. The second ignores the average entirely and asks *which files, which lines* — because that 87% is hiding the case where the webhook receiver sits at 40% and a one-line getter sits at 100%. This lesson is the second read. By the end you'll have a `coverage` block on the `vitest.config.ts` from the first lesson, with thresholds on the surfaces where coverage means something and an `include` that drags untested files into the light — but the config is the small part. The payload is learning to read the report the way an experienced engineer does: as a diagnostic that locates the untested seam *before* it ships, not a target to optimize toward.
+
+## What the coverage report actually measures
+
+Before any judgment about how to read coverage, you need the deflationary definition of what it is, because the entire "diagnostic not target" frame rests on it.
+
+Coverage measures which parts of your source ran while the suite executed. That's the whole of it. The report breaks "which parts" into four numbers: **lines** (which source lines executed), **statements** (which statements ran — close to lines, but multiple statements can share a line), **functions** (which functions were called at least once), and **branches** (which sides of each decision were taken). Four lenses on one fact: what got reached.
+
+Hold onto one sentence, because the rest of the lesson turns on it. **Coverage records what executed, never what was checked.** A line can run inside a test that asserts nothing at all and still count as covered — the line ran, so it's green, and the report has no idea whether anything downstream was verified. Keep that gap in view; we come back to harvest it.
+
+The numbers come from the `@vitest/coverage-v8` provider you installed in the first lesson. It reads the coverage data that <Term definition="The JavaScript engine inside Node and Chrome; it can report which code ran during execution at no extra cost, which is how coverage is gathered without rewriting your source.">V8</Term> already produces during a normal run, so there's no <Term definition="Rewriting your source to insert hit counters before running it — what the older Istanbul provider does, and what V8 avoids by reading data the engine emits for free.">instrumentation</Term> step rewriting your source first. That makes it fast, and you already have the dependency. (The alternative provider, `@vitest/coverage-istanbul`, exists for the rare case where V8's output doesn't fit your needs — name it and move on; `provider: 'v8'` is the default, so the choice is already made for you.)
+
+Turning the report on is a small addition to the config you already have. The provider and a reporter are enough to produce one:
+
+```ts title="vitest.config.ts"
+// inside test: { ... }
+coverage: {
+  provider: 'v8',
+  reporter: ['text', 'html'],
+},
+```
+
+Run it with the `pnpm test:coverage` script from the first lesson. Of the four numbers it prints, one is worth reading first — and it isn't the one most people look at.
+
+## Read branch coverage before line coverage
+
+The most common way to misread coverage is to treat the line percentage as the headline number. It's the wrong instinct, because line coverage is the lens least connected to where bugs live.
+
+The distinction is sharp once you see it. Line coverage rewards *executing every line*. Branch coverage rewards *taking every path through every decision* — each side of an `if`, each `case`, each side of an `&&` or a `?:` that can short-circuit, each `catch` that may or may not fire. The two come apart constantly, because a single test can run every line of a function while only ever taking one side of its decisions.
+
+Take a guard you've written a dozen times by now:
+
+```ts
+export function loadReport(role: Role) {
+  if (role !== 'admin') {
+    return forbidden();
+  }
+  return buildReport();
+}
+```
+
+Write one test that calls `loadReport('admin')`. It runs the function declaration, runs the `if`, runs the `return buildReport()` — every line executes, so line coverage reports 100%. But the test only ever took the `false` side of `role !== 'admin'`. The `forbidden()` branch never fired. Branch coverage reports 50%, and the branch it's telling you is missing is the *authorization denial* — exactly the path whose absence ships as a bug. This is the <Term definition="A decision point with more than one outcome — each side of an if, each case, each && short-circuit; branch coverage tracks which of those outcomes your tests actually triggered.">branch</Term> the fail-closed reflex from the errors-and-security work cares about most: every doubt is a deny, and the deny is the branch line coverage is blind to.
+
+The following figure puts the two readings side by side so you can see why they diverge. The same five lines, the same single test — one gutter counts lines, the other counts branches.
+
+<Figure caption="Every line ran; only one side of the decision did. Line coverage says 100%, branch coverage says 50% — and the missing branch is the denial.">
+  <BranchVsLine />
+</Figure>
+
+So the rule, stated to keep: **read branch coverage first.** Line coverage hovering near 100% with branch coverage well below it is the signature of a suite that *calls* the code but doesn't *test its decisions* — and the decisions are where the seam bugs are.
+
+## Why 100% coverage is theatre
+
+If branch coverage is the number to read first, you might reasonably conclude the goal is to push every number to 100%. It isn't, and treating it as one is the most expensive mistake in the chapter. A 100%-coverage badge is a yellow flag, not a gold star.
+
+The cost argument comes first, because it's the obvious one. Hitting 100% means writing a test for every getter, every defaulted parameter, every error class's `name`, every branch the framework injects that your code never chooses. The effort is enormous and the bug-finding signal is close to zero — you're spending real hours to turn green a body of code nobody was ever going to break.
+
+The corruption argument is the one that actually matters. Chasing the number rewards tests that exercise *code paths* instead of *behaviors*, and now you can cash in the sentence from earlier: coverage measures what ran, not what was checked. A 100% number is therefore fully achievable by a suite that asserts almost nothing — call each function with a fixture, let the lines tick over, never check the result. Worse than wasted effort, a 100% culture quietly converts your test code from a *contract about behavior* into a *mirror of the source*, and once the team senses the tests only echo the implementation, they stop trusting them. You've paid for a suite and bought yourself noise.
+
+It helps to recognize the concrete shapes these tests take, because they all pass and they all look like work:
+
+- `it('exports the function', () => expect(typeof fn).toBe('function'))` — confirms the function exists, asserts nothing about what it does.
+- A snapshot that captures whatever the function returned today and asserts nothing about behavior.
+- A test that checks a function's return *type* matches its declared type — the type system already guarantees that, as you saw all the way back in the TypeScript work; the test is redundant the moment it compiles.
+- A test that mocks every dependency and then asserts the mocks were called with the values the test itself just wired in — it tests the wiring, not the function. (This is why the conventions forbid mocking Drizzle, Stripe, and Resend: a test built on those mocks can only ever confirm its own setup.)
+
+There's a single question that separates these from real tests, and it's worth carrying everywhere: **what would have to change for this test to fail meaningfully?** If the only honest answer is "delete the test," it's theatre. A real test fails when the behavior breaks; a theatre test fails only when it's removed.
+
+Try it on the file below. You're reviewing a small test suite — most of it is theatre. Leave a comment on each test that isn't pulling its weight, naming *why* it's theatre, not just *that* it is.
+
+<CodeReview instructions="You're reviewing a teammate's new test file. Three of these four tests add coverage but no signal — they pass, they tick lines green, and they fail only if you delete them. Leave a comment on each one you'd flag, naming *why* it's theatre.">
+  <ReviewFile name="src/lib/billing.test.ts">
+    ```ts
+    import { expect, it, vi } from 'vitest';
+    import { formatPlan, chargeCustomer } from './billing';
+
+    it('exports formatPlan', () => {
+      expect(typeof formatPlan).toBe('function');
+    });
+
+    it('returns a string', () => {
+      const result = formatPlan('pro');
+      expect(typeof result).toBe('string');
+    });
+
+    it('formats the pro plan label', () => {
+      expect(formatPlan('pro')).toBe('Pro plan');
+    });
+
+    it('charges the customer', () => {
+      const stripe = { charge: vi.fn() };
+      chargeCustomer(stripe, 4200);
+      expect(stripe.charge).toHaveBeenCalledWith(4200);
+    });
+    ```
+  </ReviewFile>
+
+  <ReviewIssue file="src/lib/billing.test.ts" line={5} kernel="asserts the function exists, not what it does — passes for any non-empty implementation, pure coverage theatre">
+    `expect(typeof formatPlan).toBe('function')` checks that the export exists and nothing else. It passes for *any* implementation — even `formatPlan = () => undefined`. The only change that turns it red is deleting the export. It runs the import line and ticks coverage, but it verifies zero behavior.
+
+    A real test names the behavior:
+
+    ```ts
+    expect(formatPlan('pro')).toBe('Pro plan');
+    ```
+  </ReviewIssue>
+
+  <ReviewIssue file="src/lib/billing.test.ts" line={10} kernel="asserts the return type, which the type system already guarantees — no behavioral signal">
+    `expect(typeof result).toBe('string')` restates the function's declared return type as a runtime check. TypeScript already guarantees `formatPlan` returns a `string` — the moment this compiles, the assertion is redundant. It can never catch a *wrong* string, only a non-string the compiler wouldn't have let through. Coverage goes up; signal stays at zero.
+  </ReviewIssue>
+
+  <ReviewIssue file="src/lib/billing.test.ts" line={20} kernel="asserts the mock was called with the value the test itself wired in — tests the wiring, not chargeCustomer's behavior">
+    This asserts that the mock was called with `4200` — the exact value the test passed in two lines up. The only thing under test is whether `chargeCustomer` forwards its argument to a mock the test created; it never touches the real charge logic. This is why the conventions forbid mocking the Stripe SDK: a test built on that mock can only ever confirm its own setup.
+  </ReviewIssue>
+
+  <ReviewWhy>
+    The genuine test — `formats the pro plan label` — is the control: it fails the instant the formatting behavior changes. The other three don't. The lesson isn't the fix, it's recognizing the *shape*: every one of these passes, every one adds coverage, and every one fails only if you delete it. Ask of any test before you keep it: what would have to break for this to go red?
+  </ReviewWhy>
+</CodeReview>
+
+There's a tool that measures the thing coverage can't, and it's worth knowing as a mental model even though you won't install it. <Term definition={"A technique that mutates your source — say, flipping < to > or deleting a branch — and checks whether any test fails as a result.\nIt measures whether your tests actually check behavior, not just whether code ran."}>Mutation testing</Term> (the tool is Stryker) flips operators in your source and asks whether any test notices. That's the clean way to hold coverage's limitation in your head: **coverage measures what ran; mutation measures what's checked.** Stryker is overkill for most SaaS suites, so take the idea and leave the tool — when you ask "what would have to change for this test to fail," you're running the mutation test in your head.
+
+<VideoCallout videoId="BVErL_Ez9LI" videoTitle="Don't Chase Test Coverage — Dave Farley">
+  Dave Farley (Continuous Delivery, 17 min) walks the exact trap of this section — a team paid to hit 80% coverage, 30% of whose tests asserted nothing — and lands on mutation testing as the answer to "who tests the tests."
+</VideoCallout>
+
+## Reading the report to find the under-tested seam
+
+If 100% isn't the goal and theatre tests are the trap, the fair question is: what is coverage actually *for*? This is where it earns its keep. Read correctly, the report is the fastest way to locate load-bearing code paths your suite never exercised — and those paths cluster at the seams.
+
+Flip your mental model of the report. It isn't a scoreboard; it's a **map of un-exercised paths**, and you read a map by location, not by average. The diagnostic move is to scan the per-file breakdown for under-coverage *in the seams* — the catalog you built last lesson is exactly the list to scan: `authedAction`'s catch branch, the webhook receiver's signature-failure path, <Term definition="The rate-limit wrapper from the security baseline — it fails open on a Redis-auth error, fails closed on genuine quota exhaustion.">`safeLimit`</Term>'s fail-open carve-out, the cross-tenant 404 branch, the error mapper's fallback case. Each uncovered branch there is a line that a missing test will ship as a production bug.
+
+And here's the contrast that makes the whole lesson land. A 100%-covered `/lib` mapper sitting next to a 40%-covered Server Action wrapper is *the* signature of a suite that ships bugs: all the testing effort pooled at the safe base, none at the dangerous seam. That's the coverage-report restatement of last lesson's pyramid failure — the effort went where the diagram said the bugs were, and the bug went where the diagram wasn't looking. The average hides it; the per-file view makes it impossible to miss.
+
+The figure below is what that view looks like. Don't read it like a scoreboard — your eye should go straight to the rows in red, and within those rows, to the gap between the line and branch columns.
+
+<Figure caption="Don't read the average — a healthy-looking headline number across this table would tell you nothing. Read which seams are red.">
+  <ReportTable />
+</Figure>
+
+So how do you actually get in front of this? `pnpm test:coverage` writes an HTML report under `coverage/` — the `html` reporter is on by default. Open it, drill into a seam file, and read *which lines and branches are red*. Never read the top-line percentage; it's the one number on the page that can't help you. The two reporters serve two surfaces: the `text` reporter prints a summary table to the terminal — the at-a-glance view a teammate or CI scans — while the HTML report is the developer's drill-down. As for cadence: this is a periodic diagnostic read — once a sprint, and whenever you touch a seam — not a per-save habit. Running with `--coverage` on every save is slow and pointless; leave it for the moments you're actually asking the diagnostic question.
+
+On a pull request, the signal a reviewer wants is differential, not absolute. <Term definition="How much of the code a single change added is covered by that change's own tests — the per-PR view, as opposed to the whole-codebase average.">Differential coverage</Term> answers "this PR added 20 lines and covered 15 of them," which is actionable, where "the overall number moved 0.4%" is noise. Vitest can ratchet thresholds up automatically with `coverage.thresholds.autoUpdate`, but the course doesn't use it — the churn it creates outweighs the gain. Surface the differential; don't auto-ratchet. (Wiring that signal into CI and the PR comment is a later chapter's job; here you only need to know which signal to look for.)
+
+## Per-directory thresholds as a backstop, not a goal
+
+The reading discipline is the work, but a discipline that lives only in your head erodes the moment you're not looking. So you encode a piece of it into CI — carefully, because a threshold framed wrong recreates every problem this lesson just dismantled.
+
+Start with the principle, because the framing is the whole game. A threshold is a **backstop** — a floor that catches the case where a previously-tested seam *loses* coverage, like someone adding an `else` without a test for it. It is not a target you climb toward. The team writes tests for behaviors that exist; the threshold is the speed-bump that catches the regression. And it goes *only* on surfaces where coverage means something — `/lib` purity and the seams — and *nowhere* on framework-mediated surfaces, because chasing coverage there is the theatre you already know to avoid.
+
+Here's the course baseline. Notice that every threshold ships with a one-line justification — that habit is the point, because a number without a reason is a number nobody can defend later:
+
+- `src/lib/**` — 90% lines, 85% branches. Pure logic, the wide base of the honeycomb; if it lives in `/lib`, it's testable, so it should be near-fully covered.
+- `src/app/api/webhooks/**` — 85% branches. The highest-stakes seam; every uncovered branch is a webhook that mishandles a real provider event.
+- `src/lib/auth/**`, `src/lib/error-mapping.ts`, `src/lib/rate-limit.ts` — 85% branches. Load-bearing helpers; an uncovered branch here is an auth bypass, a leaked stack trace, or a fail-open that should have failed closed.
+- Everything else — deliberately unthresholded.
+
+A note before you write it, because the tooling changed and the stale advice is everywhere. In Vitest 4, per-glob thresholds are keys *inside* `coverage.thresholds`, and they **no longer inherit** the top-level `perFile` setting — if a glob needs per-file checking, you set `perFile` on that glob's own object. Older guides won't mention this; write it as the version on disk behaves.
+
+The exclusion list is the paired idea. Thresholds declare where coverage matters; `coverage.exclude` declares where it's pure noise — files whose coverage number would only ever mislead. The course excludes config files (`**/*.config.{ts,js}`), type-only files (`**/*.d.ts`, `**/types.ts`), barrel files (`**/index.ts`), framework-orchestrated route files (`app/**/page.tsx`, `app/**/layout.tsx` — tested through integration at the seam, not by re-testing the framework's rendering), Storybook stories (`**/*.stories.tsx`), one-off scripts (`scripts/**`), and mock directories (`**/__mocks__/**`). The discipline is the same as for thresholds: every exclusion carries a recorded reason. An unexplained `exclude` entry is precisely how a seam quietly disappears from the report and rots in the dark.
+
+Walk through the assembled block one part at a time:
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+// inside test: { ... }
+coverage: {
+  provider: 'v8',
+  reporter: ['text', 'html'],
+  thresholds: {
+    'src/lib/**': { lines: 90, branches: 85 },
+    'src/app/api/webhooks/**': { branches: 85, perFile: true },
+    'src/lib/auth/**': { branches: 85 },
+  },
+  exclude: [
+    '**/*.config.{ts,js}',
+    '**/*.d.ts',
+    'app/**/{page,layout}.tsx',
+    '**/*.stories.tsx',
+  ],
+},
+`}>
+  <AnnotatedStep meta="{3-4}" color="blue">
+    First, produce the report: the `v8` provider and two reporters — `text` for the terminal summary, `html` for the drill-down you open when you're hunting a seam.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{6}" color="green">
+    A floor on the wide base. Pure logic in `/lib` should be near-fully covered, so 90% lines / 85% branches catches a regression where someone ships untested logic into it.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{7-8}" color="orange">
+    Branch floors on the seams. These protect the denial and fail-closed branches specifically — the webhook's signature-failure path, the auth wrapper's reject path — the exact branches line coverage hides.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"perFile: true"`} color="violet">
+    Vitest 4 detail: glob thresholds don't inherit the top-level `perFile`, so you opt in per glob. Here it means *every* webhook file clears 85%, not just the average across them — one untested receiver can't hide behind the others.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{10-15}" color="red">
+    Strip the noise. Config, type-only, and framework-orchestrated files would only ever report misleading numbers; each entry is coverage you refuse to let count against you.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+That config is the backstop and nothing more. It catches regressions on surfaces you've already decided to care about; it does not, and cannot, tell you whether a test asserts the right thing. The reading discipline from the previous section is still the actual work.
+
+Before you move on, drill the discrimination the section turns on: which files earn a coverage threshold, and which are exempt. Sort each one.
+
+<Buckets twoCol instructions="Sort each file by whether it earns a coverage threshold or is exempt from the report. Ask: if this file lost coverage, would a real bug be hiding behind the number?">
+  <Bucket name="threshold" label="Gets a coverage threshold" description="Load-bearing — coverage here means something" />
+  <Bucket name="exempt" label="Excluded or unthresholded" description="Framework-mediated or pure noise" />
+
+  <Item bucket="threshold">`lib/money.ts`</Item>
+  <Item bucket="threshold">`lib/auth/authed-action.ts`</Item>
+  <Item bucket="threshold">`app/api/webhooks/stripe/route.ts`</Item>
+  <Item bucket="threshold">`lib/rate-limit.ts`</Item>
+  <Item bucket="exempt">`app/dashboard/page.tsx`</Item>
+  <Item bucket="exempt">`env.config.ts`</Item>
+  <Item bucket="exempt">`components/ui/card.tsx`</Item>
+  <Item bucket="exempt">`lib/types.ts`</Item>
+</Buckets>
+
+## The blind spot: a file with zero tests
+
+There's one gap coverage cannot see by itself, and it's the subtlest of the lot — so it's the right note to end on. Coverage reports on what *ran*. A file that no test ever imports therefore doesn't run during the suite, which means it doesn't appear in the report at all.
+
+Sit with how that compounds. A file with a single trivial test that runs every line is 100% covered and effectively untested — you already know to distrust that. But a file with *no test at all* is worse, because it doesn't even drag the average down. In Vitest 4's default, it's simply absent. Coverage tells you what ran; it is completely silent about what was never written. The most dangerous file in your codebase can be the one the report doesn't mention.
+
+Here's the mechanism, and read it carefully because the fact changed and the old advice will derail you. In Vitest 4, the report by default includes *only files that were loaded during the test run*. The old behavior — reporting every file by default via `coverage.all: true` — was **removed in Vitest 4**, and `coverage.all` no longer exists. To pull untested files into the report, you set `coverage.include` to globs covering your load-bearing surface. Any file matched by `include` that was never imported now shows up at 0% instead of vanishing:
+
+<div data-mark-color="blue">
+
+```ts title="vitest.config.ts" {3}
+// inside test: { ... }
+coverage: {
+  include: ['src/lib/**/*.ts', 'src/app/api/**/*.ts'],
+},
+```
+
+</div>
+
+:::caution
+Older guides — and a lot of half-remembered Vitest 3 knowledge — tell you to set `coverage.all: true` for this. That option was removed in Vitest 4. Reach for `coverage.include` instead; if you paste `coverage.all`, you'll get a config error and waste an hour chasing it.
+:::
+
+But `include` only makes the gap *visible* — it can't close it. The audit is a human habit: for every file in `/lib` and `/app/api`, confirm a test sits beside it (or in `tests/integration/` for the seams that cross modules) and actually exercises the public surface. The config surfaces the 0% rows; you still have to read them and write the missing test. In the figure earlier, an untested file would simply be a new row sitting at 0% — once you've set `include`, it can't hide.
+
+One honest carve-out, because rules without judgment is how teams learn to resent their own tooling. A brand-new feature behind a flag, in its first sprint, may legitimately ship under-tested while its surface is still moving. The professional move is to *time-box the gap out loud*: add the directory to a temporary `exclude`, ship it, write the tests in the follow-up PR, and remove the exclude. That's the opposite of hiding the absence behind a coverage line that happens to clear the threshold. The discipline was never "always 90%" — it's naming the gap instead of pretending it isn't there.
+
+Here's the finished `coverage` block in one place, so you hold the whole shape rather than the pieces:
+
+```ts title="vitest.config.ts"
+// inside test: { ... }
+coverage: {
+  provider: 'v8',
+  reporter: ['text', 'html'],
+  include: ['src/lib/**/*.ts', 'src/app/api/**/*.ts'],
+  thresholds: {
+    'src/lib/**': { lines: 90, branches: 85 },
+    'src/app/api/webhooks/**': { branches: 85, perFile: true },
+    'src/lib/auth/**': { branches: 85 },
+    'src/lib/error-mapping.ts': { branches: 85 },
+    'src/lib/rate-limit.ts': { branches: 85 },
+  },
+  exclude: [
+    '**/*.config.{ts,js}',
+    '**/*.d.ts',
+    '**/types.ts',
+    '**/index.ts',
+    'app/**/{page,layout}.tsx',
+    '**/*.stories.tsx',
+    'scripts/**',
+    '**/__mocks__/**',
+  ],
+},
+```
+
+Before the close, one question to make sure the senior read stuck.
+
+<MultipleChoice>
+  A teammate opens a PR that raises the project's overall coverage from 84% to 91% and points to it as evidence the suite got stronger.
+  You pull up the report.
+  Which observation would most justify pushing back?
+
+  <McqChoice>The branch coverage is still trailing the line coverage, so a handful of decisions remain untested.</McqChoice>
+  <McqChoice correct>The seven new points all landed on `/lib` getters now sitting at 100%, while the webhook receiver and the auth wrapper haven't moved off 40%.</McqChoice>
+  <McqChoice>The PR didn't also switch on `coverage.thresholds.autoUpdate`, so the new floor isn't locked in.</McqChoice>
+  <McqChoice>91% still leaves a measurable slice of untested code, so the work isn't finished until it reaches 100%.</McqChoice>
+
+  <McqWhy>The average is the one number on the page that can't tell you whether the suite got stronger. Seven points earned at the safe base while the seams sit at 40% is a suite that still ships the seam bug — now wearing a better badge. Read *where* the coverage is, never the headline; and 100% was never the target, so "still short of 100%" is the wrong complaint. The line-vs-branch gap is real but weak: it's true of almost every suite, and `autoUpdate` is something the course deliberately declines.</McqWhy>
+</MultipleChoice>
+
+## Where this leaves you
+
+Coverage is a flashlight for finding untested seams, not a score to maximize. It tells you what your tests *ran*; the number that actually decides whether a test is worth keeping is whether it *asserted the right thing* — and no coverage tool can see that. You can hit 100% and assert nothing, or sit at 70% with a suite that catches every bug that matters.
+
+Which lands you exactly where the next lesson begins. The value of a test is in what it asserts, not what it executes — so next you'll learn to write that assertion well: Arrange, Act, Assert; one behavior per test; an assertion that fails on the real bug and survives the refactor that doesn't change behavior. The flashlight found the seam; now you write the test that holds it.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Test Coverage — Martin Fowler"
+    href="https://martinfowler.com/bliki/TestCoverage.html"
+    icon="lucide:flashlight"
+    iconColor="#1A8FE3"
+    description="The canonical statement of this lesson's thesis: coverage is for finding untested code, useless as a numeric grade of test quality."
+  />
+  <ExternalResource
+    title="Getting Started with Vitest Code Coverage — ViteConf"
+    href="https://www.youtube.com/watch?v=UOdgx2Mm3X8"
+    icon="simple-icons:youtube"
+    iconColor="#FF0000"
+    description="Vitest maintainer Ari Perkkiö (11 min) on how files are included and which coverage provider to choose — the tooling under this config."
+  />
+  <ExternalResource
+    title="Vitest — Coverage configuration"
+    href="https://vitest.dev/config/coverage"
+    icon="simple-icons:vitest"
+    iconColor="#6E9F18"
+    description="Every coverage option, including the threshold, reporter, include, and exclude shapes this lesson set."
+  />
+  <ExternalResource
+    title="Stryker — Mutation testing for JavaScript"
+    href="https://stryker-mutator.io/docs/stryker-js/introduction/"
+    icon="simple-icons:stryker"
+    iconColor="#E74C3C"
+    description="The tool behind the mental model: it mutates your source and asks whether any test notices — measuring what coverage can't."
+  />
+</CardGrid>
