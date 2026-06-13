@@ -453,11 +453,11 @@ WCAG 2.2 AA is the floor. Every project, every screen.
   - `i18n/routing.ts` — `defineRouting` with the locale list and default.
   - `i18n/navigation.ts` — typed navigation primitives (`Link`, `useRouter`, `redirect`, `usePathname`).
   - `i18n/request.ts` — `getRequestConfig` resolves messages, timezone, and `now`.
-  - `i18n/formats.ts` — shared formatter presets.
-  - `proxy.ts` — `createMiddleware(routing)` runs before the auth gate. When you wrap the middleware with auth, the file must export `proxy` (named), not `middleware` — Next.js 16 dispatches on the named export.
+  - `i18n/formats.ts` — shared formatter presets (introduced in the project chapter, not the teaching lessons).
+  - `proxy.ts` — `createMiddleware(routing)` runs before the auth gate. Next.js 16 dispatches on either a default export or a named `proxy` export. The standalone form is `export default createMiddleware(routing)`; use the named `proxy` function only when composing the middleware with auth.
   - `app/[locale]/layout.tsx` — calls `setRequestLocale(locale)` first thing.
 - **`setRequestLocale(locale)`** at the top of every `page.tsx` and every `layout.tsx` under `app/[locale]/`. Skipping it in a page or layout forces dynamic rendering and breaks static prerendering. The rule applies to nested pages, not only the root layout.
-- **Type-safe keys.** Declare the `IntlMessages` global type from `messages/en.json` so missing or misspelled keys are a build error.
+- **Type-safe keys.** Augment next-intl's `AppConfig` interface (`declare module 'next-intl' { interface AppConfig { Messages: ...; Formats: ...; Locale: ... } }`) so missing or misspelled keys are a build error. All three keys are optional — register `Messages` (typed from `messages/en.json`) and `Locale` at minimum; add `Formats` when shared format presets exist.
 - **SEO surface**: `alternates.languages` in metadata with one entry per locale, self-reference, and `x-default`. Per-locale canonical URLs. Per-locale entries in `sitemap.ts`. OG cards with `og:locale` and a per-locale `opengraph-image.tsx`.
 
 ## Logging
