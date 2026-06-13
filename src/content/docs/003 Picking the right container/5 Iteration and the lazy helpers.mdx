@@ -25,7 +25,7 @@ import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
 
 <CourseProgressBar value={frontmatter['course-progress']} />
 
-Here are two production bugs from opposite ends of the same surface. The first allocates a million rows only to throw most of them away. The second silently picks up a property nobody added to the object. Both are iteration bugs: in each case the code reaches for the wrong loop, or the wrong surface for the shape of the source.
+Here are two production bugs that both come from iterating the wrong way. The first allocates a million rows only to throw most of them away. The second silently picks up a property nobody put on the object. In each case the code reached for the wrong loop, or for a loop that doesn't fit the shape of the source it runs over.
 
 <CodeVariants>
   <CodeVariant label="Eager waste">
@@ -44,7 +44,7 @@ Here are two production bugs from opposite ends of the same surface. The first a
     ```
 
     </div>
-    The generator can yield up to a million rows. The spread pulls every single one into an array before the `.filter` ever runs, so 999,990 rows are allocated only to be discarded immediately. The pipeline reads as if it were lazy, but it isn't. The chain is fluent; the source is the wrong shape for it.
+    The generator can yield up to a million rows. The spread pulls every single one into an array before the `.filter` ever runs, so 999,990 rows are allocated only to be discarded a moment later. The chain reads as if it processed rows one at a time, but it doesn't: the spread forces the whole source into memory first.
   </CodeVariant>
 
   <CodeVariant label="Prototype leak">
@@ -59,21 +59,21 @@ Here are two production bugs from opposite ends of the same surface. The first a
     ```
 
     </div>
-    This looks innocuous, and on a clean codebase it prints the two keys you expect. But `for...in` walks the prototype chain. The moment any third-party script in the page adds an enumerable property to `Object.prototype`, and historically several have, this loop logs that property too. The bug ships silently and reappears the day a dependency changes.
+    This looks harmless, and on a clean codebase it prints the two keys you expect. But `for...in` walks the prototype chain. If any third-party script on the page adds an enumerable property to `Object.prototype`, which several have done over the years, this loop logs that property too. Nothing breaks at the time you write it, and the bug surfaces later, the day a dependency changes.
   </CodeVariant>
 </CodeVariants>
 
-The fix for either one isn't a clever defensive check or an extra copy. It's reaching for the right loop, and when the source is lazy, the right helper surface. This lesson covers both: the protocol that sits underneath every `for...of`, the three static entry points for iterating an object (and the one banned form you'll flag in code review), generators in just enough detail to recognize them, and the ES2025 `Iterator.prototype` helpers that let you compose `.filter` and `.map` over a lazy source without materializing it first.
+Neither bug is fixed with a defensive check or an extra copy. Both are fixed by choosing the right loop, and, when the source is lazy, the right set of helpers to run over it. This lesson covers what you need to make those choices: the protocol that sits underneath every `for...of`, the three static entry points for iterating an object (and the one banned form you'll flag in code review), generators in just enough detail to recognize them, and the ES2025 `Iterator.prototype` helpers that let you compose `.filter` and `.map` over a lazy source without materializing it first.
 
 ## The iteration protocol
 
-Every container the previous four lessons covered (arrays, `Set`, `Map`, and the array `Object.entries` returns) shares one contract. So do strings, `URLSearchParams`, the `NodeList` from a DOM query, the value returned by `FormData.entries()`, and the result of calling a generator. The contract is the *iteration protocol*, and it's what `for...of`, the spread operator (`[...x]`), `Array.from`, and the new `Iterator.from` all consume.
+Every container the previous four lessons covered (arrays, `Set`, `Map`, and the array `Object.entries` returns) shares one contract. So do strings, `URLSearchParams`, the `NodeList` from a DOM query, the value returned by `FormData.entries()`, and the result of calling a generator. That shared contract is the *iteration protocol*, and it's what `for...of`, the spread operator (`[...x]`), `Array.from`, and the new `Iterator.from` all rely on to do their work.
 
-The protocol has two halves. Anything with a `[Symbol.iterator]()` method that returns an iterator is an <Term definition="An object that implements the iteration protocol via a [Symbol.iterator]() method returning an iterator. Arrays, strings, Maps, Sets, generators — anything you can put after the of in for...of.">iterable</Term>. An <Term definition="An object with a .next() method that returns { value, done } each time it's called. Once done is true, the iterator is exhausted.">iterator</Term> is anything with a `.next()` method that returns `{ value, done }`, where `value` is the next item and `done` flips to `true` when there's nothing left. That's the entire surface: no class, no inheritance, no registration. If your object answers those two questions, the language treats it as iterable.
+The protocol has two halves. Anything with a `[Symbol.iterator]()` method that returns an iterator is an <Term definition="An object that implements the iteration protocol via a [Symbol.iterator]() method returning an iterator. Arrays, strings, Maps, Sets, generators — anything you can put after the of in for...of.">iterable</Term>. An <Term definition="An object with a .next() method that returns { value, done } each time it's called. Once done is true, the iterator is exhausted.">iterator</Term> is anything with a `.next()` method that returns `{ value, done }`, where `value` is the next item and `done` flips to `true` when there's nothing left. That's all there is to it: no class to extend, no interface to inherit, no registration step. If an object answers those two questions, the language treats it as iterable.
 
-You almost never author one by hand in 2026 application code. The only realistic place you'd write one is a generator function, and we'll get to those in a moment. The reason to name the protocol now is that everything else in this lesson makes sense once you can see it. `for...of` is sugar for "call `[Symbol.iterator]()`, then call `.next()` in a loop until `done` is true." Spread is the same loop, collecting into a fresh array. The iterator helpers later in the lesson are operators on the iterator the protocol returns.
+You almost never write an iterator by hand in 2026 application code. The one realistic place you would is a generator function, which we'll get to in a moment. It's worth naming the protocol now because the rest of the lesson builds directly on it. `for...of` is shorthand for "call `[Symbol.iterator]()`, then call `.next()` in a loop until `done` is true." Spread runs that same loop and collects the values into a fresh array. The iterator helpers later in the lesson are operators that wrap the iterator the protocol hands back.
 
-Here is a short walk-through to make the shape concrete. The code below pulls values out of a plain array by hand, doing the same work `for...of` does for you.
+Here is a short walk-through to make that concrete. The code below pulls values out of a plain array by hand, doing the same work `for...of` does for you.
 
 <AnnotatedCode lang="js" code={`
 const arr = [1, 2];
@@ -88,7 +88,7 @@ iter.next();
   </AnnotatedStep>
 
   <AnnotatedStep meta="{4-5}" color="blue">
-    Each `.next()` advances the iterator and returns `{ value, done }`. The first call returns `{ value: 1, done: false }`: the first element, with more to come. The second returns `{ value: 2, done: false }`: the last element, but the iterator hasn't realized yet that it's the last. `done` reports *after* the fact.
+    Each `.next()` advances the iterator and returns `{ value, done }`. The first call returns `{ value: 1, done: false }`: the first element, with more to come. The second returns `{ value: 2, done: false }`: the last element, but `done` is still `false` because the iterator only reports `done` on the call *after* the final value, not on the call that hands it out.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{6}" color="blue">
@@ -96,7 +96,7 @@ iter.next();
   </AnnotatedStep>
 </AnnotatedCode>
 
-The takeaway isn't that you can now write iterators by hand. It's that you can now read what `for...of`, spread, and `Array.from` are doing under the hood, and you can see where the lazy helpers later in this lesson plug in. The protocol is the seam between the container surface from the previous four lessons and the consumer surface in this one.
+The goal here isn't to leave you writing iterators by hand. It's to let you read what `for...of`, spread, and `Array.from` are doing under the hood, and to see where the lazy helpers later in this lesson plug in. The protocol is the joint between the containers from the previous four lessons and the loops and helpers that consume them in this one.
 
 <VideoCallout videoId="6D7XOGXbyfs" videoTitle="What are JavaScript Generators and Iterators?">
   Andrew Burgess builds the protocol up from the bottom in 10 minutes, starting with the raw `.next()` iterator, then `[Symbol.iterator]` to make it iterable, then a generator, showing how each layer sits on the one below.
@@ -104,7 +104,7 @@ The takeaway isn't that you can now write iterators by hand. It's that you can n
 
 ## `for...of` as the default loop
 
-The lesson on array methods named the four triggers that flip the choice from a `.map`/`.filter` chain to a `for...of` loop. Those triggers still apply, and it's worth restating them here in terms of the protocol: `for...of` is the loop you reach for over anything iterable, which is everything in this chapter and most of the surfaces in the chapters ahead.
+The lesson on array methods named the four triggers that tip the choice from a `.map`/`.filter` chain over to a `for...of` loop. Those triggers still apply, and it's worth restating them here in terms of the protocol: `for...of` is the loop you reach for over anything iterable, which means everything in this chapter and most of the data you'll loop over in the chapters ahead.
 
 The mechanics are exactly what the protocol implies. `for...of` calls `[Symbol.iterator]()`, then calls `.next()` until `done`, running the loop body with each `value`. It works naturally with `break`, `continue`, `return`, and `throw`, and, most usefully, with `await` inside the body.
 
@@ -116,7 +116,7 @@ The five things `for...of` lets you write that array methods don't:
 - The `.entries()` shape for index plus value, as in `for (const [i, item] of arr.entries())`.
 - Multiple statements per iteration with their own local bindings, without stuffing them into a `.forEach` callback.
 
-The four triggers from the array-methods lesson collapse the choice into one sentence: reach for `for...of` when you need async sequencing, early termination, multi-statement bodies, or both index and value. Otherwise the chain reads cleaner.
+The four triggers from the array-methods lesson come down to one sentence: reach for `for...of` when you need async sequencing, early termination, multi-statement bodies, or both index and value. When none of those apply, a `.map`/`.filter` chain reads cleaner.
 
 Here is one example pulling several of those together. The invoice domain from the previous lessons is `{ id, amountCents, status, customerId, dueDate }`, this time keyed by `id` in an `invoicesById` lookup. The loop walks until the running total crosses a threshold, then returns the id where it crossed:
 
@@ -134,7 +134,7 @@ const findFirstOverBudget = (
 };
 ```
 
-Two things from the list happen at once. The `for (const [id, invoice] of ...)` binding destructures each `[key, value]` pair as it arrives, so both halves are bound in one move. The `return id` short-circuits the loop the moment the running total crosses the threshold, so the rest of the entries never get walked. Neither shape is reachable inside a `.reduce` callback: `.reduce` doesn't expose early termination, and destructuring the pair inside the callback signature is awkward for what should read as one line. `for...of` is the right tool here because of the triggers, not the syntax.
+Two things from the list happen at once. The `for (const [id, invoice] of ...)` binding destructures each `[key, value]` pair as it arrives, so both halves are bound in one move. The `return id` exits the loop the moment the running total crosses the threshold, so the remaining entries are never walked. A `.reduce` callback can do neither: `.reduce` has no way to stop early, and destructuring the pair inside the callback signature is awkward for what should read as one line. The triggers, not a preference for the syntax, are what make `for...of` the right tool here.
 
 ## Iterating an object's own properties
 
@@ -148,13 +148,13 @@ Here are the three entry points, named once in the lesson on objects and recalle
 
 All three return arrays of <Term definition="A property defined directly on the object, not inherited from its prototype. Object.entries, Object.keys, and Object.values only walk own properties; for...in walks own plus inherited.">own properties</Term>, so the prototype chain doesn't leak through. The senior reach for "loop over an object" is `for (const [key, value] of Object.entries(obj))`.
 
-One small TypeScript wrinkle is worth recalling from the objects lesson: `Object.keys(obj)` and `Object.entries(obj)` widen the key type to `string[]`, not `keyof typeof obj`. At runtime, `obj` might have extra keys the compile-time type doesn't know about, so typing them as the declared keys would be wrong. In practice you read the value, which is typed correctly, and ignore the widened key, or you assert the type at trusted boundaries.
+One small TypeScript wrinkle is worth recalling from the objects lesson: `Object.keys(obj)` and `Object.entries(obj)` widen the key type to `string[]`, not `keyof typeof obj`. At runtime `obj` might carry extra keys the compile-time type doesn't know about, so typing the keys as the declared ones would be a lie TypeScript refuses to tell. In practice you read the value, which is typed correctly, and ignore the widened key, or you assert the type at a boundary you trust.
 
 ### The `for...in` ban
 
 `for...in` exists, but the course never writes it. Here's why, gathered in one place so you can flag it on sight in code review.
 
-`for...in` iterates **string keys**, **including inherited enumerable ones**. Two things in that sentence go wrong in production code. First, it walks the prototype chain: every enumerable property on `Object.prototype` (and any prototype between yours and `Object.prototype`) shows up in the iteration. If a third-party script or an older polyfill adds an enumerable property to `Object.prototype`, every `for...in` loop in your app suddenly logs that property too. That is the cold-open bug exactly. Second, on arrays, `for...in` yields the indices as *strings* (`"0"`, `"1"`, `"2"`) rather than the values, which is almost certainly not what the developer meant.
+`for...in` iterates **string keys**, **including inherited enumerable ones**. Two parts of that sentence cause trouble in production code. The first is that it walks the prototype chain: every enumerable property on `Object.prototype`, and on any prototype between yours and `Object.prototype`, shows up in the iteration. So if a third-party script or an older polyfill adds an enumerable property to `Object.prototype`, every `for...in` loop in your app starts logging that property too. That is the second bug from the start of the lesson. The second part is that on arrays, `for...in` yields the indices as *strings* (`"0"`, `"1"`, `"2"`) rather than the values, which is almost never what the developer wanted.
 
 The senior rule: in 2026 application code, write `Object.entries` (or `.keys` / `.values`) when iterating an object, and `for...of` when iterating an array. `for...in` appears once, in a code-review checklist, and a single line in `biome.json` configures a linter to flag it project-wide.
 
@@ -173,7 +173,7 @@ Here are the two forms side by side, both iterating the same `invoicesById` reco
     ```
 
     </div>
-    This walks the prototype chain, so if anything in the page has added an enumerable property to `Object.prototype`, the body runs for it too. Under `noUncheckedIndexedAccess`, `invoicesById[id]` returns `Invoice | undefined`, so the body needs a defensive narrow before reading `.amountCents`. That's twice the typing for the wrong shape.
+    This walks the prototype chain, so if anything on the page has added an enumerable property to `Object.prototype`, the body runs for it too. Under `noUncheckedIndexedAccess`, `invoicesById[id]` returns `Invoice | undefined`, so the body needs a defensive narrow before it can read `.amountCents`. You write more code, and it still has the wrong behavior.
   </CodeVariant>
 
   <CodeVariant label="Object.entries (default)">
@@ -194,7 +194,7 @@ If you ever need to ask "is this key on the object itself, ignoring the prototyp
 
 ## Generators, in one snippet
 
-Generators are the easiest way to author a custom iterable, and the only way you'll realistically reach for in 2026 application code. The lazy-helper section coming up needs a non-array source to demonstrate laziness, and a generator is the cleanest source to write.
+Generators are the easiest way to write a custom iterable, and the only way you'll realistically reach for in 2026 application code. The lazy-helper section coming up needs a non-array source to show off laziness, and a generator is the cleanest such source to write.
 
 A generator function uses the `function*` syntax (note the asterisk) and the `yield` keyword inside the body. Calling it doesn't run the body; it returns an iterator. Each `yield` pauses the function and hands a value out, and the next `.next()` call resumes execution right where it left off. The returned object is both an iterator (it has `.next()`) and an iterable (its `[Symbol.iterator]()` returns itself), so it drops straight into `for...of` or into any of the iterator helpers we're about to meet.
 
@@ -213,9 +213,9 @@ function* invoiceEvents() {
 }
 ```
 
-This is plain JS, not TS, because the generator surface is the shape we care about here, and the `console.log` is the observable signal of laziness for the next section. Every time the generator yields, you'll see the line print. If something downstream stops pulling values early, the `console.log` lines stop firing. That's how we'll show the helper chain doesn't materialize the whole source.
+This is plain JS rather than TS, because the generator's shape is all we care about here, and the `console.log` is what makes laziness observable in the next section. Every time the generator yields, you'll see the line print. If something downstream stops pulling values early, the `console.log` lines stop firing with it. That's how the next section shows that the helper chain never materializes the whole source.
 
-In 2026 SaaS code, the common consumer sites for generators are anything streamed: a `ReadableStream` from the Fetch API (later in the platform unit), or the loop over paginated API pages (later in the async chapter). The common author site is exactly this case: you need a lazy source for a helper chain, and writing it as a generator is shorter than hand-rolling a `[Symbol.iterator]` method. That's the whole reach, and there's no exercise here, since recognition is enough.
+In 2026 SaaS code, the places you'll consume a generator are anything streamed: a `ReadableStream` from the Fetch API (later in the platform unit), or the loop over paginated API pages (later in the async chapter). The place you'll write one is exactly this case: you need a lazy source for a helper chain, and a generator is shorter to write than a hand-rolled `[Symbol.iterator]` method. That's the whole of it. There's no exercise here, because recognizing a generator when you see one is all you need from this section.
 
 <VideoCallout videoId="8pGdvQy12ss" videoTitle="I actually use JavaScript generator functions">
   Joshua Morony walks through a real day-to-day use of generators (driving Motion Canvas animations) in 7 minutes, a concrete answer to the question of where you would ever reach for `function*`.
@@ -223,17 +223,17 @@ In 2026 SaaS code, the common consumer sites for generators are anything streame
 
 ## The lazy iterator helpers
 
-This is the central idea of the lesson. ES2025 added a layer of methods directly to `Iterator.prototype`: the same `.map`, `.filter`, `.take`, and `.reduce` you know from arrays, but operating on the *iterator* itself, lazily, without materializing intermediate arrays. They land on every iterator in the language, so they work on generators, `Map.values()`, `Set.values()`, the iterator returned by `Object.entries`, and anything else iterable. Node 24 LTS (the runtime the course pins) ships them, and every modern browser does too.
+This is the central idea of the lesson. ES2025 added a layer of methods directly to `Iterator.prototype`: the same `.map`, `.filter`, `.take`, and `.reduce` you know from arrays, but operating on the *iterator* itself. They run lazily and never build intermediate arrays. Because they live on every iterator in the language, they work on generators, `Map.values()`, `Set.values()`, the iterator returned by `Object.entries`, and anything else iterable. Node 24 LTS, the runtime the course pins, ships them, and so does every modern browser.
 
-The instinct after reading that paragraph is to use these everywhere instead of array methods. That's the wrong reach. The whole point of these helpers is to handle sources that array methods handle badly. If you can already point at an in-memory array, array methods are the right tool. Three triggers, and only these three, flip the choice toward the helpers.
+The instinct after reading that paragraph is to use these everywhere in place of array methods, and that instinct is wrong. The point of these helpers is to handle sources that array methods handle badly. If you can already point at an in-memory array, array methods are still the right tool. Only three things tip the choice toward the helpers, and it's worth holding them clearly in mind.
 
-Match the trigger before reaching for the tool. Reach for the iterator helpers when:
+Reach for the iterator helpers when one of these holds:
 
 1. **The source is itself lazy:** a generator, a stream, or a paginated API loop. You don't want to pull all of it at once; you want each pipeline stage to pull just what the next stage needs.
 2. **The source is large enough that materializing it is wasteful.** Even if you could pull it all, allocating a million-row array just to throw most of it away is the wrong shape.
 3. **The pipeline short-circuits.** You only need the first N matches, or the first match that satisfies a condition. Array methods walk the whole array; the helpers stop pulling the moment the terminal step has what it asked for.
 
-On an in-memory list of 50 invoices, `invoices.filter(isOverdue).map(toReminder)` is the right shape: eager, readable, and terminal in one step. The iterator helpers earn their place when the source pushes back against being materialized. Check for a trigger first; the tool follows from it.
+On an in-memory list of 50 invoices, `invoices.filter(isOverdue).map(toReminder)` is the right shape: eager, readable, and terminal in one step. The iterator helpers earn their place only when materializing the source is something you want to avoid, which is what the three triggers are there to flag.
 
 ### The surface
 
@@ -251,13 +251,13 @@ Here is the visual that makes the laziness click. Each terminal call pulls one v
 
 <PullThroughPipeline />
 
-Reading the diagram right-to-left: `.toArray()` asks `.take(10)` for one value. `.take(10)` asks `.filter(isCritical)` for one value. `.filter` asks the source for one value, checks it against `isCritical`, and either passes it back (if critical) or asks again (if not). The value flows back along the chain in the opposite direction from the pull. When `.take(10)` has handed out its tenth value, it answers `done: true` on the next pull and the chain stops. The source generator yields exactly the items it had to produce to satisfy ten passes through the filter, not one more.
+Reading the diagram right-to-left: `.toArray()` asks `.take(10)` for one value. `.take(10)` asks `.filter(isCritical)` for one value. `.filter` asks the source for one value, checks it against `isCritical`, and either passes it back (if critical) or asks the source again (if not). The value then flows back along the chain, in the opposite direction from the pull. Once `.take(10)` has handed out its tenth value, it answers `done: true` on the next pull and the whole chain stops. The source generator yields exactly the items it had to produce to get ten values through the filter, and not one more.
 
-That's the whole win. If the first ten critical events are in the first fifty items of a million-row stream, the source yields fifty times. The other 999,950 never happen.
+That is the entire benefit. If the first ten critical events sit in the first fifty items of a million-row stream, the source yields fifty times. The other 999,950 are never produced at all.
 
 ### Eager versus lazy
 
-Here is the cold-open bug, fixed.
+Here is the first bug from the start of the lesson, fixed.
 
 <CodeVariants>
   <CodeVariant label="Eager (wasteful)">
@@ -288,7 +288,7 @@ Here is the cold-open bug, fixed.
   </CodeVariant>
 </CodeVariants>
 
-The two shapes look almost identical on the page. The difference is in what runs, and when. The eager version reads the entire source up front; the lazy version reads one value at a time and stops the moment the terminal step has what it asked for. The surface area is the same, but the two are two orders of magnitude apart in what gets allocated.
+The two shapes look almost identical on the page. The difference is in what runs, and when. The eager version reads the entire source up front; the lazy version reads one value at a time and stops the moment the terminal step has what it asked for. They read the same, but they can be two orders of magnitude apart in how much memory they allocate.
 
 <VideoCallout videoId="jSVr5dfIWys" videoTitle="JavaScript Iterator Helpers — overview of all 11 methods">
   Bernard from Better Stack tours all eleven ES2025 `Iterator.prototype` methods in under 4 minutes, with chained `.drop`, `.filter`, `.take`, and `.toArray` examples on an infinite generator.
@@ -325,11 +325,11 @@ console.log(result);
 
 </PredictOutput>
 
-The point of that drill is that the source generator runs only as far as the terminal step demands. Six `console.log` lines fire, not seven, because the source never had to be asked for `g`. The same code rewritten as `[...events()].filter(isMatch).slice(0, 2)` would fire all seven `console.log`s before `.filter` even started looking, and the value of `g` would be allocated for no reason.
+The point of that drill is that the source generator runs only as far as the terminal step demands. Six `console.log` lines fire, not seven, because the source is never asked for `g`. The same code rewritten as `[...events()].filter(isMatch).slice(0, 2)` would fire all seven `console.log`s before `.filter` even started looking, allocating `g` for nothing.
 
 ### Rewrite the eager form
 
-Now the inverse drill. It's the same shape as the cold open, with a test asserting *both* the result and the count of times the source generator yielded. The eager form passes the result check, but only the lazy form passes the count check. That failing count is the point: you watch "yielded 1000 times" turn into "yielded N times" once the rewrite lands.
+This drill runs the other way around. It's the same shape as the first bug from the start of the lesson, with a test that asserts *both* the result and the number of times the source generator yielded. The eager form passes the result check, but only the lazy form passes the count check. That failing count is the whole point: you watch "yielded 1000 times" turn into "yielded N times" once the rewrite lands.
 
 <ScriptCoding
   instructions="firstNMatches is implemented eagerly — it spreads the entire source into an array, then filters, then slices. The 'returns the right matches' test passes already. The 'only pulls what it needs' test checks that the source generator's yield fired at most 425 times (not 1000). Rewrite the body using Iterator.from, .filter, .take, and .toArray so both tests pass. Keep the signature the same."
@@ -378,17 +378,17 @@ const firstNMatches = (source, predicate, n) => {
 
 </details>
 
-The shape of the rewrite is what matters. The arguments don't change, the return type doesn't change, and the test for whether you returned the right thing doesn't change. What changes is the number of times the source had to yield to get there. That's the production win: not microseconds shaved off a benchmark, but a stream you can compose against without first asking whether your server can hold all of it in memory.
+The shape of the rewrite is what matters. The arguments don't change, the return type doesn't change, and the test for the returned value doesn't change. What changes is the number of times the source had to yield to get there. That's the production win: not microseconds shaved off a benchmark, but a stream you can compose against without first asking whether your server can hold all of it in memory.
 
 ## When to stay with arrays
 
-The most common mistake after learning the iterator helpers is reaching for them by reflex on a 50-row array. Avoid that. The helpers earn their place against the three triggers above, and if none of them fire, you're trading readability for nothing.
+The most common mistake after learning the iterator helpers is reaching for them by reflex on a 50-row array. The helpers earn their place against the three triggers above, and when none of those fire, you're trading readability for nothing in return.
 
 Most application data fits comfortably in memory. A `.filter(isOverdue).map(toReminder)` over an in-memory array of fifty invoices is the right shape: eager, readable, terminal in one step, and no wrapper. Wrapping that array in `Iterator.from(...)` adds a method call and no observable benefit. The senior rule fits in one line: if you can already point at the array, don't wrap it; if the source yields values over time, do.
 
 ## Async iteration, in one paragraph
 
-When the source itself is asynchronous, such as a `ReadableStream` from `fetch`, server-sent events, or a paginated API that returns a `Promise<Page>` per pull, the synchronous `for...of` doesn't fit. The shape is `for await (const value of asyncIterable)`: the same loop body, but it awaits each value before binding it. You'll meet `for await...of` properly in the async chapter, and again when we cover streamed `fetch`. The lazy iterator helpers have an async cousin too, the async iterator helpers, which ship under a separate spec, but the course reaches for them only where they earn their place. For now, just recognize the shape:
+When the source itself is asynchronous, such as a `ReadableStream` from `fetch`, server-sent events, or a paginated API that returns a `Promise<Page>` per pull, the synchronous `for...of` doesn't fit. The shape you want instead is `for await (const value of asyncIterable)`: the same loop body, but it awaits each value before binding it. You'll meet `for await...of` properly in the async chapter, and again when we cover streamed `fetch`. The lazy iterator helpers have an async cousin too, the async iterator helpers, which ship under a separate spec; the course reaches for them only where they earn their place. For now it's enough to recognize the shape:
 
 ```ts
 for await (const chunk of response.body) {
