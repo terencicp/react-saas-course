@@ -1,0 +1,359 @@
+---
+title: Flake has a structural cause
+tagline: Diagnose and fix flaky tests in your Vitest integration suite by treating every flake as a hidden input that sorts into one of two buckets, a state leak or an order dependency, each with its own structural fix.
+chapter-id: 88
+course-progress: 0.00005
+sidebar:
+  order: 8
+  label: Flake is structural
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import { Card, CardGrid } from '@astrojs/starlight/components';
+import Figure from '../../../components/figures/Figure.astro';
+import ArrowDiagram from '../../../components/figures/ArrowDiagram.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import TrueFalse from '../../../components/exercises/true-false/TrueFalse.astro';
+import Statement from '../../../components/exercises/true-false/Statement.astro';
+import TfWhy from '../../../components/exercises/true-false/TfWhy.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import FlakeTwoBuckets from '../../../components/lessons/088/8/FlakeTwoBuckets.astro';
+import FlakeDiagnosticLoop from '../../../components/lessons/088/8/FlakeDiagnosticLoop.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+You've built the whole integration suite across this chapter — rollback per test, a database per worker, the `signedInAs` fixture, MSW at the wire, webhook receivers, Server Actions through their full wrapper. Now you ship it, and a week later you hit the single most expensive bug a test suite can produce.
+
+A test goes red on a pull request. You open it, and the failure has nothing to do with your change — it's a `createInvoice` test in a file you never touched. You run it again. Green. You re-run the CI job. Green. The Slack message writes itself: *anyone else seeing CI flake?* And your hand is already moving toward the *Re-run failed jobs* button.
+
+Stop there, because that button is the mistake. That test is not unreliable. Your suite has leaked state from one test into the next, or it has an order dependency, or it reads a clock you didn't fake — and every one of those has a structural cause and a structural fix. <Term definition="A flaky test passes or fails non-deterministically across runs of the same code, with no change to the code between runs.">Flake</Term> is not bad luck. It is determinism you haven't found yet.
+
+That reframe is the whole lesson. By the end you'll be able to name the cause of any flake and fix the structure, instead of re-running and hoping. Here's the thing that makes this lesson short: you already own almost every fix. Rollback, `resetHandlers`, `useRealTimers`, mock reset — each of those was already a flake fix the moment you learned it. This is where those scattered rules collapse into one idea.
+
+## The cost of "just re-run it"
+
+Before any technique, sit with why this matters, because the fixes here are mostly one-liners you already know. What's expensive isn't the flaky test. It's the habit a team grows around tolerating it.
+
+Do the arithmetic, small and concrete. A team merges 200 pull requests a week. The suite flakes 5% of the time — one run in twenty goes red for no real reason. That's ten spurious red builds a week. Each one costs CI minutes on the re-run, sure, but that's the cheap part. The expensive part is a developer pulled out of their own work to investigate a failure that was never their bug — and then, run after run, learning to glance at red and ignore it.
+
+That last move is the real damage. Once "just re-run it" is the team reflex, the suite stops being a signal. Red no longer means *something broke*; it means *roll the dice again*. And now a **real** regression — a genuine bug your test correctly caught — hides behind exactly the same yellow the team has trained itself to dismiss. Tolerated flake doesn't cost you the flaky test. It costs you every other test's credibility.
+
+<Aside type="note" title="The inversion worth memorizing">
+A flaky test is worse than no test. A missing test is a known gap — everyone can see the seam isn't covered. A flaky test is a gap that lies about being covered: it's green most of the time, so the team trusts it, right up until the run where it would have caught a real bug and got re-run away instead. The bar for an integration suite is a measured flake rate well under 1% — a number you watch on a dashboard, not a vibe you assert in standup.
+</Aside>
+
+So hold onto the sentence the rest of this lesson hangs off: **every flake has a named cause and a structural fix.** The work is never "make it less flaky." It's "find the cause, fix the structure, prove it's gone."
+
+## "Intermittent" is a symptom, not a diagnosis
+
+Here's the most important habit to break. When a developer says "the test is flaky," they've named the *symptom* and stopped. "Intermittent," "non-deterministic," "sometimes it fails" — none of those is a cause. They're the thing you're trying to explain, dressed up as if they were the explanation.
+
+The move is to refuse "intermittent" as a root cause and ask one question instead: **what does the failing run inherit from a run before it, or depend on, that the passing run doesn't?** Given identical inputs, code is deterministic — run it a thousand times, get the same answer a thousand times. So if a test's result changes between runs, an input changed that you didn't think of as an input. Flake is just an input you haven't found yet. Your job is to find it.
+
+That hidden input always lands in one of two buckets. This is the spine of the entire lesson — internalize these two and the rest is detail.
+
+The first is a **state leak**. A test leaves a mutation behind — an un-rolled-back row, a stacked MSW handler, a mock implementation, fake timers still engaged, a value pushed into a shared array — and the *next* test runs against that dirty world. The tell is unmistakable: **the test passes alone and fails in the suite.** Run it by itself and there's nothing to inherit, so it's green; run it after its noisy neighbor and it inherits the mess.
+
+The second is **order or nondeterminism**. The test passes only because of *when* it ran — the order other tests ran in, the actual wall-clock time, a random value. The tell here is different: **it passes in one order and fails in another; or it passes today and fails at midnight.**
+
+The reason this two-bucket split is worth installing before anything else is that the *fix shape* follows directly from the bucket. They aren't the same kind of fix:
+
+- A **state leak** is fixed by *isolation or reset* — structurally, in a fixture or an `afterEach`, never in the test body. Put it in the test body and the next person who writes a test forgets it, and you're back where you started. <Term definition="Each test runs against a clean world it can't see leftovers from — no row, mock, handler, or timer left behind by an earlier test.">Isolation</Term> is the goal, and it belongs to the setup, not the test.
+- An **order dependency** is fixed by *removing the dependency* — make every test self-contained, seam the clock and IDs and randomness so nothing is <Term definition="Producing a different result across runs of the same code, because it depends on a hidden variable input like time, run order, or a random value.">nondeterministic</Term> — and then *proven gone* by deliberately scrambling the run order and watching it stay green.
+
+So the diagnostic order is always: first decide which bucket, then the fix follows. The diagram below is that decision made visual — one symptom, forking into two causes, each pointing at its own shape of fix.
+
+<Figure expandable={false} caption="First decide which bucket the symptom points to — the shape of the fix follows from the bucket, not from the test.">
+  <FlakeTwoBuckets />
+</Figure>
+
+## The nine causes, two buckets
+
+Now the taxonomy — but read it as a reference table you scan when a real test goes yellow, not a list to memorize. Almost all of these you've already met; the fix for each was taught earlier in this chapter or the last. So each entry is just cause, fix, and where the mechanics live. The point isn't the nine items. It's that they sort cleanly into the two buckets, and the bucket tells you the fix shape.
+
+The two cards below are that sort. Scan the left card when a test "passes alone, fails in the suite"; scan the right when it "passes in one order, fails in another."
+
+<CardGrid>
+  <Card title="Bucket A — state leaks" icon="seti:db">
+    *Tell: passes alone, fails in the suite. Fix shape: isolate or reset, structurally.*
+
+    - **DB-state leak** — a factory or `signedInAs` called *outside* `withRollback` commits real rows every later test sees. Fix: run every test body inside `withRollback`; the `tx` rollback is the isolation.
+    - **MSW handler leak** — a per-test `server.use(...)` override survives into the next test. Fix: `server.resetHandlers()` in `afterEach`, wired once in the integration setup file.
+    - **Mock-implementation leak** — `vi.mocked(auth.api.getSession).mockResolvedValue(...)` set in test A still answers in test B. Fix: `vi.resetAllMocks()` (or a targeted `mockReset`) in `afterEach` — setup-file mocks are *not* auto-reset, so you name the reset.
+    - **Timer leak** — `vi.useFakeTimers()` with no `vi.useRealTimers()` in `afterEach`; fake time carries forward and a later "after 1s" test hangs to the timeout. Fix: restore real timers in `afterEach`.
+    - **Port collision** — two suites, or a stray dev server, bind the same port; whoever loses flakes. Fix: a dedicated test port (the test Postgres on 5433) and a database per worker so workers can't contend.
+    - **Shared mutable module state** — a top-of-file `const seen = []` (or any module-scope singleton) mutated by tests. Fix: declare capture arrays *inside* the test body, never at module scope.
+  </Card>
+
+  <Card title="Bucket B — order / nondeterminism" icon="random">
+    *Tell: passes one order, fails another; passes today, fails at midnight. Fix shape: remove the dependency, then prove it with `--sequence.shuffle.files`.*
+
+    - **Order dependency** — test B only passes because test A ran first (left a row, set a mock, advanced a sequence). Fix: make every test self-contained; surface the bug with `vitest run --sequence.shuffle.files`.
+    - **Real-time clock** — code reads `Date.now()` / `new Date()` directly, so a time assertion passes by day and fails near a boundary. Fix: read time through the clock seam (`lib/clock.ts`) and freeze it in tests.
+    - **Inline randomness / unstable data** — `Math.random()`, `crypto.randomUUID()`, or `Date.now()` inline in production or test data, so values differ run to run. Fix: route randomness and IDs through their seams (`lib/random.ts`, `lib/ids.ts`); assert on *shape* (`expect.stringMatching`, `expect.any`), never an exact, sequence-derived ID.
+  </Card>
+</CardGrid>
+
+Look at what those two lists actually are. Every entry in the left card is the *same bug* wearing a different costume: a test left state behind, and the structural fix is a reset in `afterEach` or a fixture. Every entry in the right card is the *same bug* too: a hidden non-deterministic input crept in, and the structural fix is a seam. Six "reset in `afterEach`" rules are one rule. Three "route it through a seam" rules are one rule. The nine collapse to two.
+
+(One close cousin doesn't fit either bucket because it isn't really a leak or an order bug: a forgotten `await` on an async assertion, covered in Async tests without the forgotten-await trap — the test finishes before the assertion runs and passes by skipping the check entirely. `await expect(...).resolves` and `expect.assertions(n)` are the guard there; it's named here only so you don't mistake it for flake.)
+
+That collapse is the skill. When a real test flakes, you don't pattern-match against nine memorized cases — you ask "passes alone or fails alone?", land in a bucket, and the fix shape is already decided. Try that first decision now, on a pile of symptoms.
+
+<Buckets twoCol instructions="You're triaging flaky tests. For each symptom or one-line smell, decide which bucket it lands in — that first decision selects the fix shape.">
+  <Bucket name="leak" label="State leak" description="Passes alone, fails in the suite — reset or isolate" />
+  <Bucket name="order" label="Order or nondeterminism" description="Passes one order, fails another — remove the dependency" />
+
+  <Item bucket="leak">`signedInAs` called before `withRollback`</Item>
+  <Item bucket="leak">`server.use(...)` with no `afterEach` reset</Item>
+  <Item bucket="leak">`vi.useFakeTimers()` and no `useRealTimers`</Item>
+  <Item bucket="leak">A top-of-file `const seen = []` the tests push into</Item>
+  <Item bucket="leak">A leaked `mockResolvedValue` from an earlier test still answering</Item>
+  <Item bucket="order">The test asserts `row.id === 5`</Item>
+  <Item bucket="order">Production code calls `Date.now()` directly and a test asserts on time</Item>
+  <Item bucket="order">Test B fails when it runs before test A</Item>
+  <Item bucket="order">`Math.random()` inside the input factory</Item>
+</Buckets>
+
+## Finding the cause: repeats and shuffle
+
+Everything so far was the frame and the recap. This is the part you don't have yet: the diagnostic loop that turns "it's flaky sometimes" into a located, reproducible cause you can fix and prove fixed. It's four steps, and the senior instinct underneath all of them is one rule — **never debug a flake you can't reproduce on demand.**
+
+**Step one: quantify with `repeats`.** "Flaky sometimes" is unactionable. A *rate* is actionable. Vitest has no `--repeat` flag on the command line — repetition is a per-test option you attach to the suspect, then you run just its file.
+
+<div data-mark-color="blue">
+
+```ts title="src/server/actions/create-invoice.int.test.ts" "{ repeats: 100 }"
+it('creates an invoice', { repeats: 100 }, async () => {
+  // ...the test body, unchanged
+});
+```
+
+</div>
+
+Then run that one file:
+
+```bash
+vitest run src/server/actions/create-invoice.int.test.ts
+```
+
+If it comes back `3/100 failed`, you have a 3% flake rate — a number, on demand. Quantify *before* you investigate, for two reasons. First, the rate tells you whether you've actually reproduced the thing: a flake you can't make fail in 100 runs isn't reproduced, and you're about to debug a ghost. Second, the rate is how you'll know a fix worked. `100/100` green after your change is the bar — not "seems fine now," which is just the flake hiding again. The <Term definition="A per-test Vitest option — it('…', { repeats: N }, fn) — that runs the test N times in one go, so you can measure its flake rate on demand.">`repeats`</Term> option is how you force reproduction, so the rest of the loop has something to work with.
+
+**Step two: localize order bugs with shuffle.** A leak that only fires in a specific run order is invisible to repeating a single file in source order — it'll go `100/100` green because nothing reorders. So you scramble the order on purpose. The <Term definition="A Vitest flag that randomizes the order test files execute in, surfacing cross-file leaks and order dependencies.">`vitest run --sequence.shuffle.files`</Term> command randomizes which order the *files* run in; `--sequence.shuffle.tests` randomizes the order *within* a file. A suite that's green in source order but goes red under shuffle *is* an order dependency or a cross-file leak — that's proof, not suspicion.
+
+```bash
+vitest run --sequence.shuffle.files
+```
+
+And reproducibility is the whole point of a diagnostic. When a shuffled run fails, Vitest prints the <Term definition="The value Vitest used to compute a shuffled run order. Pass it back with --sequence.seed to replay that exact order deterministically.">**seed**</Term> it used. Feed that seed back and the exact failing order replays deterministically:
+
+```bash
+vitest run --sequence.shuffle.files --sequence.seed 8675309
+```
+
+Now you have a failing order you can run as many times as you like while you hunt the cause. The senior reach is to not wait for a shuffle to find you by accident: turn shuffle on in your config so it runs on every CI run, or at minimum a scheduled weekly job, so an order dependency surfaces the day it's introduced rather than three months later in someone else's pull request.
+
+:::note
+The per-test `repeats` option and the `--sequence.shuffle.*` flags are the *debugging reach* — you point them at a suspect. Both also exist as config under `test.sequence.shuffle` and `test.sequence.seed` for whole-suite runs, which is exactly what you'd wire into CI for the scheduled shuffle.
+:::
+
+**Step three: read the bucket off the symptom.** The tool that reproduced it already narrows the bucket for you. Reproduces under `repeats` in source order, no shuffle needed? It's a state leak inside the file, or genuine nondeterminism. Clean alone but red only under shuffle? It's an order dependency or a cross-file leak. You're back at the two buckets — and now you got there with proof instead of a guess.
+
+**Step four: fix structurally, then re-prove.** Apply the bucket's fix — reset or isolate, or seam and remove the dependency — and re-run with `repeats` (and shuffle, if that's how you caught it) until it's green every time. The fix isn't done when the test passes once. It's done when it *can't* fail under the tool that caught it.
+
+Watch the whole loop run on one concrete test. Scrub through it.
+
+<FlakeDiagnosticLoop />
+
+Notice where the fix went in that last step: into the setup file's `afterEach`, one line, for the whole project.
+
+```ts title="src/test/integration.setup.ts" ins={2}
+afterEach(() => {
+  vi.resetAllMocks();
+});
+```
+
+That's the entire payoff of the two-bucket model: you didn't memorize "mock leaks need `resetAllMocks`." You reproduced a rate, read "fires in source order" as bucket A, named the leak, and reached for the reset that bucket always wants — in the setup file, where the next person can't forget it.
+
+## Why `--retry` is forbidden
+
+There's a tool that looks like it fixes flake and is the exact opposite of a fix. You need to leave this lesson unwilling to reach for it.
+
+`vitest run --retry=3` re-runs a failing test up to three times and reports green if *any* attempt passes. On its face, that's flake-tolerance built into the runner. In reality it takes your suite's one honest signal — *this test is non-deterministic* — and silences it. The flake is still there. You've just configured the suite to stop telling you. It's "just re-run it" promoted to config and applied to every test, forever, automatically.
+
+And the harm is worse than hiding one flaky test, because retry hides a whole *category*. A real intermittent regression — a genuine race in production code that your test correctly catches one run in twenty — now passes under retry in exactly the same way a leaked mock would. You've configured your suite to lie about a class of real bugs. The race ships. The test was green.
+
+The contrast is sharpest side by side. One of these silences the signal; the other removes the cause.
+
+<CodeVariants>
+  <CodeVariant label="Reach for --retry">
+    <div data-mark-color="red">
+
+    ```bash "--retry=3"
+    vitest run --retry=3
+    ```
+
+    </div>
+    **Green builds, hidden bug.** The failing run is retried until one attempt passes, so the suite reports success — and the flake count climbs silently underneath. You've muted the signal, not removed the cause. A real race ships looking exactly this green.
+  </CodeVariant>
+
+  <CodeVariant label="Find the cause">
+    <div data-mark-color="green">
+
+    ```ts {2}
+    afterEach(() => {
+      vi.resetAllMocks();
+    });
+    ```
+
+    </div>
+    **The flake is gone, not muted.** You reproduce it with `{ repeats: 100 }`, the symptom names the bucket, and the structural fix — one reset in the setup file's `afterEach` — removes the cause. Re-run until 100/100. The signal still works for the next real bug.
+  </CodeVariant>
+</CodeVariants>
+
+So the course rule, stated flat: **`--retry` on test-logic flake is forbidden.** The fix for a flaky test is always the structural fix from the bucket it belongs to.
+
+A rule with no exceptions isn't credible, though, and there is exactly one. **Infrastructure flake** is genuinely outside your test's determinism: the CI runner's network blips while pulling a container image, a database container occasionally needs a second to start accepting connections, an external sandbox times out. That isn't your code being non-deterministic — it's the world being non-deterministic around it. A *scoped* retry on *that boundary* is legitimate: retry the container-startup step, not the test suite.
+
+The line is sharp, so hold it: retry the **infrastructure**, never the **test logic**. If a retry is what makes *your code's* test pass, the retry is hiding your bug.
+
+## Shipping with a flake you can't fix yet
+
+Real life intrudes. Sometimes a flake hits `main`, the whole team is blocked behind red builds, and the root cause needs real investigation time you don't have in the next hour. You need a release valve — and reaching for `--retry` is the wrong one, because it's permanent and silent. There's a disciplined alternative.
+
+**Quarantine, with a leash.** Skip the test *visibly*, so it still runs where you can see it. `it.skipIf(process.env.CI)` keeps it running locally while taking it out of the CI gate; alternatively, move it to an excluded `*.flaky.test.ts` lane that the integration project's glob doesn't pick up. The difference between quarantine and `--retry` is the difference between loud-and-finite and silent-and-forever: a quarantined test is *visibly skipped*, not quietly passing, and it carries an owner and a tracking issue right there in a comment.
+
+<div data-mark-color="orange">
+
+```ts title="src/server/actions/create-invoice.int.test.ts" {1-2}
+// QUARANTINED 2026-06-12 — @maria — flaky under shuffle, see APP-4821.
+// Re-enable once the cross-file order dependency is fixed; do not delete.
+it.skipIf(process.env.CI)('creates an invoice', async () => {
+  // ...
+});
+```
+
+</div>
+
+That comment is not decoration. A quarantine without a tracking issue is just `--retry` with extra steps — it's debt you've decided to forget, and it never comes back. The whole reason quarantine is acceptable and `--retry` isn't comes down to that follow-up: quarantine buys you *time to do the structural fix*, and it is never the fix itself.
+
+<Aside type="caution">
+A quarantine list that only grows is a suite rotting in slow motion. The health metric is that the list trends to **zero** — every entry has an owner, an issue, and a date it's expected to come back. Quarantine without a tracking issue is `--retry` with extra steps.
+</Aside>
+
+## Diagnose the flake
+
+Time to put the whole thing together. The durable skill here isn't recalling which `afterEach` fixes which leak — it's asking the questions in the right *order*: reproduce before you theorize, pick the bucket before you name the taxon. Walk a failing test from symptom to structural fix. At each step, choose the move you'd actually make.
+
+<StateMachineWalker title="A test is failing intermittently — walk it to the cause">
+  <Question id="first-move" prompt="A test fails intermittently on CI. What's your first move?">
+    <Branch label="Re-run the job until it's green" to="leaf-rerun" />
+    <Branch label="Reproduce it on demand with `repeats`" to="reproduce" rationale="You can't fix what you can't make fail." />
+  </Question>
+
+  <Question id="reproduce" prompt="You add `{ repeats: 100 }` to the suspect and run its file. It fails 7/100, in source order, no shuffle. What does that point to?">
+    <Branch label="A state leak within the run" to="which-leak" rationale="It reproduces without reordering anything." />
+    <Branch label="An order dependency" to="leaf-recheck-order" />
+  </Question>
+
+  <Question id="which-leak" prompt="It's a state leak. Which one leaked?">
+    <Branch label="Rows from an earlier test are still in the DB" to="leaf-rollback" />
+    <Branch label="A `server.use(...)` override from a previous test" to="leaf-resethandlers" />
+    <Branch label="A mock implementation set in an earlier test" to="leaf-resetmocks" />
+    <Branch label="Fake timers from an earlier test, still engaged" to="leaf-realtimers" />
+  </Question>
+
+  <Leaf id="leaf-rerun" verdict="Wrong move — reproduce instead">
+    This is the habit the whole lesson exists to break. Re-running silences the one honest signal you have. Don't roll the dice — make it fail on demand with `{ repeats: 100 }`, get a rate, then find the cause.
+  </Leaf>
+
+  <Leaf id="leaf-recheck-order" verdict="Then re-check the tool">
+    An order dependency wouldn't reproduce under `repeats` in source order — nothing reordered, so nothing would change. If you suspect order, the test would be clean alone and red under `vitest run --sequence.shuffle.files`. Reproduce with the *right* tool first.
+  </Leaf>
+
+  <Leaf id="leaf-rollback" verdict="Run the test body inside `withRollback`">
+    The fix is structural and it lives in the test's wrapper, not its body: every test runs inside `withRollback`, and the transaction rolls back its writes so the next test inherits a clean DB. (Mechanics: Rollback against real Postgres.)
+  </Leaf>
+
+  <Leaf id="leaf-resethandlers" verdict="`server.resetHandlers()` in `afterEach`">
+    Wire it once in the integration setup file, never per test — the next author won't remember a per-test reset. Each test starts from the default handlers, overrides don't leak forward. (Mechanics: MSW mechanics.)
+  </Leaf>
+
+  <Leaf id="leaf-resetmocks" verdict="`vi.resetAllMocks()` in `afterEach`">
+    Setup-file mocks are *not* auto-reset — you have to name it. One `afterEach` in the setup file clears every mock implementation between tests, so test A's session can't answer test B. (Mechanics: the `signedInAs` fixture; Server Action tests.)
+  </Leaf>
+
+  <Leaf id="leaf-realtimers" verdict="`vi.useRealTimers()` in `afterEach`">
+    Fake time left engaged carries into the next test, and a later "after 1s" test hangs to the timeout. Always restore real timers in `afterEach`, in the setup, so no test can leak the clock. (Mechanics: Pinning time, IDs, and randomness — the clock seam.)
+  </Leaf>
+</StateMachineWalker>
+
+That walker only covered the state-leak branch. The other root works the same way: if the test is clean alone but red under `vitest run --sequence.shuffle.files`, it's an order dependency — make the test self-contained, and prove the fix by replaying the exact failing order with the reported seed (`--sequence.shuffle.files --sequence.seed <seed>`) until it's green.
+
+Before you go, three statements that catch the highest-value misconceptions. Mark each true or false.
+
+<TrueFalse instructions="Each claim is about diagnosing and fixing a flaky integration test.">
+  <Statement answer="false">
+    `--retry` is an acceptable fix for a flaky integration test.
+    <TfWhy>It's forbidden for test-logic flake. `--retry` re-runs the failing test until one attempt passes and reports green — it hides the cause and silences the signal, including for real intermittent regressions. The only legitimate retry is scoped to *infrastructure* (container startup, CI network), never your test logic.</TfWhy>
+  </Statement>
+
+  <Statement answer="true">
+    A test that passes alone but fails in the suite has a state leak.
+    <TfWhy>That's the defining tell of bucket A. Run alone, there's nothing to inherit, so it's green; run after a noisy neighbor, it inherits the leftover row, handler, mock, or timer. The fix is to isolate or reset — structurally, in a fixture or `afterEach`.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    To measure a flake rate, run the test with the `--repeat 100` flag.
+    <TfWhy>There is no `--repeat` CLI flag in Vitest. Repetition is a per-test option — `it('…', { repeats: 100 }, fn)` — and you run that file. The whole-suite knob lives in config under `test.sequence`; the per-test option is the debugging reach.</TfWhy>
+  </Statement>
+</TrueFalse>
+
+## External resources
+
+Two of these are the source of truth for the flags in this lesson — worth bookmarking, since stale tutorials still reach for a `--repeat` flag that never shipped and a bare `--shuffle` that isn't the real form. The other two are where the two-bucket model and the "flake rate under 1%" bar come from: the canonical essay on the cause, and the team-scale evidence for why tolerating it rots a suite.
+
+<CardGrid>
+  <ExternalResource
+    title="Eradicating Non-Determinism in Tests"
+    href="https://martinfowler.com/articles/nonDeterminism.html"
+    icon="lucide:book-open-text"
+    iconColor="#2E7D9A"
+    description="Martin Fowler's canonical essay — isolation, asynchrony, time, and quarantine, the same buckets this lesson sorts into."
+  />
+  <ExternalResource
+    title="Flaky Tests at Google and How We Mitigate Them"
+    href="https://testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html"
+    icon="simple-icons:google"
+    iconColor="#4285F4"
+    description="Why a tolerated flake rate erodes trust at scale, and the quarantine-and-track discipline that keeps the signal honest."
+  />
+  <ExternalResource
+    title="Vitest — sequence config"
+    href="https://vitest.dev/config/sequence"
+    icon="simple-icons:vitest"
+    iconColor="#6E9F18"
+    description="The `shuffle` and `seed` options the lesson's `--sequence.shuffle.*` flags map to, for wiring shuffle into CI."
+  />
+  <ExternalResource
+    title="Vitest — retry config"
+    href="https://vitest.dev/config/retry"
+    icon="simple-icons:vitest"
+    iconColor="#6E9F18"
+    description="What `retry` / `--retry` actually does — the tool the lesson forbids for test-logic flake."
+  />
+</CardGrid>
+
+That closes the integration arc. You can build the suite — and now you can keep it honest. Every time a test goes yellow from here on, the move is the same: reproduce it, find the bucket, fix the structure, prove it's gone. Never re-run and hope.

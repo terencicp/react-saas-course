@@ -1,0 +1,485 @@
+---
+title: The signedInAs fixture
+tagline: Building a reusable test fixture that signs a caller into a real user and org, so every Server Action authorization test can stub the session seam at the right depth instead of rolling its own.
+chapter-id: 88
+course-progress: 0.00005
+sidebar:
+  order: 3
+  label: signedInAs fixture
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import Dropdowns from '../../../components/exercises/dropdowns/Dropdowns.astro';
+import Term from '../../../components/ui/Term.astro';
+import { Code, CardGrid } from '@astrojs/starlight/components';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import OwnsVsDoesNotOwn from '../../../components/lessons/088/3/OwnsVsDoesNotOwn.astro';
+import RealVsStubbedLanes from '../../../components/lessons/088/3/RealVsStubbedLanes.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Every protected action in this app starts the same way. It reads the session, pulls out the user, and checks their role and which org they belong to before it touches a single row. `createInvoice` does it, `archiveInvoice` does it, the route handler behind your Stripe portal does it. Which means every *test* of one of those actions has to answer the same question before it can assert anything: who is signed in?
+
+Answer it by hand and it's about five lines — insert a user, insert their org, build a fake session, stub the cookie the wrapper reads. Five lines you write once. Then again in the next test. Then again, slightly differently, in the third, because this one needs an admin and you forgot to set the org and the test passed anyway. That last sentence is the whole problem, and it's a nasty one: a hand-rolled auth setup that's subtly wrong doesn't fail loudly. It passes for the wrong reason, and an authorization test that passes for the wrong reason is worse than no test at all.
+
+So we build the thing every test reaches for on its first line: `signedInAs`. One call that hands back a signed-in test context — a real user, a real org, a stubbed session, a cookie jar — so that the *rest* of the test is free to assert what the action actually does. By the end of this lesson you'll reach for `await signedInAs({ role: 'admin' }, tx)` as reflexively as you reach for `buildInvoice(...)`, and — more importantly — you'll be able to say exactly which <Term definition="The point where your code meets something it doesn't own — the session decoder, the database, the network. A test stubs the seam to control what crosses it.">seam</Term> it stubs and why we stub *that* one and not a deeper one.
+
+We'll build it the way you'd actually arrive at it: write the painful version first, feel each thing that's wrong with it, then extract `signedInAs` one responsibility at a time until every pain is gone.
+
+## The session stub you write by hand, five tests in
+
+Here's the action under test. It's the `createInvoice` you've been carrying through this chapter, shown at its wrapper shape so the seams are legible:
+
+```ts
+export const createInvoice = authedAction(
+  'member',
+  createInvoiceSchema,
+  async (input, { user, orgId, db }) => {
+    const [invoice] = await db
+      .insert(invoices)
+      .values({ ...input, orgId, createdBy: user.id })
+      .returning();
+    return ok(invoice);
+  },
+);
+```
+
+That `authedAction` wrapper runs the five-seam shape every action in the project follows: it **parses** the input through `createInvoiceSchema`, **authorizes** the caller (here, "must be at least a `member`"), runs your **mutate** body, **revalidates** the affected paths, and **returns** a `Result`. This lesson owns exactly one of those seams — *authorize*. Asserting on the parse failures, the revalidation calls, the redirect throws: that's its own craft, and it's the next lesson over. Right now we only care about getting a caller *into* the action so the authorize check has a session to read.
+
+Here's the test you'd write before you had a fixture. It uses `withRollback` — the wrapper from earlier in this chapter that runs your test body inside a transaction and rolls it back unconditionally, handing you a `tx` to write against. Read `tx` as "the database, but every write vanishes when the test ends."
+
+<Code
+  lang="ts"
+  title="createInvoice.int.test.ts"
+  code={`// installed for the whole file — every test below is now this user
+vi.mock('@/lib/auth', () => ({
+  auth: { api: { getSession: async () => session } },
+}));
+vi.mock('next/headers', () => ({ cookies: async () => emptyCookieJar }));
+
+const session = { user: { id: 'user_1', email: 'a@b.co' } };
+
+it('creates an invoice', withRollback(async ({ tx }) => {
+  await tx.insert(users).values({ id: 'user_1', email: 'a@b.co' });
+  await tx.insert(organizations).values({ id: 'org_1', plan: 'free' });
+  await tx.insert(memberships).values({ userId: 'user_1', role: 'member' });
+
+  const result = await createInvoice(input, { db: tx });
+
+  expect(result).toBeOkResult();
+}));`}
+/>
+
+Hand that to anyone who's reviewed tests before and they flag three things, fast.
+
+The <Term definition="The join row that records a user's role inside one org. requireOrgUser reads it to resolve both who the user is and which tenant they belong to.">membership</Term> row is missing its `organizationId`. Depending on how the column is declared that either throws or — worse — leaves the user attached to nothing in particular, and `requireOrgUser` quietly resolves them into the baseline seed org instead. Now picture the test you were *actually* trying to write: a cross-tenant check that proves a user in org A can't see org B's invoices. With the org link silently wrong, the user lands in the seed org on *both* sides, the query finds nothing because there's nothing there, and the test goes green. That's a <Term definition="A test that reports success while the behavior it was meant to verify is broken. The green tells you nothing — it would pass even if the feature didn't work.">false negative</Term>: the bug is real, the test is green, and you have learned exactly nothing.
+
+The `user_1` id is hardcoded, and the moment a second test copies this setup you have two tests claiming to be the same user. As long as both only read, you might get away with it. The first one that mutates that row introduces <Term definition="Two tests referencing the same record by a shared, hardcoded id. A write in one silently changes the state the other reads.">aliasing</Term>, and now the order the tests run in changes the result — the run-order coupling you spent the last chapter learning to avoid, smuggled back in through a copy-pasted id.
+
+And the `vi.mock('@/lib/auth', ...)` sits at file scope with a fixed session baked in. Vitest hoists that mock above the imports, so it's installed for the *whole file* — every test in it is now signed in as `user_1` whether it asked to be or not, unless something resets it between tests. Identity leaks from one test into the next.
+
+None of these three is exotic. They're what *always* goes wrong when each test rolls its own auth setup, and they go wrong quietly, which is the dangerous kind. The arrange block is identical across every protected test; duplicating it is precisely how authorization tests rot. So we write it once, correctly, and never again. That's the fixture.
+
+## What one call should hand back
+
+Before we write a line of its body, let's pin down the *contract* — the signature and what it returns — so the rest of the lesson is just "make this real" rather than "discover the shape as we go."
+
+```ts
+signedInAs(opts: SignedInOptions, tx: DbOrTx): Promise<SignedInContext>;
+
+type SignedInOptions = {
+  role?: Role;
+  plan?: Plan;
+  orgId?: string;
+};
+
+type SignedInContext = {
+  user: User;
+  org: Organization;
+  session: Session;
+  cookieJar: CookieJar;
+};
+```
+
+Every option is optional; the defaults are `role: 'member'` and `plan: 'free'`, the most common signed-in user. You pass `tx` explicitly as the second argument rather than reaching for some ambient handle — same call-site-explicit convention the rest of this chapter uses, and it works because you call `signedInAs` *inside* the `withRollback` body, where `tx` is right there in scope.
+
+The return is everything a test could need to either drive the action or assert against it: the `user` and `org` rows so you can scope a factory call to them, the `session` it stubbed, and a <Term definition="A tiny Map-backed stand-in that exposes the same .get / .set surface that Next.js's cookies() returns, so the action's cookie reads resolve in a test.">`CookieJar`</Term> the action wrapper reads.
+
+Now the single most important boundary in this whole lesson, and it's worth drawing before you're tempted to cross it. `signedInAs` answers one question — *who is signed in* — and nothing else.
+
+<Figure caption="Identity is the fixture's job; world-state is the test's job.">
+  <OwnsVsDoesNotOwn />
+</Figure>
+
+The reason this line matters isn't tidiness. It's that the fixture has to stay *changeable*. The day someone adds `invoiceCount` to `signedInAs` "for convenience," it starts to grow a `hasActiveSubscription`, then a `withOverdueBalance`, and within a quarter it's a four-hundred-line god-object that every test depends on and nobody dares touch. The discipline is simple and you enforce it forever: identity is the fixture's job, world-state is the test's job. If the sentence starts with "the user *is*…" it's probably an argument to `signedInAs`. If it starts with "the user *has*…" it's a factory call.
+
+One more thing to name up front. The module we're building, `src/test/fixtures/auth.ts`, exports exactly two things: `signedInAs` for the signed-in case, and `anonymous` for the signed-*out* case. The unauthenticated path deserves a first-class, intention-revealing call too — we'll build `anonymous` at the end — but know now that it's the deliberate counterpart, not an afterthought.
+
+## Inserting the real user, org, and session
+
+Time to build. The fixture has two halves: insert real rows, then stub the session. We'll do the rows first.
+
+There's an obvious objection to get ahead of: *if we're going to stub the session anyway, why insert real `user` and `org` rows at all?* Hold that thought — we'll answer it in full once you've seen the code, because the code makes the answer concrete.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+export const signedInAs = async (
+  { role = 'member', plan = 'free', orgId }: SignedInOptions,
+  tx: DbOrTx,
+): Promise<SignedInContext> => {
+  const org = orgId
+    ? await getOrCreateOrg({ orgId, plan }, tx)
+    : await insertOrg(buildOrganization({ plan }), tx);
+
+  const user = await insertUser(buildUser(), tx);
+
+  await insertMembership({ userId: user.id, organizationId: org.id, role }, tx);
+
+  const session = await insertSession(
+    { userId: user.id, expiresAt: FROZEN.add({ days: 30 }) },
+    tx,
+  );
+
+  return { user, org, session, cookieJar: buildCookieJar() };
+};
+`}>
+  <AnnotatedStep meta="{1-4}" color="blue">
+    The signature, with the defaults living right in the destructure — a `member` on the `free` plan unless the caller says otherwise. `tx` is the second positional argument, in scope from the surrounding `withRollback` body.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5-7}" color="blue">
+    Reuse-or-create. If the caller named an `orgId` we look it up (or build it with that id); otherwise we mint a fresh org. This is the line multi-tenant tests lean on to pin `org_A` against `org_B`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{9}" color="green">
+    `buildUser()` is the previous chapter's in-memory factory — but there it returned a plain object; here we *persist* it through `tx` so the action's own queries can find it. Every call gets a fresh, sequence-unique id, which is what kills the `user_1` aliasing bug from before.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{11}" color="blue">
+    The join row carrying the user's role *within this org*. It's the exact row `requireOrgUser` reads to resolve role and tenant — get it right and your authz assertions are real; forget its `organizationId` and you're back to the silent false-negative.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{13-16}" color="blue">
+    A session row pointing at the user, with `expiresAt` derived from the frozen clock so it's deterministic and never "expired relative to wall-clock" — reusing the `FROZEN` instant from the previous chapter.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{18}" color="blue">
+    Hand back identity: the `user`, `org`, and `session`, plus a `cookieJar` built by a helper we write in the next section. For now treat that last one as a forward crumb.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Note `buildUser` and `buildOrganization`. Those are the in-memory factories from the previous chapter — the ones that hand you a valid row object with sensible defaults. There they returned a plain object you asserted against in memory. Here we take that valid object and *insert* it through `tx`. That's the only difference, and it's the whole point of this half: the rows have to actually exist in the database the action is about to query.
+
+The session's `expiresAt` is computed off <Term definition="The canonical frozen test instant from the previous chapter — 2026-01-15T12:00:00Z. The clock seam returns it instead of the wall clock, so anything time-derived is deterministic.">`FROZEN`</Term>, the frozen clock instant from the previous chapter, not off `Date.now()`. That matters here for a specific reason: if you stamped the session against the real wall clock, a test that also froze time to the past would see a session dated in its *future* and could read as not-yet-valid. Anchor both to the same frozen instant and the session is reliably live for the length of the test.
+
+Which is the answer to the objection from a moment ago. Picture the two paths the action takes through your test, side by side.
+
+<Figure caption="Real where our code reads; stubbed where the framework reads.">
+  <RealVsStubbedLanes />
+</Figure>
+
+Lane A is your action reading *its own data*: when the body calls `requireInvoice` or a tenant-scoped query, that SQL runs for real against `tx` and has to find a real `user`, `org`, `membership`, and whatever rows the test set up. Mock those and you're back to testing a fiction. Lane B is the session decode: the wrapper calls `requireOrgUser`, which calls `auth.api.getSession`, and *that* we stub — because re-deriving a real signed session cookie and round-tripping it through the auth adapter tests the framework's crypto, not your code. So: real rows where our code reads, a stubbed session where the framework reads. The hybrid isn't a compromise; it's drawing the mock at exactly the right depth.
+
+One thing that will bite you if you let it. `signedInAs` inserts through `tx`, and `tx` only exists — and only rolls back — *inside* a `withRollback` body. Call `signedInAs` outside one and those inserts hit the committed database and stay there, leaking a phantom user into every test that runs afterward. It's the same silent-commit class of bug this chapter warned about with the global `db` handle, wearing a different hat. The rule is unchanged: if you're calling the fixture, you're inside `withRollback`.
+
+## Stubbing the auth seam, not its internals
+
+Now the half that makes people argue: the session stub. The rows were mechanical; this is a decision. *Which* seam do you stub?
+
+This is the conceptual center of the lesson, so let's look at the three places you *could* cut, side by side, because the right answer only makes sense against the wrong ones.
+
+<CodeVariants>
+  <CodeVariant label="Too shallow">
+    <div data-mark-color="orange">
+
+    ```ts "requireOrgUser"
+    vi.mock('@/lib/auth', () => ({
+      requireOrgUser: async () => ({ user, orgId, role }),
+    }));
+    ```
+
+    </div>
+    **It works, but it couples every test to one helper and silently skips the other two.** Mocking `requireOrgUser` hands back a canned `{ user, orgId, role }`, but any code path that reads `getCurrentUser` or `requireUser` instead gets nothing — and you've bypassed the wrapper's real branching.
+  </CodeVariant>
+
+  <CodeVariant label="Right">
+    <div data-mark-color="green">
+
+    ```ts "getSession"
+    vi.mock('@/lib/auth', () => ({
+      auth: { api: { getSession: vi.fn() } },
+    }));
+    ```
+
+    </div>
+    **One fake feeds all three ladder helpers; the action's real authorize logic runs.** Mock the `auth` object so `auth.api.getSession({ headers })` resolves the fixture's `{ user, session }`. Now `getCurrentUser`, `requireUser`, and `requireOrgUser` all compute their results from that one fake, exactly as in production — because all three funnel through `getSession`. This is the course default.
+  </CodeVariant>
+
+  <CodeVariant label="Too deep">
+    <div data-mark-color="red">
+
+    ```ts "getSessionCookie"
+    vi.mock('better-auth/cookies', () => ({
+      getSessionCookie: () => signedCookieValue,
+    }));
+    ```
+
+    </div>
+    **It tests Better Auth's crypto, not your code — and shatters on every library update.** Stub the cookie-signing or the session-cookie reader and you're now asserting on the framework's internals, which change without warning and were never your contract to begin with.
+  </CodeVariant>
+</CodeVariants>
+
+Sit with why the middle one wins. The session-read ladder in this app — <Term definition="Better Auth's auth.api.getSession({ headers }). Every session-read helper in the app funnels through this one call to decode the request's session.">`getSession`</Term> at the bottom, then `getCurrentUser` / `requireUser` / `requireOrgUser` layered on top — is built so that *every* helper resolves through that one `getSession` call. Stub `getSession` and you've fed all three at once with a single fake, and crucially the helpers' own logic still runs: `requireOrgUser` still reads the membership row from `tx`, still computes the role, still decides whether to allow or refuse. You've replaced only the part that decodes a cookie, which is the one part you have no business re-implementing in a test.
+
+The heuristic generalizes, and it's worth keeping: **mock at the boundary your code calls, not at the library's guts.** Your code calls `getSession`; it does not call the cookie verifier. That same instinct is the one you'll apply to the Stripe SDK in the next lesson — mock the wire it talks to, not its internals. Same principle, different boundary.
+
+Now the mechanics of doing it cleanly, because there's a trap in the obvious approach. Look again at the seeded bug from the opening test: a `vi.mock('@/lib/auth')` with a session *baked into the factory* leaks that identity across the whole file. The fix is to separate *registering* the mock from *setting* its value.
+
+First, what lives in the integration `setupFiles` — registered once, a placeholder only:
+
+<Code
+  lang="ts"
+  title="setupFiles — registered once"
+  code={`vi.mock('@/lib/auth', () => ({
+  auth: { api: { getSession: vi.fn() } },
+}));`}
+/>
+
+Then what `signedInAs` does per call, inside its body, after building the session:
+
+<Code
+  lang="ts"
+  title="signedInAs — set per call"
+  code={`vi.mocked(auth.api.getSession).mockResolvedValue({ user, session });`}
+/>
+
+The `vi.mock` call is registered once, in the integration `setupFiles` you set up earlier in this chapter — the same place the `next/headers` mock and the MSW server live. But it registers only a `vi.fn()` placeholder; it does *not* know who's signed in. That's deliberate, and there's a hard reason for it. Vitest <Term definition="Vitest lifts every vi.mock() call to the top of the file, above the imports, so the mock is in place before the real module is ever loaded. A consequence: the mock factory runs before any of your test setup.">hoists</Term> `vi.mock` above the file's imports so the mock is installed before any module loads — which means the mock factory runs *before* any particular test exists, so it physically cannot close over a per-call `{ user, session }`. (Hoisted factories can't reference top-level variables either, for the same reason.) So the factory supplies an empty `vi.fn()`, and `signedInAs` fills in the actual session *per call* with `mockResolvedValue`. That split isn't an accident of the API — it's the only shape that works, and it's exactly why the fixture owns the implementation instead of a static top-level mock.
+
+<VideoCallout videoId="0vXPEqHCrao" videoTitle="How to mock an npm package with Vitest/Jest">
+  Lazar Nikolov walks through `vi.mock` hoisting and the empty-`vi.fn()`-then-set-per-call pattern this section relies on (10 min).
+</VideoCallout>
+
+:::caution
+Keep the `@/lib/auth` import static at the top of your production files. A dynamic `import('@/lib/auth')` inside a function dodges the hoisted `vi.mock` entirely — the mock is in place, but your code went around it — and your stub silently does nothing.
+:::
+
+The last piece is reset discipline, and it's the cure for the third opening bug. A session implementation set in one test outlives that test unless something clears it. Leave it, and the next test runs signed in as the *previous* test's user — green, and completely wrong. So the integration `setupFiles` resets between every test:
+
+```ts
+afterEach(() => {
+  vi.mocked(auth.api.getSession).mockReset();
+});
+```
+
+This lives in `setupFiles`, once, not copy-pasted into every test file. (If your setup already calls `vi.resetAllMocks()` in `afterEach` — as the previous chapter's clock seam does — that covers it too.) A leftover session implementation is a textbook flake: the test passes or fails depending on what ran before it, which is exactly the kind of structural cause we'll catalogue later in this chapter. Resetting it is one line, and it's the line that keeps identity from leaking.
+
+:::caution
+Don't stub the session *and* hand-set a real signed cookie. Now the action has two sources of truth for who's signed in, and which one wins depends on implementation details you shouldn't have to know. Stub `getSession`; leave the real cookie crypto out of it.
+:::
+
+## The cookie jar and the Origin header
+
+Let me tell you about an afternoon you can lose, so you don't.
+
+You've stubbed the session perfectly. The membership row is right, `getSession` resolves your user, the reset is in place. You call the action and it fails — with a generic error that, for all the world, *reads* like an auth problem. So you stare at the session stub. You log it. It's fine. You re-check the membership. It's fine. An hour goes by.
+
+The cause has nothing to do with auth. Next.js 16 Server Actions defend against <Term definition="Cross-Site Request Forgery — a forged request fired from another origin that rides along on the user's cookies. Server Actions guard against it by checking the request's Origin header against the host.">CSRF</Term> by comparing the request's `Origin` header against the host, and rejecting the request *before the action body runs* if they don't match. Your test sends no `Origin` header at all. So the action is refused at the gate, the body never executes, the session you so carefully stubbed never even gets read — and the failure surfaces as something that looks, infuriatingly, like broken auth.
+
+That's the whole reason the fixture deals with cookies and headers: not because cookies are interesting, but because skipping them produces a failure that lies about its cause. Two small pieces close the gap.
+
+First, the cookie jar — a `Map` dressed up to look exactly like what `cookies()` returns, and nothing more:
+
+<Code
+  lang="ts"
+  title="src/test/fixtures/auth.ts"
+  code={`export const buildCookieJar = () => {
+  const store = new Map<string, string>();
+  return {
+    get: (name: string) =>
+      store.has(name) ? { name, value: store.get(name)! } : undefined,
+    set: (name: string, value: string) => store.set(name, value),
+    delete: (name: string) => store.delete(name),
+    has: (name: string) => store.has(name),
+  };
+};`}
+/>
+
+The shape matches `cookies()`'s read surface deliberately: `get` returns `{ name, value }` or `undefined`, just like the real thing, so the action's cookie reads resolve without knowing they're in a test. Two notes. `cookies()` is async in Next.js 16 — code reads `await cookies()` — so the `next/headers` mock returns the jar from an `async` function. And that `next/headers` mock, like the auth one, was registered once back in your integration `setupFiles`; the fixture only *populates* the jar per call.
+
+Second, the header that closes the afternoon-shaped hole. The fixture sets the request's `Origin` and `Host` to the same canonical test origin, so the CSRF comparison passes:
+
+<div data-mark-color="blue">
+
+<Code
+  lang="ts"
+  title="src/test/fixtures/auth.ts"
+  mark={[3, 4]}
+  code={`const TEST_ORIGIN = 'http://localhost:3000';
+
+requestHeaders.set('origin', TEST_ORIGIN);
+requestHeaders.set('host', new URL(TEST_ORIGIN).host);`}
+/>
+
+</div>
+
+Set `Origin` equal to `Host` and the gate opens. Omit it and *every single* action test fails the CSRF check, all reading like auth bugs. That's the entire operational rule, and it's all you need here — *why* Next.js derives the allowed origins the way it does, how the token is built, that's a security concern for later in the course. For testing, the knowledge is one sentence: set Origin to Host so the gate passes; here's why your test failed without it.
+
+:::caution
+Stubbing `cookies()` but forgetting the `Origin` header is the silent failure above — the action dies at the CSRF gate. The opposite mistake is hand-faking the *signed* session cookie instead of stubbing `getSession`, which drags back the framework-crypto coupling the last section rejected. Populate the jar; stub the session; set Origin = Host. Don't sign anything.
+:::
+
+## Roles, plans, and tenants as one call argument
+
+Here's where the fixture earns its keep. Three options — `role`, `plan`, `orgId` — and each one flips a different branch of the authorization logic, so a single call configures the exact access scenario a test needs.
+
+**Role** drives the membership row, which `requireOrgUser('admin')` reads to decide. Default `member`. Reach for `signedInAs({ role: 'admin' })` to test the privileged path, and `signedInAs({ role: 'guest' })` to drive the *refused* path — the test that asserts a non-privileged caller gets back `toBeErrResult('forbidden')`. You're not asserting on an error message; you're asserting on the `Result` code, the same discipline from the previous chapter. The message is UI copy that changes; the code is the contract.
+
+**Plan** gates plan-restricted actions. Default `free`. `signedInAs({ plan: 'pro' })` clears a pro-only gate; `signedInAs({ plan: 'free' })` against that same action asserts the refusal. Same rule on the assertion: check the `Result` code, never the user-facing text.
+
+**Tenant** is the one with teeth. `signedInAs({ orgId: 'org_A' })` signs the user into a *named* org. The canonical cross-tenant test reads like a sentence: sign in to `org_A`, build a row under `org_B`, assert that the `org_A`-scoped query can't see it. The fixture creates both orgs; the assertion proves the tenant scoping holds. And here's the rule that prevents the exact false-negative from the opening of this lesson: **in a cross-tenant test, always name the `orgId` on both sides.** Lean on the default seed org for one side and both ends collapse into the same tenant, the query trivially finds nothing, and your isolation test passes without testing isolation. Name the orgs. Make the scoping do real work.
+
+There's a quieter payoff in the *types*, and it's not a footnote — it's free regression detection on your most security-sensitive surface.
+
+<CodeTooltips tooltips={{
+  'R extends Role': 'Role is a string-literal union derived from the Drizzle role enum column — not a hand-listed set. The schema is the single source of truth.',
+  'P extends Plan': 'Plan, likewise, is inferred from the Drizzle plan enum. Add a plan in the schema and it appears here automatically.',
+  'SignedInContext<R, P>': 'The returned context carries the literal role and plan you passed, so downstream code knows ctx.user is an admin, not just any role.',
+}}>
+```ts
+export const signedInAs = async <
+  R extends Role = 'member',
+  P extends Plan = 'free',
+>(
+  { role, plan, orgId }: SignedInOptions<R, P>,
+  tx: DbOrTx,
+): Promise<SignedInContext<R, P>> => { ... };
+```
+</CodeTooltips>
+
+Make `signedInAs` generic over the role and plan and the returned `SignedInContext` carries the *literal* you passed — `signedInAs({ role: 'admin' })` hands back a context typed as an admin, not a vague "some role." The `Role` and `Plan` unions themselves come straight from the Drizzle enum columns; you never hand-list the literals, you derive them from the schema, the same `$inferSelect` instinct the data layer runs on. So the day someone adds a `superadmin` role to the schema, every `signedInAs` call site that didn't account for it can break at *compile* time. The type system is doing regression detection on the auth surface for free, before a single test runs.
+
+Let's lock in the boundary that holds all of this together — identity versus activity — because it's the highest-value idea to walk away with.
+
+<Buckets twoCol instructions="Each line is something a test needs to be true. Decide whether signedInAs should know it, whether a per-test factory should arrange it, or whether it belongs to neither.">
+  <Bucket name="arg" label="A signedInAs argument" description="Identity — who is signed in (the user is…)" />
+  <Bucket name="factory" label="A per-test factory call" description="Activity — what exists in their world (the user has…)" />
+  <Bucket name="neither" label="Neither — that's anonymous()" description="No one is signed in at all" />
+
+  <Item bucket="arg">the user **is** an admin</Item>
+  <Item bucket="factory">the user **has** 3 paid invoices</Item>
+  <Item bucket="neither">the request is unauthenticated</Item>
+  <Item bucket="factory">an invoice already exists with number `INV-1001`</Item>
+  <Item bucket="arg">the user **is** on the pro plan</Item>
+  <Item bucket="factory">the org's subscription **is** past due</Item>
+  <Item bucket="arg">the user **belongs to** `org_A`</Item>
+</Buckets>
+
+The two "is" sentences in the right column are the trap. "The org's subscription **is** past due" *sounds* like identity, but it's world-state the test arranges with a factory — being past due is something the org **has**, not who the user **is**. And "the request is unauthenticated" is neither a `signedInAs` argument nor a factory call: it's the absence of a session, which gets its own first-class name — `anonymous()`.
+
+Run your eye down the items: every "the user *is*…" lands left, every "the user *has*…" lands right, and the one about being unauthenticated belongs to neither — which is the perfect cue for the last piece of the module.
+
+## Naming the unauthenticated path with `anonymous`
+
+The signed-*out* path needs a test too: the one that proves your action refuses a caller with no session at all. You *could* write that test by just… not calling `signedInAs`. Don't. A test that calls the action with no fixture inherits whatever the previous test's session mock left lying around — and even with the `afterEach` reset, "I deliberately have no session" and "I forgot to set one up" read identically at the call site. So we give the absence a name.
+
+<div data-mark-color="blue">
+
+<Code
+  lang="ts"
+  title="src/test/fixtures/auth.ts"
+  mark={[2]}
+  code={`export const anonymous = (): AnonymousContext => {
+  vi.mocked(auth.api.getSession).mockResolvedValue(null);
+
+  requestHeaders.set('origin', TEST_ORIGIN);
+  requestHeaders.set('host', new URL(TEST_ORIGIN).host);
+
+  return { cookieJar: buildCookieJar() };
+};`}
+/>
+
+</div>
+
+`anonymous()` resolves `getSession` to `null` and leaves the cookie jar empty — there's no one signed in. But notice it *still* sets the Origin and Host headers. That's not an oversight: the CSRF gate fires before the session check, so an unauthenticated request that skips Origin would die at the gate and you'd be back to the failure-that-lies-about-its-cause from two sections ago. `anonymous()` returns nothing you'll assert against; its entire value is the *named intent* at the call site.
+
+One thing the call site has to get right, and it's the branch almost everyone models wrong: a session-less caller does **not** come back as `toBeErrResult('unauthenticated')`. There's no such `Result` code in this codebase. The auth ladder — `requireOrgUser` down to `requireUser` — doesn't *return* an error for a missing session; it **redirects** the caller to sign-in, and Next.js's `redirect()` works by *throwing* `NEXT_REDIRECT` straight out of the wrapper, before the action body ever runs. So the test asserts the *throw*, not a `Result` — and checks that the body never wrote anything:
+
+```ts
+it('redirects when signed out', withRollback(async ({ tx }) => {
+  anonymous();
+
+  await expect(
+    createInvoice(input, { db: tx }),
+  ).rejects.toThrow('NEXT_REDIRECT');
+
+  const rows = await tx.select().from(invoices);
+  expect(rows).toHaveLength(0);
+}));
+```
+
+Hand `expect` the un-awaited promise and assert it rejects with `NEXT_REDIRECT`; don't write `const result = await …`, because the act throws before any value comes back. Then assert **zero rows** — the redirect fired before the body, so nothing should have been written. Don't mock `redirect`; let it throw and observe the throw. The next lesson treats this branch in full; here it's enough to know the signed-out path is a thrown redirect, not a `Result` code. And because `anonymous()` *sets* the null session rather than relying on the previous test having left one, it's reset-safe by construction — the same discipline that kept identity from leaking, applied to its absence.
+
+With that, the module's public surface is closed: `src/test/fixtures/auth.ts` exports `signedInAs` and `anonymous`, and nothing else. That export list is a tell. The day it grows a third name, ask hard what that name is doing — a fixture module that keeps sprouting exports is the god-object smell, early.
+
+Let's assemble the whole pattern end to end. Here's a realistic authorization test file with the load-bearing decisions blanked out — fill each one in.
+
+<Dropdowns
+  instructions="Fill the four load-bearing blanks: the fixture each case reaches for, the Result code the in-place refusal returns, and what the signed-out act throws."
+  answers={[
+  { answer: 'signedInAs', options: ['signedInAs', 'anonymous', 'buildUser'] },
+  { answer: 'forbidden', options: ['forbidden', 'unauthorized', 'validation'] },
+  { answer: 'anonymous', options: ['anonymous', 'signedInAs', 'logout'] },
+  { answer: 'NEXT_REDIRECT', options: ['NEXT_REDIRECT', 'unauthorized', 'forbidden'] },
+]}>
+```ts
+describe('createInvoice — authorize seam', () => {
+  it('refuses a guest', withRollback(async ({ tx }) => {
+    await ___({ role: 'guest' }, tx);
+
+    const result = await createInvoice(input, { db: tx });
+
+    expect(result).toBeErrResult('___');
+  }));
+
+  it('redirects when signed out', withRollback(async ({ tx }) => {
+    ___();
+
+    await expect(
+      createInvoice(input, { db: tx }),
+    ).rejects.toThrow('___');
+  }));
+});
+```
+</Dropdowns>
+
+If you reached for `signedInAs` to set up a role, `anonymous` to mean "no session," and matched each refusal to the right exit — `toBeErrResult('forbidden')` for the wrong role, a thrown `NEXT_REDIRECT` for no session — you've got the whole pattern. The two exits aren't interchangeable: an authenticated-but-underprivileged caller is refused *in place* with a `Result` code, while a session-less caller is *redirected* to sign-in, which throws. That's the fixture, and it's the first line of nearly every Server Action and route-handler test you'll write for the rest of this chapter and the project that follows. From here on, the arrange block is one call, and the test gets to be about what the action *does*.
+
+Next we leave auth behind and turn to the *other* boundary an action crosses — the network — and the same seam-depth instinct decides where to cut there too.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Vitest — Mocking Modules"
+    href="https://vitest.dev/guide/mocking/modules"
+    icon="simple-icons:vitest"
+    iconColor="#6E9F18"
+    description="The official guide to vi.mock, the hoisting behavior, and factory patterns behind signedInAs."
+  />
+  <ExternalResource
+    title="How to Think About Security in Next.js"
+    href="https://nextjs.org/blog/security-nextjs-server-components-actions"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="Next.js explains the Origin-vs-Host CSRF check that the cookie-jar section works around."
+  />
+</CardGrid>

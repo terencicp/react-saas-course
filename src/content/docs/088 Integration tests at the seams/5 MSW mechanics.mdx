@@ -1,0 +1,516 @@
+---
+title: MSW mechanics in practice
+tagline: Mock outbound HTTP in your integration tests with Mock Service Worker v2, intercepting the wire so the real SDK answers to handlers you write per scenario.
+chapter-id: 88
+course-progress: 0.00005
+sidebar:
+  order: 5
+  label: MSW mechanics
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Dropdowns from '../../../components/exercises/dropdowns/Dropdowns.astro';
+import Sequence from '../../../components/exercises/sequence/Sequence.astro';
+import SequenceStep from '../../../components/exercises/sequence/Step.astro';
+import PredictOutput from '../../../components/exercises/predict-output/PredictOutput.astro';
+import PredictWhy from '../../../components/exercises/predict-output/PredictWhy.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import { Aside, CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The last lesson settled an argument: when your code reaches out to Stripe, you mock the *wire* — the actual HTTP request leaving your process — and leave the SDK's serializing, signing, retrying, and parsing under test. You came away with a rule and a mental model. What you didn't come away with is a single line you can type. This lesson is the typing.
+
+Picture three tests against *one* endpoint, `POST /v1/checkout/sessions` — the call Stripe's SDK makes when you open a checkout session:
+
+- A happy-path test needs that endpoint to return a canned checkout URL so `createSubscription` resolves and you can assert the URL came back.
+- A duplicate-customer test needs the *same* endpoint to return `400` with `error.code: 'resource_already_exists'`, so you can assert the SDK surfaced it as the mapped error your code handles.
+- A retry test needs that endpoint to fail three times with `503` and then succeed with `200`, so you can prove the SDK's retry logic actually climbs back to success.
+
+Same URL, three different behaviors, chosen per test. That is the whole job, and the tool for it is <Term definition="Mock Service Worker — a request-interception library. In Node it runs setupServer, which hooks the request layer so the SDK's real outbound call is answered by a handler you wrote instead of hitting the network.">MSW</Term>. By the end of this lesson those three scenarios are three small, named blocks you can write from memory.
+
+The shape of the reach is: **handlers per scenario, matchers per shape, per-test overrides that don't leak** — all under a strict discipline you already half-own. The `server` that does the intercepting lives in exactly one place. Handlers reset between every test. And — the policy you locked in last lesson — a request with no handler doesn't quietly return `200`; it fails loud, because an unhandled request to a third party is a bug, not a fallthrough.
+
+We'll build it in layers. First the plumbing that every later section assumes — the server and its lifecycle. Then the three scenarios in order: the happy handler, the per-test override, the retry sequence. Then the capstone — recovering the request the SDK actually sent, so you can assert on the bytes on the wire. The whole thing lives in a new `src/test/msw/` directory.
+
+## Standing up the server: install and lifecycle
+
+Before any handler can intercept anything, MSW needs a server instance and a place in the test lifecycle to switch it on and off. You wire this once. Every section after this one just assumes it's there.
+
+Install it as a dev dependency — MSW is a test tool and never ships to production:
+
+```sh
+pnpm add -D msw
+```
+
+Next, the server itself. This is the one module where the instance is born, and it's deliberately tiny:
+
+```ts title="src/test/msw/server.ts"
+import { setupServer } from 'msw/node';
+import { stripeHandlers } from './handlers/stripe';
+import { resendHandlers } from './handlers/resend';
+import { posthogHandlers } from './handlers/posthog';
+
+export const server = setupServer(
+  ...stripeHandlers,
+  ...resendHandlers,
+  ...posthogHandlers,
+);
+```
+
+<Term definition="The Node-side request interceptor MSW gives you — the server-equivalent of the browser service worker that gives the library its name. Constructed once with your default handlers; you control it through server.listen / use / resetHandlers / close.">`setupServer`</Term> takes a list of handlers (the next section builds those `handlers/` files) and hands back a `server` you'll drive from the lifecycle hooks. The thing to hold onto here is that this is a *module singleton*. Anywhere in your test suite that imports `server` from this file gets the same instance — the same switchboard. There is one server, and these handler files describe what it knows how to answer.
+
+A switchboard isn't doing anything until you plug it in, and you plug it in from the integration setup file — the one earlier in this chapter wired up with the migration runner and the auth mock. You're adding three lines to it, one per phase of a test run:
+
+<AnnotatedCode lang="ts" maxLines={12} code={`
+import { server } from './msw/server';
+
+// alongside this chapter's earlier migration setup and the auth mock
+
+beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
+afterEach(() => server.resetHandlers());
+afterAll(() => server.close());
+`}>
+  <AnnotatedStep meta="{1}" color="blue">
+    The singleton from the module you just wrote. You import it; you never call `setupServer` again — that already happened, once.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5}" color="blue">
+    `listen` boots interception for the whole worker. The `onUnhandledRequest: 'error'` option is the policy from last lesson, now live: any request without a matching handler throws instead of silently passing through. A URL typo or a missing handler becomes a loud, immediate failure — exactly what you want.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{6}" color="blue">
+    `resetHandlers` strips every per-test override (the next sections add those) and snaps the server back to its default handlers. This is the single most important line for keeping tests independent — one test's override must never bleed into the next. (You'll meet this line again, by name, when this chapter catalogues the ways tests leak into each other.)
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{7}" color="blue">
+    `close` tears interception down when the worker is done. Symmetric with `listen`; nothing exotic.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Three hooks, three jobs: `listen` turns interception on, `resetHandlers` clears per-test state between tests, `close` turns it off. Notice that you set `onUnhandledRequest` once here and never think about it again — it governs the whole suite from this single line.
+
+<Aside type="caution">
+The `server` is a module singleton *per worker*. Two tests in the same file share the exact same instance — which is precisely why `resetHandlers()` in `afterEach` is non-negotiable: without it, an override stacked in one test is still answering in the next. Across workers, each gets its own `server` (this chapter's per-worker isolation again), so test files never cross-contaminate. The flake risk lives *inside* a file, and `afterEach` is what closes it.
+</Aside>
+
+## Default handlers: the happy-path contract
+
+Now the first scenario — the canned checkout URL — and, more importantly, the home for every happy path in your suite.
+
+Handlers live in `src/test/msw/handlers/`, one file per third party: `stripe.ts`, `resend.ts`, `posthog.ts`. Each file exports an array of handlers covering only the happy paths your suite actually exercises, and `server.ts` spreads those arrays into `setupServer` (you saw that spread a moment ago). Splitting by provider keeps each file readable and keeps "what we assume Stripe does on success" in one obvious place.
+
+That framing is the whole point of the default array: **it is the contract.** It says, in code, "here is what we assume these services do when everything goes right." A test that needs an *unhappy* path — the 400, the 503 — doesn't edit this file; it stacks a one-test override on top (next section). Defaults are the rule; overrides are the exceptions.
+
+Each handler matches a request by method and URL. The method comes from the `http` object — `http.get`, `http.post`, `http.put`, `http.patch`, `http.delete`, and `http.all` for any method — and the URL is a string you match against:
+
+```ts
+http.post('https://api.stripe.com/v1/checkout/sessions', resolver);
+```
+
+The URL can carry path parameters with a `:name` segment, which you'll read back later when capturing requests:
+
+```ts
+http.post('https://api.stripe.com/v1/customers/:customerId', resolver);
+```
+
+Pin the *exact* base URL and full path. A pathname that doesn't match falls through to `onUnhandledRequest: 'error'` and the test fails loud — which is good, you'll see it immediately. The trap is a *wrong host*: if your code somehow hits a regional or sandbox endpoint your handler doesn't cover, that request also just misses your handler. Pin the host you actually call.
+
+The second argument is the <Term definition="The function MSW calls when a request matches. In MSW v2 it receives an object — { request, params, cookies, requestId } — and returns an HttpResponse directly. The request is a real Request; params holds any :name URL segments.">resolver</Term>: a function that receives the matched request and returns the response. In MSW v2 it returns an `HttpResponse` *directly*:
+
+```ts
+async ({ request, params }) => HttpResponse.json(body, { status });
+```
+
+`HttpResponse` is MSW's response builder, and it has a shape for every kind of reply your suite needs:
+
+- `HttpResponse.json(body, { status })` — a JSON body, status `200` by default. The workhorse.
+- `HttpResponse.text(body, { status })` — a plain-text body.
+- `HttpResponse.error()` — not an HTTP error, a *network-level* failure (connection refused). You'll use this in the retry section to engage the SDK's retry path.
+- `new HttpResponse(body, { headers })` — the raw escape hatch when you need full control over headers or a binary body. Reach for it rarely.
+
+Before you write your first handler, one detour that will save you an afternoon. If you search the web for MSW examples, most of what you find predates a rewrite the library shipped in late 2023, and the old API looks just different enough to break when you paste it. Here is the same handler in both dialects so you can recognize and translate on sight:
+
+<CodeVariants>
+  <CodeVariant label="Legacy (v1)">
+    ```ts del={1} del="rest.post" del="(req, res, ctx) =>" del="res(ctx.json("
+    import { rest } from 'msw';
+
+    rest.post(
+      'https://api.stripe.com/v1/checkout/sessions',
+      (req, res, ctx) =>
+        res(ctx.json({ id: 'cs_test_123', url: 'https://checkout.stripe.com/c/cs_test_123' })),
+    );
+    ```
+    **Most pre-2024 tutorials look like this.** The import is `rest`, the resolver takes a `(req, res, ctx)` triple, and you build the response by *calling* `res(ctx.json(...))`. If a snippet you copied has any of those three tells, it's the old API.
+  </CodeVariant>
+
+  <CodeVariant label="v2 (what we write)">
+    ```ts ins={1} ins="http.post" ins="() =>" ins="HttpResponse.json("
+    import { http, HttpResponse } from 'msw';
+
+    http.post(
+      'https://api.stripe.com/v1/checkout/sessions',
+      () =>
+        HttpResponse.json({ id: 'cs_test_123', url: 'https://checkout.stripe.com/c/cs_test_123' }),
+    );
+    ```
+    **`http` replaced `rest`.** The resolver returns an `HttpResponse` *directly* instead of being handed a `res`/`ctx` toolkit. Translating an old snippet is mechanical: `rest` → `http`, drop `req, res, ctx`, and `return HttpResponse.json(x)` where the old one wrote `res(ctx.json(x))`.
+  </CodeVariant>
+</CodeVariants>
+
+<Term definition="The major MSW rewrite that landed in October 2023. It swapped rest for http and changed resolvers from res(ctx.json(...)) to returning an HttpResponse directly. The cutoff to keep in mind when reading docs and Stack Overflow answers — anything older is the legacy API.">MSW v2</Term> is what this course writes, and it's worth knowing the cutoff is October 2023 so you can date any example you find. Now the first scenario, resolved. Here is the Stripe handler file with its happy checkout path, the array that `server.ts` already spreads in:
+
+```ts title="src/test/msw/handlers/stripe.ts"
+import { http, HttpResponse } from 'msw';
+
+export const stripeHandlers = [
+  http.post('https://api.stripe.com/v1/checkout/sessions', () =>
+    HttpResponse.json({
+      id: 'cs_test_123',
+      url: 'https://checkout.stripe.com/c/cs_test_123',
+    }),
+  ),
+];
+```
+
+That's the canned-URL scenario done. The default array carries the happy checkout session; `server.ts` spreads `stripeHandlers` into `setupServer`; every test in the suite now gets a successful checkout response for free, and `createSubscription` resolves with a real-looking URL. Scenario one, complete.
+
+## Overriding for one test: server.use and unhappy paths
+
+The second scenario is the duplicate-customer `400`. The happy path is already in the defaults, so this isn't something you add there — it's an *exception* you stack for exactly one test.
+
+The tool is `server.use(...)`. It pushes one or more handlers on top of the defaults *for the current test*, and the `resetHandlers()` you already wired into `afterEach` strips them before the next test runs. The reflex to build: **happy paths live in the default handlers; reach for `server.use` only for the one unhappy path this single test needs.**
+
+Here is the duplicate-customer override and the test that uses it:
+
+```ts title="src/server/actions/create-subscription.int.test.ts" {5-12} "{ status: 400 }"
+it('surfaces a duplicate customer as a mapped error', () =>
+  withRollback(async ({ tx }) => {
+    await signedInAs({ plan: 'free' }, tx);
+
+    server.use(
+      http.post('https://api.stripe.com/v1/checkout/sessions', () =>
+        HttpResponse.json(
+          { error: { code: 'resource_already_exists' } },
+          { status: 400 },
+        ),
+      ),
+    );
+
+    const result = await createSubscription({ priceId: 'price_pro_monthly' });
+
+    expect(result).toBeErrResult('conflict');
+  }));
+```
+
+For this one test, the checkout endpoint stops returning the happy URL and returns a `400` with the `error.code` Stripe uses for a duplicate. The SDK receives that response, maps it to the error your code handles, and your action returns the `'conflict'` code. The assertion is `toBeErrResult('conflict')` — you check the `Result` code, the same discipline from the previous chapter, never the user-facing message, which is UI copy that changes. The next test, thanks to `afterEach`, sees the original happy handler again — the override is gone. Scenario two, complete.
+
+One reviewer reflex to internalize while it's fresh: an override is only ever a *deviation from a contract that already exists*. If you find yourself writing a `server.use` for an endpoint that has **no default handler underneath it**, that's a smell — it means your default array is missing a contract entry, not that you've found a clever exception. Every endpoint your suite touches should have a happy-path default; `server.use` shadows it for a test, it doesn't stand in for a missing one.
+
+That `400` is one of three failure shapes you'll inject, and they all live right here in the override, each one line:
+
+- **A status code** — `{ status: 503 }` — gives the SDK a server error to chew on, which exercises its *real* retry path. This is the entire reason you mock the wire: a function-level mock would never trigger that retry.
+- **`HttpResponse.error()`** — a network-level failure, like a refused connection — also engages the SDK's retry logic, but from the transport layer rather than an HTTP status.
+- **A slow upstream** — `await new Promise((r) => setTimeout(r, 5000))` inside the resolver before you return — simulates a hanging third party. This one has a catch: under fake timers it needs `vi.useFakeTimers()` plus `advanceTimersByTimeAsync` (the clock seam you met in the previous chapter's lesson on time in tests) to push past the delay, and MSW and fake timers have a sharp interaction we'll get to at the end of this lesson. Keep it in your back pocket for now.
+
+Before the next scenario, assemble an override yourself from the surface you just learned. The skeleton below is a `server.use` for the duplicate-customer test with three blanks — pick the method, the response helper, and the status that make it a correct `400`-with-JSON override:
+
+<Dropdowns
+  instructions="Complete the duplicate-customer override so it returns a 400 with a JSON error body."
+  answers={[
+    { answer: 'http.post', options: ['http.post', 'http.get'] },
+    { answer: 'HttpResponse.json', options: ['HttpResponse.json', 'HttpResponse.text'] },
+    { answer: '400', options: ['400', '200'] },
+  ]}
+>
+```ts
+server.use(
+  ___('https://api.stripe.com/v1/checkout/sessions', () =>
+    ___(
+      { error: { code: 'resource_already_exists' } },
+      { status: ___ },
+    ),
+  ),
+);
+```
+</Dropdowns>
+
+<Aside type="tip">
+`server.use` overrides are *additive and last-wins* — the most recently pushed handler that matches a request answers it. That's exactly what lets a one-test override shadow a default without you having to delete the default: you stack a new handler on top, it wins for this test, and `resetHandlers()` pops it off afterward.
+</Aside>
+
+## Sequenced responses: `{ once: true }` for retries
+
+The third scenario is the one students reliably get wrong, which is why it gets its own section: three `503`s, then a `200`. The mechanism is a handler option called `once`, and the single most common mistake is reaching for a method that doesn't exist — there is no `.once()`. `once` is the *third argument* to `http.*`, an option object that changes how long the handler lives.
+
+A handler marked `{ once: true }` answers exactly one matching request and then retires. It's spent — gone — and the next matching request looks past it to whatever is underneath. Stack a few of them and you've described a sequence:
+
+<AnnotatedCode lang="ts" maxLines={14} code={`
+server.use(
+  http.post(url, () => new HttpResponse(null, { status: 503 }), { once: true }),
+  http.post(url, () => new HttpResponse(null, { status: 503 }), { once: true }),
+  http.post(url, () => new HttpResponse(null, { status: 503 }), { once: true }),
+  http.post(url, () => HttpResponse.json({ id: 'sub_123' })),
+);
+`}>
+  <AnnotatedStep meta="{2-4}" color="orange">
+    Three `once` handlers for the same endpoint. Order is response order — the first one answers the first request, the second answers the second, the third answers the third. Each drains as it's used.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"{ once: true }"`} color="orange">
+    This is the third argument to `http.post`, the handler option that makes it single-use. It is *not* a `.once()` method — there's no such thing. Getting this wrong is the number-one MSW mistake; it's an option, not a call.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5}" color="orange">
+    The sticky tail. After the three `once` handlers are spent, every further request hits this one and gets the success. It has *no* `once`, so it answers as many times as needed — which is what lets the fourth request (and any after it) come back `200`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"url"`} color="orange">
+    What's actually under test here is the SDK's *real* retry logic climbing this staircase — three failures, then success. A function-level mock could never exercise that. This is the payoff of mocking the wire from last lesson.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Read the stack top to bottom and it's a script: request one drains the first `once` handler and gets `503`, request two drains the second and gets `503`, request three drains the third and gets `503`, and request four — finding no `once` handlers left — hits the sticky success and gets `200 { id: 'sub_123' }`. The SDK, retrying on `503`, walks exactly that path and arrives at success, which is the behavior your test asserts.
+
+That final non-`once` handler is not optional. Without it, the fourth request finds nothing — no `once` handlers left, no sticky fallback — and falls straight through to `onUnhandledRequest: 'error'`, failing the test with a confusing "no handler" error right when you expected success. The sticky tail is what catches the retry. (There's an inverse, `restoreHandlers()`, that re-arms spent `once` handlers — worth knowing the name exists, but you won't need it here.)
+
+To lock in the drain-in-order model, put the four-handler stack in the right sequence of *responses*. Each retry attempt below receives one response — order them as the stack hands them out:
+
+<Sequence instructions="The stack below is wired for a retry test. Drag the responses into the order the four requests receive them.">
+
+```ts
+server.use(
+  http.post(url, () => new HttpResponse(null, { status: 503 }), { once: true }),
+  http.post(url, () => new HttpResponse(null, { status: 503 }), { once: true }),
+  http.post(url, () => new HttpResponse(null, { status: 503 }), { once: true }),
+  http.post(url, () => HttpResponse.json({ id: 'sub_123' })),
+);
+```
+
+  <SequenceStep>Request 1 → `503` (drains the first `once` handler)</SequenceStep>
+  <SequenceStep>Request 2 → `503` (drains the second `once` handler)</SequenceStep>
+  <SequenceStep>Request 3 → `503` (drains the third `once` handler)</SequenceStep>
+  <SequenceStep>Request 4 → `200 { id: 'sub_123' }` (the sticky tail)</SequenceStep>
+</Sequence>
+
+## Recovering the request: the clone-and-capture pattern
+
+Everything so far has been about what your handler *returns*. The capstone is the other direction: what the SDK *sent*. This is the entire reason you mock the wire instead of the function — so you can assert on the actual outbound request, the bytes Stripe would receive, never on "the SDK method was called." Last lesson promised this; here is the mechanic.
+
+The pattern is a capture array you declare *inside the test*, an override that pushes the request into it, and assertions *after* the act:
+
+<AnnotatedCode lang="ts" maxLines={16} code={`
+it('sends userId and an idempotency key to Stripe', () =>
+  withRollback(async ({ tx }) => {
+    const { user } = await signedInAs({ plan: 'free' }, tx);
+    const seen: Request[] = [];
+
+    server.use(
+      http.post('https://api.stripe.com/v1/checkout/sessions', ({ request }) => {
+        seen.push(request.clone());
+        return HttpResponse.json({ id: 'cs_test_123', url: 'https://stripe.test/c' });
+      }),
+    );
+
+    await createSubscription({ priceId: 'price_pro_monthly' });
+
+    const body = await seen[0].text();
+    expect(body).toContain(\`metadata[userId]=\${user.id}\`);
+    expect(seen[0].headers.get('Idempotency-Key')).toBeTruthy();
+  }));
+`}>
+  <AnnotatedStep meta="{4}" color="green">
+    The capture array, declared *inside the test*, not at module scope. Module-level mutable state shared across tests is a classic flake source — one test's captured request leaking into another's assertions. Fresh array per test, scoped to the test, no leak. (This chapter's flake lesson names this exact trap.)
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{8}" color="green">
+    `clone()` is load-bearing. A `Request` body is a one-shot stream — read it once and it's consumed. The framework and the SDK round-trip will read this body; if you don't clone *before* anyone reads it, your later `seen[0].text()` throws "body already consumed." Clone, then push the copy. This is the single highest-value gotcha in the lesson.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{15}" color="green">
+    Recover the body *after* the act, off the cloned request. Stripe's v1 API sends `application/x-www-form-urlencoded`, so this is `.text()` (a form string), not `.json()`. The string looks like `metadata[userId]=u_1&metadata[orgId]=o_1` — and asserting `metadata[userId]` is in it proves the SDK serialized your `metadata` exactly the way Stripe expects.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{17}" color="green">
+    The payoff. This header is generated by the *SDK*, not your code — it's invisible to any function-level mock. Only by intercepting the real wire can you assert it's present. This is the thing last lesson said only the wire could verify, verified.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Walk the test once more, because its shape is the shape of nearly every integration test you'll write after this chapter. The arrange step signs in a user with `signedInAs` (this chapter's auth fixture) inside `withRollback` (its transaction wrapper) and declares the empty `seen` array. The override captures each matched request and returns a canned response. The act calls `createSubscription` exactly as production calls it. And the assertions run *after* — on the captured request, never inside the resolver. (Keep resolvers about *responding* and assertions about *verifying*; an `expect` inside a resolver fails in a place that's hard to trace.)
+
+Two parts of that test deserve a closer look, because they're where first-timers stumble.
+
+**The clone.** A `Request` body is a single-use stream — designed to be read straight through once, like water out of a tap, not a value you can re-read. Something in the pipeline — the framework forwarding the request, the SDK serializing it — *will* read this body to do its job. If you then call `request.text()` on that same consumed request, you get a thrown error, not your data. `request.clone()` makes an independent copy with its own unread stream; you push the clone and read it later in peace. Whenever you capture, clone first. Always.
+
+**Reading by content type.** What you call to read the body depends on what the SDK sent. Stripe's v1 API encodes its bodies as `application/x-www-form-urlencoded` — a form string like `metadata[userId]=u_1&metadata[orgId]=o_1` — so you read it with `await request.text()`, **not** `.json()`. JSON APIs (most modern ones) use `await request.json()`. This form-encoding is the kind of detail a function-level mock can't see and only a wire-level capture can check — exactly the point from last lesson made concrete.
+
+Beyond the body, the request carries three more things worth asserting, and each has its own accessor:
+
+- **URL parameters** — those `:customerId` segments — arrive on the resolver's `params`: `({ params }) => params.customerId`.
+- **Query string** — parse it off the URL: `new URL(request.url).searchParams.get('expand')`.
+- **Headers** — SDK-generated ones especially: `request.headers.get('Idempotency-Key')`, `request.headers.get('Stripe-Version')`. These are the headers last lesson promised only the wire could verify.
+
+Now feel the clone trap before the rule fully sets. Predict what this tiny program prints — a resolver reads the request body, and then the test reads it *again* off the same, un-cloned reference:
+
+<PredictOutput
+  instructions="The resolver reads the request body, stashes the same reference, and the test reads it again after the act. No clone() anywhere."
+  expected="Body is unusable: Body has already been read"
+>
+
+```ts
+let captured: Request;
+
+server.use(
+  http.post('https://api.stripe.com/v1/checkout/sessions', async ({ request }) => {
+    await request.text();
+    captured = request;
+    return HttpResponse.json({ id: 'cs_test_123' });
+  }),
+);
+
+await createSubscription({ priceId: 'price_pro_monthly' });
+
+try {
+  await captured.text();
+  console.log('read ok');
+} catch (error) {
+  console.log(error instanceof Error ? error.message : 'unknown');
+}
+```
+
+<PredictWhy>A `Request` body is a single-use stream. The resolver's `await request.text()` already drained it, so `captured` points at an emptied request; the second `await captured.text()` finds nothing left and throws, and the `catch` logs its `message`. The `'read ok'` branch is never reached. The fix is `request.clone()` *before* the first read — push the clone, then read the copy later.</PredictWhy>
+
+</PredictOutput>
+
+That thrown error is the one you'll hit on your first capture if you forget to clone. Feeling it once is worth more than reading the rule ten times.
+
+## When MSW fights fake timers, and when it's the wrong tool
+
+Two watch-outs don't belong to any single mechanic — they qualify the *whole* MSW setup — so they get their own short section. The first will hang a test if you don't know it; the second is a decision you make once.
+
+**MSW and fake timers don't naturally coexist.** MSW resolves requests through internal async work — microtasks and timers it schedules itself. The moment you reach for `vi.useFakeTimers()` with its defaults, Vitest freezes the clock for *everything*, including the `queueMicrotask` MSW relies on — and the request never settles. Your resolver never runs, your `await` never resolves, and the test hangs until it times out. This is a real, common wall, not a footnote.
+
+There are three ways through it, from lightest touch to most robust. Because this is the one part of the API that drifts across Vitest versions, confirm the exact option names against the project's pinned Vitest before you lean on them:
+
+<CodeVariants maxLines={8}>
+  <CodeVariant label="Scope the fakes">
+    ```ts
+    it('retries on a slow upstream', () =>
+      withRollback(async ({ tx }) => {
+        vi.useFakeTimers();
+        // act + advance the clock here
+        vi.useRealTimers();
+      }));
+    ```
+    **The lightest fix.** Keep `vi.useFakeTimers()` *inside* the test body and call `vi.useRealTimers()` before it ends, so setup and teardown run on the real clock and only the controlled section is frozen. Often enough on its own.
+  </CodeVariant>
+
+  <CodeVariant label="Advance real time">
+    ```ts "shouldAdvanceTime: true"
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    ```
+    **A heavier hammer than scoping, lighter than the next.** `shouldAdvanceTime` lets the fake clock keep ticking along with real time underneath, so MSW's internal work still progresses while you control the foreground.
+  </CodeVariant>
+
+  <CodeVariant label="Spare queueMicrotask">
+    <div data-mark-color="green">
+
+    ```ts "toFake: ['setTimeout', 'setInterval', 'Date']"
+    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'Date'] });
+    ```
+
+    </div>
+    **The durable fix for MSW v2.** Name *which* timers to fake and leave `queueMicrotask` off the list, so MSW's internals run on the real microtask queue while your code still sees a frozen `Date` and a controllable `setTimeout`. This is the one to reach for when the other two don't hold.
+  </CodeVariant>
+</CodeVariants>
+
+The third tab is the durable fix, and worth understanding rather than copying: MSW *must* be allowed to use the real `queueMicrotask`, so you fake everything else and leave that one alone. Pair it with `advanceTimersByTimeAsync` for the slow-upstream resolver from the override section, and the hanging test resolves on command. The clock seam itself is the previous chapter's lesson on time in tests; this is only the part where it collides with MSW. Treat it as a known sharp edge — you *will* hit a hung test here at least once, and now you'll know why.
+
+**MSW is the tool; don't double-mock.** This course pins MSW for outbound HTTP. You'll see an alternative, `nock`, in older codebases — name it once and move on. MSW's edge is real: the same API across Node, jsdom, and the browser; declarative request matching; and `onUnhandledRequest: 'error'` built in. The hard rule that comes with picking it: **never combine `vi.spyOn(global, 'fetch')` or `vi.mock('node:https')` with MSW.** Two interception layers means two sources of truth, and the result is baffling double-mock behavior where neither layer fully controls the request. Pick one — pick MSW. (There's a subtlety here: Stripe's SDK routes through `node:https`, not `fetch`, so a `fetch` spy wouldn't even catch the request — another reason the wire-level interceptor is the right tool and the spy is the wrong one.)
+
+To close, consolidate the watch-outs scattered through this lesson into one decision. Of the choices below, which are actual *bugs* in an MSW integration setup?
+
+<MultipleChoice>
+  A teammate's MSW integration setup is below, one snippet per choice. Which of these are **bugs**? Select all that apply.
+
+  <McqChoice correct>
+    ```ts
+    // the only lifecycle hooks in setupFiles
+    beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
+    afterAll(() => server.close());
+    ```
+  </McqChoice>
+  <McqChoice correct>
+    ```ts
+    beforeAll(() => server.listen({ onUnhandledRequest: 'warn' }));
+    ```
+  </McqChoice>
+  <McqChoice correct>
+    ```ts
+    vi.spyOn(global, 'fetch');
+    server.use(http.post(url, () => HttpResponse.json({})));
+    ```
+  </McqChoice>
+  <McqChoice correct>
+    ```ts
+    http.post(url, async ({ request }) => {
+      seen.push(request);
+      return HttpResponse.json({ id: 'cs_test_123' });
+    });
+    // later: await seen[0].text()
+    ```
+  </McqChoice>
+  <McqChoice>
+    ```ts
+    export const stripeHandlers = [
+      http.post(url, () => HttpResponse.json({ id: 'cs_test_123' })),
+    ];
+    ```
+  </McqChoice>
+
+  <McqWhy>
+  Four of these are bugs, one is the contract working as designed.
+
+  - **No `afterEach(() => server.resetHandlers())`** is a bug: every `server.use` override survives into the rest of the file, the exact leak `resetHandlers()` exists to stop.
+  - **`onUnhandledRequest: 'warn'`** is a bug: an unhandled request (a URL typo, a missing handler) slips through as a silent pass. The policy is `'error'`, so a miss fails loud.
+  - **`vi.spyOn(global, 'fetch')` next to MSW** is a bug: two interception layers means two sources of truth and baffling double-mock behavior. Pick MSW alone (and the Stripe SDK routes through `node:https`, not `fetch`, so the spy wouldn't even catch it).
+  - **Pushing `request` without `request.clone()`** is a bug: the body is a one-shot stream, so the later `seen[0].text()` throws "body already consumed." Clone before you push.
+  - **The default `stripeHandlers` array** is *not* a bug — it's the happy-path contract, exactly where happy paths belong. Overrides are the exceptions stacked on top of it.
+  </McqWhy>
+</MultipleChoice>
+
+## Wrap and external resources
+
+MSW is now your **day-one reflex for every outbound HTTP call** in the integration suite. The whole loop, in one breath: a singleton `server` wired into the lifecycle once; a default-handler file per third party that *is* your happy-path contract; `server.use` to stack an unhappy override for a single test without leaking; `{ once: true }` to sequence responses for a retry; and `clone()`-and-capture to assert on the exact bytes the SDK sent. Three scenarios against one endpoint, three small named blocks — exactly what was promised.
+
+A boundary worth marking before you move on: everything here was *outbound* — your code calling Stripe. The next lesson flips it to *inbound* — testing a webhook receiver that Stripe calls, which has a completely different shape (raw bodies, signature verification, deduplication). Don't conflate the two; MSW is for the requests *you* send. After that, the chapter weaves this capture pattern into a complete Server Action test, and later names handler-leak as one of its catalogued causes of flake — the `resetHandlers()` line, promoted to a first-class concept.
+
+When you want the canonical reference, these are the pages to bookmark.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="MSW — http request handlers"
+    href="https://mswjs.io/docs/api/http"
+    icon="simple-icons:mockserviceworker"
+    iconColor="#FF6A33"
+    description="The full list of http.* methods and the v2 resolver signature: request, params, cookies, requestId."
+  />
+  <ExternalResource
+    title="MSW — setupServer"
+    href="https://mswjs.io/docs/api/setup-server"
+    icon="simple-icons:mockserviceworker"
+    iconColor="#FF6A33"
+    description="The Node lifecycle hub: listen, use, resetHandlers, close, and the onUnhandledRequest policy."
+  />
+</CardGrid>
