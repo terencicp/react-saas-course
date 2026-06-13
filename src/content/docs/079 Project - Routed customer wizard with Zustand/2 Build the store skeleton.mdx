@@ -1,0 +1,592 @@
+---
+title: Build the store skeleton
+chapter-id: 079
+course-progress: 0.00005
+sidebar:
+  order: 2
+  label: Store skeleton
+---
+
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Stand up the wizard's draft store so its four slices accept writes and reset cleanly to empty.
+
+Right now the wizard is a hollow shell. The four route segments load, the progress header reads "Step 1 of 4", the inspector mirrors an empty store — but every setter is a no-op stub, so nothing you do changes anything. By the end of this lesson the store's data layer is complete: a created store handle responds to `setContactField`, `setBillingField`, `setPreferenceField`, `togglePreferenceChannel`, `goNext`, `goBack`, and `reset`, and a small headless test suite proves each one. The provided provider keeps one store instance alive as you navigate step 1 through step 4 and back, and the inspector snapshot tracks it the whole way.
+
+Be honest with yourself about what this lesson does *not* do: the forms stay inert. No input is wired to a setter yet, so the inspector snapshot keeps mirroring the initial empty store no matter what you type, and Next stays disabled. That is the deliberate runnable midpoint. You are building the engine here; the forms that drive it land in the next lesson, [Wire the forms and the Next-gate](/079-project---routed-customer-wizard-with-zustand/3-wire-the-forms-and-the-next-gate/).
+
+## Your mission
+
+This is the heaviest mechanics lesson in the chapter. You are standing up the store that every later lesson reads from, and the discipline you set here — how the store is created, where the provider lives, how `reset` is written — is what keeps the whole wizard correct under navigation and across sessions. Most of the file count for this skeleton is provided so you can study it as the reference for the next surface you build; what you actually author is small and surgical: the four slice setter bodies and the store-wide `reset`.
+
+Two structural calls shape everything, and both are already made for you in the provided files — your job is to understand *why*, because you will reproduce them by hand the next time a feature clears the bar for its own store. The first: the store factory uses `createStore` from `zustand/vanilla`, not `create` from `zustand`. `create` parks a single module-scoped store in the server bundle's memory, and the first time two users hit this layout in the same Node process, one tenant's draft bleeds into the other's render — the per-request leak you met in [Primitives and the per-request provider](/078-zustand/2-primitives-and-the-per-request-provider/). A factory you call per request has no such shared memory. The second: the provider belongs on the shared `/customers/new` layout, pinned in a `useRef`, not on a step page and not in `useState`. A step page re-mounts on every navigation, which would re-create the store and wipe the draft on each step — the canonical mistake this whole wizard exists to avoid. `useRef` with lazy init, rather than `useState(() => createWizardStore())`, is React's documented pattern for a ref holding an initialized value, and it sidesteps the strict-mode double-invoke that can otherwise spin up two stores on first mount in dev. The provided hook's throw-on-missing-provider guard is the third piece of that contract: a component reaching outside the provider's subtree fails loudly instead of silently reading a default.
+
+A few constraints shape the slices themselves, all of them non-negotiable for reasons that bite later. Every `StateCreator` is parameterized on the full `WizardStore` type, so `set` and `get` inside any slice see the whole store — including `reset`, which lives on the store, not on any one slice. The middleware generics are empty tuples (`[]`) because this chapter ships no `persist`, `devtools`, or `subscribeWithSelector` — they were named in [Primitives and the per-request provider](/078-zustand/2-primitives-and-the-per-request-provider/) and deliberately left out here. `completedSteps` stays a plain `number[]`, never a `Set`, because the inspector mirrors the store over `postMessage` and a `Set` does not survive structured-clone serialization. And validity is never stored on a slice: a slice holds data and setters, full stop. Whether a step is valid is *derived* from its Zod schema in `selectors.ts`, and that lands in the next lesson — don't reach for a `isValid` boolean here.
+
+Out of scope: all form wiring, the Next-gate, and submit. Fields stay unwired at the end of this lesson by design.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">Setting a contact field on the store updates only that field and leaves the other contact fields untouched.</ChecklistItem>
+  <ChecklistItem chip="tested">Setting a billing field updates only that field, including the `paymentTerms` enum value.</ChecklistItem>
+  <ChecklistItem chip="tested">Setting a preference field (currency or language) updates only that field and leaves `channels` untouched.</ChecklistItem>
+  <ChecklistItem chip="tested">Toggling a preference channel adds it when it is absent and removes it when it is present, leaving the other channels in place.</ChecklistItem>
+  <ChecklistItem chip="tested">Advancing the step moves the current step forward by one and records the step just left, without duplicating a step already recorded.</ChecklistItem>
+  <ChecklistItem chip="tested">Going back moves the current step back by one but never below 1.</ChecklistItem>
+  <ChecklistItem chip="tested">After filling several fields and advancing steps, resetting returns every slice and the step counters to their initial values while leaving the setters and actions callable.</ChecklistItem>
+  <ChecklistItem chip="untested">Navigating to `/customers/new/step-1` loads the step with the progress indicator reading "Step 1 of 4" and the first pip highlighted.</ChecklistItem>
+  <ChecklistItem chip="untested">The inspector store-snapshot panel mirrors the initial store (empty slices, step 1, no completed steps) and stays in sync while the iframe is mounted.</ChecklistItem>
+  <ChecklistItem chip="untested">Navigating forward and back across step 1 through step 4 keeps the one store instance alive — the snapshot does not reset on navigation.</ChecklistItem>
+  <ChecklistItem chip="untested">A component reading the store from outside the provider's subtree throws a clear `useWizardStore must be used within a WizardStoreProvider` error rather than failing silently.</ChecklistItem>
+  <ChecklistItem chip="untested">The store is per-request: a second session opening the wizard sees its own empty store, not the first session's draft.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Open the four slice files and `store.ts`, fill in the setter bodies and `reset` against the brief and the Lesson 2 tests, then come back here. The shapes only stick if you wrestle with them before reading the reference.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+### The type surface you are building against
+
+You do not write `wizard-types.ts` — it ships complete and read-only — but every slice is typed against it, so read it first. It is the contract: each slice owns its data plus its setters, `WizardState` is the four-slice intersection, and `WizardStore` adds the store-level `reset`. Note `initialWizardData` at the bottom: the data-only projection of every slice, which `reset` overlays to wipe the draft.
+
+```ts title="src/app/(app)/customers/new/_lib/wizard/wizard-types.ts"
+// The wizard's type surface. Each slice owns its data + setters; validity is
+// derived in `selectors.ts`, never stored here. `WizardState` is the four-slice
+// intersection (data + per-slice actions); `WizardStore` adds the store-level
+// `reset`. `completedSteps` is a `number[]` (never a `Set`) so the snapshot
+// serializes for the inspector bridge.
+
+export type ContactSlice = {
+  contact: {
+    firstName: string;
+    lastName: string;
+    email: string;
+    phone: string;
+  };
+  setContactField: <K extends keyof ContactSlice['contact']>(
+    key: K,
+    value: ContactSlice['contact'][K],
+  ) => void;
+};
+
+export type BillingSlice = {
+  billing: {
+    line1: string;
+    line2: string;
+    city: string;
+    region: string;
+    postalCode: string;
+    country: string;
+    taxId: string;
+    paymentTerms: 'net15' | 'net30' | 'net60';
+  };
+  setBillingField: <K extends keyof BillingSlice['billing']>(
+    key: K,
+    value: BillingSlice['billing'][K],
+  ) => void;
+};
+
+export type PreferencesSlice = {
+  preferences: {
+    channels: Array<'email' | 'sms' | 'inApp'>;
+    defaultCurrency: string;
+    language: 'en-US' | 'en-GB' | 'fr-FR';
+  };
+  setPreferenceField: <
+    K extends keyof Omit<PreferencesSlice['preferences'], 'channels'>,
+  >(
+    key: K,
+    value: PreferencesSlice['preferences'][K],
+  ) => void;
+  togglePreferenceChannel: (channel: 'email' | 'sms' | 'inApp') => void;
+};
+
+export type MetaSlice = {
+  currentStep: number;
+  completedSteps: number[];
+  goNext: () => void;
+  goBack: () => void;
+};
+
+export type WizardState = ContactSlice &
+  BillingSlice &
+  PreferencesSlice &
+  MetaSlice;
+
+export type WizardStore = WizardState & { reset: () => void };
+
+// The data-only projection of every slice. `reset` overlays this onto a fresh
+// spread of the slice factories so the replace-flag write produces a complete
+// store (blank data + fresh action identities).
+export const initialWizardData: Pick<
+  WizardState,
+  'contact' | 'billing' | 'preferences' | 'currentStep' | 'completedSteps'
+> = {
+  contact: { firstName: '', lastName: '', email: '', phone: '' },
+  billing: {
+    line1: '',
+    line2: '',
+    city: '',
+    region: '',
+    postalCode: '',
+    country: '',
+    taxId: '',
+    paymentTerms: 'net30',
+  },
+  preferences: { channels: [], defaultCurrency: 'USD', language: 'en-US' },
+  currentStep: 1,
+  completedSteps: [],
+};
+```
+
+One detail in `PreferencesSlice` repays attention: `setPreferenceField`'s key is `keyof Omit<…, 'channels'>`, so it can set `defaultCurrency` and `language` but *not* `channels`. Channels are a membership set, not a value you overwrite, so they get their own toggle. The type stops you wiring a checkbox to the wrong setter.
+
+### The contact and billing slices: one-field merge
+
+These two are the same shape. A slice factory is a function that receives `set` (and `get`, and the store handle — the `StateCreator` triple) and returns the slice's data and setters. The setter merges a single key onto the slice object:
+
+```ts title="src/app/(app)/customers/new/_lib/wizard/contact-slice.ts"
+import type { StateCreator } from 'zustand';
+import type {
+  ContactSlice,
+  WizardStore,
+} from '@/app/(app)/customers/new/_lib/wizard/wizard-types';
+
+export const createContactSlice: StateCreator<
+  WizardStore,
+  [],
+  [],
+  ContactSlice
+> = (set) => ({
+  contact: { firstName: '', lastName: '', email: '', phone: '' },
+  setContactField: (key, value) =>
+    set((s) => ({ contact: { ...s.contact, [key]: value } })),
+});
+```
+
+The two `[]` generics between `WizardStore` and `ContactSlice` are the input and output middleware tuples — empty, because no middleware wraps this store. Typing the creator on `WizardStore` (not `ContactSlice`) is what lets `set`'s updater see the whole store later; here it costs nothing and keeps every slice uniform.
+
+The setter is the line to internalize. `set((s) => ({ contact: { ...s.contact, [key]: value } }))` spreads the existing `contact` object, then overwrites the one computed key. Zustand shallow-merges the returned partial into state, so returning `{ contact: … }` replaces the whole `contact` object — which is why you spread `...s.contact` first, to carry the three fields you are *not* changing. Drop the spread and you would clobber the siblings back to undefined. There is no `validate…` anywhere on the slice; data and setter, nothing else.
+
+Billing is byte-for-byte the same pattern over a wider object:
+
+```ts title="src/app/(app)/customers/new/_lib/wizard/billing-slice.ts"
+import type { StateCreator } from 'zustand';
+import type {
+  BillingSlice,
+  WizardStore,
+} from '@/app/(app)/customers/new/_lib/wizard/wizard-types';
+
+export const createBillingSlice: StateCreator<
+  WizardStore,
+  [],
+  [],
+  BillingSlice
+> = (set) => ({
+  billing: {
+    line1: '',
+    line2: '',
+    city: '',
+    region: '',
+    postalCode: '',
+    country: '',
+    taxId: '',
+    paymentTerms: 'net30',
+  },
+  setBillingField: (key, value) =>
+    set((s) => ({ billing: { ...s.billing, [key]: value } })),
+});
+```
+
+The `paymentTerms` enum needs no special-casing — it is just another key the same merge handles, which is exactly the point of keying the setter generically. A test sets `paymentTerms` to `'net60'` and expects the merge to land it over the initial `'net30'`.
+
+### The preferences slice: a value setter and a membership toggle
+
+Preferences carries two setters. `setPreferenceField` is the same one-field merge as contact and billing (restricted by its type to currency and language). `togglePreferenceChannel` is the new shape — it flips array membership in a single `set`:
+
+```ts title="src/app/(app)/customers/new/_lib/wizard/preferences-slice.ts"
+import type { StateCreator } from 'zustand';
+import type {
+  PreferencesSlice,
+  WizardStore,
+} from '@/app/(app)/customers/new/_lib/wizard/wizard-types';
+
+export const createPreferencesSlice: StateCreator<
+  WizardStore,
+  [],
+  [],
+  PreferencesSlice
+> = (set) => ({
+  preferences: { channels: [], defaultCurrency: 'USD', language: 'en-US' },
+  setPreferenceField: (key, value) =>
+    set((s) => ({ preferences: { ...s.preferences, [key]: value } })),
+  togglePreferenceChannel: (channel) =>
+    set((s) => ({
+      preferences: {
+        ...s.preferences,
+        channels: s.preferences.channels.includes(channel)
+          ? s.preferences.channels.filter((c) => c !== channel)
+          : [...s.preferences.channels, channel],
+      },
+    })),
+});
+```
+
+The toggle reads as one expression: if the channel is already in the array, filter it out; otherwise append it. Both branches build a fresh array — `filter` returns a new array and the spread `[...channels, channel]` builds one — so the existing array is never mutated, which keeps Zustand's change detection honest and the inspector snapshot a clean copy. The spread of `...s.preferences` carries `defaultCurrency` and `language` through untouched, the same discipline as the field setters.
+
+### The meta slice: step movement with a de-duped trail
+
+The meta slice holds the navigation state — which step you are on and which you have completed — plus the two actions that move between them:
+
+```ts title="src/app/(app)/customers/new/_lib/wizard/meta-slice.ts"
+import type { StateCreator } from 'zustand';
+import type {
+  MetaSlice,
+  WizardStore,
+} from '@/app/(app)/customers/new/_lib/wizard/wizard-types';
+
+export const createMetaSlice: StateCreator<WizardStore, [], [], MetaSlice> = (
+  set,
+) => ({
+  currentStep: 1,
+  completedSteps: [],
+  goNext: () =>
+    set((s) => ({
+      currentStep: s.currentStep + 1,
+      completedSteps: s.completedSteps.includes(s.currentStep)
+        ? s.completedSteps
+        : [...s.completedSteps, s.currentStep],
+    })),
+  goBack: () => set((s) => ({ currentStep: Math.max(1, s.currentStep - 1) })),
+});
+```
+
+`goNext` does two things in one `set`: it increments `currentStep`, and it appends the step you are *leaving* to `completedSteps` — but only if it is not already there. That guard matters because the wizard lets you go forward, back, and forward again; without the `includes` check, walking step 1 → 2 → 1 → 2 would record `1` twice and the progress pips would double-count. When the step is already recorded, it returns the existing array reference unchanged, so no needless re-render fires.
+
+`goBack` is a one-liner with a floor: `Math.max(1, s.currentStep - 1)` decrements but clamps at 1, so pressing Back on step 1 is a no-op rather than a slide into step 0. There is no separate `markStepComplete` action and no `validate…` — the meta slice is data plus movement, nothing more.
+
+### The store factory: composing the slices and authoring `reset`
+
+`store.ts` is where the four slices become one store. The composition and the factory are provided; the single line you author is `reset`. Here is the whole file:
+
+```ts title="src/app/(app)/customers/new/_lib/wizard/store.ts"
+import type { StateCreator } from 'zustand';
+import { createStore } from 'zustand/vanilla';
+import { createBillingSlice } from '@/app/(app)/customers/new/_lib/wizard/billing-slice';
+import { createContactSlice } from '@/app/(app)/customers/new/_lib/wizard/contact-slice';
+import { createMetaSlice } from '@/app/(app)/customers/new/_lib/wizard/meta-slice';
+import { createPreferencesSlice } from '@/app/(app)/customers/new/_lib/wizard/preferences-slice';
+import {
+  initialWizardData,
+  type WizardStore,
+} from '@/app/(app)/customers/new/_lib/wizard/wizard-types';
+
+const composeSlices: StateCreator<WizardStore, [], [], WizardStore> = (
+  ...a
+) => ({
+  ...createContactSlice(...a),
+  ...createBillingSlice(...a),
+  ...createPreferencesSlice(...a),
+  ...createMetaSlice(...a),
+  reset: () => a[0]({ ...composeSlices(...a), ...initialWizardData }, true),
+});
+
+export const createWizardStore = () =>
+  createStore<WizardStore>()(composeSlices);
+
+export type WizardStoreApi = ReturnType<typeof createWizardStore>;
+```
+
+The `composeSlices = (...a) => ({ ...createContactSlice(...a), … })` line looks unusual the first time you see it, but it is the standard Zustand slice composition. `a` is the `StateCreator` argument tuple — `[set, get, store]` — captured with a rest parameter. Spreading `createContactSlice(...a)` calls each slice factory with that exact same triple and spreads its returned object into the store, so all four slices share one `set`, one `get`, one store handle. That shared `set` is why a slice typed on `WizardStore` can reach the whole store.
+
+`reset` is the single most opaque line in this lesson, so walk it carefully:
+
+<AnnotatedCode lang="ts" maxLines={5} code={`
+reset: () => a[0]({ ...composeSlices(...a), ...initialWizardData }, true),
+`}>
+  <AnnotatedStep meta={`"a[0]"`} color="blue">
+    `a[0]` is `set` — the first element of the `StateCreator` arg tuple. Calling it writes new state.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"composeSlices(...a)"`} color="green">
+    Re-running `composeSlices` with the same args rebuilds a *complete* store object — fresh data plus brand-new setter and action identities. This is what guarantees the setters keep working after a reset.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"...initialWizardData"`} color="orange">
+    Overlaying `initialWizardData` on top blanks every data field and resets the step counters, while the fresh action identities from the line before survive the overlay.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`", true"`} color="violet">
+    The second argument `true` is the replace flag. It tells `set` to *replace* the whole state, not shallow-merge a partial — so the result is exactly the complete object you built, with no stale draft fields left behind.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The reason for replace-mode over a casual partial `set` is the requirement the test pins down: after `reset`, the setters and actions must still be callable. A partial `set({ ...initialWizardData })` would merge the blank data over the live store and leave the existing functions in place — which happens to work, but only by luck of merge semantics. Rebuilding the complete store in replace mode is the version that states the intent: *the store after reset is a fresh store*, identities and all. That generalizes to any store with a reset, and it is the shape to carry forward.
+
+`createWizardStore` itself is the per-request factory. `createStore<WizardStore>()(composeSlices)` — note the curried call, `createStore<T>()` then `(initializer)`, which is Zustand's signature for supplying the state type — returns a fresh store handle every time it runs. That is the whole defense against the cross-request leak.
+
+### Why `createStore`, not `create`
+
+This is the load-bearing import, so it earns a side-by-side. The difference is one named import, and it decides whether your store is a process-wide singleton or a per-request instance:
+
+<CodeVariants maxLines={10}>
+  <CodeVariant label="create (wrong on the server)">
+    ```ts
+    import { create } from 'zustand';
+
+    // One store, created when the module first loads — and reused by every
+    // request the Node process serves.
+    export const useWizardStore = create<WizardStore>()(composeSlices);
+    ```
+    **Leaks across requests.** `create` builds the store at module-load time and hands back a hook bound to that one instance. On the server that module is shared by every request the process handles, so the first time two tenants hit the layout at once, they read and write the same draft. This is the per-request leak from chapter 078.
+  </CodeVariant>
+
+  <CodeVariant label="createStore (correct)">
+    ```ts
+    import { createStore } from 'zustand/vanilla';
+
+    // A factory. Nothing is created until the provider calls it — once per
+    // mount, so every request gets its own isolated store.
+    export const createWizardStore = () =>
+      createStore<WizardStore>()(composeSlices);
+    ```
+    **Isolated per request.** `createStore` is the framework-agnostic factory underneath `create`. It builds nothing on import — it returns a store *handle* only when you call it, which the provider does once per mount, so two tenants never share memory.
+  </CodeVariant>
+</CodeVariants>
+
+`create` is a convenience that bundles `createStore` with a React hook bound to a module-level instance — fine for a truly global client store, fatal for anything that renders on the server per request. The wizard renders on the server, so it uses the vanilla factory and supplies its own provider and hook. That is the whole reason the next two files exist.
+
+### The provider: the per-request boundary (provided — study it)
+
+You do not write `wizard-store-provider.tsx`; it ships complete, and it carries two extra branches that exist only for the inspector's debug flags. Read it as the reference implementation of the per-request boundary, because you will hand-write this exact shape the next time a feature needs its own store. Here it is in full:
+
+<AnnotatedCode lang="tsx" maxLines={18} code={`
+'use client';
+
+import { usePathname } from 'next/navigation';
+import { createContext, type ReactNode, useRef } from 'react';
+import { useBroadcastSnapshot } from '@/app/(app)/customers/new/_components/use-broadcast-snapshot';
+import {
+  createWizardStore,
+  type WizardStoreApi,
+} from '@/app/(app)/customers/new/_lib/wizard/store';
+
+// The per-request boundary. The Context and the ref hold the store *handle*
+// (\`WizardStoreApi = StoreApi<WizardStore>\`), not the state object. The store is
+// pinned with \`useRef\` (React-19/Compiler-safe, not \`useState\`) so a single
+// instance survives back/forward across the four segments — the layout that
+// mounts this persists across child navigations. A fresh \`createWizardStore()\`
+// per request is what stops one tenant's draft leaking into another's SSR
+// render. The lesson articulates that rationale; the wiring boots as shipped.
+export const WizardStoreContext = createContext<WizardStoreApi | null>(null);
+
+// SCAFFOLD-ONLY module-scoped store for the inspector's \`STORE_MODULE_SCOPED\`
+// debug flag. The CANONICAL path never touches this — each provider mount gets
+// its own \`useRef\`-pinned \`createWizardStore()\`, so two sessions never share a
+// draft. When the flag is on, every mount reuses this single instance instead,
+// reproducing the Ch078 L2 cross-session leak so a rendered check can observe
+// it. Not part of the architecture the student authors; gated behind the flag.
+let moduleScopedStore: WizardStoreApi | null = null;
+const getModuleScopedStore = (): WizardStoreApi => {
+  moduleScopedStore ??= createWizardStore();
+  return moduleScopedStore;
+};
+
+type WizardStoreProviderProps = {
+  children: ReactNode;
+  // Both default OFF — the canonical correct architecture. The layout reads the
+  // inspector's cookie-backed debug flags per request and passes them in; only
+  // an explicit toggle flips a buggy mounting strategy into existence.
+  storeModuleScoped?: boolean;
+  providerOnStepPage?: boolean;
+};
+
+export const WizardStoreProvider = ({
+  children,
+  storeModuleScoped = false,
+  providerOnStepPage = false,
+}: WizardStoreProviderProps) => {
+  // \`providerOnStepPage\` ON: re-pin the store per step page by keying the ref on
+  // the pathname, so navigating step-1 → step-2 → step-1 mounts a fresh store
+  // each time and clears the draft — identical to mounting the provider on each
+  // step page instead of the shared layout (the canonical "draft cleared on
+  // nav" bug). OFF: the pathname is ignored, the single layout-mounted store
+  // survives every navigation.
+  const pathname = usePathname();
+  const pinKey = providerOnStepPage ? pathname : '';
+
+  const storeRef = useRef<{ key: string; store: WizardStoreApi } | null>(null);
+  if (storeRef.current === null || storeRef.current.key !== pinKey) {
+    // \`storeModuleScoped\` ON yields the shared singleton (cross-session leak);
+    // OFF yields a fresh per-mount instance (the isolated, correct store).
+    storeRef.current = {
+      key: pinKey,
+      store: storeModuleScoped ? getModuleScopedStore() : createWizardStore(),
+    };
+  }
+
+  // Mirror the store to the inspector iframe (the helper is provided).
+  useBroadcastSnapshot(storeRef.current.store);
+
+  return (
+    <WizardStoreContext value={storeRef.current.store}>
+      {children}
+    </WizardStoreContext>
+  );
+};
+`}>
+  <AnnotatedStep meta={`"'use client'"`} color="violet">
+    The provider is a Client Component — it holds the store and calls hooks. The boundary between this and the Server Component layout that mounts it is the App Router split from [Server Components as the default](/030-the-server---client-boundary/1-server-components-as-the-default/).
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"createContext<WizardStoreApi | null>(null)"`} color="blue">
+    The Context carries the store *handle*, not its state, and defaults to `null` so the hook can detect a component mounted outside the provider.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"const storeRef = useRef<{ key: string; store: WizardStoreApi } | null>(null);"`} color="green">
+    The store is pinned in a `useRef`, lazily. The `if (storeRef.current === null …)` guard creates it once, on first render, and never again — the lazy-init pattern that survives strict-mode's double-invoke.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"createWizardStore()"`} color="orange">
+    In the canonical path this is the only branch that fires — a fresh per-mount store, the per-request boundary. The `getModuleScopedStore()` sibling is scaffold for a debug flag; ignore it when you reproduce this shape.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"useBroadcastSnapshot(storeRef.current.store);"`} color="blue">
+    The provided helper subscribes to the store and posts each snapshot to the inspector iframe over `postMessage`. It is why the snapshot panel works without you wiring anything.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Two parts of that file are scaffold, not architecture, and the comments flag them: `getModuleScopedStore` and the `providerOnStepPage`/`storeModuleScoped` props exist purely so the inspector can flip a canonical bug into existence and let you watch it. When you build your own store provider, the shape you copy is the bare path — a `useRef`-pinned `createWizardStore()` mirrored into Context, nothing else. Strip the debug branches in your head and what is left is the whole pattern.
+
+:::caution
+The provider mounts on the shared layout, not on a step page. That single placement is what makes the wizard work: the layout persists across the four step navigations, so the one store survives back and forward. Mount it on each step page and every navigation re-mounts the provider, re-creates the store, and wipes the draft — which is exactly what the `PROVIDER_ON_STEP_PAGE` flag simulates so you can see it fail.
+:::
+
+### The typed hook (provided — study it)
+
+The hook is the only place anything reads the store. It pulls the handle from Context, throws if it is missing, and binds a selector with Zustand's `useStore`:
+
+```ts title="src/app/(app)/customers/new/_components/use-wizard-store.ts"
+'use client';
+
+import { useContext } from 'react';
+import { useStore } from 'zustand';
+import { WizardStoreContext } from '@/app/(app)/customers/new/_components/wizard-store-provider';
+import type { WizardStore } from '@/app/(app)/customers/new/_lib/wizard/wizard-types';
+
+// The only store access. Reads the store handle from Context, throws if mounted
+// outside the provider, and binds with `useStore(store, selector)`. The selector
+// is typed on the full `WizardStore` so the submit button can select `reset`
+// (which lives on `WizardStore`, not `WizardState`); `WizardState`-typed
+// selectors still pass by contravariance.
+export function useWizardStore<T>(selector: (s: WizardStore) => T): T {
+  const store = useContext(WizardStoreContext);
+  if (store === null) {
+    throw new Error('useWizardStore must be used within a WizardStoreProvider');
+  }
+  return useStore(store, selector);
+}
+```
+
+The `if (store === null) throw` is the runtime contract behind requirement 11. The Context default is `null`, so any component that calls `useWizardStore` while mounted outside the provider's subtree gets a clear, named error — `useWizardStore must be used within a WizardStoreProvider` — instead of silently reading whatever a default store would hand back. That is the difference between a bug you catch in the first render and one that ships. The selector is typed on the full `WizardStore` so a caller can select `reset`; a selector that only touches `WizardState` still type-checks.
+
+### Where the provider lives, and why the progress header already works
+
+The layout is provided too, but reading it closes requirements 8, 10, and 12, so glance at the shape:
+
+<div data-mark-color="blue">
+
+```tsx title="src/app/(app)/customers/new/layout.tsx" {10-12}
+const NewCustomerLayout = async ({ children }: { children: ReactNode }) => {
+  const flags = await readDebugFlags();
+
+  return (
+    <WizardStoreProvider
+      providerOnStepPage={flags.PROVIDER_ON_STEP_PAGE}
+      storeModuleScoped={flags.STORE_MODULE_SCOPED}
+    >
+      <div className="mx-auto max-w-xl space-y-6">
+        <WizardProgress />
+        {children}
+        <WizardFooter />
+      </div>
+    </WizardStoreProvider>
+  );
+};
+```
+
+</div>
+
+The provider wraps `<WizardProgress />`, `{children}` (the active step page), and `<WizardFooter />` — all three sit one level below it, on the shared layout. Because the layout is what persists across the four step navigations, the store inside it does too, which is the entire mechanism behind "navigate forward and back and the draft survives" (reqs 10, 12). The flags are read per request from a cookie and passed straight in; both default off, so the rendered tree is the correct architecture until you deliberately flip a flag in the inspector.
+
+This is also why the progress header already reads "Step 1 of 4" with the first pip lit (req 8) before you have wired a single field. `WizardProgress` is a provided Client Component that consumes the store through two atomic selectors — `currentStep` and `completedSteps` — so the moment your slices give the store real `currentStep` and `completedSteps` values, it resolves them against the mounted store and renders. It is proof the store boots and the provider is mounted above it.
+
+For the App Router Server/Client boundary and the `'use client'` directive on the provider, hook, and step pages, see [Directives and server-only enforcement](/030-the-server---client-boundary/3-directives-and-server-only-enforcement/) — this lesson applies that split rather than re-teaching it.
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Zustand — Slices Pattern"
+    href="https://zustand.docs.pmnd.rs/learn/guides/slices-pattern"
+    icon="lucide:layers"
+    iconColor="#7C3AED"
+    description="The official spread-composition you reproduce in store.ts, plus the StateCreator typing each slice uses."
+  />
+  <ExternalResource
+    title="Zustand — Setup with Next.js"
+    href="https://zustand.docs.pmnd.rs/learn/guides/nextjs"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="createStore from zustand/vanilla and the per-request provider — the no-global-store rule behind this skeleton."
+  />
+  <ExternalResource
+    title="React — useRef"
+    href="https://react.dev/reference/react/useRef"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="The 'Avoiding recreating the ref contents' lazy-init pattern the provider pins the store with."
+  />
+</CardGrid>
+
+## Moment of truth
+
+The slices and `reset` are pure vanilla-Zustand units — no React render needed to exercise them — so the lesson ships a real test suite. Run it with the project's lesson runner:
+
+```bash
+pnpm test:lesson 2
+```
+
+The suite creates a fresh store with `createWizardStore()`, calls your setters and actions, and reads `store.getState()` back — the only observable your slice bodies produce. It drives every requirement 1 through 7: each field setter merges one key and leaves its siblings alone, the channel toggle adds and removes, `goNext` advances and de-dupes the trail, `goBack` clamps at 1, and `reset` returns a complete, still-callable store. When the data layer is wired correctly you'll see the suite pass green:
+
+```
+ ✓ lesson-verification/Lesson 2.ts (14 tests)
+
+ Test Files  1 passed (1)
+      Tests  14 passed (14)
+```
+
+The tests cover the headless store. They cannot reach the provider, the inspector mirror, or the cross-session boundary — those are React-and-runtime behaviors, and the inspector exists to confirm them by hand. Walk this list against `/inspector` and the browser:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">`/customers/new/step-1` shows "Step 1 of 4" with the first pip highlighted; the form fields render but are unwired; the footer Next button is disabled.</ChecklistItem>
+  <ChecklistItem chip="untested">The inspector store-snapshot shows the initial state — empty slices, step 1, no completed steps — and stays in sync as the iframe re-renders.</ChecklistItem>
+  <ChecklistItem chip="untested">Navigating step 1 → 2 → 3 → 4 and back leaves the snapshot's accumulated state intact: the store survives every navigation.</ChecklistItem>
+  <ChecklistItem chip="untested">Reading `layout.tsx` confirms `<WizardStoreProvider>` wraps `<WizardProgress />`, `{children}`, and `<WizardFooter />` one level above the step children.</ChecklistItem>
+  <ChecklistItem chip="untested">In the inspector, flip the `PROVIDER_ON_STEP_PAGE` debug flag on, then navigate step 1 → 2 → 1: the store clears on each navigation — the canonical "draft wiped on nav" bug. Flip it back off.</ChecklistItem>
+  <ChecklistItem chip="untested">Flip the `STORE_MODULE_SCOPED` flag on, then repeat a two-session test (two browser profiles or a normal and a private window): session A's draft leaks into session B. Flip it back off.</ChecklistItem>
+</Checklist>
+
+With the suite green and those checks confirmed, the store's data layer is done and the wizard navigates on a single live store. The forms still don't write to it — that is the next lesson, [Wire the forms and the Next-gate](/079-project---routed-customer-wizard-with-zustand/3-wire-the-forms-and-the-next-gate/), where every field binds to the setters you just built.

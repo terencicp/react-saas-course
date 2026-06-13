@@ -1,0 +1,384 @@
+---
+title: Submit, reset, and guard
+chapter-id: 079
+course-progress: 0.00005
+sidebar:
+  order: 4
+  label: Submit and guard
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import { Code, CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Completing all four steps and clicking **Create customer** writes the customer and lands you on its detail page.
+
+Here is the shape of the thing. The review on step 4 reads back the contact, billing, and preferences you filled across the three earlier steps, and one button sits below it. Click it and a single Server-Action POST writes the customer row plus a `customer.created` audit entry, then the router pushes you to `/customers/[newId]` — the chapter 062 detail page you already have — with the wizard reset behind you, so the next "new customer" starts blank. Arm a forced failure and the same click shows an inline error under the button and leaves every field exactly as you typed it, ready to retry. Double-click, and the action fires once, not twice.
+
+<Screenshot viewport="desktop">
+  <img
+    src="/screenshots/079/l4-desktop-1280-submit-error.png"
+    alt="The step-4 Review screen — Contact, Billing, and Preferences sections filled in from the draft, with a red inline error reading 'Forced action failure for verification' above the 'Create customer' button, all fields still populated."
+  />
+</Screenshot>
+
+This is the lesson where the wizard stops being a form that collects values and becomes a feature that creates a customer. It closes the seam between the client store and the server, and the discipline that lives at that seam — re-parse at the boundary, guard the double-click, reset only on success — is the whole point. Read it for those three calls, not just for the wiring.
+
+## Your mission
+
+The architectural payoff is the seam itself. The store owns the draft in memory; the action owns the write; the submit button is the single named place they meet. The action never imports the store, and the store never imports the action — each side stays ignorant of the other, which is what keeps either replaceable. You have built up to this across the chapter: four slices holding the draft, atomic selectors feeding the forms, a Next-gate that derives validity client-side. None of that touches the database. The button is where it finally does.
+
+That seam re-parses. The submit button hands the action the composite draft it holds parsed in the client store, and the action runs that draft back through `createCustomerInput` before it writes a thing. This is not redundant. The client Next-gate is a UX convenience — it greys out **Next** so a user does not advance with an empty field — but it is trivially bypassable, and a Server Action is a public HTTP endpoint anyone can POST to. The re-parse at the action is the correctness boundary; the gate is not. You wire the action with `authedInputAction`, the direct-object sibling of the form-bound wrapper, so the button can call it as `await createCustomer({ contact, billing, preferences })` — a plain object, no `FormData` round-trip, because the data already lives parsed in the store and re-encoding it as form fields would be ceremony with nothing to show for it.
+
+Tenancy lives entirely server-side and the store knows nothing about it. `authedInputAction` resolves the active session at the boundary, and the `orgId` it carries flows into the write and the audit entry. The client store has no `orgId` field, no notion of which organization it belongs to — it does not need one, because the server decides whose customer this is. That is defense in depth: even if a client somehow lied about its draft, it cannot lie about its org, because it never names one.
+
+Two calls on the button are where inexperienced developers get bitten. The first is where the transient error goes. A failed submit — a network blip, a forced failure, a duplicate email — sets a message in the button's own `useState`, not in the store. The store holds the draft the user owns; a momentary action failure is not part of that draft, and writing it there would mean reasoning about how to clear it later. Local component state is born and dies with the attempt. The second is the trap this lesson exists to prevent: **reset fires on success only.** The natural-looking `if (!result.ok) { reset(); ... }` wipes everything the user typed the instant the server hiccups, which is the cruelest possible response to a failed save. The failure branch never resets. Reset lives on the success branch alone, and it runs *before* the redirect — order matters as a discipline even though the wizard layout happens to unmount on navigation here, because the same pattern has to hold on surfaces where the layout stays mounted across the reset (a cart living in a header).
+
+You will reach for two new tools and reuse a handful of old ones. `useTransition` gives you `isPending`, which does double duty: it drives the "Creating…" label, and it guards the double-submit — the first click disables the button while the transition runs, so a second click fires no handler at all. That is why `useTransition` beats a plain `useState<boolean>` here: you get the concurrency-aware pending state and the guard from one hook. `useShallow` belongs on both composite reads — the review's pick of three slices and the button's identical payload pick — because each genuinely assembles three slice objects into one fresh literal on every render, and the default `Object.is` equality would treat that fresh literal as a change every time. The reflex to internalize: a selector returning a fresh literal object or array wants `useShallow`; a selector returning a primitive or an already-existing reference is fine on the default check, and reaching for `useShallow` on an atomic selector is over-reach. On the server side you reuse what earlier chapters built — `authedInputAction`, the canonical `Result`, `logAudit`, and the in-memory `pushCustomer` — unchanged.
+
+Two things stay out of scope. You will not stash the new customer's id into the store: it is server state the redirect transitions to, and parking it in the client store is role creep. And you will not add idempotency keys — one user, one transition, one submit is naturally idempotent at this layer; `processed_events` is the move for *external* retries, and that lands with billing webhooks in a later chapter, not here.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">Completing all four steps with valid data and submitting creates the customer and returns `{ ok: true, data: { id } }`, and writes exactly one `customer.created` audit row in the active org.</ChecklistItem>
+  <ChecklistItem chip="tested">A programmatic submit with a malformed composite payload returns `{ ok: false, error: { code: 'validation' } }` and writes no audit row.</ChecklistItem>
+  <ChecklistItem chip="tested">Submitting a customer whose email duplicates a seeded one (`dupe@acme.test`) returns `{ ok: false, error: { code: 'conflict' } }` and leaves the audit log unchanged.</ChecklistItem>
+  <ChecklistItem chip="untested">On success the router lands on `/customers/[newId]` and the customer detail page renders.</ChecklistItem>
+  <ChecklistItem chip="untested">After a successful submit, navigating back to step 1 shows the wizard reset to its initial state — empty slices, `currentStep: 1`, `completedSteps` empty.</ChecklistItem>
+  <ChecklistItem chip="untested">With force-failure armed, submitting shows an inline error under the button and leaves every field populated for retry.</ChecklistItem>
+  <ChecklistItem chip="untested">A double-click (or "Force double-submit") fires the action only once — one POST, one audit row.</ChecklistItem>
+  <ChecklistItem chip="untested">The review step and the submit button each read the three data slices through a `useShallow` pick, and `useShallow` appears in those two files only.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Write `createCustomer` in `actions.ts`, the `useShallow` review in `step-4/page.tsx`, and the guarded submit button in `step-4/submit-button.tsx`, against the brief above and the tests. Attempt it before you open the reference — the seam only sticks once you have drawn it yourself.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+### The action owns the write
+
+Start at `_lib/wizard/actions.ts`. This is the server half of the seam, and the whole file is one action plus a small helper that recognizes a duplicate-email throw.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+'use server';
+
+import { revalidatePath } from 'next/cache';
+import { createCustomerInput } from '@/app/(app)/customers/new/_lib/wizard/schemas';
+import { logAudit } from '@/lib/audit-log';
+import { authedInputAction } from '@/lib/authed-action';
+import { consumeForceFailure } from '@/lib/force-failure';
+import { conflict, err, ok } from '@/lib/result';
+import { pushCustomer } from '@/server/store';
+import type { Customer } from '@/server/types';
+
+const isUniqueViolation = (error: unknown): boolean =>
+  typeof error === 'object' &&
+  error !== null &&
+  'code' in error &&
+  (error as { code: unknown }).code === '23505';
+
+const FORCE_FAILURE_DELAY_MS = 200;
+
+const delay = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+export const createCustomer = authedInputAction(
+  'member',
+  createCustomerInput,
+  async (input, ctx) => {
+    if (consumeForceFailure(ctx.userId)) {
+      await delay(FORCE_FAILURE_DELAY_MS);
+      return err('internal', 'Forced action failure for verification');
+    }
+
+    let row: Customer;
+    try {
+      row = pushCustomer({
+        orgId: ctx.orgId,
+        firstName: input.contact.firstName,
+        lastName: input.contact.lastName,
+        email: input.contact.email,
+        phone: input.contact.phone,
+        ...input.billing,
+        defaultCurrency: input.preferences.defaultCurrency,
+        language: input.preferences.language,
+        notificationChannels: input.preferences.channels,
+      });
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        return conflict(
+          'A customer with this email already exists in this organization.',
+          null,
+        );
+      }
+      throw error;
+    }
+
+    logAudit({
+      orgId: ctx.orgId,
+      actorUserId: ctx.userId,
+      action: 'customer.created',
+      subjectId: row.id,
+    });
+    revalidatePath('/customers');
+    return ok({ id: row.id });
+  },
+);
+`}>
+  <AnnotatedStep meta={`{23-26} "authedInputAction"`} color="blue">
+    The direct-object action. The first arg is the minimum role, the second is the schema it re-parses the input against before `fn` ever runs, and the body receives the parsed input plus a `ctx` carrying the resolved session (`userId`, `orgId`, `role`). The button calls it straight — `await createCustomer({ contact, billing, preferences })` — no `FormData`, no `_prev` to thread, because the data is already a plain object.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{27-30} "consumeForceFailure"`} color="orange">
+    The inspector's "Arm force-failure" button sets a per-user flag; this reads-and-clears it, sleeps 200ms to make the in-flight pending state visible, and returns `err('internal')`. It is verification scaffolding, but it is also exactly the failure shape a real action returns, which is why the button's failure branch is built against it.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{34-44} "...input.billing"`} color="blue">
+    The four-slice draft maps straight onto the `Customer` row. `firstName` and `lastName` are their own columns — no name concatenation. The billing slice spreads in whole because its keys already match the row. Preferences fans out: `channels` becomes `notificationChannels`, and `defaultCurrency`/`language` map by name. No migration to write — the in-memory store stands in for Postgres and the shapes line up.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{45-53} "isUniqueViolation"`} color="violet">
+    `pushCustomer` throws a `{ code: '23505' }`-shaped error on a duplicate `(orgId, email)` — 23505 is Postgres's unique-violation SQLSTATE, kept here so the code reads like the real thing. The catch maps that one code to `conflict(…, null)` and rethrows everything else into `authedInputAction`'s `internal` default. Catch the error you expect; let the unknown ones surface.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{55-62} "logAudit" "revalidatePath"`} color="green">
+    On the happy path, write the audit row, revalidate the customers list so it picks up the new customer, and return the new id so the button can redirect. Note the ordering: `pushCustomer` runs before `logAudit`, so a duplicate throws before any audit row is written — that is how the audit log stays clean on a conflict.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+A few decisions carry this file.
+
+**The direct-object wrapper, not the form-bound one.** `authedInputAction` takes a plain object and re-parses it; `authedAction` takes `(_prev, formData)` for `useActionState`. The data here already lives parsed in the client store, so the direct-object wrapper is the fit — the button calls the action like a function. Server Actions, the canonical `Result`, and the parse-authorize-mutate shape are taught in full back in [Server Actions](/043-server-actions/3-result-or-throw/); here the action just applies them.
+
+**The re-parse is correctness, not UX.** It would be tempting to trust the client gate and skip the schema at the action — the user already cleared every step, after all. Don't. The action is a public endpoint, and `createCustomerInput` parsing the composite payload is what makes a malformed POST return `{ ok: false, error: { code: 'validation' } }` instead of writing garbage. The gate is for the honest user; the parse is for everyone else.
+
+**Ordering stands in for a transaction.** There is no real Postgres here and no `tx` wrapper, yet the audit log stays consistent with the customer table on a conflict — because `pushCustomer` throws *before* `logAudit` is ever reached, so a rejected insert writes no audit row. That is an ordering guarantee, not atomic rollback. Say it plainly: against a live database you would wrap the insert and the audit write in one transaction so a failure rolls both back together. That production move lands with the testing and migration work later in the course; here the ordering is enough to keep the two honest, and the conflict test asserts exactly that.
+
+:::note
+`logAudit` and `pushCustomer` are synchronous calls over the in-memory store, so there is no `await` on them. In the real app these would be `await`ed database writes — the seam and the ordering are identical, only the storage changes.
+:::
+
+### The review reads the draft
+
+`step-4/page.tsx` is read-only. It pulls the three data slices and renders them back, with the submit button below. The only line that needs a second look is the selector.
+
+<div data-mark-color="blue">
+
+```tsx title="step-4/page.tsx" collapse={7-12, 23-64} "useShallow"
+'use client';
+
+import { useShallow } from 'zustand/react/shallow';
+import { useWizardStore } from '@/app/(app)/customers/new/_components/use-wizard-store';
+import { SubmitButton } from '@/app/(app)/customers/new/step-4/submit-button';
+
+const Row = ({ label, value }: { label: string; value: string }) => (
+  <div className="flex justify-between gap-4 border-b py-1.5 last:border-b-0">
+    <dt className="text-muted-foreground">{label}</dt>
+    <dd className="text-right font-medium">{value}</dd>
+  </div>
+);
+
+const Step4Page = () => {
+  const { contact, billing, preferences } = useWizardStore(
+    useShallow((s) => ({
+      contact: s.contact,
+      billing: s.billing,
+      preferences: s.preferences,
+    })),
+  );
+
+  return (
+    <div data-testid="step-4" className="space-y-6">
+      <h2 className="text-lg font-medium">Review</h2>
+
+      <section data-testid="review-contact" className="space-y-2">
+        <h3 className="text-sm font-medium">Contact</h3>
+        <dl className="rounded-lg border p-3 text-sm">
+          <Row
+            label="Name"
+            value={`${contact.firstName} ${contact.lastName}`}
+          />
+          <Row label="Email" value={contact.email} />
+          <Row label="Phone" value={contact.phone} />
+        </dl>
+      </section>
+
+      <section data-testid="review-billing" className="space-y-2">
+        <h3 className="text-sm font-medium">Billing</h3>
+        <dl className="rounded-lg border p-3 text-sm">
+          <Row
+            label="Address"
+            value={`${billing.line1}${billing.line2 ? `, ${billing.line2}` : ''}, ${billing.city} ${billing.region} ${billing.postalCode}, ${billing.country}`}
+          />
+          <Row label="Tax ID" value={billing.taxId} />
+          <Row label="Payment terms" value={billing.paymentTerms} />
+        </dl>
+      </section>
+
+      <section data-testid="review-preferences" className="space-y-2">
+        <h3 className="text-sm font-medium">Preferences</h3>
+        <dl className="rounded-lg border p-3 text-sm">
+          <Row label="Currency" value={preferences.defaultCurrency} />
+          <Row label="Language" value={preferences.language} />
+          <Row
+            label="Channels"
+            value={preferences.channels.join(', ') || '—'}
+          />
+        </dl>
+      </section>
+
+      <SubmitButton />
+    </div>
+  );
+};
+
+export default Step4Page;
+```
+
+</div>
+
+The selector maps three slice objects into one fresh literal `{ contact, billing, preferences }` on every render. Without `useShallow`, the store's default `Object.is` equality compares last render's literal against this one, finds two different objects, and re-runs the subscriber every time the store changes anywhere. `useShallow` swaps in a shallow comparison: same `contact`, same `billing`, same `preferences` references means no re-render. This is the textbook case the reflex is built for — a selector that genuinely produces a new object each call. Everywhere else in the wizard the selectors are atomic and return primitives or stable references, so they stay on the default check.
+
+### The button guards the seam
+
+`step-4/submit-button.tsx` is the client half. It reads its own payload pick, runs the action inside a transition, and owns the two branches.
+
+<AnnotatedCode lang="tsx" maxLines={18} code={`
+'use client';
+
+import type { Route } from 'next';
+import { useRouter } from 'next/navigation';
+import { useState, useTransition } from 'react';
+import { useShallow } from 'zustand/react/shallow';
+import { useWizardStore } from '@/app/(app)/customers/new/_components/use-wizard-store';
+import { createCustomer } from '@/app/(app)/customers/new/_lib/wizard/actions';
+import { Button } from '@/components/ui/button';
+
+export const SubmitButton = () => {
+  const [isPending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const reset = useWizardStore((s) => s.reset);
+  const { contact, billing, preferences } = useWizardStore(
+    useShallow((s) => ({
+      contact: s.contact,
+      billing: s.billing,
+      preferences: s.preferences,
+    })),
+  );
+  const router = useRouter();
+
+  const onSubmit = () => {
+    setError(null);
+    startTransition(async () => {
+      const result = await createCustomer({ contact, billing, preferences });
+      if (!result.ok) {
+        setError(result.error.userMessage);
+        return;
+      }
+      reset();
+      router.push(\`/customers/\${result.data.id}\` as Route);
+    });
+  };
+
+  return (
+    <div className="space-y-2">
+      {error !== null ? (
+        <p data-testid="submit-error" className="text-sm text-destructive">
+          {error}
+        </p>
+      ) : null}
+      <Button
+        type="button"
+        data-testid="wizard-submit"
+        disabled={isPending}
+        onClick={onSubmit}
+      >
+        {isPending ? 'Creating…' : 'Create customer'}
+      </Button>
+    </div>
+  );
+};
+`}>
+  <AnnotatedStep meta={`{12} "isPending"`} color="orange">
+    `isPending` is the one piece of state that does two jobs. It drives the button label ("Creating…" while in flight) and it drives the guard — the button is `disabled={isPending}`, so the first click flips `isPending` true, disables the button, and a second click has no enabled button to fire. The double-submit guard is free.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{14-21} "useShallow"`} color="blue">
+    The button assembles the same composite the review renders, for the same reason — three slice objects into one literal, so `useShallow` keeps the subscription stable. `reset` is read through its own atomic selector right above it; `reset` is a stable function reference, so it stays on the default check.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{28-31} "setError"`} color="violet">
+    The failure branch sets the error message in local component state and returns. It does not reset. A network blip or a forced failure leaves the entire draft intact, so the user fixes whatever went wrong and clicks again — the message lives in `useState`, born and cleared with the attempt, never in the store.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{32-33} "reset()" "router.push"`} color="green">
+    On success, reset the store first, then redirect to the new customer's detail page. The id comes from `result.data`, used for the push and never stashed in the store. Reset-before-push is the ordering discipline: here the layout unmounts on navigation so a fresh store mounts regardless, but the same code has to be correct on surfaces where the layout survives the reset.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The remaining calls worth naming, beyond what the annotations cover:
+
+**`useTransition` over `useState<boolean>`.** You could track a pending boolean by hand — `setBusy(true)` before, `setBusy(false)` in a `finally`. `useTransition` does it for you and keeps the work inside a transition, so React treats the pending UI as non-urgent and the guard falls out of the same `isPending`. It is the right pending-state shape for a Server Action call. The hook itself is taught in [Marking updates as non-urgent](/025-effects-context-and-concurrent-hooks/6-marking-updates-as-non-urgent/); here it is the guard and the label in one.
+
+**A button handler, not `<form action>`.** The native progressive-enhancement path would be `<form action={createCustomer}>` with `useActionState` — and on a form whose values the user just typed into fields, that is the right call. It is the wrong call here, because the values are not in form fields; they are already parsed in the client store. Routing them back out through `FormData` only to have the action parse them again is ceremony with no upside. When data lives in a client store, the programmatic direct-object call wins, and `authedInputAction` is the wrapper built for it.
+
+**The error is transient and the id is ephemeral.** Two non-storage decisions close the untested requirements. The failure message goes in `useState`, not the store, because the store is for the draft the user owns and a momentary error is not part of it. The new id is read off `result.data` for the redirect and never written anywhere — it is server state the detail page will read fresh, and parking it in the wizard store would be inventing client state for a value the server already owns.
+
+There is one forward pointer worth planting and not building. In production, the wizard's `reset()` also fires from inside the active-organization-switch and sign-out flows, as a tenancy-boundary discipline — you do not want one org's half-typed draft surviving into another org's session. The org-switch action lives back in the organizations chapter, and wiring the reset into it is a single line. It is out of scope here; just know the seam you built is the hook it plugs into.
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Zustand — useShallow"
+    href="https://zustand.docs.pmnd.rs/reference/hooks/use-shallow"
+    icon="lucide:layers"
+    iconColor="#433E38"
+    description="Official reference for the composite-pick pattern both the review and the submit button use."
+  />
+  <ExternalResource
+    title="React — useTransition"
+    href="https://react.dev/reference/react/useTransition"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="The isPending + startTransition hook that drives the Creating… label and the double-submit guard."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's test suite with the runner the project ships:
+
+```bash
+pnpm test:lesson 4
+```
+
+The suite drives your `createCustomer` directly against the shared in-memory store — no browser, no dev server. It asserts the three server-side outcomes the action owns: a complete valid draft returns `{ ok: true, data: { id } }` and writes exactly one `customer.created` audit row in the active org; a malformed draft (a bad email) comes back as `{ ok: false, error: { code: 'validation' } }` with no audit row and no customer written; and a submit reusing the seeded `dupe@acme.test` returns `{ ok: false, error: { code: 'conflict' } }` and leaves the audit log untouched, because `pushCustomer` throws before `logAudit` runs. When the action is wired correctly you'll see the suite pass:
+
+```
+ ✓ lesson-verification/Lesson 4.ts (6 tests)
+
+ Test Files  1 passed (1)
+      Tests  6 passed (6)
+```
+
+The tests reach the action, but they cannot cheaply drive React, the transition, or the redirect. Confirm the rest by hand against the inspector at `/inspector` and the browser:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">Completing four valid steps and submitting fires exactly one Server-Action POST returning `{ ok: true, data: { id } }`; the audit-log tail gains one `customer.created` row; the router lands on `/customers/[newId]` and the real detail page renders.</ChecklistItem>
+  <ChecklistItem chip="untested">After a successful submit, navigating back to step 1 shows empty fields and an initial snapshot. Temporarily remove `reset()` from the success branch and repeat — the previous customer's data is still there, which confirms reset is what closed the loop; revert.</ChecklistItem>
+  <ChecklistItem chip="untested">With "Arm force-failure" on, submitting shows the inline error under the button and leaves the draft intact. Temporarily add `reset()` to the failure branch and repeat — the draft is wiped on the forced failure, which confirms the failure branch must not reset; revert.</ChecklistItem>
+  <ChecklistItem chip="untested">"Force double-submit" produces one POST and one audit row — `isPending` blocks the second handler.</ChecklistItem>
+  <ChecklistItem chip="untested">A session acting in org X creates the customer in org X's list, not org Y's — switch the acting identity in the inspector header and confirm tenancy holds at the action.</ChecklistItem>
+  <ChecklistItem chip="untested">Grepping `useShallow` returns exactly two hits — `step-4/page.tsx` and `step-4/submit-button.tsx` — and the action file imports schemas only, never the store or the hook.</ChecklistItem>
+</Checklist>
+
+With those ticked, the wizard's full loop runs end to end: fill four steps, review, submit, redirect — and the chapter is complete.
