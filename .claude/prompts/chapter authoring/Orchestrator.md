@@ -13,12 +13,19 @@ Folder and file names: Strip # and `, replace / with -, replace : with - making 
 
 ## Chapter selection
 
-The folder `src/content/docs` contains folders that represent chapters. Find the last chapter folder (highest id) and build the next chapter after that. Run this exact command to find the next chapter:
+The folder `src/content/docs` contains folders that represent chapters. Walk the sorted chapter ids and select the first gap in the sequence — the lowest id that has no folder yet (this builds skipped chapters before extending past the highest id). If there is no gap, select the chapter after the highest id. Run this exact command to find the next chapter:
 
 ```bash
-last=$(basename "$(ls -d /Users/terenci/react-saas-course/src/content/docs/*/ | sort | tail -1)")
-next=$(printf '%03d' $((10#${last:0:3} + 1)))
-echo "Last: $last → Next chapter: $next"
+ids=$(ls -d /Users/terenci/react-saas-course/src/content/docs/*/ | xargs -n1 basename | cut -c1-3 | grep -E '^[0-9]{3}$' | sort -n)
+prev=""; next=""
+for id in $ids; do
+  if [ -n "$prev" ] && [ "$((10#$id))" -ne "$((10#$prev + 1))" ]; then
+    next=$(printf '%03d' $((10#$prev + 1))); break
+  fi
+  prev=$id
+done
+[ -z "$next" ] && next=$(printf '%03d' $((10#$prev + 1)))
+echo "Next chapter: $next"
 ```
 
 Project chapter ids: 028, 035, 041, 047, 050, 055, 059, 062, 065, 067, 069, 071, 073, 075, 077, 079, 082, 085, 091, 095, 100, 104, 108. Other chapters are teaching chapters.
