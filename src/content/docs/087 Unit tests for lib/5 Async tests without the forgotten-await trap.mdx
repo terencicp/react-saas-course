@@ -1,0 +1,478 @@
+---
+title: Async tests without the forgotten-await trap
+tagline: Writing Vitest async assertions whose green is earned, with awaited resolves and rejects, fake timers, and microtask draining.
+chapter-id: 87
+course-progress: 0.00005
+sidebar:
+  order: 5
+  label: Async tests
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+import Term from '../../../components/ui/Term.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import PredictOutput from '../../../components/exercises/predict-output/PredictOutput.astro';
+import PredictWhy from '../../../components/exercises/predict-output/PredictWhy.astro';
+import Sequence from '../../../components/exercises/sequence/Sequence.astro';
+import Step from '../../../components/exercises/sequence/Step.astro';
+import ScriptCoding from '../../../components/live-coding/ScriptCoding/ScriptCoding.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import MicrotaskMacrotaskTrace from '../../../components/lessons/087/5/MicrotaskMacrotaskTrace.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+A `/lib` function, `refundCharge`, returns a promise. Someone tested it like this:
+
+```ts
+it('refunds a settled charge', async () => {
+  expect(refundCharge(charge)).resolves.toBe(true);
+});
+```
+
+The test is green. The function is broken — it resolves `false` for every charge, because a typo checks the refund against the wrong status. The refund button does nothing in production, and the test that was supposed to catch that reported success on every CI run for three weeks.
+
+The bug isn't in the function. It's in the missing `await`. You already write `async`/`await` in your app code, and you've spent this chapter testing pure functions — but those were synchronous, and synchronous code can't lie to the runner about whether it finished. Async code can. The new idea is narrow and it underwrites every async test you will ever write: **the test runner can only judge what it waits for.** An assertion it never waited for cannot fail, no matter how wrong the code is.
+
+By the end of this lesson you'll write async tests whose green is earned: the canonical awaited shape, the insurance for branchy error tests, and the genuinely hard part — what happens when fake timers and promises share a test. The course runs on <Term definition="The test runner the course uses. Version 4 hard-fails an async assertion that was never awaited, where version 3 only warned.">Vitest 4</Term>, which now hard-fails the exact mistake above instead of just warning. That's a safety net, not the lesson. The lesson is understanding *why* it's a mistake, so you write the awaited shape by reflex and don't depend on a tool noticing for you.
+
+## The green test that ships a bug
+
+Before any fix, sit with the failure, because it's the whole reason the rest of this lesson exists. Here is the pairing that shipped the broken refund.
+
+<CodeVariants>
+  <CodeVariant label="The code">
+    <div data-mark-color="red">
+
+    ```ts {3}
+    export async function refundCharge(charge: Charge): Promise<boolean> {
+      const refund = await gateway.refund(charge.id);
+      return refund.status === 'pending';
+    }
+    ```
+
+    </div>
+    **A one-word bug.** A successful refund settles with status `'succeeded'`, never `'pending'` — so this returns `false` for every real refund. It's exactly the kind of typo a test exists to catch.
+  </CodeVariant>
+
+  <CodeVariant label="The test">
+    <div data-mark-color="red">
+
+    ```ts /expect/
+    it('resolves true when the charge is refunded', async () => {
+      expect(refundCharge(settledCharge)).resolves.toBe(true);
+    });
+    ```
+
+    </div>
+    **Green against broken code.** `expect(...).resolves.toBe(true)` builds a promise that will reject when the assertion fails — but nobody awaits it. The `it` callback runs to its closing brace and returns, the runner sees a callback that finished cleanly, and it reports a pass. The assertion's rejection lands a tick later, in a void.
+  </CodeVariant>
+</CodeVariants>
+
+That second tab is the canonical version of the trap, but it's not the only shape it takes. A forgotten `await` produces a silent pass in three different-looking ways, and recognizing all three is what keeps you from writing one by accident.
+
+```ts title="Three ways a forgotten await passes"
+// 1. Dangling assertion — the .resolves promise is built but never awaited.
+expect(promise).resolves.toBe(x);
+
+// 2. Comparing the wrong thing — a Promise object is never === x, but the
+//    failed comparison is itself an unawaited promise, so it never surfaces.
+expect(promise).toBe(x);
+
+// 3. Fire-and-forget — the promise is neither returned nor awaited; the test
+//    body finishes before it settles.
+it('...', () => { doAsyncWork(); });
+```
+
+Different surfaces, one mechanism underneath. Say it once, plainly, and let it carry the rest of the lesson: **the runner judges a test by the promise the `it` callback returns, or by the work you `await` inside it. Work it never waited for cannot fail the test.** A <Term definition="A test that reports a pass while the code under test is broken — a false negative. The bug is real; the signal says it isn't.">silent pass</Term> is just that rule turned against you.
+
+To make the rule stick, predict what the runner reports for the broken pairing — not what the function prints, but the verdict on the test itself.
+
+<PredictOutput
+  instructions="You're predicting the test runner's verdict, not program output. The runner here is Vitest 3, which only warns about an unawaited assertion. Type PASS or FAIL."
+  expected="PASS"
+  placeholder="PASS or FAIL"
+>
+
+```ts
+// refundCharge resolves false for every charge — the status check is wrong.
+async function refundCharge(charge: Charge): Promise<boolean> {
+  const refund = await gateway.refund(charge.id);
+  return refund.status === 'pending'; // bug: a settled refund is 'succeeded'
+}
+
+it('resolves true when the charge is refunded', async () => {
+  expect(refundCharge(settledCharge)).resolves.toBe(true);
+});
+```
+
+<PredictWhy>
+**PASS** — against code you can see is broken. `expect(refundCharge(...)).resolves.toBe(true)` builds a promise that rejects when the value isn't `true`, but the `it` callback never awaits it. The callback runs to its closing brace and returns, the runner sees a callback that finished cleanly, and it records a pass — a tick before the rejection lands, with nothing left to catch it. That's the silent pass. Vitest 4 flips this exact case to a hard FAIL precisely because so many real bugs shipped behind it; the `await` fix in the next section makes it pass for the right reason.
+</PredictWhy>
+
+</PredictOutput>
+
+The surprise — PASS, against code you can see is wrong — is the feeling to hold onto. Every technique below exists to make sure your green means what you think it means.
+
+:::caution
+A green test is a hypothesis, not a proof. It proves only what it awaited.
+:::
+
+## `await expect(p).resolves` — the canonical form
+
+The fix is one keyword, and it's the shape roughly nine out of ten async tests take. Here it is against the broken version from above (once you fix the function's typo too, of course).
+
+<div data-mark-color="green">
+
+```ts /await/
+it('resolves true when the charge is refunded', async () => {
+  await expect(refundCharge(settledCharge)).resolves.toBe(true);
+});
+```
+
+</div>
+
+Three things are doing work in that line — and in its mirror image for the failure path, `await expect(p).rejects.toThrow(...)`. It's worth knowing which piece does what, because when an async test misbehaves, it's almost always one of these three that's missing.
+
+<AnnotatedCode lang="ts" code={`
+it('resolves true when the charge is refunded', async () => {
+  await expect(refundCharge(settledCharge)).resolves.toBe(true);
+});
+
+it('rejects when the charge is already refunded', async () => {
+  await expect(refundCharge(refundedCharge)).rejects.toThrow(RefundError);
+});
+`}>
+  <AnnotatedStep meta={`".resolves" ".rejects"`} color="blue">
+    `.resolves` and `.rejects` unwrap the promise and apply the matcher to the *settled* value — the resolved value for `.resolves`, the thrown error for `.rejects`. Without them you'd be matching against the `Promise` object itself.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"await"`} color="green">
+    The outer `await` is what makes the runner wait. Drop it and `.resolves` hands back a promise that resolves or rejects entirely outside the runner's view — the silent pass from the last section.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"async"`} color="orange">
+    `async () =>` on the `it` callback is what gives the runner a promise to await. Default every async test to an `async` callback even when a particular line doesn't strictly need it — the day you add an `await` inside, the callback is already shaped to be waited on.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+You'll see one alternative in the wild: `return expect(p).resolves.toBe(x)` instead of `await`. It works, in both Vitest 3 and 4 — returning the assertion's promise hands the runner the same thing the `await` does. The course prefers `await` for one reason that shows up the moment a test grows.
+
+<div data-mark-color="green">
+
+```ts {5-6}
+// `return` works — but you only get to return once.
+return expect(refundCharge(charge)).resolves.toBe(true);
+
+// `await` composes — two awaited assertions in one test, no contortion.
+await expect(refundCharge(chargeA)).resolves.toBe(true);
+await expect(refundCharge(chargeB)).rejects.toThrow(RefundError);
+```
+
+</div>
+
+One more thing that trips people up the first time, so let's defuse it: `.resolves` and `.rejects` don't come with their own matchers. They unwrap the promise, then hand off to the *same* matchers you already use on synchronous values — `toBe`, `toEqual`, `toMatchObject`, all of them. `await expect(p).resolves.toEqual({ ok: true, data })` is the synchronous `expect(value).toEqual(...)` with a promise-unwrapping step bolted onto the front. There's nothing new to learn on the matcher axis. Async only changes how the value arrives, not how you assert on it once it has.
+
+To check that the chain of waiting has settled in your head, order the steps the runner actually takes when it runs a correct awaited test.
+
+<Sequence instructions="A correct async test runs through these steps in order. Drag them into the order the runner executes them.">
+
+```ts
+it('resolves true when the charge is refunded', async () => {
+  await expect(refundCharge(settledCharge)).resolves.toBe(true);
+});
+```
+
+  <Step>The runner calls the `it` callback.</Step>
+  <Step>`refundCharge(settledCharge)` starts and returns a pending promise.</Step>
+  <Step>`.resolves` waits for that promise to settle, then targets its resolved value.</Step>
+  <Step>The outer `await` pauses the callback until the assertion finishes.</Step>
+  <Step>`toBe(true)` compares the resolved value and passes or fails.</Step>
+  <Step>The callback's promise settles, and the runner records the result.</Step>
+</Sequence>
+
+## `expect.assertions(n)` for branchy tests
+
+`.resolves` / `.rejects` is the everyday shape. But some error tests don't have a single straight line for the runner to await — they branch through a `try`/`catch`, and a branch is exactly where a silent pass hides again, in a new disguise.
+
+Picture a test that wraps the call in `try`/`catch` so it can inspect the thrown error in detail. If the call *doesn't* throw — because the bug you're testing for has been reintroduced — control skips the `catch` block entirely, the test runs zero assertions, and it passes having verified nothing at all. Same disease as the forgotten `await`: the runner judged a callback that finished cleanly, and finishing cleanly was the bug.
+
+`expect.assertions(n)` is the cheap insurance against that. It declares up front that the test must run exactly `n` assertions; if the test exits having run fewer — a swallowed error, an early return, a `catch` block that never executed — it fails with `expected n assertions, called m`. There's also a looser `expect.hasAssertions()` that only checks at least one assertion ran; reach for the precise count whenever you know it, since "called 1 of 2" catches a half-finished test that "at least one" waves through.
+
+Here's the canonical branchy error test, the shape `expect.assertions` exists for.
+
+<AnnotatedCode lang="ts" code={`
+it('rejects with code expired when the charge has lapsed', async () => {
+  expect.assertions(2);
+  try {
+    await refundCharge(expiredCharge);
+    expect.fail('expected refundCharge to reject');
+  } catch (err) {
+    expect(err).toBeInstanceOf(RefundError);
+    expect((err as RefundError).code).toBe('expired');
+  }
+});
+`}>
+  <AnnotatedStep meta="{2}" color="green">
+    `expect.assertions(2)` is the contract: this test must run exactly two assertions before it ends. Forget the `await`, swallow the error, or skip the `catch`, and the count comes up short and the test fails loudly.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{4-5}" color="orange">
+    The `await` runs the call inside the `try`. If `refundCharge` *resolves* instead of rejecting — the no-throw bug — control falls through to the next line instead of jumping to `catch`. `expect.fail('...')` guards that case: a non-throwing bug fails the test outright rather than silently skipping the assertions.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{7-8}" color="blue">
+    The two `catch` assertions inspect the error: its class, then its structured `code` field. Asserting on the class and the `code` rather than the message string is its own topic — that's the next lesson — but notice that's *two* assertions, which is what the contract on line 2 promised.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+That block does double duty. It's the `expect.assertions` lesson, and it's a preview of the try/catch error-inspection pattern. But notice the cost: it's seven lines to assert on two fields of one error. So the decision rule is sharp — reach for try/catch + `expect.assertions` only when an error has **several fields worth asserting** and you want them all in one test. When you just need "this rejected with the right error type," the one-liner `await expect(p).rejects.toThrow(RefundError)` from the last section says it in a line. Don't default to the heavy form.
+
+## When fake timers meet promises
+
+This is the section that earns the lesson's length. You already know `vi.useFakeTimers()` from earlier in this chapter — how to freeze the clock, advance it with `vi.advanceTimersByTime`, and reset it in `beforeEach`/`afterEach`. That machinery still applies unchanged. What changes is one thing: when the code you're advancing time through also `await`s, the obvious approach quietly fails. Here it is failing.
+
+```ts title="The code under test"
+const sleep = (ms: number) =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+export async function withRetry(): Promise<string> {
+  await sleep(5000);
+  return doWork();
+}
+```
+
+<CodeVariants>
+  <CodeVariant label="Broken — sync advance">
+    <div data-mark-color="red">
+
+    ```ts {3}
+    it('runs the work after the backoff elapses', () => {
+      withRetry();
+      vi.advanceTimersByTime(5000);
+      expect(doWork).toHaveBeenCalled();
+    });
+    ```
+
+    </div>
+    **Fails — the assertion runs a tick too early.** `advanceTimersByTime` fires the timer synchronously, so the very next line runs before `withRetry`'s `await` resumes. `doWork` hasn't been called yet. (`doWork` is a spy from earlier in the file, so the assertion observes whether it ran.)
+  </CodeVariant>
+
+  <CodeVariant label="Fixed — async advance">
+    <div data-mark-color="green">
+
+    ```ts {3} "async"
+    it('runs the work after the backoff elapses', async () => {
+      withRetry();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(doWork).toHaveBeenCalled();
+    });
+    ```
+
+    </div>
+    **Passes — the async variant drains the promise.** `advanceTimersByTimeAsync` fires the timer *and* lets the awaited continuation run before returning, so by the assertion `doWork` has been called.
+  </CodeVariant>
+</CodeVariants>
+
+One word — `advanceTimersByTimeAsync` instead of `advanceTimersByTime`, plus the `await` and `async` that word requires — is the entire fix. But typing the fix from memory isn't the goal; understanding *why* the sync version leaves the promise hanging is, because that understanding generalizes far past fake timers. The reason is that the timer firing and the promise resolving happen on two different queues, one tick apart. Scrub through it.
+
+<MicrotaskMacrotaskTrace />
+
+The takeaway in one breath: a <Term definition="A setTimeout / setInterval callback, run by the timer queue. Advancing fake timers fires these.">macrotask</Term> firing and the <Term definition="A promise continuation — a .then callback or the code after an await. Drained to empty before the next macrotask runs.">microtask</Term> it schedules are one tick apart, and the synchronous timer API stops after the macrotask. The async variant keeps going until the <Term definition="The scheduler that alternates between draining all pending microtasks and running the next macrotask.">event loop</Term> has drained the microtasks too. That's the only difference, and it's why the rule is blunt: **any fake-timer test on a code path that `await`s uses the `*Async` variant.**
+
+If you want the underlying event-loop model from another angle, this animated walkthrough is the canonical one.
+
+<VideoCallout videoId="eiC58R16hb8" videoTitle="JavaScript Visualized — Event Loop, Web APIs, (Micro)task Queue by Lydia Hallie">
+  Lydia Hallie animates the call stack, task queue, and microtask queue tick by tick (~13 min) — the exact one-tick gap that makes `advanceTimersByTimeAsync` necessary.
+</VideoCallout>
+
+Here's the family of timer methods you'll reach for.
+
+```ts title="The *Async timer family"
+await vi.advanceTimersByTimeAsync(5000); // ↔ advanceTimersByTime — advance by a fixed span
+await vi.runOnlyPendingTimersAsync();    // ↔ runOnlyPendingTimers — one round; safe with setInterval
+await vi.runAllTimersAsync();            // ↔ runAllTimers — drains every timer; loops forever on a
+                                         //    self-rescheduling setInterval, so prefer the bounded forms
+```
+
+There's a sibling case where there's no timer to advance at all. Sometimes the code doesn't use `setTimeout` — it schedules a bare microtask directly with `queueMicrotask`, or chains a `.then`, or awaits an already-resolved promise. There's no clock to tick forward, so `advanceTimersByTimeAsync` has nothing to do. To let those microtasks drain, `await Promise.resolve()` yields one tick to the event loop:
+
+```ts
+await Promise.resolve(); // yield one tick — pending microtasks drain
+```
+
+Treat this one as a scalpel, not a hammer. It's tempting to sprinkle `await Promise.resolve()` (sometimes twice, for two ticks) wherever a test "needs stuff to happen" — and that's brittle, because you're guessing at how many ticks the code takes instead of waiting for a real signal. Reach for the microtask flush only when the code genuinely schedules a bare microtask and there's no actual promise to await. When there *is* a promise — a return value, a settled effect — await that instead. Name the real await point whenever you can.
+
+Now feel that one-tick gap yourself, in plain promises you can actually run. The Vitest timer APIs can't execute in this sandbox, but the mechanism the diagram showed is identical here: a microtask is queued and the assertion runs before it drains, until you yield a tick.
+
+<ScriptCoding
+  instructions="A microtask is scheduled at module load to flip `ran` to true. `readFlag` returns `ran`, but right now it reads it before that microtask has drained, so the test fails. Make `readFlag` observe the resolved value by yielding a tick — `await Promise.resolve()` — before it returns. This is the diagram's microtask-flush idea in plain promises; the same reasoning is what `advanceTimersByTimeAsync` does for you."
+  starter={`let ran = false;
+Promise.resolve().then(() => {
+  ran = true;
+});
+
+async function readFlag() {
+  // Make this read \`ran\` only after the microtask above has drained.
+  return ran;
+}`}
+  tests={`
+test('readFlag observes the flag after the microtask drains', async () => {
+  expect(await readFlag()).toBe(true);
+});
+`}
+/>
+
+## The async unhappy-path toolkit
+
+A handful of async assertions round out what you'll reach for in practice. Keep one thing in mind as you read them: *how* to assert on an error's shape — class versus message versus structured code — is the next lesson's whole subject. Here it's only the async mechanics, kept deliberately shallow.
+
+The async negative form you've already seen is the one you'll use most for failures:
+
+<div data-mark-color="blue">
+
+```ts ".rejects.toThrow"
+it('rejects with a validation error for a malformed charge id', async () => {
+  await expect(refundCharge(malformedCharge)).rejects.toThrow(RefundError);
+});
+```
+
+</div>
+
+Assert on the error *class* (or a structured `code`), not the message string — messages get reworded and the test shouldn't break when they do. That's a one-line preview; the next lesson is where it's earned. When an error has several fields worth checking at once, the try/catch + `expect.assertions` block from earlier is the tool — the async version is identical, with the `await` sitting inside the `try`.
+
+Cancellation is the next one, and it's probably the first time you'll test a behavior most people forget is theirs to test. If a `/lib` function takes an `AbortSignal` — and per the course's conventions, every async function that does IO takes one when cancellation is reachable — then the abort path is code you wrote, which means it earns an assertion just like the happy path does.
+
+<div data-mark-color="orange">
+
+```ts {4}
+it('rejects when the caller aborts mid-flight', async () => {
+  const controller = new AbortController();
+  const resultPromise = fetchInvoice('inv_1', { signal: controller.signal });
+  controller.abort();
+  await expect(resultPromise).rejects.toThrow(/abort/i);
+});
+```
+
+</div>
+
+Notice the matcher is loose — `/abort/i`, a case-insensitive regex, rather than an exact class or message. The native `AbortError` name and message vary a little across runtimes, so a loose match buys robustness without giving up the signal that *something abort-shaped* rejected the promise. That's a reasonable trade here; it's not a license to be loose everywhere.
+
+Last one. When a unit fires several async calls at once and you want to assert on each outcome independently — where one rejection shouldn't collapse the whole assertion into a single thrown error — `Promise.allSettled` is the production primitive, and the test mirrors it exactly:
+
+<div data-mark-color="violet">
+
+```ts "allSettled"
+it('settles each refund independently when one fails', async () => {
+  const results = await Promise.allSettled([
+    refundCharge(chargeA),
+    refundCharge(chargeB),
+    refundCharge(badCharge),
+  ]);
+  expect(results.map((r) => r.status)).toEqual([
+    'fulfilled',
+    'fulfilled',
+    'rejected',
+  ]);
+});
+```
+
+</div>
+
+This is the same reasoning behind reaching for `Promise.allSettled` in production when one failure shouldn't cancel the rest — the test asserts the outcomes the primitive guarantees: two settled, one rejected, none of them taking down the others.
+
+:::note
+Vitest can run tests within a file concurrently with `it.concurrent`, which needs the per-test `expect` from the callback context (`async ({ expect }) => ...`) so failures attribute to the right test. Leave it off by default — concurrent tests race when they share fake timers or module mocks, which is exactly the territory this lesson is in.
+:::
+
+## Cleanup that survives failure
+
+One async test's mess can poison the next, and async makes the mess easier to leave behind. A resource a test opens — an `AbortController`, an interval, fake timers — has to be released even when an assertion throws partway through and the rest of the test never runs. That's what `finally` and `afterEach` are for.
+
+<div data-mark-color="orange">
+
+```ts {6}
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+it('stops polling once the invoice settles', async () => {
+  const controller = new AbortController();
+  startInvoicePoll('inv_1', { signal: controller.signal });
+  try {
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(onSettled).toHaveBeenCalled();
+  } finally {
+    controller.abort();
+  }
+});
+```
+
+</div>
+
+The `afterEach(() => vi.useRealTimers())` is the line that's non-negotiable for async-timer tests, and it ties straight back to the timer mechanics from earlier in this chapter. Skip it and the fake clock leaks *forward* into whatever test runs next — a test that expects real time will hang waiting for a clock that no longer ticks on its own, or behave bizarrely, and the failure points at the innocent test instead of the one that forgot to clean up. It's the classic run-order bug, and the only reliable fix is to always restore real timers in teardown.
+
+One smell worth naming while we're here: a long `testTimeout` is not a fix. If a test needs a thirty-second timeout to pass, the await structure is wrong — usually a real timer that should have been faked, or a missing `*Async` flush leaving a promise hanging. Cranking the timeout hides the structural problem and makes the suite slower for everyone. Fix the await, not the clock.
+
+## Recap and the rule
+
+Async testing is one idea wearing several outfits. Here's the durable set.
+
+<CardGrid>
+  <Card title="Always async" icon="random">
+    Every async test is `it('...', async () => ...)`. Shape the callback to be awaited even before you need it.
+  </Card>
+  <Card title="The canonical form" icon="approve-check-circle">
+    Positive: `await expect(p).resolves.toEqual(...)`. Negative: `await expect(p).rejects.toThrow(Class)`. The outer `await` is mandatory.
+  </Card>
+  <Card title="Branchy error tests" icon="error">
+    Multi-field error inspection: `expect.assertions(n)` + `try`/`catch` + `expect.fail`. Insurance against a skipped branch.
+  </Card>
+  <Card title="Timers on an awaited path" icon="clock">
+    The `*Async` variants fire the timer *and* drain microtasks. The sync ones stop after the timer. Always use `*Async` when the path awaits.
+  </Card>
+  <Card title="Behaviors get tests" icon="puzzle">
+    Cancellation (`rejects.toThrow(/abort/i)`) and parallel effects (`Promise.allSettled`) are code you wrote, so they earn assertions.
+  </Card>
+  <Card title="Clean up or leak" icon="warning">
+    `afterEach(() => vi.useRealTimers())` is non-negotiable. Release resources in `finally` so a thrown assertion can't leave a mess.
+  </Card>
+</CardGrid>
+
+And the one rule underneath all of them, the sentence to keep when the specifics fade: **the runner can only judge what it awaits.** Every technique here is a way of making sure it waits for the thing you actually care about.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Vitest — Testing Asynchronous Code"
+    href="https://vitest.dev/guide/learn/async"
+    icon="simple-icons:vitest"
+    iconColor="#6E9F18"
+    description="The runner's own guide to awaited assertions, resolves/rejects, and expect.assertions."
+  />
+  <ExternalResource
+    title="Vitest — vi: fake timers API"
+    href="https://vitest.dev/api/vi"
+    icon="simple-icons:vitest"
+    iconColor="#6E9F18"
+    description="Reference for advanceTimersByTimeAsync, runAllTimersAsync, and the rest of the *Async timer family."
+  />
+  <ExternalResource
+    title="Vitest — expect: .resolves & .rejects"
+    href="https://vitest.dev/api/expect"
+    icon="simple-icons:vitest"
+    iconColor="#6E9F18"
+    description="Reference for the promise-unwrapping matchers and the synchronous matchers they chain."
+  />
+</CardGrid>

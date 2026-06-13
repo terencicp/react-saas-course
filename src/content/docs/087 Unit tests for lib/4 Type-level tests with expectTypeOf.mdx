@@ -1,0 +1,507 @@
+---
+title: Type-level tests with expectTypeOf
+tagline: Vitest's expectTypeOf and the --typecheck pass let you write tests that the compiler checks, pinning unions, branded IDs, and generic inference that runtime tests can never see.
+chapter-id: 87
+course-progress: 0.00005
+sidebar:
+  order: 4
+  label: Type-level tests
+---
+
+import { FileTree, Aside } from '@astrojs/starlight/components';
+import Term from '../../../components/ui/Term.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import TypeCoding from '../../../components/live-coding/TypeCoding/TypeCoding.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import TwoSurfaces from '../../../components/lessons/087/4/TwoSurfaces.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+A teammate opens a pull request that "simplifies" an ID alias: `type InvoiceId = Brand<string, 'InvoiceId'>` becomes `type InvoiceId = string`. They run the test suite. Everything is green. They merge.
+
+Three weeks later a bug report comes in: a function that expected an invoice's ID was handed a user's ID, and nothing stopped it. The guarantee that those two IDs could never be confused — the one you built deliberately back when you learned branded types — is gone. And every single unit test stayed green the whole time, because not one of them was looking at the thing that broke.
+
+This is the gap. The last three lessons taught you to prove *values*: `expect(fn(input)).toEqual(output)`, run by the Vitest runner. But a codebase has a second correctness surface that the runner never touches — its *types*. A discriminated union's members, a function's signature, a brand's distinctness, the shape of a `Result` — these are compile-time guarantees, and a test that calls functions and inspects their return values can't see them. When a refactor widens a union, drops a brand, or lets a generic's return collapse to `unknown`, every runtime test passes and the contract rots silently.
+
+The fix is a test you write *for the compiler*. By the end of this lesson you'll be able to write a `*.test-d.ts` file, run it under `vitest --typecheck`, and reach for the right matcher to pin a union, a brand, a `Result` shape, or a generic's inference — so that the next time someone unbrands an ID, a test goes red before it merges.
+
+## Two surfaces: values and types
+
+Here is the regression from the opening, in full. A `/lib` file exports a branded ID; the "simplification" drops the brand:
+
+<CodeVariants>
+  <CodeVariant label="Before">
+    <div data-mark-color="green">
+
+    ```ts title="src/lib/invoices/ids.ts" {1}
+    export type InvoiceId = Brand<string, 'InvoiceId'>;
+    ```
+
+    </div>
+    **Branded.** The `Brand` wrapper makes `InvoiceId` a distinct type — a `UserId` or a bare `string` can't be passed where one is expected.
+  </CodeVariant>
+
+  <CodeVariant label="After">
+    <div data-mark-color="red">
+
+    ```ts title="src/lib/invoices/ids.ts" {1}
+    export type InvoiceId = string;
+    ```
+
+    </div>
+    **Unbranded.** Now `InvoiceId` is just an alias for `string`. Every value that was distinct is now interchangeable — and nothing in the runtime suite can tell.
+  </CodeVariant>
+</CodeVariants>
+
+Picture the only test that touches this file — a runtime test that calls a function returning an `InvoiceId` and checks the string came back correct:
+
+```ts title="src/lib/invoices/ids.test.ts"
+it('returns the underlying string', () => {
+  expect(toInvoiceId('inv_42')).toBe('inv_42');
+});
+```
+
+This test passes before the change and after it. It has to: the *value* — the string — is identical either way. The brand lived purely in the type, and the runner erases types before it runs a single line. The thing that broke is invisible to the only tool watching.
+
+So we use a second tool. A <Term definition={"A test whose assertions are checked by the type checker (tsc), not by running code. It proves a function's signature, a union's members, or a type's shape — the value is never executed."}>type-level test</Term> asserts on the *type*, and it is checked by `tsc`, not by running code:
+
+```ts title="src/lib/invoices/ids.test-d.ts"
+expectTypeOf<InvoiceId>().not.toEqualTypeOf<string>();
+```
+
+Read that as a sentence: "an `InvoiceId` is not the same type as a plain `string`." Before the refactor it's true and the type checker stays quiet. After the refactor `InvoiceId` *is* `string`, the assertion is false, and the typecheck pass reports it as a failed test — the same red output as any other failure. The drift is caught at the boundary where it happened.
+
+That's the whole mental model, and it's worth slowing down on, because everything else in this lesson is mechanics on top of it: **runtime tests assert values; type tests assert types; neither checker sees the other's surface.**
+
+<Figure>
+  <TwoSurfaces />
+</Figure>
+
+Notice what this picture does *not* introduce: a new way to organize tests, a new place to put files, a new discipline. The colocation rule from earlier in this chapter carries over unchanged. The "one behavior per assertion" discipline carries over. The "a test reads as documentation" framing carries over. Only two things are new — a different matcher family and a different file suffix. Hold onto that: you already own most of this.
+
+## Where type tests live and how they run
+
+Type tests live exactly where their runtime siblings live. The file `result.ts` already sits next to `result.test.ts`; the type test is a third sibling, `result.test-d.ts`:
+
+<FileTree>
+- src/
+  - lib/
+    - result.ts the unit
+    - result.test.ts runtime tests — *run* by Vitest
+    - result.test-d.ts type tests — *type-checked*, never run
+</FileTree>
+
+The `.test-d.ts` suffix is the signal. The runtime runner skips these files; the typecheck pass picks them up. That split is deliberate — type tests are slower than value tests (running the type checker isn't free), so you don't want them firing on every keystroke alongside your fast unit tests.
+
+You run them with a flag:
+
+```bash
+vitest --typecheck
+```
+
+What this does, in one sentence: it runs <Term definition={"Run tsc for diagnostics only — type-check the code and report errors, produce no JavaScript output."}>`tsc --noEmit`</Term> over the type-test files and reports every type error it finds as a failed Vitest test. A broken type contract shows up in the same red output as a broken value, in the same suite. In CI you run it once, no watch:
+
+```bash
+vitest run --typecheck
+```
+
+Wire that into a script so it's one word to invoke. The config also tells Vitest which files the typecheck pass should look at — narrowing it to the `*.test-d.ts` glob so the rest of your suite isn't dragged through `tsc` a second time. This is the only addition; the `unit` project, `globals: false`, and the test glob are already in place from earlier:
+
+```ts title="vitest.config.ts" {2-4}
+test: {
+  typecheck: {
+    include: ['src/**/*.test-d.ts'],
+  },
+},
+```
+
+```json title="package.json"
+"scripts": {
+  "test:types": "vitest run --typecheck"
+}
+```
+
+This rides the same `unit` project you already configured — there's no new project to set up, just a typecheck slice on the one you have.
+
+<Aside type="caution">
+The typecheck pass reports type *errors* as failures, but it does **not** fail a file that contains zero assertions. An empty `*.test-d.ts` is green — it just has nothing to check. You confirm coverage by *reviewing* the file, not by trusting a green pass. And never `import` a `*.test-d.ts` file from a runtime test: that pulls it into the runtime module graph and the two passes stop being isolated. Keep them separate, the way the file tree above keeps them.
+</Aside>
+
+## The expectTypeOf matcher family
+
+In the first lesson of this chapter you chose runtime matchers by the *shape of the value*: `toBe` for primitives, `toEqual` for objects, `toMatchObject` for a partial. Type tests work the same way, with a parallel family — except now you choose by the *relationship between two types*.
+
+The walkthrough below steps through that family one matcher at a time. It's written as a single `result.test-d.ts`-flavored file so you can see them sit together the way they would in a real file.
+
+<AnnotatedCode lang="ts" code={`
+import { expectTypeOf } from 'vitest';
+import { ok } from './result';
+import { formatMoney } from '../money';
+import type { Money, Currency } from '../money';
+
+expectTypeOf(ok(invoice)).toEqualTypeOf<{ ok: true; data: Invoice }>();
+expectTypeOf<InvoiceId>().toExtend<string>();
+expectTypeOf(invoice).toMatchObjectType<{ id: InvoiceId }>();
+expectTypeOf(formatMoney).parameters.toEqualTypeOf<[Money, Currency]>();
+expectTypeOf(formatMoney).returns.toEqualTypeOf<string>();
+expectTypeOf(invoice.total).toBeNumber();
+expectTypeOf<InvoiceId>().not.toEqualTypeOf<string>();
+`}>
+  <AnnotatedStep meta="{1}">
+    `expectTypeOf` is imported from `'vitest'` like every other matcher, with `globals: false`. It's erased at runtime — calling it does nothing. That's *why* the typecheck pass is mandatory: nothing here actually runs.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{6}">
+    The wrapper takes a value — `expectTypeOf(ok(invoice))` — and exposes its *type*; the angle-bracket form `expectTypeOf<T>()` takes a type directly. `.toEqualTypeOf<T>()` is exact, bidirectional equality: "this is *exactly* `T`, no wider, no narrower." This is your default reach.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{7}">
+    `.toExtend<T>()` is one-way assignability: "the value's type is *a* `T`." A subtype passes. `InvoiceId` extends `string` (it's a branded string), so this holds, but `string` does *not* extend `InvoiceId`. Reach for it when a subtype is acceptable. (It replaces the old `toMatchTypeOf`, now deprecated.)
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{8}">
+    `.toMatchObjectType<T>()` checks an object type against a *subset* of its keys — the type-level analog of runtime `toMatchObject`. Here it asserts `invoice` has at least `{ id: InvoiceId }`, ignoring its other fields.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{9-10}" color="green">
+    Navigators drill into a type before you assert on it: `.parameters` (a tuple of the function's parameter types), `.returns`, `.items` (an array's element type), `.toHaveProperty('x')`. Here we pin `formatMoney`'s parameters and return separately.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{11}" color="orange">
+    Primitive and special checkers read a single type without naming it: `.toBeString()`, `.toBeNumber()` (shown), `.toBeNever()`, `.toBeUnknown()`, `.toBeAny()`. The special one is `.toBeAny()` — a type quietly degraded to `any` passes almost any *other* assertion silently, so you usually write its negation, `.not.toBeAny()`, as a canary against that leak.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{12}" color="violet">
+    `.not` negates any matcher. It's the workhorse for "must not widen" assertions: `.not.toEqualTypeOf<string>()` proves the brand is still distinct from `string`. You'll lean on it hard in the next two sections.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Two of those carry a sharp edge worth naming on its own. First: `expectTypeOf(value)` with *nothing chained after it* is a silent no-op. It type-checks fine and asserts nothing — the type-level twin of a runtime test with no `expect`. Second: `toEqualTypeOf` and `toExtend` are not interchangeable. `toEqualTypeOf` is bidirectional; `toExtend` is one-way <Term definition={"A value of type A can be used wherever type B is expected. One-directional: A assignable to B doesn't imply B assignable to A."}>assignability</Term>. If you reach for `toExtend` where you meant exact equality, a *widened* type sails right through, because a wider type still satisfies "is-a." Choosing the wrong one doesn't error — it just stops testing what you thought.
+
+<VideoCallout videoId="pKvebYHH3x4" videoTitle="How we unit test TypeScript types in TanStack">
+  A TanStack maintainer walks through `expectTypeOf` / `toEqualTypeOf` on real library types and wires the typecheck into CI — the whole lesson in seven minutes.
+</VideoCallout>
+
+So, the decision procedure — the type-level mirror of the matcher-by-shape table from the first lesson:
+
+<Aside type="tip" title="Pick the matcher by the relationship">
+- **Exactly this type** (no wider, no narrower) → `toEqualTypeOf<T>()`
+- **Is-a / a subtype is fine** → `toExtend<T>()`
+- **Has at least these keys** → `toMatchObjectType<T>()`
+- **Definitely *not* this type** → `.not.toEqualTypeOf<T>()` (and friends)
+- **Did a generic leak `any`?** → `toBeAny()`
+- **Drill into a function or array first** → `.parameters` / `.returns` / `.items`, then assert
+</Aside>
+
+There's also a leaner, expression-shaped option for a quick one-off. `assertType<T>(value)` asserts that a single expression has type `T` — it reads like `const x: T = value` without the throwaway binding:
+
+```ts
+assertType<Result<Invoice>>(ok(invoice));
+```
+
+Reach for `assertType` to pin one expression in passing; reach for `expectTypeOf` when the file is genuinely a *test* and you want navigators, negation, and the readable matcher names. For the rest of this lesson we're writing test files, so `expectTypeOf` is the tool.
+
+Two of the terms above will pull their weight in the next sections, so let's pin them. <Term definition={"A equals B requires both A assignable to B and B assignable to A — neither type is wider than the other. This is what toEqualTypeOf checks."}>Bidirectional equality</Term> is why `toEqualTypeOf` catches a *widened* union (a wider type fails the "B assignable to A" half). <Term definition={"TypeScript compares types by their shape, not their declared name. Two types with identical members are the same type, whatever you called them."}>Structural typing</Term> is why a brand needs a phantom field at all — and it's the heart of the next section.
+
+## Pinning a discriminated union
+
+Time to point these matchers at the chapter's real domain. The invoice lifecycle is a discriminated union — a state is one of a fixed set of shapes, told apart by a `status` discriminant:
+
+```ts title="src/lib/invoices/state.test-d.ts" {8-13,15}
+type InvoiceState =
+  | { status: 'draft'; total: Money }
+  | { status: 'sent'; total: Money; sentAt: Instant }
+  | { status: 'paid'; total: Money; paidAt: Instant };
+
+declare function processInvoice(state: InvoiceState): Money;
+
+expectTypeOf<InvoiceState>().toEqualTypeOf<
+  { status: 'draft'; total: Money }
+  | { status: 'sent'; total: Money; sentAt: Instant }
+  | { status: 'paid'; total: Money; paidAt: Instant }
+>();
+
+expectTypeOf(processInvoice).parameters.toEqualTypeOf<[InvoiceState]>();
+```
+
+The first assertion pins the union to its exact set of members, and the choice of `toEqualTypeOf` is doing real work here. Suppose a refactor adds a fourth case — `{ status: 'cancelled'; ... }`. The union is now *wider* than the literal on the right. Because `toEqualTypeOf` is bidirectional, "the right side is assignable to the left" no longer holds, the assertion fails, and the test names the drift the moment it appears. Had you written `.toExtend` here, the widened union would still pass — a wider type is still a supertype — and the new case would slip in unnoticed. This is precisely the place where exact equality earns its keep over assignability.
+
+The second assertion pins what *consumes* the union. Now adding `cancelled` to `InvoiceState` without teaching `processInvoice` to handle it surfaces structurally, at the type-test boundary, rather than waiting for a runtime path that happens to exercise the new state.
+
+This works hand in hand with the exhaustiveness check you already know. The `assertNever` switch fails the *build* if `processInvoice`'s body forgets a case; the type test fails if the *union itself or the signature* drifts. Between them, the union is fenced from both sides — neither a missing handler nor a silent widening gets through.
+
+## Keeping branded IDs from collapsing to string
+
+This is the highest-value target in the lesson, and the most counter-intuitive — so it's worth confronting the intuition head-on. Two IDs, both built on `string`:
+
+```ts title="src/lib/branded.test-d.ts"
+type InvoiceId = Brand<string, 'InvoiceId'>;
+type UserId = Brand<string, 'UserId'>;
+```
+
+Your instinct says these are *obviously* different types — they have different names, they identify different things. Your instinct is wrong, and TypeScript will tell you why: it's structurally typed. It compares types by their members, not their names. Strip the brand away and both are just `string` — the same type, as far as the compiler is concerned. The brand is the phantom field that gives them distinct shapes; the `Brand<T, Name>` helper exists for exactly this reason.
+
+<VideoCallout videoId="rpw59rajUSI" videoTitle="Branded types give you stronger input validation">
+  Andrew Burgess builds a branded type from the `string & { __brand }` intersection up, then validates at the edge — the construction side of the distinctness this section pins.
+</VideoCallout>
+
+So the two assertions that matter for a brand are both negative:
+
+```ts title="src/lib/branded.test-d.ts" {4-5}
+type InvoiceId = Brand<string, 'InvoiceId'>;
+type UserId = Brand<string, 'UserId'>;
+
+expectTypeOf<InvoiceId>().not.toEqualTypeOf<string>();
+expectTypeOf<InvoiceId>().not.toExtend<UserId>();
+```
+
+The first proves the brand hasn't been widened away — this is the exact assertion that catches the opening regression, the "simplified back to `string`" merge. The second proves the IDs don't cross-assign: handing a `UserId` where an `InvoiceId` is wanted must be a type error, and this test confirms that guard still holds.
+
+Why are both *negative*? Because brand bugs are bugs of *absence*. Nothing was added wrong; something protective was *removed* — a brand dropped, a distinction erased. You can't assert that a good thing is present, because the brand has no runtime presence to inspect. So you assert that the *bad thing is impossible*. That reframes `.not` from an edge case into the main event: for brands, the negative assertion is the assertion.
+
+<CodeTooltips tooltips={{
+  Brand: "A helper from lib/branded.ts. Brand<string, 'InvoiceId'> expands to roughly string & { readonly __brand: 'InvoiceId' } — a string with a phantom field that exists only in the type system. The field gives the type a distinct shape, so structural typing tells it apart from a plain string and from other brands.",
+}}>
+```ts
+type InvoiceId = Brand<string, 'InvoiceId'>;
+```
+</CodeTooltips>
+
+Now prove it yourself. In the exercise below, one line *should* be a type error — assigning a `UserId` where an `InvoiceId` is expected. Your job is the usual one: make every error in the panel go away. The catch is that one of those "errors" is supposed to stay broken, so it's marked with a `// @ts-expect-error` directive — which flips the polarity cleanly. That directive *expects* the next line to fail type-checking; if the line ever starts to type-check, the directive itself errors with "unused `@ts-expect-error` directive." A passing type test, here, means "this bad assignment is correctly rejected."
+
+<TypeCoding
+  instructions="One assignment below should be rejected by the type checker, and one assertion is left incomplete. Complete the assertion (replace the ____ blank) and make every error in the panel go away — including the one the `@ts-expect-error` directive is guarding."
+  starter={`// expectTypeOf is normally imported from 'vitest'; this minimal
+// declaration stands in for it so the exercise stays self-contained.
+type IsEqual<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
+    ? true
+    : false;
+declare function expectTypeOf<T>(): {
+  not: { toEqualTypeOf<U>(...no: IsEqual<T, U> extends true ? [never] : []): void };
+};
+
+type Brand<T, Name extends string> = T & { readonly __brand: Name };
+
+type InvoiceId = Brand<string, 'InvoiceId'>;
+type UserId = Brand<string, 'UserId'>;
+
+declare const userId: UserId;
+
+// @ts-expect-error a UserId must not be assignable to an InvoiceId
+const invoiceId: InvoiceId = userId;
+
+// Complete this so it passes: an InvoiceId is NOT a plain string.
+expectTypeOf<InvoiceId>().____;
+`}
+/>
+
+<details>
+<summary>Reference solution</summary>
+
+The cross-assignment stays as-is — leaving the brand intact is what keeps `@ts-expect-error` satisfied (the assignment *should* fail). The completed assertion:
+
+```ts
+expectTypeOf<InvoiceId>().not.toEqualTypeOf<string>();
+```
+
+Swap the brand on `InvoiceId` back to a plain `string` and two things break at once: the cross-assignment now type-checks, so the `@ts-expect-error` directive goes red as "unused," and `.not.toEqualTypeOf<string>()` now asks the checker to prove `InvoiceId` differs from `string` — which it no longer does. That double failure is the regression from the opening, caught at the type boundary.
+</details>
+
+## Pinning the Result contract
+
+The spine of this chapter is the `Result<T>` shape that every `/lib` function returns instead of throwing. Its canonical shape:
+
+```ts title="src/lib/result.ts"
+export type Result<T> =
+  | { ok: true; data: T }
+  | {
+      ok: false;
+      error: {
+        code: 'not_found' | 'conflict' | 'internal';
+        userMessage: string;
+        fieldErrors?: Record<string, string[]>;
+      };
+    };
+```
+
+A single type parameter, `data` on the success branch, a structured `error` on the failure branch. This is a discriminated union too — discriminated on `ok` — which means the same two angles apply: pin the constructor's output, and pin that consumers narrow before they touch the payload.
+
+<CodeVariants>
+  <CodeVariant label="Inferred type">
+    ```ts title="src/lib/result.test-d.ts"
+    expectTypeOf(ok(invoice)).toEqualTypeOf<{ ok: true; data: Invoice }>();
+    ```
+    **Pin what `ok()` returns.** The `ok` constructor should produce `{ ok: true; data: Invoice }` exactly — not `{ ok: true; data: unknown }` or some widened cousin. If a refactor lets `data` widen, this assertion fails and names it. (Asserting against `Extract<Result<Invoice>, { ok: true }>` works too, and reads cleaner once the shape grows.)
+  </CodeVariant>
+
+  <CodeVariant label="Consumer must narrow">
+    <div data-mark-color="red">
+
+    ```ts title="src/lib/result.test-d.ts" {4}
+    declare const result: Result<Invoice>;
+
+    // @ts-expect-error data doesn't exist until `ok` is checked
+    const total = result.data;
+
+    if (result.ok) {
+      expectTypeOf(result.data).toEqualTypeOf<Invoice>();
+    }
+    ```
+
+    </div>
+    **The discriminated union enforces the order.** The marked line reaches for `data` before narrowing on `result.ok`, and that's a compile error — `@ts-expect-error` is what keeps the snippet itself green. Inside the `if`, `data` *does* exist, it's `Invoice`, and the assertion confirms it. The type checker makes "check before you read" structural.
+  </CodeVariant>
+</CodeVariants>
+
+That second variant is the type-level mirror of the unhappy-path discipline you'll meet in detail in the last lesson of this chapter. The distinction matters: *here* you're proving the type system *forces* you to narrow before reading `data`. *There* you'll prove, at the value level, that an actual `err` result carries the right `code` and message. Same `Result`, two different surfaces — don't let them blur.
+
+This pays off most when a type is *derived* from a single source of truth. When a Zod schema or a Drizzle table is the source, a hand-written domain type can quietly drift from it. A one-line type test catches that the instant it happens:
+
+```ts
+expectTypeOf<z.infer<typeof invoiceSchema>>().toEqualTypeOf<Invoice>();
+```
+
+If someone edits the schema but not the `Invoice` type (or vice versa), the two stop being equal and the test goes red. You're not re-testing Zod or Drizzle here — you're testing that *your* derived type and your schema haven't drifted apart.
+
+Now operate the matcher yourself. The exercise below has a drifted `ok()` pin — the asserted type no longer matches what the constructor actually returns. Read the inferred type under the `^?` query, then correct the `toEqualTypeOf` argument so the test passes.
+
+<TypeCoding
+  instructions="The `^?` query shows the type `ok(invoice)` actually returns. The `toEqualTypeOf` argument below it has drifted and no longer matches — correct the argument so the type test passes and the panel is clear."
+  starter={`// expectTypeOf is normally imported from 'vitest'; this minimal
+// declaration stands in for it so the exercise stays self-contained.
+type IsEqual<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
+    ? true
+    : false;
+declare function expectTypeOf<T>(value: T): {
+  toEqualTypeOf<U>(...no: IsEqual<T, U> extends true ? [] : [never]): void;
+};
+
+type Invoice = { id: string; total: number };
+
+const ok = <T>(data: T): { ok: true; data: T } => ({ ok: true, data });
+
+declare const invoice: Invoice;
+
+const result = ok(invoice);
+//             ^?
+
+expectTypeOf(result).toEqualTypeOf<{ ok: true; data: unknown }>();
+`}
+  expectedQueries={[
+    { line: 18, contains: 'data:' },
+  ]}
+/>
+
+<details>
+<summary>Reference solution</summary>
+
+The `^?` query resolves to `{ ok: true; data: Invoice }`, so the asserted argument must match what `ok()` actually returns:
+
+```ts
+expectTypeOf(result).toEqualTypeOf<{ ok: true; data: Invoice }>();
+```
+
+With `data: unknown` the two types aren't equal — `toEqualTypeOf` is bidirectional, so a widened `unknown` fails the "asserted is assignable to actual" half — and the assertion reports the drift. Swap `unknown` for `Invoice` and the type test goes quiet.
+</details>
+
+## Pinning generic inference
+
+Generics are where types silently widen, and the place runtime tests are blindest. Consider a mapper over `Result` — it transforms the success payload and leaves a failure untouched:
+
+```ts title="src/lib/result.test-d.ts"
+declare function mapResult<T, U>(
+  result: Result<T>,
+  fn: (value: T) => U,
+): Result<U>;
+
+expectTypeOf(mapResult(ok(1), (n) => n.toString())).toEqualTypeOf<Result<string>>();
+```
+
+The assertion pins the *inference*: feed in a `Result<number>` and a `number => string` mapper, and `U` had better be inferred as `string`, making the result `Result<string>`. If a careless refactor breaks the inference chain so `U` widens to `unknown` — a common casualty when generics get reshuffled — this assertion fails. No runtime test would notice; at runtime the string comes back either way.
+
+There's one failure mode generics invite that you must guard against explicitly. A generic that has quietly degraded to `any` passes almost every assertion silently — including `toEqualTypeOf`, because `any` is assignable in both directions. So when you're pinning a generic, add the canary:
+
+```ts
+expectTypeOf(mapResult(ok(1), (n) => n.toString())).not.toBeAny();
+```
+
+This is the type-level analog of "a test with no assertion is a no-op." An assertion that passes because the type is `any` isn't testing anything — `.not.toBeAny()` is how you prove the type is real before you trust the rest of your assertions about it.
+
+## Type tests are not runtime tests
+
+One last boundary, because it's the conceptual error people make most: thinking a type test *runs*.
+
+It doesn't. Look again at any assertion you've written this lesson:
+
+```ts
+expectTypeOf(ok(invoice)).toEqualTypeOf<{ ok: true; data: Invoice }>();
+```
+
+This does **not** call `ok(invoice)`. The value is type-erased; only its *type* is inspected. A type test can never assert that a value *equals* something — only that its type *is* something. That's not a limitation to work around; it's the line between the two tools:
+
+- "An `InvoiceState` has exactly these three members" → a **type** test.
+- "`processInvoice` of a paid invoice returns the paid total" → a **runtime** test.
+- "This runtime input is actually a string" → neither of these — that's `expect(typeof x).toBe('string')`, a value assertion about runtime data.
+
+Type tests sit *beside* runtime tests, never instead of them. On the CI surface, `vitest run --typecheck` gates the build the same way the runtime pass does. Coverage, though, does not include type tests — there's no runtime to instrument, so there's nothing to cover. Otherwise, treat a `*.test-d.ts` like any other test: review it, and delete it when the contract it pins goes away.
+
+Which brings us back to the picture we started with: two surfaces, two checkers, one colocated suite. The runner proves your values; `tsc` proves your types; both run from the same folder, against the same files, with the same `describe`/`it` reflex.
+
+The durable skill here isn't memorizing matcher names — it's *classifying* a regression onto the right surface. Sort each of the following into the checker that would catch it.
+
+<Buckets twoCol instructions="Sort each regression into the checker that catches it — the type checker (a `*.test-d.ts` assertion) or the Vitest runner (a runtime test).">
+  <Bucket name="type" label="Type test" description="Caught by tsc under --typecheck" />
+  <Bucket name="runtime" label="Runtime test" description="Caught by the Vitest runner" />
+
+  <Item bucket="type">`InvoiceState` gains a `Cancelled` member</Item>
+  <Item bucket="type">`InvoiceId` is widened back to plain `string`</Item>
+  <Item bucket="type">A generic's return widens to `unknown`</Item>
+  <Item bucket="runtime">`processInvoice` is off by one on the total</Item>
+  <Item bucket="runtime">`ok()` returns `data: undefined` at runtime</Item>
+  <Item bucket="type">Passing a `UserId` where an `InvoiceId` is expected stops being an error</Item>
+</Buckets>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Testing Types"
+    href="https://vitest.dev/guide/testing-types"
+    icon="simple-icons:vitest"
+    iconColor="#6E9F18"
+    description="The canonical guide: the --typecheck flag, *.test-d.ts files, and the expectTypeOf / assertType APIs."
+  />
+  <ExternalResource
+    title="expect-type"
+    href="https://github.com/mmkal/expect-type"
+    icon="simple-icons:github"
+    description="The library behind expectTypeOf — the full matcher catalog, including toExtend, toMatchObjectType, and the navigators."
+  />
+  <ExternalResource
+    title="Type Compatibility"
+    href="https://www.typescriptlang.org/docs/handbook/type-compatibility.html"
+    icon="simple-icons:typescript"
+    iconColor="#3178C6"
+    description="The Handbook on structural typing — why a brand needs a phantom field and how toEqualTypeOf reasons about assignability."
+  />
+  <ExternalResource
+    title="What is a Branded Type?"
+    href="https://www.totaltypescript.com/workshops/advanced-typescript-patterns/branded-types/what-is-a-branded-type"
+    icon="simple-icons:typescript"
+    iconColor="#3178C6"
+    description="Matt Pocock's hands-on walkthrough of the brand pattern this lesson's negative assertions defend."
+  />
+</CardGrid>
