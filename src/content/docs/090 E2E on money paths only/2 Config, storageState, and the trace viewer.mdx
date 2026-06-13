@@ -1,0 +1,517 @@
+---
+title: Config, storageState, and the trace viewer
+tagline: Assemble the Playwright surface for end-to-end testing, the config, the sign-in-once storageState pattern, locators and fixtures, and the trace viewer you debug with.
+chapter-id: 90
+course-progress: 0.00005
+sidebar:
+  order: 2
+  label: Config and storageState
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import PlaywrightEmbed from '../../../components/embeds/PlaywrightEmbed.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Sequence from '../../../components/exercises/sequence/Sequence.astro';
+import Step from '../../../components/exercises/sequence/Step.astro';
+import { FileTree } from '@astrojs/starlight/components';
+import { CardGrid } from '@astrojs/starlight/components';
+import SetupStorageStateFlow from '../../../components/lessons/090/2/SetupStorageStateFlow.astro';
+import TestDbComparison from '../../../components/lessons/090/2/TestDbComparison.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+You've already decided Playwright is worth its weight on exactly four paths: sign-in to a paid surface, the Stripe Checkout round-trip, invitation acceptance, and the primary value loop. The discipline that protects those tests — run against a production build, one retry not three, fix flake at the root — is settled. What's left is the wiring. This lesson assembles the kit: a complete `playwright.config.ts`, an `auth.setup.ts` that signs each role in once and saves the session, the locator and assertion vocabulary your tests are written in, a fixtures file, and the trace viewer you open when something breaks. By the end you'll have the whole surface; the next lesson runs the four real paths across it.
+
+## Installing and the file layout it generates
+
+One command scaffolds everything. On a fresh project you run the creator, and on first run after that you pull down the browser binaries Playwright drives:
+
+```bash
+pnpm create playwright
+pnpm dlx playwright install
+```
+
+The first command writes a config file and a sample test; the second downloads the actual Chromium, Firefox, and WebKit builds into pnpm's store — they live outside your repo, so they never get committed. Here's what lands in the project, and what each path is for.
+
+<FileTree>
+- **playwright.config.ts** the surface this lesson builds
+- tests/
+  - e2e/ Playwright specs live here
+- playwright-report/ HTML report — *gitignored, never committed*
+- test-results/ traces, screenshots, videos — *gitignored, never committed*
+- .gitignore the creator adds the two dirs above
+</FileTree>
+
+The one decision worth flagging now: E2E specs get their own `tests/e2e/` directory, because Playwright is a separate runner driving the app in a separate process. That's a deliberate contrast with the integration tests from the "Integration tests at the seams" chapter, which stay *colocated* next to the code they exercise as `src/**/*.int.test.ts` — the `.int.test.ts` suffix is what routes them into Vitest's integration project. Two runners, two homes: integration lives beside the source under `src/`, E2E sits apart in `tests/e2e/`. The split keeps each suite easy to find as the codebase grows.
+
+We pin to the current 1.x line — Playwright `1.60` as of mid-2026 — using `@playwright/test`, which ships TypeScript support out of the box. No extra config to get `.ts` specs.
+
+## Reading playwright.config.ts line by line
+
+Here's the payoff for the discipline you bought last lesson. Every rule you accepted in the abstract — production build, one retry, structural flake fixes, artifacts only on failure — shows up here as a concrete config key. There's nothing new to argue in this section. We're just watching the principles become literal lines in a file. Walk through the top-level config one group at a time.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  testDir: 'tests/e2e',
+  fullyParallel: true,
+  forbidOnly: !!process.env.CI,
+  retries: process.env.CI ? 1 : 0,
+  workers: process.env.CI ? 2 : undefined,
+  reporter: process.env.CI ? [['github'], ['html']] : 'list',
+  use: {
+    baseURL: 'http://localhost:3000',
+    trace: 'on-first-retry',
+    screenshot: 'only-on-failure',
+    video: 'retain-on-failure',
+  },
+  // webServer and projects covered below
+});
+`}>
+  <AnnotatedStep meta="{4-5}" color="blue">
+    Where the specs live, and parallel by default — every spec file runs in its own worker process at the same time. Same parallelism instinct as the Vitest workers you already know, new runner.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{6}" color="blue">
+    `forbidOnly` makes a stray `test.only` left in a file fail the CI run instead of silently skipping the rest of the suite. `!!process.env.CI` reads "true on CI, false locally" — a focused test is fine while you iterate, fatal once it's pushed.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{7-8}" color="green">
+    Last lesson's rule made literal: one retry on CI, zero locally. The generated scaffold ships `retries: 2` — the course overrides to `1` on purpose. One re-run tells a flake apart from a real failure; more starts hiding real bugs behind a green check. `workers: 2` caps CI parallelism so a shared runner doesn't thrash.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{9}" color="orange">
+    GitHub annotations plus an HTML report on CI; a plain scrolling list locally. The `github` reporter is what surfaces a failure inline on the pull request.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{11-14}" color="blue">
+    `baseURL` lets every spec write `page.goto('/billing')` instead of the full origin. The other three say the same thing three ways — spend the bytes only when something failed. Note `trace: 'on-first-retry'` especially; it's the line the whole trace-viewer section depends on, and we'll come back to it.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+That's the spine. Two of the keys above — `webServer` and `projects` — carry enough weight to deserve their own beats, so they get the next two subsections instead of one more annotated step.
+
+### Pointing webServer at a production build
+
+This is the single most important block in the chapter, because it's last lesson's central rule — *test the build users get, not `next dev`* — made executable. There's no separate ceremony, no manual "remember to build first." It's four fields:
+
+```ts title="playwright.config.ts"
+webServer: {
+  command: 'pnpm build && pnpm start',
+  url: 'http://localhost:3000',
+  reuseExistingServer: !process.env.CI,
+  timeout: 120_000,
+},
+```
+
+The `command` is a production build, then start — never `next dev`. Dev mode is a different code path: no static optimization, dev-only error overlays, unminified hydration. A test that passes against `next dev` and breaks against the real build is the bug that ships, so the config never lets you run against dev by accident.
+
+The `url` is a readiness probe. Playwright polls it and won't start a single test until the server answers — so your first test isn't racing the server's boot. `reuseExistingServer: !process.env.CI` means locally, if you already have `pnpm start` running, Playwright reuses it for a fast inner loop; on CI it always builds fresh from a clean tree. And `timeout: 120_000` gives the probe two minutes, because a real `next build` genuinely takes a while and you don't want the probe giving up before the build finishes.
+
+:::note
+Newer Playwright can also wait on a log line instead of polling a URL. The `url` probe is all the course needs — the field exists, but reach for it only if a server has no health endpoint to hit.
+:::
+
+### Browser projects and the setup dependency
+
+The last block is `projects`, and it's where the chapter's auth model quietly gets wired in. A *project* is a named run configuration — a set of tests plus the settings they run under. Read this, then we'll trace what it does:
+
+```ts title="playwright.config.ts"
+projects: [
+  { name: 'setup', testMatch: /.*\.setup\.ts/ },
+  {
+    name: 'chromium',
+    use: { ...devices['Desktop Chrome'], storageState: '.auth/owner.json' },
+    dependencies: ['setup'],
+  },
+],
+```
+
+The `setup` project grabs every file matching `*.setup.ts` and nothing else. The `chromium` project runs your actual specs, and it declares `dependencies: ['setup']` — which forces the setup project to finish first. So the chain is: setup runs, setup writes a file, then `use.storageState` loads that file into every chromium test. That `dependencies` key is the entire mechanism connecting the next section's `auth.setup.ts` to all your tests. Right now it's pointing at a `.auth/owner.json` file that doesn't exist yet — the setup project's whole job is to produce it.
+
+That flow is hard to see from the config alone, so here it is as a picture:
+
+<SetupStorageStateFlow />
+
+One policy note carried over from last lesson, then we move on. Chromium is the only browser CI runs by default. WebKit and Firefox are added as two more projects, gated behind an environment flag so they're opt-in:
+
+```ts title="playwright.config.ts" frame="none"
+// only when PLAYWRIGHT_PROJECTS=all
+{ name: 'webkit', use: { ...devices['Desktop Safari'], storageState: '.auth/owner.json' }, dependencies: ['setup'] },
+```
+
+Cross-browser coverage is expensive, so it's reserved for the auth and checkout money paths only — single browser everywhere else. That's the same shape as the money-path filter itself: pay for the broad coverage exactly where failure costs money, and nowhere else.
+
+## Signing in once with auth.setup.ts and storageState
+
+This is the first of the two genuinely new mechanisms in the lesson, so we'll slow down. Start with the mistake it exists to prevent, because you'll feel the pull toward it.
+
+The instinct, fresh off other test frameworks, is to log in at the top of every test — navigate to `/sign-in`, fill the form, submit, wait for the dashboard, *then* test the thing you actually care about. Do that, and every one of your four money-path tests replays the full email-to-password-to-redirect flow before it does any real work. You've multiplied the suite's runtime five or ten times over, and you're re-testing login inside tests that have nothing to do with login.
+
+The fix is to sign each role in *once*, capture the resulting browser session — cookies plus storage — into a file, and have every other test start already authenticated by loading that file. That serialized session is <Term definition={"A JSON snapshot of a browser context's cookies, localStorage, and sessionStorage.\nReplayed into a fresh context to restore auth without driving the login UI."}>storageState</Term>. The login flow runs exactly one time, in the setup project, and produces the `.auth/owner.json` file the config was already pointing at.
+
+Here's the setup file that does it.
+
+<AnnotatedCode lang="ts" maxLines={16} code={`
+import { test as setup, expect } from './fixtures';
+
+setup('authenticate as owner', async ({ page }) => {
+  await page.goto('/sign-in');
+  await page.getByLabel(/email/i).fill('owner@e2e.test');
+  await page.getByLabel(/password/i).fill('correct-horse');
+  await page.getByRole('button', { name: /sign in/i }).click();
+
+  await expect(
+    page.getByRole('heading', { name: /dashboard/i }),
+  ).toBeVisible();
+
+  await page.context().storageState({ path: '.auth/owner.json' });
+});
+`}>
+  <AnnotatedStep meta={`{1} "setup" "./fixtures"`} color="blue">
+    It's a test like any other, in the `setup` project. It imports `test` — aliased `setup` for readability — and `expect` from the project's own fixtures file, not from `@playwright/test` directly. We unpack that fixtures file a couple of sections from here.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{4-7}" color="blue">
+    Drive the real login UI. Role-first locators — `getByLabel`, `getByRole` — are exactly the ladder you learned for React Testing Library, with `page.` swapped in for `screen.`. The credentials belong to a seeded test user we'll create next.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{9-11}" color="orange">
+    Wait for the post-login state before saving. This is doing real work, not decoration: serialize the session while the redirect is still in flight and you capture a half-finished login, so every test that loads it starts broken. The matcher waits for the dashboard heading to actually appear. (More on why this `expect` waits on its own in a couple of sections.)
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{13} "storageState"`} color="green">
+    The write. `context().storageState({ path })` serializes the now-authenticated session to disk — the artifact every spec consumes.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+One setup test per role the suite needs. The money paths assert role-specific UI — an owner sees the billing controls a member doesn't — so you write `auth.setup.ts` once per role, each signing in a different seeded user and writing its own state file: `.auth/owner.json`, `.auth/member.json`, and so on.
+
+<VideoCallout videoId="D5GVH1MY2GM" videoTitle="Playwright Storage State: Login Once, Test Forever">
+  Artem Bondar builds the same setup-file-plus-`dependencies` wiring end to end in 8 minutes — watch the `.json` state file get written and reused across tests.
+</VideoCallout>
+
+:::danger
+The `.auth/` directory is gitignored, and that's not optional. These files contain live session cookies. Commit one and you've pushed a working logged-in session into your git history for anyone with repo access to replay. It's the same reason `test-results/` is gitignored — anything carrying a real session or artifact stays out of version control.
+:::
+
+To make the before/after concrete, here are the two approaches side by side.
+
+<CodeVariants>
+  <CodeVariant label="UI login every test">
+    <div data-mark-color="red">
+
+    ```ts del={2-6}
+    test('owner can open billing', async ({ page }) => {
+      await page.goto('/sign-in');
+      await page.getByLabel(/email/i).fill('owner@e2e.test');
+      await page.getByLabel(/password/i).fill('correct-horse');
+      await page.getByRole('button', { name: /sign in/i }).click();
+      await expect(page.getByRole('heading', { name: /dashboard/i })).toBeVisible();
+
+      await page.goto('/billing');
+      // the test you actually meant to write starts here
+    });
+    ```
+
+    </div>
+    **Multiplies runtime and re-tests login everywhere.** Every spec pays the full email-to-redirect cost, and a single login regression now fails dozens of unrelated tests at once, burying the signal.
+  </CodeVariant>
+
+  <CodeVariant label="storageState once">
+    <div data-mark-color="green">
+
+    ```ts ins={2}
+    test('owner can open billing', async ({ page }) => {
+      await page.goto('/billing');
+      // already signed in — straight to the point
+    });
+    ```
+
+    </div>
+    **Log in once in setup, reuse everywhere.** The session loaded from `.auth/owner.json` means this test starts authenticated; login is exercised in exactly one place — the dedicated sign-in money-path test.
+  </CodeVariant>
+</CodeVariants>
+
+## The Playwright-owned test database and its seed
+
+Playwright drives a *real* server, and a real server needs a *real* database. So far so familiar — you already accepted "separate Postgres for tests" in "Integration tests at the seams." The twist is that you can't reuse the database setup from there, and the reason why is the insight of this section.
+
+The integration tests keyed a fresh database per Vitest worker and wrapped each test in a transaction that rolled back its writes — clean isolation, per test, for free. That scheme works because the test code and the database connection live in the *same process*: the test opens the transaction, does its writes, and rolls back, all in one runtime. Playwright's server is a *different process*. Your test only talks to it over HTTP — it sends a request, the server reads and writes its own database, the test reads the response. The test has no handle on the server's transaction; it can't open one before a request and roll it back after. The process boundary that makes E2E realistic is the same boundary that makes per-test rollback impossible.
+
+So the isolation model is different: a deterministic full reset between *runs*, not a rollback per *test*. The course's reach is a separate database, `saas_e2e`, with a reset script:
+
+```bash
+pnpm db:e2e:reset
+```
+
+That script runs the migrations and then a deterministic seed — it creates the role users (`owner@e2e.test`, `member@e2e.test`), their organizations, and a baseline of records every test can assume exists. CI runs it once before the suite; locally you reuse the seeded database until the schema actually changes. Tests assume the seed and write incrementally on top of it; the reset between full runs is the isolation seam. Those seeded users, of course, are exactly the credentials `auth.setup.ts` signs in — the two sections meet here.
+
+This is the spot students most often trip, so let's draw the line between the two test databases explicitly.
+
+<TestDbComparison />
+
+Keep these two genuinely separate. Point Playwright at the integration suite's database — or run both against the same one — and their writes collide. Different process, different database, different seam.
+
+:::note
+The seed also clears the rate-limit counters for `*@e2e.test` users, so the sign-in path's rate-limit test starts from a known count. We'll lean on that next lesson; for now, just know the reset owns it.
+:::
+
+## Locators and assertions that wait for you
+
+Tests are made of two things: ways to find elements (locators) and ways to assert something about them (`expect`). Both work the way you'd hope and — this is the part that retires a whole category of bugs — both *wait* for you. This is also where we kill the second anti-pattern magnet, `page.waitForTimeout`, because once you've seen why it's unnecessary you'll never reach for it again.
+
+### Locators are role-first, and they wait
+
+The locator priority ladder is the exact one you learned for React Testing Library: `getByRole` first, then `getByLabel`, then `getByText`, and `getByTestId` only as a last resort. The single difference is the prefix — `page.` instead of `screen.`:
+
+```ts
+page.getByRole('button', { name: /sign in/i });
+page.getByLabel(/email/i);
+page.getByText(/invoice sent/i);
+page.getByTestId('plan-badge');
+```
+
+There's no new ranking to learn here — it's pure transfer. Query by what a user perceives (a button named "Sign in"), not by how the markup happens to be built today. Which is why CSS-class locators are off the menu: `page.locator('.btn-primary')` reads fine until someone renames the class in a refactor and your test breaks for a reason that has nothing to do with behavior. A role plus an accessible name survives that refactor.
+
+The new part is what happens when you *act* on a locator. Playwright locators are <Term definition={"Playwright retries an action or assertion until the element is ready (attached, visible, stable, enabled) or a timeout fires.\nNo manual sleeps."}>auto-waiting</Term>: `await page.getByRole('button', { name: /pay/i }).click()` doesn't fire a click into the void. It waits until that button is attached to the DOM, visible, not animating, and enabled — *then* clicks. You don't call `waitForSelector` first. The wait is built into the action.
+
+### expect polls until it holds
+
+The same idea runs through assertions. A web-first matcher like `toBeVisible` is not a one-shot check:
+
+```ts
+await expect(page.getByRole('heading', { name: /dashboard/i })).toBeVisible();
+```
+
+This *polls*. It re-checks the condition over and over until it holds or the default timeout — about five seconds — runs out. So after you click "Sign in," you don't sleep to let the redirect happen; you assert the dashboard heading is visible, and the assertion waits for it. The matchers you'll reach for most are `toBeVisible`, `toHaveURL`, `toHaveText`, `toBeEnabled`, and `toBeChecked`. When you need to wait on something that *isn't* in the DOM — a database row appearing, a webhook landing — `expect.poll(fn)` is the escape hatch: it re-runs your function until the value matches.
+
+Both of these together are why "sleep, then assert" is obsolete. Here it is as a before/after.
+
+<CodeVariants>
+  <CodeVariant label="Sleep then assert">
+    <div data-mark-color="red">
+
+    ```ts {2}
+    await page.getByRole('button', { name: /sign in/i }).click();
+    await page.waitForTimeout(2000);
+    expect(await page.getByRole('heading', { name: /dashboard/i }).isVisible()).toBe(true);
+    ```
+
+    </div>
+    **Flaky and slow at the same time.** 2000ms is a guess — too short and it fails on a slow run, too long and every test pays the full wait even when the page was ready in 200ms. A fixed sleep can only be wrong in one of two directions.
+  </CodeVariant>
+
+  <CodeVariant label="Auto-waiting matcher">
+    <div data-mark-color="green">
+
+    ```ts {2}
+    await page.getByRole('button', { name: /sign in/i }).click();
+    await expect(page.getByRole('heading', { name: /dashboard/i })).toBeVisible();
+    ```
+
+    </div>
+    **Deterministic, and as fast as the page allows.** The matcher polls until the heading appears, then continues immediately — no guessing, no wasted seconds. This is the structural fix the flake discipline asks for, not a retry bump.
+  </CodeVariant>
+</CodeVariants>
+
+One more trap worth a flag, because it's subtle and expensive: an `expect` on a web-first matcher only works if you `await` it.
+
+<div data-mark-color="red">
+
+```ts {1}
+expect(page.getByRole('heading', { name: /dashboard/i })).toBeVisible();
+```
+
+</div>
+
+Drop the `await` and the matcher returns a promise nobody waits on. The test moves past it without ever checking the condition, and — worse than a crash — it *passes silently*. A test that asserts nothing is more dangerous than one that fails, because it hides. The fix is one keyword: put `await` back.
+
+Now a quick check on the locator instinct.
+
+<MultipleChoice>
+  Your checkout page renders this markup, and a money-path test needs to click the **Confirm payment** button:
+
+  ```html
+  <form>
+    <label>Card number <input name="cardNumber" /></label>
+    <button class="btn-pay primary" data-testid="checkout-submit">
+      Confirm payment
+    </button>
+  </form>
+  ```
+
+  Which locator targets that button *and* survives a CSS-class rename or a markup reshuffle in next month's refactor?
+
+  <McqChoice>
+    ```ts
+    page.locator('.btn-pay.primary');
+    ```
+  </McqChoice>
+  <McqChoice correct>
+    ```ts
+    page.getByRole('button', { name: /confirm payment/i });
+    ```
+  </McqChoice>
+  <McqChoice>
+    ```ts
+    page.locator('form button >> nth=0');
+    ```
+  </McqChoice>
+  <McqChoice>
+    ```ts
+    page.getByTestId('checkout-submit');
+    ```
+  </McqChoice>
+
+  <McqWhy>
+  `page.getByRole('button', { name: /confirm payment/i })` matches the element by what a user actually perceives — a button labelled "Confirm payment" — so it rides through class renames and DOM reordering untouched. The class selector breaks the moment someone renames `.btn-pay`; the positional `nth=0` breaks if another button is added above it; and `getByTestId` *works* but sits at the very bottom of the ladder — reach for it only when no role or label fits. Here a role plus its accessible name fits perfectly, so it's the robust choice.
+  </McqWhy>
+</MultipleChoice>
+
+## Packaging shared setup with fixtures
+
+You've now imported `test` and `expect` from `./fixtures` twice without me explaining where that file comes from. Here it is. Playwright's `test.extend` builds typed, per-test fixtures — and "per-test, isolated" should ring a bell, because it's the same isolation discipline Vitest gave you, on a new surface.
+
+The fixtures file does two jobs. The smaller one is a convention you've already met: it re-exports `test` and `expect` so every spec imports from a single local file rather than from `@playwright/test` directly — the same single-import pattern you used for the React Testing Library `render` helper and the `signedInAs` fixture in the chapters before this one. The bigger one is defining custom fixtures. The shape is the part worth slowing down on, because the `await use(...)` call in the middle is unfamiliar if you're coming from `beforeEach`.
+
+<AnnotatedCode lang="ts" maxLines={14} code={`
+import { test as base, expect } from '@playwright/test';
+import { seedInvoices, deleteInvoices } from './seed-helpers';
+
+export const test = base.extend<{ invoices: Invoice[] }>({
+  invoices: async ({}, use) => {
+    const invoices = await seedInvoices(3);
+    await use(invoices);
+    await deleteInvoices(invoices);
+  },
+});
+
+export { expect };
+`}>
+  <AnnotatedStep meta={`{4} "base.extend"`} color="blue">
+    `base.extend` takes a generic describing the fixtures this file adds — here, an `invoices` fixture typed as `Invoice[]`. The returned `test` is what specs import; it knows about the new fixture and is fully typed.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{6}" color="green">
+    The setup phase. Code *above* `use` runs before the test — here it seeds three invoices and holds them.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{7} "use"`} color="orange">
+    `await use(invoices)` hands the value to the test and pauses here for the duration of that test. This is the line that's new if you're used to `beforeEach` — setup and teardown live in one function, split by the `use` call.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{8}" color="green">
+    The teardown phase. Code *after* `use` runs once the test finishes — deleting the rows it seeded. Fixtures are per-test by default, so this runs for every test that asks for `invoices`.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+A spec opts into a fixture just by naming it in the test's destructured argument — `async ({ invoices }) =>` — and Playwright runs the setup, injects the value, and runs the teardown around that one test. Fixtures compose, they're typed, and they're isolated per test. Same guarantee as the integration layer's per-test setup; this is just the browser-test version of it.
+
+## The trace viewer is the debugger
+
+Remember `trace: 'on-first-retry'` from the config? Here's what it buys you, and it's the thing from this lesson you'll actually remember. When a test fails and gets its one retry, that retry records a `trace.zip`. You open it with:
+
+```bash
+pnpm exec playwright show-trace test-results/<the-failing-test>/trace.zip
+```
+
+What opens is not a log file — it's <Term definition={"Playwright's post-mortem GUI, opened from a trace.zip.\nPer-action DOM snapshot, network log, console log, screenshot, and source-mapped stack."}>the trace viewer</Term>, and it's time-travel debugging. A timeline of every action the test took; click any one and you see the full DOM snapshot of the page at that exact moment, plus the network requests in flight, the console output, a screenshot, and the source-mapped line of your test that fired it. You don't sprinkle `console.log` through a spec to find out what went wrong — you open the trace and scrub to the action that failed.
+
+<VideoCallout videoId="yP6AnTxC34s" videoTitle="Exploring Playwright's Trace Viewer for debugging locally and on CI">
+  The official Playwright channel tours every panel — timeline, DOM snapshot, network, call log, source — in 5 minutes, a guided version of the live trace you're about to scrub.
+</VideoCallout>
+
+The fastest way to understand it is to operate one. The trace below is a real, failing Playwright run from the official sample suite. It's live — go ahead and use it.
+
+<PlaywrightEmbed
+  zipUrl="https://demo.playwright.dev/reports/todomvc/data/e6099cadf79aa753d5500aa9508f9d1dbd87b5ee.zip"
+  title="Trace viewer — a real failing TodoMVC run"
+  height={680}
+/>
+
+Click an action in the timeline along the top and watch the DOM snapshot on the left swap to the page as it looked at that step. Open the **Network** tab to see the requests that action triggered. Read the **Call** log to follow the test line by line. Hover the timeline and you scrub through the run like video. That's the entire 2026 Playwright debugging loop, and you just ran it without having written a single failing test of your own.
+
+On CI it's the same loop with one extra hop: the `trace.zip` uploads as a GitHub Actions artifact, and whoever reviews the pull request downloads it and opens it with `show-trace`. The failure travels with the evidence.
+
+The one thing to internalize: a trace exists *only when a test retries*. With `trace: 'on-first-retry'`, a test that passes on the first try records nothing — which is correct, because you don't want a trace for every green run filling up your artifacts. The flip side trips people: "why is there no trace?" almost always means "the test didn't retry," which means it either passed first try or you're looking at a config that doesn't capture traces. Put the sequence in order.
+
+<Sequence instructions="A money-path spec just went red in CI. Order the steps that produce a trace and put it in front of the reviewer — remember, a trace exists only because the test retried.">
+  <Step>A test fails on its first run in CI</Step>
+  <Step>`retries: 1` triggers exactly one retry</Step>
+  <Step>The retry records a `trace.zip`</Step>
+  <Step>CI uploads the zip as a GitHub Actions artifact</Step>
+  <Step>The reviewer downloads it and runs `show-trace`</Step>
+  <Step>The reviewer scrubs to the failing action and reads its DOM snapshot</Step>
+</Sequence>
+
+## First-draft a spec with codegen
+
+You don't have to hand-write the first version of a spec. Point codegen at your running app and click through the flow:
+
+```bash
+pnpm exec playwright codegen http://localhost:3000
+```
+
+A browser opens and records your clicks and typing as Playwright code, with locators generated as you go — a fast way to rough out a new test. The catch, and the one place judgment comes in: codegen sometimes emits a CSS selector where a role-based locator would be more robust. So the workflow is codegen for the skeleton, then rewrite the brittle locators before the test goes in for review — exactly the role-first call from the locators section. The VS Code extension wraps the same tools into the editor: run or debug a single test, view its trace live, and pick locators interactively.
+
+<VideoCallout videoId="5XIZPqKkdBA" videoTitle="How to Generate Tests in Playwright with the VS Code Extension">
+  The official Playwright channel records a full flow in the VS Code extension in 5 minutes, generating role-first locators and assertions as it clicks.
+</VideoCallout>
+
+## What stays out of this surface
+
+A few deliberate cuts, so you know where the edges are and don't go looking for them here:
+
+- **Reading the trace viewer panel by panel.** You've operated it and know what it shows; the official docs own the exhaustive tour.
+- **Custom reporters.** Pinned to GitHub plus HTML. No others.
+- **Sharding.** Splitting the suite across parallel CI jobs (`--shard=1/4`, `--shard=2/4`, …) only pays off once the suite passes roughly 10–15 minutes. A four-money-path suite is nowhere near that — it's a seam to know exists, not a thing to set up now.
+- **Component testing in Playwright.** React Testing Library owns the component layer from "Component tests, off by default"; the course doesn't pin two component-test tools.
+- **Mobile emulation and visual regression.** Out of scope for this chapter.
+- **`page.clock`.** Stable, and it controls `Date.now()` inside the browser — the same intent as Vitest's fake timers — for time-based UI like a trial-end banner. It exists; reach for it only when a money path actually needs to freeze time.
+
+## External resources
+
+The official docs go deeper on CI setup and the trace viewer than this lesson's scope allows. The best-practices page is worth a read for its locator and isolation guidance.
+
+<CardGrid>
+  <ExternalResource
+    title="Playwright — Continuous Integration"
+    href="https://playwright.dev/docs/ci"
+    icon="simple-icons:playwright"
+    iconColor="#2EAD33"
+    description="Wiring the suite into CI, including sharding and per-provider setup."
+  />
+  <ExternalResource
+    title="Playwright — Trace viewer"
+    href="https://playwright.dev/docs/trace-viewer"
+    icon="simple-icons:playwright"
+    iconColor="#2EAD33"
+    description="The full panel-by-panel tour of the post-mortem debugger."
+  />
+  <ExternalResource
+    title="Playwright — Best Practices"
+    href="https://playwright.dev/docs/best-practices"
+    icon="simple-icons:playwright"
+    iconColor="#2EAD33"
+    description="Role-first locators, web-first assertions, and test isolation."
+  />
+  <ExternalResource
+    title="Online Trace Viewer"
+    href="https://trace.playwright.dev/"
+    icon="simple-icons:playwright"
+    iconColor="#2EAD33"
+    description="Drag any trace.zip into the browser to scrub it — no install, the same GUI as show-trace."
+  />
+</CardGrid>
