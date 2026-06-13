@@ -171,6 +171,7 @@ What this lesson does not cover:
 - The full security baseline audit (Chapter 081).
 - GDPR retention timers (lesson 4 of chapter 081).
 - The audit-log export for legal response (named once; not built here).
+- Admin-impersonation actor attribution — the dual-actor wrinkle `logAudit`'s session-derived actor can't handle (record both impersonator and impersonated). Pointer-only: the `impersonatedBy` session column is named in lesson 2 of chapter 051; the `admin.tenant-data-viewed` event is catalogued in lesson 3 of chapter 081.
 - Webhook event recording — `processed_events` is a different table (Chapter 063).
 - Activity feeds for users (different concept — user-facing, not compliance).
 - Per-row encryption of audit payloads (not a year-1 reach).
