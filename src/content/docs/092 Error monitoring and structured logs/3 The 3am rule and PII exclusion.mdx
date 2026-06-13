@@ -1,0 +1,404 @@
+---
+title: The 3am rule and PII exclusion
+tagline: A logging policy for your Pino structured logs, deciding what every line should carry for an on-call operator and what it must never leak to a regulator.
+chapter-id: 92
+course-progress: 0.00005
+sidebar:
+  order: 3
+  label: The 3am rule and PII
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import CodeReview from '../../../components/exercises/code-review/CodeReview.astro';
+import ReviewFile from '../../../components/exercises/code-review/ReviewFile.astro';
+import ReviewIssue from '../../../components/exercises/code-review/ReviewIssue.astro';
+import ReviewWhy from '../../../components/exercises/code-review/ReviewWhy.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import SafeRedactSplit from '../../../components/lessons/092/3/SafeRedactSplit.astro';
+import LogStreamsCompare from '../../../components/lessons/092/3/LogStreamsCompare.astro';
+import { Aside, CardGrid, Card } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The logger is wired. The last lesson gave you the `pino` singleton in `lib/logger.ts`, a `requestId` threaded through every line by `AsyncLocalStorage`, and the child-logger idiom that binds the request's IDs to a file's logger so your call sites stay lean. The machinery works. But the team has never actually decided two things, and they're the two things that determine whether any of that machinery is worth running: *what* those lines should say, and *what they must never say*.
+
+Picture the moment the decision is for. It's 3am, a pager fires, and the on-call engineer opens the log destination filtered by the `requestId` they copied off a Sentry event. Two questions hang over that screen at once. Can they see enough to diagnose the incident without reproducing it? And — the question nobody asks until it's expensive — is there anything sitting in those lines that a regulator would object to finding six months later? The same log line answers to two audiences who never meet.
+
+That's the whole lesson, and it compresses to one sentence worth memorizing: **log what an operator at 3am would want; exclude what a regulator at 9am would object to.** Two audiences, two rules, one config. You'll build both halves. The first is a per-seam logging policy — the *3am rule* — that decides the content of every log call. The second fills the empty `redact` slot the last lesson left in `lib/logger.ts`: a redaction denylist that keeps secrets and personal data out of the stream by key name, set once, never re-litigated at the call site.
+
+One piece of known ground makes all of this tractable, so let's name it up front. Back in the error-handling chapter you learned that every error is really two artifacts — a sanitized *user* string and a rich *operator* record — and they diverge at the wrapper, never at the UI. The log is the operator side of that split, made queryable. Hold onto that, because it's about to make a counterintuitive call for you: it's the reason an email address is safe to log and a customer's name is not.
+
+## Rule 1: log what the 3am operator needs
+
+Start with the generative half — what good looks like — because it motivates why logs exist at all. A denylist with nothing to constrain is abstract; you have to be reaching to log things before "don't log that" means anything.
+
+Here's the principle, stated once so it sticks: **log the *what* and the *which*, not the *how*.** The operator paged at 3am needs to know *what operation ran*, *which entities it touched*, and *how it turned out*. They do not need a play-by-play of your control flow. They are not reading your code line by line; they are reconstructing an incident from the outside, and the log is their only window in.
+
+That principle has a concrete shape that recurs at every server-side seam:
+
+- One structured `info` line per **successful** meaningful operation.
+- One structured `error` line per **failure**, carrying the cause chain through the `{ err }` serializer from the last lesson.
+- Each line names the operation, the entities it touched (by ID), the outcome, and the duration.
+
+That's it. Most operations are one or two lines. The temptation is always to log more; resist it until you've felt the cost, which we'll get to.
+
+To make this real, here are four representative log calls — one for each of the seams your app actually has. They use the child-logger idiom from the last lesson, so the `requestId` and the seam name are already bound and the call site only has to add what's specific to this operation. Step through them and watch what each field buys the operator.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+// (a) server action — authedAction wrapper
+const log = logger.child({ seam: 'action.createInvoice', userId, orgId });
+log.info({ input, durationMs }, 'invoice created');
+log.error({ err, code, durationMs }, 'create invoice failed');
+
+// (b) webhook handler
+const log = logger.child({ seam: 'webhook.stripe', stripeEventType, eventId });
+log.info({ signatureVerified, idempotencyHit, durationMs }, 'webhook processed');
+
+// (c) background job — Trigger.dev task
+const log = logger.child({ seam: 'job.exportInvoices', jobId });
+log.info({ invoiceId, userId, resultCode, attempt }, 'export complete');
+
+// (d) external API call
+const log = logger.child({ seam: 'stripe.charges.create' });
+log.info({ endpoint: 'POST /v1/charges', status, durationMs, attempt }, 'ok');
+`}>
+  <AnnotatedStep meta="{2,7,11,15}" color="blue">
+    Every seam opens with a child logger. The `requestId` is already on it from the ALS; here we add only the `seam` (which names the file) and the IDs specific to this operation. Every line below inherits them, so the call sites stay to the fields that change.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{3-4}" color="green">
+    The action logs its name, the validated input shape, `userId`, `orgId`, and `durationMs` on success; on failure it swaps to `error` and carries the `code` plus the cause chain via `{ err }`. Note `input` is the *validated* shape, not the raw form — we'll see why that distinction is load-bearing in the next section.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{8}" color="green">
+    This is the line set that answers "which org, which event, did we already process it." `stripeEventType` and `eventId` are on the child; the call adds whether the signature verified, whether the idempotency ledger already had this event, and how long it took. When the Stripe webhook 500s for one org, this is what tells the operator the scope.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{12}" color="green">
+    A Trigger.dev task inherits no auth context, so the IDs come from the payload, not a session — `invoiceId` and `userId` are passed in. Add the `resultCode` and the retry `attempt` so a flaky job's pattern is visible across runs.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{16}" color="green">
+    For an outbound call, the operator wants the endpoint, the status code, the duration, and which retry attempt this was. When an upstream is slow or flapping, these four fields are the whole story.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Notice what these lines are *not*: there's no `log.info('entering handler')`, no `log.info('about to call Stripe')`. That restraint is the rule, not an accident, and it's worth stating as its own discipline because the opposite is the most common way teams ruin their logs.
+
+The anti-pattern is logging everything. It starts innocently — a `log.info('entering handler')` at the top of a function and a `log.info('leaving handler')` at the bottom, repeated on every function in the call stack. Each pair feels like diligence. In aggregate it's a disaster: the volume buries the signal, the destination bills you per line, and — here's the part people miss — the entry/exit pairs carry *zero* diagnostic value, because the `requestId` already ties every line of the request together. You don't need a line that says "I got here"; the presence of the *next* meaningful line already proves you got there.
+
+So the discipline is: log the request entry **once**, log significant *decisions* inside it (a cache miss when you expected a hit, a rate-limit headroom check, a branch taken, a fallback fired), and log the outcome. Decisions earn a line; transitions don't.
+
+There's a volume threshold that sits right next to this. A read-heavy endpoint running at high requests-per-second, emitting one `info` line per hit, can cost more than its diagnostic value the moment it's under load — and a healthy read returning the same shape a thousand times a second is the *least* interesting thing in your logs. The move there is to drop those routine reads to `debug` (which is off in production) and keep `info` for state changes and `error` for everything that failed. And if a single endpoint's log volume ever starts dominating the bill, the answer is to sample — keep 1-in-N `info` lines — but never sample errors. You keep 100% of errors, always. An error you didn't log is an incident you can't reconstruct.
+
+## Rule 2: what never reaches the log
+
+Now the constraint. You only get to introduce it now, after the first rule, because the constraint only makes sense once you're already reaching to log things — and the previous section had you reaching.
+
+Meet the second audience. The first was the 3am operator; the second is the regulator at 9am, and standing right behind them is the third-party log vendor — Axiom, in the next lesson — that will *store* every line you ship. That last detail is the one that should change your posture. Once a line leaves your process and lands in a vendor's index, replicated across their infrastructure and backups, asking them to surgically delete one field from one customer's records months later runs into hard limits. The framing to internalize is blunt: **prevention is cheaper than deletion.** The cheapest PII to delete is the PII you never sent.
+
+So here is the exclusion list. It's grouped into three tiers, because a grouped list is memorable and a flat dump is not.
+
+<CardGrid>
+  <Card title="Secrets — never, in any form" icon="lucide:key-round">
+    Passwords, plaintext *or* hashed — neither belongs in a log. API keys and tokens (Stripe keys, OAuth tokens, JWTs, session cookies, signed URLs). Full `Authorization` and `Cookie` headers. Full request bodies, which can carry any of the above.
+  </Card>
+  <Card title="Personal data (PII) under GDPR" icon="lucide:user-round">
+    Full name, postal address, phone number. IP address (special-cased below). Full card or bank numbers, government IDs, date of birth, precise geolocation.
+  </Card>
+  <Card title="Special-category data — the brightest line" icon="lucide:shield-alert">
+    Health, religion, ethnicity, political opinion, sexual orientation, biometric data. GDPR Article 9 treats these as a sharper prohibition than ordinary PII; the point is to know the category exists and that it's never operational-log material.
+  </Card>
+</CardGrid>
+
+Three terms in there earn a hover definition the first time they appear, because they're regulatory and non-obvious: <Term definition="Personally Identifiable Information — data that can identify a specific person, directly or in combination.">PII</Term>, <Term definition="General Data Protection Regulation — the EU regulation governing how personal data is handled. The de-facto global floor for data protection.">GDPR</Term>, and <Term definition="GDPR Article 9 categories — health, religion, ethnicity, political opinion, sexual orientation, biometric, and genetic data. A stricter prohibition than ordinary personal data.">special-category data</Term>.
+
+Now the part that deserves equal billing, because it's where careful engineers go wrong: the **safe list**. After absorbing "GDPR" people overcorrect and start redacting identifiers too — they strip the `userId`, they mask the email — and in doing so they blind the operator and destroy the ability to tie an incident back to a specific customer. So state it plainly: **`userId`, `email`, `orgId`, `plan`, `role`, and the non-sensitive validated request shape are SAFE, and they SHOULD be logged.**
+
+This isn't a loophole. It's the operator side of the split you already know. Those identifiers are load-bearing for support ("find me everything that happened to this customer this week"), for fraud investigation, and for incident correlation. Redacting them doesn't make you more compliant; it makes you blind for no benefit. The contrast is sharp enough that it deserves a picture.
+
+### The operator/user split decides what the logger emits
+
+This is the conceptual crux, so it gets its own heading. You met the split in the error-handling chapter: every error is two artifacts, a sanitized user string and a rich operator record, diverging at the wrapper. Here's the new application — *that same split decides logging.* Operator-side fields (internal IDs, email) go in the log; user-side fields (name, address, phone) don't. Redaction, which is next, is just the backstop that enforces the boundary on a user-side field that accidentally rides inside some object you logged.
+
+The figure below draws the boundary. The non-obvious thing it's making unmissable is that email and IDs land on the *safe* side, not the redacted one.
+
+<Figure caption="Email and IDs are diagnostic, not decorative — redacting them blinds the operator.">
+  <SafeRedactSplit />
+</Figure>
+
+Keep that two-column picture in your head; it's the one to recall at a call site when you're about to log an object and your hand hesitates over a field.
+
+## Structural redaction: the denylist set once
+
+Now the payoff — the single code artifact of this lesson, and the thing that fills the empty `redact` slot from the last lesson. Before showing the config, it's worth being clear about *why* it's structural, because the structure is the whole point.
+
+There are two ways to keep a sensitive field out of a log line. Compare them.
+
+<CodeVariants>
+  <CodeVariant label="Per-call-site">
+    <div data-mark-color="red">
+
+    ```ts {2}
+    log.info(
+      { user: { id: user.id, email: user.email } },
+      'profile updated',
+    );
+    ```
+
+    </div>
+    **Fragile.** The caller hand-prunes the object, remembering to leave `user.name` and `user.phone` out. This relies on every developer remembering and every reviewer catching it — one forgotten field leaks forever, and it's invisible to a security review that can't read every call site.
+  </CodeVariant>
+
+  <CodeVariant label="Structural">
+    <div data-mark-color="green">
+
+    ```ts {1}
+    log.info({ user }, 'profile updated');
+    ```
+
+    </div>
+    **The discipline.** The caller logs the *whole* object naturally; the logger strips sensitive keys by name at serialize time. A new sensitive field is caught by its name without anyone touching this call site, and the entire policy lives in one reviewable file.
+  </CodeVariant>
+</CodeVariants>
+
+State the rule the comparison earns: **redaction is the logger's job, not the caller's.** The caller's job is to log honestly; the logger's job is to know what to censor. Push that responsibility down to the config and it's enforced everywhere, by construction, including in code that hasn't been written yet.
+
+Here's the config that does it. This is the `redact` slot from `lib/logger.ts`, now filled, plus the `PII_KEYS` constant it pulls in. Step through it.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+// lib/logger.ts — the redact slot, now filled
+export const PII_KEYS = [
+  'fullName', 'name', 'phone', 'address', 'dateOfBirth', 'ip',
+];
+
+export const redactionConfig = {
+  paths: [
+    'password', '*.password',
+    'token', '*.token', '*.apiKey', '*.secret',
+    'req.headers.authorization',
+    'req.headers.cookie',
+    'res.headers["set-cookie"]',
+    ...PII_KEYS.flatMap((key) => [key, \`*.\${key}\`]),
+  ],
+  censor: '[REDACTED]',
+};
+`}>
+  <AnnotatedStep meta="{2-4}" color="violet">
+    The application's own personal-data fields, pulled out as a named constant so they're reviewed as a unit. This same constant feeds Sentry's `beforeSend` redaction from the first lesson, so both enforcement points share one source of truth — add a field here and it's stripped from logs *and* error events.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{8-9}" color="orange">
+    The secret keys. Note the wildcard: bare `password` matches a top-level key, `*.password` matches the key one level deep. The `*` is a single-level wildcard; a dotted path like `req.headers.authorization` reaches an exact nested location. One cost note: wildcard paths are measurably slower than explicit keys, so fan out by name where you know the shape and reserve `*` for genuinely unknown nesting — don't carpet-bomb with `*`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{10-12}" color="orange">
+    Full `Authorization`, `Cookie`, and `Set-Cookie` headers. Watch the footgun: these paths are case-sensitive, so `authorization` will not match a header logged as `Authorization`. Node lowercases incoming header names for you, so this is usually free — but a hand-built object can reintroduce a capital and silently defeat the redaction. Lowercase header keys before logging.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{13}" color="violet">
+    `PII_KEYS` fanned out to both a top-level path (`name`) and a one-level-deep path (`*.name`) for each key, so a personal field is caught whether it sits at the root of the logged object or nested inside `user`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{15}" color="green">
+    What a matched field becomes — the string `[REDACTED]`. The crucial property is *when* this runs: redaction happens at serialize time, before the line leaves the process, so a redacted field never touches stdout, never reaches the drain, never lands in the vendor's index. It's gone before it's anywhere.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The payoff of putting it all in one object is auditability. This is a single file a reviewer reads in a pull request. Logging a new field that happens to be sensitive means adding one line here — and that line shows up in the diff, where review catches it. Behind that, as defense in depth, the course wires a small CI check that fails the build on literal sensitive patterns in committed code (a bare `password:` or `secret:` followed by a value), so a hardcoded leak never even reaches review. The config is the policy; the CI grep is the seatbelt.
+
+There's one failure mode worth naming so you recognize it, because it's the way this config quietly rots.
+
+<Aside type="caution" title="Redact-config drift">
+Someone adds a `taxId` field to an object that gets logged, and forgets to add `taxId` to `PII_KEYS`. The field leaks on every line until someone notices — and "someone notices" is not a control. The fix isn't vigilance, it's process: a pull request that adds a logged field gets a paired redact-config review, the same way a schema change gets a migration. Treat the denylist as code that ships alongside the code it protects.
+</Aside>
+
+## Edge cases the rule has to answer
+
+Three applications trip people up in the real world. Each is a direct consequence of the two rules, but the consequence isn't obvious until you've been bitten, so let's walk them.
+
+### Logging a request body — the bounded shape
+
+Sometimes the operator genuinely needs the input. A Zod validation failed and the *shape of the input is the diagnosis* — which field was wrong, in what way. The instinct is to log `req.body` so you can see what came in. Don't.
+
+Log the **validated and redacted** output instead, never the raw body. The Zod parse already enforced the shape, so the result has known keys, and your redact config strips the sensitive ones from those known keys. The raw `req.body`, by contrast, can carry *anything* an attacker chose to send — including fields you never modeled and therefore never added to `PII_KEYS`. A denylist can only redact keys it knows about; an unbounded object is an unbounded leak. **Never log `req.body` before the parse.**
+
+The sharpest version of this is logging the validation error itself.
+
+<CodeVariants>
+  <CodeVariant label="Leaks the input">
+    <div data-mark-color="red">
+
+    ```ts {3}
+    const parsed = signInSchema.safeParse(input);
+    if (!parsed.success) {
+      log.warn({ issues: parsed.error.issues, input }, 'sign-in validation failed');
+    }
+    ```
+
+    </div>
+    **Wrong.** Attaching `input` next to `issues` logs the exact payload that failed validation — the malformed email, the raw password attempt — which is the PII the validation was guarding. The error report carries the very data you were trying to keep out.
+  </CodeVariant>
+
+  <CodeVariant label="Logs the diagnosis only">
+    <div data-mark-color="green">
+
+    ```ts {3}
+    const parsed = signInSchema.safeParse(input);
+    if (!parsed.success) {
+      log.warn({ issues: parsed.error.issues }, 'sign-in validation failed');
+    }
+    ```
+
+    </div>
+    **Right.** `error.issues` carries the *paths and codes* — operator-safe, and exactly the diagnosis. The operator reads `email: invalid format` at path `['email']` and knows which field failed and why, without the malformed email itself ever being logged.
+  </CodeVariant>
+</CodeVariants>
+
+### Errors and stack traces — what's safe and the message trap
+
+`Error.stack` is operator-side and safe to log. It's file paths and line numbers — your code's geography, no user data in it. That one's easy.
+
+`Error.message` is the trap. A message can carry concatenated user input: `Could not find user with email alice@example.com`. The split says the message is operator-side *for the log*, so logging it is fine in isolation. The problem is that the *same message* can travel to other surfaces — it might get surfaced in a user-facing toast, or written into the audit log — and on those surfaces it leaks. A field that's safe in one stream is a leak in another, and a string baked into the message rides along everywhere the error goes.
+
+The discipline (it's the error-class convention from the error-handling chapter, not new) is: **constants for error messages, structured fields for context.** Write `new NotFoundError('user', { email })`, not `new Error('Could not find user with email ' + email)`. The structured `{ email }` field rides through your redact config like any other field; the message stays a constant that's safe on every surface.
+
+<Aside type="danger" title="Never JSON.stringify an error to log it">
+`Error.message` and `Error.stack` are non-enumerable properties. `JSON.stringify(err)` walks only enumerable properties, so it silently drops both — you log `{}` and learn nothing from your most important line. Always pass `{ err }` and let the serializer from the last lesson render `{ type, message, stack, cause }`. This is a classic beginner bug, and it bites hardest exactly when you need the error most.
+</Aside>
+
+### IP addresses — the GDPR-specific reach
+
+The IP is the genuinely nuanced case, because the answer is conditional. Under GDPR an IP address is personal data. But it's also genuinely useful for diagnosis — rate-limit context, geographic-anomaly detection during a credential-stuffing wave. So you can't just blanket-ban it, and you can't freely log it either. The discipline the course adopts splits by purpose:
+
+- **Routine `info` logging:** log the IP with the last octet zeroed — `192.168.1.0`. That's enough for a geographic or subnet signal, not enough to single out one person.
+- **Security events** (sign-in failures, rate-limit breaches): log the full IP, under the legitimate-interest basis tied to security, and give those logs **shorter retention** than ordinary operational logs.
+
+One claim to *not* make, because it's a common and dangerous oversimplification: masking the last octet does **not** make an IP "not personal data" or exempt it from GDPR. Partial masking *reduces* identifiability and satisfies data-minimization — it lowers risk, and it's the right default. But if the masking is reversible, or the remaining data still identifies someone in context, the obligations persist. The honest framing is "minimize by default, justify the exception," not "masking equals anonymous."
+
+Notice the mechanics line up with that posture: `ip` is in `PII_KEYS`, so the *default* is redaction. Logging an IP at all requires a deliberate, masked call that names what it's doing. That's the disciplined move in miniature — the safe default is exclusion, and the exception is explicit and justified. (Where the shorter retention actually gets enforced is the audit-log retention work in the security chapter; this lesson only flags the IP-specific gotcha.)
+
+## Audit the rule: a sign-in flow under review
+
+This is a judgment skill, and judgment lands by review, not by reading. So two exercises, easy then applied.
+
+First, sort the fields. You're deciding what your logger config should let through versus what it must catch. The whole point is the counterintuitive calls — email and `userId` are safe, a full name and phone are not, a zeroed IP is fine while a full IP is not. Make each call explicitly.
+
+<Buckets twoCol instructions="You're deciding what your logger config lets through. Sort each field into where it belongs.">
+  <Bucket name="safe" label="Safe to log" description="Operator-side — diagnostic" />
+  <Bucket name="redact" label="Redact / never log" description="Secrets or user-side PII" />
+
+  <Item bucket="safe">`userId`</Item>
+  <Item bucket="safe">`email`</Item>
+  <Item bucket="safe">`orgId`</Item>
+  <Item bucket="safe">`plan`</Item>
+  <Item bucket="safe">`requestId`</Item>
+  <Item bucket="safe">`durationMs`</Item>
+  <Item bucket="safe">`error.issues`</Item>
+  <Item bucket="safe">`Error.stack`</Item>
+  <Item bucket="safe">IP, last octet zeroed</Item>
+  <Item bucket="redact">`password`</Item>
+  <Item bucket="redact">`Authorization` header</Item>
+  <Item bucket="redact">`stripe.token`</Item>
+  <Item bucket="redact">customer full name</Item>
+  <Item bucket="redact">postal address</Item>
+  <Item bucket="redact">phone number</Item>
+  <Item bucket="redact">full client IP</Item>
+  <Item bucket="redact">raw `req.body`</Item>
+</Buckets>
+
+Now apply it where it actually lives — in code, under review. The pull request below adds logging to a sign-in server action. Read it as a reviewer and leave a comment on every line that violates the two rules. One line is *correct* and present on purpose; flagging it would be the over-redaction trap, so think before you comment.
+
+<CodeReview instructions="Review this PR adding logging to the sign-in action. Comment on every line that breaks the 3am rule or the exclusion rule — and only those lines.">
+  <ReviewFile name="lib/actions/sign-in.ts">
+    ```ts ins={3-23}
+    'use server';
+
+    export const signIn = action(async (input) => {
+      const log = logger.child({ seam: 'action.signIn' });
+      log.info({ body: input }, 'sign-in attempt');
+
+      const parsed = signInSchema.safeParse(input);
+      if (!parsed.success) {
+        log.warn({ issues: parsed.error.issues, input }, 'validation failed');
+        return err('validation', 'Check your email and password.');
+      }
+
+      const result = await verifyCredentials(parsed.data);
+      if (!result.ok) {
+        logger.error({ error: JSON.stringify(result.cause) }, 'sign-in failed');
+        return err('unauthorized', 'Invalid email or password.');
+      }
+
+      const { user } = result;
+      log.info({ userId: user.id, ip: clientIp }, 'signed in');
+      log.info({ userId: user.id, email: user.email }, 'session created');
+      return ok(user);
+    });
+    ```
+  </ReviewFile>
+
+  <ReviewIssue file="lib/actions/sign-in.ts" line={5} kernel="logs the raw request body — carries the plaintext password before any redaction can help">
+    This logs the raw `input` before the parse. The body can hold the plaintext password and any unmodeled field an attacker chose to send — and a denylist can only redact keys it knows about, so the redact config can't save you here. Log the **validated and redacted** shape *after* `safeParse`, never `input` raw.
+  </ReviewIssue>
+
+  <ReviewIssue file="lib/actions/sign-in.ts" line={9} kernel="logs the failed input alongside `issues` — leaks the PII that failed validation">
+    `parsed.error.issues` is already the diagnosis — paths and codes, operator-safe. Attaching `input` next to it re-logs the exact payload that failed (the malformed email, the password attempt) — the very PII the validation was guarding. Drop `input`; keep `issues`.
+  </ReviewIssue>
+
+  <ReviewIssue file="lib/actions/sign-in.ts" line={15} kernel="`JSON.stringify(err)` drops the non-enumerable message and stack — use `{ err }` and the serializer">
+    `message` and `stack` are non-enumerable, so `JSON.stringify(result.cause)` walks past both and you log `{}` on your most important line. Pass `{ err: result.cause }` and let the serializer render `{ type, message, stack, cause }`. (Also note this reaches for the base `logger`, not the bound child `log`, so it loses the seam binding.)
+  </ReviewIssue>
+
+  <ReviewIssue file="lib/actions/sign-in.ts" line={20} kernel="full client IP at info for a routine sign-in — mask to last-octet-zeroed, reserve full IP for security events">
+    A successful sign-in is a routine event, and `ip` is in `PII_KEYS` — the default is redaction. If the operator wants a geographic signal here, log the **last-octet-zeroed** IP (`192.168.1.0`). Reserve the full IP for security events like repeated failures, under shorter retention.
+  </ReviewIssue>
+
+  <ReviewWhy>
+    One sentence decides every line: log what an operator at 3am needs, exclude what a regulator at 9am would object to. The `body`, the attached `input`, and the full IP all break the second half; the `JSON.stringify` line breaks the first by logging nothing useful. But the **last** line — `userId` + `email` on session creation — is the trap: those are operator-side identifiers, the load-bearing keys for incident correlation. Flagging it is the over-redaction reflex, and it would blind the operator for no compliance gain.
+  </ReviewWhy>
+</CodeReview>
+
+<Aside type="note">
+If your environment can't reach the local AI grader, the review falls back to line-graded — any comment on a flagged line counts. The plants here are line-specific, so that fallback is fine.
+</Aside>
+
+## Two streams, two rule sets
+
+One last distinction, because it's a real conflation and getting it wrong is expensive in both directions. The operational logger you've built this chapter is not the audit log from the security chapter. They're two different streams, with overlapping but distinct rules, and treating them as one stream breaks both.
+
+<Figure caption="Same incident, two streams: the operational log is built to be cheap, redacted, and short-lived; the audit log is built to be durable and complete. Route one through the other and you break both.">
+  <LogStreamsCompare />
+</Figure>
+
+The rule that follows: **never route one stream through the other.** Don't try to reconstruct an audit trail by grepping operational logs — they're best-effort, redacted, and expired by the time a compliance question arrives. And don't dump operational diagnostics into the audit table — wrong retention, wrong cost, wrong audience. Each stream has a job; let it do its own.
+
+That closes the loop this chapter opened. Errors and logs are two surfaces of one incident, joined by `requestId` — and now the log surface carries exactly what it should: everything the operator at 3am needs, and nothing the regulator at 9am would object to.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="pino — redaction reference"
+    href="https://github.com/pinojs/pino/blob/main/docs/redaction.md"
+    icon="simple-icons:pino"
+    iconColor="#687634"
+    description="The official redact spec: path syntax, the * wildcard, censor, and the remove option."
+  />
+  <ExternalResource
+    title="Is an IP address personal data under GDPR?"
+    href="https://techgdpr.com/blog/is-an-ip-address-considered-personal-data/"
+    icon="lucide:scale"
+    iconColor="#1E40AF"
+    description="Why an IP is personal data, and why masking is pseudonymization — minimization, not exemption."
+  />
+</CardGrid>

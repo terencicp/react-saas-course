@@ -1,0 +1,488 @@
+---
+title: 'Sentry: capture, releases, and breadcrumbs'
+chapter-id: 92
+course-progress: 0.00005
+tagline: Wiring Sentry as the error-monitoring surface of your SaaS, so production exceptions arrive grouped, source-mapped, release-tagged, and tied to the user who hit them.
+sidebar:
+  order: 1
+  label: Sentry capture
+---
+
+import Figure from '../../../components/figures/Figure.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import TrueFalse from '../../../components/exercises/true-false/TrueFalse.astro';
+import Statement from '../../../components/exercises/true-false/Statement.astro';
+import TfWhy from '../../../components/exercises/true-false/TfWhy.astro';
+import Sequence from '../../../components/exercises/sequence/Sequence.astro';
+import Step from '../../../components/exercises/sequence/Step.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import SentryVsLogSurface from '../../../components/lessons/092/1/SentryVsLogSurface.astro';
+import TwoCapturePaths from '../../../components/lessons/092/1/TwoCapturePaths.astro';
+import MinifiedVsSymbolicated from '../../../components/lessons/092/1/MinifiedVsSymbolicated.astro';
+import BreadcrumbTrailVsLogStream from '../../../components/lessons/092/1/BreadcrumbTrailVsLogStream.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Term from '../../../components/ui/Term.astro';
+import { Code, FileTree, Steps, Aside, CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+A `createInvoice` Server Action throws in production. A required field came back from Stripe as `null`, a property access blew up, and the action did exactly what you built it to do back in the error-handling chapter: it caught the throw, returned a `Result.err`, and the user saw a calm generic toast instead of a stack trace. The user side is handled. The operator side is a promise you haven't kept yet.
+
+Because right now, that failure exists in exactly one place: Vercel's function output, as a single minified line like `Function.t [as h] (chunk-abc123.js:1:42)`. No user attached. No org. No plan. No link to the deploy that introduced it. To answer "what happened?" you'd open the Vercel dashboard, find the right function, scroll the right invocation, and reconstruct the rest from memory. When you wrote that catch, you put a `Sentry.captureException(error)` line right next to your `logger.error(...)` and left a note that the wiring waited for a later chapter. This is that chapter, and that line is where we start — you're finishing a sentence, not opening a new topic.
+
+By the end of this lesson, a deliberate throw — one from a Server Action, one from a client component — will arrive in <Term definition="An error-monitoring platform that collects, groups, and enriches exceptions from your app.">Sentry</Term> **grouped**, with a **readable stack trace**, the **correct release tag**, and the **user and org context** attached. The single idea that makes all of that work is one rule about two paths, and we'll keep coming back to it: a server-side error reaches Sentry by exactly one of two routes, and you should always be able to say which.
+
+## What Sentry gives you that a log line can't
+
+You're about to install two observability tools in this chapter — Sentry here, structured logs next — so the first decision is what the second tool isn't. A log line, which you'll build in the next lesson, is a flat record. It's there if you wrote it, and it helps you *if you already know what to filter for*. That's the right shape for "replay the request"; it's the wrong shape for "a thing is broken and I don't yet know what."
+
+A Sentry event is the same failure, enriched along five axes that a raw log line doesn't have:
+
+- **Grouped by fingerprint.** Forty-seven instances of the same bug collapse into one issue with a count, not forty-seven lines you have to notice are identical.
+- **Source-mapped.** The minified production frame is rebound to your original `.ts` source, file and line.
+- **Release-tagged.** Every event carries the deploy it shipped in, so a regression points at the commit that introduced it.
+- **User- and org-tagged.** You can filter to "every error this user hit this week."
+- **Breadcrumb-trailed.** The event arrives with a trail of what happened in the seconds before the throw.
+
+Those five are the spine of this lesson — each section below wires one of them. Hold onto the framing the chapter opens on: **errors and logs are two surfaces of one incident.** They're not competitors. Later in this chapter they'll share a single `requestId` so you can stand in a Sentry event, copy that ID, and jump straight to the matching log lines. Today we build the error surface; keep the join in the back of your mind.
+
+The contrast below is the whole pitch — the same failure, before and after.
+
+<SentryVsLogSurface />
+
+**Why Sentry, and why it's the default here.** Sentry is the default error monitor for a 2026 Next.js stack, full stop. The alternatives exist — Bugsnag, Rollbar, Highlight, Honeybadger all capture exceptions competently — and the trigger to reach for one of them, for the SaaS this course builds, is: there isn't one. Sentry wins on one specific thing that matters for this stack: a first-party-quality Next.js SDK that folds release tracking and source-map upload into a single wizard and hooks the App Router's instrumentation file directly. That integration is the reason the rest of this lesson is short on setup and long on judgment.
+
+One scope note so you don't overbuy. Sentry also ships session replay. We won't turn it on — the next chapter picks PostHog for replay, and running two replay products side by side is paying twice for one capability. When a feature in this lesson has a cheaper owner elsewhere in the course, it stays off here.
+
+## Running the wizard, and what it writes
+
+The first decision is whether to hand-wire Sentry or let its wizard do it. Use the wizard. It writes a complete, working baseline in one command, and hand-wiring the same files buys you nothing but the chance to get a config path wrong. But "use the wizard" is not the same as "treat its output as magic" — you're going to own these files, so we'll walk every one it touches and label what's load-bearing.
+
+```bash
+npx @sentry/wizard@latest -i nextjs
+```
+
+The wizard asks you to log in, pick (or create) a Sentry project, and then it writes the files below. It creates the config files, wraps your `next.config.ts`, drops a git-ignored env file holding a build-time auth token, and adds the source-map upload step to your build. Here's the blast radius at a glance — the highlighted entries are new.
+
+<FileTree>
+- src/
+  - app/
+    - **global-error.tsx** error boundary — calls `Sentry.captureException`
+    - …
+  - **instrumentation.ts** Next.js hook — `register()` + `onRequestError`
+  - **instrumentation-client.ts** browser SDK — `Sentry.init`
+  - **sentry.server.config.ts** Node SDK — `Sentry.init`
+  - **sentry.edge.config.ts** edge runtime SDK — `Sentry.init`
+- **next.config.ts** wrapped in `withSentryConfig`
+- **.env.sentry-build-plugin** auth token — git-ignored
+- …
+</FileTree>
+
+This is more files than people expect, and the surprise is worth pausing on: there is **no single place** where Sentry "starts." `Sentry.init` — the call that boots the SDK with your config — runs in three separate files, one per runtime your app executes in:
+
+- `instrumentation-client.ts` boots the SDK in the **browser**.
+- `sentry.server.config.ts` boots it in the **Node** server runtime.
+- `sentry.edge.config.ts` boots it in the **edge** runtime.
+
+Then `instrumentation.ts` is the glue. It's a Next.js file with a special name, and it does two jobs. Its `register()` function runs once when the server boots and imports the right server config based on which runtime it's in. And it exports `onRequestError`, which is the hook that catches server-side throws. That export is the engine of this whole lesson, so let's look at exactly what the wizard puts there.
+
+<AnnotatedCode lang="ts" code={`
+import * as Sentry from '@sentry/nextjs';
+
+export async function register() {
+  if (process.env.NEXT_RUNTIME === 'nodejs') {
+    await import('./sentry.server.config');
+  }
+  if (process.env.NEXT_RUNTIME === 'edge') {
+    await import('./sentry.edge.config');
+  }
+}
+
+export const onRequestError = Sentry.captureRequestError;
+`}>
+  <AnnotatedStep meta="{1}" color="blue">
+    The SDK import. It resolves to the real `@sentry/nextjs` package now — the same import the `captureException` stub from the error-handling chapter referenced.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{3-10}" color="blue">
+    `register()` runs once at server boot and lazily imports the config for whichever runtime is live, keyed off `NEXT_RUNTIME`. This is why `Sentry.init` lives in those separate config files, not here.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{12}" color="green">
+    The `onRequestError` export. This one line is the entire uncaught-error path; the next section dissects it.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+A few calls in the wizard's output are load-bearing and a couple are yours to adjust:
+
+- **Keep the tunnel route.** Inside `withSentryConfig` the wizard sets a <Term definition="A same-origin proxy route the SDK posts events through so ad-blockers don't drop them.">`tunnelRoute`</Term>. Ad-blockers recognize and block requests to Sentry's default ingest endpoint, which means client-side events silently vanish for a chunk of your users. The tunnel route makes the request look same-origin. Leave it on — this is a default that's protecting you.
+- **Delete the example page.** The wizard adds a route with a deliberate-error button so you can fire a first test event. Useful once; a liability if it ships. Smoke-test with it, then delete it.
+- **One <Term definition="The project's ingest key and URL — where the SDK sends events.">DSN</Term>, both sides.** The client and server SDKs share a single DSN. You may see advice to configure a separate "client DSN" — don't. It's extra config to keep in sync for no benefit. One project, one DSN.
+
+:::tip
+The tunnel route is the single most common reason "Sentry works in dev but client errors don't show up in production." Dev has no ad-blocker in the way; real users do. Confirm `tunnelRoute` survived in your `withSentryConfig` before you trust client capture.
+:::
+
+If you want to watch the whole wizard run before you run it yourself, Sentry's own walkthrough does exactly that — and it's the closest thing to a video companion for this lesson.
+
+<VideoCallout videoId="cirvSu1RSDc" videoTitle="Setup Sentry in Next.js — Debugging Next.js Applications with Sentry">
+  Sentry's official 6-minute walkthrough of the same wizard — it tours every file it writes (the three runtime configs, `instrumentation.ts`, the tunnel route) and fires a first error end to end.
+</VideoCallout>
+
+## `onRequestError`: the uncaught path
+
+Here's the first of the two capture paths, and the reason we just stared at one export line. `onRequestError` is a Next.js framework hook (it needs `@sentry/nextjs` 8.28 or newer and Next 15+). Next.js calls it whenever an error bubbles all the way up to *its* boundary — an uncaught throw in a Server Component, a route handler, or a Server Action that doesn't catch its own error. The wizard binds that hook to `Sentry.captureRequestError`, so every such throw gets reported with the request's context already attached.
+
+State it as a rule, because forgetting it is the most common wiring mistake there is: **without this export, server-side throws that reach the framework boundary never reach Sentry.** It is the entire uncaught path. Delete that one line and an entire class of production errors goes dark — silently, because nothing errors; events just stop arriving.
+
+Make the boundary concrete with two throws. A Server Component that throws — say a `page.tsx` that hits a `null` it didn't guard — bubbles up to Next.js, which renders the nearest `error.tsx` for the user *and* fires `onRequestError`, so the event lands in Sentry. But your `authedAction` wrapper from the forms-and-actions chapters is built to *catch* its own throw and return a `Result.err`. It never lets the error reach the framework boundary. So `onRequestError` never fires for it — which is exactly why there has to be a second path, and why we cover it next.
+
+The diagram below puts the two paths in space before we name the second one. Scrub through it.
+
+<TwoCapturePaths />
+
+## `captureException` inside your wrappers: the caught path
+
+This is where the stub from the error-handling chapter becomes real, and it's the most important section in the lesson. The problem is a direct consequence of good design. Your `authedAction` and `authedRoute` wrappers exist *to catch* the throw — that's how the user gets a safe message instead of a stack trace, and how the operator detail stays out of the response. But a caught error is, by definition, an error that never bubbled to the framework boundary. So `onRequestError` will never see it. The wrapper's catch is the **only** place the caught path can be covered.
+
+Recall the shape of that catch from the error-handling chapter. It normalizes the unknown error, writes an operator-facing log line, and then — the line we're here to wire — calls Sentry before returning the user-safe result. The two tabs below are the entire lesson in miniature: the stub you wrote, and the enriched version you're replacing it with.
+
+<CodeVariants>
+  <CodeVariant label="Before — the stub">
+    <div data-mark-color="blue">
+
+    ```ts {7}
+    } catch (e) {
+      const error = ensureError(e);
+      logger.error(
+        { action: fn.name, userId, orgId, role, input: redact(input.data), err: error },
+        'action failed',
+      );
+      Sentry.captureException(error);
+      return mapError(error);
+    }
+    ```
+
+    </div>
+    **The wire exists, but the event is bare.** It arrives grouped and source-mapped, but with no idea which action threw or who hit it.
+  </CodeVariant>
+
+  <CodeVariant label="After — enriched">
+    ```ts ins={7-10}
+    } catch (e) {
+      const error = ensureError(e);
+      logger.error(
+        { action: fn.name, userId, orgId, role, input: redact(input.data), err: error },
+        'action failed',
+      );
+      Sentry.captureException(error, {
+        tags: { seam: 'authedAction', action: fn.name },
+        user: { id: ctx.user.id, email: ctx.user.email },
+      });
+      return mapError(error);
+    }
+    ```
+
+    **Same event, now filterable.** The `tags` group and filter the issue; `user` ties it to a person. The org/role context rides along too — the next section covers exactly where that goes.
+  </CodeVariant>
+</CodeVariants>
+
+Now the rule to commit to memory, stated both directions so you can apply it to any throw: **every catch-and-handle seam calls `captureException`; every uncaught throw rides `onRequestError`.** And here's the payoff of having built the wrapper in the first place — because the split lives *in the wrapper*, you wire `captureException` in exactly one place and every action that goes through `authedAction` inherits it for free. The flip side is the warning: an action that bypasses `authedAction` and does its own thing skips not just fail-closed authorization and the message split, but Sentry capture too. The wrapper is load-bearing for observability now, not just for safety.
+
+One name to know and set aside: `withServerActionInstrumentation`. It's Sentry's wrapper that puts a performance *span* around an action and groups by action name. Reach for it when a specific action needs a trace; basic error capture, the thing we care about today, works without it. We're not wiring it here.
+
+Go back to the diagram from the last section and scrub to its final frame — both lanes now reach the same Sentry issue. The uncaught lane via `onRequestError`, the caught lane via the `captureException` you just added. That convergence is the two-path rule, made literal.
+
+Before moving on, prove to yourself you can route any throw. Drag each one to the path that carries it to Sentry.
+
+<Buckets twoCol instructions="Each throw below reaches Sentry by one path — or by neither server path. Sort them.">
+  <Bucket name="uncaught" label="→ onRequestError" description="Bubbles to the framework boundary" />
+  <Bucket name="manual" label="→ manual captureException" description="Caught and handled in a wrapper" />
+  <Bucket name="client" label="→ neither (client SDK's job)" description="Never touches the server" />
+
+  <Item bucket="uncaught">An unguarded `null` access throws in a Server Component's render</Item>
+  <Item bucket="manual">`authedAction` catches a failed DB write and returns `Result.err`</Item>
+  <Item bucket="uncaught">A route handler rethrows after logging, letting it bubble</Item>
+  <Item bucket="manual">A webhook handler catches a signature mismatch and returns a 400</Item>
+  <Item bucket="client">An unhandled promise rejection in a client component's `onClick`</Item>
+</Buckets>
+
+## Source maps and releases: a readable, dated stack
+
+The capture paths get the event to Sentry. The next two enrichments make the event worth reading. They travel together, both are wired by the wizard, and each needs you to verify exactly one thing — so this section is verification, not theory.
+
+**Source maps** solve the minified-frame problem. Production JavaScript is minified; the raw frame really does read `chunk-abc123.js:1:42`, which tells you nothing. A <Term definition="A file that maps each position in the minified output back to its original source line.">source map</Term> lets Sentry rebind that frame to `createInvoice.ts:34`. The wizard's build step uploads your source maps every production build so Sentry can do that rebinding. The one thing to verify: the build-time `authToken` is set, and the `org` and `project` slugs in `withSentryConfig` point at the right Sentry project. And know the boundary — **CI uploads source maps; your local dev build does not.** That's deliberate: uploading on every local build would be slow and pointless. Don't expect symbolicated traces from `next dev`.
+
+**Releases** solve the "when did this start?" problem. A <Term definition="A Sentry label that binds events to a specific deploy and commit.">release</Term> tags every event with the deploy it shipped in. The current guidance is to derive the release name from the commit SHA, so it lines up with the source maps from that same commit. On Vercel the SHA is handed to you as the `VERCEL_GIT_COMMIT_SHA` environment variable. The payoff is the thing that turns a 2am regression hunt into a one-liner: Sentry tells you **"first seen in release `a1b2c3d` by Jordan,"** and you've bisected the bug to a single deploy and author without running `git bisect` at all.
+
+There's a smoother way to wire all of this than copying tokens by hand. The **Sentry–Vercel integration**, connected once from either dashboard, auto-injects `SENTRY_ORG`, `SENTRY_PROJECT`, `SENTRY_AUTH_TOKEN`, and `NEXT_PUBLIC_SENTRY_DSN` into your Vercel project and notifies Sentry on every deploy. That's the recommended path — it makes the manual token step disappear. The manual env route is the fallback for when you're not on Vercel.
+
+Here's what those two enrichments actually buy you, in one picture: the same frame before and after.
+
+<MinifiedVsSymbolicated />
+
+## User, org, and tags: making errors filterable
+
+Source maps make one event readable. This enrichment makes a *pile* of events queryable — and it's the one place this lesson touches PII, which we'll handle by reference rather than re-arguing.
+
+The core call is `Sentry.setUser`. After authentication, you attach the actor to the Sentry scope, and from then on every event in that request carries it:
+
+<div data-mark-color="green">
+
+```ts {1-2}
+Sentry.setUser({ id: ctx.user.id, email: ctx.user.email });
+Sentry.setTag('orgId', ctx.orgId);
+```
+
+</div>
+
+With the user set, Sentry groups errors per person and lets an operator filter to "every error user X hit this week" — which is the raw input to the bug-SLA dashboards a support team lives in. And note what's in that call: an internal ID and an email. **Here, email is operator-safe context, not PII to redact.** That isn't a new decision — the error-handling chapter already drew the user/operator line, and it put internal IDs and email addresses on the operator side precisely so support and incident response can use them. We're spending that decision, not re-making it.
+
+Tags are the other half. A tag is a low-cardinality label you filter on — `plan: 'pro'`, `feature: 'invoicing'`, `seam: 'authedAction'`. The discipline is one sentence: **tags are filter dimensions, so they must be low-cardinality.** Two corollaries fall out of it. Never put a secret in a tag — tags are indexed and visible. And never put a high-cardinality one-off in a tag either: a `requestId`, a full URL, anything with effectively unbounded distinct values. Those belong in `extra` / context, which Sentry stores on the event but doesn't try to index as a filterable dimension. That word — <Term definition="The number of distinct values a field can take; high-cardinality fields blow out grouping and quota.">cardinality</Term> — is the instinct to build here, because the next exercise drills it.
+
+That `requestId` is worth flagging now even though we're not building it yet. In the next lesson it becomes the join key between a Sentry event and your logs. For today, just know it rides along as context, not as a tag, and it's the future pivot anchor. As for *where* you set all this: prefer setting the user and tags at the request entry — or inside the wrapper, right next to the `captureException` call — so every event in the request inherits the context without you remembering at each call site.
+
+Sort these six fields the way you'd treat them on a Sentry event.
+
+<Buckets twoCol instructions="Each field below could end up on a Sentry event. Where does it belong?">
+  <Bucket name="tag" label="Tag" description="Low-cardinality filter dimension" />
+  <Bucket name="context" label="Context / extra" description="High-cardinality, one-off, not a filter" />
+  <Bucket name="never" label="Never send" description="Secret — keep it off the event" />
+
+  <Item bucket="tag">`plan` (`free` / `pro` / `enterprise`)</Item>
+  <Item bucket="tag">`orgId`</Item>
+  <Item bucket="context">`requestId`</Item>
+  <Item bucket="never">The Stripe secret API key</Item>
+  <Item bucket="tag">`feature` name (`invoicing`)</Item>
+  <Item bucket="context">The full request URL with query string</Item>
+</Buckets>
+
+## Breadcrumbs: the trail that led to the throw
+
+User and tags tell you *who* and *what kind*. Breadcrumbs tell you *what just happened*. A <Term definition="A single entry in a capped, ordered trail of recent events attached to an error.">breadcrumb</Term> is one step in the story leading up to the throw. Sentry auto-captures some for you — navigation, fetch calls, console output — and they all ship attached to the next error that fires, then they're dropped. They answer the question a stack trace can't: "what was the user doing right before this broke?"
+
+This is the section most likely to trip you up, because breadcrumbs *look* like logs, and they are not. Hold these three apart, because the chapter leans on the distinction:
+
+- **Breadcrumbs** are per-event, ephemeral context that ships *with* the error and is gone once it fires. No error, no breadcrumbs.
+- **Logs** (next lesson) are persistent, queryable lines that exist whether or not anything ever throws.
+- **The audit log** (from the security chapter) is durable domain events kept for compliance.
+
+Three different stores, three different lifetimes, three different questions. Confusing the first two is the classic beginner mistake — a breadcrumb is not "a log that only Sentry can see."
+
+You add custom breadcrumbs where the stack trace alone won't explain the failure:
+
+```ts
+Sentry.addBreadcrumb({
+  category: 'invoice',
+  message: 'Loaded invoice for billing',
+  data: { invoiceId },
+});
+```
+
+The decision rule is sharp: **add a breadcrumb where the failure context isn't recoverable from the stack.** The stack tells you *which line*; it doesn't tell you *which invoice*, *which webhook event*, or *which step of a multi-step action* was in flight. So the high-value places are webhook handlers (drop the event id and type), background jobs (the job id and the shape of its input), and multi-step actions (which step ran before it broke). Where the stack already says everything, skip it — a breadcrumb on every function entry is just noise that buries the signal.
+
+The diagram below makes the contrast literal: a bounded breadcrumb trail terminating in an exception, set beside the open-ended log stream that exists regardless.
+
+<BreadcrumbTrailVsLogStream />
+
+Lock in the distinction with a quick round.
+
+<TrueFalse instructions="Each claim is about which of the three stores — breadcrumbs, logs, or the audit log — fits the job.">
+  <Statement answer="false">
+    Breadcrumbs are queryable across all of your events, like a database you can filter and search after the fact.
+    <TfWhy>Breadcrumbs are per-event and ephemeral — the trail attaches to the one error that fires next, then it's gone. The persistent, queryable store is the log stream (next lesson), not breadcrumbs.</TfWhy>
+  </Statement>
+
+  <Statement answer="true">
+    A breadcrumb is dropped after its error fires.
+    <TfWhy>The trail ships *with* the error and is cleared once it does. No error, no breadcrumbs — they only ever exist as context attached to a captured event.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    To record a successful payment for a compliance audit, you add a breadcrumb.
+    <TfWhy>That's the durable audit log's job (from the security chapter) — domain events kept for compliance. Breadcrumbs vanish after an error fires and don't exist at all if nothing throws, so a *successful* payment would never be recorded by one.</TfWhy>
+  </Statement>
+
+  <Statement answer="true">
+    A log line exists even when no error is thrown.
+    <TfWhy>Logs are persistent records that exist whether or not anything ever fails — that's exactly the shape that lets you "replay the request" after the fact. Breadcrumbs, by contrast, only materialise alongside an error.</TfWhy>
+  </Statement>
+</TrueFalse>
+
+## Sentry on the client, and from your error boundaries
+
+So far every throw we've routed has been server-side. But the contrast figure at the top promised a *client* error too, and the routing exercise had one item — the unhandled rejection — that landed in neither server path. This section closes that loop: the other surfaces a throw can come from.
+
+**The client SDK is its own engine.** `instrumentation-client.ts` runs Sentry in the browser; `sentry.server.config.ts` and `sentry.edge.config.ts` run it on the server. They share **one DSN and the same release tag** — which is the quietly important part. Because the release tag matches, a client error and a server error from the same deploy group under the same release, and you can reason about a bad deploy as one thing instead of two disconnected piles. The client SDK auto-captures unhandled promise rejections and console errors (via its `captureConsoleIntegration`); the server SDK captures via `onRequestError` plus the manual `captureException` you wired. That's the answer to the exercise item that fit neither server path: an unhandled rejection in a client component is the *client* SDK's job, and it's already handled.
+
+**Your error boundaries are the second surface.** Back in the App Router chapter you built `error.tsx` and `global-error.tsx` — the components Next.js renders when a render throws, each receiving the thrown `error` as a prop. The wizard wires `Sentry.captureException(error)` into `global-error.tsx`'s `useEffect`, so the top-level boundary reports. But — and this is the omission that bites people — **it does not wire your per-segment `error.tsx` files. Those are yours to add.** A segment boundary that doesn't call `captureException` swallows its error as far as Sentry is concerned.
+
+There's one detail that makes the segment-boundary capture correct rather than just present: the `digest`. Next.js attaches a <Term definition="An opaque hash Next.js puts on a server error so the client and server sides can be correlated.">`digest`</Term> to errors that originated on the server. Thread it through when you capture from `error.tsx` and the client boundary's report links up with the server-side event instead of grouping as an unrelated client error. A digest is high-cardinality, so it rides as *context* on the event, not as a tag — exactly the discipline from the last two sections.
+
+<CodeVariants>
+  <CodeVariant label="global-error.tsx — wizard-provided">
+    <div data-mark-color="blue">
+
+    ```tsx
+    'use client';
+
+    import * as Sentry from '@sentry/nextjs';
+    import { useEffect } from 'react';
+
+    export default function GlobalError({ error }: { error: Error & { digest?: string } }) {
+      useEffect(() => {
+        Sentry.captureException(error);
+      }, [error]);
+
+      return (
+        <html lang="en">
+          <body>{/* fallback UI */}</body>
+        </html>
+      );
+    }
+    ```
+
+    </div>
+    **Given.** The wizard covers the top-level boundary — the one that catches errors the root layout can't.
+  </CodeVariant>
+
+  <CodeVariant label="error.tsx — your job">
+    ```tsx ins={12-14}
+    'use client';
+
+    import * as Sentry from '@sentry/nextjs';
+    import { useEffect } from 'react';
+
+    export default function Error({
+      error,
+    }: {
+      error: Error & { digest?: string };
+    }) {
+      useEffect(() => {
+        Sentry.captureException(error, {
+          contexts: { nextjs: { digest: error.digest } },
+        });
+      }, [error]);
+
+      return <ErrorState />;
+    }
+    ```
+
+    **Yours.** Segment boundaries need the same capture, plus the `digest` in `contexts` so the report joins the server-side group instead of standing alone.
+  </CodeVariant>
+</CodeVariants>
+
+:::caution
+The wizard wires `global-error.tsx` and stops there. Every per-segment `error.tsx` you add elsewhere in the app needs its own `captureException` — without it, errors caught by that boundary never reach Sentry, and nothing warns you. Treat "added a boundary" and "added the capture" as one task.
+:::
+
+## `beforeSend`: the redaction floor, and keeping the quota sane
+
+Two closing concerns, both flavors of one idea: don't let the tool you just installed hurt you. The first is safety — don't leak. The second is economics — don't overspend.
+
+**Redaction, via `beforeSend`.** `beforeSend` is a hook that runs on every event right before it's sent, your last chance to strip anything sensitive the SDK might have swept up incidentally — request bodies on transactions, a query string carrying a token. The course's posture: strip `password`, `token`, `apiKey`, and `Authorization` from event request data, and *let user emails and IDs through* because, again, those are operator-side by the error-handling chapter's decision. The thing to internalize is that this is the **same redaction posture as your logger** — one denylist concept, two enforcement points. Sentry enforces it in `beforeSend`; pino enforces it in its `redact` config (a later lesson in this chapter owns the full denylist and the reasoning behind it). You're not inventing a second policy; you're applying the same one at a second door.
+
+**Sampling.** Not every kind of event costs the same. Error events are cheap; performance traces and session replays cost meaningfully more. This chapter's floor is deliberately simple: **100% of errors, 0% of traces, 0% of replays.** You'll raise trace sampling when performance traces earn their weight (the performance chapter), and replay stays off because PostHog owns it next chapter. Here's the part to not be confused by: Sentry's own docs and the wizard seed `tracesSampleRate: 0.1` for production. We're turning that down to `0` on purpose — traces are owned later, and this chapter's job is errors-only. That's an intentional course choice, not a mistake; you're overriding a sensible default for a reason.
+
+<div data-mark-color="orange">
+
+```ts title="sentry.server.config.ts" {4-5} ins={9-10}
+Sentry.init({
+  dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
+  release: process.env.VERCEL_GIT_COMMIT_SHA,
+  tracesSampleRate: 0, // raise when traces earn weight (perf chapter)
+  replaysSessionSampleRate: 0, // replay owned by PostHog next chapter
+  beforeSend(event) {
+    const headers = event.request?.headers;
+    if (headers) {
+      delete headers.Authorization;
+      delete headers.Cookie;
+    }
+    return event;
+  },
+});
+```
+
+</div>
+
+**Cost and quota.** Sentry's free tier is roughly 5k errors a month; the paid plan starts where the volume earns it. What you watch for is the small number of shapes that can burn a month's quota in an afternoon: a tight loop calling `captureException`, a webhook signature mismatch that fires on every single retry, or a missing-tag error that fragments into a high-cardinality pile of near-duplicate groups. Two relief valves, named so you know they exist: `level: 'warning'` for events you want tracked but that aren't page-worthy, and `Sentry.withScope(scope => scope.setFingerprint([...]))` to force known-noisy errors to group together. Deep fingerprinting is its own topic; one mention is enough here.
+
+:::caution
+The fastest way to blow your Sentry quota is an error inside a retry loop — a webhook that fails signature verification, retries, fails again, and captures on every attempt. Capture *once* at the seam, drop the noisy ones to `warning`, and fingerprint the rest so they collapse into a single issue.
+:::
+
+## Verifying the wire end to end
+
+The introduction promised that a deliberate throw from both a Server Action and a client component would arrive grouped, readable, release-tagged, and context-attached. Close the loop by proving it — don't trust "the wizard said it worked." This is also the shape the project at the end of this unit will automate, so it's worth doing by hand once.
+
+<Steps>
+1. **Throw from a Server Action.** Temporarily make an `authedAction` throw (or use the wizard's example route once). Trigger it from the UI — confirm an event appears in Sentry. *(Wired by: the caught path → `captureException`.)*
+
+2. **Throw from a client component.** Throw in a client `onClick` handler. Confirm a second event appears. *(Wired by: the client SDK.)*
+
+3. **Confirm grouping.** Fire the same throw a few times — confirm the occurrences collapse into one issue with a count, not separate issues.
+
+4. **Read the stack.** Open the issue (from a production/preview deploy) and confirm the stack points at your `.ts` source, not a minified `chunk`. *(Wired by: source maps.)*
+
+5. **Check the release.** Confirm the issue is tagged with the deploy's release (the commit SHA). *(Wired by: releases + `VERCEL_GIT_COMMIT_SHA`.)*
+
+6. **Check the context.** Confirm the user and org are attached and filterable. *(Wired by: `setUser` + tags.)*
+
+7. **Clean up.** Remove the deliberate throw (and delete the wizard's example route).
+</Steps>
+
+The point of wiring all of this was never the wiring — it was the workflow it unlocks when a real event shows up at 2am. Rehearse that order. Once an issue exists, you reconstruct an incident in a fixed sequence; drag the steps into it.
+
+<Sequence instructions="Order the on-call reconstruction workflow you run once a Sentry event exists — widen first, then narrow.">
+  <Step>Open the grouped issue and read the occurrence count — how widespread is it?</Step>
+  <Step>Read the symbolicated stack trace — which line in which file threw?</Step>
+  <Step>Check the release and author — which deploy introduced it?</Step>
+  <Step>Read the breadcrumb trail — what happened in the seconds before?</Step>
+  <Step>Filter by the user / org tag — is it one customer or everyone?</Step>
+</Sequence>
+
+That last step — narrowing to a user or org — is where this lesson hands off to the next one. In a couple of lessons, the move after "filter by org" becomes "copy the `requestId` off this event and jump straight to the matching log lines," because the error surface and the log surface will share that ID. You've built the first surface. Next we build the second.
+
+## Going deeper
+
+The exact file set the wizard writes shifts as the SDK evolves, so when a config detail here ages, the canonical reference is Sentry's own manual-setup guide. And the Sentry–Vercel integration is the recommended way to wire releases and tokens — its doc is the one to follow.
+
+<CardGrid>
+  <ExternalResource
+    title="Sentry Next.js SDK — manual setup"
+    href="https://docs.sentry.io/platforms/javascript/guides/nextjs/manual-setup/"
+    icon="simple-icons:sentry"
+    iconColor="#362D59"
+    description="The source of truth for the config files and instrumentation.ts exports when the wizard's output ages."
+  />
+  <ExternalResource
+    title="Sentry breadcrumbs"
+    href="https://docs.sentry.io/platforms/javascript/guides/nextjs/enriching-events/breadcrumbs/"
+    icon="simple-icons:sentry"
+    iconColor="#362D59"
+    description="What Sentry auto-captures, how to add custom crumbs, and the beforeBreadcrumb hook to drop noise."
+  />
+  <ExternalResource
+    title="Scrubbing sensitive data"
+    href="https://docs.sentry.io/platforms/javascript/data-management/sensitive-data/"
+    icon="simple-icons:sentry"
+    iconColor="#362D59"
+    description="The full beforeSend redaction story plus server-side scrubbing — the policy the lesson's denylist applies."
+  />
+  <ExternalResource
+    title="Sentry + Vercel integration"
+    href="https://docs.sentry.io/integrations/deployment/vercel/"
+    icon="simple-icons:vercel"
+    iconColor="#000000"
+    description="Auto-injects the org/project/token/DSN envs and notifies Sentry on every deploy."
+  />
+</CardGrid>

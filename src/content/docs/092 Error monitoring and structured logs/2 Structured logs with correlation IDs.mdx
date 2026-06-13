@@ -1,0 +1,485 @@
+---
+title: Structured logs with correlation IDs
+tagline: Emit queryable JSON logs with Pino and thread a shared requestId through every line using AsyncLocalStorage, so logs and Sentry events join back to one request.
+chapter-id: 92
+course-progress: 0.00005
+sidebar:
+  order: 2
+  label: Structured logs
+---
+
+import RequestIdJourney from '../../../components/lessons/092/2/RequestIdJourney.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Sequence from '../../../components/exercises/sequence/Sequence.astro';
+import Step from '../../../components/exercises/sequence/Step.astro';
+import Dropdowns from '../../../components/exercises/dropdowns/Dropdowns.astro';
+import DropdownChoice from '../../../components/exercises/dropdowns/DropdownChoice.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+A Stripe webhook handler 500s, and it only happens for one org. You open the Sentry event from the last lesson and it tells you a lot: the stack trace, the line that threw, the org tag, the release it shipped in. It tells you *what threw*. It does not tell you *what happened* — the last step that succeeded before the throw, the upstream response the handler got back, whether the idempotency ledger already had this event. That narrative isn't in the stack trace. It lives in the log lines the request emitted on its way to the crash.
+
+That's the second surface this chapter promised. The last lesson built the error surface; this one builds the log surface — and, more importantly, the single value that joins the two. Every server-side log line and every Sentry event for the same request is going to carry the same `requestId`, so an on-call engineer standing in a Sentry event can copy that ID and pivot straight to the per-request log narrative. (The pivot itself — the UI where you paste the ID and read the story — is a couple of lessons out; today we plant the shared ID and the discipline that makes the logs worth pivoting to.)
+
+That `requestId` is a <Term definition="A value shared across otherwise-separate records — here, log lines and Sentry events — so they can be joined back to one request.">correlation ID</Term>, and threading it through every log line is the load-bearing pattern of this lesson. But before we can correlate logs, the logs have to be worth correlating. So we start one step earlier, with the shape of a single line.
+
+## Why a log line is a JSON object, not a sentence
+
+Here is the threshold most people cross without noticing. The default tool — `console.log` — invites you to write a sentence: `console.log('user ' + userId + ' processed invoice ' + id)`. It runs, it shows up in Vercel's function output, and for about a week it feels fine. Then the webhook 500s for one org, you go looking, and you discover what that sentence actually bought you: substring search over the last hour, and nothing else. You can grep for `processed invoice`. You cannot ask "show me every error for org_123 where the request took longer than a second," because that question requires the machine to understand `org_123` and *a second* as values, and all it has is a flat string.
+
+The fix is to stop writing sentences and start emitting objects. Compare the two:
+
+<CodeVariants>
+  <CodeVariant label="String — grep-only">
+    <div data-mark-color="red">
+
+    ```ts {1}
+    console.log('user ' + userId + ' processed invoice ' + invoiceId);
+    ```
+
+    </div>
+    **Grep-only.** The whole line is one opaque string. The only question you can ask of it later is "does this substring appear?" — IDs, durations, and levels are baked into prose the index can't see.
+  </CodeVariant>
+
+  <CodeVariant label="Structured — queryable">
+    <div data-mark-color="green">
+
+    ```ts "{ orgId, invoiceId, durationMs }"
+    logger.info({ orgId, invoiceId, durationMs }, 'invoice processed');
+    ```
+
+    </div>
+    **Queryable.** Same event, but `msg` is the human label and every other fact is a named key. The destination indexes each one, so `level:error AND orgId:"org_123" AND durationMs:>1000` becomes a filter instead of a regex prayer.
+  </CodeVariant>
+</CodeVariants>
+
+Read the structured version closely, because its shape is the contract for everything that follows. The message — `'invoice processed'` — is a short, stable phrase a human reads. Everything that varies per request is a key on the object: `orgId`, `invoiceId`, `durationMs`. The log destination we wire up later treats every one of those keys as a column you can filter and aggregate on. The string version threw all of that away the moment it concatenated.
+
+So the discipline, stated once and meant literally: **every server-side log line is one JSON object.** After this lesson you stop writing string log lines in server code. The phrase goes in the message; the facts go in keys.
+
+That raises an obvious question — which keys? If every line invented its own, the dashboards would be chaos. So the codebase fixes a base set of keys that *every* line carries, and lets each call site append its own on top:
+
+- `level` — `debug` / `info` / `warn` / `error`.
+- `time` — an ISO 8601 timestamp.
+- `msg` — the short, low-cardinality phrase.
+- `requestId` — the correlation ID that joins this line to its siblings and to Sentry.
+- `userId?` and `orgId?` — who and which tenant, when known.
+- `service` — which deployable emitted it (`'app'`, `'worker'`).
+- `env` — `production` / `preview` / `development`.
+
+Then domain keys append per line: `invoiceId`, `webhookEventType`, `durationMs`, whatever the event is about. A fixed base set is what keeps a dashboard built today still readable next quarter and consistent across two services that share it.
+
+Here's the part worth holding onto, because it makes the next two sections feel like payoffs instead of chores. You don't hand-write most of those keys at the call site. `time` and `level` come from the logger for free. `service`, `env`, and `release` get baked in once when you configure the logger — that's the next section. And `requestId`, `userId`, `orgId` get stamped on automatically by a per-request child logger — that's the section after. By the time you're calling `logger.info(...)` in a deep helper, the only keys you type are the domain ones. The rest ride along because you wired them once.
+
+Let's wire that first piece now.
+
+## The logger: `lib/logger.ts`
+
+The whole point of a logger module is to make the right thing the only thing you have to type. You configure the base keys, the redaction, and the output once, in one file, and every other file imports a ready-made `logger` and just calls it. The 2026 default for this in Node is <Term definition="The fast, structured JSON logger that's the Node default in 2026. Small, asynchronous, with a child-logger API that makes correlation IDs ergonomic.">pino</Term> — it's fast, it emits JSON by design, and it has a child-logger API that, as you'll see shortly, makes correlation nearly free. (You'll hear `winston`, `bunyan`, and `consola` named as alternatives; for this stack there's no reason to reach for them.)
+
+Here's the file. Read it once top to bottom, then step through it.
+
+<AnnotatedCode lang="ts" code={`
+import 'server-only';
+import pino from 'pino';
+
+export const logger = pino({
+  base: {
+    service: 'app',
+    env: process.env.VERCEL_ENV ?? 'development',
+    release: process.env.VERCEL_GIT_COMMIT_SHA,
+  },
+  level: process.env.LOG_LEVEL ?? 'info',
+  serializers: { err: pino.stdSerializers.err },
+  redact: redactionConfig,
+});
+`}>
+  <AnnotatedStep meta={`"'server-only'"`} color="blue">
+    The logger reads server environment variables and must never end up in a client bundle. The `server-only` import makes that a build error rather than a leak — the same rule every adapter in `lib/` follows.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5-9}" color="blue">
+    `base` is the set of keys pinned onto every single line this logger emits. Three keys, configured once: which service this is, which environment it's running in, and which release it shipped in. No call site ever types these again.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{8}" color="green">
+    `release` reads `VERCEL_GIT_COMMIT_SHA` — and that is deliberately the *same* value Sentry tags its releases with from the last lesson. So your logs and your Sentry events now join on the release, not just on the `requestId`: a regression you see in Sentry maps to the exact deploy in your logs too.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{10}" color="blue">
+    The minimum level to emit, read from `LOG_LEVEL`. `info` in production (skip the chatty `debug` lines), `debug` locally where you want them. Levels are the back half of this lesson.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{11}" color="blue">
+    A serializer turns an awkward value into clean JSON. `pino.stdSerializers.err` renders a thrown `Error` as `{ type, message, stack, cause }` — and because it walks the `cause` chain, a wrapped-and-rethrown error keeps its full chain in the log, the same discipline you built around `Error.cause` earlier in the course.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{12}" color="blue">
+    Redaction also lives here — a denylist of keys that get stripped before a line is serialized, so PII and secrets never reach the destination. We're leaving the contents of that list to the next lesson; just note the slot exists, and that redaction is structural (configured once, here) rather than something you remember at each call site.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+A note on the `process.env.VERCEL_*` reads, because you've been trained to route environment variables through the validated `env.ts` schema. The logger is intentionally an exception, and it sits in the same tier as the Sentry config files from the last lesson — these run at the very edge of the process, before and around the app, and they read the platform's own variables directly. Keep the logger consistent with the Sentry setup: direct `process.env`, not the schema.
+
+<VideoCallout videoId="fluDEkA1h6w" videoTitle="Pino JS — Logging in JavaScript / Node.js applications">
+  Better Stack's 40-minute pino deep-dive — chapters for child loggers, serializers, redaction, and transports if you want every option behind the config above.
+</VideoCallout>
+
+### The transport footgun that breaks on Vercel
+
+Now the trap, because this one is specifically the teaching point and it bites people who learned pino from a blog post. pino has a feature called a <Term definition="pino's pluggable log-shipping mechanism. Runs off the main thread in a worker thread for performance — which is exactly why it breaks on serverless cold paths.">transport</Term> — a pluggable shipper that takes your log lines and does something with them: pretty-print them, send them to a service, whatever. For performance, a transport runs in a **worker thread**, off the main thread.
+
+That worker thread is the problem. Serverless functions on Vercel are torn down and spun back up constantly, and when the function tears down between invocations, the worker thread goes with it — sometimes mid-flush. The result is a transport that *silently* breaks on cold paths: logs vanish and nothing tells you. Pasting a `pino.transport(...)` block from a tutorial into your production config is how you ship a logger that drops lines in exactly the incident you wrote it for.
+
+The fix is almost anticlimactic: in production, **don't configure a transport at all.** With no transport, pino writes JSON straight to synchronous <Term definition="A process's standard output stream. On Vercel, whatever a function writes to stdout is captured line-by-line — which is exactly how your logs get out without a transport.">stdout</Term>, and Vercel captures stdout line by line. That captured stream is what the destination (a couple of lessons out) drains and ships onward. Synchronous stdout is the serverless-correct default, and it's what you get by writing nothing.
+
+A transport still earns its place in one spot: local development, where raw JSON is miserable to read and `pino-pretty` turns it into colored, aligned lines. So you gate it on the environment — the two panes below abbreviate the config from above to spotlight just that gating.
+
+<CodeVariants>
+  <CodeVariant label="Production — stdout">
+    ```ts title="src/lib/logger.ts"
+    export const logger = pino({
+      base,
+      level: process.env.LOG_LEVEL ?? 'info',
+    });
+    ```
+    **No transport.** pino writes JSON to synchronous stdout; Vercel captures it. This is the serverless-safe default — there's no worker thread to tear down.
+  </CodeVariant>
+
+  <CodeVariant label="Development — pino-pretty">
+    <div data-mark-color="green">
+
+    ```ts title="src/lib/logger.ts" "transport"
+    const transport =
+      process.env.NODE_ENV !== 'production'
+        ? { target: 'pino-pretty' }
+        : undefined;
+
+    export const logger = pino({ base, level, transport });
+    ```
+
+    </div>
+    **Transport, dev-only.** Gated behind `NODE_ENV !== 'production'`, so `pino-pretty` gives you readable local lines and production never touches a worker thread.
+  </CodeVariant>
+</CodeVariants>
+
+:::caution
+Do not paste a `pino.transport(...)` config into your production logger. Production logs go to stdout; transports are a development-only convenience.
+:::
+
+That's the logger configured: base keys baked in, errors serialized, output serverless-safe. What it's still missing is the key that makes a line *findable* — the `requestId`. That's next, and it's the heart of the lesson.
+
+## Threading `requestId` through AsyncLocalStorage
+
+Here's the problem in its raw form. A `requestId` is born at the request boundary — the very first moment Next.js hands you the request. The log line that needs it might be emitted six function calls deep, inside a `/lib` query helper that has no idea a request is even happening. How does the ID get from the boundary down to that helper?
+
+The obvious answer is the bad one: pass it as a parameter. Add a `requestId` argument to the action, which passes it to the service, which passes it to the query helper, which passes it to the logger. That's prop-drilling, but for the server — every function in the call stack grows a parameter it only carries so something deeper can use it, and the moment one link forgets, the chain breaks. We need a request-scoped store that any code in the call stack can *read* without anyone passing it down.
+
+Node has a built-in answer, and we'll build up to it in three moves: what the tool is, where the ID comes from, and how it reaches every call site.
+
+### Move 1: the store that follows the call stack
+
+The tool is <Term definition="A Node API (node:async_hooks) that keeps a value alive across an async call chain, isolated per request. Code deep in the stack reads it without anyone passing it down.">AsyncLocalStorage</Term>, from Node's `node:async_hooks` module — ALS for short. The mental model: you open a "scope" with a value, and *anything* that runs inside that scope — synchronously or through awaits, however deep — can read that value back, with no parameter passing. When the scope ends, the value is gone. Crucially it's isolated per request: two requests in flight at once each see their own value, never each other's.
+
+The shape is two methods. `als.run(value, callback)` opens a scope: it sets `value` as the store and runs `callback` inside it. `als.getStore()` reads the current store from anywhere inside that callback's call stack, no matter how deep. That `getStore()` reaching down the stack without a parameter is the whole trick — it's what replaces the prop-drilling.
+
+One platform fact that makes this available where we need it: in Next.js 16, `proxy.ts` runs on the Node runtime, so `node:async_hooks` is there at the request boundary. That matters because the boundary is where we'll open the scope.
+
+<VideoCallout videoId="ukefzxZ_G9U" videoTitle="Async Context Tracking in Node with Async Local Storage API ft. James Snell">
+  Node core maintainer James Snell walks through the same prop-drilling problem and how `run`/`getStore` solve it (17 min).
+</VideoCallout>
+
+### Move 2: where the `requestId` comes from
+
+Before we can store the ID, we need one. The rule at the entry seam is **read-or-generate**:
+
+- **Read** the incoming `x-request-id` header if it's present. Vercel's edge and many proxies already stamp one on the request; if there's an ID upstream, you adopt it so the whole hop shares one value.
+- **Generate** one if there isn't. The course standard is `uuidv7()` — the same time-ordered ID you use for primary keys, already in your toolbox, and sortable by creation time, which is a nice property for a log ID. (`crypto.randomUUID()` is the zero-dependency fallback if you don't want to pull in the helper.)
+- **Echo** it back on the response as `x-request-id`. Now a client that hits an error can quote the exact ID in a bug report, and the operator searches for that string and lands on the request.
+
+### Move 3: the ALS module and the child logger
+
+Now we put it in a module of its own, because the store has a *shape* — a contract other code depends on — and that shape deserves a named home and a type. Here's `lib/request-context.ts`.
+
+<AnnotatedCode lang="ts" code={`
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+export type RequestContext = {
+  requestId: string;
+  userId?: string;
+  orgId?: string;
+};
+
+const storage = new AsyncLocalStorage<RequestContext>();
+
+export const runWithContext = <T>(context: RequestContext, fn: () => T): T =>
+  storage.run(context, fn);
+
+export const getRequestContext = (): RequestContext | undefined =>
+  storage.getStore();
+`}>
+  <AnnotatedStep meta="{1}" color="blue">
+    The import. `AsyncLocalStorage` is built into Node — no dependency, it ships with the runtime.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{3-7}" color="blue">
+    The store's shape, written down as a type because it's a seam contract that two entry points and every reader depend on. `requestId` is always present; `userId` and `orgId` are optional, because at the very first seam — the proxy — authentication hasn't happened yet.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{9}" color="blue">
+    One ALS instance for the whole app, typed to the store shape. Notice it's at module scope, but it holds *no value* on its own — it's just the mechanism. The value only exists inside a `run` call. (Putting an actual store value at module scope is the classic ALS bug; we'll name it in a second.)
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{11-12}" color="blue">
+    A thin wrapper over `storage.run`. Call it at an entry seam with a fresh context and the work to run; everything inside that work can now read the context.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{14-15}" color="blue">
+    The reader any code in the stack calls to get the current context — or `undefined` if it's running outside a request scope (a startup task, say). This is the call that replaces prop-drilling.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Here's the footgun I promised to name, because it's the one beginners hit and it fails *silently*. The `storage` instance lives at module scope — that's correct, it's shared. The *value* must not. If you ever set the store once at module load (a single shared context object) instead of opening a fresh scope per request inside `runWithContext`, every request reads and overwrites the same object, and one request's `userId` leaks into another's logs. The whole point of ALS is per-request isolation, and you only get it by calling `run` per request. Module-scope instance, per-request value — never the other way around.
+
+And now the payoff that ties the module back to the logger. pino loggers have a `child` method: `logger.child(extraKeys)` returns a <Term definition="A derived logger that pre-binds a set of extra keys onto every line it emits, on top of its parent's keys.">child logger</Term> that stamps `extraKeys` onto every line it emits. Point it at the request context and you get a logger pre-loaded with the request's IDs:
+
+<CodeVariants>
+  <CodeVariant label="Base logger — uncorrelated">
+    <div data-mark-color="red">
+
+    ```ts "logger.info({ invoiceId }, 'invoice processed')"
+    import { logger } from '@/lib/logger';
+
+    logger.info({ invoiceId }, 'invoice processed');
+    // → { ..., msg: 'invoice processed', invoiceId }  — no requestId
+    ```
+
+    </div>
+    **Uncorrelated.** A line through the base `logger` carries the base keys and your domain key — but no `requestId`, `userId`, or `orgId`. It can't be joined back to a request or to its Sentry event. This is the line you *don't* want.
+  </CodeVariant>
+
+  <CodeVariant label="Request child — correlated">
+    <div data-mark-color="green">
+
+    ```ts "logger.child(getRequestContext() ?? {})"
+    import { logger } from '@/lib/logger';
+    import { getRequestContext } from '@/lib/request-context';
+
+    const log = logger.child(getRequestContext() ?? {});
+    log.info({ invoiceId }, 'invoice processed');
+    // → { ..., requestId, userId, orgId, invoiceId }  — joinable
+    ```
+
+    </div>
+    **Correlated.** The child pre-binds the request's `requestId`/`userId`/`orgId`, so every `log.info(...)` after it carries them with zero per-call-site effort. This line joins back to its request and to Sentry.
+  </CodeVariant>
+</CodeVariants>
+
+Sit with what tab B buys you. Once you've made that child logger, correlation is *structural* — every line it emits is joinable, and you never type a `requestId` again. The alternative, tab A's world, is correlation as per-call-site discipline: remembering to attach the right ID at every single `logger.info` in the codebase, and silently losing the join the first time anyone forgets. The child logger turns a discipline you'd inevitably break into a property of the logger itself.
+
+There's one honest gap left, and it's the subtle part. The child reads `getRequestContext()` — which only returns something if some seam *opened* a scope with `runWithContext`. So: where do we open it?
+
+### Two seams own the context: `proxy.ts` and `authedAction`
+
+Your instinct will be to open the scope once, in `proxy.ts`, since every request flows through there. That instinct is wrong in a way that's worth understanding, because getting it wrong produces logs that look correct in development and lose their `requestId` in production.
+
+Here's the fact: **Next.js does not propagate an ALS scope set in `proxy.ts` into your route handlers, server components, or server actions.** The proxy and the handler run in execution contexts that don't share the proxy's ALS frame — this is a known, confirmed boundary in Next.js, not a configuration you can flip. A scope you open in the proxy covers the proxy's own work and nothing downstream. So you establish the context at **each** entry seam independently. Two seams, not one.
+
+The ALS *scope* doesn't cross that boundary, but a *header* does — so the proxy forwards the `requestId` on the request itself (an `x-request-id` request header), and the second seam reads it back to open its own scope with the very same ID. The value survives the hop even though the scope doesn't. That's the thread that keeps it one `requestId` end to end.
+
+An <Term definition="The single chokepoint every request of a kind passes through — where cross-cutting setup like auth, logging, and context belongs, so you wire it once instead of at every handler.">entry seam</Term> is a chokepoint every request of a kind passes through. You already own two of them.
+
+<CodeVariants>
+  <CodeVariant label="Seam 1 — proxy.ts">
+    <div data-mark-color="blue">
+
+    ```ts title="src/proxy.ts" "runWithContext({ requestId }, () => {" "{ requestId }"
+    export default function proxy(request: NextRequest) {
+      const requestId = request.headers.get('x-request-id') ?? uuidv7();
+      const requestHeaders = new Headers(request.headers);
+      requestHeaders.set('x-request-id', requestId);
+
+      return runWithContext({ requestId }, () => {
+        const response = NextResponse.next({ request: { headers: requestHeaders } });
+        response.headers.set('x-request-id', requestId);
+        return response;
+      });
+    }
+    ```
+
+    </div>
+    **Bare context, at the edge.** The proxy reads-or-generates the `requestId`, forwards it on the request (so the second seam can recover it), opens the scope with just that, and echoes the ID on the response. No `userId`/`orgId` yet — auth hasn't run.
+  </CodeVariant>
+
+  <CodeVariant label="Seam 2 — authedAction">
+    <div data-mark-color="green">
+
+    ```ts title="src/lib/authed-action.ts" "{ requestId, userId: ctx.user.id, orgId: ctx.orgId }" "runWithContext("
+    const ctx = await resolveSession();
+    const requestId =
+      (await headers()).get('x-request-id') ?? uuidv7();
+
+    return runWithContext(
+      { requestId, userId: ctx.user.id, orgId: ctx.orgId },
+      () => fn(ctx, input),
+    );
+    ```
+
+    </div>
+    **Enriched context, after auth.** The scope didn't survive the proxy, so the wrapper recovers the same `requestId` from the `x-request-id` header the proxy forwarded — then opens its own scope, now with `userId` and `orgId`. This is where most of your domain logging happens.
+  </CodeVariant>
+</CodeVariants>
+
+Notice the difference between the two store objects: the proxy's is `{ requestId }`, the action wrapper's is `{ requestId, userId, orgId }`. That's the whole reason two seams isn't just a workaround for a framework limitation — it's where the *enriched* context, the one with the actor and tenant attached, actually gets to exist. Most of your domain logs are emitted inside actions, so most of them want the enriched store.
+
+Now reconnect this to the last lesson, because here is where the chapter's promise gets paid off in code. The `authedAction` wrapper's catch already calls `logger.error(...)` and `Sentry.captureException(...)` — you wrote that last lesson. This lesson is what makes those `logger.error` lines carry a `requestId`, because they're now emitting inside the scope this wrapper opened. And the join works in both directions only if the *same* `requestId` lands on the Sentry event:
+
+<div data-mark-color="green">
+
+```ts title="src/lib/authed-action.ts" {1}
+Sentry.getCurrentScope().setContext('request', { requestId });
+Sentry.captureException(error, {
+  tags: { seam: 'authedAction', action: fn.name },
+  user: { id: ctx.user.id, email: ctx.user.email },
+});
+```
+
+</div>
+
+Note *where* the `requestId` goes: on the Sentry **context**, not as a tag. That's the exact rule the last lesson drilled — a `requestId` is high-cardinality and ephemeral, so it rides as context Sentry stores but doesn't try to index as a filter dimension. The point isn't to filter Sentry by `requestId`; it's that when you're reading one event, the `requestId` is sitting right there to copy and paste into your log search. Same ID, two surfaces, one incident.
+
+That's the entire mechanism. Let's watch one request carry it end to end.
+
+<RequestIdJourney />
+
+Step 3 is the one to dwell on: the helper that emits the line never received a `requestId`, a `userId`, or an `orgId` as an argument. It called `getRequestContext()`, reached up through the ALS scope opened two frames above it, and got all three. Depth doesn't matter — a helper ten frames deep reads the same store as one frame deep. That's the prop-drilling you didn't have to do.
+
+#### A child logger per seam
+
+One small habit that compounds. Inside a specific handler, narrow the logger to what that handler is doing by making *its own* child:
+
+<div data-mark-color="blue">
+
+```ts title="src/app/api/webhooks/stripe/route.ts" {1-5}
+const log = logger.child({
+  seam: 'webhook.stripe',
+  webhookEventId: event.id,
+  stripeEventType: event.type,
+});
+log.info('webhook received');
+```
+
+</div>
+
+Because child loggers compose, this `log` carries the seam name and the webhook keys *on top of* the request's `requestId`/`userId`/`orgId` — every `log.info(...)` in the handler is now stamped with all of it. The convention is one child logger per seam, with the seam name matching the file (`webhook.stripe`), so a glance at any line tells you which seam emitted it. Cheap to make, and the file's logger now knows what the file is doing.
+
+Before moving on, let's make sure the journey is in your fingers, not just your eyes.
+
+<Sequence instructions="Order the journey of a requestId through one request, from arrival to incident pivot.">
+  <Step>`proxy.ts` reads or generates the `requestId`</Step>
+  <Step>`runWithContext` opens the request scope</Step>
+  <Step>auth resolves and `authedAction` enriches the scope with `userId` and `orgId`</Step>
+  <Step>a deep `/lib` helper's child logger stamps the `requestId` onto a line</Step>
+  <Step>the same `requestId` is set on the Sentry event's context</Step>
+  <Step>the `requestId` is echoed back on the response as `x-request-id`</Step>
+</Sequence>
+
+## Levels, cardinality, and retiring console.log
+
+You've got a logger that emits correlated JSON. The last thing standing between that and logs you actually trust is daily-use discipline: which level to use, what to put in keys, and not quietly slipping back to `console.log`. These three are all the same question — *how do I use this correctly every day?* — so they live together.
+
+### Picking the level
+
+Every line has a level, and the level is a decision, not decoration. The decision rule:
+
+- **`debug`** — high-volume tracing you want while developing and nowhere near production. Which branch a calculation took, the intermediate value. Off in prod via `LOG_LEVEL`.
+- **`info`** — a significant *successful* state change. Signed in. Webhook processed. Job completed. The trap here is treating `info` as a synonym for `console.log`: a routine read — fetching a list to render a page — does **not** earn an `info` line. `info` marks things that *changed*, not things that *happened to run*.
+- **`warn`** — a recoverable abnormality. The thing you expected to be in cache wasn't. A retry fired. A fail-open carve-out triggered and you kept going. Nothing's broken, but someone should know it's happening.
+- **`error`** — a handled or unhandled exception, logged with the `err` serializer. These overlap with Sentry on purpose: the same incident lands in both stores, the stack trace in Sentry and the surrounding request narrative in your logs.
+
+Try a few. Pick the level each moment deserves:
+
+<Dropdowns instructions="Pick the level each logging moment deserves.">
+  - A Stripe webhook was processed successfully and the subscription row updated → <DropdownChoice answer="info" options={['debug', 'info', 'warn', 'error']} />
+  - The rate limiter's Redis call failed, so the limiter fell open and let the request through → <DropdownChoice answer="warn" options={['debug', 'info', 'warn', 'error']} />
+  - A server action caught a thrown error and is about to return the user-safe `Result.err` → <DropdownChoice answer="error" options={['debug', 'info', 'warn', 'error']} />
+  - You're tracing which branch a pricing calculation took, on your machine only → <DropdownChoice answer="debug" options={['debug', 'info', 'warn', 'error']} />
+  - An invitation was accepted and a new member joined the org → <DropdownChoice answer="info" options={['debug', 'info', 'warn', 'error']} />
+</Dropdowns>
+
+### The cost of cardinality
+
+The destination indexes every key, and indexing isn't free — it's why *what* you put in keys matters as much as that you use keys at all. The instinct to build is around <Term definition="The number of distinct values a field can take. High-cardinality fields (like a per-request ID) are expensive to index; low-cardinality fields (like a log level) are cheap.">cardinality</Term>, the same word the last lesson drilled for Sentry tags.
+
+Bounded high-cardinality is fine. `userId` has as many values as you have users — high, but it stops growing when signups stop, and you genuinely want to filter by it. `requestId` is higher still and effectively unbounded, but it's ephemeral: the destination drops it on a TTL, so it never accumulates. Both are exactly what keys are for.
+
+What wrecks an index is free text masquerading as a key. A field like `{ note: 'user clicked the green button while the modal was still animating' }` has unbounded distinct values that never repeat and that nobody will ever filter on — it just bloats the index. Narrative belongs in `msg`, which stays low-cardinality on purpose; structured *facts* belong in keys.
+
+This is also exactly why the `err` serializer is shaped the way it is. The long `stack` string is genuinely high-cardinality free text — but it lives *inside* the structured `{ type, message, stack }` object the serializer builds, not as a top-level free-text key, so it doesn't fragment the index. Which gives a hard rule for errors: **log `{ err }` and let the serializer run.** Never `JSON.stringify(err)` — `Error`'s `message` and `stack` are non-enumerable, so stringify silently drops them and you get `{}`. And never hand-build an `error: err.stack` string field — you've just created the free-text key the serializer was designed to avoid. One more in the same family: don't log whole database rows. The volume and cost are real; log the keys that *identify* the row, not the row.
+
+### Retiring console.log
+
+The discipline only holds if the easy wrong thing stops being available. So after this lesson, **`console.log` in server code is a lint error.** A `no-console` rule, scoped to your server files, fails the build — server logs go through `logger`, full stop.
+
+<div data-mark-color="blue">
+
+```jsonc title="biome.json" {3}
+"overrides": [
+  {
+    "includes": ["src/app/**", "src/lib/**", "src/server/**"],
+    "linter": { "rules": { "suspicious": { "noConsole": "error" } } }
+  }
+]
+```
+
+</div>
+
+That's a sketch of the shape, not a config to copy wholesale — the point is the *scope*, and the scope is deliberately not global. Two carve-outs follow from why the rule exists:
+
+- **Client code keeps `console.error`.** It surfaces in the browser's DevTools where a developer needs it, and the Sentry client SDK's console integration from the last lesson already captures it. The rule is server-scoped, not a blanket ban.
+- **Tests keep `console.log`.** The lint rule excludes them; a quick log while debugging a test isn't a production line.
+
+And one boundary worth drawing clearly so you don't conflate two different streams. Everything in this lesson is the *operational* log — ephemeral, best-effort, the request narrative an operator reads during an incident. That is **not** the audit log you built earlier in the course (`logAudit(tx, event)`): the audit log is durable, transactional, compliance-scoped, and the system of record for who-did-what. Different table, different audience, different rules. When you want "what happened in this request, right now," reach for the logger; when you want "the permanent record of this domain event," reach for the audit log. Don't route one through the other.
+
+So: you can stand up `lib/logger.ts` and the ALS request-context module, open the scope at both entry seams, and emit a correctly-leveled, correctly-correlated line from anywhere in the server. The two surfaces — Sentry and your logs — now share a `requestId`, which is the join the whole chapter is built around. The next lesson decides *what* each seam should log and fills in that redaction denylist so PII and secrets never leave the building. The lesson after ships these lines to a real destination and walks the Sentry-to-logs pivot this `requestId` finally makes possible.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="pino — logging"
+    href="https://getpino.io"
+    icon="lucide:scroll-text"
+    iconColor="#687634"
+    description="The logger's full API: child loggers, serializers, redaction, transports."
+  />
+  <ExternalResource
+    title="Node — AsyncLocalStorage"
+    href="https://nodejs.org/api/async_context.html#class-asynclocalstorage"
+    icon="simple-icons:nodedotjs"
+    iconColor="#5FA04E"
+    description="The built-in async-context API behind the per-request store, with run() and getStore()."
+  />
+  <ExternalResource
+    title="Vercel — Runtime Logs"
+    href="https://vercel.com/docs/logs/runtime"
+    icon="simple-icons:vercel"
+    iconColor="#000000"
+    description="How Vercel captures function stdout line by line — the destination for the transport-free logger."
+  />
+  <ExternalResource
+    title="Log levels explained"
+    href="https://betterstack.com/community/guides/logging/log-levels-explained/"
+    icon="lucide:gauge"
+    iconColor="#8B5CF6"
+    description="A deeper take on debug/info/warn/error and how to choose between them in production."
+  />
+</CardGrid>

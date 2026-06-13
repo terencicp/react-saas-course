@@ -1,0 +1,459 @@
+---
+title: Server-side debugging with the inspector
+tagline: Attach the Node V8 inspector to your local Next.js server with breakpoints, conditional breakpoints, and logpoints, the live third surface alongside Sentry and structured logs for diagnosing server-side bugs.
+chapter-id: 92
+course-progress: 0.00005
+sidebar:
+  order: 5
+  label: Server-side debugging
+---
+
+import { Steps, CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Term from '../../../components/ui/Term.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import Sequence from '../../../components/exercises/sequence/Sequence.astro';
+import Step from '../../../components/exercises/sequence/Step.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import InspectorClients from '../../../components/lessons/092/5/InspectorClients.astro';
+import BreakpointHitReveal from '../../../components/lessons/092/5/BreakpointHitReveal.astro';
+import VscodePausedSession from '../../../components/lessons/092/5/VscodePausedSession.astro';
+import ThreeSurfacesRecap from '../../../components/lessons/092/5/ThreeSurfacesRecap.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+A user clicks a button. The toast says the generic "Something went wrong" — the user-safe half of the operator/user split you have been honoring all chapter. You open Sentry. The stack trace is clean and points straight at a validation predicate in a server action. You copy the `requestId` from the event's request context, open the drain, and filter by it. The per-request narrative is right there: the input *looked valid*, and the predicate *still* returned `false`. Both surfaces agree on **where** the failure is. Neither can tell you **why** an input that looks correct fails the check.
+
+This is the wall the last two retroactive surfaces hit. Sentry and the logs only show you what was *captured* — and nobody captured the one value that explains this bug, because nobody knew in advance it would matter. The move now is to stop reading recordings and open a live window: attach a debugger to your local server, pause execution on that exact line, replay the same input, and read the variables as the code runs. That is the whole of this lesson, and it completes the chapter's thesis in one sentence: **Sentry answers what threw, the logs answer what happened, the debugger answers what's in scope right now.** Three surfaces, three questions, one incident.
+
+By the end you will have a `.vscode/launch.json` that starts a debuggable Next.js server in one keypress, the three breakpoint moves an experienced engineer actually uses — plain, conditional, and logpoint — and the end-to-end drill that wires all five of this chapter's tools into a single incident. You already own the incident; the debugger is the last tool you reach for, and knowing *when* to reach for it is the real skill here.
+
+## When the debugger earns its weight
+
+The instinct of a less experienced engineer, when a bug gets slippery, is to reach for the debugger first — or worse, to wish they could attach one to the deployed app. Both instincts are wrong, and getting this decision right matters more than any breakpoint mechanic, so we install it before we touch a single tool.
+
+Here is the framing. Logs and Sentry breadcrumbs are **retroactive and static**: you see only the values that were captured at the time, frozen, with no way to ask a follow-up question. The debugger is **interactive**: you can read every local variable, every closure, every property of every object in scope, and you can even mutate state and resume to test a hypothesis. That power is exactly why it is the *last* tool, not the first — most incidents never need it. Sentry plus the structured logs resolve roughly nine out of ten of them on their own. The debugger is for the tenth, and reaching for it earlier just means you skipped the cheaper surfaces.
+
+So when does it earn its weight? Three signals:
+
+- **The bug doesn't reproduce in the logs.** The deciding state was on the wire — a value that flowed through the request but never landed in any variable you thought to log. You can't add a log line for a value you didn't know mattered, but you *can* pause and read it.
+- **The call stack reads "something inside a library does something we don't expect."** The throw isn't in your code; it's two frames deep into a dependency, and you need to see the arguments your code handed it.
+- **It's a <Term definition="A bug that changes or disappears the moment you try to observe it. Classically, adding a log line shifts the timing or state just enough that the bug stops happening.">heisenbug</Term>** — the failure vanishes the instant you add a `console.log`. A breakpoint observes without recompiling or changing the timing the way an edit-and-restart does.
+
+And, just as importantly, when does it *not* — each case with the surface you should reach for instead:
+
+- **A known bug with a clean reproduction.** You already know how to trigger it. Don't step through it by hand — write the failing test or assertion. The test is durable; a debugging session evaporates the moment you close the tab.
+- **Anything in production.** This is the line you never cross, and we will spend the last section of this lesson on *why*. For a live incident, the answer is the Sentry-plus-drain workflow you built across this chapter — never a live inspector pointed at the deployed app.
+- **Performance work** — a slow endpoint, a memory climb, an async waterfall. That's a profiler's job, not a breakpoint's, and it gets its own treatment when we reach performance later in this unit.
+
+The following walk forces the order an experienced engineer asks these questions in. The lesson lives in the *order*, not in any single answer — start at the top and let each question narrow you toward the right surface.
+
+<StateMachineWalker title="Which surface answers this question?">
+  <Question id="is-prod" prompt="Is this happening in production right now?"
+    description="The most senior question comes first — the deployed app is read-only for diagnosis.">
+    <Branch label="Yes — it's a live incident" to="leaf-prod" />
+    <Branch label="No — I can run it locally" to="already-explained" />
+  </Question>
+
+  <Question id="already-explained" prompt="Do Sentry and the logs already explain why it failed?"
+    description="The two retroactive surfaces resolve roughly nine incidents in ten on their own.">
+    <Branch label="Yes — I understand the cause" to="leaf-test" />
+    <Branch label="No — they show where but not why" to="is-perf" />
+  </Question>
+
+  <Question id="is-perf" prompt="Is the problem about speed or resource use, not correctness?"
+    description="A slow endpoint, climbing memory, a long async waterfall.">
+    <Branch label="Yes — it's a performance problem" to="leaf-profiler" />
+    <Branch label="No — it's a logic / correctness bug" to="state-on-wire" />
+  </Question>
+
+  <Question id="state-on-wire" prompt="Is the deciding value visible in any logged variable?"
+    description="The breakpoint earns its weight only when the answer isn't already on disk.">
+    <Branch label="No — the state never made it into a log line" to="leaf-debugger" />
+    <Branch label="Yes — I just need to read the captured value" to="leaf-test"
+      rationale="If a log holds the value, you can reason it out and write the assertion." />
+  </Question>
+
+  <Leaf id="leaf-prod" verdict="Sentry + the log drain — never the inspector">
+    Production is read-only for diagnosis: you reconstruct the failure from the captured event and the per-request narrative, joined by `requestId`.
+    An inspector on a live server is a remote-code-execution surface — the reason covered at the end of this lesson.
+  </Leaf>
+
+  <Leaf id="leaf-test" verdict="Write the failing test, not a breakpoint">
+    Once you can reproduce it *and* you know why, the durable artifact is a regression test.
+    A debugging session evaporates the moment you close the tab; the test stays and guards the fix.
+  </Leaf>
+
+  <Leaf id="leaf-profiler" verdict="Reach for a profiler">
+    CPU, memory, and async-timing questions are a profiler's domain, not a breakpoint's.
+    This gets its own treatment when we reach performance later in this unit.
+  </Leaf>
+
+  <Leaf id="leaf-debugger" verdict="Attach the inspector">
+    The state that decides the bug was on the wire, not in any log — pause on the suspicious line, replay the same input, and read it live.
+    This is the one case the debugger is built for.
+  </Leaf>
+</StateMachineWalker>
+
+## How the Node inspector works
+
+Before you start dropping breakpoints, you need the simplest correct picture of what is actually happening under the hood — because the most common misconception here is that the debugger is a feature *of your editor*. It is not. It is a feature of the *runtime*, and your editor merely attaches to it.
+
+Node ships with a built-in <Term definition="The JavaScript engine inside Node and Chrome. It carries the inspector that exposes the running program's state.">V8</Term> inspector. Start any Node process with the `--inspect` flag and it opens a WebSocket — by default on `127.0.0.1:9229` — that speaks the <Term definition={"The wire format Node's inspector speaks.\nAny compatible client — VS Code, Chrome, WebStorm, Firefox — can attach over it to set breakpoints and read state."}>Chrome DevTools Protocol</Term>, or CDP. Any CDP-speaking client can attach over that socket: VS Code, Chrome DevTools, WebStorm, Firefox. One protocol, many clients. That is the entire idea, and the picture below is worth holding onto.
+
+<InspectorClients />
+
+The inspector is a feature of the running process; editors are just clients that connect to it over the same socket — which is exactly why Chrome DevTools is a drop-in alternative to VS Code later in this lesson.
+
+Two flag variants are worth knowing. `--inspect` runs your program normally but leaves it *attachable* — this is the one you want almost always. `--inspect-brk` pauses on the very first line and waits for a client before running anything, which is useful for debugging startup but rarely what you need for app code (and it has a sharp edge we will hit in the next section). If `9229` is already taken, `--inspect=9230` moves it.
+
+There is a nice continuity here. The debugger reads the *same dev source maps* the bundler already produces — the ones you met when Sentry rebound your minified production stack traces in this chapter's first lesson. That is how a breakpoint you set on a line of your `.ts` source maps to the actual transpiled code Node is running. Same machinery, pointed at a different problem.
+
+One more thing, planted now and paid off at the end of the lesson: a production Node process *never* runs with `--inspect`. An open inspector port is not a debugging convenience there — it is a remote-code-execution surface. Hold that thought.
+
+## Starting Next.js with the inspector
+
+To debug your server code you need a Next.js dev server that is listening for a debugger. As of **Next.js 16.1** (shipped December 2025) there is a first-class flag for exactly this:
+
+<CodeVariants>
+  <CodeVariant label="pnpm">
+    ```bash
+    pnpm dev --inspect
+    ```
+    **The course default.** The flag passes `--inspect` through to only the Node process running your code.
+  </CodeVariant>
+
+  <CodeVariant label="npm">
+    <div data-mark-color="orange">
+
+    ```bash "-- --inspect"
+    npm run dev -- --inspect
+    ```
+
+    </div>
+    **The lone `--` is load-bearing.** Without it, npm eats the flag as one of its own instead of forwarding it to the `dev` script — the single most common reason "the flag didn't work."
+  </CodeVariant>
+
+  <CodeVariant label="yarn / bun">
+    ```bash
+    yarn dev --inspect
+    ```
+    **Same shape as pnpm.** The flag forwards straight through to your server's Node process.
+  </CodeVariant>
+</CodeVariants>
+
+Why a dedicated flag at all, when you could just set `NODE_OPTIONS=--inspect`? Because `NODE_OPTIONS` attaches the inspector to *every* Node process the dev command spawns, not just the one running your app — you end up with multiple processes fighting over the port. The `--inspect` flag threads it through to only your server. That is the modern default; reach for `NODE_OPTIONS` only for the brk case below.
+
+However you start it, you are looking for one confirmation line in the terminal:
+
+```bash frame="terminal"
+Debugger listening on ws://127.0.0.1:9229/3f8b1c2a-...
+For help, see: https://nodejs.org/en/docs/inspector
+   ▲ Next.js 16.2.0
+   - Local:   http://localhost:3000
+```
+
+If you don't see the `Debugger listening` line, the flag didn't take — on npm, the missing `--` is almost always the cause. The port in that line is the same `9229` any client will attach to.
+
+If `9229` is already in use by another process, override it: `pnpm dev --inspect=9230`. (For Docker you would bind `--inspect=0.0.0.0:9229` so the port is reachable from outside the container, but the course defaults to debugging locally, so we will stay on `127.0.0.1`.)
+
+:::caution
+You may have seen `--inspect-brk` recommended to "pause before anything runs." Skip it here for two reasons. It isn't exposed by the Next flag — you'd need `NODE_OPTIONS=--inspect-brk next dev` — and more importantly, it currently **crashes Turbopack**, the default bundler in Next.js 16. You almost never need it for application code anyway: the normal flow is *attach first, then trigger the request*, which the plain `--inspect` flag handles cleanly.
+:::
+
+## The VS Code launch config
+
+Starting the server with `--inspect` and attaching by hand works, but you will do this often enough that it is worth wiring a one-keypress button. That button is a `.vscode/launch.json` file — VS Code's debug configuration — committed to the repo so the whole team gets it.
+
+The shape below is the current official Next.js configuration, and it is worth reading field by field, because the most important field is also the one that changed recently.
+
+<AnnotatedCode lang="json" maxLines={18} code={`
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Next.js: debug server-side",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "pnpm dev --inspect",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "Next.js: debug client-side",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:3000"
+    },
+    {
+      "name": "Next.js: debug full stack",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["dev", "--inspect"],
+      "serverReadyAction": {
+        "pattern": "- Local:.+(https?://.+)",
+        "uriFormat": "%s",
+        "action": "debugWithChrome"
+      }
+    }
+  ]
+}
+`}>
+  <AnnotatedStep meta="{4-10}" color="blue">
+    The server-side config is the load-bearing one for this lesson. It launches your dev command and attaches the debugger to the server process for you.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{6} "node-terminal"`} color="blue">
+    This is the field that changed. `node-terminal` runs your dev command in VS Code's integrated terminal and *auto-attaches* the debugger to the Node process it spawns — no separate "start the server, then attach to a port" dance. Older blog posts default to an attach-to-9229 config; this replaces it.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{8} "pnpm dev --inspect"`} color="blue">
+    The command VS Code runs. It's literally the line from the previous section — the `--inspect` makes the spawned process attachable, and `node-terminal` does the attaching.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{9}" color="green">
+    Keeps "step into" shallow. Without it, stepping into a function call dives straight into Node's internals; `<node_internals>/**` tells the debugger to step *over* runtime code so you stay in your own. You can add `"**/node_modules/**"` to skip dependencies too.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{11-28}" color="violet">
+    The other two official entries. "Client-side" launches Chrome against your dev URL to debug browser code; "full-stack" runs both at once via `serverReadyAction`. Copy the whole file; this lesson keeps the spotlight on server-side.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The one field to really understand is `type: "node-terminal"`. It launches your dev command inside VS Code's integrated terminal and automatically attaches the debugger to the Node process that command spawns. You get the inspector wired up without ever thinking about ports. This is the single biggest difference from older tutorials, which default to a separate `"request": "attach"` config pointed at `9229` — that approach forces you to start the dev server in one place and attach to it in another. The `node-terminal` config collapses both into one button.
+
+That older attach config still has a place, just reframed as the *manual alternative*: when you would rather start `pnpm dev --inspect` in your own terminal first and then attach to the already-running process. It looks like this:
+
+```json title=".vscode/launch.json (the manual fallback)"
+{
+  "name": "Next.js: attach to running server",
+  "type": "node",
+  "request": "attach",
+  "port": 9229,
+  "skipFiles": ["<node_internals>/**"]
+}
+```
+
+Use it when you have reasons to manage the server process yourself. For everyday work, the `node-terminal` config is the one to press.
+
+With the file saved, the run procedure is four steps:
+
+<Steps>
+
+1. Open the Run and Debug panel — `⇧⌘D` on macOS, `Ctrl+Shift+D` on Windows and Linux.
+
+2. Pick **Next.js: debug server-side** from the configuration dropdown at the top.
+
+3. Press `F5` to launch it.
+
+4. Confirm the `Debugger listening on ws://127.0.0.1:9229/...` line appears in the integrated terminal. That's your signal the inspector is attached and ready.
+
+</Steps>
+
+<VideoCallout videoId="_5mGxLZ61J0" videoTitle="Debugging Next.js in VSCode and Chrome DevTools (comprehensive guide)">
+  Tom Dohnal walks the same setup end to end (16 min) — server-side, client-side, and full-stack `launch.json` configs, plus the Turbopack caveats.
+</VideoCallout>
+
+## Breakpoints, conditional breakpoints, and logpoints
+
+Now the actual moves. There are three of them, and they form a clean progression — a plain pause, a pause with a condition, and a print that never pauses at all. Learn them in that order; each one is the previous one with a twist.
+
+### The plain breakpoint
+
+Click in the gutter — the narrow strip just left of the line numbers — next to a line inside a server action or a `lib/` helper. A red dot appears. That dot has two states worth knowing: a solid red dot means the breakpoint is <Term definition="The editor resolved your source line to the actual running, transpiled code via the source map, so the breakpoint will fire.">bound</Term> — the source map resolved your line to running code — and a hollow grey dot means it is <Term definition="The editor could not map your source line to running code, usually a source-map miss. The breakpoint won't fire until that's resolved.">unbound</Term>, meaning resolution failed and it won't fire. We will deal with the unbound case shortly.
+
+Now trigger the request that runs that line. Execution pauses on the dot, and VS Code fills four panels:
+
+- **Variables** — every local in the current frame, plus the closure scope and `this`. This is where you read what's actually in memory.
+- **Watch** — expressions you pin so they re-evaluate on every step.
+- **Call Stack** — how execution got here, frame by frame. Because of `skipFiles`, the `node_modules` frames stay collapsed so you see *your* path, not the framework's.
+- **Debug Console** — and this one is the superpower.
+
+The Debug Console is a <Term definition={"Read-eval-print loop — an interactive prompt that evaluates expressions and shows the result.\nHere it runs in the scope of the paused frame."}>REPL</Term> bound to the *paused frame's scope*. Whatever variables are in scope at the breakpoint, you can evaluate against them. Walk an object with `user.role`. Drill into `input.lineItems[0]`. You can even run a real query against the live database connection:
+
+```ts
+await db.query.invoices.findFirst({
+  where: eq(invoices.id, 'inv_123'),
+});
+```
+
+That is the concrete answer to "what's in scope right now," and it is faster than adding a log line and restarting the server. (VS Code's Debug Console supports top-level `await`, so the query above resolves to the row rather than handing you back a pending `Promise` — not every REPL does this.)
+
+Two things the Debug Console won't do, worth knowing up front. It sees your *JavaScript*, so a Drizzle query object isn't SQL yet — the SQL is generated lazily when the query runs, so set your breakpoint *around* the call, not "inside" it, and inspect the result. And if a breakpoint ever looks misaligned — pausing on the wrong line — Fast Refresh has probably staled the file the debugger is mapping against; restart the dev server and it realigns.
+
+### The conditional breakpoint
+
+A plain breakpoint pauses *every* time the line runs. That is a problem when the line is in a loop or a hot path — you'll pause thousands of times to reach the one iteration that matters. The fix is a condition. Right-click the gutter, choose **Edit Breakpoint**, and type an expression:
+
+```ts
+user.id === 'usr_problem'
+```
+
+Now the breakpoint fires *only* when that's true. This is the move for an intermittent or per-user bug — you set the condition to the user or the attempt count that fails (`attempt > 3`), let every other request sail through, and pause exactly when the bad one arrives.
+
+### The logpoint
+
+Sometimes you don't want to pause at all — pausing on a hot path breaks the very timing you're trying to observe. A logpoint is a breakpoint that *prints and keeps running*. Right-click the gutter, choose **Add Logpoint**, and write a message with expressions in braces:
+
+```text
+input was {input.amount}, user is {user.id}
+```
+
+Each time the line runs, that message prints to the Debug Console with the values filled in — and execution never stops. It is "add a log line without editing the file or restarting the server." Reach for it on hot paths, or any time you just want a value to fly by.
+
+One discipline here: a logpoint is *not* a substitute for your `logger`. Logpoints are ephemeral and dev-only — they live in your editor, never in the code, and they vanish when you close the session. Real diagnostics that an operator needs at 3am go through the structured `pino` logger you built earlier in this chapter, never `console.log` (which the `no-console` lint rule blocks in server code for exactly this reason). The debugger toolkit is *additive*; it doesn't replace structured logs.
+
+### The `debugger;` statement
+
+There is a fourth move for the awkward cases. A line of `debugger;` in your code pauses execution whenever a debugger is attached — and does nothing when one isn't. Reach for it when a gutter breakpoint won't bind (a Turbopack source-map miss leaves you with a hollow grey dot) or when the location is dynamically generated and you can't click a stable line.
+
+When a breakpoint *does* refuse to bind under Turbopack, the workaround order is: try a `debugger;` statement first, then restart the dev server so the source maps regenerate. Only as a genuine last resort would you fall back to `next dev --webpack` for the session — webpack is increasingly deprecated for dev and is not the smooth path, so treat it as an escape hatch, not a habit.
+
+Treat `debugger;` as strictly temporary. CI greps for it and fails the build if you commit it — the same guardrail that catches a stray `console.log`. It is a here-and-now tool, not something that lands in a pull request.
+
+<VideoCallout videoId="JyHjoaUhAus" videoTitle="Breakpoints and logpoints (Chrome DevTools)">
+  The Chrome DevTools team runs all four moves in under four minutes — plain breakpoints, the `debugger;` statement, conditional breakpoints, and logpoints — plus pause-on-exceptions.
+</VideoCallout>
+
+Here is the moment the whole toolkit pays off, scrubbed step by step. This models a breakpoint hitting the validation predicate from the incident in the intro — watch the Variables panel reveal the value no log line carried.
+
+<BreakpointHitReveal />
+
+That synthetic walk shows the *idea*; here is what the real thing looks like in VS Code, so you recognize it when you get there.
+
+<VscodePausedSession />
+
+Before moving on, lock in which move fits which situation — the decision matters more than the mechanics.
+
+<MultipleChoice>
+  Select every pairing below where the breakpoint move correctly fits the situation. Pick all that apply.
+
+  <McqChoice correct>One customer — and only that customer — trips the error, while everyone else's requests succeed → arm a conditional breakpoint whose expression matches that customer's id.</McqChoice>
+  <McqChoice correct>You want to watch a value stream past on a request path that fires constantly, without disturbing the timing you're trying to study → drop a logpoint.</McqChoice>
+  <McqChoice correct>You suspect one line and want to halt there once and walk its locals, closure, and call stack → set a plain breakpoint.</McqChoice>
+  <McqChoice correct>The gutter dot refuses to bind — it sits hollow grey because the source map never resolved the line under Turbopack → drop in a `debugger;` line instead.</McqChoice>
+  <McqChoice>You can already trigger the bug on demand and you understand exactly why it happens → reach for a conditional breakpoint to confirm it once more.</McqChoice>
+  <McqChoice>An endpoint feels sluggish and you need to see where its time goes → scatter a logpoint across every line and read the timestamps.</McqChoice>
+
+  <McqWhy>The four correct pairings: a **conditional breakpoint** lets every other request sail through and pauses only on the one failing case; a **logpoint** prints without stopping, so the path's timing survives; a **plain breakpoint** freezes a single frame so you can read its scope; and a **`debugger;` statement** is the fallback when a gutter dot won't bind. The two decoys point at the wrong surface entirely. A bug you can already reproduce *and* understand wants a durable **regression test**, not any breakpoint that evaporates when you close the tab. And a "where does the time go" question is a **profiler's** job — logpoints can't give you a reliable time budget, and you'd just be fighting your own instrumentation.</McqWhy>
+</MultipleChoice>
+
+## The server-action-failed drill, end to end
+
+This is the payoff — the section the rest of the lesson has been serving. Everything you built across this chapter converges on one incident, and the skill is descending the diagnostic ladder in the right order, stopping at each rung only when it runs out.
+
+Walk it with the same failing scenario from the intro:
+
+<Steps>
+
+1. **Sentry — *what threw*.** Open the event. The stack trace is rebound to source by the maps you uploaded at build time; it names the failing server action and the precise line — a validation predicate. You know *where*.
+
+2. **Logs — *what happened*.** Copy the `requestId` from the Sentry event's request **context** (it lives in context, not as a tag — the same wiring you did earlier in this chapter shares the AsyncLocalStorage value between Sentry and the logger). Open the drain, filter by it, and read the per-request narrative: the input *looked valid*, yet the predicate returned `false`. The two retroactive surfaces now agree on *where* — and they disagree with your intuition about *why*. That disagreement is your signal to descend.
+
+3. **Reproduce locally.** Start `pnpm dev --inspect`, launch the **Next.js: debug server-side** config, set a breakpoint on the predicate's `return false`, and replay the **same input** — the log line handed you its exact shape, so you reproduce the real failure, not an approximation.
+
+4. **Read live state — *what's in scope right now*.** The breakpoint hits. The Variables panel shows the predicate is comparing the input's org against a **closure-captured tenant scope** holding the wrong `orgId` — a value no log line carried, because nobody ever thought to log a closure's captured scope. This is precisely the gap the debugger exists to close.
+
+5. **Fix and close the loop.** The fix is one line in `lib/`. Then — the callback to where this lesson started — you add a regression test. The bug just became "a known bug with a clean reproduction," and the *test*, not the debugging session, is the durable artifact that keeps it fixed.
+
+</Steps>
+
+Notice how the three surfaces interleave rather than compete. The breadcrumbs that fired before the breakpoint live in the Sentry UI. The request's log lines live in the drain. The debugger sees the live state neither of them captured. The order is fixed — **Sentry's stack, then the log narrative, then the debugger** — and you only descend to the next rung when the one above has run out of answers. That is the whole diagnostic discipline in one shape, and it is worth fixing as a single picture:
+
+<ThreeSurfacesRecap />
+
+Now order the workflow yourself. The steps below are scrambled — drag them into the sequence an experienced engineer actually follows.
+
+<Sequence instructions="Order the on-call steps for resolving a server action that returned the generic toast. Descend the diagnostic ladder in the order an experienced engineer follows.">
+
+```ts title="lib/invoices.ts" {5}
+function belongsToScope(invoice: Invoice, scope: TenantScope) {
+  // input looked valid, yet this returned false in production
+  if (invoice.orgId === scope.orgId) {
+    return true;
+  }
+  return false;
+}
+```
+
+  <Step>Read the Sentry stack trace to find the failing action and the predicate's line.</Step>
+  <Step>Copy the `requestId` from the Sentry event's request context.</Step>
+  <Step>Filter the drain by that `requestId` and read the per-request narrative.</Step>
+  <Step>Start `pnpm dev --inspect` and set a breakpoint on the predicate's `return false`.</Step>
+  <Step>Replay the same input and read the live variables at the pause.</Step>
+  <Step>Fix the line in `lib/` and add a regression test.</Step>
+</Sequence>
+
+## Chrome DevTools as the alternative client
+
+Remember the "one protocol, many clients" picture from earlier? Here is where it pays off for free. Everything you just did in VS Code, you can do in Chrome DevTools instead — same inspector, same source maps, same caveats — which is handy when you are debugging without an editor open.
+
+<Steps>
+
+1. With `pnpm dev --inspect` running, open `chrome://inspect` in Chrome.
+
+2. Your Node process appears under **Remote Target**. Click **inspect** next to it — a dedicated DevTools window opens, attached to the server.
+
+3. Go to the **Sources** tab and set breakpoints in the gutter exactly as you would in VS Code.
+
+</Steps>
+
+There is one genuinely modern shortcut worth knowing. When a server error hits in development, Next.js shows an error overlay — and that overlay carries a small **Node.js icon**. Clicking it copies the inspector's DevTools URL to your clipboard; paste it into a new tab and you land straight inside the running server process, at the point of the error. It is the fastest path there is from a thrown error to a live inspector.
+
+One file-finding gotcha: in DevTools, your server source files appear under paths like `webpack://_N_E/./app/actions.ts` — and yes, that `webpack://` prefix shows up even under Turbopack, which is just a naming artifact, not a sign you're on the wrong bundler. Use `⌘P` (or `Ctrl+P`) to fuzzy-find your file by name and you won't have to hunt through the tree.
+
+## Why you never attach the inspector to production
+
+We planted this twice; now it gets its reasoning. The rule is simple — `--inspect` is dev-only, full stop — but you should understand *why*, because a memorized rule bends and a reasoned boundary holds.
+
+Look back at the Debug Console. That same `await db.query(...)` you ran locally to inspect a row is the entire problem. The inspector port speaks CDP, and CDP can **evaluate arbitrary code in the running process**. Locally that is a superpower. On a deployed server it is <Term definition="An attacker running code of their choosing inside your server process — among the most severe vulnerabilities a system can have.">remote code execution</Term> against your live database: anyone who can reach an open `9229` can run that query — or any other code — inside your production process. An exposed inspector port is a critical vulnerability, not a debugging convenience.
+
+:::danger
+Never start a production Node process with `--inspect`. An open inspector port lets anyone who can reach it run arbitrary code inside your live server — full read and write access to your production database. The flag is for your machine only.
+:::
+
+The platform's shape agrees with the rule, which is reassuring. Vercel doesn't expose the inspector port, and its serverless functions are short-lived and not attachable in the first place — there is no live, long-running process to point a debugger at. The security boundary and the deployment model point the same direction.
+
+So production debugging *is* the workflow you built across this chapter: Sentry for the throw, the drain for the per-request narrative, the two joined by a shared `requestId`. The debugger is the local complement to that workflow — the tool you reach for after the retroactive surfaces have narrowed *where* but not *why* — and it is never the remote tool. Which lands the chapter exactly where it started: Sentry answers what threw, the logs answer what happened, the debugger answers what's in scope right now. Three surfaces, three questions, one incident.
+
+## External resources
+
+The official guides go deeper on the launch configs, the alternative clients, and the inspector primitive itself.
+
+<CardGrid>
+  <ExternalResource
+    title="Next.js — Debugging guide"
+    href="https://nextjs.org/docs/app/guides/debugging"
+    icon="simple-icons:nextdotjs"
+    description="The canonical launch.json and the VS Code, Chrome, and Firefox attach flows."
+  />
+  <ExternalResource
+    title="Next.js 16.1 release notes"
+    href="https://nextjs.org/blog/next-16-1"
+    icon="simple-icons:nextdotjs"
+    description="Where the integrated next dev --inspect flag shipped."
+  />
+  <ExternalResource
+    title="Node.js — Debugging getting started"
+    href="https://nodejs.org/en/learn/getting-started/debugging"
+    icon="simple-icons:nodedotjs"
+    description="The --inspect flag and the Chrome DevTools Protocol primitive underneath it all."
+  />
+  <ExternalResource
+    title="VS Code — Node.js debugging"
+    href="https://code.visualstudio.com/docs/nodejs/nodejs-debugging"
+    icon="simple-icons:visualstudiocode"
+    description="Conditional breakpoints, logpoints, and the launch-configuration reference in depth."
+  />
+</CardGrid>

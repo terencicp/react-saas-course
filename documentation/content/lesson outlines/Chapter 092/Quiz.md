@@ -1,0 +1,85 @@
+sources:
+  92.1: 'Sentry: capture, releases, and breadcrumbs'
+  92.2: Structured logs with correlation IDs
+  92.3: The 3am rule and PII exclusion
+  92.4: Shipping logs with Vercel Drains
+  92.5: Server-side debugging with the inspector
+questions:
+  - source: 92.1
+    question: |
+      Your `authedAction` wrapper catches a thrown DB error, logs it, and returns a `Result.err` so the user sees a generic toast. Which path gets this error into Sentry?
+    choices:
+      - text: |
+          `onRequestError` in `instrumentation.ts` — Next.js fires it for every server-side throw.
+        correct: false
+      - text: |
+          A manual `Sentry.captureException` call inside the wrapper's `catch`.
+        correct: true
+      - text: |
+          Neither — a handled error that returns a `Result.err` is the client SDK's job.
+        correct: false
+    why: |
+      `onRequestError` only fires for throws that bubble all the way to Next.js's framework boundary. A caught error never reaches that boundary, so the wrapper's `catch` is the only place to capture it. That's the two-path rule: every uncaught throw rides `onRequestError`; every catch-and-handle seam calls `captureException` itself.
+  - source: 92.2
+    question: |
+      You generate the `requestId` and open an AsyncLocalStorage scope in `proxy.ts`. Why does the lesson insist you *also* open a scope inside the `authedAction` wrapper, instead of relying on the proxy's?
+    choices:
+      - text: |
+          Next.js doesn't propagate an ALS scope set in `proxy.ts` into server actions, so a deep log line in an action would lose the `requestId` otherwise.
+        correct: true
+      - text: |
+          Opening the scope twice makes the `requestId` higher-cardinality, which the log destination indexes more efficiently.
+        correct: false
+      - text: |
+          The proxy runs on the edge runtime, which has no access to `node:async_hooks`.
+        correct: false
+    why: |
+      The proxy and the handler run in execution contexts that don't share the proxy's ALS frame — a confirmed Next.js boundary. So each entry seam opens its own scope. The proxy forwards the `requestId` as an `x-request-id` header, and `authedAction` reads it back to open its own (now enriched with `userId`/`orgId`) scope with the same ID.
+  - source: 92.3
+    question: |
+      You're filling in the `redact` denylist. Which of these should you let through to the log destination, *not* redact? (Select all that apply.)
+    choices:
+      - text: |
+          `email`
+        correct: true
+      - text: |
+          `userId`
+        correct: true
+      - text: |
+          The customer's full name
+        correct: false
+      - text: |
+          The `Authorization` header
+        correct: false
+    why: |
+      `email` and `userId` are operator-side identifiers — load-bearing for support, fraud investigation, and incident correlation — so they're safe and *should* be logged. Redacting them is the over-correction trap that blinds the operator for no compliance gain. The full name is user-side PII, and the `Authorization` header carries a secret; both must be redacted.
+  - source: 92.4
+    question: |
+      Your Axiom drain shows "data is flowing," yet `level == "error" AND orgId == "org_123"` returns nothing. What's the most likely cause?
+    choices:
+      - text: |
+          The destination indexed Vercel's envelope fields but is treating your inner `pino` JSON as one opaque `message` string, so `level` and `orgId` never became queryable columns.
+        correct: true
+      - text: |
+          The drain is scoped to preview instead of production, so production lines never arrived.
+        correct: false
+      - text: |
+          `requestId` is high-cardinality, which forces the destination to drop the other fields on its TTL.
+        correct: false
+    why: |
+      Vercel wraps each line in an envelope (its own `level`/`requestId`) and stuffs your application JSON inside a `message` string. Until the destination parses that inner JSON, your fields aren't real columns. Axiom auto-parses, but the senior move is to verify it rather than trust the wizard's "success."
+  - source: 92.5
+    question: |
+      Sentry shows the throwing line and the logs show the full per-request narrative, but neither explains *why* a valid-looking input failed a validation predicate. Is this the moment to attach the debugger?
+    choices:
+      - text: |
+          Yes — the deciding value was on the wire and never landed in a logged variable, which is exactly the case the local inspector exists for.
+        correct: true
+      - text: |
+          No — reproduce it on the deployed server with `--inspect` so you debug the real production state.
+        correct: false
+      - text: |
+          No — the retroactive surfaces already located the line, so just write a regression test now.
+        correct: false
+    why: |
+      The debugger is the last rung: reach for it when Sentry and the logs pin *where* but not *why*, and the deciding state never made it into a log line. You attach it to your local server, never production (an open inspector port is a remote-code-execution surface). The regression test comes *after* the debugger reveals the cause.
