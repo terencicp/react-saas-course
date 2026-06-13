@@ -1,0 +1,534 @@
+---
+title: Headers that block live attacks
+tagline: The HTTP security headers that open the course's pre-launch hardening unit, the browser-enforced response rules, including a nonce-based Content-Security-Policy, that a 2026 SaaS ships to refuse clickjacking, MIME-sniffing, downgrade, and script injection.
+chapter-id: 81
+course-progress: 0.00005
+sidebar:
+  order: 1
+  label: Security headers
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import ArrowDiagram from '../../../components/figures/ArrowDiagram.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import Dropdowns from '../../../components/exercises/dropdowns/Dropdowns.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import HeaderEnforcementFlow from '../../../components/lessons/081/1/HeaderEnforcementFlow.astro';
+import CspNonceRoundtrip from '../../../components/lessons/081/1/CspNonceRoundtrip.astro';
+import HeaderFileSplit from '../../../components/lessons/081/1/HeaderFileSplit.astro';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Run one command against your deployed app and read what comes back:
+
+```bash
+curl -I https://app.example.com
+```
+
+```http
+HTTP/2 200
+content-type: text/html; charset=utf-8
+cache-control: private, no-store
+```
+
+Everything here is correct, and that is exactly the problem. The app boots, the page renders, the response is well-formed — and a browser receiving it will frame your login page inside an attacker's site, run a script injected through a comment field, and silently fall back to plain `http://` the next time someone types your domain without the scheme. Not because anything is broken. Because you never told the browser to refuse.
+
+That is the whole of this lesson. A handful of response headers — most of them a single line you set once and never touch again — close clickjacking, MIME-sniffing, protocol downgrade, and third-party script injection. The mental model that makes them stop feeling like magic incantations: **a security header is a rule the browser enforces; the server's only job is to ship the rule.** You are not adding protection to the server. You are telling the browser what to refuse on the response it already received.
+
+You have met both halves of this before. You met security headers as a *category* back when you learned what HTTP headers carry, and you were told there that the full set — CSP especially — was the security-baseline chapter's territory. This is that chapter. You have also already shipped the two files this lesson hands a security job to: the `headers()` key in `next.config.ts`, and `proxy.ts`, your request gate. Today each one gets exactly one new responsibility. By the end you will be able to name the six headers, say which file ships each and *why*, read a Content-Security-Policy line directive by directive, and run that same `curl -I` to confirm the whole thing in under a minute.
+
+## The browser enforces, the server declares
+
+Before any specific header, pin down the one idea every header is an instance of, because once it clicks the rest is a checklist.
+
+A response carries two things: a body — the HTML, the JSON — and headers, the metadata channel that describes the body and instructs the client about it. A security header lives in that metadata channel, and what it instructs is the *browser*: which scripts this page is allowed to run, whether this page may be displayed inside a frame, whether the browser must use HTTPS the next time it talks to this origin. The server computes a policy string and attaches it. The browser is the engine that reads the string and applies it to the page it just loaded.
+
+The server enforces nothing at runtime. It does not inspect each script as it executes, does not block the frame, does not upgrade the connection. It declares a rule and walks away; the browser does all the work.
+
+In the following diagram, follow the single arrow. The server emits a response with a header attached — that is the policy *declared*. The browser receives it and applies the rule to the page — that is the policy *enforced*. The instruction only ever flows one way.
+
+<HeaderEnforcementFlow />
+
+Two consequences fall out of this, and both matter for how you reason about these headers for the rest of your career.
+
+First, they are *cheap*. Emitting a header costs the server nothing beyond writing a string — there is no per-request inspection, no CPU spent enforcing. That is why a junior's instinct that "more security must cost performance" is wrong here: the cost is zero, so there is no trade to make on the five static ones.
+
+Second, they fail *silently*. The browser is the only enforcer, so there is no server-side backstop. If the header is malformed, or the visitor is on a browser too old to understand it, the rule simply does not apply — and nothing tells you. This is why verification, which closes the lesson, is not optional. "I shipped the header" and "the browser is enforcing the header" are two different claims, and only the second one protects anyone.
+
+Here is the map for the body of the lesson. There are six headers in the baseline, and they fall into two tiers that you should treat completely differently.
+
+| Tier | Header | What it tells the browser to refuse |
+| --- | --- | --- |
+| Set once | `Strict-Transport-Security` | Talking to this origin over plain `http://` |
+| Set once | `X-Content-Type-Options` | Guessing a response's type and running it as script |
+| Set once | `Referrer-Policy` | Leaking the full URL to other origins |
+| Set once | `Permissions-Policy` | Reaching for camera, mic, geolocation, payment |
+| Set once | `X-Frame-Options` | Letting old crawlers embed this page in a frame |
+| Live attack | `Content-Security-Policy` | Running any script or connection not on an allowlist |
+
+The split is the whole strategy. Five of these are configuration-grade hardening: one decision each, made once, never revisited. The sixth — <Term definition="Content-Security-Policy. A browser-enforced allowlist of where a page's scripts, styles, and connections may come from. Anything not on the list is refused at runtime.">CSP</Term> — is the only one that intercepts a *running* attack, and it is the only one that needs real thought. Spend your attention budget there; treat the other five as a list to tick off. We will take the five first precisely so they are out of the way.
+
+Two terms you will see repeatedly: <Term definition="Luring a user into clicking a transparent, framed copy of your page laid over a decoy — so the click lands on your app while the user thinks they clicked something else.">clickjacking</Term>, where an attacker loads your page invisibly inside theirs and tricks a user into clicking it, and <Term definition="The browser guessing a response's content type from its bytes instead of trusting the declared type — and sometimes executing a non-script file as script.">MIME-sniffing</Term>, where the browser second-guesses a response's declared type and runs something it shouldn't.
+
+<VideoCallout videoId="4bQeGUzHpOE" videoTitle="HTTP Secure Headers for Web App Security | CORS, CSP, HSTS and more">
+  ByteMonk's 8-minute tour of the same baseline header set — a spoken-word overview of every header below before we walk them one by one.
+</VideoCallout>
+
+## The five headers you set once
+
+These five ship together from one place — the `headers()` key in `next.config.ts` — because they are identical on every response your app ever sends. Here is the array. Read it once for shape; we will walk it line by line right after.
+
+```ts
+// next.config.ts
+async headers() {
+  const isProd = process.env.NODE_ENV === 'production';
+  return [
+    {
+      source: '/(.*)',
+      headers: [
+        // production-only: HSTS must not lock http://localhost to HTTPS
+        ...(isProd
+          ? [{
+              key: 'Strict-Transport-Security',
+              value: 'max-age=63072000; includeSubDomains; preload',
+            }]
+          : []),
+        { key: 'X-Content-Type-Options', value: 'nosniff' },
+        { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+        {
+          key: 'Permissions-Policy',
+          value: 'camera=(), microphone=(), geolocation=(), payment=()',
+        },
+        { key: 'X-Frame-Options', value: 'DENY' },
+      ],
+    },
+  ];
+}
+```
+
+The `source: '/(.*)'` applies these to every route. Now each header — what it refuses, the value the course ships, and the single knob that ever moves.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+const isProd = process.env.NODE_ENV === 'production';
+const headers = [
+  ...(isProd
+    ? [{
+        key: 'Strict-Transport-Security',
+        value: 'max-age=63072000; includeSubDomains; preload',
+      }]
+    : []),
+  { key: 'X-Content-Type-Options', value: 'nosniff' },
+  { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+  {
+    key: 'Permissions-Policy',
+    value: 'camera=(), microphone=(), geolocation=(), payment=()',
+  },
+  { key: 'X-Frame-Options', value: 'DENY' },
+];
+`}>
+  <AnnotatedStep meta={`{4-9}`} color="orange">
+    **HSTS — force HTTPS, but only in production.** `max-age=63072000` is two years; once a browser sees this header it refuses plain `http://` to this origin for that long, killing SSL-strip downgrade attacks on a first insecure hit. `includeSubDomains` extends it to every subdomain; `preload` opts into the browser-shipped preload list. The gate that matters: emit it *only* in production — on localhost it would lock `http://localhost` to HTTPS and break your dev server, hence the `isProd` branch. (Submitting to the list at `hstspreload.org` is an optional follow-up, not something this config does.)
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{10}`} color="blue">
+    **`nosniff` — no decision to make.** Stops the browser from MIME-sniffing a response and executing a non-script (an uploaded file, a text response) as JavaScript. There is no value to tune and no downside. Ship it and forget it.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{11}`} color="blue">
+    **`strict-origin-when-cross-origin` — the sensible default, set explicitly.** It sends only the origin (not the full path) on cross-origin navigations, and the full path same-origin. This is already the modern browser default; you set it so it isn't left to chance. The trap: `no-referrer` *looks* more secure but breaks legitimate analytics attribution — the experienced pick is the balanced one, not the most locked-down one.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{12-15}`} color="green">
+    **`Permissions-Policy` — deny features you don't use.** Each `feature=()` empty-allowlist entry turns that browser capability off for the whole page, so an injected script can't quietly reach for the camera, mic, geolocation, or Payment Request API. The one flex: the day you ship Stripe Elements, `payment=()` becomes `payment=(self "https://js.stripe.com")`. Deny everything you don't use; open exactly what you do.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{16}`} color="violet">
+    **`X-Frame-Options: DENY` — the legacy clickjacking belt.** It tells the browser no site may frame this page. CSP's `frame-ancestors 'none'` (coming up) does the same job and more, so this header is redundant *on purpose* — kept only for old crawlers and bots that don't parse CSP. Two belts, honestly named as such.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+That is five headers and exactly two decisions that ever change: turn HSTS off outside production, and open `Permissions-Policy` for Stripe if and when Stripe arrives. Everything else is a constant. This is why grouping them as a block is the right move — bundling them signals "checklist," which is precisely the posture they deserve, and it clears the deck so the one header that *isn't* a checklist item gets your full attention.
+
+:::note
+You may see two more headers in the wild — `Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy`. They are not in the baseline. They exist to enable *cross-origin isolation*, which a page needs only when it uses `SharedArrayBuffer` or similar low-level features. Reach for them when a specific feature demands it; otherwise leave them off.
+:::
+
+Two terms for this section: <Term definition="HTTP Strict Transport Security. A header that tells the browser to use HTTPS for every future request to this origin for a set duration, refusing plain http:// even if the user types it.">HSTS</Term>, and the attack it closes — a <Term definition="An attacker forcing a victim's connection back to plaintext http:// (e.g. on a hostile network), then reading or rewriting traffic that should have been encrypted.">downgrade attack</Term>, often called SSL-strip.
+
+<VideoCallout videoId="-MWqSD2_37E" videoTitle="HSTS - HTTP Strict Transport Security - Protect against SSL Stripping attack">
+  Practical Networking illustrates the SSL-strip downgrade attack step by step, then shows exactly how `max-age`, `includeSubDomains`, and `preload` close it.
+</VideoCallout>
+
+## CSP: the only header that blocks a live attack
+
+Now the one that matters. The five above harden *configuration* — they close doors that should never have been open. Content-Security-Policy is different in kind: it intercepts an attack that is *already running inside your page*. An attacker who slips a `<script>` into a comment field, a profile bio, a support ticket — anywhere user input reaches the DOM — has achieved <Term definition="Cross-Site Scripting. Getting attacker-controlled script to execute in a victim's browser in the context of your site, with access to their session and data.">XSS</Term>, and that script runs with your user's full session. CSP is the layer that says: *I don't care that the script is on the page — it's not on the allowlist, so the browser refuses to run it.* Same idea for connections: a script that tries to `fetch` stolen data to `evil.example` hits a wall, because that origin isn't allowed to be connected to.
+
+CSP is a per-page allowlist of where code and connections may come from. Anything not on the list is denied by the browser at runtime. It is also the hard part of this lesson, so we build it in three passes: first the directive list, then the problem that forces nonces, then nonces themselves.
+
+### Pass 1 — the allowlist of directives
+
+Here is the 2026 baseline policy for this stack. Read it as a deny-by-default list: each line names one kind of resource and the small set of places it may legitimately come from. Everything else is refused.
+
+<AnnotatedCode lang="text" maxLines={18} code={`
+default-src 'self';
+script-src 'self' 'nonce-{NONCE}' 'strict-dynamic';
+style-src 'self' 'nonce-{NONCE}';
+img-src 'self' data: blob: https:;
+font-src 'self';
+connect-src 'self' https://*.upstash.io https://*.sentry.io https://us.i.posthog.com;
+frame-ancestors 'none';
+base-uri 'self';
+form-action 'self';
+`}>
+  <AnnotatedStep meta={`{1}`} color="blue">
+    **The floor.** `default-src` is the fallback for every resource type that doesn't have its own line. `'self'` means same-origin only. Every directive below either narrows or widens this baseline for one specific resource kind.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{2-3}`} color="orange">
+    **Scripts and styles, locked to same-origin plus a marked exception.** Read `'nonce-{NONCE}'` and `'strict-dynamic'` as placeholders for now — Pass 3 explains them. The point today: scripts must be same-origin or carry an explicit mark of trust. There is no blanket permission for arbitrary inline script, which is the whole game.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{6}`} color="green">
+    **The teachable line — every third party justifies itself.** `connect-src` controls where `fetch`, WebSocket, and `sendBeacon` may reach. Three vendors are listed: `*.upstash.io` (rate limiting), `*.sentry.io` (error monitoring), `us.i.posthog.com` (analytics). An entry here means *this app deliberately talks to this vendor*; an entry nobody can explain is a finding. The policy is a manifest of who your app trusts.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{4}`} color="blue">
+    **Images are looser, on purpose.** `data:` allows inline SVG, `blob:` allows client-generated previews, `https:` allows any HTTPS image (user uploads, CDN). That looks permissive — and it's acceptable, because images don't *execute*. The danger CSP guards hardest against is code running; a wide image policy doesn't open that door.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{7}`} color="violet">
+    **The real clickjacking defense.** `frame-ancestors 'none'` says no site, anywhere, may embed this page in a frame. This is the modern replacement for `X-Frame-Options: DENY` — same protection, but understood by current browsers as part of the policy rather than a separate legacy header.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{8-9}`} color="blue">
+    **Two narrow injection vectors, closed.** `base-uri 'self'` stops injected markup from rewriting the page's base URL (which would silently re-point every relative script src). `form-action 'self'` stops a form from posting to an attacker's domain. Cheap lines, real holes.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Read top to bottom, the policy is a sentence: *default to same-origin; scripts and styles need an explicit mark; talk only to these three vendors; images can come from anywhere over HTTPS; nobody may frame us; nobody may rewrite our base or hijack our form posts.* Two of those lines — the `'nonce-{NONCE}'` tokens — we have been deferring. They are the crux. Here is why they have to exist.
+
+### Pass 2 — the inline-script problem
+
+A strict `script-src 'self'` blocks *all* inline script — any `<script>` with code directly between the tags, rather than a `src` pointing at a same-origin file. That is the right default: inline script is exactly the shape an XSS injection takes. But it collides head-on with how your framework works.
+
+Next.js injects inline `<script>` tags to bootstrap hydration. React Server Components stream inline scripts as part of rendering. These are *legitimate* scripts your app cannot run without — and a blanket "no inline script" policy blocks your own framework's hydration, leaving you with a dead, non-interactive page.
+
+So there are exactly three ways to let the legitimate inline scripts through. Two of them are wrong. The following three tabs are that choice, laid side by side.
+
+<CodeVariants>
+  <CodeVariant label="'unsafe-inline'" icon="question-circle">
+    <div data-mark-color="red">
+
+    ```text "'unsafe-inline'"
+    script-src 'self' 'unsafe-inline';
+    ```
+
+    </div>
+    **The trap. Never, not "temporarily."** `'unsafe-inline'` allows *every* inline script — including the attacker's. It re-opens the precise hole CSP exists to close, so a policy carrying it provides almost no XSS protection at all. This is the single most common real-world CSP mistake: a developer hits CSP errors, pastes in `'unsafe-inline'` to make them stop, and ships a policy that does nothing.
+  </CodeVariant>
+
+  <CodeVariant label="hashes" icon="question-circle">
+    <div data-mark-color="orange">
+
+    ```text "'sha256-B2yPHKaX…'"
+    script-src 'self' 'sha256-B2yPHKaX…';
+    ```
+
+    </div>
+    **Right idea, wrong fit here.** A hash pins one specific inline script by the SHA-256 of its exact contents — the browser runs only inline scripts whose hash is listed. That works when *you* control the scripts and they never change. It falls apart when Next.js generates the hydration scripts and they shift every build: you'd be regenerating and redeploying a hash list constantly. Correct mechanism, impractical for framework-generated script.
+  </CodeVariant>
+
+  <CodeVariant label="nonces" icon="approve-check">
+    <div data-mark-color="green">
+
+    ```text "'nonce-abc123'"
+    script-src 'self' 'nonce-abc123' 'strict-dynamic';
+    ```
+
+    </div>
+    **The right answer.** A nonce is a fresh random token generated per request, stamped onto every legitimate inline script *and* listed in the CSP. The browser runs only scripts carrying the matching token; an injected script has no way to know it, so it's refused. This is what `'nonce-{NONCE}'` in the baseline policy was standing in for. Pass 3 shows the mechanism.
+  </CodeVariant>
+</CodeVariants>
+
+### Pass 3 — nonces and `'strict-dynamic'`
+
+A <Term definition="A number used once. A fresh, cryptographically-random token generated per request, attached to every trusted inline script and listed in the CSP so the browser can tell legitimate scripts from injected ones.">nonce</Term> — "number used once" — is the resolution. The mechanism is a small round trip, and it touches three places with the *same* token on every single request:
+
+1. Your request gate, `proxy.ts`, generates one random nonce when a request arrives.
+2. It puts that nonce into the `script-src` and `style-src` of the CSP it sets on the response.
+3. It also forwards the nonce to your app as a request header (`x-nonce`), so your Server Components can read it — via the same `headers()` function you use to read any incoming header — and stamp it onto the scripts they render. Next.js does this automatically for its own framework and page scripts (it reads the nonce straight off the CSP header); you only reach for `x-nonce` by hand to mark an explicit `<Script>` or third-party tag.
+
+When the browser gets the page, it sees the CSP listing `'nonce-abc123'`, and it sees your legitimate scripts carrying `nonce="abc123"`. Match — they run. An attacker's injected `<script>` has no nonce, because the token is fresh every request and the attacker never saw it. No match — refused.
+
+That leaves one token in the policy still unexplained: <Term definition="A CSP keyword that tells the browser to trust any script loaded by an already-trusted (nonced) script, without each of those further origins being listed explicitly.">`'strict-dynamic'`</Term>. It is the multiplier that makes nonces practical. A modern app's nonced bootstrap script loads *other* scripts — chunks, third-party SDKs. Without `'strict-dynamic'`, you'd have to list every one of those origins in `script-src` by hand and keep the list current forever. With it, the browser reasons: *this script was already trusted because it had the nonce, so I'll trust the scripts it chooses to load too.* Trust propagates outward from the nonced root, and you stop maintaining a giant CDN allowlist.
+
+The following diagram walks one request through the whole round trip. Scrub it step by step and watch the same token — `abc123` — appear at the gate, ride out on the CSP, ride back in on `x-nonce`, land on the script, and finally get checked by the browser.
+
+<CspNonceRoundtrip />
+
+The point the diagram is built to make spatial: it is *one token, in three places, regenerated every request*. Hold that — it makes the trade-off in the next section obvious instead of something you have to take on faith.
+
+Now, the proxy code that does all of this. You will not write this from a blank file — **the project starter ships `proxy.ts` complete**, and your job in the audit is to read it and know why each line is there, not to author the nonce machinery yourself. So read the following for *recognition*: when you open the starter, this is the shape you'll see, and here is what every piece does.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+export default function proxy(request: NextRequest) {
+  const nonce = Buffer.from(crypto.randomUUID()).toString('base64');
+  const csp = [
+    \`default-src 'self'\`,
+    \`script-src 'self' 'nonce-\${nonce}' 'strict-dynamic'\`,
+    \`style-src 'self' 'nonce-\${nonce}'\`,
+    \`frame-ancestors 'none'\`,
+  ].join('; ');
+
+  const headers = new Headers(request.headers);
+  headers.set('x-nonce', nonce);
+
+  const response = NextResponse.next({ request: { headers } });
+  response.headers.set('Content-Security-Policy', csp);
+  return response;
+}
+`}>
+  <AnnotatedStep meta={`{2}`} color="orange">
+    **A fresh nonce, per request.** `crypto.randomUUID()` gives a random UUID; `Buffer.from(...).toString('base64')` encodes it as a compact token. This runs on every request, which is the entire reason CSP can't live in build-time config — the value is never the same twice. This exact expression is the canonical Next.js idiom.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{3-9}`} color="green">
+    **The nonce injected into the policy.** The same token is interpolated into `script-src` and `style-src`. (The shown policy is trimmed to four directives; the real one carries the full Pass 1 set.) This is the copy of the nonce the *browser* will check incoming scripts against.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{11-12}`} color="blue">
+    **The nonce forwarded to the app.** A copy of the request's headers is taken, `x-nonce` is set on it, and that modified header set is passed forward via `NextResponse.next({ request: { headers } })`. Next.js stamps the nonce onto its own framework and page scripts automatically; `x-nonce` is what a Server Component reads with `headers()` to mark an explicit `<Script>` or third-party tag by hand.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{14}`} color="violet">
+    **The policy set on the response.** Note the symmetry: `x-nonce` goes on the *request* (inbound, for your app to read); the CSP goes on the *response* (outbound, for the browser to enforce). Same nonce, two directions — exactly the round trip the diagram walked.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Try reconstructing the policy from understanding rather than memory. In the following exercise the CSP block has three values blanked — the values that each encode a real decision.
+
+<Dropdowns
+  instructions="Fill each blank with the value that encodes the right decision — the floor, the analytics vendor, and the clickjacking rule."
+  answers={[
+    { answer: "'self'", options: ["'self'", "'none'", "'unsafe-inline'", "*"] },
+    { answer: 'us.i.posthog.com', options: ['us.i.posthog.com', 'cdn.stripe.com', 'fonts.googleapis.com', '*'] },
+    { answer: "'none'", options: ["'none'", "'self'", "DENY", "*"] },
+  ]}
+>
+```text
+default-src ___;
+script-src 'self' 'nonce-{NONCE}' 'strict-dynamic';
+img-src 'self' data: blob: https:;
+connect-src 'self' https://*.upstash.io https://*.sentry.io https://___;
+frame-ancestors ___;
+base-uri 'self';
+```
+</Dropdowns>
+
+## Why CSP lives in proxy.ts and the other five in next.config.ts
+
+You have now seen both files do their job; this is the principle that decides which header goes where, and it is one sentence:
+
+> A header that is identical on every response can be computed once, at build time, in `next.config.ts`. A header whose value changes per request must be built per request, in `proxy.ts`.
+
+That's the entire reasoning. Lead with it; the file assignment falls out. The five static headers are constant — HSTS is always the same string, `nosniff` is always `nosniff` — so they belong in build-time config. CSP carries a fresh nonce on every request, so it *cannot* be precomputed; it has to be assembled in the proxy, which runs on each request. This is why the chapter needs both files to have a security job, and it is the architectural decision the whole lesson has been building toward.
+
+One precedence note so you don't trip over it: for the routes the proxy matches, the CSP it sets on the response *overrides* any CSP coming from `next.config.ts`. So you set CSP in the proxy and nowhere else — you don't want two CSP sources fighting each other. The five static headers come from config and the proxy never touches them. One header, one home.
+
+The following figure is the one-glance version — each header mapped to its file and the reason.
+
+<HeaderFileSplit />
+
+There is one wrinkle in that split worth stating plainly, because it looks like a contradiction until you see it. `frame-ancestors` is the modern clickjacking defense — but it is a *CSP directive*, so it physically rides inside the proxy's CSP string, not in `next.config.ts`. The legacy `X-Frame-Options: DENY` is its own standalone header and *does* live in `next.config.ts`. So the two clickjacking belts sit in different files: the real one as a directive in the proxy, the legacy fallback as a header in config. That is the correct production shape, not an oversight.
+
+The following exercise is the cleanest check of the whole lesson's central distinction. Sort each header into the file that ships it. Watch the two clickjacking belts in particular — they go to different files, and knowing why is the point.
+
+<Buckets twoCol instructions="Sort each header into the file that ships it — and remember a CSP directive travels inside the proxy's CSP string.">
+  <Bucket name="config" label="next.config.ts" description="Constant, built once" />
+  <Bucket name="proxy" label="proxy.ts" description="Per-request, carries the nonce" />
+
+  <Item bucket="config">`Strict-Transport-Security`</Item>
+  <Item bucket="config">`X-Content-Type-Options`</Item>
+  <Item bucket="config">`Referrer-Policy`</Item>
+  <Item bucket="config">`Permissions-Policy`</Item>
+  <Item bucket="config">`X-Frame-Options`</Item>
+  <Item bucket="proxy">`Content-Security-Policy`</Item>
+  <Item bucket="proxy">`frame-ancestors 'none'`</Item>
+</Buckets>
+
+## The static-prerender trade-off, and the marketing-site exception
+
+Every other header in this lesson costs nothing. This one costs something, and it is the only real trade-off — so name it now, because the alternative is discovering it as a bug.
+
+A page that gets a fresh per-request nonce **cannot be statically prerendered.** <Term definition="Rendering a page to static HTML at build time so every visitor is served the same cached output — fast, but identical for everyone.">Prerendering</Term> means the page is rendered once at build and the same HTML is served to everyone. But every request needs a *different* nonce, and you can't bake a different value into one shared static file. So a nonced page must render dynamically, per request.
+
+Here is why that costs you nothing *for the app itself*: every protected page in your app is already dynamic. It reads the session, the active org, per-tenant data — it was never a candidate for static prerendering in the first place. The nonce rides along for free on pages that were always going to render per request anyway.
+
+The place it *does* bite is the one kind of page that genuinely wants to be static: your public marketing site — `example.com`, as distinct from the `app.example.com` we've been hardening. Marketing pages are static for SEO and speed, and you don't want to force them dynamic just to attach a nonce. So there, you opt *out* of nonces and ship a different shape of CSP: a **nonceless policy with explicit origins**, where you list every third party the marketing pages load by name.
+
+<CodeVariants>
+  <CodeVariant label="App shell (dynamic)">
+    <div data-mark-color="green">
+
+    ```text "'nonce-{NONCE}'"
+    script-src 'self' 'nonce-{NONCE}' 'strict-dynamic';
+    ```
+
+    </div>
+    **Nonce-based, renders per request.** The protected app is already dynamic (session, org, tenant data), so the per-request nonce is free. This is what `proxy.ts` ships for `app.example.com`.
+  </CodeVariant>
+
+  <CodeVariant label="Marketing (static)">
+    <div data-mark-color="orange">
+
+    ```text "https://assets.calendly.com" "https://js.stripe.com"
+    script-src 'self' https://assets.calendly.com https://js.stripe.com;
+    ```
+
+    </div>
+    **Nonceless, explicit origins, stays static.** No nonce means the page can be statically prerendered for SEO and speed — but every third-party origin must be listed by hand (here a scheduling embed and Stripe's JS). The catch: forget one origin and that embed silently breaks. List them all.
+  </CodeVariant>
+</CodeVariants>
+
+The rule to carry: nonce on the dynamic app shell; explicit-origin CSP on the static marketing pages. And one warning for the marketing side — because there's no nonce trusting your scripts, a too-strict policy that omits a third-party origin will *silently* break that embed. Every origin the page loads must be in the list.
+
+## Ship Report-Only first, then enforce
+
+A strict CSP has a failure mode that has burned plenty of teams: you flip it on in enforce mode, it blocks a legitimate script you forgot to account for, and now it's broken — in production, for every user, all at once. The experienced move is to never enforce a brand-new CSP blind.
+
+The safe rollout has a built-in dress rehearsal. Ship the policy under the header name `Content-Security-Policy-Report-Only` first. In that mode the browser *reports* every violation it would have blocked — but blocks nothing. Your app keeps working exactly as before, while a stream of violation reports tells you precisely what a real enforce-mode policy would break. You watch that stream for a week, fix the legitimate scripts the policy didn't account for, and only then rename the header to `Content-Security-Policy` to actually enforce. (Sentry ingests these violation reports natively — wiring that endpoint up is the observability chapter's job, not this one; for now just know the reports have somewhere to go.)
+
+One tooling trap to avoid during the rollout: do not ship `Content-Security-Policy` and `Content-Security-Policy-Report-Only` *at the same time* with different policies. It confuses tools and, more importantly, your own reasoning about which policy is actually in force. It's one or the other while you roll out — never both.
+
+:::note
+The course's seeded codebase runs CSP in **enforce mode** directly, for teaching clarity — so when you open the starter and see a plain `Content-Security-Policy` with no `-Report-Only` variant, that's deliberate, not a skipped step. In a real launch you'd spend the Report-Only week first.
+:::
+
+## Verify in thirty seconds
+
+"I shipped the headers" is an unverified claim until you've looked at the response, and you already know why: the browser is the only enforcer, and a malformed header fails silently. Two tools close the loop, both fast.
+
+The first is the command this lesson opened with. Run `curl -I` again and read the same response — except now it carries the six headers. The following two tabs are the before and after: the bare response from the introduction, and the hardened one, same command, transformed output.
+
+<CodeVariants>
+  <CodeVariant label="Before">
+    ```http
+    $ curl -I https://app.example.com
+    HTTP/2 200
+    content-type: text/html; charset=utf-8
+    cache-control: private, no-store
+    ```
+    **Nothing for the browser to enforce.** A correct response with zero security policy. Frameable, sniffable, downgradable.
+  </CodeVariant>
+
+  <CodeVariant label="After">
+    <div data-mark-color="green">
+
+    ```http {4-9}
+    $ curl -I https://app.example.com
+    HTTP/2 200
+    content-type: text/html; charset=utf-8
+    strict-transport-security: max-age=63072000; includeSubDomains; preload
+    x-content-type-options: nosniff
+    referrer-policy: strict-origin-when-cross-origin
+    permissions-policy: camera=(), microphone=(), geolocation=(), payment=()
+    x-frame-options: DENY
+    content-security-policy: default-src 'self'; script-src 'self' 'nonce-abc123' 'strict-dynamic'; …
+    ```
+
+    </div>
+    **Six rules the browser will now enforce.** Same command, same app — every header present, the CSP carrying a live per-request nonce. The header really is just a string on the response.
+  </CodeVariant>
+</CodeVariants>
+
+The second tool is even less effort: paste your URL into **securityheaders.com** and it returns a letter grade with a per-header breakdown, no setup at all. Use it as the zero-friction external sanity check.
+
+One forward pointer so you know where this habit goes next: turning this manual `curl` into an automated check — a CI smoke test that asserts the six headers are present on every deploy, so a regression never reaches production — lands in the CI chapter later. Here you verify by hand; there you make it impossible to forget.
+
+For the full directive surface this lesson deliberately trimmed, these two are the canonical references:
+
+<CardGrid>
+  <ExternalResource
+    title="Content-Security-Policy — MDN"
+    href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Content-Security-Policy"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="Every CSP directive and value, with browser-support notes — the reference for the directives this lesson left off the baseline."
+  />
+  <ExternalResource
+    title="Next.js — Content Security Policy"
+    href="https://nextjs.org/docs/app/guides/content-security-policy"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The framework's own guide to the per-request nonce in proxy.ts and reading it in Server Components — the pattern the starter ships."
+  />
+</CardGrid>
+
+## Quick recall
+
+Two checks on the load-bearing ideas. Reason them through rather than matching the prose.
+
+<MultipleChoice>
+  A teammate hits a wall of CSP violation errors in the console during development and asks to add `'unsafe-inline'` to `script-src` "just to unblock myself for now." Why is that the wrong fix?
+
+  <McqChoice>It measurably slows down hydration on every page load.</McqChoice>
+  <McqChoice>It's deprecated and modern browsers ignore it.</McqChoice>
+  <McqChoice correct>It re-allows every inline script — including an attacker's injected one — which is exactly the hole CSP exists to close.</McqChoice>
+  <McqChoice>It only works in Report-Only mode, so it does nothing in production.</McqChoice>
+
+  <McqWhy>`'unsafe-inline'` tells the browser to run *any* inline script, so an XSS-injected `<script>` runs right alongside the legitimate ones. The policy still loads — it just stops protecting anything. The right fix is a nonce, which marks the legitimate scripts so the injected one is still refused. "Temporarily" is how it ends up permanent.</McqWhy>
+</MultipleChoice>
+
+<MultipleChoice>
+  HSTS, `nosniff`, and `Referrer-Policy` all ship from `next.config.ts`, but CSP ships from `proxy.ts` instead. What's the reason for the split?
+
+  <McqChoice>`next.config.ts` can't set a header as long as a CSP string.</McqChoice>
+  <McqChoice correct>CSP carries a nonce that's regenerated per request, so it can't be the single constant value a build-time header is.</McqChoice>
+  <McqChoice>The proxy runs earlier, so CSP is enforced sooner than the other headers.</McqChoice>
+  <McqChoice>`next.config.ts` headers don't apply to dynamically rendered pages.</McqChoice>
+
+  <McqWhy>A header in `next.config.ts` is computed once at build and is identical on every response. CSP's nonce must be different on every request — so it has to be assembled per request, which is what `proxy.ts` does. The other five never change, so build-time config is exactly right for them.</McqWhy>
+</MultipleChoice>
+
+You can now run the question this lesson set out to answer against your own deploy: name the six headers, say which file ships each and why, read the CSP line by line, and confirm the whole set with one `curl -I`. The next lesson moves from the headers that protect the browser to the limits that protect your *endpoints* — which routes are abusable, and what makes a rate limiter mandatory rather than optional.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Mitigate XSS with a strict CSP"
+    href="https://web.dev/articles/strict-csp"
+    icon="simple-icons:google"
+    iconColor="#4285F4"
+    description="Google's web.dev guide to the exact nonce + 'strict-dynamic' policy this lesson ships — why allowlists fail and nonces win."
+  />
+  <ExternalResource
+    title="OWASP Secure Headers Project"
+    href="https://owasp.org/www-project-secure-headers/"
+    icon="simple-icons:owasp"
+    iconColor="#000000"
+    description="The authoritative catalog of every security header with recommended values — the reference behind the baseline you just set."
+  />
+  <ExternalResource
+    title="Security Headers scanner"
+    href="https://securityheaders.com"
+    icon="lucide:scan-line"
+    iconColor="#16A34A"
+    description="Paste your deployed URL for a letter-grade, per-header report — the zero-setup verification the lesson points you to."
+  />
+</CardGrid>

@@ -1,0 +1,503 @@
+---
+title: What belongs in the audit log
+chapter-id: 81
+course-progress: 0.00005
+tagline: The policy layer over your audit log, deciding which privileged actions earn an immutable row, what goes inside, who may read it, and how it survives a GDPR erasure request.
+sidebar:
+  order: 3
+  label: The audit log policy
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import AppendOnlyDefense from '../../../components/lessons/081/3/AppendOnlyDefense.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import TrueFalse from '../../../components/exercises/true-false/TrueFalse.astro';
+import Statement from '../../../components/exercises/true-false/Statement.astro';
+import TfWhy from '../../../components/exercises/true-false/TfWhy.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Back in the organizations chapter you shipped the machinery: the `auditLogs` table, two row-level-security policies that deny `UPDATE` and `DELETE` so a row can never be edited once written, and `logAudit(tx, event)` — a helper whose first parameter is a database transaction, which means the compiler refuses any call that isn't co-committed with a real mutation. You even called it from the member-management flows: when someone changes a teammate's role, a row gets written in the same transaction.
+
+So the *how* is solved. What you don't have yet is the *policy* — and the policy is the senior contribution. The table will happily store anything you hand it. The question that decides whether your audit log is an asset or a liability is the one no helper can answer for you: **which actions deserve a row, which must never get one, what goes inside, and who is allowed to read it.** Get that wrong in the over-eager direction and you bury the one event that mattered under ten thousand that didn't; get it wrong in the careless direction and you write a customer's email address into a permanent, un-editable record you legally can't scrub. This lesson is the answer — a catalog you can hand to a code reviewer, and the artifact the next chapter audits a real codebase against.
+
+You will not write `logAudit` here. You will read it twice, to anchor four decisions: the test for what earns a row, the set that's forbidden, the shape of the payload, and the model for who reads the table. Each one resolves to a single sentence you can run at a review.
+
+## One source, three audiences
+
+Before deciding what goes in, be clear on what the log is *for* — because every inclusion rule later falls straight out of the jobs it serves. The audit log does three jobs at once, for three different readers.
+
+<CardGrid>
+  <Card title="Forensic" icon="magnifier">
+    Who did what, when, and from where — the <Term definition="The after-the-fact reconstruction of what happened, from the evidence left behind. The forensic audience reads the log once something has already gone wrong.">forensic</Term> reconstruction during an incident or a dispute. This is the 3am audience: the record you reach for when something has already gone wrong and you need the truth.
+  </Card>
+  <Card title="Compliance" icon="approve-check-circle">
+    <Term definition="A security-and-availability audit framework (System and Organization Controls 2) that SaaS vendors get certified against; auditors expect an immutable record of who accessed what.">SOC 2</Term> and <Term definition="The EU's General Data Protection Regulation. Among other things it requires an auditable record of access to and processing of personal data.">GDPR</Term> both want an immutable identity-and-access record. An auditor reads it by date range and asks: can you prove who could see this customer's data, and when access changed?
+  </Card>
+  <Card title="Product trust" icon="heart">
+    A customer-facing "Activity" feed reads the *same table*, so the customer can self-serve "who removed Bob from our team?" without filing a support ticket. The audit log isn't only an internal tool — part of it is a product feature.
+  </Card>
+</CardGrid>
+
+Hold onto the phrase: **one source, three audiences.** It's the spine of the whole lesson. Every decision ahead — what to include, what shape to store it in, who gets to read it — traces back to serving these three readers without serving any of them badly.
+
+It's worth drawing a hard line against something you built one chapter ago, because the two are easy to confuse. Your `pino` logs are operator-only, ephemeral, and run through a redactor that strips secrets. The audit log is the opposite on every axis: it's *durable* (it's the legal record), it's *partly customer-readable* (the Activity feed), and it's the thing an auditor will subpoena. The code conventions put it bluntly — audit writes go through `logAudit`, and *they are not pino logs: different table, different audience.* Keep those two artifacts in separate mental boxes from the start; half of this lesson's mistakes come from collapsing them.
+
+<VideoCallout videoId="qfqkEZUumcc" videoTitle="SOC 2 Compliance: Everything Startup Founders Need to Know">
+  Rob Walling (MicroConf) interviews a bootstrapped founder on why and how he got SOC 2 — the compliance audience this log serves, from the SaaS-builder's side (10 min).
+</VideoCallout>
+
+## The events that earn a row
+
+Now the first framework. Resist the urge to start from a list of events — start from the test, because a test you can apply to a *new* action is worth more than a list that's already out of date.
+
+An action earns an audit row when it is **(a) attributable to a human, (b) security- or trust-relevant, and (c) a state change, not a read.** All three, not any one. Run it as a single sentence at review:
+
+:::note
+**Privileged human verbs, not reads, not CRUD ticks.** If you can't name the person, or nothing about security or trust changed, or it's just a page view — it doesn't earn a row.
+:::
+
+That's the same judgment the table was built around; here it's the rule you apply by hand. With the test in place, the catalog stops being arbitrary. These are the six categories that come up in every SaaS, and the concrete events under each. This is the deliverable — read it as the reference it's meant to be.
+
+<CardGrid>
+  <Card title="Identity" icon="padlock">
+    `auth.signed-in`, `auth.signed-out`, `auth.signed-up`, `password.changed`, `password.reset`, `mfa.enrolled`, `mfa.removed`, `session.revoked`
+  </Card>
+  <Card title="Membership & RBAC" icon="puzzle">
+    `member.invited`, `member.joined`, `member.removed`, `member.role-changed`, `org.ownership-transferred`, `invitation.revoked`
+  </Card>
+  <Card title="Billing" icon="star">
+    `subscription.created`, `subscription.canceled`, `plan.changed`, `payment-method.added`, `payment-method.removed`, `refund.issued`
+  </Card>
+  <Card title="Privileged data access" icon="magnifier">
+    `export.started`, `export.completed`, `admin.tenant-data-viewed`, `records.bulk-deleted`, `account.deletion-requested`, `account.deletion-completed`
+  </Card>
+  <Card title="Configuration" icon="setting">
+    `api-key.created`, `api-key.revoked`, `webhook-endpoint.added`, `sso.settings-changed`, `security-setting.changed`
+  </Card>
+  <Card title="Tenant lifecycle" icon="server">
+    `org.created`, `org.deleted`, `org.transferred`
+  </Card>
+</CardGrid>
+
+Look at the *shape* of those names, because the shape is a convention you should hold to. Every one reads `entity.verb-pasttense`: a single dot, then a hyphenated, past-tense verb — `member.role-changed`, not `member.role.changed` or `changeRole`. Past tense because the row records something that *already happened* and can never un-happen; one dot because the entity-then-verb split is all the structure you need to group and filter. Three of these you've already written: `member.role-changed` with a payload of `{ before, after }`, `member.removed` with `{ previousRole }`, `org.ownership-transferred` with `{ from, to, demotedTo }`. The catalog isn't a new vocabulary — it's the names your code already speaks, written down in one place.
+
+And that "one place" is the rule that keeps the catalog alive: **adding a new class of privileged action to the codebase means adding a row to this catalog.** The catalog is the single, grep-able source of truth for what your system considers worth recording. A new verb that doesn't fit any of the six categories isn't a problem to route around quietly — it's a deliberate decision someone makes on purpose, the same way "six seams is a closed set" worked in the error-discipline chapter. Drift here is how an audit log slowly stops meaning anything.
+
+Time to run the test yourself. Sort each action into the bucket the inclusion test puts it in. A few of these are deliberately on the edge — those are the ones the next section is about, so trust the test and notice where it pulls against your instinct.
+
+<Buckets twoCol instructions="Run the inclusion test — attributable to a human, security- or trust-relevant, a state change not a read — and sort each action.">
+  <Bucket name="audit" label="Audit it" description="Passes all three parts of the test" />
+  <Bucket name="skip" label="Don't audit it" description="Fails at least one part" />
+
+  <Item bucket="audit">Changed a member's role from member to admin</Item>
+  <Item bucket="audit">Issued a refund to a customer</Item>
+  <Item bucket="audit">Created a new API key</Item>
+  <Item bucket="skip">Viewed the customer list page</Item>
+  <Item bucket="skip">Opened the dashboard</Item>
+  <Item bucket="skip">A 404 from a mistyped URL</Item>
+  <Item bucket="skip">A sign-in attempt that failed on a wrong password</Item>
+  <Item bucket="skip">A nightly retention job deleting expired sessions</Item>
+</Buckets>
+
+If the last three felt uncomfortable — a *failed* login feels security-relevant, a background deletion feels like a state change — good. That discomfort is the whole next section.
+
+## What never goes in the log
+
+The forbidden set deserves its own framework, because beginners fail in one specific direction: they over-log. "Audit everything" sounds responsible and is exactly wrong — it buries the signal you'll need at 3am under noise, and it bloats a record that's supposed to be the clean, legal account of privileged action. So the discipline cuts both ways: knowing what to leave out is as much a senior skill as knowing what to keep.
+
+There are three classes that never belong in the audit log. For each one, the load-bearing half is the redirect — *where it goes instead* — because forbidding a thing without giving it a home just creates a gap somebody fills back in later.
+
+<CardGrid>
+  <Card title="Reads of resources the user may access" icon="magnifier">
+    Every list view, every detail page the user is allowed to open. Far too noisy — log these and the forensic signal drowns. **Goes to** `pino` / Sentry structured logs, operator-only. The careful exception: a *privileged* read — an admin impersonating a tenant, a data export — **is** audited, because there the access itself is the security event. Routine read, no. Cross-tenant or privileged read, yes.
+  </Card>
+  <Card title="Failed authorization and failed auth" icon="error">
+    A rejected sign-in, a cross-tenant attempt, a request refused for too-low a role. **Goes to** Sentry, tagged with a code like `cross_tenant_attempt` or `unauthorized`. The rule is sharp: *audit successes, not failures.* A failed attempt is a security **signal** for the operator, not a trust **record** for the customer — and logging every failed login would let an attacker flood the customer's Activity feed by typing the wrong password a thousand times.
+  </Card>
+  <Card title="Internal jobs nobody triggered" icon="clock">
+    A nightly retention sweep, a queue retry. **Goes to** job history or your observability stack — not the audit table, because there's no human to attribute it to. The distinction that matters is *attributability*, not who's at the keyboard: a job acting **on a user's behalf** (the deletion job you'll meet next lesson) *does* write rows, with `actorUserId: null` and a `system.*` action. A sweep acting on nobody's behalf does not.
+  </Card>
+</CardGrid>
+
+The boundary, in one line: **user-attributable and security-relevant, or it does not belong.**
+
+:::caution
+The single most common audit-log mistake in the wild is logging reads. It feels thorough, and it quietly ruins the table: every page view becomes a row, the signal-to-noise ratio collapses, and the one event an investigator needs is now a needle in a firehose. A legal record you can't search is not a legal record.
+:::
+
+<VideoCallout videoId="I2mWnh66Bkg" videoTitle="12 Logging Best Practices in 12 minutes">
+  Better Stack on capturing the right things, not everything — including the never-log-secrets rule and the Twitter plaintext-password incident that makes the case (12 min).
+</VideoCallout>
+
+Run the exact confusions through a quick round. Each statement targets one of the lines you just drew.
+
+<TrueFalse instructions="Each claim is about what does and doesn't earn an audit row.">
+  <Statement answer="false">
+    A sign-in attempt that fails on a wrong password should be written to the audit log.
+    <TfWhy>It's a failed attempt — a security *signal*, not a trust *record*. It goes to Sentry tagged `unauthorized`. Audit successes, not failures; otherwise an attacker floods the customer's Activity feed by typing the wrong password a thousand times.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    Opening an invoice detail page should be audited.
+    <TfWhy>That's a read of a resource the user is allowed to see. Routine reads go to operator logs (`pino` / Sentry), never the audit table — log them and the forensic signal drowns in noise.</TfWhy>
+  </Statement>
+
+  <Statement answer="true">
+    An admin impersonating a tenant to view their data should be audited.
+    <TfWhy>A *privileged*, cross-tenant read is the exception. Here the access itself is the security event, so it earns a row — `admin.tenant-data-viewed`. Routine read, no; cross-tenant or privileged read, yes.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    The nightly retention job's deletions should write audit rows attributed to the users whose data was deleted.
+    <TfWhy>A sweep nobody triggered is job history, not an audit event — and attributing it to a user is a lie. Note the contrast: the *on-request* deletion job, acting on a user's behalf, *does* write rows, with `actorUserId: null` and a `system.*` action.</TfWhy>
+  </Statement>
+</TrueFalse>
+
+## The shape of an entry
+
+You've decided which actions earn a row. Now the field-level contract: what each column is *for*, read through the policy lens rather than the schema lens. You declared this table in the organizations chapter, so this isn't a re-teach of Drizzle column builders or the RLS policy — it's a second look at the same shape, asking "why does the policy want this field" of each one.
+
+Here's the type the caller hands in, and the columns that actually land in the row.
+
+```ts title="src/lib/audit.ts"
+type AuditEvent = {
+  action: string;
+  subjectType?: string;
+  subjectId?: string;
+  payload?: Record<string, unknown>;
+};
+```
+
+| Column | Type | What it's for (policy lens) |
+| --- | --- | --- |
+| `id` | uuid | the row's own identity |
+| `organizationId` | uuid | the tenant the event belongs to — the boundary RLS enforces |
+| `actorUserId` | uuid, nullable | the human who acted; `null` means a system actor (FK `onDelete: 'set null'`) |
+| `actorIp` | text | where the action came from — forensic "from where" |
+| `actorUserAgent` | text (truncated 512) | the client used — forensic context |
+| `action` | text | the canonical catalog name |
+| `subjectType` | text | what kind of thing was acted on (`member`, `invoice`) |
+| `subjectId` | text | which specific one |
+| `payload` | jsonb | the forensic detail — shaped, not dumped (next section) |
+| `createdAt` | timestamptz | server `now()`, never client-supplied |
+
+Notice what the caller is *not* allowed to pass. The `AuditEvent` is four fields — `action`, `subjectType`, `subjectId`, `payload` — and that's all. The actor, the IP, the user agent, the timestamp: `logAudit` derives every one of those itself, from the request and the clock. That isn't an ergonomic shortcut. It's an integrity property, and it's worth being precise about why.
+
+**Server time is the only time.** `createdAt` defaults to the server's `now()` and is never accepted from the client. Think about what would happen if it were: an attacker could backdate their own action to before they had access, or future-date it past the window an investigator is looking at — forging the timeline of the legal record from inside their own request. A client clock is an attacker-controlled clock. The server's is the only one that means anything here.
+
+**Derive the actor, never trust it.** The same logic governs `actorUserId`. The caller can't claim to be someone else, because the caller never supplies it — `logAudit` reads it from the authenticated session. You'll sometimes see audit designs reach for four conceptual actor *kinds*: a human user, the system itself, an API key, a webhook. Those are useful as a taxonomy, but be honest about how this schema actually expresses them: there is no `actorType` enum column. The split is encoded by `actorUserId` being nullable — non-null is a human, `null` is the system — together with the `action` prefix (`system.*` rows carry `actorUserId: null` and record their provenance in the payload). Promoting `actorType` to a real column is a deliberate future extension, not the shape you ship in year one. Don't invent the column; the nullable actor plus the action prefix already carry the distinction.
+
+Read one real call to tie the contract to a row you've already written. This is the `member.role-changed` flow from the organizations chapter — walk the steps and notice what each piece is doing for the *policy*, not the API.
+
+<AnnotatedCode lang="ts" maxLines={16} code={`
+await withTenant(orgId, async (tx) => {
+  await tx
+    .update(orgMembers)
+    .set({ role: nextRole })
+    .where(eq(orgMembers.id, memberId));
+
+  await logAudit(tx, {
+    action: 'member.role-changed',
+    subjectType: 'member',
+    subjectId: memberId,
+    payload: { before: currentRole, after: nextRole },
+  });
+});
+`}>
+  <AnnotatedStep meta={`"(tx)" "logAudit(tx,"`} color="blue">
+    `withTenant` opens the transaction and hands it in as `tx`; passing that same `tx` to `logAudit` makes the mutation and the audit row commit together or roll back together. There is no path where one lands without the other — and the type signature is what enforces it.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"action: 'member.role-changed',"`} color="blue">
+    The action is a name straight out of the catalog. If it isn't in the catalog it shouldn't be here — and if it's here, it must be in the catalog.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"subjectType: 'member'," "subjectId: memberId,"`} color="blue">
+    What was acted on: the specific member row. `subjectType` + `subjectId` answer "on what" without dumping the whole record.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"payload: { before: currentRole, after: nextRole },"`} color="blue">
+    The forensic diff: only the field that changed, before and after. Not the request, not the row — the change. This is the next section.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+## Payload is forensics, not a data dump
+
+This is the most important section in the lesson, and the one beginners get wrong most reliably — so slow down here. The payload is where good intentions write secrets and personal data into a record you can never edit afterward.
+
+Start from what the payload is *for*. It answers one question and only one: **what changed, or what were this operation's arguments** — in human-readable terms. That gives you three clean cases:
+
+- **State changes** carry `{ before, after }` of *only the fields that changed*. A role change is `{ before: 'member', after: 'admin' }` — not the whole member row.
+- **Action events** carry the operation's arguments. `member.invited` is `{ email, role }` — the email *is* the event, so it belongs.
+- **Events where the fact is the whole record** carry an empty payload. `password.changed` is `{}` — that it happened, by whom, when, is the entire forensic content. There's nothing to put inside.
+
+One sentence: **the payload is a forensic diff, not a request log.**
+
+Here's the mistake and the fix side by side. The wrong version is the one that feels easiest — and it's a trap on two separate counts.
+
+<CodeVariants>
+  <CodeVariant label="Wrong" icon="error">
+    <div data-mark-color="red">
+
+    ```ts {5}
+    await logAudit(tx, {
+      action: 'member.role-changed',
+      subjectType: 'member',
+      subjectId: memberId,
+      payload: rawFormData,
+    });
+    ```
+
+    </div>
+    **Dumps the whole request into a permanent record.** Two failures at once — it couples the log to the incidental shape of a form submission, and it imports whatever PII and secrets the request happened to carry into a row you can never scrub.
+  </CodeVariant>
+
+  <CodeVariant label="Right" icon="approve-check">
+    <div data-mark-color="green">
+
+    ```ts {5}
+    await logAudit(tx, {
+      action: 'member.role-changed',
+      subjectType: 'member',
+      subjectId: memberId,
+      payload: { before: currentRole, after: nextRole },
+    });
+    ```
+
+    </div>
+    **Stores exactly the forensic facts.** Minimal, stable, and decoupled from the request shape — the only thing inside is the change itself. Nothing leaked in, because nothing irrelevant was put in.
+  </CodeVariant>
+</CodeVariants>
+
+Now the part that overrides what you may have read elsewhere, because it's the load-bearing insight of this whole lesson. The audit payload is **not byte-redacted.** There is no scrubber running over `logAudit` stripping out `password` keys. Confidentiality of the audit log comes from a completely different model — three artifacts, three different protections, and conflating them is the classic beginner error:
+
+<CardGrid>
+  <Card title="Minimize at write time" icon="pencil">
+    You put in *only* the forensic facts, so <Term definition="Personally Identifiable Information — any data that identifies a natural person: name, email, IP, and so on.">PII</Term> that isn't part of the event never enters the payload in the first place. `account.deletion-requested` records the *tables* being deleted, never the data itself. `member.invited` records the invitee email — because there, the email genuinely *is* the event. Minimization is a decision about what to write, made at the call site.
+  </Card>
+  <Card title="Confidentiality by access control at read time" icon="padlock">
+    The row is kept from the wrong eyes by the org-isolation <Term definition="Row-Level Security — Postgres policies that filter which rows a query can touch based on session variables. Here it scopes every read to the caller's own organization and forbids editing the audit table.">RLS</Term> policy plus a closely-held read surface — *not* by mangling the bytes inside. Who can see the row is the control, not what the row contains.
+  </Card>
+  <Card title="The redactor is a different artifact" icon="random">
+    The `pino` / Sentry redactor from the error-discipline chapter strips `password`, `token`, `secret`, and PII keys from the **operator log stream**. It does not wrap `logAudit`, and the audit payload never passes through it. Two streams, two mechanisms — don't wire one to the other.
+  </Card>
+</CardGrid>
+
+Make the distinction quotable, because you'll reach for it at reviews: **redact the operator log; minimize the audit payload; protect the table with RLS.** Three artifacts, three protections, and they don't substitute for each other.
+
+:::caution
+The inverse mistake is the dangerous one: "dump the raw input now, we'll redact it later." There is no later. The audit table is append-only — you genuinely cannot go back and scrub a row. Whatever PII or secret you write lands in the permanent legal record forever. Minimizing at write time isn't the *better* defense; it's the *only* one that works, because it's the only one that happens before the row becomes immutable.
+:::
+
+One question to lock it in. Given a role change, which payload is the right one?
+
+<MultipleChoice>
+  A `member.role-changed` event fires: someone was promoted from `member` to `admin`. Which `payload` should the `logAudit` call carry?
+
+  <McqChoice>
+    ```ts
+    payload: rawFormData
+    ```
+  </McqChoice>
+  <McqChoice>
+    ```ts
+    payload: fullMemberRow
+    ```
+  </McqChoice>
+  <McqChoice correct>
+    ```ts
+    payload: { before: 'member', after: 'admin' }
+    ```
+  </McqChoice>
+  <McqChoice>
+    ```ts
+    payload: {}
+    ```
+  </McqChoice>
+
+  <McqWhy>A state change carries the diff of *only* the field that moved — the before/after of the role, nothing else. The raw form and the full member row both drag in fields the event doesn't need and can quietly land PII in a row you can never scrub. An empty payload is the right call when the fact *is* the whole record (`password.changed`), but here the two role values are the forensic point, so leaving them out throws away the only detail worth keeping.</McqWhy>
+</MultipleChoice>
+
+## The append-only guarantee, revisited
+
+You built this defense in the organizations chapter, so this is a re-anchor, not a re-teach — a look at it through the audit-pass lens, asking "what do I grep for to know it's still intact." Append-only is the second pillar of the policy: a record anyone could edit is worthless as a legal account, so the table is engineered so that nobody — not even the application — can change a row once it's written.
+
+The guarantee stands on three independent layers:
+
+1. **Column shape.** There is no `updatedAt`, no `deletedAt` — no column whose existence invites a mutation. The schema simply offers nothing to change.
+2. **Database policy.** Two RLS policies with `USING (false)` deny `UPDATE` and `DELETE` to the application's database role outright. The database refuses the operation even if the application asks.
+3. **Application discipline.** Only `logAudit` ever inserts; nothing in the codebase issues an `UPDATE` or `DELETE` against `auditLogs`. The application never asks in the first place.
+
+The mantra from when you built it still holds: **the database refuses; the application never asks.** Two of those layers are belt and suspenders on purpose — if discipline slips and some code tries to edit a row, the database still says no.
+
+That third layer is also a grep. Here's the audit-pass move, and it's your contribution to the chapter's broader audit deliverable: **any reference to `auditLogs` outside `logAudit`, the migrations, and read paths is a finding.** One grep across the codebase, and every hit is either a legitimate read or a bug. The same grep-driven discipline you used to verify the rate-limit seams works here.
+
+There is exactly one sanctioned exception, and naming it honestly is the bridge to the rest of this chapter. A privileged owner-role connection — a separate, more-powerful database credential, not the everyday application role — *can* write to the table. It exists for precisely two jobs: legal retraction, and the retention work that runs next lesson, including the anonymization you're about to meet. It runs *outside* the application's `USING (false)` policy because it connects as a different role, and it is *never* reachable from a Server Action. This is how "append-only" and "audit rows get anonymized on deletion" are both true at once: the anonymization is a deliberate, architected exception running as a privileged role, not a hole in the wall.
+
+The diagram makes the structure glanceable: three independent layers wrapping the table, and one deliberate arrow piercing all three from the side.
+
+<AppendOnlyDefense />
+
+## Who reads it, and reading is audited too
+
+The third pillar is the read model — and it has a twist that's pure senior judgment. The same table serves three readers, each with a different query scope and a different rendering. This is policy, not implementation: the Activity-page Server Component and its query stay out of scope here (you flagged them "not built" back in the organizations chapter). What matters is the *model*.
+
+<CardGrid>
+  <Card title="Customer admin" icon="comment">
+    Reads their **own org's** Activity page. The query is tenant-scoped — the org-isolation RLS policy already draws that boundary, so a customer physically cannot read another tenant's rows. They see a *rendered* feed, never raw rows.
+  </Card>
+  <Card title="Platform operator" icon="warning">
+    Reads **cross-tenant** during an incident, gated by the <Term definition="The platform-level operator role — your own staff — distinct from a customer's org-level owner. It can cross tenant boundaries, which is exactly why its use is gated and logged.">superadmin</Term> role. The twist: this read **is itself audited** — it writes an `admin.audit-log-queried` row. Reading the most sensitive table in the system is a privileged action, so it earns its own entry, the same as any other.
+  </Card>
+  <Card title="Compliance officer" icon="document">
+    Exports a date range for a SOC 2 review — and that export writes its own `audit.exported` event. Named here, built elsewhere; the point is that the export is itself a recorded action.
+  </Card>
+</CardGrid>
+
+That second card is the surprise worth holding onto. Reading the audit log is a privileged action, so reading the audit log gets audited. The most sensitive table in your system keeps a record of who looked at it — including your own operators. There's no special class of person who reads it invisibly.
+
+There's a rendering rule that runs across all three readers. The customer-facing feed never reads raw `payload` — it goes through a `formatAuditEvent(event)` helper that turns the structured row into a human sentence: "Alice promoted Bob from member to admin," built from that `{ before, after }` diff. The rule is **the UI renders from a formatter, never from raw `payload`.** The reason is the one that bites teams later: render straight from `payload` and the UI is now coupled to the row's schema, so the day you reshape a payload, the customer's Activity page silently breaks. The formatter is the stable seam between the stored shape and the shown string — one source, many renderings. (Localizing those strings comes later, in the internationalization chapter; for now it's enough that the rendered string is authored for a human and goes through one helper.)
+
+The diagram below is the whole read model in one picture — one table, three reads, and the self-referential loop where the operator's read writes back into the table it just queried.
+
+<Figure caption="One table, three audiences — and reading it is itself an event.">
+```d2
+direction: right
+
+**.style.font-size: 28
+
+classes: {
+  source: {
+    style: {
+      fill: "#ede9fe"
+      stroke: "#7c3aed"
+      stroke-width: 2
+      border-radius: 16
+      font-color: "#5b21b6"
+      bold: true
+    }
+  }
+  reader: {
+    style: {
+      fill: "#f8fafc"
+      stroke: "#475569"
+      border-radius: 16
+    }
+  }
+}
+
+audit: "auditLogs" { class: source }
+
+customer: "Customer admin" { class: reader }
+operator: "Platform operator" { class: reader }
+compliance: "Compliance officer" { class: reader }
+
+audit -> customer: "org-scoped\nrendered feed"
+audit -> operator: "cross-tenant + superadmin\nraw incident view"
+audit -> compliance: "date-range\nCSV export"
+
+operator -> audit: "writes admin.audit-log-queried" {
+  style: { stroke: "#dc2626"; stroke-width: 4; stroke-dash: 4; font-color: "#dc2626"; bold: true }
+}
+```
+</Figure>
+
+:::danger
+A cross-tenant read without the superadmin gate is a tenant data leak, full stop — one customer seeing another's record. The operator's door into the audit log must be guarded as tightly as any other privileged action, *and* logged when it's used. The gate and the `admin.audit-log-queried` row are two halves of one control.
+:::
+
+## When a user is forgotten
+
+The last decision is where the audit log collides with privacy law — and it's a genuine collision, not a detail. This section is policy only: the *rule* and the *why*. The job that performs it, the retention timers, and the different shapes deletion can take are all the next lesson — so where the mechanics come up, treat them as a forward reference, not something to build here.
+
+Here's the tension. GDPR's <Term definition="The GDPR right (Article 17) that lets a person demand a company erase their personal data. Also called the right to be forgotten.">right to erasure</Term> says: when a person asks, delete their personal data. Append-only says: audit rows are immutable and can never be deleted. Both are non-negotiable, and they point in opposite directions.
+
+The senior resolution is to realize the two aren't actually asking for the same thing. **Audit entries are anonymized, not deleted.** The legal and forensic record of *what happened* has to survive — you cannot prove compliance with a record you destroyed, and the fact that a role was changed is the *organization's* record, not solely the individual's. What gets removed is the *link to the natural person*. The event lives; the identity is severed.
+
+Reconciled with the schema you shipped, that happens in two moves:
+
+1. **The foreign key already does half the job.** `actorUserId` is `onDelete: 'set null'`. Delete the `user` row and the FK automatically nulls the actor on every audit row that referenced them. You shipped this layer in the organizations chapter without thinking of it as anonymization — but that's exactly what it is.
+2. **The payload is scrubbed of any PII it legitimately held** — an invitee email in a `member.invited` event, say — by the privileged owner-role path (that one sanctioned write from the append-only section), never by the application. And here's the payoff of the whole payload-shaping rule: because you *minimized* at write time, there's almost nothing to scrub. Minimization at write makes anonymization at deletion cheap. The two sections are one decision, paying off twice.
+
+The result: the row stays — "a role was changed from member to admin at 14:03" — the actor is `null` or a stable hash, and the PII is gone. The forensic fact survives; the person doesn't. One line: **anonymize, don't delete — keep the record, sever the identity.**
+
+The job that actually runs this — along with retention timers, the different deletion shapes, and the calls out to third parties — is the very next lesson. This one gives you the rule and the reason; the next one gives you the how.
+
+## The deliverable — the event catalog
+
+Pull the lesson into its artifact, the way every lesson in this chapter ends in something grep-able. The **audit-log event catalog** is a table with a row per event class and these columns: category, action name, subject type, payload shape, retention class. It's the thing the next chapter audits a seeded codebase against — every privileged action in the code should map to a catalog row, and every catalog row should map to real code.
+
+Here it is, filled in from everything above. The retention column points forward — the next lesson owns those timers — but it's included so the catalog is complete.
+
+| Category | Action | Subject | Payload shape | Retention |
+| --- | --- | --- | --- | --- |
+| Identity | `auth.signed-in` | `user` | `{}` | 2y |
+| Identity | `password.changed` | `user` | `{}` | 2y |
+| Membership | `member.invited` | `member` | `{ email, role }` | 2y |
+| Membership | `member.role-changed` | `member` | `{ before, after }` | 2y |
+| Membership | `member.removed` | `member` | `{ previousRole }` | 2y |
+| Membership | `org.ownership-transferred` | `org` | `{ from, to, demotedTo }` | 2y |
+| Billing | `subscription.created` | `subscription` | `{ plan }` | 7y |
+| Billing | `refund.issued` | `payment` | `{ amount, reason }` | 7y |
+| Privileged access | `admin.tenant-data-viewed` | `org` | `{ reason }` | 7y |
+| Privileged access | `account.deletion-requested` | `user` | `{ tables }` | 7y |
+| Privileged access | `account.deletion-completed` | `user` | `{ tablesPurged, externalsPurged, durationMs }` | 7y |
+| Configuration | `api-key.created` | `api-key` | `{ name, scopes }` | 7y |
+
+The retention classes (identity 2y, billing 7y, privileged-access 7y) are named here so the catalog is complete; the timer that enforces them is the next lesson's.
+
+Read the catalog as a two-way contract, because that's how the next chapter's audit reads it: **a privileged action with no catalog row is a missing audit; a catalog row with no code behind it is dead policy.** Both are findings. The catalog isn't documentation that drifts away from the code — it's the contract the code is checked against, in both directions.
+
+Keep this pass tickable. It's the same discipline the next chapter runs against a real codebase.
+
+<Checklist id="audit-policy">
+  <ChecklistItem>Every privileged human action (a state change, not a read) maps to a catalog row with a canonical `entity.verb-pasttense` name.</ChecklistItem>
+  <ChecklistItem>No reads, failed-auth events, or untriggered background jobs are written to the audit table — they go to Sentry / operator logs.</ChecklistItem>
+  <ChecklistItem>Every payload is a minimized forensic diff or operation args, never a raw request or full row.</ChecklistItem>
+  <ChecklistItem>`auditLogs` is referenced only by `logAudit`, the migrations, and read paths — no `UPDATE` / `DELETE` from the app.</ChecklistItem>
+  <ChecklistItem>Cross-tenant reads are gated by `superadmin` and write an `admin.audit-log-queried` row.</ChecklistItem>
+  <ChecklistItem>The customer feed renders through `formatAuditEvent`, never from raw `payload`.</ChecklistItem>
+</Checklist>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="OWASP Logging Cheat Sheet"
+    href="https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html"
+    icon="simple-icons:owasp"
+    iconColor="#000000"
+    description="What security events to record and — just as important — what never to log."
+  />
+  <ExternalResource
+    title="GDPR Article 17 — Right to erasure"
+    href="https://gdpr-info.eu/art-17-gdpr/"
+    icon="lucide:scale"
+    iconColor="#003399"
+    description="The legal text behind anonymize-don't-delete: when erasure applies and the carve-outs that let a record persist."
+  />
+  <ExternalResource
+    title="SOC 2 audit log requirements"
+    href="https://auditkit.dev/blog/soc-2-audit-log-requirements"
+    icon="lucide:clipboard-check"
+    iconColor="#16a34a"
+    description="The Trust Services controls (CC6.1, CC7.2/7.3, CC8.1) that hang on the audit log, mapped to what each one expects you to record."
+  />
+</CardGrid>
