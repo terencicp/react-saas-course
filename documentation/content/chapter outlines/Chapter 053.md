@@ -272,6 +272,7 @@ Topics to cover:
 What this lesson does not cover:
 
 - Account linking (lesson 9 of chapter 053), generic OAuth for non-built-in providers (the `genericOAuth()` plugin — named once, configured the same way with provider-specific URLs).
+- Enterprise SSO — SAML 2.0 / OIDC federation against a customer's own IdP, via the separate `@better-auth/sso` (`sso()`) plugin; named once in the close as the B2B-procurement reach, not configured ("SSO" = enterprise IdP federation only, never "sign in with Google").
 - Server-side OAuth for provider-API access — library doesn't own this; SaaS calls APIs with stored tokens directly.
 - OAuth code-for-tokens / PKCE mechanics (lesson 3 of chapter 051).
 
