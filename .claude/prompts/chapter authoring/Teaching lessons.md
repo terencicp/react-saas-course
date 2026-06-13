@@ -17,7 +17,7 @@ Once every lesson's spine is done, run **lesson-build-fixer** once: chapter id `
 ## Phase B — Build-out
 
 After Phase A is done for every lesson, finish the lessons in parallel.
-Work in batches of at most 3 lessons.
+Work in batches of at most 6 lessons.
 Start one dev server per lesson in the batch, each on its own port, so batched agents never share a browser tab; pass each agent its lesson's port.
 For each lesson in the batch run the step below in order, then move on to the next batch.
 Step 1 is a round-robin; steps 2–6 each launch one agent per lesson.
