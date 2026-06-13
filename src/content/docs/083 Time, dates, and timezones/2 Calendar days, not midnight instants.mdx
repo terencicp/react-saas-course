@@ -1,0 +1,406 @@
+---
+title: Calendar days, not midnight instants
+chapter-id: 83
+course-progress: 0.00005
+tagline: Storing calendar days like a due date or a birthday with Postgres date and Temporal.PlainDate, so a value that means the same day everywhere never gets pinned to a single timezone's instant.
+sidebar:
+  order: 2
+  label: Calendar days
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import Figure from '../../../components/figures/Figure.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import Dropdowns from '../../../components/exercises/dropdowns/Dropdowns.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import MidnightSydneyNumberLine from '../../../components/lessons/083/2/MidnightSydneyNumberLine.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Last lesson you ran a grammar test over a handful of columns and dropped two of them — the day an invoice is due, a user's birthday — into a bucket labelled "calendar day, next lesson," then moved on. This is that lesson, and it pays off the placeholder you were left holding.
+
+Here's the concrete case it pays off with. An invoice has a `dueDate`: the day the customer agreed to pay by. The naive shape for that column is the one you just spent a whole lesson building — a `timestamptz`, set to midnight UTC. It passes every test you write, because your machine and your Vercel functions all run at or near UTC. Then a customer in Sydney opens an invoice you stamped for May 15 and reads it as **due May 14**, a day early, and you can't reproduce it. The fix isn't a patch on that column; it's a different storage triple that exists specifically for days, and this lesson installs it.
+
+You already own the machinery — the `customType` pattern, the seam in `lib/temporal.ts`, ISO 8601 on the wire — so the only genuinely new ideas are *when* a column is a day and *why* the day pair is structurally safer. And the payoff up front: this pair is *simpler* than the instant one. No space-to-`T` repair, no native-Postgres-text trap. The hard codec is behind you.
+
+## The two questions a date column answers
+
+Before any code, the one discrimination the whole lesson hangs on. Given a date-bearing column, you are answering one of exactly two questions, and the answer locks everything downstream.
+
+**Calendar-day values go in a `date` column with <Term definition="A Temporal type for a calendar date — year, month, day, and nothing else. No time of day, no timezone. Immutable.">`Temporal.PlainDate`</Term>. Instant values go in `timestamptz` with `Temporal.Instant`. They are not interchangeable, and the runtime will not catch a swap.** No exception throws, no type error fires when you put a day where an instant belongs; it simply produces wrong answers for some of your users and right answers for the rest, which is the worst failure shape there is.
+
+The grammar test from last lesson, sharpened: **if "May 15" is the answer no matter where the user is standing, it's a calendar day; if the answer is "this exact second," it's an instant.** A `dueDate` is May 15 in Sydney and in Los Angeles at once. So is a `birthDate`, a `subscriptionStartDate`, an `effectiveDate`, a `holidayDate`. None of those has a single moment attached — and that's not a formatting detail, it's a difference in *kind*.
+
+Stay on that point for a second, because it's the one that makes the rest obvious. Take a birthday: May 5, 1990. Ask "what instant was that?" and there is no honest answer. It was May 5 in Tokyo and May 5 in Los Angeles *simultaneously*, even though those are sixteen hours apart in real time — the calendar flipped to the 5th at different moments in each place, and the birthday is true across all of them. There is no point on the world's timeline you can name and say "*that* is the birthday." A calendar day isn't a moment you're rounding off to the nearest day; it's a fundamentally different thing — a label on a square of the calendar that every timezone shares. An instant is a pin in real time. Trying to store one as the other is a category error, and the `date` / `timestamptz` split is the type system refusing to let you blur them.
+
+So the senior move, every time, is to ask the discrimination first and let it pick the column, the Temporal type, and the codec as a locked set. Walk it once explicitly — in the order an experienced engineer actually asks the questions, with the trap path included, because the trap is where the real mistakes live.
+
+<StateMachineWalker kind="decision" title="Classifying a date-bearing column">
+  <Question id="anchor" prompt="Does this value name a specific moment, or a day on the calendar?">
+    <Branch label="A specific moment — a point in real time" to="moment-check" />
+    <Branch label="A day on the calendar" to="day-check" />
+    <Branch
+      label="It has a time of day, but the day is what the user cares about"
+      to="borderline"
+      rationale="The tricky one — this is where the midnight-UTC mistake hides."
+    />
+  </Question>
+
+  <Question id="moment-check" prompt="Would two users in different timezones agree on the exact instant it happened?">
+    <Branch label="Yes — it's one fixed instant" to="instant" />
+  </Question>
+
+  <Question id="day-check" prompt="If two users in different timezones read it, do they see the same calendar date?">
+    <Branch label="Yes — 'May 15' for everyone" to="day" />
+  </Question>
+
+  <Question id="borderline" prompt="Is that time of day intrinsic to the event, or are you inventing midnight to fit a date into a timestamp?">
+    <Branch
+      label="I'm inventing midnight"
+      to="day"
+      rationale="Then there's no real time of day — it's a calendar day wearing a timestamp."
+    />
+    <Branch
+      label="The moment is real — it's when the thing actually happens"
+      to="instant"
+      rationale="A meeting starts at a real instant; that's not a calendar day."
+    />
+  </Question>
+
+  <Leaf id="instant" verdict="timestamptz + Temporal.Instant">
+    The instant pair from last lesson. Reach for it for `createdAt`, `receivedAt`, `expiresAt`, `event.scheduledFor` — anything whose answer is "this exact second."
+  </Leaf>
+
+  <Leaf id="day" verdict="date + Temporal.PlainDate">
+    The calendar-day pair, this lesson's. Reach for it for `dueDate`, `birthDate`, `effectiveDate` — anything whose answer is "this day, everywhere."
+
+    The borderline path lands here too: the moment you catch yourself reaching for "midnight UTC" to make a date fit a timestamp, that's the signal you wanted a `date` column all along.
+  </Leaf>
+</StateMachineWalker>
+
+The third branch is the one to internalize. Reaching for midnight to cram a date into a timestamp *feels* like a date — but the midnight is fiction, a value you invented because the column demanded a time you didn't have. The next two sections are what happens when that fiction ships.
+
+## What a `date` column stores
+
+You know how to read a Postgres type doc now, so this is quick — and it's the calm inverse of last lesson's headline trap. Postgres `date` is four bytes: a year, a month, a day. No time. No timezone. Nothing the session can reinterpret. `2026-05-15` is the same text in every connection, on every machine, forever.
+
+That's the whole contrast with `timestamptz`, and it's worth seeing as a direct rhyme. Last lesson, the same stored row printed as two *different* strings depending on the session's `TimeZone` — the bytes were fixed but the text disagreed by eight hours, and that disagreement was the entire source of trouble. A `date` has nothing to convert on the way in or out, so there's nothing for two sessions to disagree about. Here's the same experiment that broke for `timestamptz`, run against a `date`:
+
+```sql title="Same row, two session zones"
+SET TIME ZONE 'UTC';
+SELECT due_date::text FROM invoices WHERE id = '...';
+-- → 2026-05-15
+
+SET TIME ZONE 'Australia/Sydney';
+SELECT due_date::text FROM invoices WHERE id = '...';
+-- → 2026-05-15
+```
+
+Same text, both sessions. Nothing moved, because a `date` carries no offset to apply. That structural calm is exactly why a calendar day belongs in this type: there is no rendering decision baked into storage, so there's no rendering decision that can come out wrong.
+
+On the wire, a `date` travels as an ISO 8601 calendar date: `'2026-05-15'` — no `T`, no `Z`, no offset. That's the same ISO 8601 standard the instant used, but a narrower production of it. The instant's form was `2026-03-09T07:47:00.038Z`, a full date-time pinned to UTC; the date's form stops at the day. Same alphabet, shorter word.
+
+## The `date` column and its codec
+
+Now the artifact. Last lesson's read seam needed a repair on the way in — Postgres hands back its own native rendering, not the canonical ISO 8601 carrier, so `fromDriver` had to normalize the hours-only `+00` offset up to the `±HH:mm` shape (`+00:00`) a strict parser accepts, plus swap the cosmetic space for a `T`. The `date` type has no such problem. Postgres hands back `'2026-05-15'`, `Temporal.PlainDate.from()` accepts that string exactly as-is, and `PlainDate.prototype.toString()` produces exactly that shape going the other way. Both directions are one clean line. This is the simpler sibling, and you can see *how much* simpler by putting the two codecs next to each other.
+
+<CodeVariants>
+  <CodeVariant label="Instant pair — last lesson">
+    <div data-mark-color="red">
+
+    ```ts {9}
+    export const instantColumn = customType<{
+      data: Temporal.Instant;
+      driverData: string;
+    }>({
+      dataType: () => 'timestamp (3) with time zone',
+      toDriver: (value) => value.toString(),
+      fromDriver: (value) =>
+        Temporal.Instant.from(
+          value.replace(' ', 'T').replace(/([+-]\d{2})$/, '$1:00'),
+        ),
+    });
+    ```
+
+    </div>
+
+    **The read seam needs a repair.** Postgres's native timestamp text isn't a canonical ISO 8601 carrier — its offset is hours-only (`+00`, not `+00:00`) — so `fromDriver` normalizes the offset (and swaps the cosmetic space for a `T`) before `Temporal.Instant.from` will reliably accept it. That highlighted line is the load-bearing one, and it's the only reason the instant codec is more than two trivial functions.
+  </CodeVariant>
+
+  <CodeVariant label="Calendar-day pair — this lesson">
+    <div data-mark-color="green">
+
+    ```ts "Temporal.PlainDate.from(value)"
+    export const dateColumn = customType<{
+      data: Temporal.PlainDate;
+      driverData: string;
+    }>({
+      dataType: () => 'date',
+      toDriver: (value) => value.toString(),
+      fromDriver: (value) => Temporal.PlainDate.from(value),
+    });
+    ```
+
+    </div>
+
+    **No repair anywhere.** Postgres hands back `'2026-05-15'`, which is already valid ISO 8601, so `fromDriver` parses it directly. `toDriver` is `value.toString()`, the same one-liner as the instant. The codec is genuinely just "parse a string, stringify a date" — the hard one was the one you already finished.
+  </CodeVariant>
+</CodeVariants>
+
+It lives beside `instantColumn` in `lib/temporal.ts` — same seam file, same shape, so when the project swaps the `Temporal` import for native Node 26 the day pair migrates for free right alongside the instant pair. At the schema, it reads exactly like its sibling:
+
+```ts
+dueDate: dateColumn('due_date').notNull(),
+```
+
+If you put that next to `createdAt: instantColumn('created_at').notNull().defaultNow()` from last lesson, the parallel is the point: you pick the column type by answering the discrimination, and everything else about the call site is identical.
+
+### Why `PlainDate`, and not a `Date` or a bare string
+
+The column hands back a `Temporal.PlainDate`, and it's worth being explicit about why that's the right domain type, because the two obvious alternatives each fail in an instructive way.
+
+A **bare ISO string** — just storing and passing `'2026-05-15'` around — falls over the moment you need to *do* anything with it. "Due in 30 days" is string surgery you'd have to hand-roll, leap years and month lengths and all. Arithmetic needs a type that understands the calendar.
+
+A **`Date`** is the actively dangerous choice here, and naming it sharply matters: a `Date` is always an instant under the hood, so the moment you construct one from `'2026-05-15'` it rebinds to *midnight UTC* — and you have just dragged the exact timezone gotcha this entire lesson exists to prevent back into your domain, on the very value that was supposed to be safe from it. A calendar day stored as a `Date` is a midnight-UTC instant in disguise, which is the anti-pattern, not the fix.
+
+`Temporal.PlainDate` is the type whose *ignorance* of timezones is the feature. It is immutable, it knows nothing about zones or times of day, so it *cannot* drift across one — there's no offset in it to apply. And it gives you exactly the calendar operations a date needs: `with({ ... })` to edit a component, `add({ ... })` for arithmetic, `compare(other)` for sorting. You'll use all three shortly.
+
+<VideoCallout videoId="zwFlVPdtKvE" videoTitle="JavaScript Dates SUCK — Here's What's Replacing Them">
+  Better Stack's 13-minute tour of the whole Temporal family — `PlainDate`, `Instant`, `ZonedDateTime`, immutability, and the `overflow` option — if you want the types this lesson uses seen end to end.
+</VideoCallout>
+
+## The midnight-UTC anti-pattern, seen from Sydney
+
+Now watch the bug actually happen, because once you've seen *why* it lands on the wrong day you'll never reach for the wrong type again.
+
+Set the scene with the wrong column. `dueDate` is declared as `timestamptz` — "to keep our options open," the tempting line goes — and the application writes midnight UTC for a due date of May 15, storing `2026-05-15T00:00:00Z`. On your machine, in UTC, this looks completely fine.
+
+Now a customer in Sydney. Sydney runs at UTC+10. (It's actually +11 under their summer DST, but hold it at +10 for a clean number — the off-by-one is the same either way, and one offset keeps the picture readable.) Your stored instant, `2026-05-15T00:00:00Z`, *is* a real moment, and in Sydney's wall clock that moment reads as `2026-05-15T10:00:00+10:00` — 10 in the morning on the 15th. Fine so far. The trouble is the other direction. When that Sydney customer sets a due date of "today, the 15th," their local midnight is `2026-05-15T00:00:00+10:00` — and converted to UTC for storage, *that* is `2026-05-14T14:00:00Z`. You stored the 14th. Read it back, format it naively, and the invoice says **due May 14** — a day before the date the customer chose. The day boundary fell in a different place for them than it did for you, because midnight is not a single instant; it happens at a different moment in every zone.
+
+<Figure caption="Midnight on the calendar is a different instant in every timezone — which is why a calendar day is not an instant.">
+  <MidnightSydneyNumberLine />
+</Figure>
+
+The same wrong type produces the same wrong day on three different surfaces, which is how you'll recognize it in a codebase:
+
+- A query like `WHERE due_date = '2026-05-15'` quietly misses rows, because the stored value isn't really the 15th for everyone.
+- The Sydney customer sees the invoice "due yesterday," and opens a support ticket you can't reproduce.
+- A report that groups invoices by due date files half your user base under the wrong day, and every downstream number drifts.
+
+Here is the senior takeaway, and it's worth holding onto as the shape of the whole fix. The cure is not "remember to be careful about midnight." Careful is a habit, and habits get forgotten under deadline. The cure is **structural, and it's a matched pair of type guards: the `date` column rejects the time of day — there is nowhere to put a midnight — and the `Temporal.PlainDate` rejects the timezone — there is nothing to offset.** With the right triple, the bug isn't avoided, it's *impossible to express*. Neither guard depends on you remembering anything; the types simply won't hold the bad value. That's why picking the right type is the fix, and "writing careful code" is not.
+
+## Doing date math without leaving the calendar
+
+A `dueDate` doesn't just sit in a column — you compute with it. "Net 30." "First of next month." "Is this overdue?" `Temporal.PlainDate` covers each of these in one call, and every one of them stays on the calendar: a `PlainDate` operation returns a new `PlainDate`, never an instant, so there's no door for a timezone to sneak through. This is a survey of the four operations a due date actually asks for — the full arithmetic surface gets a lesson of its own later.
+
+"Due in 30 days" is `add`:
+
+```ts
+const net30 = dueDate.add({ days: 30 });
+```
+
+It returns a new `PlainDate` thirty days on; `dueDate` itself is untouched, because the type is immutable. Note the shape — `{ days: 30 }`, a named component, not a bare `30`. The unit is always spelled out.
+
+"Due in one month" is the same call with a different unit, and it carries the single arithmetic subtlety worth teaching here, because billing dates hit it constantly: **month-end clamping.**
+
+```ts
+const nextMonth = dueDate.add({ months: 1 });
+```
+
+What is "one month after January 31"? There is no February 31. Temporal's answer, by default, is to clamp to the last valid day of the target month: January 31 plus one month is **February 28** (or the 29th in a leap year). It does not throw, and it does not roll over into March 3. That default has a name — the <Term definition="The Temporal option controlling out-of-range date arithmetic. 'constrain' (the default) clamps an impossible result like Jan 31 + 1 month to Feb 28; 'reject' throws a RangeError instead.">`overflow`</Term> option, set to `'constrain'`. Most of the time clamping is what you want and you never think about it. When you'd rather "January 31 plus one month" *fail loudly* than silently land on the 28th — because in your billing rules a clamp would be a real error — you opt out with `overflow: 'reject'`, and Temporal throws instead of guessing.
+
+"First of next month" composes `with` and `add`:
+
+```ts
+const firstOfNextMonth = dueDate.with({ day: 1 }).add({ months: 1 });
+```
+
+`with` is a component-level edit — it returns a new date with the day set to 1 and everything else unchanged — and then `add` walks forward a month. Read it left to right: snap to the first of this month, then step to the first of next.
+
+And comparison, for sorting and for booleans:
+
+```ts
+const byDueDate = invoices.toSorted((a, b) =>
+  Temporal.PlainDate.compare(a.dueDate, b.dueDate),
+);
+
+const isOverdue = today.after(dueDate);
+```
+
+`Temporal.PlainDate.compare(a, b)` returns `-1`, `0`, or `1` — exactly the shape `toSorted` wants. For a plain yes/no, the instance methods `a.equals(b)`, `a.before(b)`, `a.after(b)` read more directly (here `today` is the `PlainDate` for the current day in the user's zone), and the same static `compare` works too when you'd rather check the sign yourself.
+
+Pull back and notice the thread running through all four: every one of these operations *only* accepts a `PlainDate` and *only* returns a `PlainDate`. You cannot accidentally do instant-math on one — there's no timezone to supply and no time-of-day input it will take. The type guard from the last section isn't just protecting storage; it follows the value through every calculation. Now fill in the calls yourself — and notice that the wrong option in each blank is always a piece of *instant* machinery that has no business on a calendar day.
+
+The two domains sit side by side here on purpose: `due` is a `Temporal.PlainDate` (a calendar day — no time, no zone) and `issuedAt` is a `Temporal.Instant` (the exact moment the invoice was issued). The three functions stay entirely on the calendar; `issuedAt` is present only as the contrast — the decoy options are the operations you'd reach for *if* you mistook a calendar day for an instant.
+
+<Dropdowns
+  instructions="Fill each blank with the calendar-day-correct shape. Every decoy is instant machinery — a timezone, a clock, or an epoch — that a Temporal.PlainDate has no place for."
+  answers={[
+    { answer: "add({ days: 30 })", options: ["add({ days: 30 })", "toZonedDateTimeISO('UTC').add({ days: 30 })"] },
+    { answer: "with({ day: 1 })", options: ["with({ day: 1 })", "with({ hour: 0, minute: 0 })"] },
+    { answer: "add({ months: 1 })", options: ["add({ months: 1 })", "add({ days: 31 })"] },
+    { answer: "Temporal.PlainDate.compare(today, due)", options: ["Temporal.PlainDate.compare(today, due)", "today.toInstant() > due.toInstant()"] },
+  ]}
+>
+```ts
+const issuedAt = Temporal.Instant.from('2026-05-15T09:30:00Z'); // the contrast: an Instant, not used below
+
+// "Net 30": the due date, thirty days on. Returns a new PlainDate.
+function netThirty(due: Temporal.PlainDate): Temporal.PlainDate {
+  return due.___;
+}
+
+// "First of next month": snap to day 1, then step forward one month.
+function firstOfNextMonth(due: Temporal.PlainDate): Temporal.PlainDate {
+  return due.___.___;
+}
+
+// Is the invoice overdue? True when 'today' is strictly after 'due'.
+function isOverdue(due: Temporal.PlainDate, today: Temporal.PlainDate): boolean {
+  return ___ > 0;
+}
+```
+</Dropdowns>
+
+Two of those blanks are the same month-end story the prose just walked. `netThirty` adds *days*, so it never clamps: January 31 plus 30 days counts straight through February into **March 2**. `firstOfNextMonth` adds a *month* — but only after `with({ day: 1 })` has already moved off the 31st, so it lands cleanly on the 1st with nothing to clamp. The clamp itself is the bare case the prose named: `Temporal.PlainDate.from('2026-01-31').add({ months: 1 })` is **February 28**, because there is no February 31 and the default `overflow: 'constrain'` snaps to the last valid day. Every correct pick stays on `PlainDate`; every decoy drags in a zone, a clock, or an epoch — the exact instant machinery a calendar day refuses.
+
+## The wire and the boundary: no time component allowed
+
+A `dueDate` arrives over HTTP the same way every value does — as a string in a request body — which means the boundary is exactly where a midnight-UTC timestamp would try to sneak in disguised as a date. Lock the wire shape and the bad value can't get past the door.
+
+Inbound, the body carries the ISO 8601 *calendar date* string, and Zod validates the shape with `z.iso.date()` — the same top-level ISO builder discipline you used for forms back in the validation chapter, no relearning. It accepts `YYYY-MM-DD` and nothing else: no `T`, no `Z`, no offset.
+
+<CodeTooltips tooltips={{
+  'z.iso.date()': 'Validates a YYYY-MM-DD calendar date only — no time, no zone. A datetime string fails here, which catches a date-as-instant bug right at the edge.',
+  "'2026-05-15T00:00:00Z'": 'A midnight-UTC timestamp posing as a date. The schema rejects it — and that rejection is the signal that some upstream code produced the wrong shape.',
+}}>
+```ts title="schemas/due-date.ts"
+const updateDueDateSchema = z.object({
+  dueDate: z.iso.date(),
+});
+
+updateDueDateSchema.safeParse({ dueDate: '2026-05-15' }); // ok
+updateDueDateSchema.safeParse({ dueDate: '2026-05-15T00:00:00Z' }); // fails
+```
+</CodeTooltips>
+
+Past validation you have a choice with no wrong answer: transform the validated string into a `PlainDate` if your domain code wants the type, or hand the string straight through `dateColumn`, which parses it on write anyway. Either way the value that lands in the column is a real calendar date.
+
+Outbound is symmetric. A `PlainDate` serializes through `toJSON()` to the same `'2026-05-15'` string — and it *must* serialize, because a `Temporal.PlainDate` is a class instance, and class instances don't cross the React Server Component or JSON boundary as-is, exactly as an `Instant` doesn't. Same rule as last lesson: Temporal in memory, ISO 8601 on the wire.
+
+But the most valuable thing `z.iso.date()` does here isn't input hygiene — it's that it works as a tripwire on the anti-pattern. When a value arrives as `'2026-05-15T00:00:00Z'` where a date was expected, the schema rejects it, and that rejection is *information*: it means some upstream code path produced a midnight-UTC string for a date field, and *that* code is the bug. The schema doesn't just clean the input; it tells you the date-as-instant mistake happened somewhere behind it.
+
+## When a calendar day needs a clock time
+
+A `PlainDate` deliberately has no time and no zone — that's its whole safety. But sometimes you genuinely need both: "end of business on the due date, in the customer's timezone," for a reminder you're going to schedule. The point of this section is that crossing from a calendar day to a real instant is always *explicit*. There is no implicit "midnight," no ambient "local." You supply the time and the zone by hand, every time, and that explicitness is the feature.
+
+The bridge is `toZonedDateTime`:
+
+<AnnotatedCode lang="ts" code={`
+const deadline = dueDate
+  .toZonedDateTime({ timeZone: user.timeZone, plainTime: '17:00' })
+  .toInstant();
+`}>
+  <AnnotatedStep meta={`"dueDate"`} color="blue">
+    The source is a `Temporal.PlainDate` — a bare calendar day, no time, no zone. On its own it can't name a moment in real time; it's missing both pieces. The whole expression's job is to supply them, deliberately.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"{ timeZone: user.timeZone, plainTime: '17:00' }"`} color="green">
+    The two things a calendar day lacks, both spelled out at the call site. `plainTime: '17:00'` is the clock time you're choosing — 5 PM. `timeZone: user.timeZone` is whose clock — the customer's, read from their profile. Nothing here is assumed; if you don't name the zone, the conversion won't happen. That's the guard against an accidental "midnight UTC."
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`".toInstant()"`} color="orange">
+    The result of `toZonedDateTime` is a `Temporal.ZonedDateTime` — a day, plus a clock, plus a zone, all carried together. `.toInstant()` collapses it to the `Temporal.Instant` you'd actually store or schedule against. A calendar day has become a fixed moment, and every input that moment depended on was named in the line above it.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+That middle type, <Term definition="A Temporal type that carries a calendar day, a clock time, and an IANA timezone together — the only Temporal type that knows about DST. It's the bridge between a PlainDate and an Instant.">`Temporal.ZonedDateTime`</Term>, is the one that carries a day *and* a clock *and* a zone at once — the bridge between this lesson's calendar-day pair and last lesson's instant pair. It also knows about Daylight Saving Time, which is the entire reason a later lesson on scheduling recurring work leans on it. You don't need that depth here; here it's just the vehicle that gets a `PlainDate` to an `Instant` with the zone named out loud.
+
+The conversion runs both ways, and the reverse is the mirror you'll reach for just as often. Going back — "what calendar day was this instant, *for this user*?" — you attach their zone and drop the clock:
+
+```ts
+const dueDay = issuedAt.toZonedDateTimeISO(user.timeZone).toPlainDate();
+```
+
+An `Instant` gains a zone to become a `ZonedDateTime`, then sheds its time of day to become a `PlainDate`. Same principle in reverse: the timezone is always named, never ambient. (The full conversion graph between all the Temporal types is a later lesson; these two crossings are the ones this chapter actually uses.)
+
+One last check on the skill the whole lesson is really about — the discrimination — under a column name designed to fool you.
+
+<MultipleChoice>
+  Your app has a column `subscription.startedAt`: the exact moment a customer's trial began, used to compute when it ends and to order the tier-change timeline. Which storage triple is correct?
+
+  <McqChoice correct>`timestamptz` + `Temporal.Instant` — it names a specific moment in real time.</McqChoice>
+  <McqChoice>`date` + `Temporal.PlainDate` — the name ends in a date-ish word and it has a calendar day in it.</McqChoice>
+  <McqChoice>`timestamptz` set to midnight UTC of the start day — close enough, and it keeps the options open.</McqChoice>
+
+  <McqWhy>
+    Run the grammar test, and ignore the name. Would two users in different timezones agree on the *exact instant* the trial began? Yes — it's one fixed point in real time, the second the clock started ticking toward the trial's end. That's an instant: `timestamptz` + `Temporal.Instant`. The trap is that "started" and "date" *feel* calendar-shaped, but the value is a moment, not a day-everywhere. The midnight-UTC option is the anti-pattern this whole lesson exists to retire — it throws away the real start time and reintroduces the timezone bug. The discrimination is about the *kind* of value, never the column's name.
+  </McqWhy>
+</MultipleChoice>
+
+## The two pairs, side by side
+
+Both storage pairs are now real, and they're cleaner held next to each other. A date-bearing column answers one of two questions, and the answer locks a triple — Postgres type, Temporal type, codec — plus the one-line grammar test that picks it:
+
+| The question | Postgres | Temporal | Codec | Test |
+| --- | --- | --- | --- | --- |
+| "Which exact second?" | `timestamptz` | `Temporal.Instant` | `instantColumn` | this exact second |
+| "Which day, everywhere?" | `date` | `Temporal.PlainDate` | `dateColumn` | this day, everywhere |
+
+One file, `lib/temporal.ts`, owns both codecs. Picking the column is picking the row of that table, and you pick the row by asking the grammar test — never by reading the column's name, which is exactly what trips people up. Work the borderline cases that catch people, because they're where the discrimination earns its keep:
+
+- `subscription.startedAt` → **`timestamptz`**. The moment a trial began; "started" sounds day-ish, but the value is an instant.
+- `birthDate` → **`date`**. May 5, 1990 in Tokyo and in Los Angeles at once; there is no instant that is a birthday.
+- `event.scheduledFor` → **`timestamptz`**. A meeting starts at a specific moment, even though you'd *display* it as a date and time.
+- "Send this report at end of day on the 15th of every month" → **neither.** This isn't a stored value at all; it's a recurring *rule*. Trying to model it as a column is the mistake — a later lesson on scheduling owns it, and you'll hand it off there rather than reaching for a type here.
+
+That last one matters: not every date-shaped requirement is a column. A repeating schedule is a rule the platform runs, not a value you store, and recognizing the difference keeps you from inventing a column that can't hold it.
+
+With both pairs built, the storage-and-domain half of this chapter is done. What's left is the *edge* — the question the opening Sydney story really turned on: *whose* timezone? A user's timezone turns out to belong on their profile as data, not derived per request (derive it on Vercel and you'll silently format every user's data in UTC) — that's the next lesson. After it: recurring jobs that survive a DST transition, which lean on the `toZonedDateTime` bridge you just met, and then the full Temporal arithmetic surface this lesson only surveyed.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="MDN — Temporal.PlainDate"
+    href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Temporal/PlainDate"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The calendar-day type itself — its constructor, its immutability, and the with / add / compare surface a dueDate reaches for."
+  />
+  <ExternalResource
+    title="MDN — Temporal.PlainDate.prototype.add"
+    href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Temporal/PlainDate/add"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="Month-end clamping in detail and the overflow option — exactly why Jan 31 + 1 month lands on Feb 28 and how to make it throw instead."
+  />
+  <ExternalResource
+    title="PostgreSQL — date/time types"
+    href="https://www.postgresql.org/docs/18/datatype-datetime.html#DATATYPE-DATETIME-DATE-TABLE"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="The authority on the date type — four bytes, year/month/day, no time and no timezone, the same text in every session."
+  />
+  <ExternalResource
+    title="UTC is enough for everyone …right?"
+    href="https://zachholman.com/talk/utc-is-enough-for-everyone-right"
+    icon="lucide:clock"
+    iconColor="#E8590C"
+    description="Zach Holman's tour of why time is hard — birthdays as 'floating' calendar days, timezones that move, and why a day is not a timestamp. The same discrimination, told as a story."
+  />
+</CardGrid>

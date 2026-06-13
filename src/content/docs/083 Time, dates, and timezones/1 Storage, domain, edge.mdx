@@ -1,0 +1,323 @@
+---
+title: Storage, domain, edge
+tagline: The storage, domain, edge architecture for time, storing an instant as a Postgres timestamptz and reading it back as a Temporal.Instant through a custom Drizzle column.
+chapter-id: 83
+course-progress: 0.00005
+sidebar:
+  order: 1
+  label: Storage, domain, edge
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import Figure from '../../../components/figures/Figure.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ThreeLayerSplitStrip from '../../../components/lessons/083/1/ThreeLayerSplitStrip.astro';
+import InstantColumnRoundtrip from '../../../components/lessons/083/1/InstantColumnRoundtrip.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+A user clicks "Create invoice" at 11:47 PM Pacific on March 8, 2026. That date isn't random: it's the night the United States springs forward, so for a slice of the country the wall clock is about to skip from 1:59 AM straight to 3:00 AM. Your Vercel function runs in UTC. Your Postgres on Neon runs in UTC. The row gets written, the customer moves on, and nothing breaks. Six months later a sales lead asks for a feature: a customer-facing audit log that shows each event "in the user's timezone." Whether that feature is an afternoon's work or a database migration was decided the day you picked the type for that one column.
+
+Three storage shapes were on the table. You could store the local wall-clock string the user saw (`'2026-03-08 23:47'`). You could store a plain `timestamp` and *agree, informally,* that it means UTC. Or you could store a `timestamptz` that carries genuine UTC semantics. Only the third keeps the *rendering* of a time independent from its *storage* — and that independence is the whole game. With local-as-string, "show this in Tokyo time" means re-parsing text whose original zone you have to guess. With the third shape, it's a formatting call at the very edge of the system that never touches the column or the query.
+
+That separation has a name in this course, and it's the architecture you'll operate on for the next several lessons: **storage, domain, edge**. You already have every piece. In the chapter on JSON, classes, and the Temporal pivot you met the five Temporal types, the `lib/temporal.ts` seam, the "`Date` lives only at the seam" rule, and ISO 8601 as the wire format. In the Drizzle chapter you met `timestamptz` versus plain `timestamp`. This lesson doesn't re-teach any of that. It names the architecture that ties those pieces into a single discipline, and it installs exactly one new artifact: a Drizzle column type that reads a `timestamptz` straight back as a `Temporal.Instant`, so you never convert by hand.
+
+## The three-layer split
+
+Here is the spine of the whole chapter, stated once. An instant — a fixed point in real time, like "when this invoice was created" — lives in three different shapes depending on where in your system it is.
+
+In **storage**, which is Postgres, the instant is a `timestamptz`: eight bytes of UTC, no human anywhere in the picture. In the **domain**, which is your application's memory while a request runs, the instant is a `Temporal.Instant`: the type your business logic compares, sorts, and does arithmetic on. At the **edge**, the single moment a value is rendered for a person to read, the instant becomes a local string like `"Mar 8, 2026, 11:47 PM PST"` — and *only here* does the user's timezone enter the calculation.
+
+Between those three layers runs one carrier: the ISO 8601 string — the interchange format you've used since the Temporal pivot, like `2026-03-09T07:47:00.038Z`, where the trailing `Z` means UTC. Every time an instant crosses a boundary — out of Postgres into your code, out of your code onto the wire of an API response — it travels as an ISO 8601 string with a `Z` on the end. The Temporal types live only *inside* the layers; the string is what moves *between* them.
+
+<Figure caption="One instant, three shapes. The user's timezone only enters at the edge.">
+  <ThreeLayerSplitStrip />
+</Figure>
+
+Why is this the senior default rather than fussy over-engineering? Because the alternative couples two things that change for different reasons. *Storage* changes when your data model changes. *Rendering* changes constantly — a new locale, a user who travels, a report that groups by the recipient's day instead of yours. If "render in the user's timezone" is a pure edge concern, you add it without migrating a single row. If it leaked into the column the day you stored a local string, every rendering change is a data change. The split is what bought you the cheap audit-log feature in the opening story.
+
+Every remaining section of this lesson attaches to one box or one boundary on that strip. We start at storage.
+
+## What `timestamptz` actually stores
+
+Start by correcting the name, because the name actively misleads. `timestamptz` reads as "timestamp *with* time zone," and the obvious inference is that the column stores a zone alongside the time. It does not. A `timestamptz` is eight bytes: a count of microseconds since midnight UTC on January 1, 2000. There is no zone in there. The instant it represents is absolute — the same eight bytes mean the same moment in São Paulo, Berlin, and Honolulu.
+
+So where does the "time zone" in the name come from? From the *conversion* Postgres does on the way in and the way out, and that conversion is driven by a per-connection setting called the <Term definition="A per-connection Postgres setting that controls how timestamptz input strings are interpreted and how output is rendered as text. It does not change the stored bytes — only the translation on input and output.">session `TimeZone`</Term>. On `INSERT`, Postgres reads that setting, interprets your input string *as if it were written in that zone*, converts the result to UTC, and stores the UTC bytes. On `SELECT`, the same setting drives how the stored bytes get rendered back into text.
+
+That last part is the trap. The bytes are fixed, but the *text* you see depends entirely on the session that reads them. Picture one row, written once, read by two different connections.
+
+<CodeTooltips tooltips={{
+  'created_at::text': 'The same 8 stored bytes both times — only the session\'s rendering of them changes.',
+  '+00': 'UTC offset: the session is rendering in UTC.',
+  '-08': 'Pacific offset: same instant, different wall clock, different text.',
+}}>
+```sql
+SET TIME ZONE 'UTC';
+SELECT created_at::text FROM invoices WHERE id = '...';
+-- → 2026-03-09 07:47:00.038+00
+
+SET TIME ZONE 'America/Los_Angeles';
+SELECT created_at::text FROM invoices WHERE id = '...';
+-- → 2026-03-08 23:47:00.038-08
+```
+</CodeTooltips>
+
+Read that carefully: the row never changed. The eight stored bytes are identical in both queries. The only thing that moved is the session's idea of how to print them, and the printed strings disagree by eight hours. If your application reasoned about times by string-matching this text, a non-UTC session would quietly break it.
+
+The defense is one rule with two halves, and you already follow both: keep the session `TimeZone` pinned to UTC, and write every input as an ISO 8601 string with a `Z`. Neon and Vercel default their connections to UTC, so you mostly get the first half for free; an explicit `SET TIME ZONE 'UTC'` in the database client is belt-and-suspenders for the day a managed default drifts. The `Z` on your inputs removes the second guess: a string that already says "this is UTC" doesn't depend on the session's interpretation at all.
+
+<VideoCallout videoId="oWF5jTFBSHw" videoTitle="Tips for handling timezones in Postgres">
+  Aaron Francis (Mastering Postgres) demonstrates the session `TimeZone` mechanic live in 14 minutes — same "keep it UTC, convert at the edge" rule, plus the named-zone-vs-offset trap.
+</VideoCallout>
+
+This is why the rendering has to move to the edge. Postgres *can* localize a timestamp for you by changing the session zone — but it localizes for the whole connection, not per user, and your serverless functions share connections. The only place that knows "which user is reading this, and what's *their* zone" is the edge of your application, and that's exactly where the localization belongs.
+
+One foil, named once so you recognize it and walk past it. Plain `timestamp` — without the time zone — does none of this conversion. It stores the literal wall-clock string you hand it, untranslated, with no zone interpretation at all. The failure mode is two services on two machines both writing "now": with different local clocks they store *different* values for the same real moment, and nothing flags it. Postgres's own [Don't Do This](https://wiki.postgresql.org/wiki/Don%27t_Do_This) list names it directly. You met this distinction in the Drizzle chapter; the only thing to add here is the mechanic — `timestamp` stores an untranslated literal — and the one place it legitimately appears: a data pipeline whose source explicitly disclaims any timezone, like a CSV exported from a "local clock, no zone recorded" system. Everything else is `timestamptz`.
+
+## The Drizzle column and its read mode
+
+Now the domain boundary — the arrow between Storage and Domain on the strip. In the Drizzle chapter you wrote the canonical column with `timestamp({ withTimezone: true })`. That declaration is correct for the *storage* shape; it emits a `timestamptz`. The open question this lesson answers is what your TypeScript gets back when you *read* that column, because the obvious answer is a trap, and the fix is the one new artifact of the lesson.
+
+Drizzle's `timestamp` builder takes a <Term definition="A per-column Drizzle option that picks the JavaScript type a column reads back as. For timestamps: 'date' hands back a Date, 'string' hands back the raw Postgres text.">`mode`</Term> that decides the JavaScript type of a read. There are two built-in choices, and neither is the answer.
+
+<CodeVariants>
+  <CodeVariant label="mode: 'date' — wrong type">
+    <div data-mark-color="red">
+
+    ```ts "mode: 'date'"
+    createdAt: timestamp('created_at', {
+      withTimezone: true,
+      mode: 'date',
+    }).notNull().defaultNow(),
+    ```
+
+    </div>
+
+    **Hands back a `Date`.** This is Drizzle's default. Every read smuggles a `Date` into your domain — and with it every gotcha the Temporal pivot exists to retire: zero-indexed months, silent mutation, `getMonth()` reading the runtime's local zone. The type is simply wrong for a codebase that banned `Date` from the domain.
+  </CodeVariant>
+
+  <CodeVariant label="mode: 'string' — wrong shape">
+    <div data-mark-color="orange">
+
+    ```ts "mode: 'string'"
+    createdAt: timestamp('created_at', {
+      withTimezone: true,
+      mode: 'string',
+    }).notNull().defaultNow(),
+    ```
+
+    </div>
+
+    **Hands back Postgres's raw text** — `'2026-03-09 07:47:00.038+00'`. A space where the canonical form uses `T`, and — the part that bites — an hours-only `+00` offset instead of the `±HH:mm` shape (`+00:00`) a clean ISO 8601 carrier round-trips. The type is right (a string), but the shape is non-canonical, so you don't hand it to Temporal raw — you normalize it first.
+  </CodeVariant>
+</CodeVariants>
+
+Sit with that for a second, because the second variant is the subtle one. It *looks* like it should work — you asked for a string, you got a string, and you have a `Temporal.Instant.from(string)` parser. But the string Postgres hands you is its own native rendering, not the canonical interchange shape: space-separated, and carrying an hours-only `+00` offset rather than `+00:00` or a `Z`. The hours-only offset is the fragile part — it's the piece you can't rely on a strict ISO 8601 parser to accept, and the piece your `fromDriver` has to repair before it hands the string to Temporal. So `'date'` gives you the wrong *type* and `'string'` gives you the wrong *shape*. Neither raw mode lets your query just return a `Temporal.Instant`.
+
+The fix is to stop converting at the call site and convert *inside the column instead*. Drizzle lets you define a column type with `customType`, supplying your own conversions for the two directions a value travels: `toDriver` (your code → the database) and `fromDriver` (the database → your code). Put the Temporal conversion there and it happens automatically on every read and every write through the schema. You write this once, in `lib/temporal.ts` — the same seam file that already owns your Temporal import.
+
+<AnnotatedCode lang="ts" code={`
+// lib/temporal.ts — built on the existing seam file
+import { customType } from 'drizzle-orm/pg-core';
+import { Temporal } from '@/lib/temporal';
+
+export const instantColumn = customType<{
+  data: Temporal.Instant;
+  driverData: string;
+}>({
+  dataType: () => 'timestamp (3) with time zone',
+  toDriver: (value) => value.toString(),
+  fromDriver: (value) =>
+    Temporal.Instant.from(value.replace(' ', 'T').replace(/([+-]\\d{2})$/, '$1:00')),
+});
+`}>
+  <AnnotatedStep meta={`{5-8} "data: Temporal.Instant" "driverData: string"`} color="violet">
+    The generic is the contract, and it's the whole point of the artifact. `data` is the type your application code sees — `Temporal.Instant`, full stop. `driverData` is the string the Postgres driver actually moves over the wire. Read this as: "the schema reads and writes `Temporal.Instant`; the driver only ever sees a string."
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"dataType: () => 'timestamp (3) with time zone'"`} color="blue">
+    This is the SQL the migration emits: a `timestamptz` with `precision: 3`. Why 3? Postgres stores microseconds, but `Temporal.Instant` and the wire carry milliseconds. Pinning the column to millisecond precision aligns storage to your application's resolution, so a write-then-read round-trip can't drift on a dropped microsecond tail. (Compare two instants with `.epochMilliseconds` or `.equals()`, never by string-equality across a round-trip.)
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{11-12}`} color="green">
+    The read seam — the load-bearing line, and the two `.replace()` calls are doing different jobs. The space-to-`T` swap is cosmetic normalization (a space is a perfectly valid date-time separator, but the canonical interchange form uses `T`). The load-bearing repair is the *offset*: Postgres emits an hours-only offset like `+00` or `-08`, but the canonical `±HH:mm` shape an ISO 8601 carrier should round-trip is `+00:00`. The regex `/([+-]\d{2})$/` matches a trailing two-digit offset and pads it with `:00`. With both repairs applied, the string is unambiguous ISO 8601 and `Temporal.Instant.from` parses it; because `from` throws a `RangeError` on anything genuinely malformed, this line also doubles as the parse gate for every timestamp coming out of the database.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"toDriver: (value) => value.toString()"`} color="orange">
+    The write seam, and it's one line because the work was already done for you. `Instant.prototype.toString()` produces the canonical ISO 8601 string with a `Z` — exactly the shape Postgres ingests cleanly. No repair needed in this direction; the trap is only on the way out of Postgres, not on the way in.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+You might wonder why this lives *in the column* rather than as a free-floating pair of `{ fromDb, toDb }` functions you call at each query. The answer is the senior reason the whole pattern exists: a discipline the call site has to remember is a discipline the call site will eventually forget. Put the conversion in the column and forgetting becomes impossible — `db.select()` already hands back a `Temporal.Instant`, and an insert already accepts one. The conversion is *structural*, not a habit. And `.defaultNow()` still chains on exactly as before, because the default is computed server-side by Postgres (`CURRENT_TIMESTAMP`); the column type only governs values that cross the TypeScript boundary.
+
+The trace below follows one `createdAt` through the column on a read and then on a write, so the offset repair and the "conversion lives in the column, not the call site" idea are both visible at once.
+
+<InstantColumnRoundtrip />
+
+There's a payoff to having concentrated all of this in one file. The chapter on the Temporal pivot promised that moving from the polyfill to native Node 26 Temporal would be a single-line change. This is where that promise pays off: when you swap the `Temporal` import at the top of `lib/temporal.ts`, every schema column built on `instantColumn` and every line of code that reads one keeps working untouched. One seam, one edit.
+
+And notice why `toDriver` could be a single line while `fromDriver` needed a repair: ISO 8601 strings with `Z` are the universal carrier, and everything except Postgres's *read* text already speaks them. Postgres ingests instants from `Z` strings. `Temporal.Instant.from()` parses them. `Instant.prototype.toString()` and `toJSON()` produce them. Every API this course consumes — Stripe payloads, Trigger.dev job payloads, Resend — emits and accepts them. ISO strings cross *every* boundary; `Temporal` types only ever live in memory between two boundaries. Postgres's hours-only-offset read text is the single exception, and the column quarantines it.
+
+## What application code sees: Temporal, never Date
+
+Step back from the plumbing and look at what your day-to-day code now holds. Because the column does the conversion, a row's `createdAt` field is a `Temporal.Instant` the instant you read it. You reach for `.epochMilliseconds`, `.toString()`, `.since(other)` — the Temporal surface. You never reach for `.getMonth()` or `.toISOString()`, because those are `Date` methods and the value isn't a `Date`; they don't exist on it, and your editor will tell you so. Three call sites show the shape across a read, a write, and the wire.
+
+<CodeVariants>
+  <CodeVariant label="List query">
+    ```ts "a.createdAt" "b.createdAt"
+    const invoices = await listInvoices(orgId);
+
+    const sorted = invoices.toSorted((a, b) =>
+      Temporal.Instant.compare(a.createdAt, b.createdAt),
+    );
+    ```
+    **The read direction is automatic.** No `fromDb(...)` call clutters the query — the `instantColumn` already converted on the way out, so each `createdAt` is a `Temporal.Instant` you can hand straight to `Temporal.Instant.compare`.
+  </CodeVariant>
+
+  <CodeVariant label="Server Action">
+    ```ts "Temporal.Now.instant()"
+    export const recordPayment = async (input: PaymentInput) => {
+      const { orgId } = await requireOrgUser();
+      await db.insert(payments).values({
+        invoiceId: input.invoiceId,
+        // server clock is the authority — never accept this from the client
+        receivedAt: Temporal.Now.instant(),
+      });
+    };
+    ```
+    **The write direction takes a `Temporal.Instant` too.** The action re-derives the instant on the server rather than accepting one from the client — the next section is entirely about why.
+  </CodeVariant>
+
+  <CodeVariant label="Route handler">
+    ```ts "invoice.createdAt.toString()"
+    export const GET = async () => {
+      const invoice = await getInvoice(id);
+      return Response.json({
+        id: invoice.id,
+        createdAt: invoice.createdAt.toString(),
+      });
+    };
+    ```
+    **The wire direction is the one manual encode.** A `Temporal.Instant` can't cross a JSON response or the React Server Component wire as-is — it's a class instance the boundary rejects. Call `.toString()` (or let `JSON.stringify` invoke `toJSON()`) to emit the ISO string.
+  </CodeVariant>
+</CodeVariants>
+
+One asymmetry is worth stating outright, because it's the thing students trip on. The *database* direction is automatic in both ways — the column converts on read and on write. The *wire* direction, when you hand-write a response, is explicit: you call `.toString()` to encode an instant into its ISO string. So if you ever try to pass a raw `Temporal.Instant` as a prop from a Server Component to a Client Component, or return one bare from a route handler, the boundary will reject it. The fix is always the same: encode to the ISO string at the boundary, parse back to a `Temporal.Instant` on the other side. `Temporal` in memory, ISO 8601 on the wire.
+
+Quick check on the type boundary, since it's the muscle that makes the rest reflexive.
+
+<MultipleChoice>
+  You have a value `created` typed `Temporal.Instant`, read off a query row. Three of these lines compile; one calls a method that doesn't exist on an `Instant`. Which one fails?
+
+  <McqChoice>`created.epochMilliseconds`</McqChoice>
+  <McqChoice>`created.since(other)`</McqChoice>
+  <McqChoice correct>`created.getMonth()`</McqChoice>
+  <McqChoice>`created.toString()`</McqChoice>
+
+  <McqWhy>
+    `getMonth()` is a `Date` method, and the column never hands you a `Date` — it hands you a `Temporal.Instant`, which has no such method. (An instant doesn't even *have* a month without a timezone attached; "which month was this" is a question you answer by converting to a `ZonedDateTime` in the user's zone first — a later lesson.) The other three are core `Instant` members: `.epochMilliseconds` for the numeric value, `.since(other)` for a duration, `.toString()` for the ISO string.
+  </McqWhy>
+</MultipleChoice>
+
+## The server clock is the authority
+
+You saw the server stamp `Temporal.Now.instant()` in the action above, and skip the client. That's not incidental — it's a senior reflex that closes off a whole bug class in one line, so it's worth making explicit.
+
+Every server-meaningful instant — `createdAt`, `updatedAt`, `processedAt`, `expiresAt`, the timestamps your business logic and your idempotency reasoning depend on — is stamped by the *server*, never sent by the client. There are two correct sources, and you pick by where the value is computed. When Postgres can produce it, `defaultNow()` is the reflex: the database stamps `CURRENT_TIMESTAMP` and you write nothing. When you need the instant in TypeScript before the insert — to compute an expiry, say — `Temporal.Now.instant()` in server-side code is the source.
+
+The anti-pattern is a Server Action that accepts `createdAt` in its input payload and writes whatever the client sent. That trusts the client's clock, and a client's clock can be wrong by minutes, skewed by a stale device, or set deliberately by someone probing your system. The fix is structural, not a validation patch: drop the client-supplied instant entirely and re-stamp on the server. Even a timestamp that's *legitimately* client-originated — "when the user tapped the button while offline" — gets validated and re-reasoned at the seam, never trusted raw. The server clock is the authority; the client merely reports.
+
+## Where Date is still allowed
+
+The Temporal pivot warned against over-correcting — against trying to purge `Date` from places where it genuinely belongs. Now that the storage layer is concrete, that carve-out gets concrete too. There are two seams where a `Date` legitimately appears, and the rule for both is the same one from the pivot chapter: convert at the seam, never propagate inward.
+
+The first is **third-party SDKs that hand you a `Date`**, and Stripe is the case you'll actually hit. You already have `instantFromDate` in `lib/temporal.ts` for this — when an SDK returns a `Date`, you convert it to a `Temporal.Instant` the moment it crosses into your code, and the `Date` never travels further. But Stripe carries a sharper trap worth naming here at the storage boundary, because getting it wrong writes garbage into your `timestamptz` column.
+
+```ts title="lib/stripe/webhook.ts" ins={2} del={4}
+// Stripe webhook fields like `created` are Unix SECONDS, not milliseconds.
+const occurredAt = instantFromUnixSeconds(event.created);
+
+const wrong = Temporal.Instant.fromEpochMilliseconds(event.created);
+```
+
+Stripe's wire format is Unix *seconds* — a ten-digit integer — and while the SDK often wraps those in a `Date` for you, raw webhook payload fields like `created` arrive as seconds. Hand `event.created` straight to `Temporal.Instant.fromEpochMilliseconds` and you've told Temporal that a seconds count is a milliseconds count: the result lands in January 1970, a thousand-fold off. The `instantFromUnixSeconds` helper from the pivot chapter exists precisely to multiply by 1000 at the seam so this can't happen. When the SDK hands you a `Date` instead, `instantFromDate` is the converter. Either way the `Date` (or the raw number) dies at the boundary.
+
+The second seam is **stopwatch-style duration measurement**, where the absolute time is meaningless and only the gap between two readings matters — "how long did this operation take." Here `Date` isn't even the right reach; `performance.now()` is, because it's sub-millisecond and monotonic, so it doesn't jump when the system clock corrects. One sentence of recall from the pivot chapter; nothing new.
+
+So the rule lands the same way it did before, now anchored against real storage: **`Date` at the seam, `Temporal` in the domain.** A `Date` that appears anywhere other than an SDK adapter or a stopwatch is a smell — it means a conversion got skipped, and the value is one `.getMonth()` away from a timezone bug.
+
+## The two pairs, and what this lesson installed
+
+Step back to the strip one last time, this time looking forward. This chapter installs **two** Drizzle-to-Temporal pairs, and you've now built the first. This lesson did the *instant* pair: `timestamptz` in storage, `Temporal.Instant` in the domain, joined by the `instantColumn` you wrote. The next lesson adds the *calendar-day* pair: a `date` column joined to `Temporal.PlainDate`, for values like a due date or a birthday where the answer is "May 15" regardless of where anyone stands. Two custom column types, two domain types, one file — `lib/temporal.ts` owns both.
+
+The dividing question between the two pairs is a grammar test you can apply to any column. *Is the answer "this exact second"?* If yes — when a row was created, when a payment was received, when a token expires — it's the instant pair you just built. If the answer is instead "this calendar day, everywhere" — that's the next lesson's pair, and you'll learn to spot it then. Sort a few columns by that test now, while the instant half is fresh; one bucket is yours today, the other is a placeholder for what's next.
+
+<Buckets twoCol instructions="Apply the grammar test — is the answer 'this exact second'? Sort each column. One bucket you own now; the other is next lesson's, so anything that lands there is just a 'not this one'.">
+  <Bucket name="instant" label="timestamptz + Temporal.Instant" description="the answer is 'this exact second'" />
+  <Bucket name="day" label="calendar day (next lesson)" description="the answer is 'this day, everywhere'" />
+
+  <Item bucket="instant">When an invoice was created</Item>
+  <Item bucket="instant">When a Stripe webhook was processed</Item>
+  <Item bucket="instant">When a password-reset token expires</Item>
+  <Item bucket="instant">When a row was last updated</Item>
+  <Item bucket="day">The day an invoice is due</Item>
+  <Item bucket="day">A user's birthday</Item>
+</Buckets>
+
+Two layers of the strip are now real: storage and domain, with ISO 8601 as the carrier between them. The third — the edge, where the user's profile timezone finally enters — is its own lesson, because "whose timezone?" turns out to be a deeper question than it looks (deriving it per-request on Vercel silently formats everyone's data in UTC). The lessons after that attach the remaining boxes: recurring schedules that survive a DST transition, and the full Temporal arithmetic surface.
+
+A closing note on what you *won't* see, so its absence reads as deliberate. Postgres has a `time without time zone` type, an `interval` type, and even arrays of `timestamptz`. They're real and occasionally useful, but the SaaS surface this course builds doesn't reach for them — instants and calendar days cover the ground. If you go looking for them in the pattern later and don't find them, that's the design, not an oversight.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Drizzle ORM — custom column types"
+    href="https://orm.drizzle.team/docs/custom-types"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The customType reference: dataType, toDriver, and fromDriver — the three hooks the instantColumn is built on."
+  />
+  <ExternalResource
+    title="Drizzle ORM — timestamp column"
+    href="https://orm.drizzle.team/docs/column-types/pg#timestamp"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The mode and precision options for the built-in timestamp builder, and exactly what each read mode returns."
+  />
+  <ExternalResource
+    title="PostgreSQL — date/time types"
+    href="https://www.postgresql.org/docs/18/datatype-datetime.html"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="The authority on what timestamptz stores and how the session TimeZone drives input interpretation and output rendering."
+  />
+  <ExternalResource
+    title="MDN — Temporal.Instant"
+    href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Temporal/Instant"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The reference for the domain type this lesson installs: from(), compare(), epochMilliseconds, since(), toString()."
+  />
+  <ExternalResource
+    title="Storing UTC is not a silver bullet"
+    href="https://codeblog.jonskeet.uk/2019/03/27/storing-utc-is-not-a-silver-bullet/"
+    icon="lucide:clock"
+    iconColor="#F97316"
+    description="Jon Skeet on where UTC-everywhere stops being enough — the future and recurring events that motivate the chapter's later lessons."
+  />
+</CardGrid>
