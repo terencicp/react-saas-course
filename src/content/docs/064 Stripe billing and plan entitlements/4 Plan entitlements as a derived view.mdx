@@ -249,6 +249,7 @@ type EntitlementPatch = {
   subscriptionId: string;
   currentPeriodEnd: Date;
   cancelAtPeriodEnd: boolean;
+  seats: number;
 };
 
 const subscriptionToEntitlement = (
@@ -261,31 +262,32 @@ const subscriptionToEntitlement = (
     subscriptionId: subscription.id,
     currentPeriodEnd: new Date(item.current_period_end * 1000),
     cancelAtPeriodEnd: subscription.cancel_at_period_end,
+    seats: item.quantity ?? 1,
   };
 };
 `}>
-  <AnnotatedStep meta="{1-7}" color="blue">
+  <AnnotatedStep meta="{1-8}" color="blue">
     **The output is a patch.** Not the whole row — just the writable columns the webhook will UPSERT onto the org's entitlement. It derives `plan` and `status` from `PlanEntitlement`, so this type tracks the table's unions automatically and can never drift out of sync with the schema.
   </AnnotatedStep>
 
-  <AnnotatedStep meta={`{9-11} "Stripe.Subscription" "EntitlementPatch"`} color="blue">
+  <AnnotatedStep meta={`{10-12} "Stripe.Subscription" "EntitlementPatch"`} color="blue">
     **Pure: Stripe shape in, app patch out, no IO.** That purity is what makes it trivially unit-testable. It's also the *only* place in the codebase that touches a raw `Stripe.Subscription` — later this chapter it moves behind the `/lib/billing/` seam, so this shape never leaks past the boundary.
   </AnnotatedStep>
 
-  <AnnotatedStep meta="{15}" color="blue">
+  <AnnotatedStep meta="{16}" color="blue">
     **`status` is copied verbatim.** The raw Stripe status string goes straight onto the patch with no interpretation. Whether `past_due` means "warn" or `canceled` means "wind down" is the next lesson's job — here it's an opaque label you faithfully store.
   </AnnotatedStep>
 
-  <AnnotatedStep meta="{14}" color="green">
+  <AnnotatedStep meta="{15}" color="green">
     **`plan` resolves through the app's own map — the stable handle at work.** It never hardcodes a price id (those differ between Stripe's test and live modes). `resolvePlan` looks up a price the app already knows from its seeded catalog, keyed off the durable lookup key — so the projection is mode-independent and survives a re-seed with no code change.
   </AnnotatedStep>
 
-  <AnnotatedStep meta="{17}" color="blue">
+  <AnnotatedStep meta="{18}" color="blue">
     **The gotcha — and the highest-value line here.** On API `2025-03-31.basil` this date lives on the subscription *item* (`item.current_period_end`), not the Subscription root; read `subscription.current_period_end` and you get `undefined`, silently. The `* 1000` converts Stripe's epoch *seconds* to the milliseconds `Date` expects.
   </AnnotatedStep>
 
-  <AnnotatedStep meta="{16,18}" color="blue">
-    **The remaining direct copies.** `subscriptionId` and `cancelAtPeriodEnd` map straight across from the Subscription with no transformation — the boring fields that round out the patch the webhook is about to write.
+  <AnnotatedStep meta="{17,19,20}" color="blue">
+    **The remaining direct copies.** `subscriptionId` and `cancelAtPeriodEnd` map straight across from the Subscription with no transformation — the boring fields that round out the patch the webhook is about to write, and seats reads the item's quantity — the seat count for a seat-based plan — defaulting to 1 when Stripe omits it.
   </AnnotatedStep>
 </AnnotatedCode>
 
@@ -294,6 +296,9 @@ The two lines worth slowing down on are `plan` and `currentPeriodEnd`, and they'
 `plan` is where the *stable handle* idea from [the object-graph lesson](/064-stripe-billing-and-plan-entitlements/1-the-stripe-object-graph) earns its keep. The function doesn't compare against a hardcoded price id — those differ between Stripe's test and live modes, so hardcoding them would tie your projection to one mode. Instead it resolves the plan through the app's own price-to-plan map, the one built from the catalog you seeded around stable lookup keys. The lookup key is the durable name; the map turns a price the app already knows into a plan slug, and the projection comes out mode-independent.
 
 `currentPeriodEnd` is the correctness landmine. Reach for `subscription.current_period_end` — the obvious place — and you get `undefined`, silently, on the current Stripe API version. The value moved onto the subscription *item*, so it's `item.current_period_end`. This single line is the most common way a real entitlement projection ships broken, with a `null` period date nobody notices until a renewal banner renders empty. The `* 1000` is the unit conversion: Stripe speaks epoch seconds, JavaScript's `Date` wants milliseconds.
+
+`seats` is the other field that reads off the item, not the Subscription root: a single-item subscription carries the seat count as `item.quantity`, and `?? 1` covers the plans that never set a quantity at all.
+This is the line that makes "your seats column updates on the next webhook" true — a Portal-driven seat change arrives as a `customer.subscription.updated` event, and the projection copies the new quantity into the row the invite gate reads.
 
 Once the patch is built, the webhook UPSERTs it onto the org's row, guarded by that `lastEventAt` comparison so a late-arriving older event is a harmless no-op. You've seen that machinery; here we just needed the function that feeds it.
 
