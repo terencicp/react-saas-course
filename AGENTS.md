@@ -22,6 +22,10 @@ Read project files only if essential to your current task. Read only the relevan
 
 - `src/content/docs/` — lessons MDX
 
+### Scratch space
+
+- `tmp/` — experimental and temporary files. Use this for throwaway scripts, scratch notes, and intermediate artifacts. Its contents are gitignored. You are responsible for deleting your own files here once they are no longer needed.
+
 ### Documentation
 
 - `documentation/content/overview/Table of contents.md` — list of Units, Chapters, Lessons and a brief description of lesson content. Extensive document, read only the relevant sections.
