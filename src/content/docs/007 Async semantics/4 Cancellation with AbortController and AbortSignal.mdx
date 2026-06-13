@@ -26,7 +26,7 @@ import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
 
 A user types into a search box. The first keystroke is `r`, and your code fires `fetch('/api/search?q=r')`. By the time that request lands the user has typed `re`, `rea`, `reac`, `react`: five characters in roughly a second, five requests in flight. The fast network mostly returns them in order, but not always. The response for `rea` happens to be served from a cold cache, so it lands *after* the response for `react`. Your dropdown renders whichever response arrives last, so it now shows results for `rea` while the user stares at the word `react`. The bug is reproducible, embarrassing, and not the user's fault.
 
-The fix isn't to debounce harder or to sort responses by timestamp. The fix is to stop the obsolete requests the moment they become obsolete, to *cancel* them. The 2026 mechanism for that has two parts. <Term definition="The producer side of cancellation: an object whose abort() method signals downstream consumers to stop.">`AbortController`</Term> creates the cancellation token, and <Term definition="The consumer-facing view of an AbortController; a read-only signal that async APIs subscribe to via { signal } to stop in-flight work.">`AbortSignal`</Term> is the read-only view consumers listen to. This pair shows up everywhere. `fetch` takes a signal. The abortable Node variant of `setTimeout` takes a signal. `addEventListener` takes a signal. The Vercel AI SDK's `streamText` takes a signal. Drizzle queries pass a signal to the underlying `pg` driver. Every Server Action this course writes accepts a signal. By the end of this lesson, when you see an async function that does any kind of I/O, you should expect a `signal` parameter and notice when it isn't there.
+The fix isn't to debounce harder or to sort responses by timestamp. The fix is to *cancel* the obsolete requests the moment they become obsolete. The 2026 mechanism for that has two parts. <Term definition="The producer side of cancellation: an object whose abort() method signals downstream consumers to stop.">`AbortController`</Term> creates the cancellation token, and <Term definition="The consumer-facing view of an AbortController; a read-only signal that async APIs subscribe to via { signal } to stop in-flight work.">`AbortSignal`</Term> is the read-only view that consumers listen to. This pair shows up everywhere. `fetch` takes a signal, and so does the abortable Node variant of `setTimeout`, and `addEventListener`, and the Vercel AI SDK's `streamText`. Drizzle queries pass a signal to the underlying `pg` driver, and every Server Action this course writes accepts one. By the end of this lesson, when you see an async function that does any kind of I/O, you should expect a `signal` parameter and notice when it isn't there.
 
 ## The producer-consumer split
 
@@ -46,7 +46,7 @@ const controller = new AbortController();
 controller.abort();
 ```
 
-Two properties on the signal are worth knowing, because they show up when you write the consumer side of long-running work. `signal.aborted` is a boolean: `false` before the abort, `true` after. `signal.reason` is whatever value you passed to `abort(reason)`, or a default `DOMException` if you called `abort()` with no argument. A long-running loop can guard against a mid-flight abort by checking `if (signal.aborted) break` between iterations. You won't reach for these often, since most of the time you thread the signal into an API that handles the listening for you, but they are there when you need them.
+Two properties on the signal are worth knowing, because they show up when you write the consumer side of long-running work. `signal.aborted` is a boolean: `false` before the abort, `true` after. `signal.reason` is whatever value you passed to `abort(reason)`, or a default `DOMException` if you called `abort()` with no argument. A long-running loop can guard against a mid-flight abort by checking `if (signal.aborted) break` between iterations. You won't reach for these often, because most of the time you thread the signal into an API that does the listening for you, but they are there when you need them.
 
 <VideoCallout videoId="pOQguIkDp5w" videoTitle="Software Developer Diaries — The Power of AbortController in JavaScript">
   An 18-minute walkthrough that touches `fetch`, `addEventListener`, WebSocket cleanup, and the `signal.aborted` loop guard. It makes a good second pass on the producer-consumer shape before the lesson narrows in on the parameter idiom.
@@ -151,7 +151,7 @@ Two things are worth noticing about this shape. First, the function and the call
 
 ## Discriminating cancellation at the catch
 
-Most 2026 tutorials skip this part, but it carries real weight. Three different conditions can cause an awaited operation to reject before it finishes successfully, and your `catch` block has to tell them apart. Get this wrong and you either silently swallow real failures or you spam the console with noise on every keystroke. Here are the three conditions, in order:
+Most 2026 tutorials skip this part, but it is where cancellation actually pays off. Three different conditions can cause an awaited operation to reject before it finishes successfully, and your `catch` block has to tell them apart. Get this wrong and you either silently swallow real failures or you spam the console with noise on every keystroke. Here are the three conditions, in order:
 
 1. **User-cancel.** Someone called `controller.abort()`. The awaited operation rejects with an error whose `name` is <Term definition="The error name a fetch (or other abortable API) rejects with when its signal was aborted by controller.abort().">`'AbortError'`</Term>. This is intentional, so treat it as a no-op and return early. Don't log it; the user just moved on.
 2. **Timeout.** The signal came from `AbortSignal.timeout(ms)`, covered in the next section. The rejection has a `name` of <Term definition="The error name a signal from AbortSignal.timeout(ms) rejects with when the deadline elapses — distinct from AbortError.">`'TimeoutError'`</Term>. This is also intentional, but the user probably wants to know, so surface a message like "took too long, try again."
@@ -212,7 +212,7 @@ const res = await fetch('/api/slow', { signal: AbortSignal.timeout(5_000) });
 
 `AbortSignal.timeout(ms)` is a static factory. It returns a fresh `AbortSignal` that aborts itself after `ms` milliseconds. There is no controller to hold, no `clearTimeout` to remember, and no `Promise.race` to assemble. The timer cleans itself up if the request settles first, and the signal becomes garbage as soon as the call returns. One line replaces the old four-step dance.
 
-You already saw the gotcha: when the timeout fires, the rejection's `name` is `'TimeoutError'`, not `'AbortError'`. That isn't an inconsistency. It's a deliberate signal to your `catch` so it can tell "the user moved on," which is silent, from "the network is too slow," which the user should hear about. The two-name discrimination from the previous section is exactly why this matters.
+You already saw the gotcha: when the timeout fires, the rejection's `name` is `'TimeoutError'`, not `'AbortError'`. That isn't an inconsistency. It's a deliberate signal to your `catch`, which uses the two names to tell two situations apart. "The user moved on" is silent, and "the network is too slow" is something the user should hear about. This is exactly the discrimination the previous section set up.
 
 :::tip
 Often you want both a user-cancel signal and a deadline on the same request. The next section composes them with `AbortSignal.any` so a single `signal` does both.
@@ -220,7 +220,7 @@ Often you want both a user-cancel signal and a deadline on the same request. The
 
 ## Composing signals with `AbortSignal.any([...])`
 
-A typical SaaS request usually has more than one reason to be cancelled. The user clicked Stop. The server-side deadline expired. The process is shutting down and needs to drain. You want all three reasons to be able to terminate the same operation, and you want one `catch` block to handle all of them. `AbortSignal.any([...])` is the composition primitive for that: give it an array of signals, and you get back a single signal that aborts the moment *any* input signal aborts.
+A typical SaaS request has more than one reason to be cancelled. The user clicked Stop. The server-side deadline expired. The process is shutting down and needs to drain. You want all three reasons to be able to terminate the same operation, and you want one `catch` block to handle all of them. `AbortSignal.any([...])` is the composition primitive for that: give it an array of signals, and you get back a single signal that aborts the moment *any* input signal aborts.
 
 Here is the canonical shape this course uses everywhere, in Server Actions, in background workers, in AI streaming, anywhere a single async operation has multiple legitimate reasons to stop:
 
@@ -238,7 +238,7 @@ Three composition sources, each with a real trigger:
 
 - **User cancellation:** `userController` is held wherever the cancel UI lives. The user closes the tab, clicks Stop, or navigates away, and the component's effect aborts the controller as it tears down.
 - **Deadline:** `AbortSignal.timeout(30_000)` caps the operation at 30 seconds. If the upstream service hangs, the server gives up instead of holding the request socket open indefinitely.
-- **Shutdown:** `shutdownSignal` is a process-wide signal that fires when the server receives `SIGTERM` for a graceful shutdown. In-flight work drains, so the deployment finishes faster. The wiring arrives in a later deployment chapter; here, just recognize the shape.
+- **Shutdown:** `shutdownSignal` is a process-wide signal that fires when the server receives `SIGTERM` for a graceful shutdown. In-flight work is allowed to drain before the process exits. The wiring arrives in a later deployment chapter, so for now just recognize the shape.
 
 The composed signal carries the reason from whichever input fired first, so inside your `catch` the same name-based discrimination still works. If user-cancel fired first, the name is `'AbortError'`; if the timeout fired first, the name is `'TimeoutError'`. You don't need to know which input fired, because the rejection tells you.
 
@@ -260,9 +260,9 @@ Here are two contracts, stated plainly so you don't reach for the wrong tool whe
 
 **Not guaranteed.** Work that already completed is *not* reversed. If your `fetch` already received a 200 and the server already inserted a row into the database, that row is committed; aborting the signal now cancels nothing, because the work is done. If your code called a Stripe charge that already settled, the charge has settled. Cancellation prevents *further* work, not work already done.
 
-The sentence to carry forward is this: the unit of cancellation is the work, not the Promise. A Promise is just a value that tells you when the work finished and how. Cancelling the Promise itself is meaningless, because there is no Promise-level "undo" in JavaScript, by design. What you cancel is the operation behind it.
+The underlying idea is that the unit of cancellation is the work, not the Promise. A Promise is just a value that tells you when the work finished and how. Cancelling the Promise itself is meaningless, because JavaScript has no Promise-level "undo," by design. What you cancel is the operation behind it.
 
-When you actually need to undo what was already done, you reach for a different tool: a transaction that rolls back if anything inside it fails, covered in the database chapter on transactions, or a compensating action that explicitly reverses a previous step, covered in the background-work chapter. Cancellation is the cheap, structural mechanism for stopping future work. Transactions and compensating actions are the expensive, deliberate mechanisms for undoing past work.
+When you actually need to undo what was already done, you reach for a different tool. One is a transaction that rolls back if anything inside it fails, covered in the database chapter on transactions. Another is a compensating action that explicitly reverses a previous step, covered in the background-work chapter. Cancellation is the cheap, structural mechanism for stopping future work. Transactions and compensating actions are the expensive, deliberate mechanisms for undoing past work.
 
 ## Practice: refactor a fetch helper
 
@@ -359,7 +359,7 @@ The signature carries the optional `signal` in the canonical options-object shap
 
 ## Practice: match the source to the move
 
-Five scenarios, five tools. Matching the trigger to the right API surface is how this lesson's vocabulary becomes something you reach for without thinking.
+The next exercise pairs five scenarios with five tools. Matching each trigger to the right API surface is how this lesson's vocabulary becomes something you reach for without thinking.
 
 <Matching instructions="Match each cancellation scenario to the canonical 2026 move.">
   <Pair>
