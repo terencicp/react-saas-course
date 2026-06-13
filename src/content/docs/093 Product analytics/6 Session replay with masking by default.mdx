@@ -1,0 +1,332 @@
+---
+title: Session replay with masking by default
+tagline: Record what your users actually saw with PostHog session replay, masking sensitive data by default so the recording never becomes a privacy leak.
+chapter-id: 93
+course-progress: 0.00005
+sidebar:
+  order: 6
+  label: Session replay
+---
+
+import ReplayPipeline from '../../../components/lessons/093/6/ReplayPipeline.astro';
+import MaskVsBlock from '../../../components/lessons/093/6/MaskVsBlock.astro';
+import ReplayWorkflow from '../../../components/lessons/093/6/ReplayWorkflow.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Three users this week told support the dashboard "broke." Sentry is clean — no exception, no stack trace. Your structured logs show every request from those visits returning a `200`. You get one of them on a call and ask them to do it again; it works fine. Nothing in the observability stack you've built so far can see what went wrong, because nothing actually *threw*.
+
+This is a UX bug. The code didn't crash — the interaction failed. A modal opened and snapped shut. A button sat behind an invisible overlay. A click landed on the wrong target. The user did something real, the app responded wrong, and not a single byte of that is in an error report or a log line. Those tools record what the *server* saw. They have no idea what the *user* saw.
+
+Session replay is the surface that does. It is PostHog's fourth and final primitive — after events, properties, and feature flags — and it answers exactly one question the others can't: *what did this one user actually do, frame by frame?* By the end of this lesson you'll resolve the ticket above from a recording, without ever getting the user back on a call. But replay is also the easiest PostHog primitive to turn into a privacy incident, so most of this lesson is about controlling what it captures.
+
+## What replay sees that errors and logs miss
+
+You've now built a layered observability stack across this chapter and the last one. Each layer answers a different question at a different zoom level. Replay slots in at the bottom — the single-user, frame-by-frame layer — and it's worth seeing the whole stack at once so you reach for the right tool when a ticket lands.
+
+| Tool | Answers the question | Granularity |
+| --- | --- | --- |
+| Sentry | What exception was thrown, and where in the code? | One error, with a stack trace |
+| Structured logs | What did this request do on the server? | One request |
+| Product analytics | What are users doing, in aggregate? | Cohorts and funnels |
+| Session replay | What did *this* user actually do, on screen? | One user, one session |
+
+Read that bottom row against the rest. Sentry needs a thrown error to have something to report. Logs need a request to have a line to write. Product analytics tells you that *conversion dropped on the pricing page*, not *why this user bailed*. Replay is the only row that captures interaction the code never reacted to — the misfired click, the modal that closed itself, the form the user gave up on.
+
+One thing to be clear about before we go further: replay *complements* Sentry, it doesn't replace it. They sit at opposite ends of the same investigation. When a bug throws, Sentry catches it with a stack trace and replay would just show you a user hitting an error screen. When a bug *doesn't* throw, Sentry has nothing and replay is the only witness. A mature SaaS runs both, and the real skill — which we'll build at the end of this lesson — is pivoting between them on a single ticket.
+
+## Replay records the DOM, not a video
+
+Here is the single idea this entire lesson hangs on. Get it wrong and every decision downstream gets harder; get it right and masking, blocking, and the privacy review all fall out naturally.
+
+**PostHog does not record your screen.** There is no video file. When you picture "session replay," your instinct is probably a screen recording — a video of the user's monitor that PostHog plays back. That instinct is wrong, and the difference matters enormously.
+
+What actually happens is that PostHog serializes the <Term definition="Document Object Model — the live tree of elements the browser renders the page from.">DOM</Term>. It takes one snapshot of the page's DOM at the start, then records a stream of *changes* to that DOM as the user interacts — a node added here, a class toggled there, this text updated. It captures these mutations using <Term definition="The open-source DOM-recording engine PostHog's session replay is built on.">rrweb</Term>, alongside mouse movements, clicks, scroll position, and viewport size. It also records `console` lines and network request *metadata* — the URL, method, status code, and duration of each request. Then the replay player takes that stream and re-renders the recorded DOM, deterministically, frame by frame. What you watch is your own app's HTML and CSS being re-played, not a movie of someone's screen.
+
+Notice what's *not* in that list: request and response bodies. By default, the payload of every fetch your app makes stays out of the recording — you get the URL and the status, never the contents. That's deliberate, and we'll come back to why at the end.
+
+Now the payoff, because this is the whole point. Because the player re-renders recorded DOM, masking is **structural**. When you mark a field as masked, its value is replaced with `***` — or the element is dropped entirely — *at capture time, inside the user's browser, before anything is transmitted.* The real value is never serialized, never sent, never stored. Compare that to blurring a video frame: a blur is a layer painted over pixels that still exist underneath, and pixels can be recovered. There are no pixels here. A masked value was never in the recording to begin with. There is nothing to un-blur, nothing to OCR, nothing to leak.
+
+This is why the screen-recording mental model is actively harmful. If you picture a blurred screenshot, you'll instinctively *under-trust* masking ("a blur can be reversed, so I'd better hide the whole page") and *over-block* — and an all-grey replay teaches you nothing. Trust the structural guarantee: the masked value left the browser as `***`. Let's make that pipeline concrete.
+
+<ReplayPipeline />
+
+Scrub through it and watch the value in step 1 become `***` in step 2 and stay that way through steps 3 and 4. The masked value disappears in the browser, before transit. Everything else in this lesson is a consequence of that single fact.
+
+:::note
+This is also where data residency lands for replay. As you saw earlier in this chapter, the project runs on PostHog Cloud EU, hosted in Frankfurt — so the (already-masked) recordings are stored in the EU, which keeps the GDPR posture clean.
+:::
+
+## Masking by default: two surfaces, one posture
+
+The posture is *default to masked, then whitelist what's safe to show*. This is the inverse of the older analytics default ("capture all text, mask only password inputs"), and it's the right way around for a SaaS handling customer data: you start from "nothing sensitive is visible" and deliberately open up the few fields that are safe.
+
+Two things make this concrete, and you have to set **both** or you'll fool yourself:
+
+1. **The SDK config**, inside the `posthog.init` you already wrote. This is where your code declares what to mask.
+2. **The project's replay settings**, in the PostHog dashboard. This is a project-wide masking level that applies regardless of what any individual page's code says.
+
+These compose. The dashboard setting is a floor the whole project sits on; the SDK config tightens it per app. The failure mode — and it's a common one — is split-brain: you set masking carefully in `posthog.init`, assume you're covered, and never check that the dashboard's default isn't quietly looser. Or the reverse. Set both, and make them agree.
+
+PostHog's 2026 default already **masks all inputs** out of the box — every `<input>`, `<textarea>`, and `<select>` value is hidden unless you opt it back in. That's your safety floor. On top of it, you'll add a couple of class- and attribute-based selectors so the masking matches your app's specific sensitive surfaces.
+
+Here's the code. The important thing to see is that this is *not* a new file — it's the exact `posthog.init` from earlier in this chapter, plus three keys. The following two tabs show the before and the after.
+
+<CodeVariants>
+  <CodeVariant label="Earlier init (recap)">
+    ```ts title="lib/posthog.ts"
+    posthog.init(POSTHOG_KEY, {
+      api_host: '/ingest',
+      ui_host: 'https://eu.posthog.com',
+      defaults: '2026-01-30',
+      capture_pageview: false,
+      opt_out_capturing_by_default: true,
+    });
+    ```
+    **The init you already have.** `opt_out_capturing_by_default: true` is the belt-and-suspenders safety floor — nothing captures until consent flips it on.
+  </CodeVariant>
+
+  <CodeVariant label="+ replay masking">
+    ```ts title="lib/posthog.ts" ins={7-12}
+    posthog.init(POSTHOG_KEY, {
+      api_host: '/ingest',
+      ui_host: 'https://eu.posthog.com',
+      defaults: '2026-01-30',
+      capture_pageview: false,
+      opt_out_capturing_by_default: true,
+      disable_session_recording: true,
+      session_recording: {
+        maskAllInputs: true,
+        maskTextSelector: '.sensitive, [data-sensitive]',
+        blockSelector: '.never-record, [data-no-replay]',
+      },
+    });
+    ```
+    **The same init, plus three keys.** `maskAllInputs: true` is the safety floor — every input value masked. `maskTextSelector` adds class- and attribute-targeted masking for non-input text; `blockSelector` removes matching elements from the recording entirely. `disable_session_recording: true` keeps recording off until consent turns it on — the next section explains why we don't auto-record.
+  </CodeVariant>
+</CodeVariants>
+
+A few notes on those three keys, because the names hide some nuance. `maskAllInputs` is the floor and it's doing the heavy lifting — turn it off and every form on your site streams its values in the clear, so leave it on. `maskTextSelector` is for *text that isn't in an input* — a `<div>` showing a customer's name, say — matched by CSS selector. `blockSelector` is a different lever entirely, and the difference between masking text and blocking an element is the next section.
+
+One naming note for your own code: `.sensitive` and `.never-record` are conventions we'll use throughout this lesson — `.sensitive` for "mask this element's text," `.never-record` for "don't record this element at all." They're just CSS classes; pick whatever names you like, but pick them once and apply them consistently, because consistency is what makes the masking catalog later in this lesson maintainable.
+
+## Mask versus block: two levers, two intents
+
+Students conflate these constantly, so let's draw the line sharply. Masking and blocking both hide sensitive content, but they hide *different amounts* of it, for *different reasons*.
+
+**Mask** keeps the element in the recording. Its structure, position, dimensions, and the *fact that the user interacted with it* are all recorded — only the text or value is replaced with `***`. In the replay you watch the user click into the password field, you see the focus ring land, you see them type eight characters — you just don't see *which* eight. Reach for mask when the interaction itself matters for debugging: Did they actually fill the field? Did focus land where you expected? Did the validation message fire?
+
+**Block** removes the element entirely. It's not recorded at all; the player shows a blank placeholder of the same footprint where it used to be. You lose all of it — content *and* the fact of interaction. Reach for block when the element's content shouldn't exist in the recording in *any* form: a third-party iframe rendering someone's <Term definition="Personally Identifiable Information — data that can identify a specific person, like a name, email, or payment details.">PII</Term>, a customer's fully-rendered billing details, anything where even the structure is more than you want stored.
+
+The fastest way to feel the difference is to look at what the operator actually sees in each case. The two tabs below show the replay player rendering the same login form — once with the password field masked, once with it blocked.
+
+<MaskVsBlock />
+
+So here's the decision rule, and it's short: **default to mask; escalate to block only when the structure itself is sensitive or the element is third-party.** The reasoning is a balance of two failure modes. Over-block and you destroy the debugging value — an all-grey replay is as useless as no replay, and you went to the trouble of recording for nothing. Under-mask and you leak. The experienced posture is *mask aggressively, block surgically.*
+
+Those project-wide selectors from the last section have per-element counterparts, for when you want to tag one specific element at its call site rather than add it to the global config. You apply them right in your JSX:
+
+```jsx title="app/(app)/profile/profile-form.tsx"
+<form>
+  {/* masked: recorded, but the value shows as *** */}
+  <input name="fullName" className="ph-no-capture" />
+
+  {/* blocked: this element is not recorded at all */}
+  <iframe src={billingWidgetUrl} data-ph-no-capture />
+
+  {/* unmasked: opt one value back in, even under masking */}
+  <span data-ph-capture-attribute-unmask="true">Order #{orderId}</span>
+</form>
+```
+
+So: the `ph-no-capture` *class* masks the element (the per-element version of `maskTextSelector`); the `data-ph-no-capture` *attribute* blocks it entirely (the per-element version of `blockSelector`); and `data-ph-capture-attribute-unmask="true"` selectively un-masks one specific value even when a broader masking rule would otherwise hide it — the rare whitelist case, for something like an order number that support genuinely needs to read off the replay.
+
+## A masking catalog for a SaaS app
+
+Posture and levers are abstract until you map them onto the actual surfaces of a real app. Every SaaS has the same recurring set of sensitive spots, and the experienced move is to decide them *once* — write the catalog, apply the classes, and stop re-litigating it per feature. Let's build that catalog, and the best way to internalize it is to triage the targets yourself.
+
+The exercise below gives you realistic targets from a B2B SaaS. Drag each into the column for the lever it needs: **Mask** (record it, hide the value) or **Block** (don't record it at all). Lean on the rule you just learned — mask when the interaction matters, block when even the structure shouldn't be stored.
+
+<Buckets twoCol instructions="Sort each surface into how a SaaS app should treat it in session replay.">
+  <Bucket name="mask" label="Mask" description="Record it, hide the value" />
+  <Bucket name="block" label="Block & don't record" description="Keep it out of the recording entirely" />
+
+  <Item bucket="mask">Customer name and address on a profile page</Item>
+  <Item bucket="mask">A free-text notes field where users paste anything</Item>
+  <Item bucket="mask">The email field on the sign-in form</Item>
+  <Item bucket="mask">Any element classed `.sensitive`</Item>
+  <Item bucket="block">A third-party iframe rendering customer PII</Item>
+  <Item bucket="block">Fully-rendered billing and payment details</Item>
+  <Item bucket="block">The audit-log preview surface (full of operator-visible PII)</Item>
+  <Item bucket="block">The Stripe Elements card-input wrapper</Item>
+</Buckets>
+
+Now the catalog in prose, so you have the canonical list and its mapping to a lever in one place:
+
+- **Mask** — customer name, address, and phone on profile pages; free-text fields where users might paste anything (notes, descriptions, comments); the username or email field on auth forms (you want to confirm *that* they typed an email, not *which* one — masked text lets support verify the right account without seeing the address); and anything you've classed `.sensitive`. The lever: the `.sensitive` class (or `ph-no-capture` per element).
+- **Block** — third-party iframes carrying PII; rendered billing and payment details; the audit-log preview (it's wall-to-wall customer data viewed by operators); and the Stripe Elements wrapper. The lever: the `.never-record` class (or `data-ph-no-capture` per element).
+
+That last one — Stripe Elements — deserves a precise word, because it's a common source of confusion. <Term definition="Stripe's prebuilt, PCI-compliant form fields for collecting card details.">Stripe Elements</Term> renders its card inputs inside a *third-party iframe*, served from Stripe's own origin. rrweb records the DOM of *your* page; it physically cannot read across that origin boundary into Stripe's iframe. So card data is already not captured, *even with no configuration at all* — the browser's same-origin policy does the work for you. So why class the wrapper `.never-record` anyway? Two reasons: defense-in-depth (one less thing to get wrong if Stripe ever changes how Elements mounts), and signal-to-noise (it keeps an empty iframe placeholder out of the replay so it doesn't clutter the recording). The honest framing is: *it's already safe; we block it anyway, on purpose.* This kills a misconception you'll hear repeated — that replay "accidentally captures the Stripe card form." It doesn't.
+
+Two more things belong in this section, because both are about the catalog not being write-once.
+
+The first is a discipline, not a one-time task: **masking config rots.** The catalog you write today is correct for the app as it exists today. Next quarter someone ships a feature with a `<textarea>` collecting customer shipping addresses, and if nobody remembers to class it, it's captured in the clear. New sensitive surfaces appear with every feature. This is exactly why the privacy review at the end of this lesson is a *recurring* ritual, not a launch checkbox.
+
+The second is a specific gotcha that catches people who trust `maskAllInputs` too completely. That setting masks `<input>`, `<textarea>`, and `<select>` — the real form elements. It does *not* mask a `<div contenteditable>` rich-text editor, because the DOM doesn't see a `contenteditable` div as a form input — it's just a div the user can type into. So a rich-text editor where customers write notes will be captured in full unless you mask it explicitly with a class. Treat `contenteditable` as the canonical "the default didn't catch it" case, and class any rich editor `.sensitive` by hand.
+
+## Recording only on consent
+
+Replay is personal data — it's a recording of a specific person using your app — so it obeys the same consent gate as every other PostHog primitive. Nothing records before the user accepts. You've already built this gate (the four-state consent machine and the `useConsent()` source of truth from the security chapter, and the consent-gated effect earlier in this chapter), so this is a small extension, not a new system.
+
+Remember `disable_session_recording: true` from the config section? *That's* why replay doesn't start on its own. With that key set, the SDK won't record until you explicitly call `posthog.startSessionRecording()` — and the only place you call it is on the accepted branch of your consent gate, right after you opt the user in. One new line on the effect you already wrote.
+
+```tsx title="app/_components/posthog-provider.tsx" ins={4}
+import('posthog-js').then(({ default: posthog }) => {
+  // ...posthog.init(...) from earlier in this chapter
+  posthog.opt_in_capturing();
+  posthog.startSessionRecording();
+});
+```
+
+Withdrawal is handled for you. The cleanup side of that same effect already calls `posthog.opt_out_capturing()` (and `reset()`) when consent is revoked, and opting out stops the recording — so if a user accepts, gets recorded, then later changes their mind, recording stops the moment they do. You don't need a separate `stopSessionRecording()` call for the consent path; opting out covers it.
+
+Then verify it, exactly the way you verified the consent gate earlier — this is the highest-stakes primitive to get the gate wrong on, so don't skip it. Open the app fresh and **reject** in the consent banner, click around, then open the replay list in PostHog: no session should appear for that visit. Then do it again and **accept**: a session appears. Reject means no recording starts; accept means it does. That's the gate, proven.
+
+## Sampling so the inbox stays useful
+
+Recording every session sounds thorough until you do the math, and it fails in two directions at once.
+
+The first is cost. Replay is metered, and recording 100% of sessions on a B2C site at any real scale will burn through your quota in days — the same quota-bust shape this chapter warned about earlier. The second is subtler and worse: *signal*. A thousand recordings of people who landed, glanced, and bounced is a haystack. When a real bug report comes in, you have to find the one session that matters among hundreds of nothing-happened sessions. Recording everything doesn't make your replays more useful; past a point it makes them *less* useful, because the important one is buried.
+
+So you sample on purpose. There are two mechanisms.
+
+The first is a blunt **sample rate** — record some fraction of all sessions. You set it in the same `session_recording` config:
+
+<div data-mark-color="orange">
+
+```ts title="lib/posthog.ts" "'0.1'"
+session_recording: {
+  maskAllInputs: true,
+  sampleRate: '0.1',
+}
+```
+
+</div>
+
+Watch the value: `sampleRate` is a **string** fraction, `'0.1'`, not the number `0.1`. Pass a number and PostHog won't apply it the way you expect — this is a real foot-gun, so type the quotes.
+
+But a flat sample rate is rarely what you want, because not all sessions are equal. The experienced default for a B2B SaaS is to *sample by who the user is*: record at or near 100% of your **identified** users — these are your actual paying customers, low in volume and high in signal, and their bugs are the ones you must not miss — while sampling anonymous traffic low, around 10%. You want the paying customer's broken upgrade flow, not a random bounce from an ad.
+
+The second, more surgical mechanism is **trigger-based recording**, configured as *trigger groups* in PostHog's project settings. Instead of "record some fraction of everything," a trigger group says "record only sessions that match *this condition*" — a specific URL, a specific event, or a specific feature flag — each group with its own sample rate and minimum duration. The high-value pattern writes itself: record only sessions where `paywall_viewed` or `support_chat_opened` fired (events you defined earlier in this chapter). Now you're capturing exactly the funnels you actually debug, and ignoring everything else. Because trigger groups live in the dashboard rather than in code, you can re-aim them without shipping a deploy — turn on recording for a flow you're investigating this week, turn it off when you're done.
+
+:::tip
+Sample by *value*, not by volume. Near-100% of identified customers, low single-digit-percent of anonymous traffic, and trigger groups for the specific flows you're debugging. The goal isn't "record less" — it's "record the sessions you'll actually open."
+:::
+
+## Reading a replay: from ticket to one-line fix
+
+Now we resolve the ticket we opened with, and in doing so you'll learn the skill that justifies the whole primitive: *reading a replay player's panels together* to turn an un-reproducible bug into a one-line fix.
+
+The ticket, refined: a user reports "the upgrade button does nothing." No error in Sentry. Clean logs. They can't reproduce it for you on a call. Here's the on-call walk, the way you'd actually do it.
+
+<ReplayWorkflow />
+
+Walk through what just happened, because the *method* is the lesson, not this specific bug. You filtered the replay list to one user, scrubbed to the reported action, and watched the DOM timeline do something the user couldn't articulate: the modal opened and then closed itself, milliseconds later, from a stray click on the backdrop. The console panel was clean. The network panel was clean. *That cleanliness is the diagnosis* — it's precisely why Sentry and your logs missed this. There was no error and no failed request; the bug lived entirely in the interaction, in a click event bubbling to a handler it shouldn't have reached. The fix is a single <Term definition="A method on a DOM event that stops it from bubbling up to parent elements' handlers.">`e.stopPropagation()`</Term> on the modal content. One line, found by *watching*, in a bug nobody could reproduce.
+
+And here's where the whole observability stack clicks together as one tool. In this case the network panel was clean — but suppose it *hadn't* been. Suppose at the moment the upgrade bailed, the network panel showed a `500` on a `POST /api/checkout`. Now replay has told you *where* and *when* the failure happened; you copy that request URL and pivot straight to Sentry and your structured logs from the last chapter, filtered to that endpoint, to find out *why* the server fell over. Replay localizes the failure in the user's timeline; the error stack and logs explain the server's side of it. Reading them together is the actual job — replay finds where it broke, Sentry tells you why.
+
+<VideoCallout videoId="ALR9iuXQVqg" videoTitle="Solve support tickets 10x faster with Session Replay – PostHog Session Replay Demo">
+  A PostHog support engineer walks a vague ticket to its cause from a recording — using the inspector's console, network, and event panels exactly as above (3 min).
+</VideoCallout>
+
+## When not to record at all
+
+The default is *record, with masking.* But there are a handful of surfaces where the right answer is to record nothing, and recognizing them is a deliberate judgment call worth making explicitly. These are flat rules — a named exception with a reason for each — so here they are as a list, not a decision tree:
+
+- **Internal admin tools — a separate PostHog project, replay off entirely.** This is the cleanest rule in the set. When an operator works in your admin panel, their screen is *full of customer data* — every customer record they open would land in the recording. Recording the operator re-captures customer PII at one remove, masking or not. Keep internal tooling in its own PostHog project with replay disabled, and the problem never arises.
+- **Customer-data export and download flows — block the whole flow.** An export screen renders a pile of customer data on its way out the door. Put `data-ph-no-capture` on the container and keep the entire flow out of the recording.
+- **Payment forms — already handled.** The Stripe Elements iframe is isolated by the origin boundary, as you saw; class the wrapper `.never-record` for defense-in-depth and move on. Nothing more to do.
+- **Auth forms — mask, don't block.** This one's a deliberately *softer* call than your instinct might suggest. The password is already masked by `maskAllInputs`, which is the genuinely sensitive part. But leave the username/email field *captured as masked text* rather than blocking it — that way support can still confirm *which account* a session belongs to without ever reading the actual address. Block the form and you lose that pivot for no real privacy gain.
+
+The meta-rule that ties these together: *record-with-masking is the default, and everything on this list is a named exception with a stated reason.* If you can't state the reason, it's not an exception — it's just a gap in your masking.
+
+## The pre-ship privacy review
+
+We close on the discipline that keeps replay shippable, because everything above can be configured perfectly and still drift into a leak over time. Replay is the easiest PostHog primitive to misconfigure into a GDPR violation, and — as you saw with the catalog — the config rots as the app grows. The answer isn't "be careful." It's a concrete, repeatable ritual.
+
+The ritual is simple: before you ship replay to production, **open a real recorded session and scrub through it looking for PII.** Watch your own app being replayed, the way an operator would, and hunt for anything sensitive that's visible. Anything unmasked that shouldn't be — a name, an address, a field someone forgot to class — you fix on the spot: add the class, re-verify. Budget thirty minutes for the one-off pass before launch, then make it a *recurring quarterly pass*, because new features keep adding new sensitive surfaces. This pairs with the stale-flag audit you set up earlier in this chapter — both are recurring hygiene passes on the same cadence, and it's worth seeing them as a pattern: the parts of an observability stack that touch personal data need scheduled review, not just initial setup.
+
+Two more disciplines belong in this review, because both are residual leak surfaces the scrub-through has to catch.
+
+**Network body capture stays off — that's the default, keep it that way.** Recall that replay captures request metadata (URL, method, status, duration) but not request or response *bodies*. Bodies are where the PII lives — a profile-update request body is full of it — and the metadata alone is enough to debug and to pivot to Sentry. PostHog lets you turn body capture on, and there's exactly one legitimate use: a *specific, time-boxed* debugging cycle where you genuinely need to see a payload. Turn it on, debug, turn it *off*. The failure mode is enable-and-forget — flip it on to chase one bug, never flip it back, and now you're storing PII-laden bodies indefinitely.
+
+**A replay is operator-side access, even when it's perfectly masked.** Masking protects the *stored data*; it does not make a replay public or harmless. A masked replay is still a recording of a real person's session, and showing it in a screen-share with a customer, or simply opening it as an operator, is *access to that user's session* — exactly the operator-PII concern from the security unit. Treat a replay like any other PII surface: limited access, and a reason to open it.
+
+And the GDPR connection — a pointer, since the security chapter owns the mechanics. When a user requests deletion through the flow you built there, their **replays must be deleted too**. PostHog makes this clean: deleting a *person* removes all of their associated data — events *and* recordings — in a single action. Two correct surfaces exist. The first is **server-side**, via PostHog's person-deletion API through the `posthog-node` adapter you set up earlier in this chapter — the same `lib/posthog.ts` server module. The second is the **"Delete person" action in the PostHog app UI**, for a manual one-off. Wire the deletion flow from the security chapter to trigger PostHog person-deletion server-side, as one more downstream delete in that pipeline.
+
+:::caution
+Person-deletion is a **server-side** operation. Do *not* reach for `posthog.deletePerson()` on the client — that method doesn't exist on the browser SDK, and deletion is never something you want a browser able to trigger anyway. Delete people from the server (`posthog-node`) or from the PostHog dashboard.
+:::
+
+Here's the review as a checklist you can run before every replay ship and on every quarterly pass. Tick it off against a real recorded session, not from memory.
+
+<Checklist id="privacy-review">
+  <ChecklistItem>Every form input is masked (`maskAllInputs` on, verified in a real recording).</ChecklistItem>
+  <ChecklistItem>`.sensitive` is applied to every PII text field — names, addresses, phone numbers.</ChecklistItem>
+  <ChecklistItem>Rich-text / `contenteditable` editors are masked by class (the default doesn't catch them).</ChecklistItem>
+  <ChecklistItem>Export and download flows are blocked (`data-ph-no-capture` on the container).</ChecklistItem>
+  <ChecklistItem>Internal admin tools run on a separate PostHog project with replay off.</ChecklistItem>
+  <ChecklistItem>Network body capture is off.</ChecklistItem>
+  <ChecklistItem>Sampling is set deliberately — high for identified users, low for anonymous.</ChecklistItem>
+  <ChecklistItem>The GDPR deletion flow triggers PostHog person-deletion server-side.</ChecklistItem>
+  <ChecklistItem>You scrubbed through a real recorded session looking for PII and found none unmasked.</ChecklistItem>
+</Checklist>
+
+That's the full mental model to leave with: **replay is masked-DOM playback, gated by consent, sampled on purpose, and reviewed before it ships.** It's the witness for the bug that throws no error — and the cheapest way to turn an un-reproducible support ticket into a one-line fix. It is decidedly *not* "record everything in case." Record with masking, on consent, on the sessions that matter, and check it before it goes out.
+
+## External resources
+
+The PostHog docs are the canonical reference for the surfaces this lesson configured — and the rrweb repo is where the "records the DOM, not a video" idea this lesson hangs on actually lives.
+
+<CardGrid>
+  <ExternalResource
+    title="Session replay — privacy controls"
+    href="https://posthog.com/docs/session-replay/privacy"
+    icon="simple-icons:posthog"
+    iconColor="#F54E00"
+    description="The canonical masking-and-blocking reference: every selector, class, and attribute this lesson used."
+  />
+  <ExternalResource
+    title="Controlling which sessions you record"
+    href="https://posthog.com/docs/session-replay/how-to-control-which-sessions-you-record"
+    icon="simple-icons:posthog"
+    iconColor="#F54E00"
+    description="Sample rates and trigger groups — how to record by value instead of volume."
+  />
+  <ExternalResource
+    title="Data deletion"
+    href="https://posthog.com/docs/privacy/data-deletion"
+    icon="simple-icons:posthog"
+    iconColor="#F54E00"
+    description="The correct person-deletion surface for wiring replay into your GDPR deletion flow."
+  />
+  <ExternalResource
+    title="rrweb — record and replay the web"
+    href="https://github.com/rrweb-io/rrweb"
+    icon="simple-icons:github"
+    iconColor="#181717"
+    description="The open-source DOM-recording engine under PostHog's replay — see incremental snapshots in action."
+  />
+</CardGrid>

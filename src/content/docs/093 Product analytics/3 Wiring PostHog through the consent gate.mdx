@@ -1,0 +1,398 @@
+---
+title: Wiring PostHog through the consent gate
+tagline: Install the PostHog product-analytics SDK so it loads only after a user grants consent, relayed through your own domain past ad-blockers.
+chapter-id: 93
+course-progress: 0.00005
+sidebar:
+  order: 3
+  label: Wiring PostHog
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Sequence from '../../../components/exercises/sequence/Sequence.astro';
+import Step from '../../../components/exercises/sequence/Step.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import PackageMap from '../../../components/lessons/093/3/PackageMap.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+When you built the consent gate, you wired up a hook called `useConsent()` and proved that nothing non-essential could fire before the user agreed. The worked example in that lesson was PostHog — but you never actually installed it. The lesson said, in so many words, that wiring PostHog for real was a later chapter's job.
+
+This is that chapter. You are not opening a new topic here; you are finishing a sentence you started back when you built the gate. By the end of this lesson a deliberate test pageview will reach PostHog *after* the user accepts analytics — sent to the EU region, relayed through your own domain so ad-blockers can't eat it — and your DevTools Network tab will confirm that *zero* PostHog traffic fires before that. That second half is the part that matters: the gate is a compliance promise, and a promise you can't verify isn't worth much.
+
+Everything you already have is the foundation. The `useConsent()` hook returns `{ analytics, marketing, open, accept, reject }` — and the only piece this lesson cares about is the `analytics` boolean. You have a root `<Providers>` Client Component from the TanStack Query chapter, the single place where app-wide client context gets mounted. And you have the typed `env` boundary that decides which secrets are allowed to reach the browser. PostHog slots into all three.
+
+There is exactly one new discipline to internalize, and the rest of the lesson is consequences of it: **the PostHog SDK is a module that does not exist in the page until `analytics` is `true`.** Not loaded-but-disabled. Not present-but-quiet. Absent.
+
+## A one-paragraph refresher: the two belts
+
+You met the two-belt model in the consent-gate lesson, so this is a reminder, not a re-teach. Belt one is `opt_out_capturing_by_default: true` — an init option that loads the SDK in a disabled state, so even a fully-present module captures nothing until you explicitly opt it in. Belt two is the stronger guarantee: a dynamic `import('posthog-js')` that only runs *after* the consent flag flips, so the SDK code never enters the page at all while consent is absent. Belt one governs a module that's already loaded; belt two keeps it from loading. In the consent-gate lesson you reasoned about these conceptually. This lesson builds belt two for real and adds belt one underneath it as the structural floor — if the gate were ever bypassed, the module that slipped through is still mute.
+
+## The three packages and what each owns
+
+Before any code, get the map straight. PostHog's App Router story involves three package names, and knowing which one does what keeps the rest of the lesson legible.
+
+```bash
+pnpm add posthog-js posthog-node
+```
+
+<Figure caption="Three packages, three surfaces.">
+  <PackageMap />
+</Figure>
+
+Here is the judgment call worth making explicitly. There *is* a 2026 wrapper, `@posthog/next`, that folds these pieces together — and it's tempting to reach for it as the obvious modern default. As of this writing it's published but still marked beta, and PostHog's own Next.js documentation still walks the manual `posthog-js` + `posthog-node` wire as the main path. So that manual wire is what you'll build: it's the shape you actually own and understand, and it won't rot under you if the wrapper's API shifts before it stabilizes. Treat `@posthog/next` as the convenience layer you graduate to once it leaves beta — it will fold in the `/ingest` proxy, keep the browser and server distinct IDs in sync, and bootstrap feature flags. The first two you'll wire by hand in this lesson. The flag bootstrap is a later lesson's job, so leave it alone for now.
+
+The piece of vocabulary you'll see in the env section: PostHog gives a project a <Term definition={"PostHog's public, write-only ingest key for a project. Safe to ship to the browser — it can send events but cannot read data back out. Distinct from a personal API key, which is read-capable and server-only."}>project key</Term>. It's safe in the browser by design, and that design decision is what the next section is about.
+
+## The env boundary: three keys, one of which must never reach the client
+
+The provider you're about to write reads its configuration from your typed `env`, so wire the variables first. There are three, and the whole point of this section is the firewall between them. Adding these is just three entries in a file you already understand — this isn't a re-tour of how the env boundary works, only an application of its client/server split to a concrete new credential.
+
+<AnnotatedCode lang="ts" maxLines={14} code={`
+export const env = createEnv({
+  server: {
+    POSTHOG_PERSONAL_API_KEY: z.string().min(1),
+  },
+  client: {
+    NEXT_PUBLIC_POSTHOG_KEY: z.string().min(1),
+    NEXT_PUBLIC_POSTHOG_HOST: z.url(),
+  },
+  runtimeEnv: {
+    POSTHOG_PERSONAL_API_KEY: process.env.POSTHOG_PERSONAL_API_KEY,
+    NEXT_PUBLIC_POSTHOG_KEY: process.env.NEXT_PUBLIC_POSTHOG_KEY,
+    NEXT_PUBLIC_POSTHOG_HOST: process.env.NEXT_PUBLIC_POSTHOG_HOST,
+  },
+});
+`}>
+  <AnnotatedStep meta="{6-7}" color="blue">
+    The project key and the EU host. The `NEXT_PUBLIC_` prefix is deliberate — these are *designed* to ship to the browser. The project key is write-only at the ingest endpoint, so a reader who pulls it out of the bundle can send events but can't read your data back.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{3}" color="orange">
+    The personal API key is read-capable — later lessons use it for server-side flag evaluation and admin reads. It lives in the `server` block, never the client one. The split is the firewall: name it `NEXT_PUBLIC_POSTHOG_PERSONAL_KEY` by mistake and you've shipped a read credential to every visitor's browser.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{9-13}" color="blue">
+    Each variable is mapped to its `process.env` source. This is the wiring the schema needs to read the actual values at runtime.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The host is `https://eu.i.posthog.com` — EU Cloud, the region decision made when you chose PostHog. The load-bearing idea is the prefix itself: `NEXT_PUBLIC_` is the firewall. The two public keys *belong* in the browser bundle; the personal key never does, and because the env schema splits `server` from `client`, a misnamed `NEXT_PUBLIC_POSTHOG_PERSONAL_KEY` becomes a build error instead of a silent leak. "Ship a key to the client" reads like a bug on reflex — here, for the two public ones, it's correct by design. The schema is what makes that distinction enforceable rather than a comment you hope someone reads.
+
+## The provider is belt two
+
+This is the centerpiece — the component the whole lesson builds toward. You're going to write a `PostHogProvider`: a `'use client'` component that *is* belt two. Read it as a starter piece you own and can extend, the same way you treated the consent provider.
+
+Build the shape in your head before you read the code. The provider:
+
+- Mounts **inside** your existing root `<Providers>`, and crucially **inside** the `ConsentProvider`. Order matters here — `ConsentProvider` has to be an ancestor, because `PostHogProvider` calls `useConsent()`, and that hook throws if it's used outside its provider. This isn't a competing root; it slots into the one provider tree your app already has.
+- Reads `const { analytics } = useConsent()`. The gate is that boolean — not a string state, not a four-valued enum, the literal `analytics` flag the consent contract hands you.
+- When `analytics` is `false` — the default, a reject, or simply not-yet-decided, all of which collapse to "off" — the provider renders its children and the dynamic import is *never reached*. No `posthog-js` in the executed path, no network, nothing.
+- When `analytics` flips to `true`, an effect dynamically imports the SDK, initializes it with belt one baked into the config, and then opts capturing in.
+- When `analytics` flips back to `false` — a withdrawal — the effect tears everything down: it opts out and resets, stopping any queued events. This mirrors the revocation discipline the consent gate already taught.
+
+One note before the code, because it can read as an anti-pattern if you've absorbed the "you probably don't need an effect" rule. Loading a third-party SDK *is* the sanctioned use of `useEffect`: it's synchronization with an external system, which is exactly what effects are for. This isn't deriving state or handling an event — it's wiring your component up to a widget that lives outside React.
+
+<AnnotatedCode lang="tsx" maxLines={18} code={`
+'use client';
+
+import type { ReactNode } from 'react';
+import { useEffect } from 'react';
+import { useConsent } from '@/app/_components/consent-provider';
+import { env } from '@/env';
+
+export const PostHogProvider = ({ children }: { children: ReactNode }) => {
+  const { analytics } = useConsent();
+
+  useEffect(() => {
+    if (!analytics) return;
+
+    let cancelled = false;
+    import('posthog-js').then(({ default: posthog }) => {
+      if (cancelled) return;
+      posthog.init(env.NEXT_PUBLIC_POSTHOG_KEY, {
+        api_host: '/ingest',
+        ui_host: 'https://eu.posthog.com',
+        defaults: '2026-01-30',
+        capture_pageview: false,
+        opt_out_capturing_by_default: true,
+      });
+      posthog.opt_in_capturing();
+    });
+
+    return () => {
+      cancelled = true;
+      void import('posthog-js').then(({ default: posthog }) => {
+        posthog.opt_out_capturing();
+        posthog.reset();
+      });
+    };
+  }, [analytics]);
+
+  return <>{children}</>;
+};
+`}>
+  <AnnotatedStep meta={`{1} {9} "useConsent" "analytics"`} color="blue">
+    `'use client'` because this reads consent state and runs an effect. `useConsent()` is the single source of truth, and we read exactly one thing from it — the `analytics` boolean. Everything below hangs off this value.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{12}" color="green">
+    The short-circuit. If `analytics` is false, the effect returns before the import line is ever reached. This *is* belt two — the SDK code on the next line does not enter the page. The default, a reject, and an undecided user all land here.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{15} "import('posthog-js')"`} color="violet">
+    The dynamic import. The browser only fetches and runs the `posthog-js` chunk *here*, *now* — the first moment `analytics` is true. Before this line runs, the SDK does not exist in the page.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{22} "opt_out_capturing_by_default: true"`} color="orange">
+    Belt one, inside `init`. The SDK loads disabled. Even now that the module exists, it captures nothing until told otherwise — so if the gate above were ever bypassed, the module that slipped through stays silent.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{24} "opt_in_capturing()"`} color="blue">
+    The explicit opt-in. This is the line that lifts belt one, and it only runs on the consented path. Capture is on from here.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{27-33}" color="red">
+    The cleanup branch, which runs when `analytics` flips back to false. It opts capturing out and calls `reset()` to clear the queue and the stored identity. Withdrawal is not "stop sending future events" — it's "stop, and forget." (The identity side of `reset()` gets its full treatment in the next lesson.)
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Notice what the `analytics` dependency does: the effect re-runs whenever consent changes, so accept runs the init path and a later withdrawal runs the cleanup path, with no extra plumbing. The `cancelled` flag guards the gap between the async import resolving and the effect being torn down — a small correctness detail, not the lesson.
+
+:::note
+The shape above is staged for clarity — the belt-two structure has to read at a glance. A fully production-hardened version would also guard against React's development-mode double-invocation of effects by holding the initialized client on a ref so `init` can't run twice. That guard exists; it's just noise relative to the point here, which is *where the import lives and what gates it*.
+:::
+
+Now the nesting, which is a separate decision from the provider's internals and deserves its own focused look. Get the order wrong and `useConsent()` throws, because the hook can't find its provider above it.
+
+<div data-mark-color="blue">
+
+```tsx title="app/_components/providers.tsx" {3-5}
+export const Providers = ({ children }: { children: ReactNode }) => (
+  <QueryClientProvider client={getQueryClient()}>
+    <ConsentProvider>
+      <PostHogProvider>{children}</PostHogProvider>
+    </ConsentProvider>
+  </QueryClientProvider>
+);
+```
+
+</div>
+
+`ConsentProvider` wraps `PostHogProvider` wraps `{children}`. The ancestor relationship is the contract: `PostHogProvider` can only call `useConsent()` because `ConsentProvider` sits above it in the tree.
+
+To make sure the ordering landed — because this is the exact misconception that ships to production — put the steps in order, from a fresh page load to the first captured event:
+
+<Sequence instructions="A user lands on the page, then clicks Accept. Order the steps from page load to the first captured event.">
+  <Step>The page renders with `analytics` still `false`</Step>
+  <Step>The user clicks Accept in the consent banner</Step>
+  <Step>`useConsent()` returns `analytics: true`, re-running the effect</Step>
+  <Step>`import('posthog-js')` resolves and the SDK enters the page</Step>
+  <Step>`posthog.init(...)` runs with `opt_out_capturing_by_default: true`</Step>
+  <Step>`posthog.opt_in_capturing()` lifts the opt-out</Step>
+  <Step>The first event is captured and sent</Step>
+</Sequence>
+
+This is the ordering that *is* the rule. The classic production bug is putting the `import` at the top of the module and trusting `opt_out_capturing_by_default` to hold the line — but a top-level import means the SDK code is in the page on first load, consent or not. Belt one alone doesn't save you there; the module is present, just quiet, and "present" is already more than the gate promised. Belt two is the import living *inside* the consented branch.
+
+## Pinned defaults and App Router pageviews
+
+Two knobs in that init config deserve their own beat, because they're where "it works in dev but the numbers are wrong" bugs live.
+
+The first is `defaults`. PostHog bundles its recommended settings — autocapture behavior, pageview handling, exception capture — behind a single dated snapshot. Pinning a specific date is a deliberate move: it means a future change to PostHog's defaults can't silently flip your app's behavior out from under you. The value above is `'2026-01-30'`, the current snapshot at the time of writing. The discipline is *pinning*; the date is a value to confirm against PostHog's docs and revisit when they ship a new default set.
+
+The second is more interesting, and it's durable regardless of which exact option is current. The App Router navigates with `history.pushState` — that's how `next/link` and `useRouter().push()` move you between routes without a full page reload. To PostHog's automatic pageview tracking, that client-side navigation is invisible, so a naive setup either misses every in-app navigation or double-counts the first one. The fix is to turn the automatic capture off (`capture_pageview: false`) and fire pageviews yourself on route change.
+
+<div data-mark-color="orange">
+
+```tsx title="app/_components/posthog-pageview.tsx" {20-22}
+'use client';
+
+import { usePathname, useSearchParams } from 'next/navigation';
+import posthog from 'posthog-js';
+import { Suspense, useEffect } from 'react';
+
+const PageViewTracker = () => {
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
+  useEffect(() => {
+    if (!pathname) return;
+    posthog.capture('$pageview');
+  }, [pathname, searchParams]);
+
+  return null;
+};
+
+export const PostHogPageView = () => (
+  <Suspense fallback={null}>
+    <PageViewTracker />
+  </Suspense>
+);
+```
+
+</div>
+
+The component reads `usePathname()` and `useSearchParams()`, and fires `posthog.capture('$pageview')` whenever either changes — that's every client-side navigation, counted exactly once. The `Suspense` wrap isn't optional: `useSearchParams()` opts its subtree into client rendering, and the App Router makes a missing boundary a build error. You render `<PostHogPageView />` once, high in the tree (inside the provider or alongside it). Note it imports `posthog` directly — by the time a navigation fires, the user has consented and the SDK is initialized, so the singleton is live.
+
+:::caution
+Skip the deliberate pageview handling and the failure is quiet and confusing: client-side navigations either don't register at all or arrive doubled, your funnels look broken, and nothing errors to tell you why. And forget the `Suspense` boundary and the build fails outright on the `useSearchParams` reader.
+:::
+
+## The /ingest proxy: a same-origin relay past ad-blockers
+
+Here's a failure mode that's invisible until you measure it. Ad-blockers heuristically block requests to `i.posthog.com` and the EU host — and a real, non-trivial slice of your users runs one. Without a workaround, those users' events vanish silently. Nothing throws, nothing logs; your numbers are just quietly wrong, biased against exactly the privacy-conscious users you'd most want to count correctly.
+
+The fix is a <Term definition={"A request to your own domain that your server forwards on to a third party. From the browser's and the ad-blocker's perspective it's a first-party request to your origin, so it isn't blocked by host-based rules."}>reverse proxy</Term>: a route on your own domain that relays PostHog traffic. Requests go to `/ingest/...` — a <Term definition={"A request to the same scheme, host, and port the page was served from. Ad-blockers' host-based blocklists don't match it, because it's going to your domain, not the tracker's."}>same-origin</Term>, first-party path the ad-blocker has no reason to block — and your server forwards them on to PostHog. This is not an optional nicety in 2026; it's the difference between trustworthy data and data with a hole in it.
+
+The wire is two halves: the relay itself, and two config flips so the SDK uses it.
+
+<CodeVariants maxLines={14}>
+  <CodeVariant label="next.config.ts" icon="lucide:settings">
+    ```ts
+    const nextConfig: NextConfig = {
+      skipTrailingSlashRedirect: true,
+      async rewrites() {
+        return [
+          {
+            source: '/ingest/static/:path*',
+            destination: 'https://eu-assets.i.posthog.com/static/:path*',
+          },
+          {
+            source: '/ingest/:path*',
+            destination: 'https://eu.i.posthog.com/:path*',
+          },
+        ];
+      },
+    };
+    ```
+    **The relay.** Two rewrite rules. The first relays the SDK's own static assets; the second relays the ingest traffic. Both forward `/ingest/*` on your domain to PostHog's EU hosts. `skipTrailingSlashRedirect` stops Next.js from appending a slash that would break PostHog's API paths. Order matters — the more specific `/static` rule comes first.
+  </CodeVariant>
+
+  <CodeVariant label="posthog-provider.tsx" icon="simple-icons:posthog">
+    <div data-mark-color="green">
+
+    ```tsx ins={2-3}
+    posthog.init(env.NEXT_PUBLIC_POSTHOG_KEY, {
+      api_host: '/ingest',
+      ui_host: 'https://eu.posthog.com',
+      defaults: '2026-01-30',
+      capture_pageview: false,
+      opt_out_capturing_by_default: true,
+    });
+    ```
+
+    </div>
+    **The config flips.** `api_host: '/ingest'` sends events same-origin, through the rewrite. `ui_host: 'https://eu.posthog.com'` points the links the SDK generates — the toolbar, the replay viewer — at the real PostHog UI. Mind the dot: the ingest host is `eu.i.posthog.com` (with `.i.`), the UI host is `eu.posthog.com` (no `.i.`). Set `api_host` without `ui_host` and the toolbar links break.
+  </CodeVariant>
+</CodeVariants>
+
+Two things to get exactly right, because both are documented gotchas. The hosts are *not* interchangeable: `eu.i.posthog.com` (with the `.i.`) is the ingest endpoint your events go to; `eu.posthog.com` (no `.i.`) is the UI host the SDK builds links against. And don't drop the static-assets rewrite — without it, the SDK bundle itself fails to load through the proxy. If you ever need request-time logic in the relay, the alternative is a catch-all route handler at `app/ingest/[...path]/route.ts` — note the `[...path]`, not `[path]`, or it forwards only the first path segment. The rewrites approach is the canonical one; reach for the route handler only when you need to touch the request in flight. When you eventually adopt `@posthog/next`, this whole proxy is one of the things it folds in for you.
+
+## The server-side moment: capturing without a browser
+
+There's one case where the consent gate and the browser SDK are both irrelevant: an event that originates on the server, with no browser in the room. A Stripe webhook firing when a checkout completes. A scheduled job running overnight. There's no `posthog-js` here and no consent flag to read, because there's no client — the event is born server-side. That's what `posthog-node` is for.
+
+Keep this tight — it's a preview of server capture, not the full story. The mechanics of *how the server knows which user an event belongs to* are the next lesson's territory; here, the distinct ID is just a parameter the call needs.
+
+<AnnotatedCode lang="ts" maxLines={16} code={`
+import 'server-only';
+import { PostHog } from 'posthog-node';
+import { after } from 'next/server';
+import { env } from '@/env';
+
+export const posthog = new PostHog(env.NEXT_PUBLIC_POSTHOG_KEY, {
+  host: 'https://eu.i.posthog.com',
+  flushAt: 1,
+  flushInterval: 0,
+});
+
+export const POST = async (req: Request) => {
+  const event = await verifyStripeEvent(req);
+
+  posthog.captureImmediate({
+    distinctId: event.data.object.customer,
+    event: 'subscription_started',
+    properties: { plan: 'pro' },
+  });
+
+  after(() => posthog.shutdown());
+  return new Response(null, { status: 200 });
+};
+`}>
+  <AnnotatedStep meta="{1} {8-9}" color="orange">
+    `import 'server-only'` makes a leaked import a build error — this module carries a key and must never reach the browser. The client is constructed once at module scope. `flushAt: 1, flushInterval: 0` turns off batching: a serverless function won't live long enough to fill a batch, so every event sends on its own.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{15} "captureImmediate"`} color="blue">
+    Use `captureImmediate`, not `capture`, in serverless. Plain `capture()` is fire-and-async — it queues the event and returns, and the function can freeze before the HTTP send lands. `captureImmediate()` awaits the send. The `distinctId` is glossed for now; the next lesson covers how the server obtains it.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{21} "after" "shutdown"`} color="red">
+    `after(() => posthog.shutdown())` flushes any pending events *after* the response is sent, so it doesn't delay the user. Skip this and un-flushed events die when the Vercel function terminates — the headline server-side gotcha. `after` runs the flush off the critical path; an inline `await shutdown()` is the fallback.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The `distinctId` above is PostHog's per-user identifier — gloss it as "which user this event is about" for now; the next lesson covers how a server request learns it. The config there is *not* simplified, by the way — `flushAt: 1`, `flushInterval: 0`, and the `shutdown()` flush are load-bearing for correctness on Vercel, and you should ship them as-is.
+
+One nuance that trips people up. Server-side capture has no *technical* consent gate, because it isn't running in the user's browser — there's nothing for `useConsent()` to gate. But the *moral* gate still holds. Only fire server-side behavioral events for users who accepted client-side, or for genuinely session-less events keyed by an upstream provider's ID (an anonymous webhook). Don't server-fire behavioral events for a user who rejected just because the code path technically can. This is a discipline you carry in your head, not a mechanism the code enforces for you.
+
+## Proving the gate holds
+
+"Wired" is not "trusted." You've typed the gate; now prove it. You already know the shape of this ritual from the consent-gate audit — same move, run now against the real SDK instead of the conceptual one. Three checks, in order.
+
+**Check one — the reject path.** In an incognito window, click Reject in the consent banner (or just leave it undecided). Open DevTools, Network tab. Click a `<Link>` to navigate. You should see *zero* requests to `/ingest` or to `posthog.com`, and no `posthog-js` chunk in the loaded scripts. This is belt two, proven: the module is not in the page. This is the compliance-critical check — if anything PostHog-shaped appears before Accept, the gate is broken, and this is exactly the test that later becomes a CI assertion.
+
+**Check two — the accept path.** Accept analytics. Click a `<Link>`. Now you should see exactly *one* pageview request — and it goes to `/ingest`, same-origin, which proves the proxy is doing its job. The `posthog-js` chunk is now present in the loaded scripts.
+
+**Check three — server confirmation.** Open PostHog's Live Events tab. Within a few seconds, your pageview lands, attributed to the project's distinct ID. The event made it all the way through.
+
+Here's the deliverable — the checklist you run against a real codebase, not just this exercise:
+
+<Checklist id="verify-gate">
+  <ChecklistItem chip="untested">Reject (or undecided): the Network tab shows zero requests to `/ingest` or `posthog.com`, and no `posthog-js` chunk loads.</ChecklistItem>
+  <ChecklistItem chip="untested">Accept: clicking a link fires exactly one `/ingest` pageview request, and the `posthog-js` chunk is now present.</ChecklistItem>
+  <ChecklistItem chip="untested">The pageview lands in PostHog's Live Events tab within a few seconds.</ChecklistItem>
+  <ChecklistItem chip="untested">`api_host` is `/ingest` and `ui_host` is `https://eu.posthog.com` — the UI host has no `.i.`, only the ingest host does.</ChecklistItem>
+  <ChecklistItem chip="untested">The personal API key is absent from the client bundle — search the Network scripts / built bundle for it and find nothing.</ChecklistItem>
+  <ChecklistItem chip="untested">`opt_out_capturing_by_default: true` is present in the init config.</ChecklistItem>
+</Checklist>
+
+Pass all six and you've done what the consent-gate lesson promised: PostHog is wired, and you can prove it doesn't leak. The SDK is a module that doesn't exist before consent, and is opted-out even once it does — two independent guarantees, each one auditable on its own.
+
+## External resources
+
+These are the live references for the exact APIs you wired. The first is the canonical manual walkthrough — the settled default this lesson taught, not the beta wrapper.
+
+<CardGrid>
+  <ExternalResource
+    title="PostHog — Next.js setup"
+    href="https://posthog.com/docs/libraries/next-js"
+    icon="simple-icons:posthog"
+    iconColor="#F54E00"
+    description="The canonical manual posthog-js + posthog-node wire for the App Router."
+  />
+  <ExternalResource
+    title="PostHog — Reverse proxy"
+    href="https://posthog.com/docs/advanced/proxy/nextjs"
+    icon="simple-icons:posthog"
+    iconColor="#F54E00"
+    description="Why the /ingest relay exists and how to configure the host rewrites."
+  />
+  <ExternalResource
+    title="PostHog — posthog-node"
+    href="https://posthog.com/docs/libraries/node"
+    icon="simple-icons:posthog"
+    iconColor="#F54E00"
+    description="Server-side capture, captureImmediate, and the shutdown() flush behavior."
+  />
+</CardGrid>
