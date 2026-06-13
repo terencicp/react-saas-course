@@ -8,6 +8,7 @@
 // context, so it uses `parent.postMessage` and ignores its TS environment.
 
 import { appendConsole, beginResults, endResults, upsertResult } from './dom';
+import { prepareSource } from '../_shared/transpile-ts';
 
 const VANILLA_TIMEOUT_MS = 5000;
 
@@ -49,6 +50,36 @@ function vanillaHarness() {
       const ka = Object.keys(a); const kb = Object.keys(b);
       if (ka.length !== kb.length) return false;
       return ka.every((k) => deepEqual(a[k], b[k]));
+    };
+    // Async matchers: `expect(promise).rejects.<m>()` / `.resolves.<m>()`.
+    // Await the promise, assert it settled the expected way, then apply the
+    // matcher to the settled value (the rejection reason, or the resolved value).
+    const asyncMatchers = (mode: 'rejects' | 'resolves') => {
+      const settle = async () => {
+        let isRej = false; let settled: any;
+        try { settled = await actual; } catch (e) { isRej = true; settled = e; }
+        if (mode === 'rejects' && !isRej) throw new Error(`expected promise to reject, but it resolved with ${pretty(settled)}`);
+        if (mode === 'resolves' && isRej) throw new Error(`expected promise to resolve, but it rejected: ${String((settled && settled.message) || settled)}`);
+        return settled;
+      };
+      const out: Record<string, (...a: any[]) => Promise<void>> = {};
+      for (const key of ['toBe', 'toEqual', 'toBeTruthy', 'toBeFalsy', 'toBeCloseTo', 'toContain']) {
+        out[key] = async (...args: any[]) => {
+          const settled = await settle();
+          (globalThis as any).expect(settled)[key](...args);
+        };
+      }
+      // In rejects-mode the settled value IS the thrown error; assert its message.
+      out.toThrow = async (matcher?: string | RegExp) => {
+        const settled = await settle();
+        if (mode === 'resolves') return;
+        if (matcher) {
+          const msg = String((settled && settled.message) != null ? settled.message : settled);
+          const ok = matcher instanceof RegExp ? matcher.test(msg) : msg.includes(matcher);
+          if (!ok) throw new Error(`expected rejection to match ${matcher}, got "${msg}"`);
+        }
+      };
+      return out;
     };
     const api = {
       toBe(expected: any) {
@@ -94,6 +125,8 @@ function vanillaHarness() {
           throw new Error(`expected ${pretty(actual)} to be a string or array`);
         }
       },
+      get rejects() { return asyncMatchers('rejects'); },
+      get resolves() { return asyncMatchers('resolves'); },
       get not() {
         const inverted: Record<string, (...a: any[]) => void> = {};
         for (const key of Object.keys(api) as Array<keyof typeof api>) {
@@ -116,7 +149,25 @@ function vanillaHarness() {
   return tests;
 }
 
-function buildVanillaSrcdoc(studentCode: string, testCode: string): string {
+// Vanilla cards execute a classic `<script>`, where top-level `import`/`export`
+// and TS type annotations are syntax errors. Plain-JS starters (the common
+// case) are run verbatim — instant, no TypeScript download. Anything that fails
+// to parse as a classic-script body (TS syntax, or `export`/`import`) is routed
+// through the shared TS pipeline, which type-strips at an ES2022 target. Keeping
+// ES2022 means classes stay native — so `class X extends Error` keeps a working
+// `instanceof`, which a down-levelling bundler would silently break.
+async function prepareVanillaSource(combined: string): Promise<string> {
+  try {
+    // Compile-only probe (no execution); free identifiers like `test`/`expect`
+    // are fine — undefined references are runtime, not parse, errors.
+    new Function(combined);
+    return combined;
+  } catch {
+    return prepareSource(combined);
+  }
+}
+
+function buildVanillaSrcdoc(preparedBody: string): string {
   const src = vanillaHarness.toString();
   const bodyStart = src.indexOf('{') + 1;
   const bodyEnd = src.lastIndexOf('}');
@@ -125,14 +176,12 @@ function buildVanillaSrcdoc(studentCode: string, testCode: string): string {
   // Defang a closing script tag in student/test code so it can't terminate
   // the wrapping script tag we inject below.
   const closeRe = new RegExp('<' + '/script>', 'gi');
-  const safeStudent = studentCode.replace(closeRe, '<\\/script>');
-  const safeTests = testCode.replace(closeRe, '<\\/script>');
+  const safeBody = preparedBody.replace(closeRe, '<\\/script>');
 
   const runner = `
     ${body}
     try {
-      ${safeStudent}
-      ${safeTests}
+      ${safeBody}
     } catch (e) {
       parent.postMessage({ kind: 'compile_error', message: (e && e.message) || String(e) }, '*');
       parent.postMessage({ kind: 'done' }, '*');
@@ -159,9 +208,25 @@ export function setupVanillaRunner(
   tests: string,
   runBtn: HTMLButtonElement,
 ) {
-  runBtn.addEventListener('click', () => {
-    beginResults(card);
+  runBtn.addEventListener('click', async () => {
     runBtn.disabled = true;
+    const resultsEl = card.querySelector<HTMLElement>('.lc-results')!;
+
+    // Type-strip first (only TS/`export` starters pay the cost). A failure here
+    // is a transpiler/network problem, not student code — surface it cleanly
+    // rather than letting the run hang to the timeout.
+    let prepared: string;
+    try {
+      prepared = await prepareVanillaSource(getCode() + '\n' + tests);
+    } catch (e) {
+      beginResults(card);
+      upsertResult(resultsEl, 'Could not prepare code', 'error', (e as Error)?.message ?? String(e));
+      endResults(card);
+      runBtn.disabled = false;
+      return;
+    }
+
+    beginResults(card);
 
     const old = card.querySelector('iframe.lc-script-runner-iframe');
     if (old) old.remove();
@@ -169,10 +234,9 @@ export function setupVanillaRunner(
     iframe.className = 'lc-script-runner-iframe';
     iframe.style.display = 'none';
     iframe.sandbox.add('allow-scripts');
-    iframe.srcdoc = buildVanillaSrcdoc(getCode(), tests);
+    iframe.srcdoc = buildVanillaSrcdoc(prepared);
     card.appendChild(iframe);
 
-    const resultsEl = card.querySelector<HTMLElement>('.lc-results')!;
     const timer = window.setTimeout(() => {
       upsertResult(resultsEl, 'Test run timed out (5s), incorrect syntax or infinite loop.', 'error');
       cleanup();

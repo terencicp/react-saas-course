@@ -23,7 +23,7 @@ document.querySelectorAll<HTMLElement>('.lc-script').forEach((card) => {
     const view = createEditor({
         parent: refs.editor,
         doc: starter,
-        lang: 'js',
+        lang: 'ts',
         onDocChange: () => feedback.refreshGate(),
     });
 
