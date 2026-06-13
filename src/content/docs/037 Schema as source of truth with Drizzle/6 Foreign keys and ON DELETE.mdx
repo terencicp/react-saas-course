@@ -23,19 +23,19 @@ import { CardGrid } from '@astrojs/starlight/components';
 
 <CourseProgressBar value={frontmatter['course-progress']} />
 
-Right now your `invoiceLineItems` table has an `invoiceId` column that is *supposed* to point at a row in `invoices`, but it's just a `uuid`, and nothing enforces that promise. You could insert a line item whose `invoiceId` matches no invoice at all, and when an invoice is deleted, its line items sit there pointing at a row that no longer exists. A foreign key fixes both halves of that: it makes Postgres **enforce the link** on every write, and it lets you **decide what happens to the children when the parent is deleted**. The second half is where most of this lesson goes: a four-way choice you make per relationship, plus a look at when deletions even happen. Last lesson ended on "every foreign key points at exactly one primary key", and this lesson covers the foreign-key end of that sentence.
+Right now your `invoiceLineItems` table has an `invoiceId` column that is *supposed* to point at a row in `invoices`, but it's just a `uuid`, and nothing enforces that promise. You could insert a line item whose `invoiceId` matches no invoice at all, and when an invoice is deleted, its line items sit there pointing at a row that no longer exists. A foreign key fixes both problems: it makes Postgres **enforce the link** on every write, and it lets you **decide what happens to the children when the parent is deleted**. Most of this lesson goes into that second part, which is a four-way choice you make per relationship, plus a look at when deletions actually happen. Last lesson ended on "every foreign key points at exactly one primary key", and this lesson covers the foreign-key end of that sentence.
 
 ## A foreign key is a promise the database keeps
 
-Before we touch deletion behavior, get the foreign key working as a pure guarantee. Here is the whole declaration, attached to the column it lives on:
+Before we touch deletion behavior, let's get the foreign key working as a pure guarantee. Here is the whole declaration, attached to the column it lives on:
 
 ```ts title="db/schema.ts"
 organizationId: uuid().notNull().references(() => organizations.id, { onDelete: 'restrict' }),
 ```
 
-There are three pieces, left to right. First, the column itself, a `uuid` matching the type of the primary key it points at. Second, the `.references(() => organizations.id, …)` call, which names the target table and column. Third, the `onDelete` option, which sets the deletion policy. Ignore `onDelete: 'restrict'` for one more section; the next section is entirely about what those values mean. For now, focus on the link.
+There are three pieces, left to right. First, the column itself, a `uuid` matching the type of the primary key it points at. Second, the `.references(() => organizations.id, …)` call, which names the target table and column. Third, the `onDelete` option, which sets the deletion policy. Ignore `onDelete: 'restrict'` for one more section, since the next section is entirely about what those values mean. For now, just focus on the link itself.
 
-Notice the reference is a *callback*: `() => organizations.id`, not `organizations.id`. That arrow serves a purpose. When two tables reference each other, as they will in a real schema, whichever module loads second hasn't finished defining its tables yet, so reaching for the value directly throws a "cannot access before initialization" error. Wrapping it in a function defers that lookup until both tables exist. Drizzle asks for the callback precisely so you never run into that.
+Notice the reference is a *callback*: `() => organizations.id`, not `organizations.id`. That arrow is there for a reason. When two tables reference each other, as they will in a real schema, whichever module loads second hasn't finished defining its tables yet, so reaching for the value directly throws a "cannot access before initialization" error. Wrapping it in a function defers that lookup until both tables exist, and Drizzle asks for the callback precisely so you never hit that error.
 
 So what does declaring this actually buy you? Three things:
 
@@ -43,7 +43,7 @@ So what does declaring this actually buy you? Three things:
 2. The **column types must match the referenced primary key exactly**: a `uuid` foreign key points at a `uuid` primary key, a `bigint` at a `bigint`. Get this wrong and the schema fails to apply, so it's caught up front rather than as a runtime surprise. This is why last lesson's primary-key shapes matter here: the foreign key inherits the type of whatever it points at.
 3. The foreign-key column is **not indexed automatically**. Declaring the constraint creates the rule, not an index. Without one, both the cascade deletes you're about to meet and ordinary "find every invoice for this org" lookups degrade to full-table scans as the table grows. Keep that in mind for now; adding the index is the first thing we do in the indexing chapter.
 
-The payoff of all this is one point worth stating plainly: **the foreign key moves orphan-prevention out of your application code and down to the database boundary.** Without it, every code path that inserts a line item has to first check "does this invoice exist?", and the one path that forgets ships the bug. With it, the question is unnecessary, because a bad write would have failed before your code ran. The next lesson extends this same idea to uniqueness and value checks: the database is the last line of defense, not the first thing you skip.
+All three add up to one payoff: **the foreign key moves orphan-prevention out of your application code and down to the database boundary.** Without it, every code path that inserts a line item has to first check "does this invoice exist?", and the one path that forgets to check ships the bug. With it, the question is unnecessary, because a bad write would have failed before your code ran. The next lesson extends this same idea to uniqueness and value checks: the database is the last line of defense, so it's not something you can skip.
 
 There's one shape you'll see named but rarely write: a foreign key that spans *multiple* columns uses the table-level `foreignKey({ columns, foreignColumns })` helper instead of `.references()`. Because every table in this course keys on a single surrogate `id`, single-column foreign keys are almost always the shape you want. Recognize the multi-column form, but don't reach for it.
 
@@ -51,17 +51,17 @@ This guarantee, that every foreign-key value points at a real row, is <Term defi
 
 ## Choosing what happens on delete: the four ON DELETE rules
 
-Now for the decision. `onDelete` controls one specific moment: what Postgres does to the **child** rows when the **parent** row they point at gets deleted. There are four possible answers, and choosing between them is a modeling call. It comes from the *meaning* of the relationship, not from a default you accept without looking.
+With the link in place, you can make the deletion decision. `onDelete` controls one specific moment: what Postgres does to the **child** rows when the **parent** row they point at gets deleted. There are four possible answers, and choosing between them is a modeling call. The right answer comes from the *meaning* of the relationship, not from a default you accept without looking.
 
-- **`cascade`** deletes the children too. Reach for it when the child **has no meaning without its parent**: a line item under an invoice, a junction row under either table it joins. This is the *ownership* relationship. The check is blunt: if the parent is gone, is the child garbage? If yes, cascade.
+- **`cascade`** deletes the children too. Reach for it when the child **has no meaning without its parent**: a line item under an invoice, a junction row under either table it joins. This is the *ownership* relationship. The test is simple: if the parent is gone, is the child now worthless? If so, cascade.
 
-- **`set null`** keeps the child but nulls out its pointer. Reach for it when the relationship is **optional and orphaning is exactly what you want**: an invoice's `assignedToId` when the assigned user is offboarded. The invoice survives, just unassigned now. This **requires the column to be nullable** (no `.notNull()`), and that's not a quirk: calling `set null` on a `.notNull()` column is a contradiction Postgres will reject, because the rule's whole job is to write a null the column forbids. This is why last lesson's `assignedToId` was left nullable.
+- **`set null`** keeps the child but nulls out its pointer. Reach for it when the relationship is **optional and orphaning is exactly what you want**: an invoice's `assignedToId` when the assigned user is offboarded. The invoice survives, now unassigned. This **requires the column to be nullable** (no `.notNull()`). Calling `set null` on a `.notNull()` column is a contradiction that Postgres will reject, since the rule's whole job is to write a null that the column forbids. This is why last lesson's `assignedToId` was left nullable.
 
-- **`restrict`** **blocks the delete** while any child still exists. Reach for it when removing the parent out from under live children would be a mistake the system should refuse: an organization that still has invoices. The delete throws, and whoever wanted it gone must remove or reassign the children first. Far more often, you soft-delete the parent instead, which is the next section. One subtlety is worth spelling out, because the default is easy to get wrong: if you write *no* `onDelete` clause at all, Postgres doesn't fall back to `restrict`. It falls back to <Term definition="Postgres's implicit ON DELETE default when no clause is written. Like restrict, it blocks the delete while children exist — but its check can be deferred to the end of the transaction. The course writes restrict explicitly instead.">`NO ACTION`</Term>, a near-twin that also blocks but defers its check to the end of the transaction rather than checking immediately per statement. The course always writes `restrict` explicitly, so the blocking intent is on the page instead of inferred from an omission. The deferred-versus-immediate difference between the two is out of scope.
+- **`restrict`** **blocks the delete** while any child still exists. Reach for it when removing the parent out from under live children would be a mistake the system should refuse: an organization that still has invoices. The delete throws, and whoever wanted it gone must remove or reassign the children first. Far more often, you soft-delete the parent instead, which is the next section. One subtlety is easy to get wrong, so it's worth spelling out: if you write *no* `onDelete` clause at all, Postgres doesn't fall back to `restrict`. It falls back to <Term definition="Postgres's implicit ON DELETE default when no clause is written. Like restrict, it blocks the delete while children exist — but its check can be deferred to the end of the transaction. The course writes restrict explicitly instead.">`NO ACTION`</Term>, a near-twin that also blocks but defers its check to the end of the transaction rather than checking immediately per statement. The course always writes `restrict` explicitly, so the blocking intent is on the page rather than inferred from an omission. The deferred-versus-immediate difference between the two is out of scope.
 
 - **`set default`** sets the child's pointer to a column default. It exists for completeness, but it needs a sentinel default row to point at and rarely earns that wiring. Know the name; you'll almost never use it.
 
-That's the menu. The harder skill is the *order* you ask the questions in, because the rule falls out of the answers. Walk this decision: each branch commits to the next question, and the leaf names the rule plus its canonical example.
+Those are the four options. The harder skill is the *order* you ask the questions in, because the rule falls out of the answers. Walk this decision tree: each branch commits to the next question, and the leaf names the rule plus its canonical example.
 
 <StateMachineWalker title="Which onDelete rule does this relationship want?">
   <Question id="ownership" prompt="Does the child row mean anything once its parent is deleted?"
@@ -86,7 +86,7 @@ That's the menu. The harder skill is the *order* you ask the questions in, becau
   </Question>
 
   <Leaf id="leaf-cascade" verdict="onDelete: 'cascade'">
-    Delete the children with the parent. The child is *owned*: it's garbage the moment the parent is gone. Example: `invoiceLineItems.invoiceId → invoices.id`. Watch how far the delete reaches when the graph branches: cascading an org could sweep its invoices, their line items, and their tags.
+    Delete the children with the parent. The child is *owned*: it's worthless the moment the parent is gone. Example: `invoiceLineItems.invoiceId → invoices.id`. Note how far the delete can reach when the graph branches: cascading an org could sweep away its invoices, their line items, and their tags.
   </Leaf>
 
   <Leaf id="leaf-restrict" verdict="onDelete: 'restrict'">
@@ -102,7 +102,7 @@ That's the menu. The harder skill is the *order* you ask the questions in, becau
   </Leaf>
 </StateMachineWalker>
 
-The whole lesson lives in that question order, ownership then blockability then nullability, not in any single leaf. Memorizing a lookup table of four rules ages badly; internalizing the order means you can derive the right rule for a relationship you've never seen.
+What matters most is that question order, ownership then blockability then nullability, rather than any single leaf. Memorizing a lookup table of four rules ages badly. Internalizing the order means you can derive the right rule for a relationship you've never seen before.
 
 ## `onUpdate`, and why this course never needs it
 
@@ -112,14 +112,14 @@ The whole lesson lives in that question order, ownership then blockability then 
 
 Cascade quietly assumes something you should question: that the parent is **hard-deleted**, the row physically removed with a `DELETE` statement. In a lot of SaaS, that's the rare path.
 
-The common path is **soft delete**. Instead of removing the row, you stamp it with a `deletedAt` timestamp, the nullable column already sitting in your `db/columns.ts` from the column-modifiers lesson. The row stays in the table, and your queries learn to filter out the stamped ones, so the record is gone from the user's point of view but still recoverable, auditable, and present for anything that references it historically. Here's the part that reframes everything you just learned: because the row is never `DELETE`d, **`onDelete` never fires**. On the soft-delete path, `cascade` and `restrict` are simply irrelevant, because they're rules about a statement you're not running.
+The common path is **soft delete**. Instead of removing the row, you stamp it with a `deletedAt` timestamp, the nullable column already sitting in your `db/columns.ts` from the column-modifiers lesson. The row stays in the table, and your queries learn to filter out the stamped ones. The record is then gone from the user's point of view but still recoverable, auditable, and present for anything that references it historically. This is the part that reframes everything you just learned: because the row is never `DELETE`d, **`onDelete` never fires**. On the soft-delete path, `cascade` and `restrict` are simply irrelevant, because they're rules about a statement you're not running.
 
 So the senior split is a per-table decision about *which kind of deletion a table even gets*:
 
 - **Hard delete with cascade** for genuinely scrubbing a relationship graph: tenant offboarding, where an org and everything it owns must be permanently erased (a GDPR deletion request, say), or ephemeral owned children where no audit trail matters.
 - **Soft delete** for almost everything user-facing: invoices, customers, anything where "deleted" has to be recoverable or referenced later. Here `onDelete` is a backstop for the rare true purge, not the everyday path.
 
-The reconciliation people miss is that declaring `onDelete: 'cascade'` and soft-deleting are **not in conflict**. The foreign-key rule defines what happens *if* a hard delete ever runs: a purge job, an admin action, a GDPR erase. Your normal application flow soft-deletes, so the rule simply doesn't trigger. You still choose `onDelete` deliberately for every foreign key, even in a soft-delete-first app, because you're choosing what the rare purge does, not what your everyday delete does.
+The point people miss is that declaring `onDelete: 'cascade'` and soft-deleting are **not in conflict**. The foreign-key rule defines what happens *if* a hard delete ever runs, whether that's a purge job, an admin action, or a GDPR erase. Your normal application flow soft-deletes, so the rule simply doesn't trigger. You still choose `onDelete` deliberately for every foreign key, even in a soft-delete-first app, because you're choosing what the rare purge does, not what your everyday delete does.
 
 :::note
 Choose `onDelete` for the purge that *might* happen; choose soft delete for the deletes that *actually* happen day to day.
@@ -133,7 +133,7 @@ The mechanics of soft delete all belong to the soft-delete chapter later in the 
 
 ## Wiring an invoice's relationships end to end
 
-Time to put the decision to work on real tables. The point of this example is easy to miss until you see it: **one entity can legitimately carry three different `onDelete` rules at once**, because the rule is per-edge, not per-table. Here's `invoices` and its line items with every foreign key wired. Step through it: each step lands on one foreign key, its rule, and the one question from the walker that picked it.
+Now you can put the decision to work on real tables. The point of this example is that **one entity can legitimately carry three different `onDelete` rules at once**, because the rule is per-edge, not per-table. Here's `invoices` and its line items with every foreign key wired. Each step below lands on one foreign key, its rule, and the one question from the walker that picked it.
 
 <AnnotatedCode lang="ts" maxLines={18} code={`
 export const invoices = pgTable('invoices', {
@@ -168,11 +168,11 @@ export const invoiceLineItems = pgTable('invoice_line_items', {
   </AnnotatedStep>
 </AnnotatedCode>
 
-One table, three rules: `restrict`, `set null`, and `cascade`, each correct for its own edge. That's the key idea of this section.
+One table, three rules: `restrict`, `set null`, and `cascade`, each correct for its own edge.
 
-Two threads are worth pulling, briefly. There's a fourth relationship coming: invoices and tags are many-to-many, joined through an `invoiceTags` table whose two foreign keys both `cascade`, because a junction row is owned by *both* endpoints, so it should vanish when either goes. Building that junction is the next lesson's job; just note the cascade-on-both for now. And notice `organizationId` again: every tenant-owned table will carry exactly this `restrict` foreign key to `organizations`. It's where multi-tenancy *starts* in the schema. Actually *enforcing* that an org only ever sees its own rows is a query-layer concern much later in the course. For now, the foreign key is the seed.
+Two more threads are worth pulling, briefly. There's a fourth relationship coming: invoices and tags are many-to-many, joined through an `invoiceTags` table whose two foreign keys both `cascade`, because a junction row is owned by *both* endpoints, so it should vanish when either one goes. Building that junction is the next lesson's job; just note the cascade-on-both for now. Notice `organizationId` again, too: every tenant-owned table will carry exactly this `restrict` foreign key to `organizations`. It's where multi-tenancy *starts* in the schema. Actually *enforcing* that an org only ever sees its own rows is a query-layer concern much later in the course. For now, the foreign key is the seed.
 
-One last reminder in context, since it matters here specifically: deleting an org has to scan `invoices` for matching `organizationId` rows to apply that `restrict` check, and with no index on the column, that's a full-table scan. The indexing chapter fixes it; the issue is just easier to see now that you can see the relationship it slows down.
+One last reminder, since it matters here specifically: deleting an org has to scan `invoices` for matching `organizationId` rows to apply that `restrict` check, and with no index on the column, that's a full-table scan. The indexing chapter fixes it; the issue is just easier to picture now that you can see the relationship it slows down.
 
 ## Practice: enforce the relationships
 

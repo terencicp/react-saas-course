@@ -20,27 +20,31 @@ import { CardGrid } from '@astrojs/starlight/components';
 
 <CourseProgressBar value={frontmatter['course-progress']} />
 
-In the last lesson, a foreign key made Postgres refuse a row that pointed at a parent that didn't exist. Checking for orphans stopped being something your code had to remember and became something the database does on every write, no matter who is writing. The same move applies to a whole other family of rules: no two organizations may share a URL slug, an invoice total may never drop below zero, a customer's billing email is unique even across capitalization. Each of these is a promise about your data, and this lesson turns on a single question: which of those promises matter enough that no stray code path may break them? Those stray paths are real: a hand-written migration, a seed script, a `psql` session at 2am, a branch some future you forgets to validate. The two tools for making the database keep those promises are `UNIQUE` and `CHECK`. They sit beneath your application validation as a safety net, not as a replacement for it.
+In the last lesson, a foreign key made Postgres refuse a row that pointed at a parent that didn't exist. Checking for orphans stopped being something your code had to remember and became something the database does on every write, no matter who is writing. The same move applies to a whole other family of rules: no two organizations may share a URL slug, an invoice total may never drop below zero, a customer's billing email stays unique even across capitalization. Each of these is a promise about your data, and this lesson turns on one question: which of those promises matter enough that no stray code path may break them?
+
+Those stray paths are real. A hand-written migration, a seed script, a late-night `psql` session, a branch some future version of you forgets to validate: any of them can write directly to a table. The two tools for making the database keep its promises against all of them are `UNIQUE` and `CHECK`. They sit beneath your application validation as a safety net, not as a replacement for it.
 
 ## A constraint is the rule a stray code path can't skip
 
-One asymmetry drives everything in this lesson. Application validation only runs on the path that calls it. You write a Zod schema in a Server Action, and that schema guards that action well, with friendly field-level errors. It does nothing for a raw `INSERT` in a migration, nothing for a seed script, and nothing for a second service hitting the same database or for next quarter's feature that writes to the table through a code path nobody thought to wire the validator into. Each of those is a door the validator isn't standing in front of.
+One asymmetry drives everything in this lesson: application validation only runs on the path that calls it. You write a Zod schema in a Server Action, and that schema guards that action well, with friendly field-level errors. But it does nothing for a raw `INSERT` in a migration, nothing for a seed script, and nothing for a second service hitting the same database or for next quarter's feature that writes to the table through a code path nobody thought to wire the validator into. The validator guards one entrance, and the table has many.
 
-A database constraint stands in front of every door. It runs on every write, from every source, and you cannot bypass it without physically dropping the constraint. That difference, one path versus all paths, is the whole story.
+A database constraint guards all of them. It runs on every write, from every source, and you cannot bypass it without physically dropping the constraint. That difference, one path versus all paths, is the whole story.
 
-So the question is never "Zod or a constraint?" You want both, doing different jobs. Zod handles the <Term definition="The behaviour and feedback a person experiences while using the product — here, the friendly error shown next to the right form field, caught before a round-trip to the server.">user experience</Term>: a clean "Slug already taken" tied to the right form field, caught before the round-trip, so the person filling out the form gets an instant, specific answer. The constraint provides the guarantee: the floor under every writer, the thing that makes the rule true rather than merely usually true. The habit to build is to keep any rule that must always hold in the schema, not only in the validator. Reach for a constraint whenever a broken <Term definition="A rule about the data that must hold for every row, at all times, no matter who or what writes it.">invariant</Term> would corrupt your data, not merely produce a poor error message.
+So the question is never "Zod or a constraint?" You want both, doing different jobs. Zod handles the <Term definition="The behaviour and feedback a person experiences while using the product — here, the friendly error shown next to the right form field, caught before a round-trip to the server.">user experience</Term>: a clean "Slug already taken" tied to the right form field, caught before the round-trip, so the person filling out the form gets an instant, specific answer. The constraint provides the guarantee: it is the floor under every writer, the thing that makes the rule true rather than merely usually true.
 
-One practical consequence is worth holding onto now. When a constraint fires from your application code, Postgres throws an error that carries the <Term definition="A rule the database itself enforces on every write — as opposed to a check the application code performs.">constraint</Term>'s name. That's why naming constraints well matters: your action layer catches that error, reads the name, and maps it back to a friendly field error ("That slug is taken"). You'll wire that mapping up much later, when you write Server Actions. For now, just know the name does real work, and we'll name every constraint we create.
+The habit to build from this is to keep any rule that must always hold in the schema, not only in the validator. Reach for a constraint whenever a broken <Term definition="A rule about the data that must hold for every row, at all times, no matter who or what writes it.">invariant</Term> would corrupt your data, rather than merely produce a poor error message.
+
+One practical consequence is worth holding onto now. When a constraint fails from your application code, Postgres throws an error that carries the <Term definition="A rule the database itself enforces on every write — as opposed to a check the application code performs.">constraint</Term>'s name. That is why naming constraints well matters: your action layer catches that error, reads the name, and maps it back to a friendly field error ("That slug is taken"). You'll wire that mapping up much later, when you write Server Actions. For now, just know the name does real work, so we'll name every constraint we create.
 
 This is the schema-as-source-of-truth principle you met at the start of this chapter, now extended from shapes to invariants. It carries the same point the foreign-key lesson made: the database is the last line of defense.
 
 ## UNIQUE: no two rows share this value
 
-A `UNIQUE` constraint says that this value, or this combination of values, appears at most once in the table. That sounds like one rule, but in a real SaaS schema it shows up in four distinct shapes, each answering a slightly different question. We'll work through them from simplest to most involved, and each one is motivated by a concrete invariant the invoicing domain actually has.
+A `UNIQUE` constraint says that a value, or a combination of values, appears at most once in the table. That sounds like one rule, but in a real SaaS schema it shows up in four distinct shapes, each answering a slightly different question. We'll work through them from simplest to most involved, with each one motivated by a concrete invariant the invoicing domain actually has.
 
 ### Single-column: unique across the whole table
 
-Start with the plainest case. Say you add a `tags` table for labelling invoices, and a tag's `slug` has to be unique across the entire table: exactly one `urgent` tag, one `paid` tag. You declare that by chaining `.unique()` onto the column:
+Start with the plainest case. Say you add a `tags` table for labelling invoices, and a tag's `slug` has to be unique across the entire table: exactly one `urgent` tag, one `paid` tag. You declare that by chaining `.unique()` onto the column.
 
 ```ts title="db/schema.ts"
 slug: text().notNull().unique(),
@@ -48,20 +52,20 @@ slug: text().notNull().unique(),
 
 That one modifier does two things. It creates the UNIQUE constraint, and it creates a backing unique index, which means lookups on `slug` are fast. This is the same way a primary key gives you a fast index for free, which you saw in the primary-key lesson. A unique on a non-PK column works the same way: correctness and a fast index in one declaration.
 
-That declaration takes an optional argument, a name, as in `.unique('tags_slug_unique')`, and once a schema settles you should always supply it. There are two reasons, and you already know one of them: the name surfaces in the violation error, so it's what your action layer keys off later. The other is hygiene. Drizzle auto-generates a name when you don't supply one, and those auto-names are derived from column position, so they rotate whenever you reorder columns and turn your migration diffs into noise. The convention shape is `<table>_<column>_unique`.
+That declaration takes an optional name, as in `.unique('tags_slug_unique')`, and once a schema settles you should always supply it. There are two reasons, and you already know one of them: the name surfaces in the violation error, so it's what your action layer keys off later. The other is hygiene. When you don't supply a name, Drizzle generates one from the column's position, so the name rotates whenever you reorder columns and turns your migration diffs into noise. The convention is `<table>_<column>_unique`.
 
 ### Composite: unique within a tenant
 
-This is the shape you'll reach for most. Add a `pages` table where each organization can build its own marketing or docs pages, and a page has a `slug`. Should that slug be unique across the whole table? No. Acme and Globex should both be allowed a page called `home`. The slug only needs to be unique within an organization.
+This is the shape you'll reach for most. Add a `pages` table where each organization can build its own marketing or docs pages, and a page has a `slug`. Should that slug be unique across the whole table? No: Acme and Globex should both be allowed a page called `home`. The slug only needs to be unique within an organization.
 
-That's a **composite unique**: uniqueness over a combination of columns, here `(organizationId, slug)`. You declare it at the table level, in the third argument to `pgTable`, using the same `(t) => [...]` array shape you used for composite primary keys and foreign keys:
+That's a **composite unique**: uniqueness over a combination of columns, here `(organizationId, slug)`. You declare it at the table level, in the third argument to `pgTable`, using the same `(t) => [...]` array shape you used for composite primary keys and foreign keys.
 
 <CodeVariants>
   <CodeVariant label="Global unique">
     ```ts title="db/schema.ts"
     (t) => [unique('pages_slug_unique').on(t.slug)]
     ```
-    **A slug is unique across the entire table.** Only one `home` page can ever exist, no matter which org owns it. In a multi-tenant app this is almost always a modeling bug, because it stops two different customers from picking the same slug.
+    **A slug is unique across the entire table.** Only one `home` page can ever exist, no matter which org owns it. In a multi-tenant app this is almost always a modeling mistake, because it stops two different customers from picking the same slug.
   </CodeVariant>
 
   <CodeVariant label="Unique per org">
@@ -72,29 +76,29 @@ That's a **composite unique**: uniqueness over a combination of columns, here `(
     ```
 
     </div>
-    **A slug is unique within an organization.** Acme and Globex can each own a `home` page, but neither can own two. Adding the tenant column to the uniqueness key is the multi-tenant default; reach for it any time the value belongs to an org.
+    **A slug is unique within an organization.** Acme and Globex can each own a `home` page, but neither can own two. Adding the tenant column to the uniqueness key is the multi-tenant default. Reach for it any time the value belongs to an org.
   </CodeVariant>
 </CodeVariants>
 
-The point inside that second variant is worth dwelling on, because experienced engineers internalize it and beginners miss it: in a multi-tenant app, uniqueness almost always carries the tenant column. A bare global unique on a value that belongs to a customer is usually wrong, because it leaks one tenant's choices into another's namespace. When you write a unique, the first question is "unique within what?" and the answer is usually "within the org."
+The point inside that second variant is worth dwelling on, because it's easy to miss: in a multi-tenant app, uniqueness almost always carries the tenant column. A bare global unique on a value that belongs to a customer is usually wrong, because it leaks one tenant's choices into another's namespace. When you write a unique, the first question is "unique within what?", and the answer is usually "within the org."
 
 ### The NULL ≠ NULL trap
 
-This is the most important thing to understand about `UNIQUE`, and it surprises nearly everyone the first time it bites. It bites hardest on composite uniques, so this is where we meet it.
+There's one behavior of `UNIQUE` that surprises nearly everyone the first time they hit it, and it shows up most often on composite uniques, so this is where we meet it.
 
-In SQL, `NULL` is never equal to `NULL`. Two NULLs are not the same value; they're treated as unknown, and two unknowns can't be proven equal. A unique constraint inherits that rule directly: it treats every NULL as distinct from every other NULL. So a `UNIQUE (organization_id, slug)` does not stop you from inserting unlimited rows where `slug` is `NULL` under the same org. The unique waves them all through, because as far as it's concerned, no two of those rows are duplicates.
+In SQL, `NULL` is never equal to `NULL`. Two NULLs are not the same value; they're treated as unknown, and two unknowns can't be proven equal. A unique constraint inherits that rule directly: it treats every NULL as distinct from every other NULL. So a `UNIQUE (organization_id, slug)` does not stop you from inserting unlimited rows where `slug` is `NULL` under the same org. The unique lets them all through, because as far as it's concerned, no two of those rows are duplicates.
 
-Read the table below. It shows a set of rows being inserted against a `pages` table with a `UNIQUE (organization_id, slug)`, and the right column marks which ones the constraint accepts and which it rejects.
+The table below shows a set of rows being inserted against a `pages` table with a `UNIQUE (organization_id, slug)`, and the right column marks which ones the constraint accepts and which it rejects.
 
 <NullNotDistinct />
 
-The lesson is in those last two NULL rows both slipping through; a sentence about it never sticks the way the table does. So what do you do about it?
+The point to take away is that those last two NULL rows both slip through. So what do you do about it?
 
-Usually nothing, because the right answer is upstream. If a column genuinely can't be blank, make it `.notNull()`, and the question of what happens when it's NULL never arises. That's the not-null-by-default habit from the column-modifiers lesson paying off: a not-null column has no NULLs for the unique to wave through. When you do need the column nullable but still want two NULLs to count as equal, Postgres 15 and up gives you an escape hatch: `nullsNotDistinct()` chained onto the unique tells it to treat NULLs as duplicates after all. It exists, but you'll reach for it rarely. The common, boring fix is to make the column not-null.
+Usually nothing, because the right answer is upstream. If a column genuinely can't be blank, make it `.notNull()`, and the question of what happens when it's NULL never arises. That's the not-null-by-default habit from the column-modifiers lesson paying off: a not-null column has no NULLs for the unique to let through. When you do need the column nullable but still want two NULLs to count as equal, Postgres 15 and up gives you an escape hatch: `nullsNotDistinct()` chained onto the unique tells it to treat NULLs as duplicates after all. It exists, but you'll reach for it rarely. The common, boring fix is to make the column not-null.
 
 ### Case-insensitive: `ada@example.com` is `Ada@example.com`
 
-Here's an invariant a plain unique gets subtly wrong. Put a `.unique()` on a `users.email` column and Postgres will happily let `ada@example.com` and `Ada@example.com` both exist. To a plain unique they're different strings, so they become two different accounts for the same person. That's not the rule you meant. You meant that this email is unique regardless of capitalization.
+Here's an invariant a plain unique gets subtly wrong. Put a `.unique()` on a `users.email` column and Postgres will let `ada@example.com` and `Ada@example.com` both exist. To a plain unique they're different strings, so they become two different accounts for the same person. That's not the rule you meant. You meant that the email is unique regardless of capitalization.
 
 You set up the machinery for this earlier without using it. In the column-modifiers lesson, the `users` table got an `emailLowercased` column, a STORED generated column that always holds `lower(email)`, kept in sync by Postgres automatically. We deferred the payoff to this lesson, and here it is: the uniqueness goes on `emailLowercased`. Because that column always holds the lowercased form, a plain unique on it makes `ada@example.com` and `Ada@example.com` collide, which is exactly what you want.
 
@@ -109,7 +113,7 @@ emailLowercased: text()
 
 </div>
 
-Why this shape and not something cleverer? Because `emailLowercased` is a real, readable column. Your app can `select` it, sort on it, and show it, and the unique is an ordinary column unique with no special machinery. Drizzle's official docs reach for a different pattern: a functional unique index built directly on the `lower()` expression, with no extra column. Both are correct and give the identical guarantee, but they trade off differently. Here's the comparison:
+Why this shape rather than something more compact? Because `emailLowercased` is a real, readable column. Your app can `select` it, sort on it, and show it, and the unique is an ordinary column unique with no special machinery. Drizzle's official docs reach for a different pattern: a functional unique index built directly on the `lower()` expression, with no extra column. Both are correct and give the identical guarantee, but they trade off differently. Here's the comparison.
 
 <CodeVariants>
   <CodeVariant label="Generated column (course default)">
@@ -132,17 +136,19 @@ Why this shape and not something cleverer? Because `emailLowercased` is a real, 
     // the table-level (t) => [...] argument on users
     (t) => [uniqueIndex('users_email_lower_unique').on(lower(t.email))]
     ```
-    **No extra column.** The uniqueness lives on the `lower(email)` expression directly, via a small `lower()` helper. The cost is that a query has to repeat the same `lower(email)` at every lookup site to actually use the index, or it silently falls back to a slow scan. That repetition is the functional-index gotcha.
+    **No extra column.** The uniqueness lives on the `lower(email)` expression directly, via a small `lower()` helper. The cost is that every query has to repeat the same `lower(email)` at its lookup site to actually use the index; if it doesn't, the query falls back to a slow scan with no warning. That repetition is the catch with a functional index.
   </CodeVariant>
 </CodeVariants>
 
-Take two things from that comparison. First, the course standardizes on the generated column for readability. The functional index is shown so you recognize it in the wild, not because you should switch to it. Second, notice the new tool in the functional-index variant: `uniqueIndex`, as opposed to the `unique()` constraint. A unique index and a unique constraint give the same correctness guarantee. You reach for the index form specifically when uniqueness is over an expression (like `lower(email)`) or over a subset of rows, which is the next and last shape we'll cover. The bigger story of indexes for performance is its own topic in a later chapter. Here, an index is just the form a unique takes when a plain `unique()` can't express it.
+There are two things to take from that comparison. First, the course standardizes on the generated column for readability. The functional index is shown so you recognize it in the wild, not because you should switch to it.
+
+Second, notice the new tool in the functional-index variant: `uniqueIndex`, as opposed to the `unique()` constraint. A unique index and a unique constraint give the same correctness guarantee. You reach for the index form specifically when uniqueness is over an expression (like `lower(email)`) or over a subset of rows, which is the next and last shape we'll cover. The bigger story of indexes for performance is its own topic in a later chapter. Here, an index is just the form a unique takes when a plain `unique()` can't express it.
 
 ### Partial: unique among a subset of rows
 
-Here is the last shape. Add a `contacts` table where an organization has many contacts and exactly one of them is the primary contact. So there's an `isPrimary` boolean, and the rule is at most one row per org with `isPrimary = true`. Many contacts can be non-primary; only the primary one is constrained.
+This is the last shape. Add a `contacts` table where an organization has many contacts and exactly one of them is the primary contact. There's an `isPrimary` boolean, and the rule is at most one row per org with `isPrimary = true`. Many contacts can be non-primary; only the primary one is constrained.
 
-A plain composite unique can't say this. `UNIQUE (organization_id, isPrimary)` would forbid an org from having two non-primary contacts as well, which is nonsense. What you want is a unique that only looks at the rows where `isPrimary` is true. That's a <Term definition="An index — here a unique one — that includes only the rows matching a WHERE predicate, so the rule it enforces applies to that subset of rows only.">partial index</Term>: a unique index with a `.where(...)` predicate.
+A plain composite unique can't express this. `UNIQUE (organization_id, isPrimary)` would also forbid an org from having two non-primary contacts, which isn't the rule you want. What you need is a unique that only looks at the rows where `isPrimary` is true. That's a <Term definition="An index — here a unique one — that includes only the rows matching a WHERE predicate, so the rule it enforces applies to that subset of rows only.">partial index</Term>: a unique index with a `.where(...)` predicate.
 
 <div data-mark-color="blue">
 
@@ -156,13 +162,13 @@ A plain composite unique can't say this. `UNIQUE (organization_id, isPrimary)` w
 
 </div>
 
-The `.where` clause tells Postgres to include only the rows satisfying the predicate in the index. So uniqueness on `organizationId` is enforced only among primary contacts; every non-primary row is invisible to this index and exempt from the rule. Notice this has to be a unique index, not a unique constraint, because constraints can't be partial. That's the second time the index form earns its keep: expressions and subsets.
+The `.where` clause tells Postgres to include only the rows satisfying the predicate in the index. So uniqueness on `organizationId` is enforced only among primary contacts; every non-primary row is outside this index and exempt from the rule. This has to be a unique index, not a unique constraint, because constraints can't be partial. So that's the second case where you need the index form rather than `unique()`: expressions, and now subsets of rows.
 
-There's one other classic use of partial uniques worth naming so you recognize it later: soft delete. When you don't truly delete a row but mark it with a `deletedAt` timestamp, a partial unique like `UNIQUE (organization_id, slug) WHERE deleted_at IS NULL` lets a slug be reused once the old row is tombstoned, because the dead row drops out of the index and frees its slug. You met `deletedAt` already as a column; the full lifecycle of soft delete comes much later in the course. For now it's enough to know that partial uniques are how that pattern is built.
+There's one other classic use of partial uniques worth naming so you recognize it later: soft delete. When you don't truly delete a row but mark it with a `deletedAt` timestamp, a partial unique like `UNIQUE (organization_id, slug) WHERE deleted_at IS NULL` lets a slug be reused once the old row is marked deleted, because the deleted row drops out of the index and frees its slug. You've already met `deletedAt` as a column; the full lifecycle of soft delete comes much later in the course. For now it's enough to know that partial uniques are how that pattern is built.
 
 ## CHECK: every row must satisfy this predicate
 
-`UNIQUE` polices duplication across rows. `CHECK` polices the contents of a single row. A `CHECK` constraint is a boolean <Term definition="A boolean expression Postgres evaluates per row — true means the row is allowed, false means the write is rejected.">predicate</Term> that Postgres evaluates on every insert and every update; if the row makes the predicate false, the write is rejected.
+`UNIQUE` governs duplication across rows. `CHECK` governs the contents of a single row. A `CHECK` constraint is a boolean <Term definition="A boolean expression Postgres evaluates per row — true means the row is allowed, false means the write is rejected.">predicate</Term> that Postgres evaluates on every insert and every update; if the row makes the predicate false, the write is rejected.
 
 You declare it at the table level, with a name and an `sql` expression. The canonical one for the invoicing domain is that an invoice's `amountDue` can never go negative.
 
@@ -170,31 +176,33 @@ You declare it at the table level, with a name and an `sql` expression. The cano
 (t) => [check('invoices_amount_due_nonneg', sql`${t.amountDue} >= 0`)]
 ```
 
-`amountDue` is the `numeric({ precision: 12, scale: 2 })` money column from the data-types lesson, and now no code path, validated or not, can write a negative total into it. There are three shapes you'll reach for a `CHECK` again and again:
+`amountDue` is the `numeric({ precision: 12, scale: 2 })` money column from the data-types lesson, and now no code path, validated or not, can write a negative total into it. There are three shapes you'll reach for `CHECK` again and again:
 
-- **Monetary positivity.** `amountDue >= 0`, as above. A negative balance is rarely a real state; usually it's a bug, and you want it rejected at the floor.
+- **Monetary positivity.** `amountDue >= 0`, as above. A negative balance is rarely a real state; usually it's a bug, and you want the database to reject it.
 - **Date ordering.** A billing period or a date range where the end must not precede the start: `` ${t.endDate} >= ${t.startDate} `` inside the `sql` template. This one is a relationship between two columns in the same row, something neither a type nor a unique can express.
-- **Bounded values.** A rating constrained to `1..5`, or a cap on an array column. `cardinality(tags) <= 10` on a `text().array()` column keeps the list from growing unbounded.
+- **Bounded values.** A rating constrained to `1..5`, or a cap on an array column. `cardinality(tags) <= 10` on a `text().array()` column keeps the list from growing without limit.
 
-There's a boundary here that trips people up. You can write a `CHECK` to constrain a column to a fixed set of strings, such as `status IN ('draft', 'sent', 'paid', 'void')`, and it works. But don't. For a fixed set of allowed values, `pgEnum` (from the data-types lesson) is the right tool: it enforces membership and hands you a TypeScript string-literal union for free, which a `CHECK` does not. The rule of thumb is to reach for `CHECK` to express ranges and relationships between columns, and for `pgEnum` to express membership in a fixed set. A `CHECK` that lists string literals is almost always an enum waiting to be one.
+There's a boundary here that trips people up. You can write a `CHECK` to constrain a column to a fixed set of strings, such as `status IN ('draft', 'sent', 'paid', 'void')`, and it works, but it isn't the right tool. For a fixed set of allowed values, reach for `pgEnum` (from the data-types lesson) instead: it enforces membership and also hands you a TypeScript string-literal union for free, which a `CHECK` does not. The rule of thumb is to use `CHECK` for ranges and relationships between columns, and `pgEnum` for membership in a fixed set. A `CHECK` that lists string literals is almost always an enum waiting to be written.
 
 <VideoCallout videoId="hjrQb029LEE" videoTitle="Mastering check constraints in Postgres to keep your database clean!">
-  Supabase walks through every `CHECK` shape in this lesson live (8 min): numeric positivity, two-column comparisons in one row, and the enum-vs-check trade-off, running each against real inserts.
+  Supabase walks through every `CHECK` shape from this lesson live (8 min): numeric positivity, two-column comparisons in one row, and the enum-vs-check trade-off, running each against real inserts.
 </VideoCallout>
 
-The Zod parallel from the principle section returns here, because length caps, numeric ranges, and regex patterns are also Zod's job at the boundary. Zod gives the friendly "Amount must be positive" before the round-trip; the `CHECK` guarantees it even when Zod is bypassed. Both are correct and do different jobs, the same split as before. One thing to flag now so it doesn't surprise you later: when you generate Zod schemas from your Drizzle schema, a few chapters on, that tool reads your columns and types, but it does **not** read your `CHECK` predicates. So if you want both the friendly message and the guarantee, you write the predicate twice, once as the `CHECK` here and once as a Zod refinement at the boundary. The `CHECK` does not propagate to your validation automatically.
+The Zod parallel from the principle section returns here, because length caps, numeric ranges, and regex patterns are also Zod's job at the boundary. Zod gives the friendly "Amount must be positive" before the round-trip; the `CHECK` guarantees it even when Zod is bypassed. Both are correct and do different jobs, the same split as before.
+
+One thing is worth flagging now so it doesn't surprise you later. A few chapters on, you'll generate Zod schemas from your Drizzle schema. That tool reads your columns and types, but it does **not** read your `CHECK` predicates. So a `CHECK` does not propagate to your validation on its own: if you want both the friendly message and the guarantee, you write the predicate twice, once as the `CHECK` here and once as a Zod refinement at the boundary.
 
 :::caution
-Keep `CHECK` expressions built from **column references** (`${t.amountDue}`) and literal SQL inside the tagged template. Don't interpolate a runtime JavaScript value into the predicate, because current Drizzle Kit can mis-generate the SQL when you do. The predicates in this lesson (`>= 0`, `endDate >= startDate`, `IN (...)` with literals) all stay on the safe side.
+Build `CHECK` expressions from **column references** (`${t.amountDue}`) and literal SQL inside the tagged template. Don't interpolate a runtime JavaScript value into the predicate, because current Drizzle Kit can generate the SQL incorrectly when you do. The predicates in this lesson (`>= 0`, `endDate >= startDate`, `IN (...)` with literals) all stay on the safe side.
 :::
 
 ## What constraints can't see: cross-row and cross-table rules
 
-There's a hard limit on both tools, and knowing where it sits keeps you from trying to make a constraint do a job it structurally can't. A `CHECK` sees exactly one row, the one being written. A `UNIQUE` sees one column-tuple's duplication. Neither can evaluate a rule that depends on other rows or other tables: "total outstanding per org stays under a credit limit", "an org has at most 5 active seats", "the sum of an invoice's line items equals its total." Every one of those needs to count or sum across rows the single-row check can't see.
+Both tools have a hard limit, and knowing where it sits keeps you from trying to make a constraint do a job it structurally can't. A `CHECK` sees exactly one row, the one being written. A `UNIQUE` sees the duplication of one set of column values. Neither can evaluate a rule that depends on other rows or other tables, such as "total outstanding per org stays under a credit limit", "an org has at most 5 active seats", or "the sum of an invoice's line items equals its total." Every one of those needs to count or sum across rows that a single-row check can't see.
 
-The reason isn't just that the syntax is missing. Enforcing those rules correctly requires reading the current aggregate and writing atomically, so a concurrent writer can't slip in between your read and your write and break the count. That's a transaction with application logic, a tool you'll meet in a later chapter on Drizzle. It is deliberately not a declarative constraint.
+The reason isn't only that the syntax is missing. Enforcing those rules correctly means reading the current aggregate and writing atomically, so that a concurrent writer can't slip in between your read and your write and break the count. That calls for a transaction with application logic, a tool you'll meet in a later chapter on Drizzle. It is deliberately not a declarative constraint.
 
-So here's the heuristic to leave with, and it cleanly partitions what goes in your schema from what goes in your application code: **if the rule can be checked by looking at the single row being written, it's a constraint; if it needs to count or sum across rows, it's transaction logic.**
+So here is the heuristic to leave with, and it cleanly divides what goes in your schema from what goes in your application code. **If the rule can be checked by looking at the single row being written, it's a constraint. If it needs to count or sum across rows, it's transaction logic.**
 
 ## Practice: push the invariants into the schema
 
@@ -333,7 +341,7 @@ The composite `unique` on `(organization_id, slug)` makes the slug unique within
 
 ## External resources
 
-The Drizzle docs cover the full `unique` / `uniqueIndex` / `check` surface, and there's a dedicated guide for the case-insensitive-email pattern, worth a look to see the functional-index approach as Drizzle officially documents it.
+The Drizzle docs cover the full `unique` / `uniqueIndex` / `check` surface, and there's a dedicated guide for the case-insensitive-email pattern. The guide is worth a look to see the functional-index approach as Drizzle officially documents it.
 
 <CardGrid>
   <ExternalResource
