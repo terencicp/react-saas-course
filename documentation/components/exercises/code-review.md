@@ -1,6 +1,6 @@
 # `CodeReview` + `ReviewFile` + `ReviewIssue` + `ReviewWhy`
 
-PR-style code-review exercise. The student sees a multi-file diff, clicks lines to leave inline review comments, and presses **Submit review**. Each on-line comment is sent to a local Ollama model that grades it against the issue's `kernel` — a short rubric phrase naming the single defect the senior reviewer would flag. The reveal panel shows ✓ (caught) or ✗ (missed) for every seeded plant.
+PR-style code-review exercise. The student sees a multi-file diff, clicks lines to leave inline review comments, and presses **Submit review**. Each on-line comment is sent to an AI model — via OpenRouter, using the reader's own key (shared with the AI chat) — that grades it against the issue's `kernel`, a short rubric phrase naming the single defect the senior reviewer would flag. The reveal panel shows ✓ (caught) or ✗ (missed) for every seeded plant.
 
 Two or more `<ReviewFile>` children render inside Starlight's `<Tabs>`; a single file renders inline. Lines display 1-based numbers counting every rendered line (ins + del + context).
 
@@ -52,8 +52,8 @@ No props. Optional overall debrief rendered above the issue list after submit.
 
 Two modes:
 
-- **Comments graded** (default, when Ollama is reachable) — every line that received at least one comment is sent to the model along with the `kernel` and a small code window around the target line. The model scores 0–10 against an "identifies the defect" rubric; ≥4 passes. Senior reveal text is **hidden** on caught rows in this mode (the student already nailed it).
-- **Lines graded** (fallback when Ollama is unreachable) — any comment on the correct line passes, regardless of substance. Senior reveal shows for every plant. The header reads "Lines graded".
+- **Comments graded** (default, when an OpenRouter key is set) — every line that received at least one comment is sent to the model along with the `kernel` and a small code window around the target line. The model scores 0–10 against an "identifies the defect" rubric; ≥4 passes. Senior reveal text is **hidden** on caught rows in this mode (the student already nailed it).
+- **Lines graded** (fallback when grading errors out) — any comment on the correct line passes, regardless of substance. Senior reveal shows for every plant. The header reads "Lines graded".
 
 A plant is "caught" iff at least one comment lands on its exact `file:line` (and passes the grader, in Comments mode). Plants with no comments on their line are always missed.
 
@@ -62,7 +62,7 @@ A plant is "caught" iff at least one comment lands on its exact `file:line` (and
 - `line` counts **every rendered line in source order**, including added/deleted lines (`ins=`, `del=`). The lesson author needs to count carefully when adding multi-line diffs.
 - `kernel` should be a single sentence naming the defect ("missing tenant-scope filter"), not a paragraph. The slot holds the paragraph.
 - The reveal panel's "missed" reveals can be educational on their own — students who skip a plant still learn what they should have flagged.
-- The grader requires a local Ollama at the URL configured in `src/lib/ollama.ts`. If the dev environment doesn't have it, every card silently degrades to "Lines graded".
+- The grader uses the shared OpenRouter client in `src/components/ai-chat/lib/exercise-feedback.ts` with the reader's BYOK key (the same one the AI chat stores). Submitting with comments but no key opens the chat panel to add one; if a graded request errors out, the card degrades to "Lines graded".
 
 ## Example
 

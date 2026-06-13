@@ -84,6 +84,9 @@ export type StreamRequest = {
 	model: string;
 	messages: { role: 'system' | 'user' | 'assistant'; content: string }[];
 	signal: AbortSignal;
+	/** Sampling temperature. Omitted from the request when undefined (the chat
+	 * leaves it unset; exercise grading pins it low for deterministic output). */
+	temperature?: number;
 };
 
 /** Streams completion deltas. Throws OpenRouterError on HTTP or mid-stream errors. */
@@ -92,6 +95,7 @@ export async function* streamChat({
 	model,
 	messages,
 	signal,
+	temperature,
 }: StreamRequest): AsyncGenerator<string> {
 	const res = await fetch(`${API}/chat/completions`, {
 		method: 'POST',
@@ -101,7 +105,12 @@ export async function* streamChat({
 			'Content-Type': 'application/json',
 			...attribution(),
 		},
-		body: JSON.stringify({ model, messages, stream: true }),
+		body: JSON.stringify({
+			model,
+			messages,
+			stream: true,
+			...(temperature !== undefined ? { temperature } : {}),
+		}),
 	});
 	if (!res.ok || !res.body) throw await errorFromResponse(res);
 

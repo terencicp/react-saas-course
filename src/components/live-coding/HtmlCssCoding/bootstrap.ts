@@ -222,7 +222,7 @@ function initCard(card: HTMLElement): void {
         void rebuild();
     });
 
-    // ---------- feedback (Ollama) ----------
+    // ---------- feedback (AI) ----------
 
     const isCodeChanged = (): boolean =>
         (Object.keys(views) as Lang[]).some(

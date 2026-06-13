@@ -1,8 +1,8 @@
 # `TextAnswer` + `AnswerWhy`
 
-Free-text answer drill. The student types a free-form answer into a textarea and presses **Submit answer**. A local Ollama model streams a one-paragraph verdict — the first word is `Pass.` or `Fail.` (driving the panel color and headline), the rest streams live into the panel as tokens arrive. The grader is told to weave the `<AnswerWhy>` explanation into its paragraph so the student walks away understanding the principle.
+Free-text answer drill. The student types a free-form answer into a textarea and presses **Submit answer**. An AI model — via OpenRouter, using the reader's own key (shared with the AI chat) — streams a one-paragraph verdict: the first word is `Pass.` or `Fail.` (driving the panel color and headline), the rest streams live into the panel as tokens arrive. The grader is told to weave the `<AnswerWhy>` explanation into its paragraph so the student walks away understanding the principle.
 
-If Ollama is unreachable or never produces a verdict word, the script falls back to **keyword grading**: any one string in the required `keywords` array appearing (case-insensitive substring) in the answer is enough to pass. The offline path streams the `<AnswerWhy>` text verbatim. The feedback panel labels which path was used (`Graded by AI` vs `Graded by keyword match`).
+If the request errors out or never produces a verdict word, the script falls back to **keyword grading**: any one string in the required `keywords` array appearing (case-insensitive substring) in the answer is enough to pass. The fallback path streams the `<AnswerWhy>` text verbatim. The feedback panel labels which path was used (`Graded by AI` vs `Graded by keyword match`). Submitting with no key instead opens the chat panel so the reader can add one, then re-submit.
 
 ## Imports
 

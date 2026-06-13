@@ -142,10 +142,10 @@ export interface DiagnoseOpts {
 }
 
 /**
- * Pre-computed pass/fail + a specific reason. Small local models (Ollama
- * gemma3, llama3) reliably hallucinate "perfect!" when asked to compare two
- * row dumps themselves; we do the comparison here and hand the AI the
- * verdict, which constrains its output much more reliably.
+ * Pre-computed pass/fail + a specific reason. Small or cheap models reliably
+ * hallucinate "perfect!" when asked to compare two row dumps themselves; we do
+ * the comparison here and hand the AI the verdict, which constrains its output
+ * much more reliably.
  */
 export function diagnoseRows(opts: DiagnoseOpts): string {
     const { actualRows, actualCols, expectedRows, ordered, error } = opts;
