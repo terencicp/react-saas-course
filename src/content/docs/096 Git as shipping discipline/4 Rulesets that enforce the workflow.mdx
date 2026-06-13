@@ -1,0 +1,337 @@
+---
+title: Rulesets that enforce the workflow
+tagline: GitHub branch rulesets, the settings that turn your pull-request workflow from a team norm into a rule the platform mechanically enforces.
+chapter-id: 96
+course-progress: 0.00005
+sidebar:
+  order: 4
+  label: Branch rulesets
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import TwoSurfaces from '../../../components/lessons/096/4/TwoSurfaces.astro';
+import MergeGateFunnel from '../../../components/lessons/096/4/MergeGateFunnel.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import Dropdowns from '../../../components/exercises/dropdowns/Dropdowns.astro';
+import DropdownChoice from '../../../components/exercises/dropdowns/DropdownChoice.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import { CardGrid, Steps } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The last three lessons taught you a workflow: trunk-based, short-lived branches off `main`, small reviewable pull requests, squash-merge, owners routed to the files they care about. All of it is *discipline* — a set of habits the team agrees to follow. And discipline holds right up until the one bad day it doesn't.
+
+Picture three of those days. A teammate spots a typo in `main`, fixes it locally, and force-pushes — and rewrites the commit history out from under everyone who had pulled, turning the next person's `git pull` into a mess of conflicts against commits that no longer exist. It's a Friday at 18:00, a customer-facing bug is live, someone pushes the fix straight to `main` with zero review, and the fix has its own bug. CI runs green on every pull request for a month, everyone trusts the checkmark — until you discover the checks were never actually wired to block a merge, so a PR with failing tests sailed through whenever someone clicked merge fast enough. None of these are exotic. They're the normal failure modes of a workflow that exists only as a team norm.
+
+The fix is not "be more careful." The fix is to make the rule *mechanically true* — to hand the workflow to a system that will refuse to let you break it. That's the spine of this lesson, and it's worth saying plainly: **a rule the platform won't let you violate beats a norm everyone hopes holds.** On GitHub the mechanism is a <Term definition="A named set of conditions a branch enforces, configured in the repo's settings. GitHub's newer replacement for branch protection rules.">ruleset</Term> — a named set of conditions a branch enforces, configured in the repo's settings. By the end you'll be able to stand up the six-rule baseline every production `main` runs, wire the CODEOWNERS file from the last lesson to the rule that finally gives it teeth, know which extra rules to reach for and when, and recognize the failure modes where a gate looks present but silently enforces nothing. The previous lesson left CODEOWNERS as a polite suggestion and promised the next one would make it binding. This is that lesson.
+
+## Rulesets, not branch protection rules
+
+One thing to clear up before anything else, because it'll confuse you the moment you open a tutorial: GitHub has *two* mechanisms for this same job. **<Term definition="GitHub's original per-branch enforcement mechanism, set up under Branches → Add rule. Still functional, but superseded by rulesets.">Branch protection rules</Term>** are the original. **Rulesets** are the newer replacement, and they're what a new repo surfaces in its settings UI today. This course teaches rulesets. Branch protection rules still work and aren't going anywhere soon, so plenty of older tutorials show a "Branches → Add rule" screen — when you hit one, don't panic. Both mechanisms enforce the same underlying primitives; an old tutorial is teaching the same concepts under an older UI, and the translation is mechanical.
+
+Why do rulesets win for a team building today? Three reasons, and you'll meet each of them in this lesson. One ruleset can target multiple branch patterns at once instead of one rule per branch. Rulesets *stack* — you can layer a loose org-wide ruleset under a stricter one on `main`. And a ruleset can carry a bypass list — named users or apps allowed to skip the rules, with every bypass written to an audit trail. That last one is the real judgment call, and we'll get to it.
+
+If you've used GitLab or Bitbucket, they have equivalents — push rules, merge-request approval rules — but the shapes differ enough that chasing all three would just dilute the point. This course teaches GitHub.
+
+## The two surfaces: `.github/` files and the ruleset
+
+Here's the single idea that makes everything in this lesson click, so slow down for it. Repo policy lives in *two different places*, and they behave completely differently. Get this split straight and every specific rule has an obvious home; miss it and you'll keep getting blindsided by a file you committed that doesn't seem to do anything.
+
+The first surface is the **`.github/` directory**. It lives in the repo tree, right alongside your code. It's version-controlled, so every change to it rides through the exact same pull request review as a change to a component. This is where *configuration* lives: `CODEOWNERS`, the `pull_request_template.md` you met last lesson, the `workflows/*.yml` files that will define your CI in the next chapter, a `dependabot.yml` for dependency updates. And the reason this stuff sits in-repo is itself the lesson: when a change to *who must review billing code* or *what checks CI runs* is a diff in a pull request, that change is reviewed, visible in history, and revertable like any other. Policy-as-config, reviewed like code.
+
+The second surface is **Repo Settings → Rules → Rulesets**. This one does *not* live in the repo tree. It lives in GitHub's settings, attached to the repo but not committed anywhere you can `git log`. This is where the *enforcement itself* lives — the active ruleset. Why does it sit apart from everything else? Because GitHub doesn't yet read a ruleset file out of your repo and apply it automatically. The active rule lives in settings, full stop. (Hold onto that gap — it's exactly why the "settings-as-code" option we'll name at the end can exist at all.)
+
+Now the relationship between the two, which is the whole point. The ruleset in settings *references* things defined in `.github/`. It names, by string, the CI checks that your `workflows/*.yml` produce. It flips on the `CODEOWNERS` file. The file is the *data* — it says who owns what. The rule is the *switch* — it decides whether that data actually blocks a merge. Neither does the job alone.
+
+<TwoSurfaces />
+
+Keep that picture in your head. Every rule we enable from here is either a file in the left zone, a switch in the right zone, or — the interesting cases — a switch on the right that only does anything because of a file on the left.
+
+## The minimum-viable ruleset for `main`
+
+Now the artifact. There's a baseline of six rules that essentially every production `main` runs, and they're not arbitrary — each one closes a specific hole. The cleanest way to learn them is one at a time, each paired with the single sentence that justifies it: *what breaks the day you don't have it.* The order isn't alphabetical; it builds. First the gate that makes a PR mandatory, then who has to bless it, then keeping that blessing honest, then the owners, then the machine checks, then the shape of history.
+
+<Steps>
+1. **Require a pull request before merging.** This disables direct pushes to `main` — the only way in is a PR. It's the keystone: without it, every rule below is optional, because someone can always sidestep the whole pull-request flow and push straight to the branch. Everything that follows only has anything to act on *because* changes now have to arrive as PRs.
+
+2. **Require approvals: 1.** At least one human other than the author must approve before merge. Be honest about team size here: on a two-person team you pair across each other's PRs and one approval works fine; on a true solo project there's no second person, so you either drop this rule with your eyes open or self-review and accept that "approval" is just you reading your own diff again — don't pretend a solo enforcement of human review is real. One more thing landed recently: a separate **Required reviewer rule** went GA — reached <Term definition="General availability: a feature is stable and fully released to all users, no longer a beta or preview.">general availability</Term>, meaning it's a stable, fully released feature, not a preview — in February 2026. It lets you require a number of approvals from specific *teams* on specific file or folder globs, with `!` to negate a path. Think of it as a policy layer on top of ownership: CODEOWNERS says who owns the billing code, this rule says "and two of them must sign off." They complement each other; they don't compete.
+
+3. **Dismiss stale pull request approvals when new commits are pushed.** A reviewer approved commit A. The author then pushed B and C. Without this rule, that stale approval still counts and B and C merge unreviewed — the green check no longer describes what's actually landing. Turning it on drops the approval the moment new commits arrive, forcing a fresh look. This is what makes the fixup-commit loop from the pull request lesson *structural* rather than merely polite: push changes after an approval and the approval is gone until someone re-reviews.
+
+4. **Require review from Code Owners.** This is the rule that finally gives the `CODEOWNERS` file its teeth, and it's the textbook example of the gap at the heart of this lesson. The file *alone* only auto-requests the owners as reviewers — and an auto-requested reviewer can be ignored; the PR merges without them. The file *plus this rule* means the named owners' approval is required to merge. Same file, completely different outcome, decided entirely by whether this switch is on.
+
+5. **Require status checks to pass before merging.** This is the CI gate. You list the <Term definition="A CI job whose result a ruleset requires before a PR can merge, named by its exact string. The check must report green for that name or the merge is blocked.">required status checks</Term> you require *by their exact name strings* — the four jobs the next chapter's CI produces are `typecheck`, `lint`, `test`, and `build` — and a PR can't merge until all four are green. There's a sub-decision worth understanding now: **<Term definition="Require branches to be up to date before merging. A PR must be rebased onto the latest main before its checks count, re-running CI every time main moves.">strict mode</Term>**, also labeled "require branches to be up to date before merging". With it on, a PR must be rebased onto the latest `main` before its checks count, which re-runs CI every time `main` moves. That pairs beautifully with the rebase workflow *when CI is fast* — a couple of minutes — but on a busy `main` with slow CI it makes every PR re-run the whole suite repeatedly and the team thrashes. So: enable strict mode when CI is fast (a few minutes), leave it off when CI is slow (10+ minutes) or `main` is busy enough to cause constant re-runs.
+
+6. **Require <Term definition="A commit history with no merge commits — a straight line of single-parent commits. Squash- or rebase-merging produces it; a merge commit breaks it.">linear history</Term>.** This forbids merge commits on `main`. It's the structural backstop for the squash-merge discipline: even with squash-merge configured as the team default, GitHub will still *offer* a "Create a merge commit" button unless this rule is on — and one teammate clicking it pollutes your clean one-commit-per-change history. With this rule, that button is gone. (Heads up: linear history requires squash or rebase merging to be enabled on the repo first. The squash-only setting from the pull request lesson already satisfies that — but if the toggle ever looks greyed out, this is why.)
+</Steps>
+
+That's the baseline. Six switches, six holes closed. But "six switches in a settings UI that will look different a year from now" is a fragile thing to learn from. So let's collapse all six into something stable: the ruleset as an *object*.
+
+A ruleset isn't only a set of checkboxes — GitHub can export it as JSON and import it back through its API. That JSON is the durable, inspectable truth behind the clicks. You will mostly *click* these settings rather than write JSON by hand, so don't read what follows as "the form you'll author" — read it as *what those six clicks actually produce*, the thing you could read, diff, or copy to another repo. Here's the exported ruleset, trimmed to the parts that matter (the real export carries more default fields).
+
+<AnnotatedCode lang="json" maxLines={18} code={`
+{
+  "name": "main",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": { "include": ["refs/heads/main"], "exclude": [] }
+  },
+  "rules": [
+    { "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 1,
+        "dismiss_stale_reviews_on_push": true,
+        "require_code_owner_review": true
+      }
+    },
+    { "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": false,
+        "required_status_checks": [
+          { "context": "typecheck" },
+          { "context": "lint" },
+          { "context": "test" },
+          { "context": "build" }
+        ]
+      }
+    },
+    { "type": "required_linear_history" },
+    { "type": "non_fast_forward" },
+    { "type": "deletion" }
+  ]
+}
+`}>
+  <AnnotatedStep meta={`{4} {5-7}`} color="blue">
+    This ruleset targets the `main` branch and is *active* — live, not the evaluate-only dry-run mode. Everything below applies the moment a PR touches `main`. (The whole export is abbreviated; GitHub's real one carries more default fields.)
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{9-15}" color="blue">
+    One `pull_request` clause carries three of the six baseline rules at once: it requires a PR, demands one approval, dismisses stale approvals on push, and requires code-owner review — all in this object's parameters.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{16-26}" color="blue">
+    The four CI checks, listed by exact name string. This literal list is what the "renamed-job trap" later in the lesson is about — change a job's name and the matching string here no longer fires. `strict_required_status_checks_policy: false` is strict mode left off.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{27-29}" color="blue">
+    `required_linear_history` forbids merge commits; `non_fast_forward` blocks force-pushes; `deletion` stops the branch being deleted. The last two are GitHub's default protections — you mostly just confirm they're on.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Read it once and the six rules stop being scattered toggles and become one concrete thing you can hold. That object survives the next UI redesign, and it's the same object the settings-as-code option at the end of the lesson manages as a file.
+
+## Wiring CODEOWNERS to the rule
+
+The fourth baseline rule turned `CODEOWNERS` from a suggestion into a requirement, but it's worth slowing down on the file itself, because this is where the two-surfaces idea gets concrete and where the previous lesson left a debt.
+
+Quick recap, because one detail trips up nearly everyone: `.github/CODEOWNERS` maps path globs to reviewers, written gitignore-style, and **the last matching line wins**. Not the most specific match — the *last* one in the file. That single rule decides how you order the file.
+
+Here's a realistic one for an invoicing app:
+
+<div data-mark-color="blue">
+
+```text title=".github/CODEOWNERS" {1}
+*                 @org/eng
+
+/app/billing/     @org/billing-leads
+/db/schema.ts     @org/dba
+/.github/         @org/platform
+```
+
+</div>
+
+Read it top to bottom. The first line is the catch-all: everything defaults to the engineering team. Each line below it carves out a higher-stakes zone — billing code goes to the billing leads, the schema file goes to whoever owns the database, the `.github/` directory itself goes to the platform team so nobody quietly weakens a ruleset config. Because last match wins, the order has to run *general to specific*: if you put `* @org/eng` last, it would override every specific line above it and route everything back to engineering. Flip the order by accident and your careful billing ownership silently evaporates — the file looks right, nothing errors, and yet nothing works, which is the failure mode this whole lesson is about.
+
+The judgment call is *what* to put in this file, and the answer is less than you'd guess. Assign code owners only to zones with **clear ownership and real stakes** — auth, billing, schema, infrastructure. Resist code-owning your general UI surfaces or routine feature work. Every code-owned path adds a required approver to every PR that touches it; spread that across the whole tree and you've diffused responsibility (everyone's an owner, so no one feels like one) and slowed every merge to a crawl. On a two-person team with no real specialization, the honest move is to cut the file entirely — there are no distinct owners to route to.
+
+And notice what introducing an ownership zone actually takes: a line in the file *and* the rule in settings. Both surfaces, every time. Add `/app/billing/ @org/billing-leads` to the file but forget that `Require review from Code Owners` is off, and you've changed nothing — the billing leads get auto-requested and then ignored. The two-places reflex is the thing to internalize: ownership is a file *plus* a switch, and you verify both whenever you touch either.
+
+So the six rules aren't really six independent toggles. They compose into a single gate that a pull request has to clear, in sequence, before the merge button turns green.
+
+<MergeGateFunnel />
+
+Before moving on, lock in the mental model that all of this hangs on. Each item below lives in exactly one of two places — the `.github/` directory that's reviewed in pull requests, or the ruleset in repo settings. Sort them.
+
+<Buckets twoCol instructions="Each piece of repo policy lives in one of two surfaces. Sort each into where it actually lives.">
+  <Bucket name="github" label="Lives in .github/" description="Version-controlled, reviewed in PRs" />
+  <Bucket name="ruleset" label="Lives in repo settings" description="The active ruleset" />
+
+  <Item bucket="github">`CODEOWNERS`</Item>
+  <Item bucket="github">`pull_request_template.md`</Item>
+  <Item bucket="github">`dependabot.yml`</Item>
+  <Item bucket="github">The `ci.yml` workflow</Item>
+  <Item bucket="ruleset">Require linear history</Item>
+  <Item bucket="ruleset">Require code-owner review</Item>
+  <Item bucket="ruleset">Dismiss stale approvals</Item>
+  <Item bucket="ruleset">The required status checks list</Item>
+</Buckets>
+
+## Rules to reach for as the repo grows
+
+The six baseline rules are do-it-now for any production `main`. Past them is a set of rules you reach for *when a specific condition makes them worth it* — not a checklist to enable blindly. The trap with a settings page full of toggles is flipping all of them on because they sound responsible; half of them will just slow you down or lock you out. So learn each of these by its *trigger*: the situation that earns it.
+
+- **Require signed commits.** The trigger: the repo is audit-grade or handles genuinely sensitive data, *and* the whole team already has GPG or SSH signing configured. Watch out — turn this on for a team that *hasn't* set up signing and you block every single push, for everyone, immediately. Worth the friction for a regulated codebase; overkill for a normal SaaS, which is why earlier lessons cut signing from the baseline.
+- **Require deployments to succeed before merging.** The trigger: you want a PR's preview deployment to be mandatory, so nothing merges unless its preview actually built. Once a later chapter wires a Vercel preview per PR, you list that deployment as a required check and a broken preview blocks the merge. (That's a forward reference, not something to set up now.)
+- **Restrict who can push to matching branches.** An explicit allow-list of who may push at all. Rare for a trunk-based `main` — the PR requirement already governs who lands code — but genuinely useful on release-tagged or specially protected branches if your team ever has them.
+- **Block force pushes.** This one's on by default in rulesets. The reach action isn't to *add* it — it's to *confirm* it's there, because it's the rule that stops the force-push-to-`main` disaster from the opening of this lesson.
+- **Restrict deletions.** Also typically on by default. Same reflex: verify `main` can't be deleted by an accidental click or an over-eager script.
+
+Then there's **<Term definition="A user, team, or app listed in a ruleset as allowed to skip its rules. Every bypass is recorded in the audit log.">bypass actors</Term>**, which deserves its own beat because it's the one piece that's pure judgment. A ruleset can name specific users, teams, or apps allowed to *bypass* the rules — and crucially, every bypass is written to the audit log. The legitimate trigger is narrow: a real production emergency where the normal PR flow simply can't ship the fix fast enough, handled by the on-call account. The discipline around it is the whole point. Default to an *empty* bypass list. A bypass should be rare, deliberate, and visible — and an after-action review should later check the audit log to see it was justified. The anti-pattern is a standing bypass actor that nobody ever reviews, because that one entry quietly defeats the entire reason you set up structural enforcement: now there's a person who can do all the things the rules forbid, and the rules became a suggestion again, just for them.
+
+One last capability, named once: rulesets *layer*. You can run a loose ruleset across all branches, a stricter one on `main`, and a stricter-still one on `release/*` — they stack and all apply. A trunk-based team needs exactly the one `main` ruleset, so this is awareness, not homework; just know the capability exists for when a repo grows into needing it.
+
+Now sort the rules by whether they're baseline or reach.
+
+<Buckets twoCol instructions="Not every rule belongs on day one. Sort each into the always-ship baseline or the add-when-triggered reach set.">
+  <Bucket name="baseline" label="Ship in the baseline" description="Every production `main`" />
+  <Bucket name="reach" label="Add when the trigger fires" description="Only when a condition earns it" />
+
+  <Item bucket="baseline">Require a pull request</Item>
+  <Item bucket="baseline">Require 1 approval</Item>
+  <Item bucket="baseline">Dismiss stale approvals</Item>
+  <Item bucket="baseline">Require code-owner review</Item>
+  <Item bucket="baseline">Require status checks</Item>
+  <Item bucket="baseline">Require linear history</Item>
+  <Item bucket="reach">Require signed commits</Item>
+  <Item bucket="reach">Require deployment to succeed</Item>
+  <Item bucket="reach">Restrict who can push</Item>
+  <Item bucket="reach">Add a bypass actor</Item>
+  <Item bucket="reach">A second layered ruleset</Item>
+</Buckets>
+
+## Standing up the ruleset on a fresh repo
+
+Enough theory — let's turn the six rules into the actual procedure on a brand-new repo. There's one thing to get straight first, because it sounds like a paradox: if a PR is the only way onto `main`, how did the very first commit get there?
+
+The answer is the **bootstrap exception**. A brand-new repo has no ruleset yet, and an empty `main` has nothing to protect — so the initial scaffold commit (the one from way back at project setup) gets pushed *straight* to `main`, directly, before any ruleset exists. The ruleset lands on commit *two* onward. From that point the only path onto `main` is a pull request. So the sequence is always: first push direct → create the ruleset → PR-only forever after. If you ever wonder how `main` got its first commit when direct pushes are banned, that's the answer — the ban didn't exist yet.
+
+Here's the procedure.
+
+<Steps>
+1. Open the repo on GitHub and go to **Settings → Rules → Rulesets**, then click **New branch ruleset**.
+2. Name it `main` and set **Enforcement status** to **Active** (the alternatives are Disabled, which does nothing, and Evaluate, which logs would-be violations without blocking — useful for a dry run, not what you want here).
+3. Under **Target branches**, add the default branch (or a pattern matching `main`).
+4. Enable **Require a pull request before merging**, then in its sub-options set **Required approvals** to `1`, tick **Dismiss stale pull request approvals when new commits are pushed**, and tick **Require review from Code Owners**.
+5. Enable **Require status checks to pass**, then add the four CI checks by name: `typecheck`, `lint`, `test`, `build`. Leave **Require branches to be up to date** (strict mode) off unless CI is fast.
+6. Enable **Require linear history**.
+7. Confirm **Block force pushes** and **Restrict deletions** are on (they're on by default).
+8. Click **Create** to save.
+</Steps>
+
+Each of those steps maps straight onto a field in GitHub's New-ruleset panel — a name box, the enforcement dropdown, the target-branch picker, and a checklist of rules with sub-options that unfold as you tick them. The exact layout shifts over time, so don't memorize the pixels; the exported JSON from earlier is the stable reference for what these toggles produce.
+
+Now the step a lot of people skip and shouldn't: *prove the rule actually fires.* A rule you've configured but never watched reject anything is a rule you only *believe* is on. So switch to `main` locally, make any trivial change, and try to push it straight up — no branch, no PR. GitHub refuses it:
+
+<div data-mark-color="green">
+
+```bash {3}
+$ git push origin main
+remote: error: GH006: Protected branch update failed for refs/heads/main.
+remote: error: Changes must be made through a pull request.
+To github.com:org/invoicing-app.git
+ ! [remote rejected] main -> main (protected branch hook declined)
+error: failed to push some refs to 'github.com:org/invoicing-app.git'
+```
+
+</div>
+
+That rejection *is* the confirmation. The branch is no longer something you can push to on a whim; the workflow is now mechanically true. Make this a habit — every time you stand up a gate, watch it reject something once.
+
+<VideoCallout videoId="ZTbM-h9RZOo" videoTitle="Introduction to GitHub Actions — Part 6 — Repository Rulesets">
+  Mickey Gousset builds this exact ruleset on camera (15 min) in the modern Rulesets UI — requiring a PR, adding a status check by its job-name string, then failing a check to watch the merge button grey out.
+</VideoCallout>
+
+## When the gate silently disappears
+
+The reason these rules need real attention is that they fail *quietly*. A gate doesn't usually break with a loud error; it breaks by looking present while enforcing nothing, and the first you hear of it is a bad merge that "shouldn't have been possible." So the skill that matters here isn't memorizing don'ts — it's recognizing the symptom and tracing it to the cause. Here are the ones that'll bite you, each as symptom → cause → fix.
+
+**CI runs on every PR but never actually blocks a merge.** The cause is almost always an empty required-status-checks list — or a check that was never added to it. A workflow producing green checkmarks is a completely different thing from a ruleset *requiring* those checks; the checkmark is decoration until the rule names it. Fix: add each job name to the required list.
+
+**The renamed-job trap** — and pay the most attention to this one, because it's the subtle killer. The ruleset names checks *by string*. Rename a CI job from `test` to `unit-tests`, and the ruleset is still waiting on a check called `test` — which no longer exists, so it never reports, so the requirement is silently treated as satisfied. No error anywhere. The gate just evaporates, and CI looks as green as ever. The fix is a reflex: when you rename a CI job, update the ruleset's required-checks list *in the same pull request*. As the repo grows, this is the kind of thing the person who owns the platform config keeps an eye on.
+
+**A CODEOWNERS file that does nothing.** The file exists, the owners are listed, and yet PRs merge without them. The cause is the one you now expect: `Require review from Code Owners` is off, so the file only auto-requests reviewers who can be ignored. It's the enforcement gap, again. Fix: turn the rule on.
+
+**Required reviews set to 2 on a two-person team.** Now every PR needs two approvals, the author can't be one of them, and there's only one other person — so nothing can ever merge. Deadlock by configuration. Fix: 1 approval on small teams.
+
+**Strict mode plus slow CI.** Every time `main` moves, every open PR has to rebase and re-run the full suite, and a busy day turns into the team watching CI spin instead of shipping. Fix: turn strict mode off until CI is fast enough to absorb the re-runs.
+
+**The signed-commits rule with no signing configured.** Enable it before the team has signing set up and every push is rejected, for everyone, instantly. Fix: configure signing first — or don't enable the rule.
+
+**"Disable the ruleset for this one PR" that never gets re-enabled.** Someone flips the ruleset off to unblock an urgent merge, ships, and forgets to flip it back. The gate is now off for *everything* and nobody notices until something bad slips through. The reflex: a disabled ruleset is an incident, not a casual ops move — it gets an after-action review, and re-enabling it is part of closing that incident.
+
+Try diagnosing a few. For each symptom, pick the most likely cause.
+
+<Dropdowns instructions="A gate that looks present can enforce nothing. Diagnose each silent failure.">
+  CI goes green on every PR, yet a PR with a clearly failing job still merged — the most likely cause is that <DropdownChoice answer="the required status checks list is empty" options={["the required status checks list is empty", "strict mode is turned off", "the branch is not the default branch"]} />.
+
+  A teammate renamed the CI job from `test` to `unit-tests` and now that gate never blocks anything, with no error shown anywhere — the fix is to <DropdownChoice answer="update the ruleset's required-checks list in the same PR" options={["update the ruleset's required-checks list in the same PR", "delete and recreate the ruleset", "enable strict mode"]} />.
+
+  The `CODEOWNERS` file lists the billing leads, but PRs touching billing keep merging without their approval — the cause is that <DropdownChoice answer="`Require review from Code Owners` is off" options={["`Require review from Code Owners` is off", "the lines are ordered specific-to-general", "the file is in the wrong directory"]} />.
+</Dropdowns>
+
+## Settings-as-code, named once
+
+One loose thread to tie off. You saw the ruleset as JSON earlier, which raises a fair question: if it can be a file, why isn't it *in* the repo? Because — as we covered — GitHub doesn't auto-apply a ruleset committed to the tree; the active rule lives in settings. But the JSON export is the seam that lets tooling close that gap. You can manage rulesets as code through the API, with tools like Terraform or a GitHub App applying the same ruleset across many repos from one source of truth. For a single SaaS-startup repo that's pure overhead — the UI is the right tool and settings-as-code earns nothing. It starts paying for itself at org scale, when you're keeping dozens of repos in lockstep and clicking through each one's settings stops being viable.
+
+And that's the chapter's spine delivered in full: the workflow you learned by hand is now enforced by a system that won't let you break it. This ruleset is also a seam the upcoming chapters plug into — the next chapter authors the CI whose `typecheck`, `lint`, `test`, and `build` checks this rule requires, and a later one adds a preview deployment as another required check. You've built the gate; those chapters fill it with what it gates on.
+
+When you need the exhaustive reference — every rule type, every parameter — these are the two pages to bookmark.
+
+<CardGrid>
+  <ExternalResource
+    title="GitHub Docs — About rulesets"
+    href="https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets"
+    icon="simple-icons:github"
+    iconColor="#181717"
+    description="The conceptual overview of how rulesets work and stack."
+  />
+  <ExternalResource
+    title="GitHub Docs — Available rules for rulesets"
+    href="https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets"
+    icon="simple-icons:github"
+    iconColor="#181717"
+    description="The full reference of every rule type and its parameters — the page you return to when configuring."
+  />
+</CardGrid>
+
+## External resources
+
+Beyond the official reference, these go deeper on the corners this lesson only pointed at — settings-as-code, ownership routing, and what rulesets look like once a real team runs them at scale.
+
+<CardGrid>
+  <ExternalResource
+    title="github/safe-settings"
+    href="https://github.com/github/safe-settings"
+    icon="simple-icons:github"
+    iconColor="#181717"
+    description="GitHub's own GitHub App for the settings-as-code option named at the end — rulesets and branch protections applied across an org from one admin repo."
+  />
+  <ExternalResource
+    title="GitHub Rulesets: two reviewers beat a hotfix"
+    href="https://medium.com/swissquote-engineering/github-rulesets-because-two-reviewers-are-better-than-a-hotfix-9f03124f1110"
+    icon="simple-icons:medium"
+    iconColor="#000000"
+    description="A Swissquote engineer on running layered, org-wide rulesets across 3,000+ repos — bypass, audit, and the limits you hit at scale."
+  />
+  <ExternalResource
+    title="A Guide to GitHub Code Owners"
+    href="https://articles.mergify.com/github-code-owners/"
+    icon="lucide:users-round"
+    iconColor="#E5484D"
+    description="A focused CODEOWNERS deep-dive: full pattern syntax and the last-match-wins ordering this lesson leans on."
+  />
+  <ExternalResource
+    title="Understanding GitHub branch protection rules"
+    href="https://graphite.com/guides/github-branch-protection-rules"
+    icon="simple-icons:graphite"
+    iconColor="#000000"
+    description="Graphite's conceptual walkthrough of the older branch-protection mechanism rulesets replaced — useful when an old tutorial shows the Branches → Add rule screen."
+  />
+</CardGrid>

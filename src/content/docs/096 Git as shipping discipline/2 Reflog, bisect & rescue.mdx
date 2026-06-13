@@ -1,0 +1,512 @@
+---
+title: Reflog, bisect, and the rescue toolkit
+chapter-id: 96
+course-progress: 0.00005
+tagline: Git's rescue and history-rewriting toolkit, reflog, bisect, cherry-pick, revert, and interactive rebase, governed by the single question of where a commit lives.
+sidebar:
+  order: 2
+  label: Reflog, bisect & rescue
+---
+
+import Figure from '../../../components/figures/Figure.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import GitBranchingEmbed from '../../../components/embeds/GitBranchingEmbed.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import Sequence from '../../../components/exercises/sequence/Sequence.astro';
+import Step from '../../../components/exercises/sequence/Step.astro';
+import CommitZonesStrip from '../../../components/lessons/096/2/CommitZonesStrip.astro';
+import ReflogPointerMotion from '../../../components/lessons/096/2/ReflogPointerMotion.astro';
+import BisectBinarySearch from '../../../components/lessons/096/2/BisectBinarySearch.astro';
+import RebaseBeforeAfter from '../../../components/lessons/096/2/RebaseBeforeAfter.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+A rebase goes wrong and four hours of work vanish from your branch. A test that was green last week is red today, and the only thing you know is that one of the forty commits since then is to blame. A one-line fix is sitting on a feature branch that won't be ready to merge for another week, and production needs that fix *now*. These are not beginner problems. They are the problems that show up precisely *because* you've started shipping like a team — more commits, more branches, more history to get lost in.
+
+The previous lesson taught you the everyday loop: small branches, `pull --rebase`, squash-merge so `main` reads like a changelog. This lesson is what you do when a ship goes sideways, and it turns out the squash-merge discipline you just learned makes most of these rescues dramatically cheaper. You'll pick up four power tools — `reflog` for getting lost work back, `bisect` for hunting down the commit that broke something, `cherry-pick` and `revert` for moving and undoing individual commits, and interactive `rebase` for cleaning up messy history before anyone else sees it — plus the smaller supporting tools each one leans on. None of them are hard to type. The skill is knowing *which* one a given disaster calls for, and that always comes back to a single question.
+
+## Where a commit lives decides what you can do to it
+
+Here is the question, and you'll ask it before reaching for any tool in this lesson: **where does this commit live?** There are three possible answers, and they form a gradient from "do whatever you want" to "look but don't touch."
+
+The first zone is a commit that exists **only on your machine**. You committed it; you haven't pushed it anywhere. Nobody else has a copy, so nothing you do to it can surprise anyone. You can rewrite its message, fold it into another commit, reorder it, delete it outright — all of it is safe, because the only history you're changing is a history only you can see.
+
+The second zone is a commit you've **pushed to your own feature branch, but haven't merged** yet. Now there's a copy on the remote, and in principle a teammate could have pulled your branch. In practice, on a short-lived feature branch that's still yours, almost nobody has. So this zone is mutable *with care*: you can still rewrite, but after you do, the remote disagrees with your machine, and you have to overwrite it with `git push --force-with-lease`. That `--lease` from the previous lesson is the safety catch — it refuses the push if someone *did* pull and add a commit in the meantime, so you can't silently bulldoze their work.
+
+The third zone is a commit that has been **merged to `main`**. Other people have pulled it. It's woven into the shared history that the whole team builds on top of. This zone is off-limits to rewriting — not because Git stops you, but because rewriting history that others already have is how you create a mess that takes the team a day to untangle. When something is already on `main` and it's wrong, you don't erase it. You add a new commit that undoes it. That tool is `git revert`, and it's the one exception in this whole lesson that touches shared history — and it does so by *adding*, never by rewriting.
+
+The following diagram lays out the three zones as a strip, from most mutable on the left to immutable on the right, with the move each one allows underneath it. This single picture is the decision you'll make for every recovery in this lesson, so it's worth fixing in your head now.
+
+<Figure caption="The same commit, three different sets of rules. The only question you ask before any rescue: which panel is this commit in?">
+  <CommitZonesStrip />
+</Figure>
+
+That gradient rests on one mechanical fact about Git that you need before the next two sections will make sense. Recall from the previous lesson that a commit is a *snapshot* and a branch is just a *movable pointer* at one of those snapshots. The consequence — the thing that makes recovery possible at all — is this: **a commit is not deleted just because no branch points at it anymore.** When you reset or rebase, you're moving pointers; the old snapshots don't evaporate, they simply become unreferenced. They linger on disk, fully intact, until Git's <Term definition="Garbage collection. Git eventually prunes commits that no branch and no reflog can reach, reclaiming disk space. Until that runs, unreferenced commits are still recoverable.">garbage collection</Term> (GC) eventually sweeps them away — and as you're about to see, Git keeps a journal of where every pointer has been, so even an "unreferenced" commit is usually one command away from coming back.
+
+Before we get to the scary tools, spend two minutes with the next embed. It's the interactive [Learn Git Branching](https://learngitbranching.js.org) sandbox, and the whole point of it here is to make pointers visceral. Type `git commit` a couple of times to grow a line of snapshots, then `git checkout -b feature` to drop a new pointer, then `git commit` again. Watch how the branch labels *move* while the commit nodes just accumulate. That mental image — pointers slide, snapshots stay — is the entire foundation for `reflog` and `reset`.
+
+<GitBranchingEmbed
+  level="intro1"
+  title="Learn Git Branching — commits are nodes, branches are pointers"
+>
+  Type `git commit`, then `git checkout -b feature`, then `git commit` again. Moving a branch pointer never deletes a commit node — that's what makes everything in this lesson recoverable.
+</GitBranchingEmbed>
+
+One more term to pin down, since the next section depends on it. <Term definition="HEAD is Git's pointer to your current commit — usually via the branch you have checked out. When you commit, switch branches, or reset, HEAD moves.">`HEAD`</Term> is Git's name for "where you are right now" — the commit you currently have checked out, normally reached through whatever branch you're on. Almost everything Git does moves `HEAD`, and the next tool is, quite literally, the log of every place `HEAD` has ever been.
+
+## The reflog is your undo history — and you set it up by knowing it exists
+
+Most tools you learn when you need them. The reflog is the exception, and that inversion is the single most important thing in this lesson. The moment you'd reach for it is the moment you think *"I just lost my work"* — and that is the worst possible time to be reading documentation about a command you've never run. So you're learning it now, before you need it, so that the rest of this lesson can be taught fearlessly. Once you know the reflog has your back, you can experiment with rebases and resets without the fear that one wrong move erases an afternoon.
+
+Here's what it is. Every time `HEAD` moves — every commit, every checkout, every reset, every rebase, every merge — Git appends a line to a private, per-repository journal called the reflog. It's not your project history; it's the history of *your pointer's movements*. And because (from the last section) the snapshots those movements left behind aren't deleted, the reflog is effectively a list of every state your repository has passed through recently, each one still reachable by its hash.
+
+The recovery flow is two steps. First, read the journal with `git reflog` to find where you were *before* the disaster. Then jump back to it. The following is what the reflog looks like right after a `reset --hard` ate two commits, and the two ways to recover.
+
+<AnnotatedCode lang="bash" maxLines={12} code={`
+$ git reflog
+9f2c1ab HEAD@{0}: reset: moving to HEAD~2
+3d8e4c7 HEAD@{1}: commit: Add status filter dropdown
+a1b9f02 HEAD@{2}: commit: Wire filter to the query
+7c4d2e9 HEAD@{3}: rebase (finish): returning to refs/heads/feat/invoice-status
+
+# Recover by jumping the current branch back:
+$ git reset --hard 3d8e4c7
+
+# Or, safer — park the lost work on a new branch first:
+$ git branch recover-work 3d8e4c7
+`}>
+  <AnnotatedStep meta="{2}" color="orange">
+    Read the journal top-down: `HEAD@{0}` is where you are now, and the top line tells you the last thing you did — here, the `reset --hard` that caused the problem.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{3}" color="green">
+    The line *just below* the disaster is the commit you want back. Each entry shows the action and its message, so you can recognise the state you're hunting for. Copy that hash.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{8}" color="blue">
+    The blunt recovery: move your current branch's pointer straight back to that commit. Fast, but it discards anything after it — only do this when you're sure.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{11}" color="green">
+    The careful recovery, and the better default: create a *new* branch at the lost commit without moving where you are. Now the work is safely parked and you can inspect it before deciding what to keep.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Reach for `git branch recover-<something> <hash>` over `git reset --hard <hash>` by default. Parking the recovered work on a fresh branch is non-destructive — it can't make a bad situation worse — and you can always merge or cherry-pick from it once you've confirmed it's what you wanted.
+
+The next sequence makes the underlying mechanism concrete. Scrub through it: you'll see `HEAD` start at your latest commit with all your work, watch a `reset --hard HEAD~2` slide the pointer backward so two commits become unreferenced, see those same commits still sitting in the reflog by hash, and finally watch a reset to that hash bring the pointer — and the work — right back. Nothing is ever deleted; the pointer just moved, and the reflog remembered where.
+
+<ReflogPointerMotion />
+
+Two practical limits keep the reflog honest. It is **local**: it lives in your clone and nowhere else. It can't recover something only a teammate ever had, and a freshly cloned repository starts with an empty reflog — there's no history of movements that haven't happened on that machine yet. And it isn't permanent: reachable entries survive roughly 90 days and unreferenced ones about 30 before garbage collection is allowed to prune them. The reflog is a net for *recent* mistakes, not an archive. If you find lost work, recover it now, not next quarter.
+
+:::tip
+The instant a sinking feeling tells you work is gone, the very first thing you type is `git reflog`. Don't try to reconstruct what you did — read the journal. It almost always shows the commit you thought you lost, sitting right there with its hash.
+:::
+
+## git stash parks unfinished work when the branch has to change
+
+The reflog gets work back after you've lost it. `git stash` is the tool for *not losing it in the first place* when you're forced to drop what you're doing. The trigger is specific: you're mid-change, the working tree is a half-finished mess that isn't ready to be a commit, and an interruption arrives that needs a clean tree — an urgent review to check out, a hotfix to start, a teammate asking you to reproduce something on `main`.
+
+You can't switch branches with a dirty working tree that would conflict, and you don't want to immortalize half a feature as a commit. Stash is the scratchpad in between: it saves your uncommitted changes onto a stack and resets the working tree to clean, so you're free to move. When you come back, you pop them off and pick up exactly where you left off.
+
+```bash
+$ git stash push -m "wip: invoice status filter"
+Saved working directory and index state On feat/invoice-status: wip: invoice status filter
+
+$ git switch main          # go deal with the interruption
+
+# ...later, back on the feature branch...
+$ git switch feat/invoice-status
+$ git stash list
+stash@{0}: On feat/invoice-status: wip: invoice status filter
+
+$ git stash pop            # restore the changes and drop the stash entry
+```
+
+Always give a stash a message with `-m`. An unlabeled stash on a stack of three is a guessing game a day later. And note that you've already been using stash without knowing it: the `rebase.autoStash=true` config line from the previous lesson auto-stashes your working tree around `git pull --rebase` and pops it back when the rebase finishes. Stash isn't an exotic trick you'll rarely touch — it's already running quietly in your everyday loop.
+
+:::caution
+Stashes pile up silently and lose their context fast. A stash older than a day is almost always abandoned work you've mentally moved on from. Run `git stash list` occasionally; turn anything still valuable into a proper commit on a branch, and `git stash drop` the rest. As a rule, prefer a throwaway "wip" commit on a branch over a long-lived stash — a commit has a message, a place in history, and shows up in the reflog.
+:::
+
+## git bisect finds the commit that broke it by binary search
+
+Some bugs you can read your way to. This section is about the bug you *can't*: a test that passed on a known-good version weeks ago and fails now, with a non-trivial pile of commits in between and no obvious culprit. This is not "I just wrote a bug and I know roughly where" — it's "a regression is hiding somewhere in the last forty commits and I have no idea which one." Searching that by hand, commit by commit, is exactly the kind of tedious work you should never do, because Git can do it for you with binary search.
+
+The idea is the one from any algorithms course. You know a commit far back was *good* and the current commit is *bad*, so the breaking change is somewhere between them. Instead of testing every commit, you test the one in the *middle*. If it's good, the bug is in the newer half; if it's bad, it's in the older half. Either way you've eliminated half the suspects in one test. Repeat, and the window halves every time — which means a thousand commits collapse to about ten tests, because that's `log₂(1000)`. The following sequence walks that search visually; this is the heart of the section, so step through it and watch the suspect window shrink.
+
+<BisectBinarySearch />
+
+Here is the manual session. You tell Git the two ends, and it starts checking out midpoints for you to judge.
+
+```bash
+$ git bisect start
+$ git bisect bad HEAD              # the current commit is broken
+$ git bisect good a1b9f02          # this old commit was fine
+Bisecting: 19 revisions left to test after this (roughly 4 steps)
+[<sha>] Wire filter to the query
+
+# Git checked out the midpoint. Run your test, then mark the result:
+$ pnpm test
+$ git bisect bad                   # ...or `git bisect good` if it passed
+
+# repeat until Git prints the first bad commit, then:
+$ git bisect reset                 # return to where you started
+```
+
+That works, but marking each step by hand is still you doing a robot's job. The version an experienced engineer actually reaches for hands the *whole* search to Git. You give it a command that returns success when the code is good and failure when it's bad — a test command does exactly that — and Git drives every step itself, marking each midpoint by the command's exit code and stopping on the culprit. Treat this one-liner as the default; manual marking is only for bugs you can't check with a script.
+
+<div data-mark-color="green">
+
+```bash {4}
+$ git bisect start
+$ git bisect bad HEAD
+$ git bisect good a1b9f02
+$ git bisect run pnpm test
+```
+
+</div>
+
+That one line hands Git the whole search. A test command exits `0` on pass and non-zero on fail, which is exactly the signal bisect needs: it reads the exit code at each midpoint, marks the commit good or bad automatically, and stops on the culprit. There's one more code to know — exit `125` is the escape hatch for a commit that *can't* be evaluated (it won't build, say); returning it tells bisect to skip that commit and pick another instead of mis-marking it.
+
+<VideoCallout videoId="vm0Hu4pWlBQ" videoTitle="How To Find ANY Bug with Git Bisect">
+  Josef Bender walks the full bisect flow in 6 minutes — a manual session first, then the `git bisect run` automation against a test, exactly the two-step build-up in this section.
+</VideoCallout>
+
+Now the payoff for the discipline from the previous lesson — and it's a real one. Because you squash-merge, **every commit on `main` is one complete, shipped change** with a green, deployable tree. So when bisect lands on a commit, it lands on a *whole pull request*, and the test it runs there is meaningful: that state genuinely worked or genuinely didn't. Contrast that with a history full of merge commits and raw feature-branch commits — "wip", "fix typo", "half the refactor" — where a commit's intermediate state is broken for reasons that have nothing to do with the bug you're hunting. Bisect can't trust those commits, and your binary search marks them as "bad" for the wrong reason and chases a ghost. A bisect-friendly `main` isn't luck; it's the squash-merge habit paying you back.
+
+:::note
+On a messy history, intermediate broken commits poison a manual bisect — when Git checks out one that doesn't even build, you mark it with `git bisect skip` and Git picks a nearby commit instead. Squash-merge prevents the situation structurally by never letting a half-built commit onto `main` in the first place. One more reason for the discipline.
+:::
+
+## cherry-pick and revert move and undo individual commits
+
+These two tools are a matched pair: one *applies* a commit somewhere new, the other applies a commit's *inverse*. Learning them together is the point, because the thing you actually have to get right isn't the syntax — it's which zone from the start of this lesson each one belongs to.
+
+**`git cherry-pick <sha>`** replays a single commit from somewhere else onto your current branch. The classic trigger in trunk-based work: a small fix is sitting on a feature branch that won't be mergeable for another week, but you need that fix shipped today. So you cherry-pick just that one commit onto a fresh branch off `main`, open a tiny pull request for it, and ship it on its own while the larger feature keeps cooking. It also rescues a single good commit out of a branch you're otherwise abandoning. Mechanically, cherry-pick *copies*: it creates a brand-new commit with the same changes but a different hash, because it has a different parent and a different place in history.
+
+**`git revert <sha>`** is the other end. A bad commit has already shipped to `main`. Rewriting it is off the table — it's in the third zone, everyone has it. So instead of erasing it, you add a new commit that is its exact inverse: whatever the bad commit added, the revert removes, and vice versa. The result is a clean rollback that *preserves the audit trail* — the original commit and its undo both stay in history, which is exactly what you want when you later need to understand what happened. This is the reflex to burn in: **production rolls back with `revert`; a mistake still on your own branch gets fixed with `rebase -i` or `amend`.** (You'll meet the rollback story again in a later chapter on deployment — it has two layers, where Vercel re-promotes the previous deployment to fix the *running app* fast, and `git revert` undoes the *code* that produced it.)
+
+The decision between them is just the zone question wearing different clothes. The following tabs put it on one scenario — "I shipped a bad commit" — and split on where it lives. Read the first sentence of each tab; that's the whole call.
+
+<CodeVariants>
+  <CodeVariant label="It's still on my branch">
+    <div data-mark-color="orange">
+
+    ```bash {2-3}
+    $ git rebase -i origin/main
+    # in the editor, change the bad commit's line from `pick` to `drop`
+    $ git push --force-with-lease    # only if you'd already pushed the branch
+    ```
+
+    </div>
+    **The bad commit hasn't left your feature branch (zone 1 or 2), so you can rewrite it away.** Drop it with an interactive rebase; force-push only if the branch was already on the remote.
+  </CodeVariant>
+
+  <CodeVariant label="It already shipped to `main`">
+    <div data-mark-color="green">
+
+    ```bash {1}
+    $ git revert 3d8e4c7
+    # creates a new commit that undoes 3d8e4c7, then push and PR as normal
+    ```
+
+    </div>
+    **The bad commit is merged to `main` (zone 3), so rewriting is off the table — you add its inverse instead.** `revert` makes a new commit that undoes it, keeping the audit trail intact.
+  </CodeVariant>
+</CodeVariants>
+
+There are two small things to watch with cherry-pick. First, if you cherry-pick a commit that *later* gets merged normally too, you'll end up with two commits that have the same changes but different hashes — usually harmless, but if you want the lineage traceable, `git cherry-pick -x <sha>` appends a `(cherry picked from commit …)` line to the new commit's message so anyone reading history can see where it came from. Second, an anti-pattern: don't cherry-pick commits *from* `main` *onto* your feature branch to "catch up" — that copies commits and diverges your history from `main`'s. To stay current with `main`, you rebase. Cherry-pick is for *moving* a commit to a new home, not for syncing a branch.
+
+The next embed lets you feel the copy happen. It sets up two branches; cherry-pick a commit across and watch a new node appear on the target with the same content but its own identity.
+
+<GitBranchingEmbed
+  command="git checkout -b side; git commit; git commit; git checkout main; git commit"
+  title="Learn Git Branching — cherry-pick copies a commit"
+>
+  You're on `main` with a `side` branch nearby. Run `git cherry-pick <id>` on one of `side`'s commits — a new node appears on `main` with the same change but a new hash. Cherry-pick copies, it doesn't move.
+</GitBranchingEmbed>
+
+One term while we're here. <Term definition="Applying a fix made on a newer line of work back onto an older release line, so an older supported version also gets the fix.">Backporting</Term> — using cherry-pick to bring a fix from a newer branch back onto an older release branch — is the one place cherry-pick shows up routinely outside trunk-based work. You'll rarely need it on a single-`main` SaaS repo, but it's worth recognizing the word when a team that maintains old releases uses it.
+
+## Shaping history before it leaves the branch
+
+Everything in this section *rewrites* commits, which means — say it with me — it's only safe in the first two zones: local, or your own un-merged feature branch. Re-anchor there before you touch any of it. The reason the tools exist is a workflow that defines experienced engineers: you write commits *messily* as you work — "wip", "ok try this", "fix the test" — because stopping to craft a perfect commit mid-thought is a waste of attention. Then, right before you push for review, you clean that mess into a sequence of commits that read as a clear, logical story. The messy version was for *you*; the clean version is for the *reviewer*. These are the tools for that conversion, staged from the simplest to the most powerful so the ideas stack.
+
+### git commit --amend fixes the most recent commit
+
+The smallest history edit, and the gateway to the rest: amend changes only the *latest* commit. You just committed and immediately realized you forgot to stage a file, or the subject line has a typo. Stage the fix if there is one, then `git commit --amend` reopens the editor so you can fix the message, or `git commit --amend --no-edit` folds in the staged changes while keeping the message exactly as it was. That's it — the previous commit is replaced by a corrected one.
+
+The boundary matters: amend only reaches the *most recent* commit. The moment the thing you want to fix is two or more commits back, amend is the wrong tool and `rebase -i` (next) is the right one.
+
+```bash
+$ git add src/components/invoice-status-filter.tsx
+$ git commit --amend --no-edit
+$ git push --force-with-lease    # only needed if the original was already pushed
+```
+
+:::caution
+Amending a commit you've already pushed rewrites that pushed commit, so it needs `git push --force-with-lease` to update the remote. Forget the force-push and your local branch and the remote silently disagree — the remote still has the old commit, you have the new one, and the next plain `git push` will be rejected or, worse, create a tangle. If you amend after pushing, force-push in the same breath.
+:::
+
+### git rebase -i rewrites a run of commits
+
+This is the core history-shaping tool, and the one that pays the most rent. `git rebase -i origin/main` (or `git rebase -i HEAD~5` to grab the last five commits) opens an editor with one line per commit, each prefixed with a verb you can change. You don't run commands here — you edit a to-do list, save, and Git carries it out. The verbs are the whole vocabulary:
+
+- **`pick`** — keep the commit as-is. The default on every line.
+- **`reword`** — keep the commit, but edit its message.
+- **`edit`** — stop *after* applying this commit so you can amend it or split it, then continue.
+- **`squash`** — fold this commit into the one above it, and combine both messages.
+- **`fixup`** — fold this commit into the one above it, and *discard* this one's message.
+- **`drop`** — remove the commit entirely.
+
+You can also **reorder** commits just by moving their lines. One detail trips up nearly everyone the first time: the list reads **top-to-bottom as oldest-to-newest** — the reverse of `git log`. The oldest commit you're editing is at the top, the newest at the bottom. Read it that way and the verbs make sense; read it like `git log` and you'll squash the wrong direction.
+
+The following is a rebase to-do buffer for a typical messy feature branch. Step through it to see what each verb is doing to turn five scrappy commits into two clean ones.
+
+<AnnotatedCode lang="bash" maxLines={12} code={`
+pick a1b9f02 Add invoice status filter
+fixup 3d8e4c7 wip
+reword 7c4d2e9 fix
+fixup 9f2c1ab fix typo in label
+drop  b2e8a14 debug logging, remove later
+`}>
+  <AnnotatedStep meta="{1}" color="green">
+    Top line, so this is the *oldest* commit and the foundation — `pick` keeps it untouched. Everything below folds into or rearranges around it.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{2,4}" color="green">
+    Two `fixup` lines collapse the `wip` and the typo-fix straight into the commit above them, *discarding* their throwaway messages. This is how four scrappy commits become one clean feature commit.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{3}" color="blue">
+    `reword` keeps this commit's changes but lets you rewrite its uselessly vague `fix` subject into something a reviewer can actually read.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5}" color="red">
+    `drop` deletes the debug-logging commit outright — its changes never make it into the rebased branch. Cleaner than committing a follow-up to remove it.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+That handles collapsing and rewording. The one verb that does more than its name suggests is `edit`, which is how you *split* an over-large commit into smaller ones: mark the commit `edit`, and when the rebase stops on it, run `git reset HEAD~` to undo the commit while keeping its changes in your working tree, then stage and commit those changes in logical pieces, and finally `git rebase --continue`. One bloated commit becomes the two or three focused commits it should have been.
+
+The payoff is a branch whose history *reads*. The following tabs show the same branch before and after the rebase above — five noisy commits collapsing into two that tell the story. The "after" is what your reviewer should see.
+
+<RebaseBeforeAfter />
+
+:::caution
+`rebase -i` rewrites commits, so running it on commits other people have already pulled rewrites *their* history too — the exact mess the third zone forbids. Only ever interactive-rebase your own un-merged branch. This is the "where does the commit live" rule made operational: rebase freely in zones one and two, never in zone three.
+:::
+
+For a screen-recorded run of every verb in this section, the next video is worth eight minutes.
+
+<VideoCallout videoId="42392W7SgnE" videoTitle="git interactive rebase — Undo, Edit & Squash git commits with a single command">
+  Philomatics demonstrates editing, splitting, squashing, deleting, and reordering commits — and opens by stressing the same "never rebase pushed commits" rule this section is built on.
+</VideoCallout>
+
+The next embed is the highest-value interactive moment in this lesson. It drops you into a branch with several commits; squash and reorder them and watch the graph linearize in real time. Doing this once teaches more than reading three paragraphs about it.
+
+<GitBranchingEmbed
+  level="move2"
+  title="Learn Git Branching — reshape history with rebase"
+>
+  This is LGB's *Interactive Rebase Intro*. Run `git rebase -i HEAD~4`, then reorder and drop lines in the dialog and hit confirm — watch the branch's commits lift onto a new base and the graph go linear. This is the move you'll make on every feature branch before review.
+</GitBranchingEmbed>
+
+### Autosquash turns review fixes into the commit they belong in
+
+There's a recurring friction in the review loop that interactive rebase *almost* solves. A reviewer points at a line in your commit; the fix obviously belongs *inside* that original commit, not in a new "address review feedback" commit that's pure noise. You could `rebase -i` and manually move a `fixup` line under the right commit every time — but Git can wire that up for you.
+
+When you make the fix, commit it with `git commit --fixup=<sha>`, where `<sha>` is the commit the fix belongs in. That creates a specially-named `fixup! <original subject>` commit. Later, `git rebase -i --autosquash origin/main` reads those markers, automatically reorders each `fixup!` commit directly beneath its target, and pre-marks it `fixup` — so the to-do buffer is already correct and you just save. (`--squash=<sha>` is the same idea when you want to *combine* the messages instead of discarding the fix's message.)
+
+<div data-mark-color="green">
+
+```bash {5}
+$ git commit --fixup=a1b9f02        # this fix belongs in commit a1b9f02
+$ git rebase -i --autosquash origin/main   # fixup is pre-sorted and pre-marked; just save
+
+# set it once so plain `git rebase -i` always autosquashes:
+$ git config --global rebase.autoSquash true
+```
+
+</div>
+
+That last line is worth a flag. The previous lesson had you set five global config lines and *deliberately left this one out* — `rebase.autoSquash` is the sixth, and here is where it earns its place. Set it once and plain `git rebase -i` will autosquash every time, so you don't have to remember the flag. This exact loop is how pull-request review works in practice: a fixup commit, a push, the reviewer sees only what changed since their last look, and the squash-merge collapses all the noise at the end — but that's the next lesson's territory, so we'll leave the review loop there.
+
+## Resolving the conflicts these tools create
+
+Merge, rebase, cherry-pick, and revert can all stop partway through and announce a conflict — the same situation, the same resolution, regardless of which tool triggered it. So rather than re-explaining it inside each section, here it is once, in one place.
+
+A conflict happens when Git can't reconcile two changes to the same lines automatically and needs you to decide. It marks the spot directly in the file with three lines: `<<<<<<<`, `=======`, and `>>>>>>>`. The first chunk is one side, the second chunk is the other, and your job is to edit the file into the result you actually want — which might be one side, the other, or a hand-merged combination — and then delete all three marker lines. The following walks through a conflicted file and the resolve-and-continue sequence.
+
+<AnnotatedCode lang="bash" maxLines={14} code={`
+<<<<<<< HEAD
+const STATUSES = ['draft', 'sent', 'paid'];
+=======
+const STATUSES = ['draft', 'sent', 'paid', 'void'];
+>>>>>>> feat/invoice-status
+
+# edit the file to the result you want, deleting all three markers, then:
+$ git add src/lib/invoice-statuses.ts
+$ git rebase --continue
+`}>
+  <AnnotatedStep meta="{1,3,5}" color="orange">
+    The three markers Git writes into the file. Everything between the first two is one side; everything between the last two is the other. During a *rebase*, the top side (`HEAD`) is the commit being replayed *onto* — it can feel inverted, so read the labels, don't assume.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{2,4}" color="blue">
+    The actual conflict: two versions of the same line. You decide — keep one, keep the other, or merge them by hand into a single correct line.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{8}" color="green">
+    Once the file reads the way you want and the markers are gone, `git add` it to tell Git this conflict is resolved.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{9}" color="green">
+    Then continue the operation that stopped. The verb matches the tool: `git rebase --continue`, or `git merge --continue`, `git cherry-pick --continue`, `git revert --continue` for those.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+If a conflict turns out to be more than you bargained for, every one of these operations has a `--abort` form — `git rebase --abort`, `git merge --abort`, and so on — that backs you all the way out to where you started, as if you'd never begun. And if you somehow get past the point where `--abort` helps, you already know the net: `git reflog` and reset to the state before the operation.
+
+A tooling note, with no religion attached. For a trivial conflict — two lines, obvious resolution — the terminal is fine. For a gnarly one, VS Code's three-way merge editor is genuinely faster: it shows you *theirs*, *yours*, and the *result* in side-by-side panes, which beats squinting at marker lines in a single buffer. Use the right surface for the size of the conflict.
+
+There's one more payoff to collect from the previous lesson. You enabled <Term definition="Reuse Recorded Resolution. Git records how you resolved a particular conflict and replays that same resolution automatically the next time the identical conflict appears.">`rerere`</Term> — "reuse recorded resolution" — back in that config block, and this is the moment it pays off. When you resolve a conflict, `rerere` remembers exactly how. If you're working a long-lived feature branch that you rebase onto a moving `main` repeatedly, you'll hit the *same* conflict over and over — and with `rerere` on, Git replays your earlier resolution automatically instead of making you redo it each time. On a branch rebased ten times, that's real time saved. (The underlying idea is a <Term definition="A merge that consults the common ancestor of both sides plus the two tips, so it can tell what each side changed rather than just diffing the two final versions.">three-way merge</Term> — comparing both sides against their shared ancestor — which is why Git can be confident enough to replay a resolution.)
+
+## Reading history: log, blame, and the modern checkout split
+
+Every tool so far operated on a commit you had to *find first* — the good baseline for bisect, the sha to cherry-pick, the commit a fix belongs in. This section is the small set of read-only commands an experienced engineer uses to find those shas and to understand history without changing it. It's a reference more than a narrative, so it's terse — but each one comes with the question it answers.
+
+Start with `git log`, which answers most "when did this change?" questions before you ever reach for anything fancier. The following is the menu of invocations worth knowing, each annotated with what it's for.
+
+```bash
+git log --oneline -20            # the last 20 commits, one line each — a quick changelog
+git log --graph --oneline --all  # the real branch topology, drawn as a graph
+git log -p src/lib/invoices.ts   # one file's history, with the diff of each change
+git log -S "calculateTotal"      # the pickaxe: commits that added or removed this string
+git log --author="Dana"          # one person's commits
+```
+
+The pickaxe (`-S`) deserves a callout — it answers "when did this exact string enter or leave the codebase?", which is often how you find the commit that introduced a bug or deleted a function, and it's the fastest way to hand bisect a known-good sha or hand cherry-pick its target.
+
+When `git log` isn't enough and the question is specifically "who wrote this *line*, and why," that's `git blame <file>`: it annotates every line with the commit, author, and date that last touched it. For a long file, `git blame -L 40,80 <file>` blames just lines 40 through 80, and VS Code's GitLens shows the same information inline as you move your cursor. Blame tells you *which* commit; to understand the *whole* change that commit made — not just the one line — follow it with `git log -p` or `git show <sha>` on that commit. The line tells you where; the commit tells you why.
+
+Finally, the two verbs that replaced an overloaded one. For years, `git checkout` did far too many unrelated jobs — switching branches, creating branches, *and* discarding file changes — which made it easy to run the destructive version by accident. Modern Git split it in two, each verb doing one job:
+
+- **`git switch <branch>`** changes to an existing branch; **`git switch -c <branch>`** creates one and switches to it.
+- **`git restore <file>`** discards uncommitted changes to a file (the destructive one, now clearly named); **`git restore --staged <file>`** unstages a file without touching its contents.
+
+You *can* still use `git checkout` — it isn't going away — but the experienced reflex is `switch` and `restore`, because one verb doing one job means you can't fat-finger a branch switch into throwing away your work. These shed their long-standing "experimental" label in Git 2.51 in 2025, so they're stable now; if a tutorial still calls them experimental, it's out of date.
+
+## The recovery muscle memory
+
+You now have the whole toolkit. But here's the thing about a real incident: the hard part is almost never *typing* the command — it's a ten-second window where your pulse is up and you have to pick the *right* command. That choice is the actual skill this lesson is building, so this last section is about matching a situation to the move. Do this enough and the matching becomes reflex.
+
+Lead with the most common real case: **you committed to the wrong branch.** You meant to be on a feature branch and committed straight onto `main`, or onto the wrong feature branch. There are two paths, and which one you're on is — of course — a zone question: have you pushed yet?
+
+If you **haven't pushed**, the commit is local-only, so you can rewrite freely. Grab its hash with `git log`, undo it locally with `git reset --hard HEAD~N` (where `N` is how many commits you misplaced), switch to where it should have gone with `git switch -c correct-branch`, and replay it there with `git cherry-pick <hash>`. If you **have pushed** but no pull request exists yet, it's the same sequence with one addition: after the reset, the original branch needs `git push --force-with-lease` so the remote drops the misplaced commit too. Either way, if any step goes sideways, the reflog is your net — every one of those moves is recorded there.
+
+The following walker is your triage trainer. Start at the top — "what went wrong?" — and click down to the recovery move. The lesson lives in the *order* of the questions, because that order is exactly how an experienced engineer triages: what happened, then where does the commit live, then is it pushed. Walk every branch a couple of times until the path feels automatic.
+
+<StateMachineWalker kind="decision" title="Something went wrong — what's the move?">
+  <Question id="what" prompt="What just happened?">
+    <Branch label="I ran `reset --hard` and lost a commit" to="lost-reset" />
+    <Branch label="I committed to the wrong branch" to="wrong-branch-pushed" />
+    <Branch label="I committed a secret" to="secret" />
+    <Branch label="A rebase went sideways" to="rebase-sideways" />
+    <Branch label="A test started failing sometime last week" to="bisect" />
+  </Question>
+
+  <Question
+    id="wrong-branch-pushed"
+    prompt="Did you already push the branch?"
+    description="The fix is the same either way — pushing just adds one step."
+  >
+    <Branch label="Not pushed yet" to="wrong-branch-local" />
+    <Branch label="Pushed, but no PR opened" to="wrong-branch-pushed-leaf" />
+  </Question>
+
+  <Leaf id="lost-reset" verdict="git reflog → git reset --hard <hash>">
+    The commit isn't deleted, just unreferenced. Read the reflog, find the line *just before* the reset, and reset back to that hash — or `git branch recover <hash>` to park it safely first, then inspect before you commit to anything destructive.
+  </Leaf>
+
+  <Leaf id="wrong-branch-local" verdict="reset --hard + switch -c + cherry-pick">
+    Local-only, so rewrite freely. `git log` for the hash, `git reset --hard HEAD~N` to undo it here, `git switch -c correct-branch`, then `git cherry-pick <hash>` to land it where it belongs.
+  </Leaf>
+
+  <Leaf id="wrong-branch-pushed-leaf" verdict="Same, plus git push --force-with-lease">
+    The exact same sequence as the not-pushed case, but the original branch's *remote* still has the misplaced commit — so finish with `git push --force-with-lease` on it to drop the commit there too.
+  </Leaf>
+
+  <Leaf id="secret" verdict="Rotate the secret — now">
+    The moment a secret hit the remote it was leaked; scrubbing it from history is theater, not a fix. **Rotate the credential immediately.** Removing it from history with tools like `git filter-repo` or BFG is a later security-playbook step, never the primary one. (This is the secret-in-history rule from the previous lesson.)
+  </Leaf>
+
+  <Leaf id="rebase-sideways" verdict="git rebase --abort (else git reflog)">
+    If you're still mid-rebase, `git rebase --abort` rewinds you to exactly where you started, as if it never happened. If you've already finished the bad rebase and it's too late to abort, the reflog has the pre-rebase commit — reset to it.
+  </Leaf>
+
+  <Leaf id="bisect" verdict="git bisect run pnpm test">
+    A regression hiding in a known-good-to-broken range is the textbook bisect case. Mark a good baseline and `bad HEAD`, then let `git bisect run pnpm test` binary-search to the culprit for you.
+  </Leaf>
+</StateMachineWalker>
+
+Scenario three deserves a sentence more, because the instinct is wrong. When you commit a secret and push it, your reflex is to scrub it out of history — and that instinct will get you hurt, because **the secret leaked the instant it reached the remote.** Anyone or anything watching that repository already has it. Deleting it from history afterward changes nothing about that exposure; it's theater. The real fix is to **rotate the secret** — revoke the leaked credential and issue a new one — immediately. Cleaning history (with `git filter-repo` or BFG) is a follow-up hygiene step from the security playbook, never the primary response. The reflog will show you the commit as evidence of what happened; rotation is what actually protects you.
+
+To lock in the wrong-branch rescue specifically — the one you'll hit most — put its not-pushed path in order with the next exercise.
+
+<Sequence instructions="You committed to the wrong branch and haven't pushed. Order the rescue.">
+  <Step>`git log` — copy the hash of the misplaced commit.</Step>
+  <Step>`git reset --hard HEAD~1` — undo the commit on this branch.</Step>
+  <Step>`git switch -c correct-branch` — create and move to the right branch.</Step>
+  <Step>`git cherry-pick <hash>` — replay the commit where it belongs.</Step>
+</Sequence>
+
+That's the toolkit. Four power tools, each earned by a trigger, all governed by one question — where does this commit live? Answer that, and the right move follows. The next lesson moves up a level from the command line to the pull request: how to package a change so a reviewer can actually review it.
+
+## Going further
+
+The official Git documentation for these commands is genuinely good reference once you know what you're looking for, and Atlassian's rewriting-history guide is a strong, readable secondary on the rebase and amend family.
+
+<CardGrid>
+  <ExternalResource
+    title="git reflog — official reference"
+    href="https://git-scm.com/docs/git-reflog"
+    icon="simple-icons:git"
+    iconColor="#F05032"
+    description="The authoritative docs for the undo journal, including expiry and pruning behaviour."
+  />
+  <ExternalResource
+    title="git bisect — official reference"
+    href="https://git-scm.com/docs/git-bisect"
+    icon="simple-icons:git"
+    iconColor="#F05032"
+    description="Every subcommand, including `run`, `skip`, and the new/old aliases for non-bug searches."
+  />
+  <ExternalResource
+    title="git rebase — official reference"
+    href="https://git-scm.com/docs/git-rebase"
+    icon="simple-icons:git"
+    iconColor="#F05032"
+    description="The full verb list and the autosquash and rebase-merge options this lesson leans on."
+  />
+  <ExternalResource
+    title="Rewriting history — Atlassian tutorial"
+    href="https://www.atlassian.com/git/tutorials/rewriting-history"
+    icon="simple-icons:atlassian"
+    iconColor="#0052CC"
+    description="A readable secondary walkthrough of amend, rebase, and reset with diagrams."
+  />
+</CardGrid>
