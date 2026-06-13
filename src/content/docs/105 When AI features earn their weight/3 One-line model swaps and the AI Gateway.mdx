@@ -1,0 +1,380 @@
+---
+title: One-line model swaps and the AI Gateway
+tagline: Structure your Vercel AI SDK integration so a model is a configuration value behind a role-named handle, with the AI Gateway as the production routing layer beneath it.
+chapter-id: 105
+course-progress: 0.00005
+sidebar:
+  order: 3
+  label: Swappable models & the Gateway
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import TrueFalse from '../../../components/exercises/true-false/TrueFalse.astro';
+import Statement from '../../../components/exercises/true-false/Statement.astro';
+import TfWhy from '../../../components/exercises/true-false/TfWhy.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import ArrowDiagram from '../../../components/figures/ArrowDiagram.astro';
+import AbstractionLayers from '../../../components/lessons/105/3/AbstractionLayers.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { CardGrid, Card } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+You shipped the invoice chat in the spring on one provider's model. It worked, the demo landed, the feature is live. Then autumn arrives and a competitor releases a model that's half the price and noticeably better at arithmetic — exactly the workload your chat box leans on. Your CFO sees the line item on the bill and asks the obvious question: can we move to the cheaper one?
+
+That question should have a one-word answer and a one-line diff. Whether it does depends entirely on a decision you made back in spring, probably without thinking about it: *where did you type the model's name?*
+
+If you typed it at the call site — inside the route handler, next to the prompt — then "move to the cheaper model" is now a grep across every route, every test, every fixture, and the one surface someone added last week that you'll forget until it breaks in production. A multi-day pull request with a real blast radius, for what should be a single character change. And this isn't a one-time tax. The provider landscape is *accelerating, not stabilizing* — a major model from a different vendor lands almost every month. A SaaS that can't swap models cheaply pays this tax on every release someone else ships.
+
+So here's the promise of this lesson: by the end, a model swap in your codebase is a one-line edit in one file, and you'll know exactly when to put the AI Gateway behind it for production. None of this is new machinery. It's the same discipline you already use for the Drizzle client in `lib/db/index.ts` — one file owns the configuration, every other file reaches for a named export. You've done it four times already. This is the fifth.
+
+One scoping note, the same one that's held all chapter: this is a lesson about *where the model name lives and what sits behind it*, not about how to write the call. Every generation line stays elided, the way it has since the first lesson; the call-site mechanics arrive in the next chapter.
+
+## The model handle is the configuration boundary
+
+Start with why the AI SDK exists at all, because that's the thing that makes a clean swap possible.
+
+Every generation call the SDK gives you — `streamText`, `generateText`, `generateObject` — takes a `model` argument. And here's the property that matters: **the body of the call is identical no matter which provider is behind that argument.** Same function name. Same Zod schema for `generateObject`. Same tool definitions. The *only* thing that changes when you switch from one vendor to another is the value of `model`. That uniformity is the entire reason the SDK is worth using — and it's the entire reason reaching for a provider's own SDK locks you in. A provider's SDK speaks the vendor's call shape, so switching vendors rewrites the call, not just a string.
+
+There are two ways to name a model in the AI SDK, and the difference is worth getting right the first time.
+
+<CodeVariants>
+  <CodeVariant label="Gateway string (default)">
+    <div data-mark-color="blue">
+
+    ```ts {2}
+    const result = streamText({
+      model: 'openai/gpt-5-mini',
+      // model call — Chapter 106
+    });
+    ```
+
+    </div>
+    **A plain `'creator/model'` string.** No provider package installed, no import — the SDK routes this through the Vercel AI Gateway by default. This is the 2026 default and the form to reach for.
+  </CodeVariant>
+
+  <CodeVariant label="Provider object (direct)">
+    <div data-mark-color="blue">
+
+    ```ts {4}
+    import { openai } from '@ai-sdk/openai';
+
+    const result = streamText({
+      model: openai('gpt-5-mini'),
+      // model call — Chapter 106
+    });
+    ```
+
+    </div>
+    **A provider object from an installed package** (`@ai-sdk/openai`) that talks to the vendor directly and bypasses the gateway. Reach for this only when you need a provider-specific option the gateway string doesn't expose — it's the escape hatch, not the default.
+  </CodeVariant>
+</CodeVariants>
+
+The string form on the first tab — `'openai/gpt-5-mini'`, `'anthropic/claude-...'`, `'google/gemini-...'` — leans on something the SDK calls its <Term definition="The SDK-level default that turns a plain model string into a routed call, without you importing or configuring a provider.">global provider</Term>: hand it a `'creator/model'` string and it routes the call through the <Term definition="A single managed endpoint that routes your model calls to any provider, adding failover, usage tracking, and one billing relationship. The AI SDK's default target in v5.">AI Gateway</Term> for you, with no provider package and no import. The provider-object form on the second tab is the escape hatch: an installed package that talks to one vendor directly, for the rare case you need a provider-specific option the gateway string doesn't surface yet.
+
+Notice what the default form means: the gateway isn't something you bolt on later. The moment you write a plain model string, you're already going through it. If you've read an older tutorial — anything written against v4 of the SDK — you'll have seen a provider imported and called for *every* generation. That's a reliable fingerprint of stale material; in v5 the string-through-gateway path is the default, and the import is the exception.
+
+<VideoCallout videoId="bx3bBKtKb8c" videoTitle="Vercel AI SDK Crash Course 2026">
+  A 2026 v6 crash course that opens on exactly this thesis — a raw provider SDK forces *four* edits to switch vendors, the AI SDK makes it one. Watch the first ~3 minutes.
+</VideoCallout>
+
+## One file owns the model: `lib/llm/models.ts`
+
+The string form already buys you a one-line swap. The SDK doesn't care which model string you pass, so editing `'openai/gpt-5-mini'` to `'anthropic/claude-...'` at a call site is genuinely one line. So why does this section exist?
+
+Because *one line, multiplied by every place you wrote it, is not one line.*
+
+Picture that model string typed inline at the call site. Now five surfaces use the model — the chat, a summarizer, an extractor, two background jobs. Each one has the string typed into it. The swap is now five edits, plus the test fixtures, plus the route someone shipped last week that isn't in your head. The string being short doesn't save you. The *number of places* is the cost, and the string's length has nothing to do with it. This is the exact reason you don't write `new Pool(...)` at the top of every file that runs a query — the Drizzle client lives in one place, and everything imports it.
+
+So the model gets the same treatment. A single module, `lib/llm/models.ts`, exports named <Term definition="A named reference you import instead of inlining the underlying value — here, a model id behind a role name.">handles</Term> bound to model identifiers. Every call site imports a handle instead of typing a string. Now a swap is a **one-line edit in `models.ts`, and not a single call site changes.** Five surfaces, one edit. The route you forgot about? It imported the handle too, so it moves with everything else for free.
+
+Here's the file. This one isn't elided — it *is* the lesson, so it's worth seeing in full.
+
+<AnnotatedCode lang="ts" code={`
+import 'server-only';
+
+export const fastModel = 'openai/gpt-5-mini';
+export const smartModel = 'anthropic/claude-sonnet-4.5';
+export const embeddingModel = 'openai/text-embedding-3-large';
+`}>
+  <AnnotatedStep meta="{1}" color="blue">
+    This module is the seam to the model — it reads provider config and routes calls. Like every secret-touching adapter in `lib/`, it opens with `import 'server-only';`, which turns any accidental import from a Client Component into a build error rather than a leaked key in the browser bundle.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"'openai/gpt-5-mini'" "'anthropic/claude-sonnet-4.5'" "'openai/text-embedding-3-large'"`} color="green">
+    The handles are plain `'creator/model'` strings, routed through the gateway. This right-hand side is the *only* thing a swap touches — change the string, and every call site that imports the handle now points at the new model, untouched.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"fastModel" "smartModel" "embeddingModel"`} color="orange">
+    `camelCase`, not `SCREAMING_SNAKE_CASE`. Your instinct is to shout a module-level constant, but these are runtime configuration, not compile-time constants — the conventions name model handles as an explicit `camelCase` carve-out. Resist the caps.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5}" color="violet">
+    One export per *role* the model plays. The embedding handle lives here alongside the others, but it carries an asterisk the chat handles don't — its swap is a different kind of expensive, which we'll get to.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+This file has siblings you already trust. `lib/db/index.ts` owns the database client. `lib/llm/pricing.ts` — the price table you built in [Bounding spend before the surface goes public](/105-when-ai-features-earn-their-weight/2-bounding-spend-before-the-surface-goes-public/) — owns the per-model cost map, keyed by the model each handle points at, so the two files move together on a swap: change the handle here, add the new model's price there. `lib/rate-limit.ts` owns the limiter; `lib/auth.ts` owns auth. One concept, one file, every time. The model is just the newest member of that set.
+
+## Name the role, not the vendor
+
+Here's the cut that separates "I extracted it to a file" from "I extracted it *well*." Centralizing in one file survives a version bump. It does not, on its own, survive a *provider switch* — and that's the swap you actually fear.
+
+Watch what goes wrong. Suppose your file exports handles named after their vendors: `gpt5ForChat`, `openaiFast`, `claudeSummarizer`. You've moved the strings into one file, good. But you've also baked the vendor into the *identifier*. The day you move chat from OpenAI to Anthropic, the variable `gpt5ForChat` is now a lie — it names OpenAI but points at Claude. You have two bad options: rename it (and every import across the codebase — which is the grep you were trying to escape, now wearing a different hat), or keep a misleading name forever and let the next engineer trip over it. The vendor leaked up one level, out of the call site and into the name.
+
+The fix is to name the **role the model plays**, never the provider behind it.
+
+<CodeVariants>
+  <CodeVariant label="Vendor-named (leaks)">
+    ```ts del={1}
+    export const gpt5ForChat = 'openai/gpt-5.5';
+    export const claudeSummarizer = 'anthropic/claude-sonnet-4.5';
+    ```
+    **The name hardcodes the vendor.** Move chat off OpenAI and `gpt5ForChat` becomes a lie — now you rename the variable *and* every import, which is exactly the grep the central file was supposed to delete.
+  </CodeVariant>
+
+  <CodeVariant label="Role-named (stable)">
+    ```ts ins={1}
+    export const chatModel = 'openai/gpt-5.5';
+    export const summarizerModel = 'anthropic/claude-sonnet-4.5';
+    ```
+    **Same right-hand side, honest left-hand side.** Swap the string to any vendor and the name still tells the truth — "the chat model" is still the chat model. The swap stays one line.
+  </CodeVariant>
+</CodeVariants>
+
+The right-hand side is identical in both. The only difference is whether the name describes a vendor or a job. `fastModel`, `smartModel`, `summarizerModel`, `extractorModel`, `chatModel`, `embeddingModel` — each names a *capability*, and a capability is stable across a swap. "The fast model" is still the fast model after you change which vendor provides it; only the string moves. The senior framing is worth holding onto: the call site asks for a *capability* ("give me the fast one"), not a *vendor* ("give me OpenAI"). Capabilities are stable. Vendors churn.
+
+Quick drill to lock in the one thing that separates the two. Sort each handle name by whether it's safe across a provider swap.
+
+<Buckets twoCol instructions="Sort each model handle by whether its name survives a switch to a different provider.">
+  <Bucket name="role" label="Role-named (good)" description="Names the job; survives a swap" />
+  <Bucket name="vendor" label="Vendor-named (leaks)" description="Names the vendor; breaks on a swap" />
+
+  <Item bucket="role">`fastModel`</Item>
+  <Item bucket="role">`summarizerModel`</Item>
+  <Item bucket="role">`embeddingModel`</Item>
+  <Item bucket="role">`chatModel`</Item>
+  <Item bucket="vendor">`gpt5ForChat`</Item>
+  <Item bucket="vendor">`claudeFast`</Item>
+  <Item bucket="vendor">`openaiSummarizer`</Item>
+  <Item bucket="vendor">`geminiExtractor`</Item>
+</Buckets>
+
+## What the AI Gateway buys you in production
+
+Now the layer underneath the handle. You might expect this section to open with "and here's how to add the gateway." It doesn't, because of what you already saw: the plain model string *already* routes through the gateway. You're not adding it. The question is narrower and more honest — should you *configure* it for production, or is the bare default enough?
+
+The bare default — a string, routed, nothing configured — is plenty for a prototype. What the gateway *offers*, once you lean on it, is four production features the bare SDK doesn't ship on its own. One concern each:
+
+- **Automatic failover.** When the primary provider returns a 429, a 5xx, or times out, the gateway retries the next provider in a fallback list, transparently — your code never sees the error. (This is the concrete close of last lesson's provider-429 problem: the branch you were told you'd delete, deleted here.)
+- **Observability.** Latency, error rate, cost-per-request, per-user attribution — *without you instrumenting a single route.* You already have an in-app view of spend: the operator dashboard from the previous lesson, a Drizzle query over your audit log. The gateway's dashboard is the *infrastructure* view of that same spend. Both exist, and neither replaces the other — one sees your app's accounting, the other sees the raw provider traffic.
+- **Unified billing.** One invoice across every provider, instead of N vendor relationships and N cards to reconcile.
+- **BYOK key management.** <Term definition="Bring your own key — you supply your own provider API keys to the gateway rather than billing through it.">BYOK</Term> lets you supply your own provider keys, held at the gateway boundary, so they never sprawl across your app's environment on every deploy target.
+
+So when does the gateway flip from "nice, but the bare default is fine" to "configure it now"? Same shape as the trigger thinking in [The four triggers that justify an LLM surface](/105-when-ai-features-earn-their-weight/1-the-four-triggers-that-justify-an-llm-surface/) — defaults first, then the threshold that crosses them. Any *one* of these three firing is enough:
+
+1. **Live traffic depends on the surface.** A user-facing surface that earned its weight can't eat a provider outage gracefully without failover. The day the primary provider has a bad hour, your feature has a bad hour too — unless the gateway quietly routed around it.
+2. **Multi-model routing is part of the product.** A fast model for autocomplete *and* a smart model for the long draft. The gateway routes between them in one place, instead of N branches scattered across your call sites.
+3. **Cost observability is a product requirement.** The operator needs per-user, per-surface spend. The gateway exposes it without per-route instrumentation.
+
+Until one of those fires, the bare string-through-gateway default is genuinely enough — it *is* the gateway, just unconfigured. The mental model: a prototype is a string that routes through the gateway with no extra config; production is the *same string*, plus a fallback list, plus someone reading the dashboard.
+
+<VideoCallout videoId="pql8C8elbnk" videoTitle="New Vercel AI Gateway is Live! Here's How to Use It">
+  A 4-minute OrcDev walkthrough of the GA gateway — the same string-replaces-provider-import shift, BYOK keys, and the usage-and-cost dashboard this section describes.
+</VideoCallout>
+
+It helps to see all of this as a stack, because each layer absorbs a *different kind of change*. That's the whole lesson in one picture.
+
+<AbstractionLayers />
+
+Read the stack top to bottom and you can see where each kind of change stops. A new *role* ("we need a summarizer") touches only `models.ts`. A *vendor swap* is absorbed by the SDK's uniform call shape. A provider *outage* is absorbed by the gateway's failover. The provider itself just does the work. Four axes of churn, four layers, and a change on one axis never ripples to the others. That separation is the payoff for every rule in this lesson.
+
+## Failover without the gateway, and with it
+
+The first trigger above — live traffic on the surface — is worth showing concretely, because failover is the feature people most often try to hand-roll, and the hand-rolled version is exactly the kind of duplicated code this chapter keeps warning you about.
+
+There are two ways to get failover. Look at the shape of each.
+
+<CodeVariants>
+  <CodeVariant label="Catch-and-retry (every route)">
+    <div data-mark-color="orange">
+
+    ```ts {3-5}
+    try {
+      // model call with smartModel — Chapter 106
+    } catch (error) {
+      // retry with smartFallback — Chapter 106
+    }
+    ```
+
+    </div>
+    **It works — but this same block has to be copied into *every* surface that calls a model.** Every new route is one more place to remember it, the same bug class as a forgotten auth check or a missing token cap. Structural problems don't get solved by a block you have to remember to paste.
+  </CodeVariant>
+
+  <CodeVariant label="Gateway fallback list (one config)">
+    <div data-mark-color="green">
+
+    ```ts {3}
+    const result = streamText({
+      model: smartModel,
+      providerOptions: { gateway: { models: [smartFallbackA, smartFallbackB] } },
+      // model call — Chapter 106
+    });
+    ```
+
+    </div>
+    **The fallback chain is declared once, as configuration.** The gateway tries the primary, then each fallback in order on failure — no try/catch, nothing to copy into the next route. Declared in one place, applied everywhere that imports these handles.
+  </CodeVariant>
+</CodeVariants>
+
+The first tab is the manual version: the route handler catches the provider error and re-issues the call against a different handle. It works. But the retry logic is *duplicated in every surface*, and every new route you add is one more place to forget it — the same structural failure as a forgotten auth check or a missing output-token cap. A discipline you have to *remember* isn't a discipline; it's a future bug with a delay timer.
+
+The second tab is the gateway version: failover is a `providerOptions.gateway.models` array sitting next to the primary `model`. You list the primary plus one or two fallbacks, and the gateway tries them in order when the primary fails. One declaration, no per-route copy. (Those fallback handles — `smartFallbackA` and friends — are role-named entries that belong in `models.ts` too, right alongside the primaries; keep the central-file discipline consistent.)
+
+The course's stance is plain: **prefer the gateway. Route-level catch-and-retry is duplicate code the gateway deletes.** It's the same lesson as everything else in this chapter — reach for the structural fix, not the one you have to remember at every call site.
+
+## Env discipline: provider keys are configuration, not deploy artifacts
+
+The model name is configuration. So is the key that authorizes the call — and keys have sharper edges, so this seam is worth a moment.
+
+Provider keys live in **env**, validated through the same `@t3-oss/env-nextjs` + Zod seam in `env.ts` you've used since the database chapter. The naming follows the obvious convention: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `AI_GATEWAY_API_KEY`. And here's the convenience that makes the handle just a string: the AI SDK *auto-reads* `<PROVIDER>_API_KEY` from `process.env` for its first-party providers. You never pass a key at the call site — which is exactly why a handle is a model string and nothing more. Once the gateway is in front, the gateway's own key (`AI_GATEWAY_API_KEY`, or a deployment OIDC token) is what's needed at the boundary, and the per-provider keys move *into* the gateway's BYOK config rather than living in your app's env on every deploy target.
+
+Adding the keys to the env schema is the whole job:
+
+```ts title="src/env.ts" {3-5}
+export const env = createEnv({
+  server: {
+    OPENAI_API_KEY: z.string().min(1),
+    ANTHROPIC_API_KEY: z.string().min(1),
+    AI_GATEWAY_API_KEY: z.string().min(1),
+  },
+  // ...client, runtimeEnv
+});
+```
+
+Three things you never do with a provider key. Frame them not as warnings to remember but as guarantees the SDK's shape already hands you — the way the React hooks force the server seam for free:
+
+- **Never read a key from a database row.** Env is the canonical seam for configuration; the database is for tenant-scoped data. A key in a table is a key in a backup, a key in a logged query, a key one bad join away from a response.
+- **Never accept a key from a query parameter or request body.** It would land in access logs, browser history, and `Referer` headers — three places you can't fully scrub.
+- **Never expose a key to the browser.** And you *can't* do this by accident, because the SDK's hook-based shape (`useChat`, `useCompletion`) forces the call onto the server. Only `NEXT_PUBLIC_*` reaches the client, and a key is never that.
+
+There's a boot-time guarantee worth naming, too. A missing `OPENAI_API_KEY` should fail `pnpm build` through the env validator — the same way a missing `DATABASE_URL` does — *not* return a 5xx the first time real traffic hits the surface. The validator catches the gap at boot; the alternative is discovering it in production, at the worst possible moment.
+
+:::caution
+The gateway is portable *routing*, not a code abstraction. Pointing at the gateway while leaving the model string inlined at every call site fixes nothing — you still have the grep problem. `lib/llm/models.ts` and the gateway are *both* needed, and they earn their weight on different axes: one keeps your call sites clean, the other keeps your surface available. The diagram drew this; it's worth saying once in words.
+:::
+
+## The embedding asterisk: not everything swaps cleanly
+
+Everything so far has pointed one direction: a model is a configuration value, a swap is one line. There is exactly one place where that story breaks, and it breaks hard, and it's expensive to learn the hard way. So learn it the easy way, here.
+
+**Embeddings are not portable across providers.**
+
+An <Term definition="A list of numbers a model assigns to text so that similar meanings sit close together. The coordinates are only meaningful within the exact model that produced them.">embedding</Term> is a list of numbers a model assigns to a piece of text so that similar meanings land near each other. The catch is that those numbers only mean anything *inside the exact model that produced them*. A vector you indexed with one provider's embedding model **cannot be queried against another provider's embeddings** — the two models map text into different <Term definition="The geometry an embedding model maps text into. Different models use incompatible geometries, which is why embeddings don't transfer between them.">vector spaces</Term>, incompatible geometries, so the distances between vectors from different models are meaningless. And this is sharper than it sounds: it holds *even within the same vendor, even at the same dimension count*. Swap one embedding model for a newer version without re-embedding your corpus and your search recall can collapse to essentially zero — every result a near-random miss. This is not a theoretical edge case; it's a documented way teams have broken their own search in a single deploy.
+
+So the `embeddingModel` handle in `models.ts` is a **one-way commitment** until you re-embed everything. Treat it as a far more conservative swap target than the chat handles around it. Swapping `smartModel` to a different vendor is a one-line edit you ship today. Swapping `embeddingModel` is a *re-indexing project*: re-embed every stored document, rebuild the vector index, plan a migration window, and pay the API cost of running your entire corpus back through a model. Same file. Visually, the same kind of line. *Wildly* different blast radius. The discipline still holds — one place owns the handle — but the *cost of exercising the swap* is what differs, and conflating the two is the trap.
+
+<TrueFalse instructions="Each claim is about how cheaply a given model handle can be swapped.">
+  <Statement answer="true">
+    Swapping `smartModel` to a different vendor is a one-line edit in `models.ts`.
+    <TfWhy>Chat models share the SDK's uniform call shape, and the call site asks for a *capability*, not a vendor — so only the string on the right-hand side moves. Nothing at the call sites changes.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    Swapping `embeddingModel` to a different vendor is a one-line edit.
+    <TfWhy>The handle changes in one line, but the vectors already in your index were produced by the *old* model. Querying them against the new model is meaningless until you re-embed the whole corpus — a re-indexing project, not a config change.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    A vector indexed with provider A's embedding model can be queried against provider B's embeddings.
+    <TfWhy>Different models map text into different vector spaces. The coordinates from one are meaningless in the other, so distances measured across them carry no information.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    Embeddings from two different *versions* of the same vendor's embedding model are interchangeable.
+    <TfWhy>Non-portability holds even within one vendor and at the same dimension count. A version bump can drop search recall to near zero unless you re-embed the corpus.</TfWhy>
+  </Statement>
+</TrueFalse>
+
+This course doesn't build embeddings — indexing, similarity queries, the vector column all land in the next chapter. The takeaway here is narrow and durable: the clean abstraction story for chat models does **not** extend to embeddings. Price an embedding swap as a migration, not as a config change.
+
+## Structured output swaps cleaner than free-form prose
+
+One last heuristic, because *how you shape the call* changes how cheaply it swaps — and you now have the vocabulary to see why.
+
+A surface built on `generateObject` with a Zod schema returns typed data *regardless of which provider is behind it*. The schema is the contract; the model is just the implementation. When you swap vendors, the Zod schema absorbs the small differences in how each provider shapes its output — the same schema validates whatever model you point at. The swap is clean because the contract never moved.
+
+A surface built on `streamText` with a carefully prompt-engineered free-form response is more fragile. That prompt was tuned to *one* model's quirks — its phrasing, its formatting habits, its tone. Point it at a different model and the output can shift in ways the compiler never sees: subtly worse formatting, a different structure, a quietly degraded answer. The code compiles, the swap "works," and the quality drops on a dimension no type-check can catch.
+
+So the heuristic: when the workload is *structured* — extraction, classification, form-fill, the second and third triggers from the first lesson — reach for `generateObject` first. The abstraction wins are larger and the swap is cleaner. Free-form `streamText` is the right call for genuine prose, but know that you're trading away some swap-portability to get it. This isn't a rule; it's a trade-off you're now equipped to make on purpose.
+
+```ts
+// generateObject({ schema, model: extractorModel }) — Chapter 106
+```
+
+The mechanics of that call are the next chapter's job. Here it's named only as a *portability property* — a structured contract swaps cleaner than a tuned prompt.
+
+## A line on LangChain and raw provider SDKs
+
+If you've gone looking, you've seen other ways to integrate a model into a Next.js app. Here's where they sit, in one beat, so the question stops nagging.
+
+<CardGrid>
+  <Card title="Raw provider SDKs" icon="warning">
+    Lock the call site to one vendor's shape — a swap rewrites the call, not a string — and lose the SDK's unified streaming model. The only reason to reach for one is a provider feature the AI SDK hasn't surfaced yet. Rare in 2026.
+  </Card>
+  <Card title="LangChain" icon="warning">
+    A heavier programming model (chains, agents, retrievers) that fights React Server Components and the App Router's streaming primitive. Right for research-style multi-agent orchestration *outside* the user-request path — not for a Next.js SaaS surface.
+  </Card>
+</CardGrid>
+
+The verdict the course committed to in the first lesson stands: the AI SDK is the canonical Next.js integration. These are the named alternatives and the narrow cases where they fit — not competitors for the surface you're building.
+
+## The decision is an ADR
+
+One closing note before the chapter ends.
+
+Picking the provider, choosing whether to lean on the gateway, and committing to an embedding model are each *architectural decisions* under the three-test inclusion rule from the documentation unit. Each one touches multiple files — the route, `models.ts`, `env.ts`, billing, possibly the vector index. Each has reasonable alternatives — no LLM at all, a different provider, a hosted RAG service. And each costs more than one pull request to reverse — the embedding commitment most of all, since reversing it is a re-indexing project. That's the full signature of a decision that earns an <Term definition="Architecture Decision Record — a short document capturing one significant decision, its context, the alternatives considered, and the consequences.">ADR</Term>. When this shape lands in your own codebase, write one per decision. The course's running app doesn't own a real provider commitment, so there's no ADR to hand in here — but the expectation is the durable part.
+
+That closes the chapter's arc. Across three lessons you learned the *filter* — when an LLM-backed surface earns its weight at all. Then the *guardrails* — bounding spend before the surface goes public. And now the *durability* — a swap is one line, and the gateway is the production default behind it. What's left is the call-site mechanics: `streamText`, `generateObject`, the UI hooks. The next chapter installs all of it *inside* the structurally-sound shape these three lessons drew, so the syntax lands on a foundation that's already correct.
+
+Carry one sentence out: the model is a configuration value behind a role-named handle in one file. The provider churns; your call sites don't.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="AI SDK — Provider & Model Management"
+    href="https://ai-sdk.dev/docs/ai-sdk-core/provider-management"
+    icon="lucide:book-marked"
+    description="Where the 'creator/model' string form, the global provider, and custom provider registries are documented."
+  />
+  <ExternalResource
+    title="Vercel AI Gateway — Model Fallbacks"
+    href="https://vercel.com/docs/ai-gateway/models-and-providers/model-fallbacks"
+    icon="simple-icons:vercel"
+    description="How the providerOptions.gateway.models failover array and routing order are configured."
+  />
+  <ExternalResource
+    title="Vercel AI Gateway — Overview"
+    href="https://vercel.com/docs/ai-gateway"
+    icon="simple-icons:vercel"
+    iconColor="#000000"
+    description="The gateway hub: one key for hundreds of models, failover, spend monitoring, and BYOK in one page."
+  />
+  <ExternalResource
+    title="Different Embedding Models, Different Spaces"
+    href="https://medium.com/data-science-collective/different-embedding-models-different-spaces-the-hidden-cost-of-model-upgrades-899db24ad233"
+    icon="simple-icons:medium"
+    iconColor="#000000"
+    description="A worked demonstration of why swapping an embedding model forces a full re-embed — the asterisk this lesson warns about."
+  />
+</CardGrid>
