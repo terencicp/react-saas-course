@@ -2,7 +2,7 @@
 
 ## Project code
 
-Run this agent sequence once, before writing the lessons. Steps 2–12 form a quality loop — see **Re-plan loop** below.
+Run this agent sequence once, before writing the lessons. Steps 2–10 form a quality loop — see **Re-plan loop** below.
 
 1 **project-chapter-outline-lessons-aligner**: Prompt with chapter id `<X>`. 
 2 **project-architect**: Prompt with chapter id `<X>`. Returns the plan path, the ordered list of slice ids, and the screenshot list. On a re-plan, also pass the relevant feedback from all previous subagents.
@@ -14,26 +14,20 @@ Run this agent sequence once, before writing the lessons. Steps 2–12 form a qu
   - **project-reviewer**: Prompt with chapter id `<X>`, plan path.
   - **project-inspector**: Prompt with chapter id `<X>`, plan path.
 9 **project-corrector**: Prompt with chapter id `<X>`, plan path, the reviewer's and inspector's issues that require fixes. Run only if either reported issues.
-12 **project-approver**: Prompt with chapter id `<X>`. Runs once. Returns `APPROVED` or `REJECTED` with root-cause feedback.
-13 **project-summarizer**: Prompt with chapter id `<X>`.
-14 **project-chapter-outline-code-aligner**: Prompt with chapter id `<X>`.
+10 **project-approver**: Prompt with chapter id `<X>`. Runs once. Returns `APPROVED` or `REJECTED` with root-cause feedback.
+11 **project-summarizer**: Prompt with chapter id `<X>`.
+12 **project-chapter-outline-code-aligner**: Prompt with chapter id `<X>`.
 
 ### Re-plan loop
 
-- If the approver `REJECTED`, re-run the architect (step 2) in re-plan mode first, while the failed `solution/` is still on disk for it to inspect. Then delete `projects/Chapter <X>/solution/`, `projects/Chapter <X>/start/`, and `public/screenshots/<X>/`, re-run steps 3–9, and proceed to step 13 — the resulting code is approved by default.
+- If the approver `REJECTED`, re-run the architect (step 2) in re-plan mode first, while the failed `solution/` is still on disk for it to inspect. Then delete `projects/Chapter <X>/solution/`, `projects/Chapter <X>/start/`, and `public/screenshots/<X>/`, re-run steps 3–9, and proceed to step 11 — the resulting code is approved by default.
 
 ## Lessons
 
-### Phase A — Outline spine
-
-Run step 1 for each lesson, one lesson at a time in order, so every lesson's title and type are settled before any lesson is built out.
-
-### Phase B — Build-out
-
-After Phase A is done for every lesson, build out the lessons in parallel.
+Build out the lessons in parallel.
 Work in batches of at most 6 lessons.
 Start one dev server per lesson in the batch, each on its own port, so batched agents never share a browser tab; pass each agent its lesson's port.
-Within a lesson, run steps 2–9 in order.
+Within a lesson, run steps 1–9 in order.
 
 1 **project-lesson-outliner**: Prompt with chapter id `<X>`, lesson number `<Y>`, lesson title. Returns the lesson outline path, the updated lesson title that should be used from now on, and the lesson **type** (`Project overview` / `Walkthrough` / `Implementation`).
 2 **project-lesson-test-coder**: Run **only when the lesson type is `Implementation`**. Prompt with chapter id `<X>`, lesson number `<Y>`, lesson outline path, code summary path (`documentation/content/project code outlines/Chapter <X>.md`). Returns the test file path at `projects/Chapter <X>/start/lesson-verification/Lesson <Y>.ts`.
