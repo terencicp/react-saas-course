@@ -32,25 +32,25 @@ import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
 
 <CourseProgressBar value={frontmatter['course-progress']} />
 
-You just spent three lessons making a webhook survive being delivered twice. Stripe retries on any non-2xx, redelivers out of order, and occasionally fires the same event for no reason at all — and your handler now shrugs all of it off. That problem felt webhook-shaped while you were inside it. It isn't.
+You just spent three lessons making a webhook survive being delivered twice. Stripe retries on any non-2xx, redelivers out of order, and occasionally fires the same event for no reason at all, and your handler now absorbs all of it without flinching. That problem felt webhook-shaped while you were inside it, but it isn't.
 
-A Server Action fires twice because the user double-clicked submit before the spinner showed up. A background job times out at second 29, and the runtime retries it from the top — except the first attempt actually finished, it was just slow to answer. A public POST to your API gets a connection reset, so the client, having no idea whether you received it, sends it again. Four different surfaces, and underneath each one is the exact same fear: the operation runs twice, and so a card gets charged twice, or two invoices appear, or two welcome emails go out. So here's the question this lesson answers, and it's worth pausing on before you read the answer: is that four separate problems, or is it one? It's one. You already wrote the solution — in the [Claim once, mutate once](/063-webhook-ingestion/2-claim-once-mutate-once) lesson — and the rest of this lesson is teaching you to *recognize* it everywhere it shows up.
+A Server Action fires twice because the user double-clicked submit before the spinner showed up. A background job times out at second 29, so the runtime retries it from the top, even though the first attempt actually finished and was just slow to answer. A public POST to your API gets a connection reset, so the client, having no idea whether you received it, sends it again. Four different surfaces, and underneath each one is the same risk: the operation runs twice, so a card gets charged twice, or two invoices appear, or two welcome emails go out. The question this lesson answers is whether that is four separate problems or one. It is one. You already wrote the solution, in the [Claim once, mutate once](/063-webhook-ingestion/2-claim-once-mutate-once) lesson, and the rest of this lesson teaches you to *recognize* it everywhere it shows up.
 
 ## The pattern, stated once
 
 Strip the webhook off the thing you built and look at what's left. Three moves, in this order:
 
 <Steps>
-1. **Choose a key that identifies *this attempt*.** Not the request, not the row — the attempt. Two deliveries of the same attempt share the key; two genuinely different operations get different keys.
+1. **Choose a key that identifies *this attempt*.** Not the request and not the row, but the attempt. Two deliveries of the same attempt share the key, and two genuinely different operations get different keys.
 
-2. **Store the key under a unique constraint.** The database, not your code, is now the thing that refuses duplicates.
+2. **Store the key under a unique constraint.** Now the database refuses duplicates, rather than your code.
 
 3. **Do the real work in the same transaction as the insert.** The claim and the consequence commit together or roll back together.
 </Steps>
 
-On a replay, the insert hits the unique constraint. `ON CONFLICT DO NOTHING` returns zero rows — or a caught unique-violation throws — and that zero-row answer is the whole signal: *this attempt already happened.* You short-circuit and return success. You don't redo the work, because the work is already done and committed alongside the key.
+On a replay, the insert hits the unique constraint. `ON CONFLICT DO NOTHING` returns zero rows, or a caught unique-violation throws, and that zero-row answer is the whole signal: *this attempt already happened.* You short-circuit and return success. You don't redo the work, because the work is already done and committed alongside the key.
 
-That's the entire discipline. It makes an operation <Term definition="An operation you can apply many times and get the same end result as applying it once.">idempotent</Term> — an operation you can apply many times and get the same end result as applying it once. And the reason you need it at all is <Term definition="The transport may deliver the same message more than once; the receiver must tolerate it. You can't make an unreliable network promise exactly-once.">at-least-once delivery</Term>: the transport between two systems can hand the same message over more than once, and the only system that can do anything about that is the receiver. You can't make the sender promise "exactly once" — that promise is impossible to keep across an unreliable network. So you make the receiver tolerant instead.
+That's the entire discipline. It makes an operation <Term definition="An operation you can apply many times and get the same end result as applying it once.">idempotent</Term>, meaning you can apply it many times and get the same end result as applying it once. The reason you need it at all is <Term definition="The transport may deliver the same message more than once; the receiver must tolerate it. You can't make an unreliable network promise exactly-once.">at-least-once delivery</Term>: the transport between two systems can hand the same message over more than once, and the only system that can do anything about that is the receiver. You can't make the sender promise "exactly once," because that promise is impossible to keep across an unreliable network. So you make the receiver tolerant instead.
 
 Now map the abstract recipe onto the concrete code you already own. Here is the claim-and-transact skeleton from the [Claim once, mutate once](/063-webhook-ingestion/2-claim-once-mutate-once) lesson, with each of the three moves labeled by its abstract role.
 
@@ -68,35 +68,35 @@ await db.transaction(async (tx) => {
 });
 `}>
   <AnnotatedStep meta={`"event.id"`} color="blue">
-    **Move 1: the key.** The key is `event.id`. Stripe assigns it, and crucially Stripe sends the *same* id on every redelivery of that event. That stability is what makes it a usable key — hold onto this, it's the whole next section.
+    **Move 1: the key.** The key is `event.id`. Stripe assigns it, and Stripe sends the *same* id on every redelivery of that event. That stability is what makes it a usable key, and it is the subject of the whole next section.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{5}" color="violet">
-    **Move 2: the unique constraint.** The dedup lives in `processed_events`, under a unique constraint on `(provider, eventId)`. The `target` names that constraint. `DO NOTHING` plus `RETURNING` means a duplicate comes back as zero rows instead of an error — the conflict becomes a value you can branch on, not an exception you must catch.
+    **Move 2: the unique constraint.** The dedup lives in `processed_events`, under a unique constraint on `(provider, eventId)`. The `target` names that constraint. `DO NOTHING` plus `RETURNING` means a duplicate comes back as zero rows instead of an error, so the conflict becomes a value you can branch on rather than an exception you must catch.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{1,10}" color="green">
-    **Move 3: the shared transaction.** The claim insert and the business work share one `tx`, so one commit boundary covers both. A crash between them rolls back both; the retry re-claims cleanly. If the claim returned zero rows, you `return` early — already done.
+    **Move 3: the shared transaction.** The claim insert and the business work share one `tx`, so one commit boundary covers both. A crash between them rolls back both, and the retry re-claims cleanly. If the claim returned zero rows, you `return` early, because the work is already done.
   </AnnotatedStep>
 </AnnotatedCode>
 
-Notice there are two completely separate questions tangled up in any incoming request, and this lesson is about exactly one of them. One question is *who sent this?* — answered by a signature or by auth. The other is *is this the same attempt I've already seen?* — answered by the key. Those axes are independent; we'll come back to why they don't substitute for each other near the end. For now, the key is the only thing on the table.
+Notice that two separate questions are tangled up in any incoming request, and this lesson is about exactly one of them. One question is *who sent this?*, answered by a signature or by auth. The other is *is this the same attempt I've already seen?*, answered by the key. Those axes are independent, and we'll come back to why they don't substitute for each other near the end. For now, the key is the only thing on the table.
 
 <VideoCallout videoId="GsZ_ZtlRCBg" videoTitle="Fix Duplicate Messages with the Idempotent Consumer Pattern">
-  Milan Jovanović spends 14 minutes on the exact pattern this lesson generalizes — why exactly-once *delivery* is impossible but exactly-once *processing* isn't, and how a unique constraint plus one transaction make the receiver tolerate duplicates.
+  Milan Jovanović spends 14 minutes on the exact pattern this lesson generalizes: why exactly-once *delivery* is impossible but exactly-once *processing* isn't, and how a unique constraint plus one transaction make the receiver tolerate duplicates.
 </VideoCallout>
 
 ## Where the key comes from is the only thing that changes
 
-Here's the claim. The three moves never change. Across all four surfaces — webhooks, Server Actions, background jobs, public routes — the recipe is identical down to the SQL. The *only* variable is two things: where the key is born, and what causes the replay. Get those right and the rest is copy-paste.
+The three moves never change. Across all four surfaces, webhooks, Server Actions, background jobs, and public routes, the recipe is identical down to the SQL. Only two things vary: where the key is born, and what causes the replay. Get those right and the rest is copy-paste.
 
-I want you to be able to see that. So here is the artifact the whole lesson hangs on — four surfaces, side by side, as parallel columns. Read across any row and you'll find the same idea wearing four costumes; read down a column and you'll find one surface's complete story. Right now, focus on the first three rows: who owns the attempt, where the key comes from, and what the key actually is. The later rows fill in as we work through each surface, and you'll see the finished grid at the end.
+Here is the artifact the whole lesson hangs on: four surfaces, side by side, as parallel columns. Read across any row and you'll find the same idea in four different forms. Read down a column and you'll find one surface's complete story. Right now, focus on the first three rows: who owns the attempt, where the key comes from, and what the key actually is. The later rows fill in as we work through each surface, and you'll see the finished grid at the end.
 
 <FourSurfacesGridPartial />
 
-Now the single most important rule in this lesson, the one that separates idempotency that *works* from idempotency that's secretly a no-op. The key is generated **at the source that owns the definition of "this attempt"** — and it is *re-sent* on the replay. The sender mints it once and sends it every time. Not the receiver.
+Now the rule that separates idempotency that *works* from idempotency that's secretly a no-op. The key is generated **at the source that owns the definition of "this attempt"**, and it is *re-sent* on the replay. The sender mints it once and sends it every time, not the receiver.
 
-This is where beginners reliably break it, so let me show you the break. The instinct is to generate a fresh dedup key inside the handler, server-side, per request — it feels responsible, you're "adding idempotency." It does nothing. Compare the two:
+This is where beginners reliably break it, so let me show you the break. The instinct is to generate a fresh dedup key inside the handler, server-side, on each request. It feels responsible, since you're "adding idempotency," but it does nothing. Compare the two:
 
 <CodeVariants>
   <CodeVariant label="Broken: the server mints the key">
@@ -114,7 +114,7 @@ This is where beginners reliably break it, so let me show you the break. The ins
     ```
 
     </div>
-    **The constraint never fires.** A retry of the same request enters this handler again and generates a *different* UUID. The two attempts never share a key, so the unique constraint has nothing to catch on, and the work runs both times. You built the table, the constraint, the transaction — and protected nothing. The key being generated per request *is* the bug.
+    **The constraint never fires.** A retry of the same request enters this handler again and generates a *different* UUID. The two attempts never share a key, so the unique constraint has nothing to catch on, and the work runs both times. You built the table, the constraint, and the transaction, and protected nothing. Generating the key per request *is* the bug.
   </CodeVariant>
 
   <CodeVariant label="Correct: the key arrives from the source">
@@ -132,19 +132,19 @@ This is where beginners reliably break it, so let me show you the break. The ins
     ```
 
     </div>
-    **The key comes in over the wire.** The first attempt and its retry carry the *same* value because the client chose it once and re-sends it. The second insert conflicts, returns zero rows, and you take the "already done" path. The fix wasn't more code — it was moving where the key is born.
+    **The key comes in over the wire.** The first attempt and its retry carry the *same* value because the client chose it once and re-sends it. The second insert conflicts, returns zero rows, and you take the "already done" path. The fix wasn't more code; it was moving where the key is born.
   </CodeVariant>
 </CodeVariants>
 
-That's the discriminator. Every surface below is just a different answer to "who is the source, and how does the key reach the receiver." Watch for it.
+That's the discriminator. Every surface below is a different answer to one question: who is the source, and how does the key reach the receiver. Watch for it.
 
 ## Server Actions: the form-supplied key
 
-Back when you learned Server Actions, the form you built shipped something that looked like dead weight — a hidden input holding a `crypto.randomUUID()`, generated once when the form rendered. That was a promissory note. This is the lesson that pays it.
+Back when you learned Server Actions, the form you built shipped something that looked like dead weight: a hidden input holding a `crypto.randomUUID()`, generated once when the form rendered. That hidden input was a promise to be cashed in later, and this is the lesson that cashes it.
 
-Walk the chain. A Client Component renders the form and mints one UUID at render time. It rides along in a hidden field. The user submits; React 19 holds that value through the pending transition and through a resubmit, so a double-click sends the *same* UUID twice. The source that owns "this attempt" is the form render — and the key reaches the server in the `FormData`. Your job is the action body: read the key, claim it under a unique constraint in the same transaction as the create, and let a conflict mean "the create already happened."
+Walk the chain. A Client Component renders the form and mints one UUID at render time, which rides along in a hidden field. When the user submits, React 19 holds that value through the pending transition and through a resubmit, so a double-click sends the *same* UUID twice. The source that owns "this attempt" is the form render, and the key reaches the server in the `FormData`. Your job is the action body: read the key, claim it under a unique constraint in the same transaction as the create, and let a conflict mean "the create already happened."
 
-Here is that action body in the course's five-seam shape — parse, authorize, mutate, revalidate, return — with the idempotency machinery slotted into the mutate seam.
+Here is that action body in the course's five-seam shape, parse, authorize, mutate, revalidate, return, with the idempotency machinery slotted into the mutate seam.
 
 <AnnotatedCode lang="ts" code={`
 'use server';
@@ -175,27 +175,27 @@ export async function createInvoice(formData: FormData): Promise<Result<null>> {
 }
 `}>
   <AnnotatedStep meta="{11}" color="blue">
-    **Read the key from the form.** The key arrives in `FormData` exactly like every other field, validated by the same `safeParse` (the schema includes `idempotencyKey: z.uuid()`). The Client Component generated it once; the action just reads it. Nothing here mints a key — that's the point.
+    **Read the key from the form.** The key arrives in `FormData` exactly like every other field, validated by the same `safeParse` (the schema includes `idempotencyKey: z.uuid()`). The Client Component generated it once, and the action just reads it. Nothing here mints a key, which is the point.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{13-23}" color="green">
-    **Claim it in the same transaction as the create.** Same three moves. The claim insert and the invoice insert share one `tx`. A double-click sends the same `idempotencyKey`; the second claim conflicts, `claimed` is undefined, the transaction returns early, and no second invoice is inserted. The action still returns `ok(null)` — the replay is a success from the caller's point of view, because the create it asked for did happen.
+    **Claim it in the same transaction as the create.** Same three moves. The claim insert and the invoice insert share one `tx`. A double-click sends the same `idempotencyKey`, so the second claim conflicts, `claimed` is undefined, the transaction returns early, and no second invoice is inserted. The action still returns `ok(null)`, because the replay is a success from the caller's point of view: the create it asked for did happen.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{17}" color="violet">
-    **The constraint is scoped to the tenant.** The unique is composite — `(orgId, idempotencyKey)` — not the key alone. Two different orgs can independently generate the same UUID string (rare, but "rare" isn't "never," and a security boundary can't rely on luck). Scoping by `orgId` means one org's key can never collide with another's. This is the same composite-key reasoning behind `(provider, eventId)` from the dedup lesson.
+    **The constraint is scoped to the tenant.** The unique is composite, `(orgId, idempotencyKey)`, not the key alone. Two different orgs can independently generate the same UUID string. That is rare, but "rare" isn't "never," and a security boundary can't rely on luck. Scoping by `orgId` means one org's key can never collide with another's. This is the same composite-key reasoning behind `(provider, eventId)` from the dedup lesson.
   </AnnotatedStep>
 </AnnotatedCode>
 
-One deliberate choice worth a sentence. The key lives in its own `idempotencyKey` column with a scoped unique constraint — it is *not* the row's primary key. You could make the client-supplied UUID the PK and get dedup for free, but the course keeps them separate on purpose: the primary key is a UUIDv7 the database owns (time-ordered, good for index locality), and the dedup identity is a thing the client owns. Decoupling them lets the row's identity stay independent of how you happened to deduplicate the request, and lets the table carry other constraints without entangling them with the PK.
+One deliberate choice is worth a sentence. The key lives in its own `idempotencyKey` column with a scoped unique constraint, and it is *not* the row's primary key. You could make the client-supplied UUID the PK and get dedup for free, but the course keeps them separate on purpose. The primary key is a UUIDv7 the database owns (time-ordered, good for index locality), and the dedup identity is a thing the client owns. Decoupling them lets the row's identity stay independent of how you happened to deduplicate the request, and lets the table carry other constraints without entangling them with the PK.
 
-And notice this is the *exact same rule* as the broken-vs-correct example, now in a real setting. A server-generated key would be a fresh value on every submit — useless. The whole game is stability across the submit *and* its retry, and the only place that stability can come from is the render that produced the form. The client is the source; React 19 carries the value through; the action reads it.
+Notice that this is the *same rule* as the broken-versus-correct example, now in a real setting. A server-generated key would be a fresh value on every submit, which is useless. The whole game is stability across the submit *and* its retry, and the only place that stability can come from is the render that produced the form. The client is the source, React 19 carries the value through, and the action reads it.
 
 ## Retried background jobs: the stable run ID
 
-The third surface is the cleanest instance of the pattern, because you write *no key-generation code at all.* You'll build real jobs later, on Trigger.dev — so treat this as a sighting, not a deep dive. The point here is just to log the third data point.
+The third surface is the cleanest instance of the pattern, because you write *no key-generation code at all.* You'll build real jobs later, on Trigger.dev, so treat this as a quick sighting rather than a deep dive. The point here is to add the third data point.
 
-When a job runtime retries a run after a timeout or a crash, it gives the retry the **same run ID** as the original attempt. That ID is your key, handed to you for free — the runtime is the source that owns "this attempt," and a retry is the replay. The job body inserts its results keyed by that ID, and a retry conflicts exactly like every other surface:
+When a job runtime retries a run after a timeout or a crash, it gives the retry the **same run ID** as the original attempt. That ID is your key, handed to you for free: the runtime is the source that owns "this attempt," and a retry is the replay. The job body inserts its results keyed by that ID, and a retry conflicts exactly like every other surface:
 
 ```ts
 await db
@@ -204,19 +204,19 @@ await db
   .onConflictDoNothing({ target: [jobResults.runId] });
 ```
 
-That's the move in two lines. The run ID *is* the namespace — the same idea you'll meet again in the naming convention for job idempotency keys (`${ctx.run.id}:${step}`), where the run ID prefixes each step's key. We'll go deep on job retries, queues, and the run lifecycle when you get to background work; for now, just notice that nothing about the shape changed. Key, unique constraint, conflict means done.
+That's the move in two lines. The run ID *is* the namespace, the same idea you'll meet again in the naming convention for job idempotency keys (`${ctx.run.id}:${step}`), where the run ID prefixes each step's key. We'll go deep on job retries, queues, and the run lifecycle when you get to background work. For now, notice that nothing about the shape changed: key, unique constraint, conflict means done.
 
 ## Public route handlers: the Idempotency-Key header
 
-Now the richest surface — and the one where the four genuinely diverge in behavior. A public POST endpoint, say `/api/invoices` that external integrations call, accepts an <Term definition="An opaque, client-chosen token sent as an HTTP header that lets the server recognize a retried request as the same attempt. The client picks it once and re-sends it on retry.">Idempotency-Key</Term> HTTP header: an opaque, client-chosen token that lets the server recognize a retried request as the same attempt. The client generates it (`crypto.randomUUID()` is fine; any re-sendable string works), sends it on the first call, and sends the *same* one if it has to retry. This is a real, widely-adopted convention — Stripe's own API works exactly this way — not something the course invented.
+Now the richest surface, and the one where the four genuinely diverge in behavior. A public POST endpoint, say `/api/invoices`, called by external integrations, accepts an <Term definition="An opaque, client-chosen token sent as an HTTP header that lets the server recognize a retried request as the same attempt. The client picks it once and re-sends it on retry.">Idempotency-Key</Term> HTTP header: an opaque, client-chosen token that lets the server recognize a retried request as the same attempt. The client generates it (`crypto.randomUUID()` is fine, and any re-sendable string works), sends it on the first call, and sends the *same* one if it has to retry. This is a real, widely adopted convention, not something the course invented; Stripe's own API works exactly this way.
 
 Everything you've seen so far still applies: key from the source, unique constraint, claim-and-work in one transaction. But there's a twist that only shows up here, and it's the whole reason this surface gets its own section.
 
-The other three surfaces, on a replay, short-circuit to "already done, here's a success." They don't reconstruct what the first attempt *returned* — they just confirm it happened. A public API can't get away with that. The client on the other end is waiting for a response body — an invoice id, a created object — and if its first request actually succeeded but the response got lost on the way back, the retry has to return **the byte-identical response the first attempt produced.** Not a fresh "ok." The same bytes. Even if the underlying state has moved on since.
+On a replay, the other three surfaces short-circuit to "already done, here's a success." They don't reconstruct what the first attempt *returned*; they just confirm it happened. A public API can't get away with that. The client on the other end is waiting for a response body, an invoice id or a created object, and if its first request actually succeeded but the response got lost on the way back, the retry has to return **the byte-identical response the first attempt produced.** Not a fresh "ok," but the same bytes, even if the underlying state has moved on since.
 
-So this surface caches the *response*, not just the *claim*. Read that twice — it's the non-obvious bit. You store the status and the response body on the claim row, and you replay them verbatim. The senior way to hold it: **idempotency caches the response because the response is the contract the client trusts.** It asked a question once; it must get the same answer however many times the network makes it ask.
+So this surface caches the *response*, not just the *claim*. You store the status and the response body on the claim row, and you replay them verbatim. The point to hold onto is that idempotency caches the response because the response is the contract the client trusts. The client asked a question once, and it must get the same answer however many times the network makes it ask.
 
-Here's the shape. Same skeleton as the webhook, with a response cache bolted onto the claim row.
+Here's the shape: the same skeleton as the webhook, with a response cache added to the claim row.
 
 <AnnotatedCode lang="ts" code={`
 export async function POST(request: Request) {
@@ -262,7 +262,7 @@ export async function POST(request: Request) {
 }
 `}>
   <AnnotatedStep meta="{3-8}" color="orange">
-    **Require the key; reject if missing.** A missing-but-required key is a `400` in RFC 9457 problem+json — the same error contract you use everywhere else. Not a silent success: silently succeeding would let a non-idempotent client double-charge and never know. If the contract says the header is required, enforce it.
+    **Require the key, and reject if it's missing.** A missing-but-required key is a `400` in RFC 9457 problem+json, the same error contract you use everywhere else. It is not a silent success, because silently succeeding would let a non-idempotent client double-charge and never know. If the contract says the header is required, enforce it.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{20-24}" color="violet">
@@ -270,21 +270,21 @@ export async function POST(request: Request) {
   </AnnotatedStep>
 
   <AnnotatedStep meta="{26-32}" color="blue">
-    **Replay path: return the cached response.** This is the surface's signature move. On a replay, read the stored `status` and `responseBody` off the row and return them verbatim — the exact bytes the first call sent back, even if the world has changed since.
+    **Replay path: return the cached response.** This is the surface's signature move. On a replay, read the stored `status` and `responseBody` off the row and return them verbatim, the exact bytes the first call sent back, even if the world has changed since.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{34-39}" color="green">
-    **First-call path: do the work, then cache the answer.** The winner does the work, writes the status and body *back onto the claim row*, and returns. Because it's all one transaction, the cached response and the invoice commit together — a replay can never read a half-finished cache.
+    **First-call path: do the work, then cache the answer.** The winner does the work, writes the status and body *back onto the claim row*, and returns. Because it's all one transaction, the cached response and the invoice commit together, so a replay can never read a half-finished cache.
   </AnnotatedStep>
 </AnnotatedCode>
 
-That's the worked shape. In production this route would sit inside the `authedRoute` wrapper you'll meet later, which lifts the auth and parsing out of the body — but the dedup-and-cache core stays exactly as you see it. Two policy calls go with it, and they're judgment, not boilerplate.
+That's the worked shape. In production this route would sit inside the `authedRoute` wrapper you'll meet later, which lifts the auth and parsing out of the body, but the dedup-and-cache core stays exactly as you see it. Two policy calls go with it, and they're judgment, not boilerplate.
 
-**Which endpoints require the header.** Not every POST. The key earns its weight on writes with external side effects — payments, sends, creates — the operations that would be genuinely bad to run twice. It's pointless on operations that are already idempotent by nature: a `PUT` that replaces a value with the same value, a `DELETE` of something already gone. So require it where double-execution hurts, and **write that requirement into your API contract.** And don't do the worst thing, which is to accept the header and ignore it — that makes the contract a lie, and a client that trusts your "we're idempotent" docs will retry straight into a double-charge. Implement it or remove it.
+**Which endpoints require the header.** Not every POST. The key earns its weight on writes with external side effects, like payments, sends, and creates, the operations that would be genuinely bad to run twice. It's pointless on operations that are already idempotent by nature: a `PUT` that replaces a value with the same value, or a `DELETE` of something already gone. So require it where double-execution hurts, and **write that requirement into your API contract.** The worst thing you can do is accept the header and ignore it, because that makes the contract a lie, and a client that trusts your "we're idempotent" docs will retry straight into a double-charge. Implement it or remove it.
 
-**How long the cache lives.** Bounded, never forever. **24 hours** is the common contract — long enough to cover any sane retry window, short enough that you're not hoarding response bodies indefinitely. Document the horizon, and remember that storing response bodies means storing user-visible data, so the same retention sweep and PII rules you apply to `processed_events` apply here too. A cache of responses is still a pile of customer data; treat it like one.
+**How long the cache lives.** Bounded, never forever. **24 hours** is the common contract: long enough to cover any sane retry window, short enough that you're not hoarding response bodies indefinitely. Document the horizon, and remember that storing response bodies means storing user-visible data, so the same retention sweep and PII rules you apply to `processed_events` apply here too. A cache of responses is still a pile of customer data, so treat it like one.
 
-This is also the most concrete instance of the pattern, which makes it the one worth getting your hands on. In the drill below, one request has already been claimed and answered — `('acme', 'req-7f3a')` is sitting in the table with its cached `201` response. A *new* request arrives carrying a fresh key, `req-9b2c`, and your job is to write the atomic claim for it: the `onConflictDoNothing` insert targeting the composite unique, with `.returning()`, and return its result. Because that key is new, nothing conflicts — your claim returns **one row**, and the row you win is the green "do the work, then cache the answer" path the handler takes the first time it sees a request.
+This is also the most concrete instance of the pattern, which makes it the one worth getting your hands on. In the drill below, one request has already been claimed and answered: `('acme', 'req-7f3a')` is sitting in the table with its cached `201` response. A *new* request arrives carrying a fresh key, `req-9b2c`, and your job is to write the atomic claim for it: the `onConflictDoNothing` insert targeting the composite unique, with `.returning()`, and return its result. Because that key is new, nothing conflicts, so your claim returns **one row**, and the row you win is the green "do the work, then cache the answer" path the handler takes the first time it sees a request.
 
 <DrizzleCoding
   instructions="The seeded row is request req-7f3a for client acme — already claimed and answered. A fresh request arrives carrying key req-9b2c for the same client. Claim it with the atomic insert: ON CONFLICT DO NOTHING on the composite unique (client_id, idempotency_key), then RETURNING the id. Because the key is new, nothing conflicts and your claim returns one row — you won it, so the handler does the work. Then point idempotencyKey back at the seeded req-7f3a and re-run: zero rows come back, the lost-claim path where the handler replays the cached response instead."
@@ -314,7 +314,7 @@ This is also the most concrete instance of the pattern, which makes it the one w
   ordered={false}
 />
 
-Now flip it around: change `idempotencyKey` from `req-9b2c` to the seeded `req-7f3a` and run again. This time **zero rows** come back — you *lost* the claim, because the unique constraint refused the duplicate and `DO NOTHING` swallowed it into an empty result. That empty result is precisely the moment the handler stops and replays the prior answer instead of charging the card again.
+Now flip it around: change `idempotencyKey` from `req-9b2c` to the seeded `req-7f3a` and run again. This time **zero rows** come back, because you *lost* the claim: the unique constraint refused the duplicate and `DO NOTHING` swallowed it into an empty result. That empty result is precisely the moment the handler stops and replays the prior answer instead of charging the card again.
 
 The full claim you just completed:
 
@@ -329,20 +329,20 @@ return await db
 ```
 
 :::note
-The sandbox writes explicit SQL column names like `text('client_id')` because it has no client-level `casing` config. In a real project you set `casing: 'snake_case'` on the Drizzle client once and write plain camelCase keys. The two produce identical SQL; the sandbox just spells it out.
+The sandbox writes explicit SQL column names like `text('client_id')` because it has no client-level `casing` config. In a real project you set `casing: 'snake_case'` on the Drizzle client once and write plain camelCase keys. The two produce identical SQL, and the sandbox just spells it out.
 :::
 
 ## Signatures prove provenance; keys prove sameness
 
-I flagged this near the top and now it gets its own beat, because conflating these two is a classic and costly mistake. An incoming request raises two independent questions, and idempotency answers only one of them.
+I flagged this near the top, and now it gets its own section, because conflating these two is a classic and costly mistake. An incoming request raises two independent questions, and idempotency answers only one of them.
 
-The first question is <Term definition="Who is this from? Established by a webhook signature or by auth on a public route. Independent of whether you've already seen the request.">provenance</Term> — *who is this from?* A webhook answers it with a signature: the HMAC proves the bytes came from Stripe and nobody else. A public route answers it with auth: a token proves which client is calling. The second question is **attempt identity** — *is this the same attempt I've already processed?* That's the key's job, and only the key's job.
+The first question is <Term definition="Who is this from? Established by a webhook signature or by auth on a public route. Independent of whether you've already seen the request.">provenance</Term>: *who is this from?* A webhook answers it with a signature, where the HMAC proves the bytes came from Stripe and nobody else. A public route answers it with auth, where a token proves which client is calling. The second question is **attempt identity**: *is this the same attempt I've already processed?* That's the key's job, and only the key's job.
 
-These are orthogonal axes. They compose; neither one covers for the other.
+These are orthogonal axes. They compose, and neither one covers for the other.
 
 <TwoAxesStrip />
 
-A real webhook lives at the intersection: the signature says *Stripe sent this*, and `event.id` says *and I haven't seen this one before.* A valid signature tells you nothing about whether you've already processed the event — Stripe will happily sign the same event five times. And a matching idempotency key tells you nothing about whether the sender is who they claim — anyone can guess or reuse a key string. You need both axes, every time, on any untrusted POST. The trap to avoid is "the signature already makes it safe, so I can skip the dedup." It doesn't. Provenance is not deduplication.
+A real webhook lives at the intersection: the signature says *Stripe sent this*, and `event.id` says *and I haven't seen this one before.* A valid signature tells you nothing about whether you've already processed the event, because Stripe will happily sign the same event five times. A matching idempotency key tells you nothing about whether the sender is who they claim, because anyone can guess or reuse a key string. You need both axes, every time, on any untrusted POST. The trap to avoid is thinking "the signature already makes it safe, so I can skip the dedup." It doesn't. Provenance is not deduplication.
 
 Quick check before moving on.
 
@@ -361,17 +361,17 @@ Quick check before moving on.
 
 ## Pick the smallest version that works
 
-One more piece of judgment before the recap, and it's the one beginners most often get wrong in the *other* direction — by reaching for the idempotency table reflexively, on every write, forever. Don't. An explicit `idempotencyKey` column is overhead the row carries for the rest of its life: a column to store, an index to maintain, a value the client must remember to send. You add it when it pays for itself, and not before.
+One more piece of judgment before the recap, and it's the one beginners most often get wrong in the *other* direction: reaching for the idempotency table reflexively, on every write, forever. Don't. An explicit `idempotencyKey` column is overhead the row carries for the rest of its life: a column to store, an index to maintain, and a value the client must remember to send. You add it when it pays for itself, and not before.
 
-Here's the thing it's easy to miss: a lot of the time the dedup is *already done for you*, by a constraint you needed anyway. If a table already has a **natural domain unique** — `(orgId, slug)`, an `email`, `(orgId, name)` — then "this can't happen twice" is already enforced. A double-submit conflicts on the natural key, with zero extra columns and zero extra thought. The constraint you added for correctness is doing idempotency on the side.
+Often the dedup is *already done for you*, by a constraint you needed anyway. If a table already has a **natural domain unique**, such as `(orgId, slug)`, an `email`, or `(orgId, name)`, then "this can't happen twice" is already enforced. A double-submit conflicts on the natural key, with zero extra columns and zero extra thought. The constraint you added for correctness is doing idempotency on the side.
 
-So run this decision before you bolt on a key:
+So run this decision before you add a key:
 
 - **A natural unique already exists and matches the operation's identity** → use it. No key column. A duplicate conflicts on the natural key for free.
 - **No natural unique, and the operation would be bad to do twice** (charge, send, create-without-natural-key) → add the scoped `idempotencyKey` column.
 - **The operation is naturally idempotent** (PUT replacing a value, DELETE, setting a field) → nothing needed. Running it twice already lands in the same place.
 
-Now make the rule muscle memory. For each operation below, decide whether a natural unique already covers it, it needs an explicit idempotency key, or it's naturally idempotent and needs neither.
+Now practice the rule until it's automatic. For each operation below, decide whether a natural unique already covers it, it needs an explicit idempotency key, or it's naturally idempotent and needs neither.
 
 <Buckets twoCol instructions="For each operation, decide whether a natural unique already does the dedup, it needs an explicit idempotency key, or running it twice already lands in the same place.">
   <Bucket name="natural" label="Natural unique covers it" description="A constraint you needed anyway already refuses the duplicate" />
@@ -388,19 +388,19 @@ Now make the rule muscle memory. For each operation below, decide whether a natu
   <Item bucket="idempotent">Delete an invoice by its id</Item>
 </Buckets>
 
-That judgment is the senior part. The mechanism is easy; knowing when *not* to reach for it is what keeps your schema honest.
+That judgment is the senior part. The mechanism is easy, and knowing when *not* to reach for it is what keeps your schema honest.
 
 ## One pattern, four surfaces
 
-Here is the grid from the middle of the lesson, now filled in completely. This is the takeaway — if you remember one image from this lesson, make it this one.
+Here is the grid from the middle of the lesson, now filled in completely. If you remember one image from this lesson, make it this one.
 
 <FourSurfacesGridFull />
 
 Read the grid one more time and let it collapse into a single sentence, because that sentence is what you actually leave with:
 
-**Idempotency is a key, a unique constraint, and atomic claim-and-work. Choose the key that names the attempt, scope it to its owner, and let the database — not your application code — be the thing that enforces "once."**
+**Idempotency is a key, a unique constraint, and atomic claim-and-work. Choose the key that names the attempt, scope it to its owner, and let the database, not your application code, be the thing that enforces "once."**
 
-That's it. You wrote it for webhooks three lessons ago. It's the same move for a double-clicked form, a retried job, and a flaky client's POST. Last check — match each surface to where its key is born.
+You wrote it for webhooks three lessons ago. It's the same move for a double-clicked form, a retried job, and a flaky client's POST. As a last check, match each surface to where its key is born.
 
 <Matching instructions="Match each surface to where its idempotency key is born — the source that owns the definition of 'this attempt'.">
   <Pair>
@@ -423,7 +423,7 @@ That's it. You wrote it for webhooks three lessons ago. It's the same move for a
 
 ## External resources
 
-If you want to see this pattern in the wild — particularly the response-caching route-handler surface — these are the canonical references.
+If you want to see this pattern in the wild, particularly the response-caching route-handler surface, these are the canonical references.
 
 <CardGrid>
   <ExternalResource
