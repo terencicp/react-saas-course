@@ -1,0 +1,265 @@
+---
+title: Env vars across dev, preview, and prod
+tagline: How Vercel scopes one configuration schema across development, preview, and production, turning environment isolation into a security boundary and reaching toward keyless cloud access with OIDC.
+chapter-id: 98
+course-progress: 0.00005
+sidebar:
+  order: 6
+  label: Env vars across environments
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import TrueFalse from '../../../components/exercises/true-false/TrueFalse.astro';
+import Statement from '../../../components/exercises/true-false/Statement.astro';
+import TfWhy from '../../../components/exercises/true-false/TfWhy.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import OneSchemaThreeFills from '../../../components/lessons/098/6/OneSchemaThreeFills.astro';
+import VercelEnvPanel from '../../../components/lessons/098/6/VercelEnvPanel.astro';
+import OidcBeforeAfter from '../../../components/lessons/098/6/OidcBeforeAfter.astro';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { Steps } from '@astrojs/starlight/components';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+You finished the schema work long ago. Back in the invoicing project you wrote `env.ts`, a single typed boundary that validates your configuration at build time and refuses to build if a required variable is missing or has the wrong shape, and the pre-launch security pass confirmed it still holds. That file has guarded the app ever since. But notice what it never told you: the schema describes what *shape* a value must have — it never says *which value*. `STRIPE_SECRET_KEY` is one field in that schema. Yet the value behind it has to be your **test** key while you develop and while a teammate reviews your pull request, and your **live** key in production. One schema field, three environments, three different secrets.
+
+Get that wiring backwards and the failure is quiet and expensive. Point a preview build at the live key and a reviewer clicking through a draft feature charges real customers' cards. Point production at a test key and your app boots cleanly, passes every check, and then declines every single real payment — a test key can't move real money. The schema can't catch either mistake, because in both cases the value *is* a valid Stripe key; it's just the wrong one for where it landed. This lesson is about that gap. By the end you'll know where each value lives across Vercel's three environments, why that scoping is a security wall and not just bookkeeping, how `vercel env pull` keeps your laptop in sync, and the two reflexes an experienced engineer reaches for: safe secret rotation and OIDC federation, which removes long-lived cloud keys from the picture entirely.
+
+## One schema, three fills
+
+Hold onto one idea and the rest of the lesson hangs off it: `env.ts` is **one file, validated identically in every environment**. The same schema runs in production, in preview, and on your laptop. What changes between them is not the schema — it's the *values* that get handed to it. So the natural way to think about a configuration variable on Vercel is as a triple: a `key`, a `value`, and a `scope`. The key and the validation rule are constant. The value is whatever the active environment supplies. The scope is what decides which environment that is.
+
+Vercel gives you three scopes, and you already met them earlier in this chapter when we mapped git events to deployments in "The push-is-the-deploy model." A push to `main` produces a **Production** deployment. A push to any other branch produces a **Preview** deployment. And `pnpm dev` on your machine — reading a local `.env.local` — is the **Development** environment. Same repository, same `env.ts`, three contexts. The schema validates whatever the active context hands it; Vercel decides what that is.
+
+The following figure is the whole lesson in one frame. On the left is your single `env.ts` with a few representative fields. On the right are the three environments, each holding the *same keys* with *different values*.
+
+<OneSchemaThreeFills />
+
+Here is the payoff, and it's worth saying plainly because it reframes a chore as a discipline: because the schema is constant and only the values move, "configure the app for production" is **never a code change**. There's no production branch of `env.ts`, no `if (production)` ladder choosing secrets. Configuring an environment means setting the right value in the right scope, in one place, outside your code. That's the same single-source-of-truth instinct you already trust inside `env.ts` — now extended past the edge of your repository and onto the platform.
+
+## The three scoping patterns
+
+Now the actual decision you'll make, variable by variable: how should this one be scoped? Almost every variable falls into one of three patterns, and naming them turns a fuzzy "where does this go?" into a quick classification.
+
+**Pattern 1 — the same value everywhere.** Rare, but real. A purely cosmetic `NEXT_PUBLIC_APP_NAME`, or a <Term definition="A key designed to be public — safe to ship in the browser bundle, unlike a secret key.">publishable key</Term> that's identical in every environment. You set it once and apply it to all three scopes. There's nothing to get wrong here, which is exactly why it's the least interesting case.
+
+**Pattern 2 — a different value per environment.** This is the dominant pattern, and where you'll spend almost all of your attention. Practically every external service hands you two sets of credentials: a test or sandbox set, and a live set. Stripe gives you a test secret key and a live secret key. Resend separates a test sending setup from your verified production domain. PostHog wants events from your laptop and your previews flowing into a development project, and only real traffic flowing into the production project. The rule of thumb: development and preview use the *test* set; production uses the *live* set. That means the variable is set **three times** — once per scope — with the correct value each time. Same key, same schema field, three different values.
+
+**Pattern 3 — present in some environments, absent in others.** Some variables genuinely don't exist everywhere. A feature flag you turn on only in Preview to dogfood something before it ships. A `SENTRY_AUTH_TOKEN` your production build needs to upload source maps, but that has no job on your laptop. Your schema can express "required in production, optional elsewhere" — you built exactly that conditional pattern in the security-baseline work on `env.ts` — so the variable can be legitimately missing in dev without failing the build there, while still being mandatory in prod.
+
+Why does getting this right matter so much? Because a value in the wrong scope is the worst kind of bug: silent, environment-specific, and invisible where you'd most likely catch it. Your laptop never exercises the production value, so local dev sails right past the mistake — the same shape of trap as a function deployed to the wrong region, where everything works in dev and only the live path pays the price. There's no clever fix. The fix is mechanical discipline: decide the pattern for each variable, then set each scope deliberately.
+
+Try sorting the app's real configuration by scoping pattern. For each variable below, ask: does it carry the same value in all three environments, a different value per environment, or is it present in only some?
+
+<Buckets instructions="Sort each variable by the scoping pattern it follows across Development, Preview, and Production.">
+  <Bucket name="same" label="Same value everywhere" description="One value, applied to all three scopes" />
+  <Bucket name="different" label="Different value per environment" description="Test set in dev/preview, live set in production" />
+  <Bucket name="some" label="Present in some only" description="Legitimately absent in at least one scope" />
+
+  <Item bucket="different">`STRIPE_SECRET_KEY`</Item>
+  <Item bucket="different">`RESEND_API_KEY`</Item>
+  <Item bucket="different">`NEXT_PUBLIC_POSTHOG_KEY`</Item>
+  <Item bucket="different">`DATABASE_URL`</Item>
+  <Item bucket="same">`NEXT_PUBLIC_APP_NAME`</Item>
+  <Item bucket="some">`SENTRY_AUTH_TOKEN`</Item>
+  <Item bucket="some">`NEXT_PUBLIC_FLAG_NEW_BILLING`</Item>
+</Buckets>
+
+<details>
+<summary>Answer &amp; why each lands where it does</summary>
+
+**Different value per environment** is the default you reach for first — every service that hands you a test set and a live set lands here. `STRIPE_SECRET_KEY`, `RESEND_API_KEY`, and `NEXT_PUBLIC_POSTHOG_KEY` all carry the test credential in Development and Preview and the live one in Production. `DATABASE_URL` belongs here too, and you've already seen why: the Neon integration injects a per-PR branch URL into Preview and the `main`-branch URL into Production, so one key points at three different databases.
+
+**Same value everywhere** is the rare case — `NEXT_PUBLIC_APP_NAME` is a cosmetic string that's identical in every scope, set once and applied to all three.
+
+**Present in some only** covers variables that genuinely don't exist everywhere: `SENTRY_AUTH_TOKEN` is required in Production to upload source maps but has no job on your laptop, and `NEXT_PUBLIC_FLAG_NEW_BILLING` is a preview-only flag you flip to dogfood a feature before it ships.
+
+This is a different question from the firewall sort (`NEXT_PUBLIC_` vs. server-only) you did earlier. Every variable has a firewall answer *and* a scope answer, independently: `NEXT_PUBLIC_POSTHOG_KEY` is public *and* different-per-environment; `STRIPE_SECRET_KEY` is server-only *and* different-per-environment.
+
+</details>
+
+## Setting variables in the Vercel dashboard
+
+With the patterns clear, the mechanic is almost anticlimactic. In your project, under **Settings → Environment Variables**, each variable you add carries three things: a key, a value, and a set of **environment checkboxes** — Production, Preview, Development. Those checkboxes *are* the scope. Check all three and tick the same value into each, and you've expressed Pattern 1. Add the variable three times with the test value scoped to Development and Preview and the live value scoped to Production, and you've expressed Pattern 2. (There's also an optional Git branch filter to pin a value to one specific preview branch — niche, reach for it rarely.)
+
+The following figure shows the panel you'll work in.
+
+<VercelEnvPanel />
+
+Three behaviors of this panel are worth internalizing, because each is a common source of confusion.
+
+First, the **Sensitive** flag. A variable marked sensitive is stored encrypted, and once you save it, its value can **never be read back** — not in the dashboard, not via the CLI, not even by an admin — while remaining fully available to your builds and at runtime. It's the platform-level companion to the code-level firewall you already enforce with `server-only`: one stops a secret reaching the browser bundle, the other stops it being read back out of the dashboard. Vercel now defaults new Production and Preview variables to sensitive, so the old reflex of "remember to flag every production secret" has mostly become "confirm the toggle is on" — but confirm it, because it's the difference between a secret you can leak by reading a screen and one you can't. The one place sensitive is *not* available is the Development scope: Vercel deliberately disallows it there, and that's not an oversight. Development values have to stay readable so that the next mechanic — pulling them down to your laptop — can actually work.
+
+:::caution
+Changing a variable's value applies to **new deployments only**. Editing a value in the dashboard does nothing to deployments that are already built and serving traffic — they keep the value they were built with until you redeploy. This is the single most common dashboard confusion: "I changed the variable, why is the app still using the old one?" You changed it for the *next* build.
+:::
+
+Finally, **managed variables**. You already met one in the previous lesson: when you wired the Neon integration, it took over `DATABASE_URL` in the Preview scope, injecting a fresh per-PR branch URL into every preview deployment. That variable shows up locked — you can't hand-edit it, and the lock is the integration telling you it owns this value and overwrites it on every deployment. Don't fight it. A managed variable is correct by construction; reaching in to override it only breaks the thing the integration is doing for you.
+
+<VideoCallout videoId="nZrAgov_-D8" videoTitle="Environments on Vercel">
+  Vercel's own 11-minute walkthrough of development, preview, and production environments, showing the same dashboard panel and per-environment values this section describes.
+</VideoCallout>
+
+## Build-time vs. runtime, and why a public var needs a rebuild
+
+There's one genuinely platform-specific subtlety left, and it's about *when* a value is read. You already know that `NEXT_PUBLIC_*` variables are inlined into the client bundle — frozen into the JavaScript that ships to the browser — while server-only secrets are read on the server. The new piece is the deploy consequence of that split.
+
+Build-time variables are read once, during `next build`: the env validator runs, static pages pre-render, and every `NEXT_PUBLIC_*` value is baked into the bundle as a literal. Runtime variables — a server-only secret read inside a Server Action or a route handler — are read fresh on each invocation. So the consequences diverge. Change a server-only secret in the dashboard and the next deployment (or even the next function cold start) picks it up, no rebuild of the client needed. But change a `NEXT_PUBLIC_*` value and updating the dashboard does *nothing* on its own: the old value is already welded into the existing bundle. The only way to change it is to rebuild, because the value isn't read at runtime — it was read at build and is now a string constant in shipped JavaScript. This closes the build-versus-runtime thread "The push-is-the-deploy model" opened earlier in the chapter. If a public value looks stale after you've clearly updated it, the answer is almost always: redeploy.
+
+## Syncing dev with `vercel env pull`
+
+So far we've handled production and preview, both of which Vercel fills for you at deploy time. Your laptop is the one environment Vercel can't reach into — which raises the question your first deploy left open in "From repo to live URL": where do *your local* values come from?
+
+The answer is one command:
+
+```bash title="Terminal"
+vercel env pull .env.local
+# Downloaded `.env.local` file  [120ms]
+```
+
+`vercel env pull` writes the **Development**-scoped variables into a gitignored `.env.local` on your machine. (It needs a linked project, so `vercel link` comes first — you ran that on your first deploy.) This is the on-clone ritual for every developer on the team. Vercel's Development scope is the source of truth for local values, which retires the old dance of copying `.env.example` and hand-filling each secret from a password manager. When a teammate adds a new development variable, everyone re-runs the command and they're back in sync. There's an inverse too — `vercel env add <KEY>` pushes a new variable up from the terminal, prompting you for which scopes it belongs to — but the dashboard is the more common home for that.
+
+Here's a small detail that quietly ties this lesson together: `vercel env pull` also writes a variable called `VERCEL_OIDC_TOKEN` into your `.env.local`. That token lets your local dev talk to a cloud provider without ever storing a long-lived cloud key on your laptop. We'll pick that thread up shortly — for now, just notice that the same command that syncs your config values also delivers a short-lived credential.
+
+And `.env.example`? It still has a job, just a smaller one. It stays committed to the repository as **documentation** — the list of keys a contributor needs to know exist, with placeholder values. It's the answer to "what do I need to set up?" for someone who doesn't have access to your Vercel project. `vercel env pull` supplies the actual values; `.env.example` documents which keys those values fill. Two files, two jobs — the difference now is that the values come from Vercel, not from you pasting them around.
+
+## Scope is the security boundary
+
+It's tempting to read "scope" as bookkeeping — a way to keep your test and live keys from getting muddled. It's far more than that. Scope is a security wall, and it's worth promoting to its own idea.
+
+The structural guarantee is this: **a Preview deployment can only read Preview-scoped variables. Production secrets are never injected into a preview build.** Sit with what that means. A pull request — including one from an external contributor you've never met — builds a preview deployment. That build literally cannot read your live Stripe key, your production database URL, or any other production secret, because Vercel never hands those values to a preview build in the first place. The wall isn't enforced by a reviewer remembering to check; it's enforced by the platform, every time, with no human in the loop. A malicious PR that tries to print every secret it can reach simply has nothing dangerous to print.
+
+This complements the supply-chain defenses from the CI work. There you guarded what *runs* at build time — pinning GitHub Actions to specific commit SHAs, and `minimumReleaseAge` making fresh package versions wait before they resolve. Scope isolation guards what *secrets* that build can see. One controls the code on the builder; the other controls the credentials that code can reach. You want both.
+
+The reflex this should produce is a firm one: **never attach a production secret to the Preview scope** to make a preview "work." It's a tempting shortcut — a preview is failing because some integration needs a real credential, so you tick the Preview box on the production secret and move on. You've just quietly demolished the wall, and now every future PR's preview can read that secret. If a preview needs a credential, it gets the *test* credential, scoped to Preview. The wall stays up.
+
+One operational note, and it's a Pro-plan-or-above feature: Vercel keeps an audit trail of environment-variable changes — who changed which variable, and when, in the team's audit log. After any suspected credential exposure, that log is where you reconstruct the timeline of what was touched, so you know what to rotate.
+
+Before moving on, test the boundary claims against your intuition.
+
+<TrueFalse instructions="Each claim is about how environment scope behaves on Vercel.">
+  <Statement answer="false">
+    A pull request's preview build can read the production `STRIPE_SECRET_KEY`.
+    <TfWhy>Production secrets are never injected into a preview build. The preview can only read Preview-scoped variables — which is exactly why an external contributor's PR can't exfiltrate your live keys.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    Changing a `NEXT_PUBLIC_*` value in the dashboard immediately updates deployments that are already live.
+    <TfWhy>Public values are inlined into the bundle at build time, so the old value is frozen into existing deployments. You have to redeploy for the change to take effect.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    The Neon integration's managed `DATABASE_URL` in Preview points at your production database.
+    <TfWhy>It points at a copy-on-write branch created per pull request — isolated from production data, which is the whole reason the integration exists.</TfWhy>
+  </Statement>
+
+  <Statement answer="true">
+    Marking a variable Sensitive means even an admin can't read its value back in the dashboard.
+    <TfWhy>A sensitive variable is stored encrypted and its value is never shown back after save, while still being available to builds and at runtime.</TfWhy>
+  </Statement>
+</TrueFalse>
+
+## OIDC: short-lived tokens instead of long-lived cloud keys
+
+Everything so far has been about *storing* secrets well. The last reflex is about needing fewer of them. This is the one place the lesson reaches a step beyond what you've already built, so we'll take it carefully.
+
+Start with the "before" — code you actually shipped. When you wired up file uploads, you stored `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` as long-lived server secrets in your environment. That's the historical default for talking to any cloud — AWS, GCP, Azure, R2: you mint a static access key in the provider's console, copy it into an env var, and your app authenticates with it forever. It works. The problem is its <Term definition="The full scope of damage a single leaked credential makes possible.">blast radius</Term>. A long-lived key is a standing liability: it stays valid until a human notices a problem and revokes it. If it ever leaks — into a log line, a compromised build, a stray commit — it grants its full access for as long as that takes. The danger isn't that the key exists; it's that its lifetime is unbounded.
+
+The 2026 pattern removes the standing secret entirely. It's called <Term definition="OpenID Connect — an identity protocol that lets one system vouch for an identity to another.">OIDC federation</Term>, and the mechanism is worth walking through one step at a time.
+
+<OidcBeforeAfter />
+
+Here's the same flow in words. First, Vercel acts as an <Term definition="IdP — the system that issues a verifiable proof of who you are.">identity provider</Term>. On each deployment or invocation it mints a short-lived, signed <Term definition={"JSON Web Token — a compact, cryptographically signed token carrying a few claims, here: which project and environment is asking."}>JWT</Term> that identifies the project and environment making the request. In a build it arrives as the `VERCEL_OIDC_TOKEN` you already saw `vercel env pull` write to your laptop; in a running function it arrives as a request header. Second, you set up a **trust relationship once** in the cloud provider — on AWS, an IAM role whose trust policy says "I trust tokens issued by Vercel's OIDC issuer." Third, at runtime the SDK **exchanges** that JWT for short-lived cloud credentials. No long-lived cloud secret is ever stored in Vercel. (The token's lifetime is under an hour, which is the whole point: even if one leaks, it's expiring as you read this.)
+
+The senior diff is a single property: **lifetime**. A static key lives until someone kills it; a federated token expires on its own, in under an hour, whether anyone is watching or not. You've moved the security guarantee from human vigilance to physics.
+
+And here's why this belongs in *this* lesson and not somewhere else. The cloud provider's trust policy can grant *different* permissions per Vercel environment — your dev, preview, and production scopes can each map to a different cloud role with different access. That's the exact same scoping wall from earlier, now extended all the way into your cloud account. Scope didn't stop at Vercel's edge; with OIDC it reaches the resources your app talks to. Per-environment env values and per-environment cloud access are the same idea applied twice.
+
+In code, the shift is smaller than the concept. Your `lib/r2.ts` already builds an S3-compatible client and hands it a `credentials` value; instead of a static key pair, you hand it Vercel's federated provider. The annotated snippet below is **what it looks like, not something you wire today** — the course shipped R2 with API keys, and the full OIDC setup (authoring that IAM trust policy) is a deferred upgrade. Read it for the shape.
+
+<AnnotatedCode lang="ts" code={`
+// src/lib/r2.ts
+import 'server-only';
+import { S3Client } from '@aws-sdk/client-s3';
+import { awsCredentialsProvider } from '@vercel/functions/oidc';
+
+export const r2 = new S3Client({
+  region: 'auto',
+  credentials: awsCredentialsProvider({
+    roleArn: process.env.AWS_ROLE_ARN,
+  }),
+});
+`}>
+  <AnnotatedStep meta="{8-10}" color="blue">
+    The client looks identical to the `lib/r2.ts` you already wrote — same `S3Client`, same `region` — except `credentials` now comes from a federated provider instead of a static key pair.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{9}" color="green">
+    The only thing you configure is which cloud role to assume. The role's trust policy — set up once, on the provider — is what permits Vercel's tokens; the ARN itself is not a secret, just an identifier.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{8-10}" color="violet">
+    Notice what's *absent*: there is no `accessKeyId` and no `secretAccessKey` here. That absence is the entire point — the provider exchanges the short-lived `VERCEL_OIDC_TOKEN` for temporary credentials on each call, so no long-lived cloud secret is stored anywhere. Contrast it with the `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` pair the old version of this file read.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+This works locally too — that `VERCEL_OIDC_TOKEN` in your pulled `.env.local` is what lets your laptop participate in the same exchange without a static key. You don't need to wire any of this now. File it as the named reflex: when an app talks to a cloud provider, federate the identity instead of storing a long-lived key.
+
+## Rotating a secret without downtime
+
+One operational reflex closes the lesson. Secrets leak, expire, and get rotated on a schedule — so eventually you'll need to *replace* one. You know secrets live in three scopes; this is the safe way to change one.
+
+The naive move is to edit an existing variable's value in place and call it done. Two things bite you. First — the rule from earlier — deployments already built against the old value keep using it until they're redeployed, so for a window you have live traffic on the old secret and new traffic expecting the new one. Second, an in-place swap gives you no overlap: there's a moment where the old secret is dead and the new one isn't live everywhere yet, and requests fall into that gap. The safe pattern trades the instantaneous swap for a deliberate overlap window where *both* secrets are valid.
+
+<Steps>
+1. **Generate the new secret at the provider, leaving the old one active.** Most providers let you mint a second credential without revoking the first — so for now both the old and new secret authenticate successfully. This is the overlap window you're creating on purpose.
+
+2. **Set the new value in Vercel and redeploy.** Every running deployment now uses the new secret; any deployment still on the old one is also still valid, because you haven't revoked it yet. Nothing is broken at any instant. Rotate each scope deliberately rather than assuming one change covers all three.
+
+3. **Revoke the old secret at the provider.** Only once you've confirmed everything is serving on the new value do you kill the old one. The overlap window closes, and the rotation is complete with no downtime.
+</Steps>
+
+That's the platform mechanic. The wider question — *which* credentials to rotate, on what cadence, and the full credential-rotation runbook you'll reach for during an incident — was covered in the pre-launch security work, and the launch checklist at the end of this chapter will confirm those runbooks exist before you go live.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    href="https://vercel.com/docs/environment-variables/manage-across-environments"
+    title="Managing environment variables across environments"
+    description="Vercel's reference for per-environment scoping and the sensitive flag — the dashboard side of everything in this lesson."
+    icon="simple-icons:vercel"
+    iconColor="#000000"
+  />
+
+  <ExternalResource
+    href="https://vercel.com/docs/oidc"
+    title="OIDC Federation on Vercel"
+    description="How VERCEL_OIDC_TOKEN works and how Vercel acts as the identity provider for short-lived, keyless cloud credentials."
+    icon="simple-icons:vercel"
+    iconColor="#000000"
+  />
+
+  <ExternalResource
+    href="https://vercel.com/docs/oidc/aws"
+    title="Connect Vercel OIDC to AWS"
+    description="The companion guide the OIDC section defers — the IAM identity provider and trust-policy setup, with the awsCredentialsProvider example."
+    icon="simple-icons:amazonwebservices"
+    iconColor="#FF9900"
+  />
+
+  <ExternalResource
+    href="https://vercel.com/docs/environment-variables/system-environment-variables"
+    title="System environment variables"
+    description="The VERCEL_* family Vercel injects automatically, including the deployment URL helpers you've already used."
+    icon="simple-icons:vercel"
+    iconColor="#000000"
+  />
+</CardGrid>

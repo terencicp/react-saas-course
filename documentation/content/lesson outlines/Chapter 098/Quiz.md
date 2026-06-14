@@ -1,0 +1,158 @@
+sources:
+  98.1: The push-is-the-deploy model
+  98.2: From repo to live URL
+  98.3: Region, runtime, and Fluid Compute
+  98.4: Custom domains and automatic SSL
+  98.5: A Neon branch per preview
+  98.6: Env vars across dev, preview, and prod
+  98.7: Two-layer rollback when prod breaks
+  98.8: The launch checklist
+
+questions:
+  - source: 98.1
+    question: |
+      Your branch ruleset requires all four CI jobs to pass before a PR can merge. A teammate, in a hurry, pushes a hotfix commit *directly* to `main`, bypassing the PR. CI starts running. What happens to production?
+    choices:
+      - text: |
+          Vercel starts a production deployment and re-aliases the domain to it immediately — it doesn't wait for CI, which runs in parallel. The broken hotfix can be live before CI ever goes red.
+        correct: true
+      - text: |
+          Vercel holds the deployment un-aliased until the four CI jobs pass, because the ruleset gates production.
+        correct: false
+      - text: |
+          Nothing deploys — a direct push to `main` is rejected by the ruleset, so production is untouched.
+        correct: false
+    why: |
+      The CI gate protects *merges into* `main`, not the production alias.
+      Vercel's deploy and GitHub Actions run in parallel and independently; the deploy doesn't wait for CI by default.
+      A direct push to `main` re-aliases production right away — which is exactly why pushing to `main` before the gate can vouch for it is dangerous.
+      Making the deploy itself wait on CI requires Vercel Deployment Checks, not the branch ruleset.
+
+  - source: 98.2
+    question: |
+      You import your repo, accept Vercel's auto-detected settings, and deploy. The build log shows it ran `npm install` instead of `pnpm install`, even though your repo uses a pnpm lockfile. What's the most likely cause?
+    choices:
+      - text: |
+          The `packageManager` field is missing from `package.json`, so Vercel couldn't detect pnpm and silently fell back to npm.
+        correct: true
+      - text: |
+          You forgot to set the Install Command override to `pnpm install` on the Configure Project screen.
+        correct: false
+      - text: |
+          Vercel always installs with npm on the first deploy and switches to pnpm only on subsequent pushes.
+        correct: false
+    why: |
+      Vercel reads `package.json`'s `packageManager` field to decide which package manager to use.
+      With it present (e.g. `"pnpm@11.5.0"`), Vercel installs with pnpm and your committed lockfile, matching your machine.
+      Without it, the build silently falls back to npm — the "works on my machine" drift you don't want under a production build. You don't override Install Command; you fix the field.
+
+  - source: 98.3
+    question: |
+      Under Fluid Compute, one warm instance now serves several requests concurrently. Which piece of code is genuinely unsafe to keep at module scope?
+    choices:
+      - text: |
+          A `let currentOrgId` that each request handler writes from the incoming request before reading it back.
+        correct: true
+      - text: |
+          The pooled Drizzle/Neon database client created once at the top of the module.
+        correct: false
+      - text: |
+          A compiled regular expression used to validate input.
+        correct: false
+    why: |
+      Module-scope state is now shared across all concurrent requests on the instance.
+      A `let currentOrgId` holds per-request data: request B can overwrite it between the moment request A sets it and reads it back — serving one tenant's data to another, a cross-tenant leak invisible to single-request local testing.
+      A pooled DB client and a compiled regex are stateless or built for concurrent use, so sharing them is fine. Per-request state belongs in function locals or `AsyncLocalStorage`.
+
+  - source: 98.4
+    question: |
+      You add a custom domain on Vercel, DNS resolves, and Let's Encrypt provisions the certificate automatically. What part of HTTPS is still your job, not the platform's?
+    choices:
+      - text: |
+          Setting the `Strict-Transport-Security` (HSTS) header — it's an application response header you configure in `next.config.ts`, not something Vercel adds.
+        correct: true
+      - text: |
+          The HTTP-to-HTTPS redirect — Vercel won't bounce plain HTTP requests, so you have to wire that yourself.
+        correct: false
+      - text: |
+          Renewing the certificate before it expires — Let's Encrypt certs are short-lived and Vercel doesn't auto-renew.
+        correct: false
+    why: |
+      Vercel handles the certificate end to end — provision, install, and auto-renew — and it auto-redirects HTTP to HTTPS on custom domains.
+      What it does *not* add is the HSTS header, which tells browsers never to even try plain HTTP again.
+      That's an app-level response header you set alongside your other security headers in `next.config.ts` and verify in the launch checklist.
+
+  - source: 98.5
+    question: |
+      The course wires migrations into the Build Command (`pnpm db:migrate && next build`) so each preview branch's schema matches its PR. Why is that exact pattern safe for previews but a "loaded gun" for production?
+    choices:
+      - text: |
+          A preview branch is disposable, so a wrong migration costs nothing; the `main` branch is real customer data, so an automatic migration on every push to `main` could drop a column out from under live traffic with no human in the loop.
+        correct: true
+      - text: |
+          Preview branches run migrations on the pooled client while production runs them unpooled, and only the unpooled path is risky.
+        correct: false
+      - text: |
+          Migrations against a preview branch are reversible, but production migrations are forward-only, so production can never run them in the build.
+        correct: false
+    why: |
+      Migrations in the Build Command run on *every* deploy — including production deploys against `main`.
+      For an ephemeral preview branch that's exactly right: it's disposable, so a bad migration costs nothing.
+      For production it's dangerous, because a naive destructive migration runs automatically with no approval. The senior call: build-command migrations for previews, gated/approved CI step for production. (Migration safety itself is the next chapter.)
+
+  - source: 98.6
+    question: |
+      The course's R2 setup used long-lived `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` env vars. The OIDC-federation upgrade replaces them with short-lived tokens. What is the single property that makes OIDC the senior default?
+    choices:
+      - text: |
+          Lifetime — a federated token expires on its own in under an hour, so a leaked credential is already dying; a static key stays valid until a human notices and revokes it.
+        correct: true
+      - text: |
+          Encryption — OIDC tokens are encrypted in transit while static access keys are sent in plaintext.
+        correct: false
+      - text: |
+          Convenience — OIDC means you no longer have to set any environment variables at all for cloud access.
+        correct: false
+    why: |
+      The senior diff is lifetime, not encryption or convenience.
+      A long-lived key's blast radius is unbounded: it grants full access until someone revokes it.
+      A federated JWT, exchanged at runtime for short-lived cloud credentials, expires on its own in under an hour — moving the security guarantee from human vigilance to physics. (You still configure a role ARN; the ARN isn't a secret.)
+
+  - source: 98.7
+    question: |
+      A bad deploy double-charged some customers and inserted bad rows before you caught it. You hit Instant Rollback and traffic flips to the previous good build in seconds. Select everything the rollback did *not* undo.
+    choices:
+      - text: |
+          The rows the bad deploy inserted into the database.
+        correct: true
+      - text: |
+          The Stripe charges it already captured.
+        correct: true
+      - text: |
+          The bad commit still sitting on top of `main`.
+        correct: true
+      - text: |
+          The buggy version of the page component the bad build shipped.
+        correct: false
+    why: |
+      Rollback flips a code pointer and nothing more. It resets what was frozen into the old build — code, the function bundle, build-time-inlined env values — so the buggy component *is* reverted.
+      It cannot touch anything outside that frozen package: the database rows persist, and already-captured charges (like emails and webhooks) stay out the door.
+      It also does *not* revert `main`; that's Layer 2, the `git revert`, without which the next merge re-ships the bug. The data-state problem is a separate, forward fix.
+
+  - source: 98.8
+    question: |
+      For the uptime monitor, why does the launch checklist ship a dedicated `/api/health` endpoint that runs a `select 1` instead of just pinging the homepage for a `200`?
+    choices:
+      - text: |
+          A Next.js page can return `200` while the database behind it is unreachable; pinging the DB with a cheap query proves the app can actually do its job, not just that the web server is up.
+        correct: true
+      - text: |
+          The homepage requires authentication, so an external monitor can't reach it without credentials.
+        correct: false
+      - text: |
+          A homepage request is too expensive to run every minute, while `/api/health` is cached at the edge and effectively free.
+        correct: false
+    why: |
+      A homepage `200` proves only the web server is alive — the static shell can stream while every data-driven path quietly fails against an unreachable database.
+      `/api/health` answers the honest question by doing a trivial `select 1`: success returns `200`, a throw returns `503`, which is what trips the monitor.
+      It's unauthenticated by design (the monitor is a non-browser client) and kept cheap on purpose, since it runs every minute forever.
