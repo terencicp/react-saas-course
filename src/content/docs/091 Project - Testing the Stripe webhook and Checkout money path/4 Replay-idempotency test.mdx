@@ -1,0 +1,190 @@
+---
+title: The replay/idempotency test
+chapter-id: 91
+course-progress: 0.00005
+sidebar:
+  order: 4
+  label: Replay/idempotency test
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { Code } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Last lesson you drove one signed `checkout.session.completed` event through the real route handler and proved it wrote the right rows. Stripe, though, does not promise to deliver that event once. It promises to deliver it *at least* once — a network blip, a slow ACK, a retry timer, and the same event lands on your endpoint a second time. This lesson you write the test that proves the second delivery changes nothing: same signed event, sent twice, and every surface a replay must leave untouched stays exactly as the first send left it.
+
+When it passes, `pnpm test:integration` reports `2 passed`. Run it under `--reporter=verbose` and the new line reads as the behavior on its own:
+
+<Code code="returns 200 with duplicate=true and does not mutate state on a replayed event" lang="text" frame="none" />
+
+No screenshot here — the terminal's pass count is the entire result.
+
+## Your mission
+
+You are proving the webhook handler is idempotent: at-least-once delivery is a guarantee you defend against, not a bug you tolerate. A duplicate is a *success* — the handler should answer `200` and quietly do nothing, never a `4xx` that would tell Stripe to retry the same event forever. The shape mirrors the happy-path test you just wrote, almost line for line — `withRollback(async ({ tx }) => { ... })`, `signedInAs({ role: 'admin' }, tx)`, the follow-up `tx.update` that sets `stripeCustomerId`, the same `registerSubscription(fixtureSubscription(...))` with a `course_pro_monthly` / `trialing` subscription, the Arrange / Act / Assert split with a blank line between each phase from [Lesson 4 of *The shape of a test suite*](/086-the-shape-of-a-test-suite/4-arrange-act-assert-one-behavior/). Use `it`, not `it.concurrent`. Read inside the transaction with `tx`, never the global `db` — `tx` is the handle the route shares through the `@/db` mock, and the global `db` would not see writes the route made inside this transaction. None of this is new work; the harness was built once in [the harness-reading lesson](/091-project---testing-the-stripe-webhook-and-checkout-money-path/2-reading-the-test-harness/), so this whole test costs you minutes.
+
+The one part that is genuinely different is the failure input, and it does not arrive by accident — you have to construct it. A replay is the *same event* arriving twice, which means the same dedup key has to survive both sends. The trap is subtle: if each send minted a fresh event id, the second call would be a brand-new event, the handler would claim it and mutate again, both assertions would pass, and your test would prove nothing about replays while looking like it does. So the failure input is deliberate — one event, built once, sent twice — and the test exists to assert the *absence* of mutation, not its presence. Keep it to that one behavior: the second send changes nothing, checked across every surface a replay touches. The signature-tampered rejection and the full browser money path are later lessons; the `subscription.deleted` and out-of-order-delivery paths are homework the harness will absorb in minutes apiece. None of them belong here.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">The first send returns `200` with `{ received: true, duplicate: false }` — the claim-and-dispatch path.</ChecklistItem>
+  <ChecklistItem chip="tested">The second send returns `200` with `{ received: true, duplicate: true }` — the dedup-hit path.</ChecklistItem>
+  <ChecklistItem chip="tested">The event is claimed exactly once — `processed_events` rows for the event id stay at 1 across both sends.</ChecklistItem>
+  <ChecklistItem chip="tested">The entitlement is not re-written — `plan_entitlements.updatedAt` is identical before and after the second send.</ChecklistItem>
+  <ChecklistItem chip="tested">The audit log is not appended twice — `audit_logs` rows for the org stay at 1.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Write `tests/integration/webhook-idempotency.int.test.ts` against the brief and the tests. Try it before you open the solution below — the muscle this builds is constructing a failure input on purpose, and you only build it by reaching for it yourself.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+The imports and the deterministic constants come first. The only one that earns a comment is `eventId` — everything else is the same cast as the happy-path test.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+import { eq } from 'drizzle-orm';
+import { describe, expect, it } from 'vitest';
+
+import { auditLogs } from '@/db/audit';
+import { planEntitlements, processedEvents } from '@/db/schema';
+import { organization } from '@/db/schema/auth';
+import { withRollback } from '@/test/db/with-rollback';
+import { signedInAs } from '@/test/fixtures/auth';
+import { checkoutCompleted } from '@/test/fixtures/stripe-events';
+import { fixtureSubscription } from '@/test/fixtures/stripe-subscription';
+import { postWebhook } from '@/test/helpers/post-webhook';
+import { registerSubscription } from '@/test/stripe-retrieve-registry';
+
+const customerId = 'cus_test_idempotency';
+const subscriptionId = 'sub_test_idempotency';
+const currentPeriodEnd = 1893456000;
+// The pinned eventId is the load-bearing setup: without it each postWebhook mints a
+// fresh id and the second call is a NEW event, not a replay. The same id sent twice is
+// what exercises claimEvent's onConflictDoNothing dedup and the 200-on-dedup-hit rule.
+const eventId = 'evt_test_idempotency_fixed';
+
+describe('replayed checkout event is a no-op', () => {
+  it(
+    'returns 200 with duplicate=true and does not mutate state on a replayed event',
+    withRollback(async ({ tx }) => {
+      const { org } = await signedInAs({ role: 'admin' }, tx);
+      await tx
+        .update(organization)
+        .set({ stripeCustomerId: customerId })
+        .where(eq(organization.id, org.id));
+
+      const event = checkoutCompleted({
+        orgId: org.id,
+        customerId,
+        subscriptionId,
+        eventId,
+      });
+      registerSubscription(
+        fixtureSubscription({
+          id: subscriptionId,
+          lookupKey: 'course_pro_monthly',
+          status: 'trialing',
+          currentPeriodEnd,
+          orgId: org.id,
+        }),
+      );
+
+      const first = await postWebhook(event);
+      expect(first.status).toBe(200);
+      await expect(first.json()).resolves.toMatchObject({
+        received: true,
+        duplicate: false,
+      });
+
+      const afterFirst = await tx.query.planEntitlements.findFirst({
+        where: eq(planEntitlements.organizationId, org.id),
+      });
+      const updatedAtAfterFirst = afterFirst?.updatedAt;
+
+      const second = await postWebhook(event);
+      expect(second.status).toBe(200);
+      await expect(second.json()).resolves.toMatchObject({
+        received: true,
+        duplicate: true,
+      });
+
+      const ledger = await tx.query.processedEvents.findMany({
+        where: eq(processedEvents.eventId, eventId),
+      });
+      expect(ledger).toHaveLength(1);
+
+      const afterSecond = await tx.query.planEntitlements.findFirst({
+        where: eq(planEntitlements.organizationId, org.id),
+      });
+      // Equality across two reads reads as "nothing changed in between" — the cleanest
+      // mutation-free assertion that the replay touched no Stripe-derived column.
+      expect(afterSecond?.updatedAt).toEqual(updatedAtAfterFirst);
+
+      const audits = await tx.query.auditLogs.findMany({
+        where: eq(auditLogs.organizationId, org.id),
+      });
+      expect(audits).toHaveLength(1);
+    }),
+  );
+});
+`}>
+  <AnnotatedStep meta={`{17-20} {32-37} "eventId"`} color="green">
+    The pinned `eventId` is the load-bearing setup. The factory hands you a fresh, unique id on every call by default; passing one in forces both deliveries to carry the same dedup key. One `event` object is built once and sent twice — there is no second `checkoutCompleted(...)` call.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{55-58} "updatedAtAfterFirst"`} color="blue">
+    After the first send lands the entitlement, read `plan_entitlements` through `tx` and stash `afterFirst?.updatedAt` in a local. This snapshot is the "before" the second send is measured against.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{72-77} "afterSecond" "toEqual"`} color="violet">
+    Re-read the row after the second send and assert `afterSecond?.updatedAt` equals the captured value. Equality across two reads reads as "nothing changed in between" — a far cleaner mutation-free proof than hardcoding a timestamp.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+A few of the decisions are worth saying out loud.
+
+**The pinned `eventId` is the whole test.** The event factory makes ids deterministic-but-unique per call precisely so independent tests never collide on a dedup key — which means *reusing* one is something you do on purpose, by passing it in. That single line is what turns two `postWebhook` calls into one event delivered twice. Drop it and you still get two `200`s and a green run, but you have tested two distinct events, not a replay. Idempotency tests always pin the dedup key explicitly; that is the tell that the author understood what they were proving.
+
+**Comparing `updatedAt` across two reads is the cleanest way to assert "nothing changed."** You could hardcode `toEqual(someTimestamp)`, but then the test is coupled to whatever `now()` returned at the first send — brittle, and it reads like a magic number. Capturing the value between the two sends and asserting equality afterward reads exactly as the intent: the column the handler would have rewritten was not rewritten. That `updatedAt` is the Stripe-derived field that moves on every projection, so pinning it down pins the whole entitlement.
+
+**Asserting on `duplicate: true` ties the test to a response-shape contract, deliberately.** The route answers `{ received: true, duplicate: true }` on the dedup-hit path — that flag is what an operator reads in the logs to tell a replay apart from a fresh claim. By asserting on it you make the test break if the team ever drops the flag. That break is *correct*: a change to a contract operators depend on deserves a test change, not a silent regression.
+
+:::note
+You are not re-testing *why* idempotency works here — only that the project's handler is idempotent. The claim-once-mutate-once pattern, the `processed_events` ledger, and the `onConflictDoNothing` dedup were built into this app in [*From Stripe webhook to plan entitlement*](/065-project-from-stripe-webhook-to-plan-entitlement/3-claim-the-event-inside-one-transaction/), and the technique of signing a webhook event and replaying it under test was taught in [Lesson 6 of *Integration tests at the seams*](/088-integration-tests-at-the-seams/6-webhook-receivers-under-test/). This lesson is where you point that technique at the real route. The `@/db` Proxy and the `testTxContext` seam that let `tx` thread into the unedited handler come from [Lesson 1 of *Integration tests at the seams*](/088-integration-tests-at-the-seams/1-rollback-against-real-postgres/).
+:::
+
+</details>
+
+<ExternalResource
+  title="Stripe — Handle duplicate webhook events"
+  href="https://docs.stripe.com/webhooks"
+  icon="simple-icons:stripe"
+  iconColor="#635BFF"
+  description="The source of truth for the behavior you're asserting: at-least-once delivery, deduping by event id, and returning 200 on a replay."
+/>
+
+## Moment of truth
+
+Run the lesson's gate:
+
+<Code code="pnpm test:lesson 4" lang="bash" frame="none" />
+
+Then run the suite itself:
+
+<Code code="pnpm test:integration" lang="bash" frame="none" />
+
+Expected: `2 passed` — the happy path from last lesson plus the replay you just wrote. Now run it a second time with no reset in between. Still `2 passed`: the `withRollback` wrapper threw away every row both tests touched, so the second run sees the same clean database the first one did. That re-runnability is the chapter-wide invariant, and a replay test is the one most likely to expose a leak — if a stray row survived the first run, the second send's dedup would behave differently.
+
+The gate reads the file you wrote and confirms it sends one event twice with a pinned id and asserts each surface. Two checks it can't make on your behalf — tick them off by hand:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">Under `pnpm test:integration --reporter=verbose`, the two `it` names alone name the two behaviors (happy path, replay) without anyone reading the test bodies — the read-aloud rule from [Lesson 4 of *The shape of a test suite*](/086-the-shape-of-a-test-suite/4-arrange-act-assert-one-behavior/).</ChecklistItem>
+  <ChecklistItem chip="untested">Swap the route handler for any other implementation that still satisfies verify → claim → mutate → audit, and both tests stay green — the test is anchored to behavior, not to the handler's internals. Restore the handler afterward.</ChecklistItem>
+</Checklist>
