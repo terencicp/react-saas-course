@@ -30,35 +30,35 @@ import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
 
 <CourseProgressBar value={frontmatter['course-progress']} />
 
-Three months from now, a support ticket lands: "An admin revoked my access and nobody can tell me who did it." A week later a security reviewer asks a sharper version of the same question — "show me every role change in this org over the last 90 days, with who made each one and from which IP." Open your database and you'll find you can't answer either. Your `member` table knows who's an admin *right now*. It has no memory of who *made* them an admin, or who removed the person in the ticket, or when, or from where. Your app tables record the present. They were never built to record the past.
+Three months from now, a support ticket lands: "An admin revoked my access and nobody can tell me who did it." A week later a security reviewer asks a sharper version of the same question: "show me every role change in this org over the last 90 days, with who made each one and from which IP." Open your database and you'll find you can't answer either. Your `member` table knows who's an admin *right now*. It has no memory of who made them an admin, or who removed the person in the ticket, or when, or from where. Your app tables record the present. They were never built to record the past.
 
-That gap is what the audit log fills. It's a separate, append-only table whose entire job is to remember privileged actions — *who did what to whom, when, from where* — long after the rows they touched have changed or vanished. Every member-management flow you wrote in the last lesson already ends its transaction with a call to `logAudit(tx, { action, … })`, a helper you've been treating as a black box. This lesson opens the box. By the end you'll have the `audit_logs` table, a second row-level policy that makes it physically impossible to edit or delete history, and the `logAudit` writer those flows have been calling.
+That gap is what the audit log fills. It's a separate, append-only table whose entire job is to remember privileged actions, who did what to whom, when, and from where, long after the rows they touched have changed or vanished. Every member-management flow you wrote in the last lesson already ends its transaction with a call to `logAudit(tx, { action, … })`, a helper you've been treating as a black box. This lesson opens the box. By the end you'll have the `audit_logs` table, a second row-level policy that makes it physically impossible to edit or delete history, and the `logAudit` writer those flows have been calling.
 
-There's one idea everything in this lesson hangs on, so let's say it up front: **the audit row lives or dies with the transaction that did the work.** If the member was removed, the audit row exists. If the transaction rolled back, neither happened. The record and the work are one atomic unit — never two. Hold onto that; we'll keep coming back to it.
+One idea holds the whole lesson together, so let's state it up front: the audit row lives or dies with the transaction that did the work. If the member was removed, the audit row exists. If the transaction rolled back, neither happened. The record and the work are one atomic unit, never two. Keep that in mind; we'll keep coming back to it.
 
-## What an audit log is for — and what it isn't
+## What an audit log is for, and what it isn't
 
-Before a single column, you need to know what this table is *for*, because the column shape only makes sense once you do. And the hard part of an audit log was never the schema. It's the judgment of what to put in it.
+Before you write a single column, you need to know what this table is *for*, because the column shape only makes sense once you do. The hard part of an audit log was never the schema. It's the judgment of what to put in it.
 
-An audit log is a <Term definition="After-the-fact reconstruction of what happened, who did it, and when.">forensic</Term> instrument. Picture the audience: a regulator, an incident responder, an auditor running a <Term definition={"A security compliance attestation enterprise buyers ask vendors to pass.\nAn audit trail of privileged actions is table stakes for it."}>SOC 2</Term> review three months from now. They're not debugging your code. They're reconstructing a chain of human decisions. So the test for whether something belongs in the audit log is simple: *would someone like that ask about it later?*
+An audit log is a <Term definition="After-the-fact reconstruction of what happened, who did it, and when.">forensic</Term> instrument. Picture the audience: a regulator, an incident responder, an auditor running a <Term definition={"A security compliance attestation enterprise buyers ask vendors to pass.\nAn audit trail of privileged actions is table stakes for it."}>SOC 2</Term> review three months from now. They're not debugging your code. They're reconstructing a chain of human decisions. So the test for whether something belongs in the audit log is simple: would someone like that ask about it later?
 
 That test sorts every event into two piles.
 
 **Audit-worthy** is the privileged, human-initiated, state-changing verb. A member was added when an invite was accepted. A member was removed. A role was changed. Ownership was transferred. The org was deleted. The billing plan changed. The customer list was exported. A sensitive setting flipped. Each one is a decision a person made that an auditor could plausibly question, and that your current-state tables don't preserve.
 
-**Not audit-worthy** is everything else, and "everything else" is enormous. Reads and page views — nobody opening a dashboard is a forensic event (in year-1 SaaS; some regulated industries do log reads, and you'll know if you're in one). High-frequency, low-stakes writes — a comment posted, a checkbox toggled, a task dragged across a board. And system writes that already have their own ledger — when you reach Stripe webhooks in a later chapter, those events get recorded in a `processed_events` table built for exactly that; you don't *also* write them here, or you've recorded the same fact twice.
+**Not audit-worthy** is everything else, and "everything else" is enormous. First, reads and page views: nobody opening a dashboard is a forensic event (in year-1 SaaS; some regulated industries do log reads, and you'll know if you're in one). Second, high-frequency, low-stakes writes: a comment posted, a checkbox toggled, a task dragged across a board. Third, system writes that already have their own ledger: when you reach Stripe webhooks in a later chapter, those events get recorded in a `processed_events` table built for exactly that, so you don't *also* write them here, or you've recorded the same fact twice.
 
-Here's the failure mode juniors walk straight into: **over-recording.** "Let's just audit everything" feels safe and responsible. It is the opposite. Audit *everything* and the table becomes a debug log — ten thousand rows of `dashboard.viewed` and `task.updated` for every one row that says `member.removed`. The signal drowns. When the incident finally happens and someone goes looking for the row that matters, they can't find it. An audit log that records everything records nothing useful. The reflex is the inverse: **audit the verbs, not the rows.** "The invoice was voided" is signal. "The invoice's `updated_at` changed" is noise — that's a database fact, not a human decision.
+Here's the failure mode juniors walk straight into: **over-recording.** "Let's just audit everything" feels safe and responsible. It is the opposite. Audit everything and the table becomes a debug log: ten thousand rows of `dashboard.viewed` and `task.updated` for every one row that says `member.removed`. The signal drowns. When the incident finally happens and someone goes looking for the row that matters, they can't find it. An audit log that records everything records nothing useful. The rule that prevents this is to audit the verbs, not the rows. "The invoice was voided" is signal. "The invoice's `updated_at` changed" is noise, a database fact rather than a human decision.
 
-The mirror-image mistake is **under-recording** — logging only failures, the way you'd think about errors. But a failed action is what your error tracker (Sentry, in a later chapter) is for. The audit log wants the *successful* privileged action, because that's exactly what an auditor came to see: not the attempts that bounced, but the admin who *successfully* removed someone. Failures go to Sentry. Successes go here.
+The mirror-image mistake is **under-recording**: logging only failures, the way you'd think about errors. But a failed action is what your error tracker (Sentry, in a later chapter) is for. The audit log wants the *successful* privileged action, because that's exactly what an auditor came to see: not the attempts that bounced, but the admin who successfully removed someone. Failures go to Sentry. Successes go here.
 
-Two more boundaries, because they're easy to blur:
+Two more boundaries are easy to blur, so they're worth spelling out.
 
-An audit log is **not an activity feed.** An activity feed is a product feature — "Sara commented on your doc," rendered in the UI to make the app feel alive. It's tuned for engagement, kept short, and nobody's compliance depends on it. An audit log is a compliance instrument with different retention, different access, and different contents. They might describe some of the same events; they are not the same table, and you don't build one by querying the other.
+An audit log is **not an activity feed.** An activity feed is a product feature, like "Sara commented on your doc," rendered in the UI to make the app feel alive. It's tuned for engagement, kept short, and nobody's compliance depends on it. An audit log is a compliance instrument with different retention, different access, and different contents. The two might describe some of the same events, but they are not the same table, and you don't build one by querying the other.
 
-An audit log is **not your application logs.** Logs and Sentry are operational telemetry — ephemeral, sampled, rotated out after a few weeks, read by engineers chasing a bug. The audit log is a durable, queryable, tenant-scoped *business record* that has to survive for years. Treating one as the other is how teams discover, during an incident, that the data they need aged out of log retention a month ago.
+An audit log is **not your application logs.** Logs and Sentry are operational telemetry: ephemeral, sampled, rotated out after a few weeks, read by engineers chasing a bug. The audit log is a durable, queryable, tenant-scoped business record that has to survive for years. Treating one as the other is how teams discover, during an incident, that the data they need aged out of log retention a month ago.
 
-Sort these. For each event, the only question is the one the auditor asks — *is this a privileged human decision someone will ask about later?*
+Sort these. For each event, the only question is the one the auditor asks: is this a privileged human decision someone will ask about later?
 
 <Buckets twoCol instructions="For each event, decide whether it earns a row in the audit log.">
   <Bucket name="audit" label="Write an audit row" description="Privileged human decisions an auditor would ask about later" />
@@ -74,11 +74,11 @@ Sort these. For each event, the only question is the one the auditor asks — *i
   <Item bucket="skip">A user edited their own display name</Item>
 </Buckets>
 
-## The table shape — append-only by design
+## The table shape: append-only by design
 
-Now the schema, and we'll justify it against the judgment above. Lead with the property that makes this table unlike any other you've written: **there is no `updated_at`, and no `deleted_at`.** Almost every table you've built carries those — they're how a row records that it changed or was archived. Their *absence* here is deliberate, and it's the first layer of the append-only contract. This table doesn't model change. A row is written once and is true forever; it is never edited and never removed. Rows only ever accumulate.
+Now the schema, justified against the judgment above. Start with the property that makes this table unlike any other you've written: there is no `updated_at`, and no `deleted_at`. Almost every table you've built carries those columns, since they're how a row records that it changed or was archived. Leaving them out here is deliberate, and it's the first layer of the append-only contract. This table doesn't model change. A row is written once and is true forever; it is never edited and never removed. Rows only ever accumulate.
 
-Here's the full table. Read it once top to bottom, then we'll walk the columns that carry a decision. As with every table in this codebase, the snake-case mapping lives on the `db` client, so TypeScript reads `organizationId` while the SQL column is `organization_id` — that holds for every column below.
+Here's the full table. Read it once top to bottom, then we'll walk the columns that carry a decision. As with every table in this codebase, the snake-case mapping lives on the `db` client, so TypeScript reads `organizationId` while the SQL column is `organization_id`, and that holds for every column below.
 
 <AnnotatedCode lang="ts" code={`
 export const auditLogs = pgTable(
@@ -111,43 +111,43 @@ export const auditLogs = pgTable(
 );
 `}>
   <AnnotatedStep meta="{15}" color="orange">
-    Look at what's *missing* right here. The last column is `createdAt` — and there's no `updatedAt` and no `deletedAt`. The schema doesn't even give you a column to mutate. That absence is the first layer of the append-only contract: a row is written once and is true forever.
+    Look at what's *missing* here. The last column is `createdAt`, and there's no `updatedAt` and no `deletedAt`. The schema doesn't even give you a column to mutate. That absence is the first layer of the append-only contract: a row is written once and is true forever.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{8}" color="blue">
-    The actor — who did it. Nullable on purpose: `null` means the *system* acted, not a person (its own section later). And `onDelete: 'set null'` is a senior tell — if the user account is later deleted, their audit rows survive with a null actor. An audit trail you can erase by deleting a user is no audit trail.
+    The actor, the person who did it. Nullable on purpose: `null` means the system acted rather than a person, which gets its own section later. And `onDelete: 'set null'` is a deliberate choice: if the user account is later deleted, their audit rows survive with a null actor. An audit trail you can erase by deleting a user is no audit trail at all.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{9-10}" color="blue">
-    The forensic context — IP and user-agent, captured at write time. `actorIp` is `text` here; Postgres has a native `inet` type that validates the shape, but Drizzle has no first-class `inet` column builder, and reaching for a custom type would be noise in this table. `text` is the deliberate simplification.
+    The forensic context: IP and user-agent, captured at write time. `actorIp` is `text` here. Postgres has a native `inet` type that validates the shape, but Drizzle has no first-class `inet` column builder, and reaching for a custom type would be noise in this table. `text` is the deliberate simplification.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{14}" color="blue">
-    The `jsonb` payload — the diff or the operation arguments for this specific event. Typed loosely here; its shape is per-event and gets its own section below.
+    The `jsonb` payload: the diff or the operation arguments for this specific event. It's typed loosely here, since its shape is per-event and gets its own section below.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{17-27}" color="green">
-    Two composite indexes, both leading with `organizationId`: one for the per-org timeline (the common read), one for the per-actor filter ("everything this admin did"). Audit logs are write-heavy and read-rare, so every index taxes the insert — index only the queries you'll actually run, and no more.
+    Two composite indexes, both leading with `organizationId`: one for the per-org timeline (the common read), one for the per-actor filter ("everything this admin did"). Audit logs are write-heavy and read-rare, so every index taxes the insert. Index only the queries you'll actually run, and no more.
   </AnnotatedStep>
 </AnnotatedCode>
 
 A couple of columns deserve a closer look than a one-liner.
 
-The `action` column holds a verb string like `'member.role-changed'` or `'org.deleted'`. The `entity.verb-pasttense` shape isn't arbitrary — it's namespaced so you can filter a whole entity's events (`member.*`), greppable so you can find every call site in the codebase, and past-tense because an audit row records something that *already happened*. Pick the convention once and every event in the catalog follows it.
+The `action` column holds a verb string like `'member.role-changed'` or `'org.deleted'`. The `entity.verb-pasttense` shape isn't arbitrary. It's namespaced so you can filter a whole entity's events (`member.*`), greppable so you can find every call site in the codebase, and past-tense because an audit row records something that already happened. Pick the convention once and every event in the catalog follows it.
 
-`subjectType` and `subjectId` name the thing the action was *done to* — `'member'` and that member's id. Notice `subjectId` is `text`, not `uuid`. That's on purpose: most subjects are UUIDs, but some aren't (a setting key, an external Stripe id), and a single `text` column holds all of them without forcing every event into the UUID mold.
+`subjectType` and `subjectId` name the thing the action was done to, such as `'member'` and that member's id. Notice `subjectId` is `text`, not `uuid`. That's on purpose: most subjects are UUIDs, but some aren't (a setting key, an external Stripe id), and a single `text` column holds all of them without forcing every event into the UUID mold.
 
 <Aside type="note">
-The `onDelete: 'set null'` on `actorUserId` is worth pausing on. If a user is deleted, their audit rows don't vanish and they don't block the deletion — they survive with a null actor. The *record of what they did* is meant to outlive the account, which is the entire point of a forensic trail.
+The `onDelete: 'set null'` on `actorUserId` is worth pausing on. If a user is deleted, their audit rows don't vanish and they don't block the deletion; they survive with a null actor. The record of what they did is meant to outlive the account, which is the entire point of a forensic trail.
 </Aside>
 
-## The append-only policy — the second half of the RLS story
+## The append-only policy: the second half of the RLS story
 
-In the previous chapter you already did real work on this table. When you set up multi-tenancy, you enabled <Term definition="Row-level security — per-row access policies enforced inside Postgres itself, not in your application code.">RLS</Term> on `audit_logs` and wrote the org-isolation policy: the `FOR ALL` rule that pins every query to the caller's org via `set_config('app.org_id', …)`, so one tenant can never read another's audit trail. That policy is still doing its job, and this lesson doesn't touch it. What it does is add a *second* policy — one that closes off mutation entirely.
+In the previous chapter you already did real work on this table. When you set up multi-tenancy, you enabled <Term definition="Row-level security: per-row access policies enforced inside Postgres itself, not in your application code.">RLS</Term> on `audit_logs` and wrote the org-isolation policy: the `FOR ALL` rule that pins every query to the caller's org via `set_config('app.org_id', …)`, so one tenant can never read another's audit trail. That policy is still doing its job, and this lesson doesn't touch it. What this lesson adds is a second policy, one that closes off mutation entirely.
 
-The org-isolation policy controls *which rows* you can touch. The new policy controls *which operations* are allowed at all. We want exactly two — `INSERT` and `SELECT`. No `UPDATE`, no `DELETE`, ever, for the <Term definition="The non-owner Postgres role your request handlers connect as — deliberately denied the power to bypass policies.">app role</Term>. Even a bug that issues `UPDATE audit_logs SET …` should affect zero rows, not because we trust the code, but because the database refuses.
+The org-isolation policy controls *which rows* you can touch. The new policy controls *which operations* are allowed at all. We want exactly two: `INSERT` and `SELECT`. No `UPDATE`, no `DELETE`, ever, for the <Term definition="The non-owner Postgres role your request handlers connect as, deliberately denied the power to bypass policies.">app role</Term>. Even a bug that issues `UPDATE audit_logs SET …` should affect zero rows, not because we trust the code, but because the database refuses.
 
-You write that as two more `pgPolicy` blocks in the schema — same single-source-of-truth discipline as last chapter, never a hand-edited migration for the policy itself.
+You write that as two more `pgPolicy` blocks in the schema, with the same single-source-of-truth discipline as last chapter, never a hand-edited migration for the policy itself.
 
 <div data-mark-color="blue">
 
@@ -173,35 +173,35 @@ export const auditLogs = pgTable(
 
 </div>
 
-Same enable-and-force checklist as the org-isolation policy from last chapter — nothing new there. The only new shape is `for: 'update'` / `for: 'delete'` paired with `using: sql\`false\``.
+This is the same enable-and-force checklist as the org-isolation policy from last chapter, with nothing new there. The only new shape is `for: 'update'` / `for: 'delete'` paired with `using: sql\`false\``.
 
-`using: sql\`false\`` reads strangely until you see what it means. A row-level policy's `USING` clause is a predicate Postgres evaluates per row to decide whether that row is a candidate for the operation. Make the predicate a literal `false` and *no row ever qualifies* — so an `UPDATE` or `DELETE` matches nothing and changes nothing, every time. `INSERT` and `SELECT` aren't mentioned in these two policies, so they stay governed by the org-isolation policy from before. The table accepts new rows, lets you read your org's rows, and refuses to change or remove any of them.
+`using: sql\`false\`` reads strangely until you see what it means. A row-level policy's `USING` clause is a predicate Postgres evaluates per row to decide whether that row is a candidate for the operation. Make the predicate a literal `false` and no row ever qualifies, so an `UPDATE` or `DELETE` matches nothing and changes nothing, every time. `INSERT` and `SELECT` aren't mentioned in these two policies, so they stay governed by the org-isolation policy from before. The table accepts new rows, lets you read your org's rows, and refuses to change or remove any of them.
 
-Step back and look at what's now protecting append-only. It's not one mechanism — it's three independent layers, each strong enough on its own, and each failing independently of the others.
+Step back and look at what's now protecting append-only. It isn't one mechanism but three independent layers, each strong enough on its own, and each failing independently of the others.
 
 <Figure caption="Append-only is defense-in-depth: each layer refuses an UPDATE or DELETE on its own, while an INSERT passes every layer to land a row. The database refuses; the application never asks.">
   <ThreeLayerDefense />
 </Figure>
 
-The first layer is the **column shape**. There is no `updated_at` and no `deleted_at`, so the schema doesn't even *model* a mutation — there's nothing to update. The second is the **database policy** you just wrote: Postgres refuses `UPDATE` and `DELETE` to the app role no matter what query arrives. The third is **application discipline**: nowhere in `/lib` or `/app` does any code path issue an `UPDATE` or `DELETE` against `audit_logs` — the only writer, `logAudit`, inserts. Say the whole thing as one line and it sticks: **the database refuses; the application never asks.**
+The first layer is the **column shape**. There is no `updated_at` and no `deleted_at`, so the schema doesn't even model a mutation: there's nothing to update. The second is the **database policy** you just wrote: Postgres refuses `UPDATE` and `DELETE` to the app role no matter what query arrives. The third is **application discipline**: nowhere in `/lib` or `/app` does any code path issue an `UPDATE` or `DELETE` against `audit_logs`, since the only writer, `logAudit`, inserts. The whole thing fits in one line: the database refuses, and the application never asks.
 
-There is exactly one sanctioned way past this, and it's rare: a legal order to retract a specific row, or the scheduled retention job that trims old rows. Both run as the database's **owner role** — the privileged role that *isn't* subject to the forced policies and holds the grants to delete — never the app role your handlers use. You met the two-role, least-privilege shape last chapter (the separate owner connection string); the full role-and-grant setup comes in a later security chapter. For now, just know the seam exists and which side of it these escape hatches live on.
+There is exactly one sanctioned way past this, and it's rare: a legal order to retract a specific row, or the scheduled retention job that trims old rows. Both run as the database's **owner role**, the privileged role that isn't subject to the forced policies and holds the grants to delete, never the app role your handlers use. You met the two-role, least-privilege shape last chapter (the separate owner connection string), and the full role-and-grant setup comes in a later security chapter. For now, just know the seam exists and which side of it these escape hatches live on.
 
-## Writing the row — `logAudit(tx, event)`
+## Writing the row: `logAudit(tx, event)`
 
-Now the writer the whole chapter has been calling. We'll build it small, and the interesting part isn't the body — it's the signature, because the signature *is* the safety mechanism.
+Now the writer the whole chapter has been calling. We'll build it small. The interesting part isn't the body but the signature, because the signature is the safety mechanism.
 
 ```ts
 export const logAudit = (tx: Transaction, event: AuditEvent): Promise<void>
 ```
 
-Look at the first parameter. It's a `Transaction` — the transaction handle Drizzle hands you inside `db.transaction(async (tx) => …)` — **not** the pooled `db`. That is a deliberate, load-bearing choice, and here's the reasoning.
+Look at the first parameter. It's a `Transaction`, the transaction handle Drizzle hands you inside `db.transaction(async (tx) => …)`, **not** the pooled `db`. That is a deliberate, load-bearing choice, and here's the reasoning.
 
-The audit insert has to ride *inside* the mutation's transaction. That's the iff guarantee from the start of the lesson — the audit row and the work must commit together or roll back together, which can only happen if they share a transaction. The insert also has to run inside the `set_config('app.org_id', …)` scope that `withTenant` opens, or the org-isolation policy's `WITH CHECK` will reject the new row. Both requirements point at the same place: `logAudit` is only ever correct when called from inside a transaction.
+The audit insert has to ride inside the mutation's transaction. That's the iff guarantee from the start of the lesson: the audit row and the work must commit together or roll back together, which can only happen if they share a transaction. The insert also has to run inside the `set_config('app.org_id', …)` scope that `withTenant` opens, or the org-isolation policy's `WITH CHECK` will reject the new row. Both requirements point at the same place: `logAudit` is only ever correct when called from inside a transaction.
 
-So we encode that requirement in the type. By typing the first parameter as `Transaction`, calling `logAudit(db, …)` on the bare pooled client is a **compile error** — `db` is not a `Transaction`, and TypeScript rejects it before the code ever runs. The wrong way to call this function doesn't compile.
+So we encode that requirement in the type. Because the first parameter is typed as `Transaction`, calling `logAudit(db, …)` on the bare pooled client is a **compile error**: `db` is not a `Transaction`, and TypeScript rejects it before the code ever runs. The wrong way to call this function doesn't compile.
 
-You've seen this move three times now in this chapter. `tenantDb` makes "query without a tenant scope" not compile. `authedAction` makes "a privileged action without a role check" not compile. And now `logAudit(tx, …)` makes "an audit write outside its transaction" not compile. It's one philosophy, applied at three layers: **make the wrong thing impossible, not merely discouraged.** A code-review comment catches a mistake sometimes. A type error catches it every time, for every developer, forever. That through-line is the payoff of the whole chapter.
+You've seen this move three times now in this chapter. `tenantDb` makes "query without a tenant scope" not compile. `authedAction` makes "a privileged action without a role check" not compile. And now `logAudit(tx, …)` makes "an audit write outside its transaction" not compile. It's one philosophy, applied at three layers: make the wrong thing impossible, not merely discouraged. A code-review comment catches a mistake sometimes. A type error catches it every time, for every developer, forever. That through-line is the payoff of the whole chapter.
 
 Here's the writer.
 
@@ -245,19 +245,19 @@ export const logAudit = async (
   </AnnotatedStep>
 
   <AnnotatedStep meta="{21-22}" color="blue">
-    Where the actor and org context come from. The caller passes only the event; `logAudit` reads *who* and *which org* from the request itself (`requireOrgUser()` is cached, so no extra query) and IP and user-agent from the headers. That's why the call sites only need `{ action, subjectId?, payload? }`.
+    Where the actor and org context come from. The caller passes only the event; `logAudit` reads who acted and which org from the request itself (`requireOrgUser()` is cached, so no extra query) and the IP and user-agent from the headers. That's why the call sites only need `{ action, subjectId?, payload? }`.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{23-32}" color="green">
-    A single insert on the transaction handle. No external IO — an audit write is pure DB work, which is exactly what's allowed inside a transaction.
+    A single insert on the transaction handle. There's no external IO: an audit write is pure DB work, which is exactly what's allowed inside a transaction.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{17-20}" color="blue">
-    Returns nothing. The audit write isn't a `Result` you branch on; if its transaction commits, the row is there, and if the transaction rolls back, so does this. There's no separate success to handle.
+    Returns nothing. The audit write isn't a `Result` you branch on. If its transaction commits, the row is there, and if the transaction rolls back, so does the row. There's no separate success to handle.
   </AnnotatedStep>
 </AnnotatedCode>
 
-One contract detail worth making explicit, because it's why the call sites from the last lesson already work. The caller passes only the *event* — `{ action, subjectId?, payload? }`. It does **not** pass the actor or the org. `logAudit` derives those itself: `requireOrgUser()` (already cached for this request, so it's free) gives the user id and org id, and a `headers()` read gives the IP and user-agent. That's the deliberate split — the action body knows *what happened*; `logAudit` knows *who and where*. It keeps every call site to the small shape the previous lesson shipped.
+One contract detail is worth making explicit, because it's why the call sites from the last lesson already work. The caller passes only the *event*, `{ action, subjectId?, payload? }`. It does **not** pass the actor or the org. `logAudit` derives those itself: `requireOrgUser()` (already cached for this request, so it's free) gives the user id and org id, and a `headers()` read gives the IP and user-agent. That's the deliberate split: the action body knows what happened, and `logAudit` knows who acted and from where. It keeps every call site to the small shape the previous lesson shipped.
 
 Now put it together in the shape you already know. Inside an `authedAction` body, the mutation and the audit row sit in one `withTenant` block:
 
@@ -273,9 +273,9 @@ await withTenant(orgId, async (tx) => {
 });
 ```
 
-That's the whole pattern, made concrete: **one transaction = the work + one audit row.** The delete and the audit insert share `tx`, so they share a fate. The org isolation rides along too — `withTenant` set the `app.org_id`, the policy's `WITH CHECK` pins the new row to it. Work and record, one atomic unit.
+That's the whole pattern made concrete: one transaction holds the work plus one audit row. The delete and the audit insert share `tx`, so they share a fate. The org isolation rides along too, because `withTenant` set the `app.org_id` and the policy's `WITH CHECK` pins the new row to it. Work and record, one atomic unit.
 
-The mistake to internalize is the one that *looks* reasonable. You might be tempted to make the action feel snappier by deferring the audit write — return the response immediately, then write the row afterward in a background callback. Compare the two shapes:
+The mistake to internalize is the one that looks reasonable. You might be tempted to make the action feel snappier by deferring the audit write: return the response immediately, then write the row afterward in a background callback. Compare the two shapes:
 
 <CodeVariants>
   <CodeVariant label="Breaks the iff">
@@ -287,7 +287,7 @@ The mistake to internalize is the one that *looks* reasonable. You might be temp
       await logAudit(db, { action: 'member.removed', subjectId: memberId });
     });
     ```
-    **The work commits, then the audit write runs separately — and that's the trap.** The transaction closes after the `delete`, and `after()` runs its callback only once the response has gone out. Two problems, one fatal: `logAudit(db, …)` passes the pooled client where a `Transaction` is required, so it won't even compile; and even if it did, the member is already gone, so if this deferred write ever fails the action looks fully successful while the trail of who did it is silently lost.
+    **The work commits, then the audit write runs separately, and that's the trap.** The transaction closes after the `delete`, and `after()` runs its callback only once the response has gone out. There are two problems, one of them fatal. First, `logAudit(db, …)` passes the pooled client where a `Transaction` is required, so it won't even compile. Second, even if it did, the member is already gone, so if this deferred write ever fails the action looks fully successful while the trail of who did it is silently lost.
   </CodeVariant>
 
   <CodeVariant label="Correct">
@@ -302,17 +302,17 @@ The mistake to internalize is the one that *looks* reasonable. You might be temp
       });
     });
     ```
-    **The audit row rides inside the same transaction as the work.** They commit together or roll back together — the row exists if and only if the member was actually removed. `logAudit(tx, …)` type-checks because `tx` is a real `Transaction`; the wrong shape from the other tab never reaches production.
+    **The audit row rides inside the same transaction as the work.** They commit together or roll back together, so the row exists if and only if the member was actually removed. `logAudit(tx, …)` type-checks because `tx` is a real `Transaction`, and the wrong shape from the other tab never reaches production.
   </CodeVariant>
 </CodeVariants>
 
-The left tab is the canonical trap, and it's worth naming *why* it's so tempting: deferring work to make a response faster is a genuinely good instinct in most places. It's wrong *here* specifically because the audit row's whole value is that it's inseparable from the work. Anything that pulls the write out of the transaction — a background callback, a queue, a fire-and-forget — breaks the iff and quietly turns your forensic record into a record that's *usually* right. Usually-right is worthless to an auditor.
+The left tab is the canonical trap, and it's worth naming why it's so tempting: deferring work to make a response faster is a genuinely good instinct in most places. It's wrong here specifically because the audit row's whole value is that it's inseparable from the work. Anything that pulls the write out of the transaction, whether a background callback, a queue, or a fire-and-forget, breaks the iff and quietly turns your forensic record into a record that's only *usually* right. Usually-right is worthless to an auditor.
 
-## The payload — readable forensics, not a column dump
+## The payload: readable forensics, not a column dump
 
-The `payload` is the `jsonb` column that carries the *details* of what happened, and juniors get it wrong in both directions: some dump the entire affected row, some record nothing useful and leave the incident responder guessing. The right shape depends on the kind of event.
+The `payload` is the `jsonb` column that carries the details of what happened, and juniors get it wrong in both directions: some dump the entire affected row, some record nothing useful and leave the incident responder guessing. The right shape depends on the kind of event.
 
-For a **state change** — a role changed, a setting edited — the payload is a `{ before, after }` diff, and it records *only the fields that actually changed*, not the whole row. For an **action event** — an export, a deletion — there's no "before," so the payload carries the operation's arguments. Compare a good payload against the dump-everything reflex:
+For a **state change**, such as a role changed or a setting edited, the payload is a `{ before, after }` diff, and it records only the fields that actually changed, not the whole row. For an **action event**, such as an export or a deletion, there's no "before," so the payload carries the operation's arguments. Compare a good payload against the dump-everything reflex:
 
 <CodeVariants>
   <CodeVariant label="Over-stuffed">
@@ -332,7 +332,7 @@ For a **state change** — a role changed, a setting edited — the payload is a
     ```
 
     </div>
-    **A dump, not a diff.** Three whole rows of mostly-unchanged fields bury the one fact that matters — what the role became — and quietly bloat every audit row with data the actor and org columns already hold.
+    **A dump, not a diff.** Three whole rows of mostly-unchanged fields bury the one fact that matters, what the role became, and quietly bloat every audit row with data the actor and org columns already hold.
   </CodeVariant>
 
   <CodeVariant label="Right-sized">
@@ -344,19 +344,19 @@ For a **state change** — a role changed, a setting edited — the payload is a
       payload: { before: 'member', after: 'admin' },
     });
     ```
-    **A diff of exactly what changed.** Two values an incident responder can read at a glance and reconstruct the decision from. The *who* and *which org* already live in their own columns — the payload only carries what those columns can't.
+    **A diff of exactly what changed.** Two values an incident responder can read at a glance and reconstruct the decision from. The actor and the org already live in their own columns, so the payload only carries what those columns can't.
   </CodeVariant>
 </CodeVariants>
 
-The reflex is: payload is **human-readable forensics**. Terse enough to scan during an incident, complete enough to reconstruct what happened — and nothing more. It's not a database snapshot. The catalog you built last lesson already follows this without you thinking about it: `member.role-changed` carries `{ before, after }`, `member.removed` carries `{ previousRole }`, `org.ownership-transferred` carries `{ from, to, demotedTo }`. Each payload is exactly the fields that make *that* event legible later.
+The guiding idea is that the payload is human-readable forensics: terse enough to scan during an incident, complete enough to reconstruct what happened, and nothing more. It's not a database snapshot. The catalog you built last lesson already follows this without you thinking about it: `member.role-changed` carries `{ before, after }`, `member.removed` carries `{ previousRole }`, and `org.ownership-transferred` carries `{ from, to, demotedTo }`. Each payload is exactly the fields that make that event legible later.
 
-There's one counter-intuition here that experienced engineers internalize and beginners almost always get backwards. Your payloads *will* contain personal data — emails, names, the before-and-after of a profile field. The instinct is to hash or redact it "to be safe." Don't. Obfuscating the payload destroys the forensic readability that's the entire point, and it buys you nothing, because the thing protecting this data was never the opacity of the bytes — it's **access control on the table**. The org-isolation policy and the closely-held read surface are what keep this data safe. The audit log is *supposed* to hold sensitive information; that's what makes it useful. Protect the table, not the bytes inside it.
+There's one counter-intuition here that experienced engineers internalize and beginners almost always get backwards. Your payloads will contain personal data: emails, names, the before-and-after of a profile field. The instinct is to hash or redact it "to be safe." Don't. Obfuscating the payload destroys the forensic readability that's the entire point, and it buys you nothing, because the thing protecting this data was never the opacity of the bytes. It's access control on the table. The org-isolation policy and the closely-held read surface are what keep this data safe. The audit log is supposed to hold sensitive information; that's what makes it useful. Protect the table, not the bytes inside it.
 
-## The system actor — when nobody clicked the button
+## The system actor: when nobody clicked the button
 
-Not every audit-worthy event has a human behind it. A scheduled job promotes a trial to a paid plan at the moment it expires. A webhook from your payment provider creates a subscription. These are real, privileged, state-changing events an auditor would absolutely ask about — but no person clicked anything. There's no actor.
+Not every audit-worthy event has a human behind it. A scheduled job promotes a trial to a paid plan at the moment it expires. A webhook from your payment provider creates a subscription. These are real, privileged, state-changing events an auditor would absolutely ask about, but no person clicked anything. There's no actor.
 
-That's exactly why `actorUserId` is nullable — but `logAudit` is the wrong tool to write that row. The helper derives the actor and org from `requireOrgUser()` and `headers()`, and a webhook or scheduled job has no session behind it, so the call would throw before it ever inserted. A system writer skips the helper and inserts on the transaction directly: an explicit `actorUserId: null`, an `action` that names the subsystem (`'system.subscription-created'`), and a payload that carries the *provenance* — which subsystem acted, and the external id that triggered it:
+That's exactly why `actorUserId` is nullable, but `logAudit` is the wrong tool to write that row. The helper derives the actor and org from `requireOrgUser()` and `headers()`, and a webhook or scheduled job has no session behind it, so the call would throw before it ever inserted. A system writer skips the helper and inserts on the transaction directly: an explicit `actorUserId: null`, an `action` that names the subsystem (`'system.subscription-created'`), and a payload that carries the provenance, meaning which subsystem acted and the external id that triggered it:
 
 ```ts
 await tx.insert(auditLogs).values({
@@ -369,35 +369,35 @@ await tx.insert(auditLogs).values({
 });
 ```
 
-The reflex: **a null actor is information, not a missing value.** It says "the system did this — here's which part and why." Don't skip the audit row just because there's no user to attribute it to; the fact that a *machine* made a privileged change is itself worth recording. (You'll wire up the webhook-driven case in a later chapter. Note the distinction now, though: the `processed_events` table that chapter introduces is about idempotency — making sure you don't process the same webhook twice — while the audit row is the business record of what that webhook *did*. One webhook may write to both; they answer different questions.)
+A null actor is information, not a missing value. It says the system did this, and the payload says which part and why. Don't skip the audit row just because there's no user to attribute it to; the fact that a machine made a privileged change is itself worth recording. You'll wire up the webhook-driven case in a later chapter. Note the distinction now, though: the `processed_events` table that chapter introduces is about idempotency, making sure you don't process the same webhook twice, while the audit row is the business record of what that webhook did. One webhook may write to both, since they answer different questions.
 
-One more actor case the model doesn't handle on its own: admin impersonation — the support engineer who clicks "log in as user" to debug someone's account.
-Here `logAudit` is quietly wrong, because it reads the actor from the session, and during impersonation the session *is* the impersonated user — so a naive setup attributes every action to the customer and loses the one fact an auditor needs, which human was really at the keyboard.
-The fix isn't to suppress the row; it's to record *both* — the impersonator and the impersonated on the same entry — so "who did this" stays answerable.
-Building that support tool is out of scope here; you saw the `impersonatedBy` column named back in the sessions lesson, and the audit event itself (`admin.tenant-data-viewed`) is catalogued in the unit-16 security baseline, in the chapter on the audit log policy.
+One more actor case the model doesn't handle on its own is admin impersonation, the support engineer who clicks "log in as user" to debug someone's account.
+Here `logAudit` is quietly wrong, because it reads the actor from the session, and during impersonation the session *is* the impersonated user. A naive setup attributes every action to the customer and loses the one fact an auditor needs: which human was really at the keyboard.
+The fix isn't to suppress the row. It's to record both the impersonator and the impersonated on the same entry, so "who did this" stays answerable.
+Building that support tool is out of scope here. You saw the `impersonatedBy` column named back in the sessions lesson, and the audit event itself (`admin.tenant-data-viewed`) is catalogued in the unit-16 security baseline, in the chapter on the audit log policy.
 
-## How long the rows live — retention and the read surface
+## How long the rows live: retention and the read surface
 
-Two operational questions follow from "rows only ever accumulate," and you should know the *shape* of both answers even though you won't build either here.
+Two operational questions follow from "rows only ever accumulate," and you should know the shape of both answers even though you won't build either here.
 
-**Retention.** An append-only table grows without bound, so it needs a deletion horizon — a point past which old rows are trimmed. The senior framing is to retain for the *longer* of two windows: the regulatory horizon your industry imposes (HIPAA wants roughly six years; SOC 2 commonly expects about one) or the product's own defensible window. With no specific regulatory commitment, a reasonable year-1 default is around two years, enforced by a scheduled deletion job. And that job runs as the **owner role** — the only role that can `DELETE` past the policy and the forced RLS. Here's the counter-intuition worth holding onto: audit logs often have a *longer* retention than the data they describe, because they record the *actions taken on* that data. When you reach data-retention and GDPR in a later chapter, you'll delete a customer's records on request — but the audit row that says "this customer was deleted, by this admin, on this date" may need to outlive them. The job exists, it runs as the owner role; that's all you need to know now.
+**Retention.** An append-only table grows without bound, so it needs a deletion horizon, a point past which old rows are trimmed. The senior framing is to retain for the longer of two windows: the regulatory horizon your industry imposes (HIPAA wants roughly six years; SOC 2 commonly expects about one) or the product's own defensible window. With no specific regulatory commitment, a reasonable year-1 default is around two years, enforced by a scheduled deletion job. That job runs as the **owner role**, the only role that can `DELETE` past the policy and the forced RLS. Here's the counter-intuition worth holding onto: audit logs often have a longer retention than the data they describe, because they record the actions taken on that data. When you reach data-retention and GDPR in a later chapter, you'll delete a customer's records on request, but the audit row that says "this customer was deleted, by this admin, on this date" may need to outlive them. The job exists and runs as the owner role; that's all you need to know now.
 
-**The read surface.** Admins and above get a read-only "Activity log" in settings — paginated, filterable by actor and action, scoped through `withTenant` so the org-isolation policy applies on reads too. It's a routine Server Component running a Drizzle query against that `(organizationId, createdAt desc)` index you put on the table for exactly this. The separate *export-for-legal-response* path — pulling rows out for a compliance request — is authenticated, closely held, and itself writes an audit event (`'audit.exported'`): you audit the reading of the audit log. The page is routine to build and out of scope here; what matters is that you designed the table's indexes around how it'll be read.
+**The read surface.** Admins and above get a read-only "Activity log" in settings: paginated, filterable by actor and action, scoped through `withTenant` so the org-isolation policy applies on reads too. It's a routine Server Component running a Drizzle query against that `(organizationId, createdAt desc)` index you put on the table for exactly this. The separate export-for-legal-response path, which pulls rows out for a compliance request, is authenticated, closely held, and itself writes an audit event (`'audit.exported'`): you audit the reading of the audit log. The page is routine to build and out of scope here. What matters is that you designed the table's indexes around how it'll be read.
 
-One more question always comes up, so let's answer it once and move on: *who audits the audit log?* In year-1 SaaS, nothing does — there's no audit-of-the-audit table, and you should resist building one. That road is infinite regress. The audit log's own trustworthiness comes from the append-only contract, the no-`DELETE` policy, the closely-held owner role, and a retention job that's reviewed in code review like any other privileged path. Knowing *where to stop* is itself the senior judgment here.
+One more question always comes up, so let's answer it once and move on: who audits the audit log? In year-1 SaaS, nothing does. There's no audit-of-the-audit table, and you should resist building one, because that road is infinite regress. The audit log's own trustworthiness comes from the append-only contract, the no-`DELETE` policy, the closely-held owner role, and a retention job that's reviewed in code review like any other privileged path. Knowing where to stop is itself the senior judgment here.
 
 ## Putting it together
 
-Step back and the audit log clicks into place as the missing half of this chapter. Everything before it — roles, `authedAction`, the member flows — was the *enforcement* half: deciding who's allowed to do what. The audit log is the *record* half: remembering what they did. And the single mechanism that makes the record trustworthy is the one you've now seen end to end — **the audit row rides in the same transaction as the work, written through a helper that won't compile outside one.**
+Step back and the audit log clicks into place as the missing half of this chapter. Everything before it (roles, `authedAction`, the member flows) was the enforcement half: deciding who's allowed to do what. The audit log is the record half: remembering what they did. The single mechanism that makes the record trustworthy is the one you've now seen end to end: the audit row rides in the same transaction as the work, written through a helper that won't compile outside one.
 
-That's the same reflex as `tenantDb`, as `withTenant`, and as `authedAction`. Three structural guarantees, one philosophy: make the wrong call shape impossible rather than merely against the rules. Scrub through one privileged action's full lifecycle and watch where the audit row lands.
+That's the same idea as `tenantDb`, `withTenant`, and `authedAction`. Three structural guarantees, one philosophy: make the wrong call shape impossible rather than merely against the rules. Scrub through one privileged action's full lifecycle and watch where the audit row lands.
 
 <DiagramSequence>
-  <DiagramStep caption="The `authedAction` wrapper has already checked the session, the role, and the input. The action body runs with a ready `ctx` — `{ user, orgId, role, db }` — so everything below is the *work*, not the gatekeeping.">
+  <DiagramStep caption="The `authedAction` wrapper has already checked the session, the role, and the input. The action body runs with a ready `ctx` of `{ user, orgId, role, db }`, so everything below is the work, not the gatekeeping.">
     <AuditLifecycle step={1} />
   </DiagramStep>
 
-  <DiagramStep caption="`withTenant(orgId, …)` opens a transaction and runs `set_config('app.org_id', orgId, true)`. From here every query is pinned to this org — and everything inside the box commits or rolls back as one unit.">
+  <DiagramStep caption="`withTenant(orgId, …)` opens a transaction and runs `set_config('app.org_id', orgId, true)`. From here every query is pinned to this org, and everything inside the box commits or rolls back as one unit.">
     <AuditLifecycle step={2} />
   </DiagramStep>
 
@@ -405,15 +405,15 @@ That's the same reflex as `tenantDb`, as `withTenant`, and as `authedAction`. Th
     <AuditLifecycle step={3} />
   </DiagramStep>
 
-  <DiagramStep caption="`logAudit(tx, { action, subjectId, payload })` inserts the audit row on the *same* `tx`. The org-isolation policy's `WITH CHECK` pins it to the org; the append-only policy permits the INSERT.">
+  <DiagramStep caption="`logAudit(tx, { action, subjectId, payload })` inserts the audit row on the same `tx`. The org-isolation policy's `WITH CHECK` pins it to the org, and the append-only policy permits the INSERT.">
     <AuditLifecycle step={4} />
   </DiagramStep>
 
-  <DiagramStep caption="COMMIT — the delete and the audit row land together, or neither does. This is the iff guarantee: the audit row exists if and only if the member was actually removed.">
+  <DiagramStep caption="COMMIT: the delete and the audit row land together, or neither does. This is the iff guarantee: the audit row exists if and only if the member was actually removed.">
     <AuditLifecycle step={5} />
   </DiagramStep>
 
-  <DiagramStep caption="After commit, `revalidatePath` refreshes the member list. The audit row is now durable — written once inside that transaction, and by design never to change again.">
+  <DiagramStep caption="After commit, `revalidatePath` refreshes the member list. The audit row is now durable, written once inside that transaction and by design never to change again.">
     <AuditLifecycle step={6} />
   </DiagramStep>
 </DiagramSequence>
