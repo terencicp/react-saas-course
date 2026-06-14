@@ -1,0 +1,554 @@
+---
+title: Generative UI via tool parts
+chapter-id: 107
+course-progress: 0.00005
+tagline: Generative UI with the Vercel AI SDK, rendering a model's tool outputs as typed React components through the tool parts on a chat message.
+sidebar:
+  order: 2
+  label: Generative UI
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import TabbedContent from '../../../components/figures/tabbed-content/TabbedContent.astro';
+import TabbedItem from '../../../components/figures/tabbed-content/TabbedItem.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import ToolPartLane from '../../../components/lessons/107/2/ToolPartLane.astro';
+import InterleavedPartsMock from '../../../components/lessons/107/2/InterleavedPartsMock.astro';
+import ProposeConfirmFlow from '../../../components/lessons/107/2/ProposeConfirmFlow.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { FileTree, CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+In the last lesson the model learned to call `getInvoiceById`, and you were careful to keep its return small: `{ id, customerName, total, dueDate, status }`. But you never decided what the user actually *sees* when that call comes back. Right now the answer is grim — either nothing at all, because the chat loop you built before only knows how to render `text` parts, or a blob of raw JSON dumped into a chat bubble. Neither is what you want. The model just decided, on its own, to fetch a structured invoice; the right response is to turn that into an invoice card with a status badge and a "send reminder" button. This lesson is how. By the end you'll be able to render any tool's output as a typed, bespoke React component — in every state of its short life, with the model choosing which component appears. It's a short lesson because it stands almost entirely on things you already have; the worked invoice-chat surface is built in the next chapter, and here you're learning the pattern that makes it possible.
+
+## Tool parts, not `ai/rsc`
+
+Before any code, one decision, because if you go shopping in the AI SDK docs for "generative UI" you'll find two doors and the wrong one will cost you weeks.
+
+The first door is <Term definition="An experimental AI SDK package that streams server-rendered React components straight from the model call. The AI SDK docs mark it experimental and recommend AI SDK UI for production.">`ai/rsc`</Term> — the `streamUI`, `useUIState`, and `useAIState` functions. It streams server-rendered <Term definition="React Server Components — components that render on the server and send their output to the client. You met them earlier in the course.">RSC</Term> components directly from the model call. The second door is AI SDK UI: the `useChat` hook and the tool parts you already met, where the model emits typed tool parts and your client renders the components. These aren't two flavors of the same thing — they're two architectures, and you only build on one.
+
+Take the second. This isn't a coin flip: `ai/rsc` is marked **experimental** in the AI SDK docs, and the team's own documented recommendation is to use AI SDK UI for production. The reason to follow that recommendation is continuity, not novelty. The tool-parts path reuses the exact `UIMessage`, `useChat`, and route handler you already built — zero new infrastructure. It keeps rendering on the client, where React 19's primitives and your whole component tree already live. And it sidesteps `ai/rsc`'s ongoing API churn; experimental APIs change shape between releases, and you don't want your invoice card rewritten because an SDK minor version moved.
+
+The following two tabs lay the choice out side by side. We name `ai/rsc` once so you recognize it when you trip over it in the docs — and then we don't teach it.
+
+<TabbedContent>
+  <TabbedItem label="AI SDK UI — the path we take" icon="lucide:check">
+    **The path this course takes.**
+
+    - Streams typed `tool-<name>` parts on the `UIMessage`; the client switches on `part.type` and renders the component.
+    - Reuses the same `useChat`, `UIMessage`, and route handler from the chat surface you already built — no new infrastructure.
+    - Rendering stays on the client where React 19 and your component tree live; stable, production-recommended API.
+  </TabbedItem>
+
+  <TabbedItem label="ai/rsc — the experimental alternative" icon="lucide:flask-conical">
+    **Named here so you recognize it — not the path we take.**
+
+    - Streams server-rendered React components directly from the model call via `streamUI` / `useUIState` / `useAIState`.
+    - Marked **experimental** in the AI SDK docs; the documented recommendation is AI SDK UI for production.
+    - API churns between releases. Named here so you recognize it in the docs — not taught.
+  </TabbedItem>
+</TabbedContent>
+
+## From a text part to a tool part: one new case
+
+Here's the good news that makes this lesson short. You already wrote the rendering machinery. Every assistant message is `{ id, role, parts }`, and back in the chat surface you walked that array with `message.parts.map((part) => ...)` and switched on `part.type`. At the time there was exactly one case to handle: `text`. Generative UI is that same switch with one more branch.
+
+Recall where the new branch comes from. When the model calls a tool, the assistant message grows a part whose `type` is literally the string `tool-` followed by the tool's key in your `tools` object. The tool keyed `getInvoiceById` produces a part typed `tool-getInvoiceById`. So the model *calling* the tool is what creates the part; your client *deciding what to render for that type* is the other half — and that decision is the whole of generative UI.
+
+<VideoCallout videoId="ihHLs6v7Lko" videoTitle="AI SDK v5: A Crash Course — Matt Pocock at React Universe Conf 2025">
+  Matt Pocock's 22-minute AI SDK v5 crash course — grounds the type-safe tools and tool-part lifecycle this whole lesson builds on.
+</VideoCallout>
+
+The two tabs below are the same switch, before and after. The first is the baseline you already shipped. The second adds one case.
+
+<CodeVariants>
+  <CodeVariant label="Chat surface: text only">
+    ```tsx
+    const MessagePart = ({ part }: { part: UIMessagePart }) => {
+      switch (part.type) {
+        case 'text':
+          return <span>{part.text}</span>;
+        default:
+          return null;
+      }
+    };
+    ```
+    **The switch you already shipped.** One case for `text`, and a `default` that renders nothing for any part type this surface doesn't recognize.
+  </CodeVariant>
+
+  <CodeVariant label="+ one tool case">
+    <div data-mark-color="green">
+
+    ```tsx ins={5-6}
+    const MessagePart = ({ part }: { part: UIMessagePart }) => {
+      switch (part.type) {
+        case 'text':
+          return <span>{part.text}</span>;
+        case 'tool-getInvoiceById':
+          return <InvoiceCard {...part.output} />;
+        default:
+          return null;
+      }
+    };
+    ```
+
+    </div>
+    **One added branch.** When a `tool-getInvoiceById` part shows up, render an `<InvoiceCard />` from its output instead of text. The model's tool choice picked the component; the switch just routes it.
+  </CodeVariant>
+</CodeVariants>
+
+That `default: return null` line is doing more work than it looks. Models add tools over time, parts arrive that an older client doesn't recognize, and a `switch` with no fallthrough that hits an unknown `part.type` is a crash in the middle of a chat. Always keep a `default` that fails gracefully — an unknown part type should render nothing, never throw. Treat it as part of the pattern, not an afterthought.
+
+One catch you can already see coming: that snippet reads `part.output`, but a tool that's still running hasn't produced any output yet. `part.output` only exists once the tool has finished. Rendering the in-between states is the next section.
+
+## Rendering the four lifecycle states
+
+A `tool-getInvoiceById` part isn't a single fixed thing — it moves through the four states you met in the last lesson, and now you get to render each one. The states, as a reminder: `input-streaming` while the model's argument tokens are still arriving, `input-available` once they're parsed and `execute` is running server-side, `output-available` when the result comes back, and `output-error` if something failed. Rendering only the last one is the beginner trap that makes a chat feel frozen on any slow tool — the user clicks, nothing changes for two seconds, then a card pops in. You want to render the whole journey.
+
+Here's the load-bearing reflex of this section, and it's an opinion worth stating sharply: while the tool runs, render a **tool-specific skeleton**, not a generic spinner. A <Term definition="A loading placeholder shaped like the content that's coming — greyed boxes where the real fields will land — instead of a generic spinner.">skeleton</Term> is a greyed-out placeholder shaped like the thing that's loading. A chat with five tools should show five *different* skeletons — an invoice-shaped one while an invoice loads, a chart-shaped one while a chart loads — because that specificity is exactly the affordance the tool-parts model buys you. The user sees *an invoice loading*, not *something loading*. A single shared spinner throws that information away.
+
+The switch over `part.state` is the canonical shape of this whole lesson. Step through it state by state.
+
+<AnnotatedCode lang="tsx" maxLines={14} code={`
+case 'tool-getInvoiceById': {
+  switch (part.state) {
+    case 'input-streaming':
+      return null;
+    case 'input-available':
+      return <InvoiceCard.Skeleton />;
+    case 'output-available':
+      return <InvoiceCard {...part.output} />;
+    case 'output-error':
+      return <ToolError message={part.errorText} />;
+  }
+}
+`}>
+  <AnnotatedStep meta="{3-4}" color="blue">
+    The model's argument tokens are still arriving — there's nothing concrete to show yet. Most surfaces render nothing here, or fall through to the same skeleton as the next state. The lightest of the four.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5-6}" color="orange">
+    Arguments are parsed and validated; `execute` is running on the server right now. This is where the tool-specific skeleton goes — `<InvoiceCard.Skeleton />`, not a generic spinner. The user sees the *shape* of an invoice forming, which is the affordance you're paying for.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{7-8}" color="green">
+    `execute` returned and `part.output` is populated — the real render. Spreading `part.output` straight into `<InvoiceCard />` works because the tool's output shape *is* the card's props; the next sections are about making that true on purpose and at the type level.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{9-10}" color="red">
+    The tool failed. The error message lives on `part.errorText`, and the SDK has already sanitized it into a safe string — render it through your own error component. Never reach for a raw `error.message` here; that's the same error-sanitization discipline from the chat surface, applied to tool parts.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The whole journey across the server boundary is easier to hold as a picture than as four cases. Scrub through the sequence below: watch the same part change state, notice that `execute` is the *only* step that happens on the server, and notice that each state is its own distinct client render — not one render deferred until the end.
+
+<DiagramSequence>
+  <DiagramStep>
+    <ToolPartLane
+      state="input-streaming"
+      serverNode="idle — execute() not called"
+      clientNode="part appears · nothing to render yet"
+      clientTone="idle"
+    />
+    <Fragment slot="caption">
+      The model emits a tool call. A `tool-getInvoiceById` part appears in state `input-streaming` — its arguments are still arriving token by token, so there's nothing concrete to render yet.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <ToolPartLane
+      state="input-available"
+      serverNode="execute() runs · org-scoped query"
+      clientNode="<InvoiceCard.Skeleton />"
+      serverTone="orange"
+      clientTone="orange"
+    />
+    <Fragment slot="caption">
+      Arguments are parsed: state becomes `input-available`, and `execute` runs server-side — the only step that lives on the server. Meanwhile the client renders `<InvoiceCard.Skeleton />`.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <ToolPartLane
+      state="output-available"
+      serverNode="result returned"
+      clientNode="<InvoiceCard {...output} />"
+      clientTone="green"
+    />
+    <Fragment slot="caption">
+      The result returns: state becomes `output-available` and `output` is populated on the part. The client switches on `part.type` and renders the real `InvoiceCard` from `output`.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <ToolPartLane
+      state="output-error"
+      serverNode="execute() threw"
+      clientNode="<ToolError message={errorText} />"
+      serverTone="red"
+      clientTone="red"
+    />
+    <Fragment slot="caption">
+      The error branch: if `execute` threw, state becomes `output-error` with a sanitized `errorText` on the part. The client renders its own error component — never a raw `error.message`.
+    </Fragment>
+  </DiagramStep>
+</DiagramSequence>
+
+One capability worth knowing exists, though you won't build it here: for a genuinely long-running tool, `execute` can *yield* partial results instead of returning once, and `part.output` populates progressively — the same streaming feel as a streaming object. The default, and what you should reach for, is to return once with a small output schema. Reach for progressive output only when a tool is slow enough that watching it fill in actually helps the user.
+
+## Typing the chat end-to-end with `InferUITools`
+
+You may have noticed that the last two snippets spread `part.output` into `<InvoiceCard />` as if its shape were known — but how does the client *know* it's `{ id, customerName, total, dueDate, status }` and not `unknown`? It doesn't, yet. That's the loose end the last lesson left when it named `outputSchema` but never wired it up. Here you pay that debt, and in return `part.output` autocompletes instead of forcing a cast.
+
+The mechanism is to type the entire chat from the tool definitions outward. v5 gives you a small chain of three steps, and they read top to bottom.
+
+<AnnotatedCode lang="ts" code={`
+import type { InferUITools, UIDataTypes, UIMessage } from 'ai';
+
+import { tools } from '@/lib/llm/tools';
+
+type MyUITools = InferUITools<typeof tools>;
+type MyUIMessage = UIMessage<never, UIDataTypes, MyUITools>;
+`}>
+  <AnnotatedStep meta="{5}" color="blue">
+    `InferUITools` walks your tool registry and infers, for every tool, its `{ input, output }` shapes from the Zod schemas. One line turns the whole `tools` object into a typed map of what each tool takes and returns.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{6}" color="green">
+    Stamp those tool types onto the message type. `UIMessage`'s three generics are `<metadata, dataParts, tools>`; here you pass `never` for metadata (this chat carries none), the `UIDataTypes` default for data parts, and your inferred tools last. This is the type that now knows every tool part's shape.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{1,3}" color="orange">
+    Both helpers come from `ai` itself, and `tools` is imported from your registry module — the same module the route handler imports. That shared import is what makes the typing work end to end; the next section is about why it has to live in its own file.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+With `MyUIMessage` defined, you pass it to `useChat<MyUIMessage>({ ... })` on the client, and — this is the part that makes it *end-to-end* — you pass the same type on the server to the message-stream helper. Both ends now speak the same typed message. The payoff lands right back in the switch you wrote earlier: inside the `output-available` branch of `case 'tool-getInvoiceById'`, `part.output` is no longer `unknown`. It autocompletes as the exact shape the tool returns.
+
+<div data-mark-color="green">
+
+<CodeTooltips tooltips={{
+  useChat: 'The chat hook. The MyUIMessage type parameter is what makes every part typed.',
+  MyUIMessage: "The typed chat message — carries every tool's input and output shapes.",
+  status: 'Autocompletes as a field of the invoice output, because the schema flows through to here.',
+}}>
+```tsx "part.output.status"
+const { messages } = useChat<MyUIMessage>({ /* ... */ });
+
+const overdue = part.output.status === 'overdue';
+return <InvoiceCard {...part.output} highlight={overdue} />;
+```
+</CodeTooltips>
+
+</div>
+
+No cast, no `unknown`, no guessing what fields exist. This is where the `outputSchema` you defined on the tool finally earns its keep: it's the schema that flows through `InferUITools` to become the component's prop type. Write the schema once; the autocomplete follows it everywhere.
+
+(One generic you passed without much comment: <Term definition="The default type for custom non-tool data parts you can stream onto a UIMessage. Used here as the default — its own feature is beyond this lesson.">`UIDataTypes`</Term> is the slot for custom data parts — typed message parts that aren't tools. You're using the default here; that's a feature for another day.)
+
+## The tool registry lives in `lib/llm/tools.ts`
+
+That last section quietly assumed something: that there's a single `tools` object you can `import` from one module — once into the route handler, once into the client's type. That assumption is load-bearing, and it's worth making explicit, because the obvious shortcut breaks it.
+
+Tools are first-class application code. They're version-controlled, lint-covered, and reviewed, exactly like routes — so they get their own file: `lib/llm/tools.ts`. That mirrors the conventions you already follow, `lib/llm/models.ts` for model handles and `lib/llm/prompts.ts` for system prompts. The route handler imports `import { tools } from '@/lib/llm/tools'` and passes it to `streamText`; the client component imports the inferred `MyUIMessage` type from the same module.
+
+<FileTree>
+- src/
+  - lib/
+    - llm/
+      - models.ts model handles (`smartModel`, `fastModel`)
+      - prompts.ts system prompts
+      - **tools.ts** the tool registry — and `MyUIMessage`
+</FileTree>
+
+Now the reason this is a rule and not a preference. `InferUITools<typeof tools>` needs a single, exported `tools` object to infer from. Define a tool *inline* in the route handler instead, and the client has nothing to import — the route handler isn't a module the client can pull a type out of. So the message type can't see the tool, and `part.output` quietly collapses back to `unknown`. You don't get an error; you get worse autocomplete and a silent invitation to cast. The file convention isn't tidiness. It's the thing that makes end-to-end typing possible at all. (The last lesson kept the running tool inline on purpose, to keep the snippet legible while you learned the shape — this is the extraction it was always heading toward.)
+
+The two tabs below are the same tool, defined the way that breaks typing and the way that preserves it.
+
+<CodeVariants>
+  <CodeVariant label="Inline (breaks typing)">
+    <div data-mark-color="red">
+
+    ```ts {7}
+    // app/api/chat/route.ts
+    export const POST = authedRoute('member', chatRequestSchema, async ({ messages }) => {
+      const result = streamText({
+        model: smartModel,
+        messages: convertToModelMessages(messages),
+        // Defined here, the client can't import this — part.output stays `unknown`.
+        tools: { getInvoiceById: tool({ /* ... */ }) },
+      });
+      return result.toUIMessageStreamResponse();
+    });
+    ```
+
+    </div>
+    **The tool lives in a route handler, which the client can't import a type from.** `InferUITools` has no exported `tools` object to read, so the typed message never learns the tool's shape.
+  </CodeVariant>
+
+  <CodeVariant label="Registry (typed)">
+    <div data-mark-color="green">
+
+    ```ts {2-3}
+    // lib/llm/tools.ts
+    export const tools = { getInvoiceById };
+    export type MyUIMessage = UIMessage<never, UIDataTypes, InferUITools<typeof tools>>;
+
+    // app/api/chat/route.ts
+    import { tools } from '@/lib/llm/tools';
+    // streamText({ model: smartModel, tools, ... })
+    ```
+
+    </div>
+    **One exported `tools` object, imported by both ends.** The handler imports the object to run it; the client imports `MyUIMessage` to type the chat. `part.output` is typed end to end.
+  </CodeVariant>
+</CodeVariants>
+
+## Co-designing the tool output and the component props
+
+This is the single most senior reflex in the lesson, and it follows straight from the typing you just wired: the tool's `outputSchema` and the React component's props are **one shape, designed together.**
+
+Sit with what that means. A `getInvoiceById` tool that returns `{ id, customerName, total, dueDate, status }` feeds `<InvoiceCard />` directly — `<InvoiceCard {...part.output} />`, no adapter in between. A `getMonthlyRevenue` tool that returns `{ months, totals }` is shaped for `<RevenueChart />`. In each case the tool's output schema *is* the component's prop type. You're not writing two contracts that happen to line up; you're writing one contract, once.
+
+The anti-pattern is to return whatever the data source hands you — a raw Drizzle row, a different shape — and reshape it *inside* the component. It feels harmless. It isn't. The moment your card does `const total = row.amountCents / 100` or `const name = row.customer.displayName ?? row.customer.email`, the component now *knows* where its data came from. It knows the column is in cents, knows the customer is a nested join, knows which field to fall back to. Change the query and you break a render. The component has been coupled to the data layer's quirks, and that coupling is invisible until it bites.
+
+The cut is simple to state: **when you write the tool's `outputSchema`, you are writing the component's prop type — so emit the shape the component wants.** This is the same "project, don't dump" discipline from the last lesson, with the projection target named precisely. There, you projected to keep the result small and cheap; here, you project *to the component's contract*.
+
+The two tabs below put the coupled and decoupled versions side by side. The cost of reshaping is only obvious when you can see both at once.
+
+<CodeVariants>
+  <CodeVariant label="Reshape in component (coupled)">
+    <div data-mark-color="red">
+
+    ```tsx {3-4}
+    // outputSchema: the raw DB row, handed straight to the component
+    const InvoiceCard = ({ row }: { row: InvoiceRow }) => {
+      const total = formatCurrency(row.amountCents / 100);
+      const name = row.customer.displayName ?? row.customer.email;
+      return <Card>{name} — {total} — {row.status}</Card>;
+    };
+    ```
+
+    </div>
+    **The component knows the column is in cents and the customer is a nested join.** It's coupled to the data layer; a query change breaks the render, and the coupling is invisible until it does.
+  </CodeVariant>
+
+  <CodeVariant label="Co-designed schema (decoupled)">
+    <div data-mark-color="green">
+
+    ```tsx "{...part.output}"
+    // outputSchema: { customerName, total, status, ... } — already the card's props
+    const InvoiceCard = ({ customerName, total, status }: InvoiceCardProps) => (
+      <Card>{customerName} — {total} — {status}</Card>
+    );
+
+    <InvoiceCard {...part.output} />;
+    ```
+
+    </div>
+    **The shaping happened in the tool, where the data was selected.** The component takes presentation-ready props and renders them — it has no idea a database exists. Spread `part.output` and you're done.
+  </CodeVariant>
+</CodeVariants>
+
+So where does the line actually fall? Some transformations belong in the tool, some in the component, and getting the boundary right is the skill. The drill below sorts a handful of real transformations into the two bins. The rule you're building toward: data selection, shaping, and authorization live in the tool; presentation lives in the component.
+
+<Buckets twoCol instructions="Each of these transformations has a right home. Sort each one into the layer where it belongs.">
+  <Bucket name="tool" label="In the tool's outputSchema" description="Data selection, shaping, authorization" />
+  <Bucket name="component" label="In the React component" description="Presentation only" />
+
+  <Item bucket="tool">Filter rows to the current organization</Item>
+  <Item bucket="tool">Pick the top 5 rows to return</Item>
+  <Item bucket="tool">Join the customer name onto the invoice</Item>
+  <Item bucket="component">Convert `amountCents` into a formatted currency string</Item>
+  <Item bucket="component">Choose the color of the status badge</Item>
+  <Item bucket="component">Format `dueDate` as a relative time like "in 3 days"</Item>
+</Buckets>
+
+## Text and tool parts in one message
+
+One more property of the parts array, and it's a small but easy thing to get wrong. A single assistant message can hold `text` parts *and* multiple tool parts, **in render order.** The model narrates *between* its tool renders: "Here's the invoice you asked about" — then the invoice card — "want me to send a reminder?" The text and the cards are interleaved, and the order is meaningful because the model controls it.
+
+Your client already does the right thing here, because `parts.map` walks the array in order. So the only rule is the one not to break: render each part *where it sits*. The trap is collecting all the tool renders and stacking them at the bottom of the bubble, with the model's text floating above, disconnected from the cards it was describing. Don't. The narration sits next to the thing it narrates because the model put it there.
+
+The mock below shows what interleaving looks like in a real bubble — text, then a card, then more text, then a second render — so you can see the shape rather than just read about it.
+
+<Figure>
+  <Screenshot viewport="desktop">
+    <InterleavedPartsMock />
+  </Screenshot>
+  <Fragment slot="caption">
+    One assistant message, rendered in `parts` order: text, an invoice card, more text, a second tool render. `parts.map` walks the array top to bottom, so each part lands where the model placed it.
+  </Fragment>
+</Figure>
+
+## Destructive tools: the propose/confirm pattern
+
+Everything so far has rendered tools that *read*. Now the highest-stakes pattern in the lesson, the one the last lesson flagged and deferred: what happens when a tool *does* something — sends an invoice, deletes a row, charges a card.
+
+The rule is blunt. The model must **never** trigger a destructive action directly. Not "usually shouldn't" — never. Frame it in production terms, because the stakes are concrete: an unguarded destructive tool means that one day the model will send the wrong invoice or delete the wrong row on a hallucinated argument. With a real user base, that's a *when*, not an *if*. Models are confident and occasionally wrong, and "occasionally wrong" is fine for a sentence and catastrophic for a `DELETE`.
+
+The fix is to split one destructive action into two tools and put a human click between them:
+
+- `proposeInvoiceSend` is **read-only**. It returns a *preview* — who the invoice goes to, the amount, the due date — which the client renders as a confirmation card with explicit "Send" and "Cancel" buttons.
+- `confirmInvoiceSend` does the actual work. The client only emits this tool call **after the user clicks Send**, continuing the conversation with a new message.
+
+The model proposes; the human confirms; the loop continues only on the human's click. Connect this to the agentic loop from the last lesson: that loop runs the model step after step until it's done. The confirmation is a *deliberate break* in that loop — a point where control leaves the model and returns to the person before the next step can run. The model can plan the send all it likes; it cannot pull the trigger.
+
+The flow below makes the human-click gate a visible node, not an afterthought. Trace it: the model proposes, the client renders the card, and the path forks at the buttons — one branch reaches the actual write, the other terminates.
+
+<ProposeConfirmFlow />
+
+In code, the shape is two `tool` definitions plus a confirmation component that renders the two buttons. The preview tool carries an `outputSchema` describing what the user is about to approve; the commit tool carries the real `execute`.
+
+<div data-mark-color="blue">
+
+```ts title="lib/llm/tools.ts" "proposeInvoiceSend" "confirmInvoiceSend"
+export const proposeInvoiceSend = tool({
+  description: 'Preview sending an invoice. Read-only — does not send.',
+  inputSchema: z.object({ invoiceId: z.uuid() }),
+  outputSchema: z.object({ recipient: z.string(), total: z.string(), dueDate: z.string() }),
+  execute: async ({ invoiceId }) => getInvoiceSendPreview(invoiceId, session.orgId),
+});
+
+export const confirmInvoiceSend = tool({
+  description: 'Send the invoice. Only call after the user confirms.',
+  inputSchema: z.object({ invoiceId: z.uuid() }),
+  execute: async ({ invoiceId }) => sendInvoice(invoiceId, session.orgId),
+});
+```
+
+</div>
+
+The confirmation card renders the two buttons, and the client emits the confirm call only on the Send click:
+
+```tsx
+case 'tool-proposeInvoiceSend':
+  return (
+    <ConfirmCard preview={part.output}>
+      <button onClick={() => sendMessage({ text: 'Yes, send it.' })}>Send</button>
+      <button onClick={dismiss}>Cancel</button>
+    </ConfirmCard>
+  );
+```
+
+The end-to-end version — real preview data, the full continuation wiring — is built in the next chapter. Here you've got the shape, and the shape is the part that matters: two tools, a human in the middle.
+
+## What stays the same: auth, audit, persistence
+
+Step back and notice what you *didn't* have to touch. Adding generative UI changed how tool results render. It changed nothing about the seams underneath, because tool parts ride the exact same protocol everything else does. Worth saying out loud, because composability — new capability, untouched foundations — is the senior win here, and it's reassuring to see how little moved.
+
+- **Authorization** still happens inside each tool's `execute` — the org-scope filter against `session.orgId` from the last lesson. Generative UI adds nothing to the trust boundary; the model still can't reach a row the tool doesn't hand it.
+- **Audit** events still write in `onStepFinish` per step and `onFinish` in aggregate. Unchanged.
+- **The Server Component shell** still loads the conversation's history and hands it to the client. Unchanged.
+- **Persistence** still saves the full `UIMessage[]` server-side. Unchanged in shape — but now that array *includes the tool parts and their typed outputs.* And that's where one watch-out lives, exactly where it bites.
+
+That persistence point deserves a beat. The handler return you already wrote saves messages for free:
+
+<div data-mark-color="blue">
+
+```ts "originalMessages" "onFinish"
+return result.toUIMessageStreamResponse({
+  originalMessages: messages,
+  onFinish: ({ messages }) => saveChat(chatId, messages),
+});
+```
+
+</div>
+
+The trap is persisting a *lossy* shape — saving only the text, or dropping the tool parts to "save space." Do that and the rendered surface vanishes on the next mount: the user reloads the page and their invoice card is *gone*, replaced by nothing, because the part that drove it was never saved. Persist the full `UIMessage[]`, tool parts and all. The card you rendered is only as durable as the message you stored.
+
+## Check yourself
+
+Hold the whole thing in one sentence: **the model is a router that picks which component renders; the tool's output schema is that component's prop contract; the client walks `parts` in order and switches on `type` and `state`; and destructive work waits behind a human click, never the model's.** Every section of this lesson was one application of that idea.
+
+The questions below check the four decisions the lesson exists to install. If any of them feels shaky, that's the section to reread.
+
+<MultipleChoice>
+  You're building a generative-UI chat surface for production in 2026. Which path does the AI SDK's own documentation recommend?
+
+  <McqChoice correct>Emit typed `tool-<name>` parts and render them from `useChat` on the client.</McqChoice>
+  <McqChoice>Stream server-rendered components straight from the model call with `streamUI`.</McqChoice>
+  <McqChoice>Either one — they're interchangeable flavors of the same feature, so pick by taste.</McqChoice>
+
+  <McqWhy>The recommended path is **AI SDK UI**: tool parts rendered from `useChat`. It's the production-recommended API and reuses the `UIMessage`, `useChat`, and route handler you already built. `streamUI` belongs to `ai/rsc`, which the docs mark **experimental** — and the two aren't flavors of one feature, they're separate architectures, which is why mixing them up is how you end up on the experimental one by accident.</McqWhy>
+</MultipleChoice>
+
+<MultipleChoice>
+  You define `getInvoiceById` *inline* inside the route handler instead of exporting it from `lib/llm/tools.ts`. The code compiles and the chat works. What did you quietly give up?
+
+  <McqChoice correct>On the client, `part.output` widens to `unknown` — there's no exported `tools` object `InferUITools` can read a shape from.</McqChoice>
+  <McqChoice>The route handler refuses to start, because the SDK requires tools to live under `lib/llm/`.</McqChoice>
+  <McqChoice>The model stops seeing the tool, so it never decides to call `getInvoiceById`.</McqChoice>
+
+  <McqWhy>Nothing throws and the model still sees any tool you hand `streamText` — that's exactly what makes it a trap. The loss is purely on the client's types: `InferUITools<typeof tools>` needs a single exported `tools` object to infer from, and a tool trapped inside a route handler can't be imported, so `part.output` collapses to `unknown` and you're back to casting.</McqWhy>
+</MultipleChoice>
+
+<MultipleChoice>
+  Why split a "send invoice" action into a read-only `proposeInvoiceSend` tool and a separate `confirmInvoiceSend` tool?
+
+  <McqChoice correct>To put a human click between the model's decision and the irreversible work — the model can plan the send, but only a person can pull the trigger.</McqChoice>
+  <McqChoice>Because a single AI SDK tool isn't allowed to both read data and write data in one `execute`.</McqChoice>
+  <McqChoice>To speed the send up by running the preview and the actual send in parallel.</McqChoice>
+
+  <McqWhy>The split is a deliberate safety gate, not a technical limit — a single tool's `execute` could absolutely both read and write. And the two tools are sequential, gated by the click, not parallel. The whole point is **control**: `proposeInvoiceSend` only previews, and `confirmInvoiceSend` fires only after the user clicks Send, so a hallucinated argument can never send anything on its own.</McqWhy>
+</MultipleChoice>
+
+<MultipleChoice>
+  In which tool-part state does a tool-specific skeleton like `<InvoiceCard.Skeleton />` belong?
+
+  <McqChoice correct>The state where the arguments are parsed and `execute` is running on the server, with no output yet.</McqChoice>
+  <McqChoice>The state where the result has come back and the part carries its output.</McqChoice>
+  <McqChoice>The state where `execute` threw and the part carries a sanitized error message.</McqChoice>
+
+  <McqWhy>The skeleton belongs in **`input-available`** — the window where the tool is working server-side and there's nothing concrete to show, so a shaped placeholder tells the user *an invoice* is loading, not just *something*. Once the result arrives (`output-available`) you render the real card, and a failure (`output-error`) renders your error component from `part.errorText`, never a loading skeleton.</McqWhy>
+</MultipleChoice>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Generative User Interfaces"
+    href="https://ai-sdk.dev/docs/ai-sdk-ui/generative-user-interfaces"
+    icon="simple-icons:vercel"
+    iconColor="#000000"
+    description="The AI SDK UI guide for rendering tool parts as React components — the canonical reference for the pattern in this lesson."
+  />
+  <ExternalResource
+    title="Chatbot Tool Usage"
+    href="https://ai-sdk.dev/docs/ai-sdk-ui/chatbot-tool-usage"
+    icon="simple-icons:vercel"
+    iconColor="#000000"
+    description="Renders tool parts through every lifecycle state and walks the human-in-the-loop approval flow behind the propose/confirm pattern."
+  />
+  <ExternalResource
+    title="InferUITools"
+    href="https://ai-sdk.dev/docs/reference/ai-sdk-ui/infer-ui-tools"
+    icon="simple-icons:vercel"
+    iconColor="#000000"
+    description="The reference for typing the chat end to end — how InferUITools derives each tool's input and output shapes for the UIMessage type."
+  />
+  <ExternalResource
+    title="Vercel Academy — Tool Use"
+    href="https://vercel.com/academy/ai-sdk/tool-use"
+    icon="simple-icons:vercel"
+    iconColor="#000000"
+    description="An interactive Vercel Academy lesson that builds a tool end to end with the tool() helper, Zod schemas, and a rendered result."
+  />
+</CardGrid>
