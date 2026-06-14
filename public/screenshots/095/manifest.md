@@ -1,0 +1,5 @@
+# Chapter 095 screenshots
+
+l6-desktop-1280.png — lesson 6, route /dashboard, desktop 1280, settled (seeded admin alice@example.com), the authenticated dashboard + single app-nav rendering end-to-end after the barrel fix — the nav with the optimized lucide icons and the dashboard body (Team + Recent invoices); the figure findings 5 (RSC waterfall) and 6 (lucide barrel) read against.
+l2-desktop-1280.png — lesson 2, route / (marketing), desktop 1280×900, settled, the marketing hero (data-testid="marketing-hero") rendering end-to-end: hero <Image>, "Run your business on Acme" headline, subtext, and "Get started" CTA — the LCP surface finding 7 (missing eager-load on the hero image) reads against. Dev badge suppressed; the analytics consent banner is real app UI.
+l2-mobile-390.png — lesson 2, route / (marketing), mobile 390×844, settled, the same marketing hero at phone width (headline wraps, single-column) — the responsive companion the lesson reads alongside the desktop frame for the LCP discussion.
