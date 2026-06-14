@@ -37,15 +37,15 @@ The invoices list page you built shipped fast. Fifty seeded rows, the page rende
 
 You already know the candidate fixes. Earlier in this chapter you declared a composite index for exactly this query, and you ruled out N+1, since this is one query, not two hundred round-trips. But how do you know the index is the fix? And once you ship it, how do you confirm it actually worked, rather than sitting unused while the database keeps scanning the whole table?
 
-"Feels slow" is not evidence, and "feels fast now" is not proof. There is one good answer to "why is this query slow, and did my change help": you ask Postgres directly. By the end of this lesson you can take any suspect query, ask the planner how it ran, read the answer top to bottom, name the expensive part, and run the loop that turns a guess into a fix.
+"Feels slow" is not evidence, and "feels fast now" is not proof. There is one reliable way to answer "why is this query slow, and did my change help": you ask Postgres directly. By the end of this lesson you can take any suspect query, ask the planner how it ran, read the answer top to bottom, name the expensive part, and run the loop that turns a guess into a fix.
 
-One rule frames everything that follows. A query says *what* you want, the planner decides *how* to get it, and `EXPLAIN ANALYZE` shows you the *how* with real numbers attached. Every tool in this lesson is a different view of that one idea.
+One idea frames everything that follows. A query says *what* you want, the planner decides *how* to get it, and `EXPLAIN ANALYZE` shows you the *how* with real numbers attached. Every tool in this lesson is a different view of that one idea.
 
 ## The planner decides how, EXPLAIN shows the decision
 
-A SQL query is <Term definition="A query that states the result you want, not the steps to compute it. You describe the what; the database figures out the how.">declarative</Term>. When you write `select * from invoices where status = 'pending' order by created_at desc limit 20`, you have described the *result* — twenty pending invoices, newest first. You have said nothing about *how* to produce it. Should the engine read every row and discard the non-pending ones? Walk an index straight to the pending rows? Sort the whole table or use an index that already keeps it sorted?
+A SQL query is <Term definition="A query that states the result you want, not the steps to compute it. You describe the what; the database figures out the how.">declarative</Term>. When you write `select * from invoices where status = 'pending' order by created_at desc limit 20`, you have described the *result*: twenty pending invoices, newest first. You have said nothing about *how* to produce it. Should the engine read every row and discard the non-pending ones? Walk an index straight to the pending rows? Sort the whole table, or use an index that already keeps it sorted?
 
-That decision belongs to the <Term definition="The part of Postgres that turns a SQL query into an execution plan. It compares the available access paths and picks the one with the lowest estimated cost.">query planner</Term>. For any query, the planner lists the access paths available, scanning the table, walking this index or that one, choosing a join algorithm, estimates the cost of each, and picks the cheapest. This is the same machinery you met when you declared indexes: an index doesn't change *what* comes back, only how the engine reaches it. Two plans for the same query return byte-identical results at wildly different speeds.
+That decision belongs to the <Term definition="The part of Postgres that turns a SQL query into an execution plan. It compares the available access paths and picks the one with the lowest estimated cost.">query planner</Term>. For any query, the planner lists the access paths available (scanning the table, walking this index or that one, choosing a join algorithm), estimates the cost of each, and picks the cheapest. This is the same machinery you met when you declared indexes: an index doesn't change *what* comes back, only how the engine reaches it. Two plans for the same query return byte-identical results at wildly different speeds.
 
 `EXPLAIN` is how you read that decision. Prefix any query with it and Postgres prints the plan it *would* run, without running it:
 
@@ -63,7 +63,7 @@ explain analyze select * from invoices where status = 'pending';
 
 This is the one to reach for. The estimate tells you what the planner thought, the actuals tell you what happened, and the gap between them is, more often than you'd guess, the bug itself. A plan that estimates ten rows and actually returns a million made its decisions on bad information.
 
-One number trips up everyone the first time. Those cost estimates look like `cost=0.00..25.40`, and the instinct is to read them as milliseconds. They are not. Cost is an arbitrary planner unit, useful only for comparing two nodes or two plans against each other, never as an absolute measure. The real time is a different field, `actual time=`, which `ANALYZE` adds and `EXPLAIN` alone does not. When you want milliseconds, you want `actual time`, which means you want `ANALYZE`.
+One field trips up everyone the first time. Those cost estimates look like `cost=0.00..25.40`, and the instinct is to read them as milliseconds. They are not. Cost is an arbitrary planner unit, useful only for comparing two nodes or two plans against each other, never as an absolute measure. The real time lives in a separate field, `actual time=`, which `ANALYZE` adds and `EXPLAIN` alone does not. When you want milliseconds, you want `actual time`, which means you want `ANALYZE`.
 
 The following three panels show the same query at three levels of evidence: the SQL you wrote, the plan the planner picked, and the plan with reality measured into it.
 
@@ -103,7 +103,7 @@ The following three panels show the same query at three levels of evidence: the 
 
 ## Running it: copy the SQL, prefix it, read the output
 
-Getting a plan is the easy part. The skill is in reading it, which is the rest of this lesson, so keep the mechanics short.
+Getting a plan is the easy part. The skill is in reading it, which is the rest of this lesson, so the mechanics here stay short.
 
 The everyday path is close to something you can already do. Turn on `logger: true` on your Drizzle client, run the page, and copy the exact SQL Drizzle logged. Paste it into a SQL console, such as Neon's SQL editor, `psql`, or Drizzle Studio, and prefix it with `explain (analyze, buffers)`. Drizzle builds the query, and you diagnose the raw SQL it emits. That separation is the point: you don't need the ORM in the loop while you're reading plans.
 
@@ -115,12 +115,12 @@ const plan = await db.execute(
 );
 ```
 
-Be honest about the friction. You're hand-writing the SQL (or interpolating it), and what comes back is rows of plan text, not a typed result shape you can work with. It's fine for a quick probe, but for interactive diagnosis the SQL console is cleaner. You'll read plans far more often than you'll script them.
+This path has real friction. You're hand-writing the SQL (or interpolating it), and what comes back is rows of plan text, not a typed result shape you can work with. It's fine for a quick probe, but for interactive diagnosis the SQL console is cleaner. You'll read plans far more often than you'll script them.
 
-Notice the `(analyze, buffers)` in both. <Term definition="An EXPLAIN option that reports how many disk pages each node read from RAM (hit) versus from disk (read). The best single signal for whether slowness is a cache miss.">BUFFERS</Term> adds, to every node, a count of how many pages came from RAM versus from disk. That's the single best signal for whether a query is slow because it's missing the cache. The catch is a version split. Postgres 18, your production target on Neon, turns `BUFFERS` on automatically whenever `ANALYZE` runs. Older Postgres, including the one running inside the exercises on this page, does not, so you have to ask for it explicitly. Rather than remember which is which, adopt one habit: always write `(analyze, buffers)`. It's a no-op where buffers are already on, and mandatory everywhere else. One portable habit, correct on every version.
+Notice the `(analyze, buffers)` in both. <Term definition="An EXPLAIN option that reports how many disk pages each node read from RAM (hit) versus from disk (read). The best single signal for whether slowness is a cache miss.">BUFFERS</Term> adds, to every node, a count of how many pages came from RAM versus from disk. That's the single best signal for whether a query is slow because it's missing the cache. The catch is a version split. Postgres 18, your production target on Neon, turns `BUFFERS` on automatically whenever `ANALYZE` runs. Older Postgres, including the one running inside the exercises on this page, does not, so there you have to ask for it explicitly. Rather than remember which version does which, adopt one habit: always write `(analyze, buffers)`. It's a no-op where buffers are already on, and necessary everywhere else, so the same line is correct on every version.
 
 <Aside type="caution">
-`EXPLAIN ANALYZE` *executes the query.* On a `SELECT` that's harmless. On an `UPDATE`, `DELETE`, or `INSERT` it performs the write, so the rows really change. To get a plan for a destructive statement without committing it, wrap it in a transaction you roll back:
+`EXPLAIN ANALYZE` *executes the query.* On a `SELECT` that's harmless. On an `UPDATE`, `DELETE`, or `INSERT` it performs the write, so the rows really change. To get a plan for a destructive statement without committing it, wrap it in a transaction and roll the transaction back:
 
 ```sql
 begin;
@@ -128,28 +128,28 @@ explain (analyze, buffers) delete from invoices where status = 'draft';
 rollback;
 ```
 
-Or drop `ANALYZE` and use plain `EXPLAIN` for an estimate-only plan that never touches the data. This is a real production hazard: run `EXPLAIN ANALYZE DELETE` in the wrong window and it deletes for real.
+Or drop `ANALYZE` and use plain `EXPLAIN` for an estimate-only plan that never touches the data. The hazard is real: run `EXPLAIN ANALYZE DELETE` in the wrong window and it deletes for real.
 </Aside>
 
 ## Reading the plan tree top to bottom
 
-This is the skill the whole lesson hangs on, so slow down here.
+Every later section depends on reading a plan correctly, so this is the part to slow down on.
 
 A plan is a tree, printed as indented text. Each line is a node, an operation like "scan this table" or "join these two inputs", followed by its estimates and, with `ANALYZE`, its actuals. <Term definition="A read of a plan that treats indentation as tree depth: deeper-indented nodes are children that run first, and their output feeds the less-indented parent above them.">Indentation is depth.</Term> A node indented under another is its *child*.
 
-Here is the part beginners get backwards, so read it twice: the deepest, most-indented node runs *first*. Its output feeds its parent one level up. Results flow upward until they reach the top line, the root, which is the *last* thing that happens and the result you actually receive. The natural instinct is to read the top line first and stop there, but the top line is the finish line, not the start.
+The part beginners get backwards is the direction of execution. The deepest, most-indented node runs *first*. Its output feeds its parent one level up. Results flow upward until they reach the top line, the root, which is the *last* thing that happens and the result you actually receive. The natural instinct is to read the top line first and stop there, but the top line is the finish line, not the start.
 
-When you read a plan, this is the recipe:
+To read a plan, follow this recipe:
 
 <Steps>
 1. Find the deepest node. That's where data first enters the query, through a table scan or an index walk.
 
-2. Walk outward and up, one level at a time, watching how `actual rows` changes at each node. Rows get filtered out, joined, sorted, aggregated as they climb.
+2. Walk outward and up, one level at a time, watching how `actual rows` changes at each node. As rows climb, they get filtered out, joined, sorted, and aggregated.
 
 3. Find the node where the time concentrates, or where the row count explodes or collapses unexpectedly. That node is your suspect.
 </Steps>
 
-The diagram below takes one real four-node plan and walks it in true execution order, deepest first, then up. Scrub through it and watch the highlight climb from the scan at the bottom to the result at the top. Spend a minute with it, since seeing the order play out helps more than reading about it.
+The diagram below takes one real four-node plan and walks it in true execution order, deepest first, then up. Scrub through it and watch the highlight climb from the scan at the bottom to the result at the top. Spend a minute with it: seeing the order play out helps more than reading about it.
 
 <PlanTreeExecutionOrder />
 
@@ -179,7 +179,7 @@ INSERT INTO invoices (id, organization_id, status, amount_cents) VALUES
 
 ## The four numbers that decide
 
-A plan node carries a dozen fields. An experienced engineer reads four of them and skims the rest. Learn these against the position they occupy in a real node line and you'll know where to look in any plan.
+A plan node carries a dozen fields. An experienced engineer reads four of them and skims the rest. Learn these four by the position they occupy in a real node line and you'll know where to look in any plan.
 
 <AnnotatedCode lang="text" code={`
 Index Scan using idx_invoices_org_created on invoices
@@ -187,15 +187,15 @@ Index Scan using idx_invoices_org_created on invoices
   Buffers: shared hit=120 read=8
 `}>
   <AnnotatedStep meta={`"rows=12" "rows=180"`} color="blue">
-    Estimated `rows` is the planner's guess from table statistics, and `actual ... rows` is what really came back. When actual is off from estimated by more than ~10×, the planner chose its plan on bad information: the stats are stale, or the predicate is too hard to estimate. To fix it, run `ANALYZE <table>;` and re-check. Here 12 vs 180 is a 15× miss, a red flag.
+    Estimated `rows` is the planner's guess from table statistics, and `actual ... rows` is what really came back. When the actual count is off from the estimate by more than about 10×, the planner chose its plan on bad information: the stats are stale, or the predicate is too hard to estimate. To fix it, run `ANALYZE <table>;` and re-check. Here 12 versus 180 is a 15× miss, a red flag.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`"loops=200"`} color="orange">
-    This node executed 200 times. The displayed time and rows are *per loop*, so the real cost is `loops × time` and the real row total is `loops × rows`. A node that looks cheap at `0.040ms` is expensive at `loops=200`: about 8ms and 36,000 rows touched. It's the most-missed number on the page, and the database-side cousin of N+1.
+    This node executed 200 times. The displayed time and rows are *per loop*, so the real cost is `loops × time` and the real row total is `loops × rows`. A node that looks cheap at `0.040ms` is expensive at `loops=200`: about 8ms and 36,000 rows touched. This is the most-missed number on the page, and the database-side cousin of N+1.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`"actual time=0.015..0.040"`} color="violet">
-    Two numbers: startup time before the first row (`0.015`), then total time to the last row (`0.040`), both *per loop*. Read it together with `loops=` to get the true cost, since on its own it understates a looped node.
+    Two numbers: startup time before the first row (`0.015`), then total time to the last row (`0.040`), both *per loop*. Read it together with `loops=` to get the true cost, because on its own it understates a looped node.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`"shared hit=120 read=8"`} color="green">
@@ -205,10 +205,10 @@ Index Scan using idx_invoices_org_created on invoices
 
 Two of those four numbers deserve a closer look, because they hide the most bugs.
 
-The estimate-versus-actual gap is the planner grading its own homework. It chose this plan because it predicted these row counts, drawn from <Term definition="Sampled summaries of each column's distribution that the planner uses to estimate row counts. Refreshed by ANALYZE and, on a schedule, by auto-vacuum.">statistics</Term>, a sampled picture of how your columns are distributed. When the prediction is wildly off, the picture is out of date. The fix is to refresh it: <Term definition="The SQL command ANALYZE <table>; refreshes the planner's statistics for that table. Not the same as the ANALYZE option inside EXPLAIN ANALYZE, which runs and times a query — a common name collision.">ANALYZE</Term> the table and run the plan again.
+The estimate-versus-actual gap is the planner grading its own homework. It chose this plan because it predicted these row counts, drawn from <Term definition="Sampled summaries of each column's distribution that the planner uses to estimate row counts. Refreshed by ANALYZE and, on a schedule, by auto-vacuum.">statistics</Term>, a sampled picture of how your columns are distributed. When the prediction is wildly off, that picture is out of date. The fix is to refresh it: <Term definition="The SQL command ANALYZE <table>; refreshes the planner's statistics for that table. Not the same as the ANALYZE option inside EXPLAIN ANALYZE, which runs and times a query — a common name collision.">ANALYZE</Term> the table and run the plan again.
 
 <Aside type="note">
-The word `ANALYZE` does two unrelated jobs, which catches people out. The option in `EXPLAIN ANALYZE` *runs and times* a query. The standalone `ANALYZE invoices;` command *refreshes statistics* for a table. Same word, different machinery. Auto-vacuum runs the statistics kind on a schedule for you, and you reach for it by hand when a plan's estimates have drifted and you don't want to wait.
+The word `ANALYZE` does two unrelated jobs, which catches people out. The option in `EXPLAIN ANALYZE` *runs and times* a query. The standalone `ANALYZE invoices;` command *refreshes statistics* for a table. Same word, different machinery. Auto-vacuum runs the statistics kind on a schedule for you, and you run it by hand when a plan's estimates have drifted and you don't want to wait for the schedule.
 </Aside>
 
 And `loops=` is the silent multiplier. A line reading `(actual time=0.01..0.04 rows=5 loops=200)` did not touch 5 rows in 0.04ms. It ran two hundred times, so the honest cost is 200 × 0.04ms and 200 × 5 rows. Postgres reports per-loop and trusts you to do the multiplication. Skip it and a node that looks free turns out to dominate the query.
@@ -219,20 +219,20 @@ You don't need the full catalogue of plan nodes. Postgres has dozens, and most n
 
 **Scans** are how rows first enter a plan.
 
-- **`Seq Scan`** reads every row in the table, top to bottom. It's perfectly fine on a small table, but a warning sign on a large one when a `WHERE` clause should have let an index skip most of it.
+- **`Seq Scan`** reads every row in the table, top to bottom. It's fine on a small table, but a warning sign on a large one when a `WHERE` clause should have let an index skip most of it.
 - **`Index Scan`** walks a B-tree index to find matching keys, then fetches those rows from the table. This is the shape a selective predicate produces once the right index exists, the payoff of the indexes you declared earlier.
 - **`Index Only Scan`** answers the whole query from the index alone, never touching the table, because the index already contains every column the query needs. That's a <Term definition="An index that contains every column a query reads, so the query can be answered from the index alone — no trip back to the table.">covering index</Term> (built with `INCLUDE`, named here and drilled later).
-- **`Bitmap Index Scan`** paired with **`Bitmap Heap Scan`** combines one or more indexes through a bitmap before fetching rows. It's the planner's choice for medium-selectivity or multi-predicate queries, where a plain index scan would jump around the table too much.
+- **`Bitmap Index Scan`** paired with **`Bitmap Heap Scan`** combines one or more indexes through a bitmap before fetching rows. The planner chooses it for medium-selectivity or multi-predicate queries, where a plain index scan would jump around the table too much.
 
 **Joins** combine two inputs. The planner picks the algorithm, and you read which one it picked.
 
-- **`Nested Loop`** takes each row from the outer input and probes the inner input for matches. It wins when the outer set is small. It turns dangerous when the inner side is an unindexed scan run many times over, so watch the inner node's `loops=`.
+- **`Nested Loop`** takes each row from the outer input and probes the inner input for matches. It wins when the outer set is small. It turns costly when the inner side is an unindexed scan run many times over, so watch the inner node's `loops=`.
 - **`Hash Join`** builds a hash table from one input, then probes it with the other. It's the workhorse for medium-to-large equality joins.
 - **`Merge Join`** zips together two inputs that are already sorted on the join key.
 
 **Post-processing** nodes shape rows after they're gathered.
 
-- **`Sort`** orders rows. Watch for `Sort Method: external merge Disk: …`, which means the sort didn't fit in memory and spilled to disk, and that is slow.
+- **`Sort`** orders rows. Watch for `Sort Method: external merge Disk: …`, which means the sort didn't fit in memory and spilled to disk, and a disk sort is slow.
 - **`Aggregate`**, **`HashAggregate`**, and **`GroupAggregate`** are the fold behind `count`, `sum`, and `group by`.
 - **`CTE Scan`** and **`Subquery Scan`** read the results of a CTE or a subquery.
 
@@ -267,11 +267,11 @@ Match each node to the plain-language thing it does. This locks the vocabulary i
 
 ## From plan to diagnosis
 
-Now the payoff. Reading a plan is a means to an end, and the end is recognition: seeing a pattern and knowing the fix. Each pattern below reads the same way: *what you see in the plan → what it means → the fix you already learned.*
+This is where the reading pays off. Reading a plan is a means to an end, and the end is recognition: seeing a pattern and knowing the fix. Each pattern below reads the same way: *what you see in the plan → what it means → the fix you already learned.*
 
 - **A `Seq Scan` with a `Filter` on a large table, where `actual rows` is far smaller than the rows scanned.** The engine read the whole table and threw most of it away. The tell is a large <Term definition="A plan line reporting how many rows a node read and then discarded because they failed the WHERE filter. A large value next to a Seq Scan means the engine is reading rows just to throw them away.">`Rows Removed by Filter`</Term> line. The fix is the missing or unused index on the filter column.
 - **An `Index Scan` returning far more rows than the final result needs.** The index is used but isn't selective enough, or it's the wrong composite for this query. A better composite, leading with the column the query filters on, may help.
-- **A `Sort` consuming most of the query's time, especially `Sort Method: external merge`.** No index produces the order the query asks for, so Postgres sorts from scratch (and spills to disk if it's big). The fix is a composite index in the query's exact sort direction, so the rows arrive already ordered and the `Sort` node disappears entirely.
+- **A `Sort` consuming most of the query's time, especially `Sort Method: external merge`.** No index produces the order the query asks for, so Postgres sorts from scratch, and spills to disk if the sort is big. The fix is a composite index in the query's exact sort direction, so the rows arrive already ordered and the `Sort` node disappears entirely.
 - **A `Nested Loop` with a high `loops=` count on its inner side, scanning an unindexed table.** This is the database-side shape that *looks* like N+1, and the distinction matters. Application N+1, from earlier in this chapter, is two hundred separate round-trips, invisible to any single plan, found only by counting queries in the log. This is *one* query whose join re-probes an unindexed table once per outer row. Because it's a single statement, the plan *does* show it. The fix is the foreign-key index on the join column.
 - **Estimates off from actuals by orders of magnitude.** This is stale statistics. Run `ANALYZE <table>;` and re-check before changing anything else.
 
@@ -279,7 +279,7 @@ Now the payoff. Reading a plan is a means to an end, and the end is recognition:
 Keep the two N+1s straight. **Application N+1** is a round-trip count problem, N parameterized queries fired from your code, and `EXPLAIN ANALYZE` is the wrong tool for it, because each individual statement's plan looks perfectly healthy. You catch it with `logger: true` and a count of statements. The **database-side nested loop** with a high `loops=` is one statement with a bad join, and the plan shows it plainly. Same shape, different layer, different tool.
 </Aside>
 
-The funnel below is the order to ask these questions in. Start at the top, pick the symptom your plan shows, and follow it to the fix.
+The funnel below sets the order to ask these questions in. Start at the top, pick the symptom your plan shows, and follow it to the fix.
 
 <StateMachineWalker kind="decision" title="Your query is slow — what does the plan show?">
   <Question
@@ -316,7 +316,7 @@ The funnel below is the order to ask these questions in. Start at the top, pick 
   </Leaf>
 
   <Leaf id="leaf-sort" verdict="Add a composite index in the sort's direction">
-    No index produces the order the query asks for, so Postgres sorts from scratch, and spills to disk if it doesn't fit in memory.
+    No index produces the order the query asks for, so Postgres sorts from scratch, and spills to disk if the rows don't fit in memory.
     Add the composite `(sortKey, id)` index in the *exact* direction the query orders.
     The rows then arrive pre-sorted and the `Sort` node disappears entirely.
 
@@ -338,7 +338,7 @@ The funnel below is the order to ask these questions in. Start at the top, pick 
   </Leaf>
 </StateMachineWalker>
 
-Now see a plan flip for yourself. Earlier in this lesson you ran `EXPLAIN` on `where status = 'pending'` against a tiny table and read a `Seq Scan`. The sandbox below runs the *same query* against a table of five thousand rows that already carries an index on `status`, declared in the seed exactly as you'd declare it in lesson 1. Run it, read the plan top to bottom, and watch the access path change. When the plan names an index scan instead of a sequential scan, you've watched the index earn its place.
+Now see a plan flip for yourself. Earlier in this lesson you ran `EXPLAIN` on `where status = 'pending'` against a tiny table and read a `Seq Scan`. The sandbox below runs the *same query* against a table of five thousand rows that already carries an index on `status`, declared in the seed exactly as you'd declare it in lesson 1. Run it, read the plan top to bottom, and watch the access path change. When the plan names an index scan instead of a sequential scan, you've seen the index earn its place.
 
 <SQLCoding
   instructions="Run this as-is. It's the same selective query you ran earlier, but now against 5,000 rows, with an index on status declared in the seed (open 'View schema & data' to see it). Read the plan top to bottom: which node sits at the root now, and what happened to the Rows Removed by Filter line you saw before?"
@@ -375,7 +375,7 @@ The plan you just read started with `Index Scan using idx_invoices_status`, and 
 
 ## One change, one re-run: the diagnostic loop
 
-Everything in this lesson collapses into a single discipline, worth naming on its own so it lands as a habit rather than a footnote.
+Everything in this lesson collapses into a single discipline, worth naming on its own so it becomes a habit rather than a footnote.
 
 <Steps>
 1. **Measure.** Run `EXPLAIN (ANALYZE, BUFFERS)` on the slow query. Read it top to bottom.
@@ -387,13 +387,13 @@ Everything in this lesson collapses into a single discipline, worth naming on it
 4. **Re-run and confirm.** Run `EXPLAIN (ANALYZE, BUFFERS)` again and check that *the node you predicted* changed the way you predicted. Then repeat if it's still slow.
 </Steps>
 
-The rule that matters most is the "exactly one" in step 3. Change two things at once and you've destroyed the signal: when the query gets faster, you can't say which change did it, and you may have shipped a useless second index that taxes every write to that table for no benefit. That discipline is the whole difference between a fix and cargo-cult tuning, where indexes get sprayed at a problem and nobody can later say which ones matter.
+The rule that matters most is the "exactly one" in step 3. Change two things at once and you've lost the signal: when the query gets faster, you can't say which change did it, and you may have shipped a useless second index that taxes every write to that table for no benefit. That discipline is the whole difference between a fix and cargo-cult tuning, where indexes get sprayed at a problem and nobody can later say which ones matter.
 
-One trap will undermine the loop before you even start it: the data you measure against. A plan on a hundred dev rows tells you almost nothing about the plan on ten million production rows, because the planner changes strategy as the table grows: a `Seq Scan` that's cheapest at a hundred rows loses to an `Index Scan` at a hundred thousand. It's the same `Seq Scan`-to-`Index Scan` swap you just toggled in the exercise, except driven by volume rather than the index, and it's why you reach for production-shaped data: a realistically seeded volume, or a production-shaped branch on Neon. Diagnose against a toy table and you'll "fix" problems that don't exist and miss the ones that do.
+One trap can undermine the loop before you even start it: the data you measure against. A plan on a hundred dev rows tells you almost nothing about the plan on ten million production rows, because the planner changes strategy as the table grows. A `Seq Scan` that's cheapest at a hundred rows loses to an `Index Scan` at a hundred thousand. That's the same `Seq Scan`-to-`Index Scan` swap you just toggled in the exercise, except here it's driven by row volume rather than by adding the index. So measure against production-shaped data: a realistically seeded volume, or a production-shaped branch on Neon. Diagnose against a toy table and you'll "fix" problems that don't exist and miss the ones that do.
 
 ## Worked example: the cursor-pagination query, before and after
 
-Now to make good on a promise. Earlier in this chapter you declared a composite index for cursor pagination, and the lesson said you'd be able to *prove* it earns its weight. This is that proof.
+This section makes good on an earlier promise. When you declared a composite index for cursor pagination earlier in this chapter, the lesson said you'd be able to *prove* it earns its weight. This is that proof.
 
 The query is the cursor-pagination one you wrote: a page of invoices for an organization, ordered newest-first, fetched with a compound cursor and a limit. Since `EXPLAIN` runs on SQL, not on the Drizzle builder, the SQL comes out roughly like this:
 
@@ -405,7 +405,7 @@ order by created_at desc, id desc
 limit 21;
 ```
 
-The index you declared for it is `idx_invoices_org_created_at_id`, on `(organization_id, created_at desc, id desc)`: the tenant column first, then the sort key and its tiebreaker in the exact direction the query orders. The two tabs below show this query's plan before that index exists and after, against a populated table.
+The index you declared for it is `idx_invoices_org_created_at_id`, on `(organization_id, created_at desc, id desc)`: the tenant column first, then the sort key and its tiebreaker in the exact direction the query orders. The two tabs below show this query's plan against a populated table, before that index exists and after.
 
 <CodeVariants>
   <CodeVariant label="Before the index">
@@ -424,7 +424,7 @@ The index you declared for it is `idx_invoices_org_created_at_id`, on `(organiza
     ```
 
     </div>
-    **Two suspects, bottom-up.** The `Seq Scan` reads all 200,000 rows and throws away 158,796, as `Rows Removed by Filter` confirms. Then the `Sort` orders 41,204 rows from scratch and spills to disk (`external merge`). 2,304 pages read from disk, 90ms total.
+    **Two suspects, reading bottom-up.** The `Seq Scan` reads all 200,000 rows and throws away 158,796, as `Rows Removed by Filter` confirms. Then the `Sort` orders 41,204 rows from scratch and spills to disk (`external merge`). That's 2,304 pages read from disk, and 90ms total.
   </CodeVariant>
 
   <CodeVariant label="After the index">
@@ -442,19 +442,19 @@ The index you declared for it is `idx_invoices_org_created_at_id`, on `(organiza
     ```
 
     </div>
-    **One node.** The `Index Scan` walks `idx_invoices_org_created_at_id` for `organization_id = 1`, and the `Limit` halts it after 21 rows, since the index already holds them in `created_at desc, id desc` order, so the engine never reads the rest. The cursor's `OR` predicate can't narrow a B-tree, so it rides along as a `Filter` that skips the few rows newer than the cursor (`Rows Removed by Filter: 3`). **No `Sort` node at all.** Zero disk reads, and 0.39ms, over two hundred times faster.
+    **One node.** The `Index Scan` walks `idx_invoices_org_created_at_id` for `organization_id = 1`, and because the index already holds the rows in `created_at desc, id desc` order, the `Limit` halts it after 21 rows and the engine never reads the rest. The cursor's `OR` predicate can't narrow a B-tree, so it rides along as a `Filter` that skips the few rows newer than the cursor (`Rows Removed by Filter: 3`). **No `Sort` node at all.** Zero disk reads, and 0.39ms, over two hundred times faster.
   </CodeVariant>
 </CodeVariants>
 
-Read the two plans side by side and two things jump out. The headline metric is the disk reads: `read=2304` collapsed to `read=0`. Before the index, Postgres dragged thousands of pages off disk to find one page of results; after, it walks straight to them in cache. The structural win is the missing node: the `Sort` is simply *gone*. The index keeps the rows in `created_at desc, id desc` order already, so there is nothing left to sort. That's the whole reason cursor pagination and its composite index belong together: the index doesn't just speed the lookup, it deletes an entire stage of work.
+Read the two plans side by side and two things stand out. The headline metric is the disk reads: `read=2304` collapsed to `read=0`. Before the index, Postgres dragged thousands of pages off disk to find one page of results; after, it walks straight to them in cache. The structural win is the missing node: the `Sort` is simply *gone*. The index already keeps the rows in `created_at desc, id desc` order, so there is nothing left to sort. That's the whole reason cursor pagination and its composite index belong together: the index doesn't just speed the lookup, it deletes an entire stage of work.
 
-And notice what this was: the loop, run once. One change, the index. One re-run. The predicted node, the `Sort`, gone exactly as predicted. That's the discipline, and that's the proof the earlier lessons deferred to this one.
+Notice that this was the loop, run once. One change, the index. One re-run. The predicted node, the `Sort`, was gone exactly as predicted. That's the discipline, and the proof the earlier lessons deferred to this one.
 
 ## Beyond the console
 
 You won't hand-run `EXPLAIN` on production all day. A few production-grade tools do this for you, and it's worth recognizing them by name now so you reach for them later.
 
-<Term definition="A Postgres extension that automatically logs the execution plan of any query slower than a configured threshold. The production version of running EXPLAIN by hand.">auto_explain</Term> is a Postgres extension that logs the plan of any query slower than a threshold you set. Set `auto_explain.log_min_duration = '500ms'`, and every slow query records its own plan to the log without you lifting a finger. It's the production version of this lesson's manual loop: instead of guessing which query is slow and running `EXPLAIN` on it, you let the slow ones announce themselves. It's a server-config concern, so it's deferred, but it's the answer to "how do I do this at scale."
+<Term definition="A Postgres extension that automatically logs the execution plan of any query slower than a configured threshold. The production version of running EXPLAIN by hand.">auto_explain</Term> is a Postgres extension that logs the plan of any query slower than a threshold you set. Set `auto_explain.log_min_duration = '500ms'`, and every slow query records its own plan to the log without you lifting a finger. It's the production version of this lesson's manual loop: instead of guessing which query is slow and running `EXPLAIN` on it, you let the slow ones announce themselves. It's a server-config concern, so a later lesson covers the setup, but it's the answer to "how do I do this at scale."
 
 One tier up, hosted tools like **pganalyze** and **Datadog database monitoring** collect plans *and* trend them over time, so you can see a query degrade across a deploy. And the consoles where you'll actually run the commands from this lesson are **Drizzle Studio** and the **Neon SQL editor**, both covered when you set them up.
 

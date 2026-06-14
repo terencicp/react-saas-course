@@ -35,7 +35,7 @@ import CompositePrefixDiagram from '../../../components/lessons/039/1/composite-
 
 The invoice list and detail queries you wrote in the last chapter work. On your dev database with its fifty seeded rows, they return instantly. But every one of them reads the whole table, top to bottom, every time, and a fifty-row table is small enough to hide that cost. Swap in a real tenant with fifty thousand invoices and the same query reads all fifty thousand rows to find the dozen it returns. The page that felt instant now crawls.
 
-The fix is an index. The experienced move, though, is not to reach for "add an index to make it fast," because that reflex buries a table under indexes that slow every write and earn nothing back. The real skill is reading a schema and its queries and knowing exactly which columns deserve an index, which kind, and which ones to leave alone. That is what this lesson covers: the four triggers that say *add one*, the decision tree that says *which kind*, and the cost that says *not that one*. You spent two chapters making queries correct and expressive; this one makes them fast. Two lessons from now you will confirm each call with `EXPLAIN ANALYZE`. Today is the decision itself.
+The fix is an index, but the experienced move is not to reach for "add an index to make it fast." That reflex buries a table under indexes that slow every write and earn nothing back. The real skill is reading a schema and its queries and knowing exactly which columns deserve an index, which kind, and which ones to leave alone. That is what this lesson covers: the four triggers that say to add one, the decision tree that picks the kind, and the cost that tells you to hold off. You spent two chapters making queries correct and expressive; this one makes them fast. Two lessons from now you will confirm each call with `EXPLAIN ANALYZE`. Today is the decision itself.
 
 ## How an index actually works
 
@@ -53,47 +53,47 @@ That is the whole intuition for layer one: an index trades a bit of extra storag
 
 ### Layer two: the planner chooses
 
-Here is the part people miss. The database does not blindly use an index just because one exists. Every query goes through the <Term def="The Postgres component that estimates the cost of each possible way to run a query and picks the cheapest one.">query planner</Term>, which estimates the cost of each available path, scanning the table or walking the index, using statistics it keeps about the table's size and the distribution of values. It picks whichever path it thinks is cheaper.
+A subtle point trips people up here: the database does not blindly use an index just because one exists. Every query goes through the <Term def="The Postgres component that estimates the cost of each possible way to run a query and picks the cheapest one.">query planner</Term>, which estimates the cost of each available path, scanning the table or walking the index, using statistics it keeps about the table's size and the distribution of values. It picks whichever path it thinks is cheaper.
 
-So an index is an *option you offer the planner*, not a command it must obey. This one fact explains two things you will keep running into. First, an index that no query benefits from just sits there unused, still costing you on every write, earning nothing. (More on that write cost next.) Second, the planner will sometimes *correctly* ignore an index you added: on a tiny table, or when a predicate matches most of the rows, a straight scan is genuinely faster than bouncing between the index and the table. The planner is not being dumb; it is doing the math you would want it to do.
+So an index is an *option you offer the planner*, not a command it must obey. That one fact explains two things you will keep running into. First, an index that no query benefits from just sits there unused, still costing you on every write and earning nothing. (More on that write cost next.) Second, the planner will sometimes correctly ignore an index you added: on a tiny table, or when a predicate matches most of the rows, a straight scan is genuinely faster than bouncing between the index and the table. The planner is not being dumb; it is doing the math you would want it to do.
 
-You do not have to take the planner's word for it. The command `EXPLAIN ANALYZE` tells you exactly which path it chose and what each step cost, and that is the diagnostic lesson two from here. For now, just hold the model: indexes are offered, not forced.
+You do not have to take the planner's word for it. The command `EXPLAIN ANALYZE` tells you exactly which path it chose and what each step cost, and that is the diagnostic you will meet two lessons from here. For now, just hold the model: indexes are offered, not forced.
 
 ### Layer three: the cost
 
 An index never changes the *result* of a query, only the path the engine takes to it. Run the same query with and without an index and you get identical rows back, every time. What changes is speed, and that speed is not free.
 
-An index lives on disk as that sorted copy of its key columns, so it takes space. More importantly, it has to stay in sync with the table: every `insert`, `update`, or `delete` that touches an indexed column must update the index too. Add a row, and the database writes it to the table *and* threads it into the sorted position of every index covering that table. One index means one extra write per row change; ten indexes mean ten extra writes. That is the seed of a discipline we return to at the end of this lesson. For now, just file it away: indexes speed up reads by taxing writes.
+An index lives on disk as that sorted copy of its key columns, so it takes space. More importantly, it has to stay in sync with the table: every `insert`, `update`, or `delete` that touches an indexed column must update the index too. Add a row, and the database writes it to the table *and* threads it into the sorted position of every index covering that table. One index means one extra write per row change; ten indexes mean ten extra writes. That is the seed of a discipline we return to at the end of this lesson. For now, hold onto the trade-off: indexes speed up reads by taxing writes.
 
-One last term before we use it. We keep saying a predicate "matches most rows" or "matches few rows," and the word for that fraction is <Term def="The fraction of a table's rows a predicate keeps. A predicate that keeps few rows is highly selective; one that keeps most rows is not.">selectivity</Term>. `where status = 'pending'`, when only 5% of invoices are pending, is *highly selective*: it slices the table down to a sliver. `where status = 'paid'`, when 90% are paid, is *not* selective, because it barely narrows anything. Selectivity is the hinge the next section turns on.
+One last term before we use it. We keep saying a predicate "matches most rows" or "matches few rows," and the word for that fraction is <Term def="The fraction of a table's rows a predicate keeps. A predicate that keeps few rows is highly selective; one that keeps most rows is not.">selectivity</Term>. `where status = 'pending'`, when only 5% of invoices are pending, is *highly selective*: it slices the table down to a sliver. `where status = 'paid'`, when 90% are paid, is not selective, because it barely narrows anything. Selectivity is the hinge the next section turns on.
 
 <VideoCallout videoId="K1a2Bk8NrYQ" videoTitle="Understanding B-Trees: The Data Structure Behind Modern Databases">
-  Spanning Tree's 13-minute animation builds the sorted-tree structure under every B-tree index from the ground up, exactly the "shortcut" picture this section asks you to hold.
+  Spanning Tree's 13-minute animation builds the sorted-tree structure under every B-tree index from the ground up, which is exactly the "shortcut" picture this section asks you to hold.
 </VideoCallout>
 
 ## The four triggers: when a column earns an index
 
-Here is the core of the lesson. Picture yourself reviewing a pull request: a schema and the queries that run against it. For each column, you ask one question: *does this column earn an index?*
+This is the core of the lesson. Picture yourself reviewing a pull request: a schema and the queries that run against it. For each column, you ask one question: does this column earn an index?
 
-The default answer is **no**. Most columns in most tables never get an index, and that is correct, because an index is a measured response to a read pattern, not something you sprinkle on preemptively. So you are looking for the specific signals that flip the answer to yes. There are four of them. Learn to spot them in code and you have the most reusable database reflex there is.
+The default answer is **no**. Most columns in most tables never get an index, and that is correct, because an index is a measured response to a read pattern, not something you sprinkle on preemptively. So you are looking for the specific signals that flip the answer to yes. There are four of them, and learning to spot them in code gives you one of the most reusable database reflexes there is.
 
 ### Foreign-key columns
 
-Start here, because this one is a trap, and it is the single highest-value fact in the lesson.
+Start here, because this one is a trap and the single highest-value fact in the lesson.
 
-**Postgres does not automatically index foreign-key columns.** When you wrote `.references(() => orgs.id)` back in the schema chapter, you created a *constraint*: Postgres now guarantees referential integrity, refusing to insert an invoice pointing at an organization that does not exist. What you did *not* create is an index. The constraint and the index are separate things, and Postgres gives you the first for free while staying silent about the second.
+**Postgres does not automatically index foreign-key columns.** When you wrote `.references(() => orgs.id)` back in the schema chapter, you created a *constraint*: Postgres now guarantees referential integrity, refusing to insert an invoice pointing at an organization that does not exist. What you did not create is an index. The constraint and the index are separate things, and Postgres gives you the first for free while staying silent about the second.
 
-That silence is dangerous, and it helps to think about what a foreign-key column is actually used for. Every join probes the child table by its foreign key: "give me the line items where `invoiceId = ?`". Every cascade delete on the parent does the same, because deleting an invoice sends Postgres looking for its line items to delete too. Without an index on `invoiceId`, both of those become sequential scans of the child table. The symptom only shows up at scale: on your dev seed the scan is invisible, so the missing index ships, and months later cascade deletes and joins on a now-large table slow to a crawl. There is no error and no warning, just a query that got slow as the data grew.
+That silence is dangerous, so it helps to think about what a foreign-key column is actually used for. Every join probes the child table by its foreign key: "give me the line items where `invoiceId = ?`". Every cascade delete on the parent does the same, because deleting an invoice sends Postgres looking for its line items to delete too. Without an index on `invoiceId`, both of those become sequential scans of the child table. The symptom only shows up at scale: on your dev seed the scan is invisible, so the missing index ships, and months later cascade deletes and joins on a now-large table slow to a crawl. There is no error and no warning, just a query that got slow as the data grew.
 
-The call: **every foreign-key column gets a B-tree index by default.** This is the one index that sits close to a correctness concern, so you ship it on day one without waiting for evidence, the same way you would ship the constraint itself. As a reviewer it becomes a reflex: when you see a `.references(...)` with no matching `index(...)`, you flag it. The `onDelete: 'cascade'` you put on invoice line items and the joins you wrote on foreign keys last chapter are exactly the queries this protects.
+So the call is that **every foreign-key column gets a B-tree index by default.** This is the one index that sits close to a correctness concern, so you ship it on day one without waiting for evidence, the same way you would ship the constraint itself. As a reviewer it becomes a reflex: when you see a `.references(...)` with no matching `index(...)`, you flag it. The `onDelete: 'cascade'` you put on invoice line items and the joins you wrote on foreign keys last chapter are exactly the queries this protects.
 
 ### Selective `where` predicates
 
 A column you filter on can earn an index, but *only if the filter is selective*. This is where the planner's cost math becomes your decision.
 
-`where status = 'pending'`, when 5% of rows are pending, is worth indexing: the index hands the engine that small slice directly and it skips the other 95%. `where status = 'paid'`, when 90% of rows are paid, is *not* worth indexing, and here is the counterintuitive part. Even with an index in place, the planner refuses to use it, because reading the index and then fetching nearly every row from the table is slower than scanning the table once. A low-selectivity index is the worst of both worlds: it taxes your writes, and the planner will not even use it.
+`where status = 'pending'`, when 5% of rows are pending, is worth indexing: the index hands the engine that small slice directly and it skips the other 95%. `where status = 'paid'`, when 90% of rows are paid, is not worth indexing, and here is the counterintuitive part. Even with an index in place, the planner refuses to use it, because reading the index and then fetching nearly every row from the table is slower than scanning the table once. A low-selectivity index is the worst of both worlds: it taxes your writes, and the planner will not even use it.
 
-The rough rule of thumb is that the predicate should slice the table down to something like 5 to 10% or less before an index pays off. The planner makes the actual call at query time from its statistics, and those stay current automatically as Postgres runs `ANALYZE` in the background, so you do not manage them by hand. You do not need to worry about the statistics machinery; just know it is there and it is why the planner's estimates track reality.
+A rough rule of thumb is that the predicate should slice the table down to something like 5 to 10% or less before an index pays off. The planner makes the actual call at query time from its statistics, and those stay current automatically as Postgres runs `ANALYZE` in the background, so you do not manage them by hand. You do not need to worry about that machinery; just know it is there, and it is why the planner's estimates track reality.
 
 Hold onto the low-selectivity case, because it is not a dead end. A column that is useless to index *as a whole* can still earn an index on its rare slice. There is a tool for exactly that, and we will get to it.
 
@@ -101,11 +101,11 @@ Hold onto the low-selectivity case, because it is not a dead end. A column that 
 
 The cursor pagination you built last chapter sorts every page by a stable key plus a tiebreaker, something like `order by createdAt desc, id desc`. That sort runs on *every single request*. Without an index in that exact order, the engine has to sort the entire table from scratch each time someone loads a page.
 
-So an `order by` that runs on every request is a trigger. The index that satisfies it is a composite: multiple columns, in the same directions the query sorts. That is a topic with enough depth to deserve its own treatment later in this lesson. For now, just register the signal: a sort that runs constantly needs an index built to match it.
+So an `order by` that runs on every request is a trigger. The index that satisfies it is a composite: multiple columns, in the same directions the query sorts. That topic has enough depth to deserve its own treatment later in this lesson. For now, just register the signal: a sort that runs constantly needs an index built to match it.
 
 ### Unique constraints
 
-This one is a freebie wearing a trigger's clothes. When you marked a column `.unique()` in the schema chapter, Postgres created a unique B-tree index under the hood. It has no choice, because enforcing uniqueness *requires* a sorted structure to check each new value against. The index already exists.
+This one is a freebie wearing a trigger's clothes. When you marked a column `.unique()` in the schema chapter, Postgres created a unique B-tree index under the hood. It had no choice, because enforcing uniqueness *requires* a sorted structure to check each new value against. The index already exists.
 
 So the call here is a *don't*: **never add a separate `index(...)` for a column that already has `.unique()`.** You would end up with two indexes doing one job and paying double the write cost for it. This is the first of several "what you already get for free" facts, and we will collect them all in one place shortly.
 
@@ -122,11 +122,11 @@ So the call here is a *don't*: **never add a separate `index(...)` for a column 
   <Item bucket="index">`createdAt` — the sort key your cursor pagination orders by on every page</Item>
 </Buckets>
 
-If the 90%-`paid` case and the already-`.unique()` case made you pause before dropping them in "Leave it," that pause is the point: those are the two that separate "add an index to be safe" from actually reasoning about cost. The 5%-`pending` column you bucketed as "index" has a sharper answer than a plain index, too, so keep it in mind for partial indexes.
+If the 90%-`paid` case and the already-`.unique()` case made you pause before dropping them in "Leave it," that pause is the point: those are the two that separate "add an index to be safe" from actually reasoning about cost. The 5%-`pending` column you bucketed as "index" has a sharper answer than a plain index too, so keep it in mind for partial indexes.
 
 ## Declaring indexes in Drizzle
 
-Now you know *what* to declare. Here is *how*, and it is deliberately mechanical, because the decisions are the hard part, not the syntax.
+Now you know *what* to declare. The *how* is deliberately mechanical, because the decisions are the hard part, not the syntax.
 
 Indexes live in the same place as the composite constraints you saw in the schema chapter, the table definition's third argument: a callback that returns an array of builders.
 
@@ -163,7 +163,7 @@ export const invoices = pgTable('invoices', {
 
 That explicit `name` argument is not optional polish. It is a convention the downstream projects enforce, and it is worth understanding why.
 
-If you omit the name, Drizzle generates one for you. The trouble is that the generated name is derived from things like column order, so it *changes* when you reorder columns or rename things, and the migration tool you will meet in the next chapter emits the name verbatim into your SQL. A name that drifts produces noisy, confusing migration diffs, and it turns a real naming collision, two indexes accidentally sharing a name, into a silent surprise instead of a clear error. A stable, hand-written name keeps your migration history clean and makes collisions loud. The convention:
+If you omit the name, Drizzle generates one for you. The trouble is that the generated name is derived from things like column order, so it *changes* when you reorder columns or rename things, and the migration tool you will meet in the next chapter emits the name verbatim into your SQL. A name that drifts produces noisy, confusing migration diffs, and it turns a real naming collision, two indexes accidentally sharing a name, into a silent surprise instead of a clear error. A stable, hand-written name keeps your migration history clean and surfaces collisions as errors. The convention:
 
 - `idx_<table>_<col>` for a B-tree, extended to `idx_<table>_<col>_<col2>` when it spans columns.
 - `idx_<table>_<col>_gin` for a GIN index, `idx_<table>_<col>_partial` for a partial one (both covered below).
@@ -176,33 +176,33 @@ If you omit the name, Drizzle generates one for you. The trouble is that the gen
 - A **`.unique()`** column is indexed automatically, and the uniqueness is enforced by that index.
 - A **`.references(...)`** foreign key is **not** indexed; only the constraint is created.
 
-That last line is the foreign-key trap from earlier, restated on purpose. It is the one Postgres will not remind you about, so you have to remember it yourself.
+That last line is the foreign-key trap from earlier, restated on purpose, because it is the one Postgres will not remind you about. You have to remember it yourself.
 :::
 
 ## B-tree and the index-type decision tree
 
-You have decided a column earns an index. Now the second decision: *which kind?*
+You have decided a column earns an index. The second decision is which kind.
 
-Almost always, the answer is **B-tree**, a <Term def="A balanced sorted tree; the default Postgres index type. It keeps keys in sorted order, which is what makes range scans and ordered reads fast.">B-tree</Term> index, the default and the workhorse. Because it stores keys in sorted order, one B-tree serves an enormous range of query shapes: `=`, `<`, `<=`, `>`, `>=`, `BETWEEN`, `IN`, `IS NULL`, `IS NOT NULL`, and `ORDER BY` in either direction. Drizzle's plain `index(...).on(col)` gives you a B-tree. The mental rule is blunt and reliable: **if you are not sure, it is B-tree.** Roughly 95% of the indexes in a typical SaaS schema are B-trees.
+Almost always, the answer is a <Term def="A balanced sorted tree; the default Postgres index type. It keeps keys in sorted order, which is what makes range scans and ordered reads fast.">B-tree</Term>, the default and the workhorse. Because it stores keys in sorted order, one B-tree serves an enormous range of query shapes: `=`, `<`, `<=`, `>`, `>=`, `BETWEEN`, `IN`, `IS NULL`, `IS NOT NULL`, and `ORDER BY` in either direction. Drizzle's plain `index(...).on(col)` gives you a B-tree. The mental rule is blunt and reliable: **if you are not sure, it is B-tree.** Roughly 95% of the indexes in a typical SaaS schema are B-trees.
 
-The other index types each exist for a specific query shape a plain B-tree cannot serve. Think of them as deviations, each triggered by a particular thing you see in the query. Here are the ones worth knowing.
+The other index types each exist for a specific query shape a plain B-tree cannot serve. Think of them as exceptions, each triggered by a particular thing you see in the query. Here are the ones worth knowing.
 
 ### Composite indexes and the leftmost-prefix rule
 
 This is the `order by` index from the triggers section, now in full. A composite index covers *more than one column*, and the key insight is how it is sorted: an index on `(a, b, c)` is sorted by `a` first, then by `b` within each group of equal `a`, then by `c` within each group of equal `a` and `b`. It works like a contact list sorted by last name, then first name, then middle name.
 
-That sort order produces the **leftmost-prefix rule**, which decides what the index can and cannot serve. It serves any query that uses a *prefix* of the columns from the left:
+That sort order produces the **leftmost-prefix rule**, which decides what the index can and cannot serve. It serves any query that uses a *prefix* of the columns, starting from the left:
 
 - `where a = ?` works, because the index is sorted by `a` first.
 - `where a = ? and b = ?` works.
 - the full `where a = ? and b = ? and c = ?` works.
 - `order by a, b, c` works, because that is exactly its sort order.
 
-But it does **not** serve `where b = ?` on its own. Look at the contact-list analogy: the list is sorted by last name, so you can find everyone named "Smith" instantly, but you *cannot* jump to everyone whose first name is "Jordan," because the Jordans are scattered all through the list, one inside each last-name group. `b` is only sorted *within* each `a`, never globally. That asymmetry is the watch-out: the column order in a composite index is a real decision, not an arbitrary list.
+But it does **not** serve `where b = ?` on its own. Look at the contact-list analogy: the list is sorted by last name, so you can find everyone named "Smith" instantly, but you cannot jump to everyone whose first name is "Jordan," because the Jordans are scattered all through the list, one inside each last-name group. `b` is only sorted *within* each `a`, never globally. That asymmetry is the watch-out: the column order in a composite index is a real decision, not an arbitrary list.
 
 <CompositePrefixDiagram />
 
-So in what order do the columns go? The rule is **equality predicate first, the range or sort key second, the tiebreaker last.** Apply it to the cursor index pagination needs:
+So in what order do the columns go? The rule is **equality predicate first, the range or sort key second, the tiebreaker last.** Apply it to the cursor index that pagination needs:
 
 <div data-mark-color="green">
 
@@ -216,7 +216,7 @@ index('idx_invoices_org_created_at_id').on(
 
 </div>
 
-Each line earns its place. `organizationId` is the equality predicate: every tenant query filters by it, so it leads. As a rule, the tenant or org column always leads a composite index on tenant-scoped data. `createdAt.desc()` is the sort key, in the exact descending direction the query orders. `id.desc()` is the tiebreaker that makes the order total, also descending to match. That `.desc()` on each column encodes the sort direction into the index itself, and this is the index the cursor pagination query depends on.
+Each line earns its place. `organizationId` is the equality predicate: every tenant query filters by it, so it leads. As a rule, the tenant or org column always leads a composite index on tenant-scoped data. `createdAt.desc()` is the sort key, in the exact descending direction the query orders. `id.desc()` is the tiebreaker that makes the order total, also descending to match. The `.desc()` on each column encodes the sort direction into the index itself, and this is the index the cursor pagination query depends on.
 
 <VideoCallout videoId="fW-y-r7CgNI" videoTitle="Are Multi-Column Indexes a good idea?">
   Supabase walks a slow recent-signins query straight into a multi-column index and shows why column order decides which queries it serves: the leftmost-prefix rule in Postgres, demonstrated live.
@@ -224,7 +224,7 @@ Each line earns its place. `organizationId` is the equality predicate: every ten
 
 ### Partial indexes: index only the rows that matter
 
-Remember the low-selectivity dead end, the column where the value you filter on is rare overall, so a full index is not worth it. This is the rescue.
+Remember the low-selectivity case from the triggers section, the column where the value you filter on is rare overall, so a full index is not worth it. This is the rescue.
 
 A **partial index** covers *only the rows matching a predicate* you attach with `.where(...)`. Instead of indexing every invoice's `dueDate`, you index the `dueDate` of only the pending ones. The two tabs below put the full index and the partial one side by side so you can see what changes.
 
@@ -235,7 +235,7 @@ That partial index is smaller on disk and cheaper to maintain, since it only upd
     ```ts
     index('idx_invoices_due_date').on(t.dueDate)
     ```
-    **Indexes every invoice.** Paid, void, draft, all of them. If the only query that uses it is the pending-invoices dashboard, the vast majority of that index is dead weight: disk you are paying for and write cost on every invoice change, all to serve a query that only ever looks at the pending slice.
+    **Indexes every invoice,** paid, void, and draft alike. If the only query that uses it is the pending-invoices dashboard, the vast majority of that index is dead weight: disk you are paying for and write cost on every invoice change, all to serve a query that only ever looks at the pending slice.
   </CodeVariant>
 
   <CodeVariant label="Partial index">
@@ -248,19 +248,19 @@ That partial index is smaller on disk and cheaper to maintain, since it only upd
     ```
 
     </div>
-    **Indexes only the pending invoices.** When `pending` is 5% of the table, this index is roughly a twentieth of the size, updates only when a pending row changes, and serves the dashboard query just as fast. The non-selective column became selective by carving out its hot slice. Note that the predicate is a raw `sql` template, not the `eq()` helper, and the next paragraph says why.
+    **Indexes only the pending invoices.** When `pending` is 5% of the table, this index is roughly a twentieth of the size, updates only when a pending row changes, and serves the dashboard query just as fast. The non-selective column became selective once you carved out its hot slice. Note that the predicate is a raw `sql` template, not the `eq()` helper; the next paragraph says why.
   </CodeVariant>
 </CodeVariants>
 
-Two things to nail down. First, write the `.where()` predicate as a raw ``sql`status = 'pending'` `` template, *not* with the `eq()` helper you use everywhere else. There is a known bug where `eq()` inside a partial-index predicate emits a parameter placeholder instead of a literal value, producing invalid SQL when the index is created. For partial-index predicates specifically, the `sql` template is the correct form.
+Two things to nail down. First, write the `.where()` predicate as a raw ``sql`status = 'pending'` `` template, *not* with the `eq()` helper you use everywhere else. There is a known bug where `eq()` inside a partial-index predicate emits a parameter placeholder instead of a literal value, which produces invalid SQL when the index is created. For partial-index predicates specifically, the `sql` template is the correct form.
 
-Second, the watch-out that catches everyone: **the planner uses a partial index only when the query's `where` includes the same predicate.** A `where status = 'pending'` query uses `idx_invoices_pending_partial`, but a `where status = 'active'` query does not, because that index simply does not contain those rows. Even a `where status in ('pending')` might not line up. The query's predicate has to match the index's predicate for the index to be eligible. Put it plainly: a partial index serves *only* the slice it was built for.
+Second, the watch-out that catches everyone: **the planner uses a partial index only when the query's `where` includes the same predicate.** A `where status = 'pending'` query uses `idx_invoices_pending_partial`, but a `where status = 'active'` query does not, because that index simply does not contain those rows. Even a `where status in ('pending')` might not line up. The query's predicate has to match the index's predicate for the index to be eligible. Put plainly: a partial index serves *only* the slice it was built for.
 
 ### Expression indexes: index a computed value
 
 Here is a quiet way to lose an index without realizing it. You build a plain B-tree on `email`, then write `where lower(email) = ?` for a case-insensitive lookup. The index is useless. The moment you wrap a column in a function, whether `lower`, `date_trunc`, or a cast, a plain index on the raw column cannot be used, because the index stores `email`, not `lower(email)`, and the planner has no way to bridge the two. You are back to a sequential scan.
 
-The fix is an **expression index**: instead of indexing the column, you index the *expression* the query computes.
+The fix is an **expression index**: instead of indexing the column, you index the *expression* that the query computes.
 
 <div data-mark-color="green">
 
@@ -272,13 +272,13 @@ index('idx_users_email_lower').on(sql`lower(${t.email})`)
 
 Now `where lower(email) = ?` has an index sorted on exactly the value it is comparing, and the planner can use it. The signal to watch for is a `where` predicate that wraps a column in a function. The watch-out is the same shape as the partial-index one, only stricter: **the index expression must match the query expression character-for-character.** Index `lower(email)` and query `lower(email)` and you are fine; slip a `coalesce` wrapper or an extra cast into the query and the match breaks, the index goes unused, and you are scanning again.
 
-One alternative is worth naming. When a computed value is read *often*, it is usually cleaner to store it in a generated column, a real column that Postgres keeps in sync (you met these in the schema chapter), and put a normal index on that. Reach for the expression index when the computed lookup is occasional, and promote to a generated column when the value is hot. The mechanics of generated columns live back in the schema chapter; here it is just the trade-off to know.
+One alternative is worth naming. When a computed value is read *often*, it is usually cleaner to store it in a generated column, a real column that Postgres keeps in sync (you met these in the schema chapter), and put a normal index on that. Reach for the expression index when the computed lookup is occasional, and promote to a generated column when the value is hot. The mechanics of generated columns live back in the schema chapter; here, it is just the trade-off to know.
 
 ### Unique indexes and the partial unique
 
-You have seen that `.unique()` and `uniqueIndex(...)` both create a unique B-tree, so they are nearly interchangeable. One difference earns `uniqueIndex` its own reach: **`uniqueIndex` accepts a `.where(...)` clause and `.unique()` does not.** That gives you a *partial unique index*, uniqueness enforced only among the rows matching a predicate.
+You have seen that `.unique()` and `uniqueIndex(...)` both create a unique B-tree, so they are nearly interchangeable. One difference earns `uniqueIndex` its own place: **`uniqueIndex` accepts a `.where(...)` clause and `.unique()` does not.** That gives you a *partial unique index*, uniqueness enforced only among the rows matching a predicate.
 
-That unlocks something a plain unique constraint cannot express: **conditional uniqueness**. "One primary contact per organization" is not "the `is_primary` column is unique," because plenty of rows have `is_primary = false` and those should not collide. What you actually want is *unique among the rows where `is_primary = true`*:
+That unlocks something a plain unique constraint cannot express: **conditional uniqueness**. "One primary contact per organization" is not the same as "the `is_primary` column is unique," because plenty of rows have `is_primary = false` and those should not collide. What you actually want is *unique among the rows where `is_primary = true`*:
 
 <div data-mark-color="green">
 
@@ -294,20 +294,20 @@ The same pattern handles soft-delete lifecycles cleanly. `unique on (org_id, slu
 
 ### GIN: the index for composite-value columns
 
-Everything so far indexes one scalar value per row. But two of the query shapes you already built do not ask "what is the value in this column?" They ask "is this thing *inside* this column?" Full-text search asks whether a word appears in a document. A `jsonb` containment query asks whether a fragment is contained in a JSON blob. A B-tree cannot answer either one, because it sorts whole values, and there is no useful sort order for "contains."
+Everything so far indexes one scalar value per row. But two of the query shapes you already built do not ask "what is the value in this column?" They ask "is this thing *inside* this column?" Full-text search asks whether a word appears in a document. A `jsonb` containment query asks whether a fragment sits inside a JSON blob. A B-tree cannot answer either one, because it sorts whole values, and there is no useful sort order for "contains."
 
-That is what <Term def="Generalized Inverted Index — it maps each value contained inside a column (each word, each JSON key/value, each array element) back to the rows that hold it.">GIN</Term> is for. A GIN index inverts the relationship: instead of mapping each row to its value, it maps each *contained* value back to the rows that hold it, every word to the documents containing it, every JSON fragment to the blobs containing it. That is exactly the lookup those two queries need.
+That is what a <Term def="Generalized Inverted Index — it maps each value contained inside a column (each word, each JSON key/value, each array element) back to the rows that hold it.">GIN</Term> index is for. It inverts the relationship: instead of mapping each row to its value, it maps each *contained* value back to the rows that hold it, every word to the documents containing it, every JSON fragment to the blobs containing it. That is exactly the lookup those two queries need.
 
 Both of the features you built last chapter were waiting for this index:
 
 - The `tsvector` full-text column from the search lesson needs a GIN index: `index('idx_invoices_search_vector_gin').using('gin', t.searchVector)`. The `.using('gin', ...)` modifier is what selects GIN instead of the default B-tree. This is the index that makes your full-text search query fast.
 - The `jsonb` column you queried with `@>` needs one too: `index('idx_events_payload_gin').using('gin', t.payload)`. GIN also covers array membership the same way.
 
-There is a trade. GIN is slower to write than a B-tree, because it indexes *every* contained token rather than one value, so a document with fifty words threads fifty entries into the index. But for these query shapes it is not a trade against B-tree at all; it is the only structure that works, because a B-tree cannot answer "contains" no matter how you build it. One refinement is worth knowing: for `jsonb` columns queried *only* with `@>` containment, and never with the key-existence `?` operators, the `jsonb_path_ops` <Term def="The per-type strategy an index uses to compare values. Most types have a default; some, like jsonb, offer alternatives such as jsonb_path_ops tuned for specific query shapes.">operator class</Term> produces a smaller, faster GIN index. Prefer it when your JSON queries are pure containment.
+There is a trade. GIN is slower to write than a B-tree, because it indexes *every* contained token rather than one value, so a document with fifty words threads fifty entries into the index. But for these query shapes it is not really a trade against B-tree at all; it is the only structure that works, because a B-tree cannot answer "contains" no matter how you build it. One refinement is worth knowing: for `jsonb` columns queried *only* with `@>` containment, and never with the key-existence `?` operators, the `jsonb_path_ops` <Term def="The per-type strategy an index uses to compare values. Most types have a default; some, like jsonb, offer alternatives such as jsonb_path_ops tuned for specific query shapes.">operator class</Term> produces a smaller, faster GIN index. Prefer it when your JSON queries are pure containment.
 
 ### The decision, as a walk
 
-That is all the types. The lesson is not really the list, though; it is the *order of the questions* you ask to land on one. The experienced move is to start from the query shape and let the type fall out. Walk it:
+That is all the types. The lesson is not really the list, though; it is the *order of the questions* you ask to land on one. The experienced move is to start from the query shape and let the type fall out, so walk it from the top:
 
 <StateMachineWalker title="Which index type?">
   <Question id="shape" prompt="What does the query do with the column?"
@@ -358,14 +358,14 @@ That is all the types. The lesson is not really the list, though; it is the *ord
 </StateMachineWalker>
 
 :::note
-**Named so you recognize them.** A handful of other index types exist. You will not reach for them building a 2026 SaaS, but you should know the names if you meet them. **BRIN** (block-range) is tiny and suits very large, naturally ordered columns, such as an append-only event log past tens of millions of rows, but it is not a default. **GiST** and **SP-GiST** serve geometric and range types. **Hash** indexes are crash-safe these days, but a B-tree almost always wins. Recognize them; do not reach for them.
+**Named so you recognize them.** A handful of other index types exist. You will not reach for them building a 2026 SaaS, but you should know the names if you meet them. **BRIN** (block-range) is tiny and suits very large, naturally ordered columns, such as an append-only event log past tens of millions of rows, though it is never a default. **GiST** and **SP-GiST** serve geometric and range types. **Hash** indexes are crash-safe these days, but a B-tree almost always wins. Recognize them; do not reach for them.
 :::
 
 ## The cost of an index, and the day-one rule
 
-Now the discipline, which deserves its own section, because it is the half of this skill that beginners skip. The instinct, when a query feels slow, is to add an index. The experienced counter-instinct is to remember that *every* index is a standing cost you pay forever, whether or not it ever helps.
+Now the discipline, which is the half of this skill that beginners skip. The instinct, when a query feels slow, is to add an index. The experienced counter-instinct is to remember that *every* index is a standing cost you pay forever, whether or not it ever helps.
 
-Three costs, concretely:
+There are three costs, concretely:
 
 1. **The write tax.** Every `insert`, `update`, or `delete` that touches an indexed column has to update the index too. Ten indexes on a hot table mean ten extra index writes for every single row you change. On a write-heavy table, such as an events log or an audit trail, you pay this constantly, on every write, forever.
 2. **Disk.** Each index is a full sorted copy of its key columns. A few are nothing, but a dozen on a wide table adds up to real storage, and real backup and replication weight.
@@ -379,7 +379,7 @@ So here is the synthesis, the thread that runs through this whole chapter: **ind
 Two more watch-outs, each tied to a specific case:
 
 - **Low-cardinality columns**, meaning booleans, three-state enums, anything with only a handful of distinct values, are usually *worse* indexed than scanned. The index cannot be selective enough to beat the scan, so the planner ignores it while you pay the write tax. If you genuinely need to index one rare value of such a column, the rescue is a *partial* index on that value, not a full index on the column.
-- **The production lock-out.** Adding an index to a table that is taking live writes **locks those writes for the entire duration of the build**, unless you build it with `CONCURRENTLY`. On a busy table that lock can mean a visible outage. The reflex is that any index added to a table with real write traffic uses `CONCURRENTLY`. You will write that migration by hand in the next chapter, so for now just hold the rule and the reason.
+- **The production lock-out.** Adding an index to a table that is taking live writes **locks those writes for the entire duration of the build**, unless you build it with `CONCURRENTLY`. On a busy table that lock can mean a visible outage. The reflex is that any index added to a table with real write traffic uses `CONCURRENTLY`. You will write that migration by hand in the next chapter, so for now just hold onto the rule and the reason.
 
 <MultipleChoice>
   A table takes about **10,000 inserts per minute**. One admin report, run a few times a day, filters `where status = 'archived'` — and `archived` rows are **0.5%** of the table. What's the right index call?
@@ -398,7 +398,7 @@ Two more watch-outs, each tied to a specific case:
 
 ## Worked example: indexing the invoices table
 
-Time to put both frames to work on a table you already have. Here is the full index set for the invoices schema, every index called by its trigger and its type, building up that third-argument array.
+Time to put both frames to work on a table you already have. Here is the full index set for the invoices schema, every index named by its trigger and its type, building up that third-argument array.
 
 <AnnotatedCode lang="ts" maxLines={18} code={`
 export const invoices = pgTable('invoices', {
@@ -423,7 +423,7 @@ export const invoices = pgTable('invoices', {
 `}>
   <AnnotatedStep meta="{4-5}" color="green">
     **Trigger: foreign key. Type: B-tree default.**
-    Both columns are joined and filtered constantly, and Postgres indexes neither automatically, so these two lines close the silent slow-cascade trap shut.
+    Both columns are joined and filtered constantly, and Postgres indexes neither automatically, so these two lines close the silent slow-cascade trap.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{6-9}" color="violet">
@@ -453,7 +453,7 @@ Look at what that array did: every index traces back to a trigger you can name a
 
 One honest caveat before you ship anything like this: every index in that array is a *hypothesis* that the query needs it. The two correctness-adjacent ones, the foreign-key and unique indexes, you ship on day one regardless. The rest you confirm with `EXPLAIN ANALYZE` two lessons from now, and the migration that actually creates them, with `CONCURRENTLY` where the writes are hot, is the next chapter's job.
 
-Now write a set yourself. The exercise below gives you a trimmed `org_members` table, the same shape but smaller. Add the foreign-key index, the composite unique that carries the tenant column, and a *partial unique* index for conditional uniqueness: one primary member per organization. The probes will try to insert two non-primary members in one org, which must succeed, and two primary members in one org, which must be rejected. That is how you will know the partial unique actually fires.
+Now write a set yourself. The exercise below gives you a trimmed `org_members` table, the same shape but smaller. Add the foreign-key index, the composite unique that carries the tenant column, and a *partial unique* index for conditional uniqueness: one primary member per organization. The probes will try to insert two non-primary members in one org, which must succeed, and two primary members in one org, which must be rejected. That is how you will see the partial unique actually fire.
 
 <DrizzleSchemaCoding
   instructions="Add three indexes to `org_members` in the third-argument array. (1) A B-tree index on the `org_id` foreign key — Postgres won't add it for you. (2) A composite unique index on `(org_id, user_id)`, tenant column first, so a user can't be added to the same org twice. (3) A partial unique index enforcing one primary member per org — unique on `org_id` where `is_primary = true`. Write the partial predicate as a raw `sql` template, not `eq()`."
@@ -542,7 +542,7 @@ The composite unique leads with `orgId` (tenancy first) and the partial unique c
 
 ## External resources
 
-Four references that match this lesson's framing: two for the mental model, two for the day-to-day work.
+Four references that match this lesson's framing, two for the mental model and two for the day-to-day work.
 
 <CardGrid>
   <ExternalResource
