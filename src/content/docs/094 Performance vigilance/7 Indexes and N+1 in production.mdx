@@ -1,0 +1,319 @@
+---
+title: Indexes and N+1 in production
+tagline: Diagnosing and fixing the two classes of Postgres slowness, the missing index and the N+1 query, from production traces, and building the checklist and weekly review that keep them away.
+chapter-id: 94
+course-progress: 0.00005
+sidebar:
+  order: 7
+  label: DB perf in production
+---
+
+import TabbedContent from '../../../components/figures/tabbed-content/TabbedContent.astro';
+import TabbedItem from '../../../components/figures/tabbed-content/TabbedItem.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import TwoSignatures from '../../../components/lessons/094/7/TwoSignatures.astro';
+import TransportComparison from '../../../components/lessons/094/7/TransportComparison.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The app has been live for months. It was fast on launch day, and then, slowly, it wasn't. Nothing broke — there was no incident, no alert, no 500. The pages just started taking a beat longer than they used to, and one day a customer mentioned it. You open the traces and find two suspects.
+
+The first is the org invoice list. It is consistently slow — about 280ms, every load, for one big tenant. One page, one number, reliable. The second is the audit-log page, and it is slow in a completely different shape: not one slow query but *fifty tiny ones*, where there should have been one. Two slow pages, two different signatures, two different fixes.
+
+Here is the thing: you already know how to fix both. Back in [Indexes](/039-indexes-plans-and-transactions/1-indexes/) you learned to design the right index, in [Spotting N+1](/039-indexes-plans-and-transactions/2-spotting-n1/) you learned to kill an N+1, and last lesson you untangled RSC waterfalls. What you have *not* done is operate any of it in production. This lesson is about that gap — looking at a real production trace and recognizing *which* of the two SQL failure classes it is showing you, confirming it, fixing it so the fix holds past launch, and then setting up the recurring checks that keep both from ever coming back.
+
+This is the chapter's closer, and it is the database half of the same vigilance discipline you've been building all chapter. The model to leave with is small enough to keep in your head: *production hands you a signature; the signature names the class; the class names the fix; you confirm the fix; you schedule the next look.* By the end you'll have two artifacts to run that discipline — a pre-launch DB checklist and a weekly review habit.
+
+## Two failure classes, two signatures
+
+Almost all SQL slowness at production scale is one of two things. That's the claim, and it's a useful one, because it means most of the diagnostic work is a single yes-or-no question. The trick is that **you tell the two apart by how they look in a trace, not by reading the SQL.** You don't open a query plan first. You look at the shape of the spans first, and the shape tells you which plan to go read.
+
+A quick refresher on the vocabulary, since you met it last lesson. A <Term definition="One timed operation inside a trace, with a start time and a duration. A single database query is one span.">span</Term> is a single timed operation — one query is one span. A <Term definition="The tree of timed spans recorded for one request, showing what ran, when, and for how long.">trace</Term> is the whole tree of spans for one request. The two failure classes draw two unmistakable pictures on that tree.
+
+A **missing or wrong index** looks like *one fat span*. A single query that takes 100ms or more, sitting there alone, because it is scanning far more rows than it returns — reading the whole table to hand you twenty rows. There is nothing wrong with the *number* of queries. There is one query, and it is doing too much work.
+
+An <Term definition="One query to load a list, then one extra query per row in that list — N child queries for one parent. Many round trips where one would do.">N+1</Term> looks like *a staircase of thin spans*. Many queries, each one fast — sub-millisecond to a few milliseconds — all the same shape with a different bound parameter. One query to load a list, then one more query per row in that list. No single span is slow. The slowness is in the *count*: fifty round trips where one would do. You saw this exact staircase in the query log back in [Spotting N+1](/039-indexes-plans-and-transactions/2-spotting-n1/); now you're seeing it in a trace.
+
+Look at the two side by side. They could not be more different.
+
+<TwoSignatures />
+
+Now collapse that into the artifact you'll actually carry out the door. This little table is the spine of the whole lesson; I'll call it **the two-class table** and refer back to it by name.
+
+| | **Missing / wrong index** | **N+1** |
+| --- | --- | --- |
+| **Production signature** | One fat span (100ms+) | A staircase of thin spans |
+| **Confirming tool** | `explain (analyze, buffers)` — `Seq Scan`, `Rows Removed by Filter` ≫ rows returned | Count statements-per-render, or read the span staircase |
+| **Structural fix** | The right index — usually the composite `(organization_id, …)` | Collapse to one statement — Drizzle `with` or a join |
+| **Where you learned it** | [Indexes](/039-indexes-plans-and-transactions/1-indexes/) · [Reading EXPLAIN ANALYZE](/039-indexes-plans-and-transactions/3-reading-explain-analyze/) | [Spotting N+1](/039-indexes-plans-and-transactions/2-spotting-n1/) |
+
+Two things to underline before we use it. First, both signatures live in the trace — you don't need any special tooling beyond the traces you already turned on when you wired up Sentry. Second, both have fixes that are *structural*, which means they hold as the app grows. That's the distinction from a cache, which you met last lesson and the one before: a cache *hides* a slow query behind a saved copy, but the cold request still pays the full cost, and the underlying query is exactly as slow as it ever was. An index or a collapsed query makes the work itself cheaper. That's the difference between vigilance and papering over.
+
+Before going further, prove to yourself you can read a signature and route it to its class. That recognition — not writing the index, not writing the join, both of which you've already done — is the new skill this lesson is built around.
+
+<Buckets twoCol instructions="Each chip is a production signature — what you'd actually see in a trace, a plan, or a query log. Drop each one into the failure class it points to. Recognizing the class is the whole skill: the class names the fix.">
+  <Bucket name="index" label="Missing index" description="One fat span → add the right index" />
+  <Bucket name="nplus1" label="N+1" description="A staircase of thin spans → collapse to one statement" />
+
+  <Item bucket="index">One 240ms span; the plan shows `Rows Removed by Filter: 49,900`</Item>
+  <Item bucket="nplus1">48 near-identical 2ms spans, same SQL with `$1` … `$48`</Item>
+  <Item bucket="nplus1">A `findMany` to load the list, then a `findFirst` per row to fetch each row's parent org</Item>
+  <Item bucket="index">A tenant list query scanning the whole table because nothing indexes `(organization_id, created_at)`</Item>
+  <Item bucket="nplus1">Statements-per-render grows with the number of rows on the page</Item>
+  <Item bucket="index">One slow span that gets *worse the deeper a user pages* into the list</Item>
+</Buckets>
+
+With the table in hand, let's run each class through the full loop on a real production page.
+
+## The slow invoice list: a missing composite index
+
+Start with the first suspect — the invoice list, one fat span, 280ms. Take it through the loop you already know: **diagnose, fix, confirm.** The only thing new here is the framing. You ran this loop to *learn* it; now you're running it as routine production operation, on a page real users are hitting.
+
+**Diagnose.** The trace points at one query. Grab the exact SQL — you already log it, because you turned on Drizzle's query logging back in [Spotting N+1](/039-indexes-plans-and-transactions/2-spotting-n1/) and never turned it off — and paste it into the Neon SQL editor. Prefix it with `explain (analyze, buffers)`, the same portable habit from [Reading EXPLAIN ANALYZE](/039-indexes-plans-and-transactions/3-reading-explain-analyze/), and read the plan.
+
+<TabbedContent>
+  <TabbedItem label="Before — Seq Scan">
+    <div data-mark-color="blue">
+
+    ```text {4,6} frame="none"
+    Limit  (cost=… rows=20) (actual time=271.4..271.5 rows=20)
+      ->  Sort  (actual time=271.4..271.4 rows=20)
+            Sort Key: created_at DESC
+            ->  Seq Scan on invoices  (actual time=0.0..248.9 rows=20 loops=1)
+                  Filter: (organization_id = '…')
+                  Rows Removed by Filter: 49980
+    Execution Time: 280.1 ms
+    ```
+
+    </div>
+  </TabbedItem>
+
+  <TabbedItem label="After — Index Scan">
+    <div data-mark-color="green">
+
+    ```text {2-3} frame="none"
+    Limit  (actual time=0.1..0.2 rows=20)
+      ->  Index Scan using idx_invoices_org_created_at_id on invoices
+            (actual time=0.0..0.1 rows=20 loops=1)
+            Index Cond: (organization_id = '…')
+    Execution Time: 4.1 ms
+    ```
+
+    </div>
+  </TabbedItem>
+</TabbedContent>
+
+There it is: `Seq Scan on invoices` with `Rows Removed by Filter: 49980`. The query asked for one tenant's twenty most recent invoices, and Postgres read all fifty thousand rows in the table, threw away the 49,980 that belonged to other tenants, sorted what was left, and handed you twenty. The cause is one line: the query filters on `organization_id` and orders by `created_at`, but no index serves that shape, so the only plan available is to scan everything.
+
+And here is why this never showed up in development. At fifty rows in your seed database, a full scan of the table is instant — there's nothing to scan. The cost only appears at production scale, and specifically at *multi-tenant* scale, where any one tenant's rows are a thin sliver of a huge table. A <Term definition="Postgres reading every row in the table from start to finish, with no index to jump to the rows it needs. Cheap on a tiny table, ruinous on a large one.">sequential scan</Term> that's free at 50 rows is a 280ms tax at 50,000. This is the most important sentence in the section: **the symptom is invisible until the exact conditions that produce it — many tenants, many rows — exist, which is to say, until production.**
+
+**The fix is the composite you already know.** One <Term definition="An index built on more than one column. It serves queries that filter and sort on those columns in left-to-right order — the leftmost-prefix rule.">composite index</Term>, on `(organization_id, created_at desc, id desc)`. The ordering is the leftmost-prefix rule from [Indexes](/039-indexes-plans-and-transactions/1-indexes/): the equality column (`organization_id`) first, the sort key (`created_at`) next, the tiebreaker (`id`) last. I won't re-derive that ordering — you already did. What's worth saying *here*, in the production framing, is why this one index matters more than any other in a multi-tenant SaaS: **every tenant-scoped list query has this exact shape.** Filter by org, sort by recency, page. The invoice list, the customer list, the activity feed — same skeleton. One index pattern carries them all, and skipping it is the single most common reason a multi-tenant app that felt fast in staging falls over in production.
+
+<div data-mark-color="green">
+
+```ts {4-8} title="src/db/schema.ts"
+export const invoices = pgTable('invoices', {
+  // …columns from the schema chapter
+}, (t) => [
+  index('idx_invoices_org_created_at_id').on(
+    t.organizationId,
+    t.createdAt.desc(),
+    t.id.desc(),
+  ),
+]);
+```
+
+</div>
+
+**Confirm.** Re-run `explain (analyze, buffers)`. The plan flips from `Seq Scan` to `Index Scan using idx_invoices_org_created_at_id`, and the execution time drops from 280ms to about 4ms — the "after" tab above. This is the discipline beat, and it's the reflex [Reading EXPLAIN ANALYZE](/039-indexes-plans-and-transactions/3-reading-explain-analyze/) drilled into you: *you do not ship an index on faith.* An index that the planner decides not to use is dead weight — it slows every write and helps no read. You confirm the plan actually flipped before you call it done.
+
+One more thread to close, back to the start of the chapter. This is a server-side fix, so it lands in <Term definition="Time To First Byte — how long until the server returns the first byte of the response. A slow database query inflates it directly.">TTFB</Term> immediately — the moment the index ships, the server returns the page faster. And TTFB feeds straight into LCP, the chain you drew in [The Core Web Vitals](/094-performance-vigilance/1-the-core-web-vitals/). So the page didn't just *measure* slow; it *felt* slow to users, because every other paint was stuck behind a 280ms server wait. Fix the query, and the whole front end gets faster for free.
+
+## The audit log's staircase: N+1 at production scale
+
+Now the second suspect — the audit-log page, the staircase. Same loop, second class.
+
+**Diagnose from the trace.** The audit-log page shows about fifty thin spans. The first lists the audit entries: `select … from audit_logs where organization_id = $1`. Then, for every entry returned, one more query to fetch the actor's name: `select … from users where id = $2`, then `$3`, then `$4`, all the way down. One parent query, N child queries. You recognize this immediately — it's the **many-to-one** disguise, shape number four from [Spotting N+1](/039-indexes-plans-and-transactions/2-spotting-n1/): load a list, then do a per-row lookup to resolve each row's parent. The tell is the same one you learned there: statements-per-render grows with the number of rows on the page. Ten audit entries, eleven queries. Fifty entries, fifty-one queries. That linear growth is the fingerprint.
+
+**The fix is the collapse you already know.** Pull the actor in the same statement — Drizzle's relational `with`, narrowed to just the columns you render — and the fifty-one queries become one.
+
+<div data-mark-color="green">
+
+```ts {5-7} title="src/db/queries/audit.ts"
+const entries = await db.query.auditLogs.findMany({
+  where: eq(auditLogs.organizationId, orgId),
+  orderBy: desc(auditLogs.createdAt),
+  limit: 50,
+  with: {
+    actor: { columns: { id: true, name: true } },
+  },
+});
+```
+
+</div>
+
+The decision between `with` and a join is the one-liner you already know: a nested tree of objects (each entry carrying its actor) wants relational `with`; a flat or aggregated result wants a join. I'm not re-teaching that call — you've made it. What's worth adding are two production shapes those exercises didn't drill, because they're the ones that bite real apps:
+
+- **List-with-children.** The invoice list where each row needs a count of its line items. The naive version fetches the list, then runs a `count` per invoice — the same staircase. The fix is relational `with` plus a `columns` projection, or a left join with a `group by` for the aggregate. Same class, same cure.
+- **Check-per-row.** This is the sneaky one. Each row needs a permission or scope check that hits the database — "can this user see this record?" — and the check fires once per row. It doesn't *look* like a data-loading N+1 because it's hiding inside authorization logic, but it draws the identical staircase. The fix is the same: lift the check to one query per scope, not one per row. Worth naming because it's an N+1 that disguises itself as security code, and it slips past review for exactly that reason.
+
+**Confirm.** The query log is your proof, the same one you used before: it drops from fifty-one statements to one. And to head off the obvious question — *why not just cache the actor lookups?* — because a cache hides, it doesn't collapse. The first request, and every cold one after the cache expires, still fires all fifty-one queries. Caching the symptom leaves the N+1 fully intact underneath; collapsing it makes the N+1 cease to exist. That's the through-line from the two-class table: structural fix over papered-over symptom.
+
+:::note
+A word on Drizzle, because there's outdated folklore here. Drizzle's relational queries always emit **one** SQL statement — lateral joins of subqueries with JSON aggregation — so the old fear that "relations silently N+1" is dead. The real watch-out is the opposite: a wide `with` that pulls heavy `text` or `jsonb` columns trades an N+1 for a single fat-payload query — you've collapsed the round trips but now you're hauling megabytes you don't render. Narrow it with a `columns` projection, exactly as the fix above did. When you're unsure what SQL a relation actually emits, inspect it with `.toSQL()` on the query, or just read the dev query log — that log is the always-safe answer.
+:::
+
+## When parallel queries become the new bottleneck: the connection pool
+
+Last lesson planted a debt and pointed at this section to pay it. Time to pay it in full.
+
+The fix for RSC waterfalls was `Promise.all` — fire independent reads in parallel instead of stacking them in a staircase. It's the right fix. But an experienced engineer doesn't adopt a fix and ignore the new failure mode it opens, and this one opens a real one. A wide `Promise.all` fan-out — or many concurrent requests each firing several queries — can **saturate the <Term definition="A fixed-size set of reusable database connections shared across queries. Opening a connection is expensive, so the app borrows one from the pool, runs a query, and returns it.">connection pool</Term>.** Every in-flight query holds one database connection. A pool has a fixed number of connections. Run more queries at once than the pool has slots, and the extra queries don't fail — they *queue*, waiting for a connection to free up. Your perfectly-parallel page is now fast in isolation and slow under load, and the new bottleneck isn't serialization anymore, it's *connection supply.* The bottleneck moved; it didn't disappear.
+
+Before you go sizing pools, though: on this stack, the common read path mostly designs the problem away. Here's why.
+
+<TransportComparison />
+
+Neon's serverless driver, the default transport you set up back in [The serverless driver and the pooled URL](/036-postgres-on-neon/4-the-serverless-driver-and-the-pooled-url/), sends each query over **HTTP** to Neon's SQL-API proxy. That proxy keeps its *own* pre-warmed pool of connections to the compute. So your serverless function never holds a persistent Postgres connection — it makes an HTTP request, the proxy borrows one of *its* connections to run the query, and hands the result back. The classic "every serverless instance grabs a connection and exhausts the database" problem is sidestepped entirely for the one-shot query path, which is the vast majority of your reads. That's the modern default, and it's why this whole problem is *mostly* designed away on the common path.
+
+Mostly. The HTTP path is for single queries and non-interactive work. An <Term definition="A multi-statement transaction held open across several round trips — a BEGIN, some statements, then COMMIT — which requires the same connection to stay reserved the entire time.">interactive transaction</Term> — a `BEGIN`, several dependent statements, a `COMMIT`, all needing to hold the same connection open across round trips — can't go over stateless HTTP. That needs the **WebSocket `Pool`** path (the node-postgres-compatible one), and *that* path is where you genuinely hold app-side connections, and where pool sizing comes back to bite.
+
+So: if you're on the WebSocket pool (or classic `pg` behind PgBouncer), a small pool plus a wide fan-out still saturates. Two reaches, and I'm naming them rather than building them, because the skill here is knowing the failure mode exists and which two levers move it:
+
+1. **Size the pool against expected concurrency.** Set the pool large enough for the queries you actually fire at peak. The honest way to find that ceiling is to load-test against a Neon branch — spin up a copy of production, push traffic, watch where queries start queueing.
+2. **Bound the fan-out.** Cap how many queries a single request fires at once — a <Term definition="Capping how many async operations run at the same time, so a burst of work can't grab every available resource at once.">bounded-concurrency</Term> helper like `pMap` with a concurrency limit — so one request can never grab the entire pool and starve every other request. This is the escape hatch last lesson explicitly deferred to here: when `Promise.all` over a large list is too wide, swap it for a bounded map.
+
+:::caution
+Last lesson's caution was about *correctness* under fan-out — `Promise.all` rejects on the first failure, so reach for `Promise.allSettled` when you'd rather degrade than fail the whole render. Here's the *resource* angle on the same fan-out: a `Promise.all` that's perfectly correct latency-wise can still be wrong at the connection layer if it's wide enough to drain the pool. Two different ways the same parallel call can go wrong — keep both in view.
+:::
+
+## The deep-page scan: the limit-offset trap
+
+Here's a production shape the index lessons didn't cover, and it's worth a short, sharp section because it masquerades as a missing index when it isn't quite one.
+
+`limit` / `offset` pagination re-scans every row it skips, on every page. Page one with a page size of ten reads ten rows. Page one hundred reads about 1,010 rows to return ten — it has to walk past the thousand it's skipping to find the ten you asked for. The cost is cheap at the front and degrades linearly with depth. In a trace this looks like a missing-index slow span with a tell-tale twist: **it gets worse the deeper users page.** That "worse with depth" curve is its distinctive signature, and here's the kicker — *even with the right index*, offset still pays the skip. The index finds the starting point fast; offset then throws away everything before your page anyway.
+
+<VideoCallout videoId="zwDIN04lIpc" videoTitle="Pagination in MySQL — offset vs. cursor">
+  PlanetScale's 13-minute walkthrough animates exactly this trade-off — why deep offset re-scans everything it skips, and how a keyset cursor (including the tie-break column) seeks straight to the page instead.
+</VideoCallout>
+
+The fix is keyset pagination — also called cursor pagination — and you've already built it. Instead of "skip 1,000 rows," you say "give me the rows *after* this cursor": `where created_at < $cursor order by created_at desc, id desc limit 10`. With the composite `(organization_id, created_at, id)` index from the first section, that's `O(limit)` regardless of depth — page one and page one thousand cost the same, because there's no skipping, just a seek to the cursor and a read of ten. The cursor mechanics are owned upstream — you learned the shape in [Cursor pagination](/038-querying-and-mutating/6-cursor-pagination/) and the policy in [Cursor by default, offset when small](/060-url-state-list-views/4-cursor-by-default-offset-when-small/) — so I won't re-teach them. The production-vigilance point is the one worth carrying: **the composite index from the first section is the same index that makes keyset pagination fast.** One index, two payoffs.
+
+<CodeVariants>
+  <CodeVariant label="Offset (deep-page cost)">
+    <div data-mark-color="red">
+
+    ```sql "offset 1000"
+    select * from invoices
+    where organization_id = $1
+    order by created_at desc
+    limit 10 offset 1000;
+    ```
+
+    </div>
+    **Linear-degrading by depth.** To return 10 rows on page 100, Postgres walks past the 1,000 it's skipping first — about 1,010 rows read. Cheap on page 1. Even with the right index, the skip is still paid.
+  </CodeVariant>
+
+  <CodeVariant label="Keyset (O(limit))">
+    <div data-mark-color="green">
+
+    ```sql "created_at < $cursor" "id desc"
+    select * from invoices
+    where organization_id = $1 and created_at < $cursor
+    order by created_at desc, id desc
+    limit 10;
+    ```
+
+    </div>
+    **Constant cost at any depth.** Instead of skipping, seek straight to the cursor and read 10. With the `(organization_id, created_at, id)` index, this costs the same on page 1 and page 1,000. Break ties on `id` — cursoring on `created_at` alone breaks when two rows share a timestamp, and the composite already carries `id` for exactly that.
+  </CodeVariant>
+</CodeVariants>
+
+## Watching for the next slow query: the monitoring surface
+
+Everything so far has been *reactive*: a trace told you a page was slow, and you went and fixed it. That works, but it means a user felt the pain first. The senior move is to go looking *before* anyone reports anything — to find the next slow query while it's still merely the slowest, not yet slow enough to notice.
+
+The surface for that is Neon's Monitoring page, specifically its query-performance view. It's powered by <Term definition="A Postgres extension that tracks per-statement execution statistics — call counts, total time, and mean time — so you can rank queries by cost.">`pg_stat_statements`</Term>, a Postgres extension that records execution stats for every statement: how often each ran, total time, mean time. The monitoring page ranks your queries by those numbers, so the slowest and most-frequent ones float to the top. (On plain Postgres without Neon, you query `pg_stat_statements` directly — same data, no dashboard.) This is where the *next* slow query announces itself.
+
+:::caution
+A real, non-obvious Neon trap: `pg_stat_statements` data is **lost when the compute suspends or scales to zero** — which it does after inactivity on a scale-to-zero branch. So don't expect a long unbroken history there. Either run your review against a compute that's been kept warm, or accept that the window resets each time it sleeps and read what's accumulated since it last woke. Worth knowing before you go looking for last week's numbers and find the slate wiped clean.
+:::
+
+Which brings the chapter's recurring-vigilance thread to the database. Last lesson's habit was "open one slow trace a week." The database version: **once a week, eyeball the top three slowest queries on the monitoring page.** If one is a regression — newly slow, or climbing — run `explain (analyze, buffers)` on it, then route it through the two-class table. Is it a fat span? Index it. Is it a staircase? Collapse it. The discipline isn't the one-time fix; it's *the weekly look.* That's the database analogue of the CI gate and the weekly trace review you've built across this whole chapter.
+
+When you spot a slow one on that page, the first move is automatic.
+
+<MultipleChoice>
+  Your weekly review flags a query that's just climbed into the top three by mean execution time on the monitoring page. You don't yet know whether it's a fat span or a staircase. What's your *first* move?
+
+  <McqChoice correct>Run `explain (analyze, buffers)` on it and read the plan.</McqChoice>
+  <McqChoice>Add an index on the column in its `where` clause and move on.</McqChoice>
+  <McqChoice>Wrap it in `'use cache'` so warm requests skip the latency.</McqChoice>
+  <McqChoice>Bump the connection pool size.</McqChoice>
+
+  <McqWhy>Run `explain (analyze, buffers)` first — the plan is what names the class, and the class names the fix. A `Seq Scan` with `Rows Removed by Filter` far above the rows returned points at a missing index; a cheap plan that's simply run a great many times is the staircase. You can't choose the right fix until you've seen which one it is. The other three skip that step: indexing the `where` column is guessing the class, and an index the planner never picks is dead weight that only slows writes; a cache hides the cost on warm requests but every cold one still pays it in full; and a bigger pool fixes *saturation* — queries queueing for a connection — not a query that's slow on its own.</McqWhy>
+</MultipleChoice>
+
+<ExternalResource
+  title="Neon — Monitor query performance"
+  href="https://neon.com/docs/introduction/monitor-query-performance"
+  icon="simple-icons:neon"
+  iconColor="#00E599"
+  description="The monitoring surface this lesson's weekly review uses, powered by pg_stat_statements."
+/>
+
+## The pre-launch DB checklist
+
+You now have the recurring half of the discipline — the weekly review. The other half is the one-off deep pass you run *before* you ship, the database twin of the pre-launch Lighthouse audit and the bundle pass from earlier in the chapter. This is the chapter's closing artifact, and along with the two-class table, it's the thing to carry out of this lesson.
+
+Run this before launch. Six checks — one profiling pass over your five most-frequent queries, then five structural guarantees — and every one uses a primitive you already own.
+
+<Checklist id="prelaunch-db">
+  <ChecklistItem>Run `explain (analyze, buffers)` on the five most-frequent queries — primary-entity list, detail page, dashboard aggregation, search, and login/auth lookup — against a **production-shaped** branch, never the dev seed. Dev-scale stats lie, exactly as the invoice list showed.</ChecklistItem>
+  <ChecklistItem>Confirm the composite `(organization_id, …)` index exists on every org-scoped table — the load-bearing multi-tenant index.</ChecklistItem>
+  <ChecklistItem>Confirm every foreign-key column is indexed. Postgres does *not* index foreign keys automatically — that's the day-one trap from [Indexes](/039-indexes-plans-and-transactions/1-indexes/).</ChecklistItem>
+  <ChecklistItem>Confirm every large list paginates by keyset, not deep offset.</ChecklistItem>
+  <ChecklistItem>Confirm the connection transport and pool sizing match expected concurrency — HTTP for one-shot reads, a sized WebSocket pool only where interactive transactions need it.</ChecklistItem>
+  <ChecklistItem>Bookmark the Neon monitoring page (and set a slow-query alert if available) so the weekly review has a home.</ChecklistItem>
+</Checklist>
+
+And that closes the chapter, so let it land on the discipline rather than a new API. Two threads from the chapter thesis tie the bow. **Defaults before audits:** the structural moves — the composite index, the keyset shape, the right transport — are what actually make the database fast; the monitoring page doesn't speed anything up, it just shows you where a default leaked. And **vigilance is recurring:** the checklist runs once, at launch; the weekly review runs forever. Production hands you a signature, the signature names the class, the class names the fix, you confirm the fix — and then you schedule the next look. That loop is the whole job.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Neon — Monitor query performance"
+    href="https://neon.com/docs/introduction/monitor-query-performance"
+    icon="simple-icons:neon"
+    iconColor="#00E599"
+    description="The monitoring page behind the weekly review, ranking your queries with pg_stat_statements."
+  />
+  <ExternalResource
+    title="Neon — Serverless driver"
+    href="https://neon.com/docs/serverless/serverless-driver"
+    icon="simple-icons:neon"
+    iconColor="#00E599"
+    description="HTTP for one-shot reads vs the WebSocket Pool for interactive transactions — the connection-pool section, grounded."
+  />
+  <ExternalResource
+    title="Drizzle — Relational queries v2"
+    href="https://orm.drizzle.team/docs/rqb-v2"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The one-statement `with` cure for the N+1 staircase, plus the columns projection that keeps the payload narrow."
+  />
+</CardGrid>

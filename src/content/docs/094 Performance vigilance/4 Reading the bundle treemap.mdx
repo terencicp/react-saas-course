@@ -1,0 +1,253 @@
+---
+title: Reading the bundle treemap
+description: How to read a production bundle treemap with the built-in Turbopack analyzer — four scan passes and a triage tree that turn a heavy bundle into an attributable fix.
+tagline: Read your production JavaScript bundle with the built-in Turbopack analyzer, using a fixed set of scan passes to attribute weight to the exact module and import that caused it.
+chapter-id: 94
+course-progress: 0.00005
+sidebar:
+  order: 4
+  label: Reading the bundle treemap
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { Aside, Steps, CardGrid } from '@astrojs/starlight/components';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import BundleTreemap from '../../../components/lessons/094/4/BundleTreemap.astro';
+import BarrelBeforeAfter from '../../../components/lessons/094/4/BarrelBeforeAfter.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Here is a situation you will eventually find yourself in. INP is creeping up in Speed Insights, the production build feels heavier with every release, and yet every pull request that landed this month looks clean — a feature here, a refactor there, nothing that screams "I just added 200KB to every page." Nobody on the team can point at the dependency responsible, because "the bundle got bigger" is a feeling, not a line you can put your finger on.
+
+This lesson installs the instrument that turns that feeling into an attribution. You'll learn to read a treemap of your production bundle: four scan passes that find the bytes that shouldn't be there, and a triage tree that maps each finding to a fix. In the lesson on the Core Web Vitals you saw that INP rides on client JavaScript weight; the previous two lessons named two ways that weight leaks — oversized images and barrel imports. This is how you *see* and *measure* those leaks. The barrel fix you wrote in the lesson on the barrel-export trap, in particular, was a promise: this is where you confirm the chunk actually shrank.
+
+## What a treemap shows you
+
+Before any tool, you need to understand the picture the tool draws, because the reading skill matters far more than which button you click.
+
+A bundle <Term definition="A space-filling chart where nested rectangles' area encodes a quantity — here, bytes. The bigger the rectangle, the more bytes.">treemap</Term> is a set of nested rectangles where **area is bytes**. The whole production bundle is the canvas. It's sliced into routes, each route sliced into chunks, each chunk sliced into the individual modules that make it up. A module that fills a quarter of the picture is a quarter of your bytes. That one equation — area is weight — is the entire reading primitive. Everything else is learning where to look.
+
+Three rules turn that primitive into a discipline. Each one is a place beginners reliably go wrong, so read them as traps to avoid, not trivia.
+
+First, **read the transfer size, not the raw size.** What hurts the user is the compressed bytes that travel over the wire, not the unminified source on disk. A library can look enormous in raw form and shrink dramatically once <Term definition="The compressed byte count actually sent over the network — what the user's connection pays for. Smaller than the raw source.">gzip</Term> gets to it. When the tool offers more than one size view, read the one closest to "what the browser downloads" — the compressed or transfer figure.
+
+Second, **filter to the client.** The analyzer shows two worlds: client modules — the JavaScript the browser downloads, which is what drives INP — and server modules, the Node bundle that runs on the server. For a performance-vigilance pass aimed at interaction latency, the client side is the one that matters. The server view has its own use (it tells you how heavy your serverless functions are, which affects cold starts), but that's a secondary question. Filter to client first.
+
+Third, **the framework runtime is the floor.** The single biggest legitimate tile is React plus Next's runtime. Every app pays it; it is the baseline, not the optimization target. Beginners see the largest rectangle, assume "biggest equals problem," and burn an afternoon trying to shave a framework they can't shave. Don't. The floor is the floor.
+
+Hold those three rules in mind while you look at a treemap for the first time. Here is a representative one, walked tile by tile.
+
+<DiagramSequence>
+  <DiagramStep caption="Start with the biggest tile. Here it's the React + Next runtime — the floor every app pays, not a target. Note it and move on.">
+    <BundleTreemap highlight="framework" />
+  </DiagramStep>
+
+  <DiagramStep caption="Each route gets its own chunk. A fat one usually means a heavy interactive component lives on that page — a chart, an editor, a map.">
+    <BundleTreemap highlight="route" />
+  </DiagramStep>
+
+  <DiagramStep caption="The tile you didn't expect is the lead. A charting library this large, on a page that barely charts, is a barrel import dragging the whole package in.">
+    <BundleTreemap highlight="surprise" />
+  </DiagramStep>
+
+  <DiagramStep caption="The same library as two tiles means two copies in the dependency tree — different versions, both shipped. The browser downloads it twice. Pure waste.">
+    <BundleTreemap highlight="duplicate" />
+  </DiagramStep>
+
+  <DiagramStep>
+    <BundleTreemap highlight="shared" />
+    <Fragment slot="caption">
+      The chunk loaded on *every* route is the most expensive weight: every page pays it, so watch it for creep release over release. Illustrative treemap — area is bytes; your real one comes from `next experimental-analyze`.
+    </Fragment>
+  </DiagramStep>
+</DiagramSequence>
+
+You'll meet this exact picture again in a moment: the four scan passes each map to one of the tiles you just saw highlighted. Learn the picture here, learn the passes against it next.
+
+## Running the analyzer
+
+The decision comes before the install, and here the decision is easy: Turbopack is the Next.js 16 builder, so the analyzer you want is the one that understands the real Turbopack build. That's the built-in Turbopack analyzer — no plugin to add, no `next.config.ts` to touch. It's one command.
+
+```bash
+# Build the production bundle and open an interactive treemap
+pnpm next experimental-analyze
+
+# Skip the interactive view and write a static report to disk
+pnpm next experimental-analyze --output
+```
+
+The first command builds the production bundle and opens an interactive treemap in your browser. Note the word *production*. The analyzer reads a production build on purpose — the dev bundle is intentionally unoptimized and unsplit, so reading it tells you nothing about what ships. This is the same reason the `optimizePackageImports` rewrite from the previous lesson only runs in production: never trust a dev bundle for size.
+
+The second command, with `--output`, skips the interactive view and writes a static copy of the report to `.next/diagnostics/analyze`. That's the form you can keep. Copy it aside so you have a baseline to compare against after a fix:
+
+```bash
+cp -r .next/diagnostics/analyze ./analyze-before
+```
+
+Now run a fix, re-run the analyzer, and diff the two. That before/after copy is also the foundation of the CI-artifact pattern we'll get to at the end of the lesson.
+
+Inside the interactive view, four controls matter, because the scan passes use them: filter by **route**, filter by **environment** (client or server), filter by **type** (JS, CSS, JSON), and **search by file**. The one feature that upgrades guessing into diagnosis is this: **click a module** and the analyzer shows its size and its **import chain** — the exact sequence of imports that pulled it into the bundle. When a tile surprises you, that import chain is the answer to "why is this here," tracing the byte cost back to the line that caused it.
+
+<Aside type="note" title="On a project still using Webpack">
+  Older projects that haven't moved to Turbopack use the `@next/bundle-analyzer` plugin: install it, wrap `next.config` and gate it behind an `ANALYZE=true` environment variable, then run `ANALYZE=true pnpm build` to get HTML treemaps. That plugin is a *Webpack* tool — it does not reflect a Turbopack build correctly. On the course stack it's the fallback, not the default. Reach for the built-in analyzer above; only fall back to the plugin on a Webpack project.
+</Aside>
+
+One more thing to clear up, because it trips up people following older tutorials. Next.js 16 **removed** the per-route "First Load JS" table that `next build` used to print, because those numbers were inaccurate for Server Component apps. If a guide tells you to read that build table, the guide predates version 16 — don't go looking for it and don't think your setup is broken. Your smell test now comes from elsewhere: real-user INP in Speed Insights, and the total-JavaScript number Lighthouse reports (the subject of the next lesson, on Lighthouse as the pre-launch gate). The treemap is what you open *after* the smell test trips — it's the diagnosis, not the alarm.
+
+<VideoCallout videoId="DrzmVU_ftIY" videoTitle="I Tested The NEW Next.js Analyzer (and I have mixed feelings)">
+  A 7-minute screen walkthrough of the Next.js 16 `experimental-analyze` treemap — running it, filtering to the client, and clicking a tile to read its import chain (Tobi Mey).
+</VideoCallout>
+
+## The four scan passes
+
+A treemap rewards a fixed reading order. You don't wander it hoping a problem jumps out; you run four passes, every time, in the same order. Each pass maps to one of the tiles you saw highlighted in the figure above: a thing to look at, what it means, and where it points you next.
+
+<Steps>
+1. **Biggest tile — expected or surprise?** Find the single largest module. If it's the framework runtime, that's the floor; leave it. If it's a library you didn't think you shipped, or a known-heavy one that's larger than it has any right to be — a date library, a charting library, an icon set pulled in whole — that's your lead. Click it, read the import chain, and find the exact line that added it.
+
+2. **Per-route weight — which routes carry heavy client chunks?** Filter by route. A route with a fat client chunk almost always has a heavy *interactive* component on its leaves: a chart, a rich text editor, a map. The fix shape is one of two: move the work to the server if it doesn't actually need interactivity, or code-split it with `dynamic()` if it sits below the fold or only appears after a click. (The mechanics of `dynamic()` come later in the course; here just know it's the reach.)
+
+3. **Duplicate dependency — the same library twice.** Scan for one package name showing up as two separate tiles, often two versions. That means two copies of the same library in your dependency tree, usually from a peer-dependency mismatch. It's pure waste: the browser downloads the same code twice. The fix isn't in your code — it's at the package manager, with `pnpm dedupe`.
+
+4. **Shared chunk — did the floor rise?** Look at the chunk loaded on *every* route: the shared runtime plus anything imported by a root layout or a global provider. It should be close to constant from release to release. If it grew, a heavy library landed on every page at once — typically because something got added to a top-level provider or `layout.tsx`. This is the most expensive kind of bloat, because every single route pays for it.
+</Steps>
+
+Step back and notice the shape of those four: passes 1 and 2 find route-local bloat — weight that lives on one page. Passes 3 and 4 find global, structural bloat — weight that lives everywhere. Global bloat is the worse of the two, precisely because it's paid on every route, so when a shared chunk grows it deserves your attention first.
+
+The point of running the same four passes every time is to make the pass-to-meaning mapping automatic. Drill it once:
+
+<Buckets twoCol instructions="Each observation came from one of the four scan passes. Sort each finding into the pass that surfaced it.">
+  <Bucket name="biggest" label="Biggest tile" description="The single largest module" />
+  <Bucket name="route" label="Per-route chunk" description="Weight concentrated on one route" />
+  <Bucket name="duplicate" label="Duplicate dep" description="The same library shipped twice" />
+  <Bucket name="shared" label="Shared chunk" description="Loaded on every route" />
+
+  <Item bucket="biggest">A charting library is the largest module on the whole canvas.</Item>
+  <Item bucket="route">Only `/dashboard` ships a 200KB rich-text editor chunk.</Item>
+  <Item bucket="duplicate">`date-fns` shows up as two tiles under different versions.</Item>
+  <Item bucket="shared">The chunk on every route grew 80KB right after an analytics provider was added to the root layout.</Item>
+</Buckets>
+
+## From tile to fix: the triage tree
+
+A finding is only useful if you know what to do with it. The four passes give you four kinds of finding; this is the order an experienced engineer triages them in. The value isn't any single leaf — it's running the questions in the right sequence so the cheapest, highest-leverage fix surfaces first. Walk the tree against whatever surprising tile you just found.
+
+<StateMachineWalker title="You found an oversized tile. Now what?">
+  <Question id="is-runtime" prompt="Is it the framework runtime?"
+    description="React plus Next's own runtime — the tile that's large in every app.">
+    <Branch label="Yes" to="leaf-floor" />
+    <Branch label="No" to="expected" />
+  </Question>
+
+  <Question id="expected" prompt="Did you expect this dependency at all?">
+    <Branch label="No — I didn't think we shipped this" to="leaf-surprise" />
+    <Branch label="Yes — I know we use it" to="is-duplicate" />
+  </Question>
+
+  <Question id="is-duplicate" prompt="Is it the same library appearing twice?">
+    <Branch label="Yes — two tiles, same name" to="leaf-dedupe" />
+    <Branch label="No — one tile" to="is-barrel" />
+  </Question>
+
+  <Question id="is-barrel" prompt="Is it a multi-export package dragged in whole by a barrel import?"
+    description="An icon set, a utility library, a UI kit imported from its index.">
+    <Branch label="Yes" to="leaf-barrel" />
+    <Branch label="No" to="is-route-local" />
+  </Question>
+
+  <Question id="is-route-local" prompt="Is the weight concentrated on one route, via an interactive component?">
+    <Branch label="Yes — it's on one page's chunk" to="leaf-route" />
+    <Branch label="No — it's on every route" to="leaf-shared" />
+  </Question>
+
+  <Leaf id="leaf-floor" verdict="It's the floor — leave it">
+    The framework runtime is the baseline every app pays. There's no win here. Note it and move to the next tile.
+  </Leaf>
+
+  <Leaf id="leaf-surprise" verdict="Trace the import chain, then remove or replace it">
+    An unexpected heavy dependency is the highest-value fix on the board. Click the tile, read the import chain to find the line that pulled it in, and either delete that usage or swap it for a lighter alternative.
+  </Leaf>
+
+  <Leaf id="leaf-dedupe" verdict="Dedupe at the package manager: `pnpm dedupe`">
+    Two copies are pure waste. Run `pnpm dedupe`, then audit the peer dependency that forced two versions so it doesn't drift back.
+  </Leaf>
+
+  <Leaf id="leaf-barrel" verdict="Barrel bloat — `experimental.optimizePackageImports`">
+    This is the barrel-export trap from the previous lesson. Add the package to `experimental.optimizePackageImports`, then re-run the analyzer to confirm the tile shrank.
+  </Leaf>
+
+  <Leaf id="leaf-route" verdict="Move it server-side, or code-split with `dynamic()`">
+    A heavy interactive component on one route: render it on the server if it doesn't need interactivity, or load it lazily with `dynamic()` if it's below the fold or behind a click.
+  </Leaf>
+
+  <Leaf id="leaf-shared" verdict="Scope it out of the global chunk">
+    Something pulled this into the root layout or a global provider and made every route pay. Find what imported it and move that import down to where it's actually used.
+  </Leaf>
+</StateMachineWalker>
+
+That barrel leaf is where the previous lesson's promise comes due. You added `optimizePackageImports` for an icon library; the treemap is how you prove it worked. Run `experimental-analyze` before the change, run it again after, and watch the tile collapse.
+
+<Figure>
+  <BarrelBeforeAfter />
+  <Fragment slot="caption">
+    The icon-library tile you'd watch shrink after `optimizePackageImports`. The shape is real; the exact bytes are illustrative — run `experimental-analyze` before and after on your own build to read the true numbers.
+  </Fragment>
+</Figure>
+
+## What the treemap can't see
+
+An instrument is only safe to trust once you know its blind spots. The treemap has two, and both matter for the INP thread running through this chapter — because both can produce a slow page that looks innocent on the treemap.
+
+The first blind spot is **runtime cost.** The treemap measures static bytes — how much JavaScript ships. It says nothing about what that JavaScript *does* once it runs. A small bundle can still produce terrible INP: a synchronous `JSON.parse` of a large payload, an O(n²) loop in a click handler, a client tree that re-renders far more than it should. None of that shows up as area on a treemap, because it isn't bytes — it's work. The instrument for runtime work is the Chrome DevTools Performance panel, not the analyzer. Hold this rule: bundle size and INP are correlated, not identical. A tiny bundle does not guarantee a fast interaction.
+
+The second blind spot is **third-party scripts.** A `<script>` loaded through `next/script` — analytics, a chat widget, a tag manager — isn't part of your bundle, so it never appears on the treemap at all. Yet heavy third parties routinely outweigh a team's own code on the wire. The treemap will happily show you a lean, well-triaged bundle while a tag manager quietly downloads more JavaScript than everything you wrote. The Network panel is where you see those; the mitigations (deferring them with a lazy loading strategy, gating them behind consent) live in other lessons. The point here is narrower and important: the analyzer will never warn you about a third-party script, so you have to go look.
+
+The takeaway is the map, not the verdict. The treemap answers "what static bytes did I ship and why." The Performance panel answers "what does my code do at runtime." Speed Insights answers "what do real users actually experience." Each instrument owns one question; reach for the right one.
+
+## Vigilance, not a one-off
+
+The most common way teams misuse the treemap is to run it once, breathe a sigh of relief, and never run it again. Bundles drift release over release — a dependency bump here, a convenience import there — and that drift is exactly the regression this whole chapter exists to catch. So treat the bundle audit as a habit, not a launch task. Two cadences cover it.
+
+The first is the **per-dependency-change pull request.** Any PR that adds a dependency, bumps one, or drops in a heavy interactive component gets an analyzer pass. The cheap, structural version needs no bot at all: run `next experimental-analyze --output`, attach the report to the PR (or upload it as a CI artifact), and have the reviewer eyeball the diff against `main`. A single line in your PR template — "ran the analyzer; here's the diff" — covers the whole regression class. A formal GitHub Action for this exists, but the well-known one (`hashicorp/nextjs-bundle-analysis`) is built around Webpack and the old build table, so on a Turbopack project the honest recommendation is the `--output` artifact plus a reviewer diff. Wiring it into CI properly is a sibling to the Lighthouse gate in the next lesson and builds on the GitHub Actions primitives taught later in the course — here, just know the shape.
+
+The second is the **pre-launch deep pass.** Once, before you ship, walk the treemap on your most important routes — the marketing page, the dashboard, the primary task screen. Run all four scan passes, triage each finding, fix, and re-run to confirm. That's the bundle-axis counterpart to the broader pre-launch audit in the next lesson on Lighthouse as the pre-launch gate.
+
+Here's the one sentence that ties the chapter together: field data tells you *that* the bundle regressed, and the treemap tells you *what* did.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Next.js — Package Bundling"
+    href="https://nextjs.org/docs/app/guides/package-bundling"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The canonical guide for both the built-in analyzer and optimizePackageImports."
+  />
+  <ExternalResource
+    title="Next.js 16.1 — Bundle Analyzer announced"
+    href="https://nextjs.org/blog/next-16-1"
+    icon="simple-icons:vercel"
+    iconColor="#000000"
+    description="The release post that shipped the analyzer, with a treemap screenshot and the full feature list."
+  />
+  <ExternalResource
+    title="Bundle Analyzer feedback thread"
+    href="https://github.com/vercel/next.js/discussions/86731"
+    icon="simple-icons:github"
+    iconColor="#181717"
+    description="The maintainers' discussion of the experimental tool — its known gaps and where it's headed."
+  />
+</CardGrid>

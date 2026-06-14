@@ -1,0 +1,381 @@
+---
+title: The barrel-export trap
+tagline: How barrel files defeat tree-shaking and bloat your bundle, and how Next.js optimizePackageImports plus sideEffects keep imports lean.
+chapter-id: 94
+course-progress: 0.00005
+sidebar:
+  order: 3
+  label: The barrel-export trap
+---
+
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import ArrowDiagram from '../../../components/figures/ArrowDiagram.astro';
+import TabbedContent from '../../../components/figures/tabbed-content/TabbedContent.astro';
+import TabbedItem from '../../../components/figures/tabbed-content/TabbedItem.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import Dropdowns from '../../../components/exercises/dropdowns/Dropdowns.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import BarrelHub from '../../../components/lessons/094/3/BarrelHub.astro';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The bundle grew 300KB since the last release.
+You open the PR that did it expecting a fat new dependency, and there isn't one — the diff is a handful of small components and one new line:
+
+```ts
+import { Pencil } from 'lucide-react';
+```
+
+One named import, one icon, and a third of a megabyte of JavaScript shipped to every visitor.
+That line is the whole story, and it looks completely innocent, which is exactly why nobody caught it in review.
+This lesson installs the discipline that keeps that from happening: how to read an import and know whether it's safe, and the two-line fix that lets you write the readable form while shipping only what you used.
+That weight is part of why <Term definition="Interaction to Next Paint — a Core Web Vital measuring how quickly the page responds to user input. Client JavaScript must be parsed and run before the page can react, so bundle weight feeds directly into it.">INP</Term> creeps up — client JavaScript has to be parsed and run before the page can respond, the thread we opened earlier in this chapter when we defined the Core Web Vitals.
+Images were one big bundle leak, covered in the last lesson; this is the other.
+You'll *prove* the fix worked with the bundle analyzer in the next lesson — here we name the cause and reason about the fix.
+
+## What a barrel export actually is
+
+A <Term definition="A package's index.ts (or index.js) whose only job is to re-export the named exports from the modules underneath it, so consumers import from one path.">barrel file</Term> is a package's `index.ts` whose only job is to re-export everything from the modules underneath it.
+Open `lucide-react`'s and you'd find roughly fifteen hundred lines that all look like this:
+
+```ts
+export { default as Pencil } from './icons/pencil';
+export { default as Trash } from './icons/trash';
+// …1500 more
+```
+
+The appeal is real.
+You import from one path, `'lucide-react'`, and autocomplete offers you the entire library.
+You never go hunting for which file `Pencil` lives in.
+But that single import path is also the catch: when you write `import { Pencil } from 'lucide-react'`, you're not importing one icon — you're pointing the bundler at the barrel, and now it has to reason about the *entire* re-export graph to decide what it's allowed to leave out.
+
+The instinct here is to shrug.
+*Modern bundlers <Term definition="Dead-code elimination across ES modules — the bundler drops exports nothing imports. Only works when the module graph is static and side-effect-free.">tree-shake</Term>; they drop the exports nothing imports.*
+True, but tree-shaking only works when the bundler can prove an export is safe to drop, and a barrel is exactly the shape that makes that proof hard.
+Three things defeat it, and you'll meet all three in real dependencies:
+
+- **Module-level side effects.** If any module in the chain runs code just by being imported — registering something, mutating a global — the bundler can't prove that dropping it is safe, so it keeps it. We'll come back to how you switch this off.
+- **Wildcard re-exports.** A barrel built from `export * from './icons'` is harder to follow statically than named re-exports, and some bundler-and-loader combinations give up and keep the lot.
+- **<Term definition="Mixing CommonJS require modules into an ESM graph. CJS exports are computed at runtime, so the bundler can't statically shake a CJS module — it keeps all of it.">CommonJS interop</Term>.** A barrel published as CommonJS can't be statically shaken at all. CommonJS exports are computed at runtime, so the bundler has no static graph to prune — it's all or nothing, and "all" is the whole library.
+
+So here's the thesis to carry out of this section: *"modern bundlers tree-shake, so barrels are free"* is false often enough that you don't get to assume it.
+A clean-looking import line tells you nothing about how many bytes it drags.
+
+<VideoCallout videoId="_0ZFrMWsWZY" videoTitle="Tree Shaking and Code Splitting Explained | Syntax STUMP'D">
+  CJ from Syntax explains tree-shaking and shows a live date-fns bundle shrink from 46KB to 25KB — the mechanism a barrel defeats (5 min).
+</VideoCallout>
+
+<BarrelHub />
+
+## The lucide-react case — 1500 icons behind one import
+
+Make that concrete with the canonical case.
+Left unoptimized, `import { Pencil } from 'lucide-react'` can pull on the order of fifteen hundred icon modules into your bundle.
+The icons a real app actually renders — a pencil, a trash can, a chevron, a dozen more — would total well under 30KB.
+Yet the chunk balloons toward the hundreds of KB, because the bundler couldn't prove the other fourteen-hundred-odd were safe to drop.
+
+<Figure>
+  <div style="display: flex; flex-direction: column; gap: 18px; margin: 0; padding: 6px 4px; font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;">
+    {/* Row 1 — the barrel import: the bar fills the whole track. */}
+    <div style="display: flex; flex-direction: column; gap: 6px; margin: 0;">
+      <div style="font-size: 0.8rem; font-weight: 600; color: var(--sl-color-white); margin: 0;">Barrel import</div>
+      <div style="display: flex; align-items: center; gap: 10px; margin: 0;">
+        <div style="box-sizing: border-box; width: 100%; height: 38px; border-radius: 8px; background: #dc2626; display: flex; align-items: center; padding: 0 14px; margin: 0;">
+          <span style="font-size: 0.82rem; font-weight: 600; color: #ffffff; white-space: nowrap; margin: 0;">~600KB — the whole library in your bundle</span>
+        </div>
+      </div>
+    </div>
+
+    {/* Row 2 — the per-export shape: a ~1/20th sliver, label sits beside it. */}
+    <div style="display: flex; flex-direction: column; gap: 6px; margin: 0;">
+      <div style="font-size: 0.8rem; font-weight: 600; color: var(--sl-color-white); margin: 0;">Per-export shape</div>
+      <div style="display: flex; align-items: center; gap: 10px; margin: 0;">
+        <div style="box-sizing: border-box; width: 5%; min-width: 18px; height: 38px; border-radius: 8px; background: #16a34a; margin: 0;"></div>
+        <span style="font-size: 0.82rem; font-weight: 600; color: var(--sl-color-white); white-space: nowrap; margin: 0;">~30KB — only the icons you used</span>
+      </div>
+    </div>
+  </div>
+  <Fragment slot="caption">
+    Rough shape, not a measured reading — one barrel import versus the per-export shape. You'll measure the real numbers with the bundle analyzer in the next lesson.
+  </Fragment>
+</Figure>
+
+Now the honest part, because it changes what this lesson is really teaching.
+`lucide-react` is on Next.js's default-optimized list.
+In a Next.js 16 project, that exact import is *already* getting rewritten for you — the disaster above is what would happen without the framework's help, and the framework is helping by default.
+
+So why spend a lesson on it?
+Because the list is finite, and the libraries it doesn't cover are exactly the ones that bite you — niche icon sets, a chart library, and above all your own internal packages.
+Lucide is the teaching vehicle for the *mechanism*; once you can see the mechanism, you can recognize the trap anywhere, including the places Next.js will never know about.
+
+<VideoCallout videoId="78a6UKaVK84" videoTitle="Next.js Performance Optimization Part 1: Barrel Files">
+  A three-minute Next.js demo of this exact scenario — a barrel inflating the bundle, then `optimizePackageImports` restoring the per-export shape.
+</VideoCallout>
+
+## The two reaches
+
+There are two ways to make an icon import like that one ship lean.
+They are not equal, and the course has a default — but seeing them side by side is what makes the default make sense.
+
+<CodeVariants>
+  <CodeVariant label="optimizePackageImports (default)">
+    <div data-mark-color="green">
+
+    ```ts {2}
+    // what you write
+    import { Pencil } from 'lucide-react';
+
+    // next.config.ts lists the package under experimental.optimizePackageImports,
+    // and the build rewrites the line above to:
+    //   import Pencil from 'lucide-react/icons/pencil';
+    ```
+
+    </div>
+    **Readable at the call site, lean in the bundle — the default.** You write the ordinary barrel import; Next.js rewrites it into per-export deep imports at build time, so the bundle ships only the icons you used. It scans just the entry barrel in one pass — cheaper than full tree-shaking — and handles nested barrels and `export *`.
+  </CodeVariant>
+
+  <CodeVariant label="Per-icon deep import">
+    <div data-mark-color="orange">
+
+    ```ts "'lucide-react/icons/pencil'"
+    import Pencil from 'lucide-react/icons/pencil';
+    ```
+
+    </div>
+    **No config, but verbose and fragile.** A direct deep import skips the barrel entirely — about 1KB, zero config. The costs add up: it needs the library to expose typed deep paths; that path may not be a documented public API, so a minor version can move it (a semver risk); it's verbose at every import site; and if you mix it with a `{ ... }` barrel import from the same package elsewhere, the barrel still loads for that line.
+  </CodeVariant>
+</CodeVariants>
+
+The decision is not close.
+**Default to `optimizePackageImports`. Reach for a per-icon deep import only when a library you depend on isn't on Next.js's list *and* you can't get it added — which is rare — or as a quick local experiment.**
+The reason the readable form wins is the whole point of the lesson: you should not have to trade legibility for bundle size.
+A deep import at every call site is a tax your whole team pays forever; a single line in the config is paid once.
+
+So let's look at that single line.
+
+<AnnotatedCode lang="ts" code={`
+const nextConfig = {
+  // …other config (security headers, reactCompiler, cacheComponents)
+  experimental: {
+    optimizePackageImports: ['@acme/ui', 'some-icon-set'],
+  },
+};
+`}>
+  <AnnotatedStep meta="{3}" color="blue">
+    This lives under `experimental` because, as of Next.js 16, `optimizePackageImports` still carries the experimental banner — widely used, but officially subject to change. Keep an eye on the release notes for when it graduates; don't assume it already has.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{4}" color="blue">
+    List the packages you want rewritten. The catch worth internalizing: you only list packages that are *not* already on Next.js's default list. Lucide, date-fns, recharts and friends are handled for you — what goes here is the libraries Next.js doesn't cover, most often your own internal packages.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{3-5}" color="blue">
+    This rewrite runs in production builds, not in `pnpm dev`. So when your dev bundle still looks heavy, that's expected — don't panic and don't go looking for a second bug. The lean output is what `pnpm build` produces.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+## `sideEffects: false` — telling the bundler it's safe to prune
+
+There's a second half to the fix, and it's the half you own.
+
+Remember that the bundler keeps any module it can't prove is inert.
+`"sideEffects": false` in a package's `package.json` is that proof, stated as a promise: *importing any module in this package runs no import-time code, so dropping the unused exports changes nothing.*
+Without the flag, the bundler plays it safe and keeps imports it can't reason about.
+With it, it's allowed to prune aggressively.
+
+This is why lucide shakes so cleanly in the first place — it ships `sideEffects: false`, which is also why it's safe for Next.js to put on the default list.
+But the place *you* set this is your own packages.
+
+```json
+{
+  "name": "@acme/ui",
+  "sideEffects": false
+}
+```
+
+One nuance keeps this from becoming a footgun.
+If a package genuinely *does* have side-effect modules — a component that imports its own CSS, a polyfill that runs on import — a blanket `false` silently drops them, and now your styles are missing in production with no error to point at.
+For those packages, use the array form to name the exceptions:
+
+```json
+{
+  "sideEffects": ["*.css"]
+}
+```
+
+A <Term definition="Code that runs as a consequence of importing a module — mutating a global, registering something, importing CSS. A module with none can be dropped if unused.">side effect</Term> is just code that runs as a consequence of importing a module — registering a handler, mutating a global, pulling in a stylesheet.
+A module with none can be dropped when nothing uses it.
+A module with one can't, unless you've told the bundler which ones to keep.
+
+## The internal `ui` package is the same trap
+
+Here's where the mechanism pays off, because this is the shape you'll actually hit.
+
+A SaaS app grows, and at some point the shared components — buttons, dialogs, form fields — get factored into an internal `ui` package, a workspace or monorepo package every app imports from.
+It gets a barrel `index.ts`, because that's the convenient thing to do:
+
+```ts
+export * from './button';
+export * from './dialog';
+export * from './field';
+```
+
+And now you have the exact same trap, in your own code, and Next.js's default list has never heard of `@acme/ui`.
+Import one button, drag the whole component library.
+
+The fix mirrors the third-party case exactly — three moves, and this is the checklist worth memorizing:
+
+1. **Keep the barrel re-export-only.** No logic, no side-effect modules anywhere in the chain. The `index.ts` exists to re-export and nothing else.
+2. **Declare `"sideEffects": false`** in the package's `package.json` — or the array form if it ships CSS.
+3. **Add the package name to `experimental.optimizePackageImports`** so Next.js rewrites every consumer's imports.
+
+Now, this might look like it contradicts a rule from earlier in the course.
+The project conventions say *no barrel files in `lib/`, `db/`, or `app/_lib/`* — import the file you need.
+Both things are true, and the reconciliation is the senior nuance here.
+An internal *component library* built for broad re-use is the one place a barrel earns its keep: the autocomplete and the single import path are worth real money to every developer who uses it — *provided* it's re-export-only, flagged `sideEffects: false`, and listed for rewriting.
+Everywhere else in your app code, where you're importing one helper from one file, skip the barrel entirely; the convenience isn't worth the cost.
+Barrels aren't banned.
+*Un-shakable* barrels are.
+
+<Buckets instructions="For each import or package, decide whether it leaks the whole library into the bundle or already ships only what's used.">
+  <Bucket name="leaks" label="Leaks the whole library" description="The barrel comes along for the ride" />
+  <Bucket name="safe" label="Ships only what's used" description="Rewritten or shaken to the per-export shape" />
+
+  <Item bucket="safe">`import { Pencil } from 'lucide-react'`</Item>
+  <Item bucket="leaks">An internal `ui` barrel with no `sideEffects` flag</Item>
+  <Item bucket="leaks">`import { debounce } from 'lodash'`</Item>
+  <Item bucket="safe">`import { format } from 'date-fns'`</Item>
+  <Item bucket="safe">`import { Tooltip } from 'recharts'`</Item>
+  <Item bucket="safe">An internal `ui` barrel with `sideEffects: false`, listed in `optimizePackageImports`</Item>
+</Buckets>
+
+## The decision frame
+
+Put it all together as the order a senior actually asks the questions at an import site.
+The value isn't any single answer — it's the sequence, which you can replay in your head every time you reach for a multi-export package.
+
+<StateMachineWalker title="Importing from a multi-export package">
+  <Question
+    id="on-list"
+    prompt="Is the package on Next.js's default-optimized list?"
+    description="Lucide, date-fns, recharts, the MUI / heroicons / tabler icon sets, and more are on it.">
+    <Branch label="Yes" to="leaf-nothing" />
+    <Branch label="No" to="own-package" />
+  </Question>
+
+  <Question id="own-package" prompt="Is it your own internal package?">
+    <Branch label="Yes" to="leaf-own" />
+    <Branch label="No — third-party, not on the list" to="deep-paths" />
+  </Question>
+
+  <Question id="deep-paths" prompt="Does the library expose typed deep import paths?">
+    <Branch label="Yes" to="leaf-deep" />
+    <Branch label="No" to="leaf-accept" />
+  </Question>
+
+  <Leaf id="leaf-nothing" verdict="Nothing to do">
+    Write the readable `{ named }` import. Next.js rewrites it to the per-export shape at build — the lean bundle is automatic.
+  </Leaf>
+
+  <Leaf id="leaf-own" verdict="Flag it and list it">
+    Set `sideEffects: false` (or the array form if it ships CSS) in its `package.json`, keep the barrel re-export-only, and add the package name to `optimizePackageImports`.
+  </Leaf>
+
+  <Leaf id="leaf-deep" verdict="Add it to optimizePackageImports">
+    That's the preferred reach. A per-icon deep import is the no-config fallback if you can't touch the config — verbose at every call site, and a semver risk.
+  </Leaf>
+
+  <Leaf id="leaf-accept" verdict="List it anyway, or watch it">
+    Add it to `optimizePackageImports` regardless — the entry-barrel scan still helps. If it can't be rewritten, accept the cost and keep an eye on it in the analyzer next lesson.
+  </Leaf>
+</StateMachineWalker>
+
+The same frame covers more than icons.
+`date-fns` is the canonical second example — multi-export, on the default list, nothing for you to do.
+Lodash is the cautionary one: plain `lodash` is CommonJS, so `import { debounce } from 'lodash'` can't be shaken and drags the full library (around 70KB) for one function.
+The fix is to depend on `lodash-es` instead, which ships ES modules that shake to just what you used, then give it the same protections.
+The pattern generalizes: the moment a package has many exports and one import path, ask the questions above.
+
+## Watch-outs and the cost of the fix
+
+The fix is two lines, but it isn't free, and a few sharp edges are worth naming so they're decisions instead of surprises.
+
+- **`optimizePackageImports` costs build time.** The rewrite is a real pass over your imports. You're trading bundle size for build time — almost always worth it, but it's a trade, not a freebie.
+- **The dev bundle stays large.** The transform runs in production builds by default, so `pnpm dev` will look heavy. That's expected behavior, not a regression to chase.
+- **It's still experimental.** As of Next.js 16 it lives under `experimental` and may move or change shape. Track the release notes; don't write code that assumes it has graduated until it has.
+- **Deep imports are a semver risk.** A per-icon path the library doesn't treat as public API can break on a minor version bump — one more reason to prefer `optimizePackageImports`, which only depends on the package's public surface.
+- **Don't mix styles in one package.** A per-icon deep import plus a `{ ... }` barrel import from the same package still loads the barrel for the barrel lines. Pick one style per package and stick to it.
+
+The discipline here is what makes this whole class of regression *attributable and preventable* instead of something you firefight after the bundle has already grown three releases in a row.
+The fix is small.
+Knowing *when* it applies, and not trusting the tree-shaking myth, is the part that's worth your attention.
+
+<Dropdowns
+  instructions="Complete the two-line fix that ships your internal `ui` package lean."
+  answers={[
+    { answer: 'experimental', options: ['experimental', 'compiler', 'bundler'] },
+    { answer: 'optimizePackageImports', options: ['optimizePackageImports', 'transpilePackages', 'optimizeImports'] },
+    { answer: 'sideEffects', options: ['sideEffects', 'treeShake', 'pure'] },
+  ]}>
+```ts
+// next.config.ts
+const nextConfig = {
+  // …other config (security headers, reactCompiler, cacheComponents)
+  ___: {
+    ___: ['@acme/ui'],
+  },
+};
+
+// packages/ui/package.json
+{ "name": "@acme/ui", "___": false }
+```
+</Dropdowns>
+
+## External resources
+
+The config doc, the explainer of the rewrite mechanism, the underlying tree-shaking guide, and a tool to weigh any package before you install it.
+
+<CardGrid>
+  <ExternalResource
+    title="Next.js — optimizePackageImports"
+    href="https://nextjs.org/docs/app/api-reference/config/next-config-js/optimizePackageImports"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The config reference, including the default-optimized package list."
+  />
+  <ExternalResource
+    title="How we optimized package imports in Next.js"
+    href="https://vercel.com/blog/how-we-optimized-package-imports-in-next-js"
+    icon="simple-icons:vercel"
+    iconColor="#000000"
+    description="The canonical explainer of the barrel problem and the build-time rewrite."
+  />
+  <ExternalResource
+    title="Reduce JavaScript payloads with tree shaking"
+    href="https://web.dev/articles/reduce-javascript-payloads-with-tree-shaking"
+    icon="simple-icons:google"
+    iconColor="#4285F4"
+    description="web.dev's hands-on guide to sideEffects and selective imports — the mechanism behind the fix."
+  />
+  <ExternalResource
+    title="Bundlephobia"
+    href="https://bundlephobia.com/package/lucide-react"
+    icon="lucide:scale"
+    iconColor="#FF6154"
+    description="Weigh any npm package's bundle cost before you install it."
+  />
+</CardGrid>
