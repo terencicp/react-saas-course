@@ -1,0 +1,219 @@
+---
+title: "Finding 8: the GDPR deletion gap"
+chapter-id: 82
+course-progress: 0.00005
+sidebar:
+  order: 9
+  label: "Finding 8: GDPR deletion"
+---
+
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+This is the last in-scope finding of the audit, and it is the one inexperienced engineers almost always get *half* right. Your goal: document the incomplete account deletion in `src/lib/account/delete-account.ts` as `findings/008-gdpr-deletion.md`, the eighth and final entry in the eight-category floor.
+
+The handler you are about to read does exactly one thing when a user clicks "delete my account": it deletes the `user` row. That is it. No graph walk, no calls to the external services the user's data reached, no anonymization of the audit trail. The app returns success, sends the confirmation email, and leaves personal data scattered across half the schema and every third party it ever touched. The finished artifact is a four-section finding that names the deletion rule from the security baseline, locates the one-statement handler with the commands that surfaced it, frames the consequence as an Article 17 breach in legal terms, and names the fix: route through the async deletion job that already ships in the repo. Once it lands, the eight-category floor is complete — committing and self-grading the whole report is the next lesson.
+
+## Your mission
+
+You are surfacing the GDPR deletion gap: the deletion that reports success but leaves the user's PII behind. The audit method is the one you have run seven times now, with one twist that makes this finding sharper than the rest. Open `src/lib/account/delete-account.ts` and read it against the retention catalog from the security-baseline chapter's deletion lesson, then grep every table that references the user's id and every external service that holds their data, and confirm the handler touches *none* of them. You do not have to imagine what a complete deletion looks like — the healthy version already ships at `trigger/delete-user.ts`, so read the seeded handler against that job and the gap is the difference between them.
+
+The twist is the trap this finding is tuned to expose: the partial answer. The reflex move is to notice that membership rows survive, name `member`, and stop. The discipline the retention catalog installs is to name *every* place the data could have leaked to — the data-graph tables, yes, but also the external services a `DELETE` against your own database can never reach: Stripe holds a Customer, Resend holds a contact and a suppression entry, PostHog holds a person profile, R2 holds the user's stored objects. An auditor finds the gap exactly where a SQL-only deletion stops looking. There is a second point the healthy job teaches that the partial answer misses entirely: audit-log rows are *anonymized*, never hard-deleted. The right to erasure and the immutable, append-only audit trail are in direct tension, and anonymization — keep the row, scrub the actor — is how both survive at once.
+
+Frame the consequence in legal terms, not as a code-quality note. Personal data persisting past a granted erasure request is not a risk of a breach; it is the breach itself, the precise failure Article 17 of the GDPR exists to prevent. And the confirmation email the user received is a lie, which is its own exposure — it removes the user's chance to escalate while their data is still everywhere. As with every finding in this pass, the target is read-only: the fix is a paragraph that names the complete reach, never a diff. You document the defect; you never patch it. Patching `delete-account.ts`, the two bonus findings, and the commit-and-self-grade step are all out of scope here.
+
+<Checklist>
+  <ChecklistItem chip="tested">`findings/008-gdpr-deletion.md` has all four template sections — Rule, Location, Consequence, Fix — filled with real content.</ChecklistItem>
+  <ChecklistItem chip="tested">The Rule names the GDPR-deletion rule: an erasure request runs as an async deletion job that walks the full retention catalog, and the audit log is anonymized rather than hard-deleted — linked to the security-baseline chapter's deletion lesson by section.</ChecklistItem>
+  <ChecklistItem chip="tested">The Location names the one-row delete in `src/lib/account/delete-account.ts` with a line range and the grep/read command(s) that surfaced it.</ChecklistItem>
+  <ChecklistItem chip="untested">The finding enumerates every PII seam the deletion misses — the data-graph tables (`member`, `invitation`, `invoice_notes`, `exports`, the Better Auth `session` and `account` rows, `audit_logs`) and the external services (Stripe, Resend, PostHog, R2) — read against the retention catalog.</ChecklistItem>
+  <ChecklistItem chip="untested">The Consequence reads in legal terms — PII persists past a successful request, an Article 17 exposure, the confirmation email is false — with no "could potentially" hedging.</ChecklistItem>
+  <ChecklistItem chip="untested">The Fix names the full reach: route through the async `deleteUser` job, block sign-in for the in-progress account, anonymize the `audit_logs` actor columns, fire the Stripe / Resend / PostHog / R2 deletes, and remove the `user` row last.</ChecklistItem>
+  <ChecklistItem chip="untested">A severity is assigned and justified in two lines.</ChecklistItem>
+  <ChecklistItem chip="tested">The audit target still runs unchanged — the seeded one-row delete is still the entire body of the handler.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Write `findings/008-gdpr-deletion.md` against the template and the brief above before you open the solution — the whole value of this finding is in catching the externals and the anonymize tension yourself, not in reading them. When you have walked the graph and written the four sections, expand the reference below.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+Start at the seeded handler. It is short enough to read in one glance, which is exactly why the gap is easy to miss — there is no clever logic to inspect, just an absence.
+
+<CodeVariants maxLines={18}>
+  <CodeVariant label="The defect" icon="lucide:bug">
+    ```ts title="src/lib/account/delete-account.ts"
+    import 'server-only';
+
+    import { eq } from 'drizzle-orm';
+
+    import { db } from '@/db';
+    import { user as users } from '@/db/schema/auth';
+
+    // The "delete my account" handler the settings page calls.
+    export const deleteAccount = async (userId: string): Promise<void> => {
+      // SEEDED #8: one-row delete. Everything else the retention
+      // catalog names is left behind.
+      await db.delete(users).where(eq(users.id, userId));
+    };
+    ```
+    **The seeded one-statement handler.** The entire body is a single `DELETE` against the `users` table — no transaction, no graph walk, no external call, no anonymization, and no route through the async deletion job. The target ships this bug on purpose; finding 8 names the gap, it does not patch it.
+  </CodeVariant>
+
+  <CodeVariant label="The reference" icon="lucide:check">
+    ```ts title="trigger/delete-user.ts"
+    export const deleteUser = schemaTask({
+      id: 'delete-user',
+      schema: z.strictObject({ userId: z.string().min(1) }),
+      run: async ({ userId }) => {
+        await db.transaction(async (tx) => {
+          // Walk the data graph: every table holding this user's PII.
+          await tx.delete(invitation).where(eq(invitation.inviterId, userId));
+          await tx.delete(invoiceNotes).where(eq(invoiceNotes.authorId, userId));
+          await tx.delete(exports).where(eq(exports.requestedBy, userId));
+          await tx.delete(member).where(eq(member.userId, userId));
+
+          // Anonymize — do NOT hard-delete — the audit trail.
+          await tx
+            .update(auditLogs)
+            .set({ actorUserId: null, actorIp: null, actorUserAgent: null })
+            .where(eq(auditLogs.actorUserId, userId));
+
+          // External deletes named, not wired (no third party in the pipeline):
+          //   Stripe Customer · Resend contact/suppression · PostHog person · R2 objects
+
+          await tx.delete(users).where(eq(users.id, userId)); // users row LAST
+        });
+      },
+    });
+    ```
+    **The healthy async job — what a complete erasure actually walks.** It walks the retention catalog (`invitation`, `invoiceNotes`, `exports`, `member`), anonymizes the `auditLogs` actor columns rather than deleting the rows, names the four external deletes, then removes the `users` row **last**, all inside one `db.transaction`. The fix cites this job by name; the seeded handler never enqueues it.
+  </CodeVariant>
+</CodeVariants>
+
+Read the two tabs together and the finding writes itself: the healthy job is the checklist of everything the seeded handler skips. Here is the completed `findings/008-gdpr-deletion.md` as it lands in the repo.
+
+````markdown title="findings/008-gdpr-deletion.md"
+# Finding 008 — Account deletion leaves the user's PII behind
+
+**Category:** GDPR deletion (security baseline).
+**Severity:** critical — a successful "delete my account" request leaves personal data live across half the schema and every external service, and the only proof it ran was a one-row `DELETE`. PII persisting past a granted erasure request is a direct Article 17 breach, and the user was told it was done.
+
+## Rule
+
+A GDPR erasure request runs as an async deletion job that walks the full retention catalog: every table holding the subject's PII or references is cleared, every external service the PII reached is told to delete it, and the audit trail is *anonymized — not hard-deleted* so the immutable record survives without naming the person (chapter 081, lesson 4 — Account deletion and the retention catalog; the three deletion shapes are hard-delete the row, anonymize the row, and cascade-delete the children, and "anonymize don't delete" is the rule for the append-only audit log specifically).
+
+## Location
+
+`src/lib/account/delete-account.ts`:
+
+- `deleteAccount(userId)` — lines 21–25. The whole body is one statement: `await db.delete(users).where(eq(users.id, userId))`. There is no transaction, no graph walk, no external call, no anonymization, and no route through the async deletion job.
+
+How it surfaced — read the deletion handler against the retention catalog, then grep for every table and service that holds this user's data and confirm the handler touches none of them.
+
+```
+# 1. The deletion entry point and what it actually deletes.
+rg -n "delete\(" src/lib/account/delete-account.ts
+# 2. The retention catalog — every table that references user.id.
+rg -n "references\(\(\) => user(s)?\.id" src/db/schema.ts src/db/schema/auth.ts src/db/audit.ts
+# 3. The healthy shape that already exists, for the fix to name.
+rg -n "schemaTask|delete-user" trigger/delete-user.ts
+```
+
+Grep 2 names the data graph the handler skips. The subject's `user.id` is referenced by:
+
+- `member` (org membership rows — cascade on `user.id`, but the deletion is *not* the same as a foreign-key cascade because the user row is the only thing being deleted here, and the order/anonymization still has to be deliberate),
+- `invitation` (`inviterId` — invitations this user sent),
+- `invoice_notes` (`authorId` — free-text the user typed, real PII),
+- `exports` (`requestedBy` — export-run history tied to the user),
+- `session` / `account` (Better Auth credential + session rows, cascade on `user.id`),
+- `audit_logs` (`actorUserId` — the append-only trail; this is the one row set that must be *kept and anonymized*, never deleted).
+
+External services the same PII reached, none of which a `DELETE users` touches: Stripe (the org's Customer), Resend (the contact / suppression entry), PostHog (the person profile), and R2 (the user's stored objects). The discipline here is to name every place the data could have leaked to, not only the obvious tables — the externals are where an auditor finds the gap a SQL-only deletion misses.
+
+The healthy reference already ships in the repo at `trigger/delete-user.ts` (the `deleteUser` `schemaTask`, id `'delete-user'`): it walks `invitation`, `invoiceNotes`, `exports`, `member`, anonymizes `audit_logs`, names the four external deletes, then removes the `users` row last, all inside one `db.transaction`. The seeded handler does not import or enqueue it.
+
+## Consequence
+
+A user clicks "delete my account", the request returns success, and the app deletes exactly one row. Their invoice notes, the invitations they sent, their export history, and their session and credential rows stay live, and their actor id stays stamped on every audit-log row they ever generated. Their Stripe Customer, Resend contact, PostHog profile, and R2 objects are never told anything. In legal terms this is a failure to honour an Article 17 erasure request: personal data persists after the controller confirmed it was erased, which is the breach itself, not a risk of one. The confirmation the user received — "your account and data have been deleted" — is false, and that false confirmation is its own exposure, because it removes the user's chance to escalate while their data is still everywhere.
+
+## Fix
+
+Route the request through the async deletion job, not an inline `DELETE`. The `deleteAccount` handler's job is to mark the account `deletion_in_progress` (so sign-in is blocked for an account mid-deletion and the user can't re-authenticate against a half-deleted graph) and enqueue the `deleteUser` Trigger.dev `schemaTask` already present at `trigger/delete-user.ts`; the job owns the actual erasure. Inside one `db.transaction`, the job walks the retention catalog — delete `invitation`, `invoice_notes`, `exports`, `member`, and the Better-Auth `session` / `account` rows — and **anonymizes** the `audit_logs` rows rather than deleting them: the append-only trail must survive for compliance, so the row stays and only the actor is scrubbed. The deletion/audit-trail tension resolves exactly here — anonymization is how both the right-to-erasure and the immutable audit record hold at once.
+
+```ts
+// inside the deleteUser job's db.transaction, the audit-trail anonymize step:
+await tx
+  .update(auditLogs)
+  .set({ actorUserId: null, actorIp: null, actorUserAgent: null })
+  .where(eq(auditLogs.actorUserId, userId));
+```
+
+After the in-database graph, the job fires the external deletes it cannot do in SQL — Stripe Customer, Resend contact/suppression, PostHog person, R2 objects — then removes the `users` row last so a partial failure leaves a recoverable, still-anonymizing state rather than orphaned children. It closes by writing `account.deletion-completed` through `logAudit` as an `ExplicitAuditEvent` with `actorUserId: null` (the job has no session, so the actor is the system, not the deleted user). The fix is structural — the async job, the catalog walk, and the anonymize step — never a wider `DELETE`.
+````
+
+A few decisions in that finding are worth slowing down on, because they are the parts the partial answer never reaches.
+
+**The enumeration is the whole point.** Item 4 is untested precisely because no automated check can tell the difference between a finding that names `member` and one that names every seam. The Location section does the work by hand: grep 2 surfaces every column that references `user.id`, and the finding lists each table with one clause on *why* it holds PII. Then it crosses the boundary the data graph can't — the four external services. A `DELETE` against your own Postgres reaches none of Stripe, Resend, PostHog, or R2; an erasure request that ignores them has not honoured anything, it has just tidied the local database. Naming the externals is the line between a junior answer and a complete one.
+
+**Why anonymize the audit log instead of deleting it.** This is the second hard-won point and the one most people miss. The audit trail is append-only by design — in this codebase the `audit_logs` table even carries restrictive row-level-security policies that forbid `UPDATE` and `DELETE` so the record can't be quietly rewritten. That immutable record is in direct tension with the right to erasure: you cannot hard-delete the rows without breaking the trail, and you cannot keep the user's name on them without breaching erasure. Anonymization resolves both — keep the row, null out the actor columns (`actorUserId`, `actorIp`, `actorUserAgent`), and the audit history survives while the person disappears from it. The illustrative `tx.update` snippet is the only inline code the finding carries, allowed by the template because the fix is structural; it shows exactly which columns get scrubbed.
+
+**Why the `users` row is deleted last.** Ordering is deliberate, not incidental. If the job deletes the user row first and then fails partway through the external deletes, you are left with orphaned child rows and no anchor to retry against. Delete the children and anonymize the trail first, remove the `users` row last, and a partial failure leaves a recoverable, still-anonymizing state — the worst case is a re-run, not a corruption.
+
+:::caution
+The deletion is **not** the same as a foreign-key cascade. `member`, `session`, and `account` all cascade on `user.id`, so it is tempting to assume deleting the user row cleans them up for free. But the seeded handler deletes only the user row, and even a complete job has to order the work and anonymize the audit trail deliberately — the cascade handles referential integrity, not the erasure policy. `invoice_notes`, `invitation`, and `exports` carry the user's data without a cascade that would clear it, and `audit_logs` must be *kept*, not cascaded away. Relying on the cascade is how an inexperienced engineer ships exactly this defect.
+:::
+
+On severity: this is **critical**. Personal data surviving a granted erasure request is a direct regulatory breach with a false confirmation on top, not a posture issue you can schedule for later — the justification reads in two lines at the top of the finding.
+
+The retention catalog, the three deletion shapes, and the anonymize-don't-delete rule are taught in full in the security-baseline chapter's account-deletion lesson; this finding links it rather than re-deriving it. The `logAudit` writer and the `ExplicitAuditEvent` path with `actorUserId: null` for a session-less system actor come from the audit-log lesson in the organizations chapter. The `deleteUser` job is read here only as a reference — authoring Trigger.dev jobs is its own unit, and the audit never builds it.
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Art. 17 GDPR — Right to erasure"
+    href="https://gdpr-info.eu/art-17-gdpr/"
+    icon="lucide:scale"
+    iconColor="#1A5FB4"
+    description="The full legal text the Consequence section cites — the erasure obligation, its grounds, and its exceptions."
+  />
+  <ExternalResource
+    title="Right to erasure (Articles 17 & 19) — Irish DPC"
+    href="https://www.dataprotection.ie/en/individuals/know-your-rights/right-erasure-articles-17-19-gdpr"
+    icon="lucide:landmark"
+    iconColor="#169B62"
+    description="Regulator guidance on the Article 19 duty to notify every recipient — the discipline behind naming all four external services."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's gate:
+
+```sh
+pnpm test:lesson 9
+```
+
+The suite reads your committed `findings/008-gdpr-deletion.md` off disk and asserts the observable shape of the finding, plus a source-shape probe that the seeded defect is untouched. On success every line is green: the finding file exists; all four sections carry real content; the Rule names the async deletion job, names the anonymize-not-hard-delete rule, and cites the security-baseline chapter's lesson 4; the Location names `delete-account.ts`, a line range, and a grep command; and the read-only probes confirm `deleteAccount` still deletes only the `users` row and walks no further. That last pair is the proof you documented the defect rather than patching it — if you "fixed" the handler the probe fails on purpose.
+
+The gate cannot judge the parts that make this finding land. Confirm those by hand:
+
+<Checklist>
+  <ChecklistItem chip="untested">The Location names the grep/read commands that surfaced the defect, not just the file path.</ChecklistItem>
+  <ChecklistItem chip="untested">The enumeration lists *every* missed table and external service — the data-graph tables and Stripe, Resend, PostHog, R2 — not just `member`. This is the partial-answer trap; the complete list is the finding.</ChecklistItem>
+  <ChecklistItem chip="untested">The Fix names audit-log *anonymization*, not deletion, and explains the deletion/audit-trail tension it resolves.</ChecklistItem>
+  <ChecklistItem chip="untested">The Consequence is framed in Article 17 / legal terms — PII persists past a successful request, the confirmation is false — not as a developer note.</ChecklistItem>
+  <ChecklistItem chip="untested">The severity is critical and justified in two lines.</ChecklistItem>
+</Checklist>
+
+With finding 8 written, the eight-category floor is complete: every audit category now carries a documented finding. The next lesson commits the whole `findings/` directory and scores it clause-by-clause against the answer key — and reaches for the two bonus findings that take the report from the 8/8 floor toward the full 10/10.

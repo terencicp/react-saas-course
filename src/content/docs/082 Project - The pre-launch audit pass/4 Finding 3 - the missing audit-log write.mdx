@@ -1,0 +1,284 @@
+---
+title: "Finding 3: the missing audit-log write"
+chapter-id: 82
+course-progress: 0.00005
+sidebar:
+  order: 4
+  label: "Finding 3: missing audit log"
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid, FileTree } from '@astrojs/starlight/components';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The first two findings announced themselves. The fail-closed bypass had a `try/catch` you could see; the XSS sink rendered `<b>bold</b>` as live HTML in your browser the moment you opened the seeded invoice. This one is different, and that difference is the whole lesson: there is nothing to see. The app runs. The transfer succeeds. No error is thrown, no DOM is mangled, no test breaks. Your goal here is to document the silent ownership transfer — the billing-side mutation in `src/lib/billing/transfer-ownership.ts` that re-points the org's owner without writing a single audit-log row — as `findings/003-audit-log-ownership-transfer.md`.
+
+"Working" for this finding has no running-app fingerprint, because the defect is invisible at runtime — and that invisibility is precisely the consequence you have to put into words. A finished finding is a file whose four sections name the rule (the canonical audit-log event set with transaction discipline), the grep evidence that surfaced the gap, the consequence framed for an auditor and a customer rather than for a developer, and the in-transaction fix with its exact event slug and redacted payload. The audit target stays untouched: you document, you do not patch.
+
+<FileTree>
+- findings/
+  - **003-audit-log-ownership-transfer.md** the only file you edit this lesson
+- src/
+  - lib/
+    - billing/
+      - transfer-ownership.ts read-only — the defect you document, never patch
+</FileTree>
+
+## Your mission
+
+This is the finding that hides best, so the discipline that catches it is not "read the running app" — there is nothing to read. It is holding a fixed list in your head and walking it against the code. The list is the canonical six-category audit-log event set from [the audit-log policy lesson](/081-the-security-baseline/3-the-audit-log-policy/): auth, membership, billing, data-export, deletion, and ownership/tenancy. Every security-relevant mutation in the codebase has to co-transact a write from that set, and the reflex you are installing is the one an experienced engineer applies automatically: pattern-match every mutation against the list — "this changes who controls the org; does it write an audit row?" — and treat that event set as a project-level invariant, not a decision each feature gets to make on its own. The category for this finding is **audit-log gaps**, the same category that lesson owns.
+
+The method is the grep-then-read rhythm you set in [the fail-closed bypass finding](/082-project---the-pre-launch-audit-pass/2-finding-1---the-fail-closed-bypass/), reused here against transactions instead of access checks. Grep for `db.transaction` across `src/lib` to enumerate every transactional mutation, then for each security-relevant one check whether a `logAudit(tx, …)` call rides the same transaction. The seeded gap is the most extreme version of the defect: `transferBillingOwnership` imports no audit writer at all. The absence is the finding. As with finding 1, the grep returns a legitimate site too — the Stripe webhook in `src/lib/webhooks/stripe.ts` co-transacts its `billing.subscription.*` rows on every branch — and a finding that does not explain why that hit is *not* a defect is an incomplete finding.
+
+A word on where this finding sits. It touches two of the threads this audit runs on: it is primarily an audit-log gap, and it brushes the user-vs-operator message split from [the two-message lesson](/080-error-discipline/2-two-audiences-two-messages/), because what is missing here is the *operator record* — the row an auditor would read. But you write it once, as one finding, in the audit-log-gap category. Do not split a single defect across two finding files because it grazes two rules. Out of scope, as always in this audit: patching the target. The fix you write is a paragraph and an illustrative snippet, not a diff — the whole pass is read-only. And the constraint that makes or breaks this finding is the consequence: it belongs in compliance and customer-facing terms. An auditor blind to the org's ownership history; a customer-facing Activity page silent on the single most consequential thing that can happen to a tenant. Never write it as "we forgot to log this" — that is a developer's note, and a launch reviewer reading it aloud learns nothing about who gets hurt.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">`findings/003-audit-log-ownership-transfer.md` has all four template sections — Rule, Location, Consequence, Fix — populated.</ChecklistItem>
+  <ChecklistItem chip="tested">The Rule names the audit-log canonical event set with transaction discipline and cites chapter 081, lesson 3.</ChecklistItem>
+  <ChecklistItem chip="tested">The Location names a grep command and the file `src/lib/billing/transfer-ownership.ts`.</ChecklistItem>
+  <ChecklistItem chip="tested">The Fix names the experienced-engineer reach: an in-transaction `logAudit` write riding `tx`, carrying the `org.ownership-transferred` event.</ChecklistItem>
+  <ChecklistItem chip="tested">The seeded defect is still present — `transferBillingOwnership` writes no audit row — proving you documented the defect rather than patching the read-only target.</ChecklistItem>
+  <ChecklistItem chip="untested">The finding is reached by walking the six-category event set against the mutation, and records that changing the org owner belongs to the ownership/tenancy category that mandates a row.</ChecklistItem>
+  <ChecklistItem chip="untested">The Location records the grep commands and their hit counts, including the legitimate transactional site (`src/lib/webhooks/stripe.ts`) the grep also returns and why it is not a finding.</ChecklistItem>
+  <ChecklistItem chip="untested">The Consequence reads in compliance and customer-facing terms — the ownership history is unrecoverable for an auditor and the Activity page (`recentAuditLogs`) is silent on it — with no "could potentially" hedging.</ChecklistItem>
+  <ChecklistItem chip="untested">The Fix names the exact event slug (`org.ownership-transferred`, single-dot `entity.verb-pasttense`), the write riding `tx` not the global `db`, and the redacted payload `{ previousOwnerId, nextOwnerId }`.</ChecklistItem>
+  <ChecklistItem chip="untested">A severity is assigned and justified in two lines.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Open `findings/003-audit-log-ownership-transfer.md`, copy the four sections from `findings/template.md`, and write the finding against the brief above before you read on. The grep is the same muscle as finding 1; the new muscle is the category cross-walk. When you have a draft, expand the worked solution and compare.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+Start by reading the target the way an audit reads it — looking for what is *not* there. The mutation is straightforward; the silence at the end of the transaction is the defect.
+
+```ts title="src/lib/billing/transfer-ownership.ts"
+export const transferBillingOwnership = async (
+  orgId: string,
+  previousOwnerId: string,
+  nextOwnerId: string,
+): Promise<void> => {
+  await db.transaction(async (tx) => {
+    await tx
+      .update(organization)
+      .set({ ownerId: nextOwnerId })
+      .where(eq(organization.id, orgId));
+
+    // Demote the previous owner and promote the next one on their membership rows.
+    await tx
+      .update(member)
+      .set({ role: 'admin' })
+      .where(eq(member.userId, previousOwnerId));
+
+    await tx
+      .update(member)
+      .set({ role: 'owner' })
+      .where(eq(member.userId, nextOwnerId));
+
+    // SEEDED #3: no in-transaction audit write here. The mutation lands silently.
+  });
+};
+```
+
+Three `UPDATE`s inside one transaction: `organization.ownerId` moves, and the two membership rows swap roles. Control of billing and tenancy for the whole org changes hands, atomically, and the transaction commits with no record of it. The reason you cannot *see* this defect is the reason it is dangerous — it does exactly what it should, minus the one thing nobody watches at runtime.
+
+Here is the completed finding as it lands in the repo.
+
+---
+
+**Category:** Audit-log gaps (security baseline).
+
+**Severity:** high — a security-relevant, tenancy-changing mutation lands with no audit row, so the single most consequential event a tenant can experience leaves no trace; it is high rather than critical because the transfer itself is correct (access is not bypassed here — finding 1 owns that), the loss is the record, not the gate.
+
+### Rule
+
+Every security-relevant mutation co-transacts an audit-log write: the canonical six-category event set (auth, membership, billing, data-export, deletion, **ownership/tenancy**) each mandates a row, and the write rides the same transaction as the mutation so a committed change can never exist without its audit record (chapter 081, lesson 3 — the audit-log canonical event set + transaction discipline; the `entity.verb-pasttense` single-dot naming convention).
+
+### Location
+
+`src/lib/billing/transfer-ownership.ts`:
+
+- `transferBillingOwnership` — the `db.transaction` at lines 27–45 re-points `organization.ownerId` (lines 28–31) and rewrites both membership owner rows (lines 33–42), then closes the transaction at lines 44–45 with no `logAudit(tx, …)` call.
+
+How it surfaced — two greps cross-walked against the canonical event set, the audit method this category reuses: find every transactional mutation, then check each against the categories that mandate a row.
+
+```shell
+# 1. Every db.transaction in the lib — the mutations that must each carry an audit write.
+rg -n "db.transaction" src/lib --glob '*.ts'
+# 2. The mutating verbs inside them — does an UPDATE to a tenancy column ride an audit row?
+rg -n "\.update\(" src/lib/billing/transfer-ownership.ts
+```
+
+Grep 1 returns two transactional sites: `src/lib/webhooks/stripe.ts` (legitimate, not a finding — it co-transacts `billing.subscription.*` audit rows on every branch) and `src/lib/billing/transfer-ownership.ts`. Grep 2 lands three `.update(` calls — `organization.ownerId` and the two `member.role` rewrites — all inside the transaction. Reading the transaction body confirms the absence: `rg "logAudit" src/lib/billing/transfer-ownership.ts` returns nothing, while `src/lib/invitations/manage.ts` co-transacts `member.role-changed` on the *lesser* mutation of demoting a non-owner. The category cross-walk is what scores this: changing the org's owner belongs to the ownership/tenancy category, which mandates a row; the mutation belongs to that category and writes none, so it is a finding, not a "looked unusual" note.
+
+### Consequence
+
+The most security-relevant event a tenant can experience — control of billing and tenancy moving from one account to another — happens and leaves no record. For an auditor reconstructing who held ownership when (a SOC 2 access-review, a breach forensic timeline, a customer dispute over who authorized a billing change), the ownership-transfer history is unrecoverable: the `audit_logs` table, which is the system of record for exactly this, has a hole where the row should be. The customer-facing surface lies by omission too — the Activity page driven by `recentAuditLogs` shows invitations sent, roles changed, and subscriptions activated, but is silent on the one change that handed someone else control of the organization, so a legitimate owner who lost their org sees nothing in their own activity feed to explain it.
+
+### Fix
+
+Add the in-transaction audit write to the `db.transaction` block in `transferBillingOwnership`, modeled on the `member.role-changed` write already shipping in `src/lib/invitations/manage.ts`. The slug is `org.ownership-transferred` — single-dot `entity.verb-pasttense`, the canonical form, and the exact slug the admin-side `src/lib/admin/transfer-ownership.ts` already uses, so the two transfer paths land one event name in the log rather than two drifting ones. The write rides `tx` (never the global `db`), so it commits or rolls back atomically with the ownership change — the `logAudit` signature takes the transaction as its first argument precisely to make an off-transaction write fail to typecheck. The payload is redacted to the two ids the event is about; no emails, no roles, no PII in the row.
+
+<AnnotatedCode lang="ts" maxLines={12} code={`
+await db.transaction(async (tx) => {
+  await tx.update(organization).set({ ownerId: nextOwnerId }).where(eq(organization.id, orgId));
+  // …the two member.role rewrites…
+  await logAudit(tx, {
+    action: 'org.ownership-transferred',
+    subjectType: 'organization',
+    subjectId: orgId,
+    payload: { previousOwnerId, nextOwnerId },
+  });
+});
+`}>
+  <AnnotatedStep meta={`"logAudit(tx, {"`} color="blue">
+    The write takes `tx`, not the global `db`, so it commits or rolls back atomically with the ownership change. `logAudit`'s signature takes the `Transaction` as its first argument with no bare-`db` overload precisely so an off-transaction write — a change that lands without its audit row — fails to typecheck.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"action: 'org.ownership-transferred',"`} color="green">
+    The canonical single-dot `entity.verb-pasttense` slug, and the same slug the admin-side `src/lib/admin/transfer-ownership.ts` already emits, so both transfer paths write one event name rather than two that drift apart.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"payload: { previousOwnerId, nextOwnerId },"`} color="orange">
+    The payload is redacted to the two ids the event is about. Two identifiers, no emails, no roles, no PII — an audit row records *what changed*, not a copy of the data.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Add `org.ownership-transferred` to the canonical event set's documented catalog so the category is explicit, not implied. The write is documented once, here — it is an audit-log gap, not a message-split or fail-closed concern.
+
+---
+
+It helps to see the gap rather than describe it. The same mutation shape ships twice in this codebase: silent in the billing transfer, complete in the role-change action. Read them side by side.
+
+<CodeVariants maxLines={18}>
+  <CodeVariant label="The gap — silent">
+    ```ts title="src/lib/billing/transfer-ownership.ts"
+    await db.transaction(async (tx) => {
+      await tx
+        .update(organization)
+        .set({ ownerId: nextOwnerId })
+        .where(eq(organization.id, orgId));
+
+      // Demote the previous owner and promote the next one on their membership rows.
+      await tx
+        .update(member)
+        .set({ role: 'admin' })
+        .where(eq(member.userId, previousOwnerId));
+
+      await tx
+        .update(member)
+        .set({ role: 'owner' })
+        .where(eq(member.userId, nextOwnerId));
+
+      // SEEDED #3: no in-transaction audit write here. The mutation lands silently.
+    });
+    ```
+    **The transaction commits with no `logAudit` call.** The mutation that changes who controls the whole org leaves no trace.
+  </CodeVariant>
+
+  <CodeVariant label="The healthy shape">
+    <div data-mark-color="green">
+
+    ```ts title="src/lib/invitations/manage.ts" {8-13}
+    await withTenant(ctx.orgId, async (tx) => {
+      await tx
+        .update(member)
+        .set({ role: newRole })
+        .where(
+          and(eq(member.id, memberId), eq(member.organizationId, ctx.orgId)),
+        );
+      await logAudit(tx, {
+        action: 'member.role-changed',
+        subjectType: 'member',
+        subjectId: memberId,
+        payload: { before: target.role, after: newRole },
+      });
+    });
+    ```
+
+    </div>
+    **The `logAudit(tx, …)` write rides the same transaction as the role change.** This is the lesser mutation — demoting a non-owner — and it still co-transacts its row. The billing transfer is the greater mutation and writes nothing; that asymmetry is the finding.
+  </CodeVariant>
+</CodeVariants>
+
+A few decisions worth their own sentences.
+
+**Why the event set is a project-level invariant, not a per-feature call.** If each feature decides for itself whether a mutation is "worth" logging, the audit log becomes a record of what developers happened to remember, not a record of what happened. The whole point of a fixed six-category set is that it removes the judgment call: a mutation touches one of those categories, so it writes a row, full stop. That is what makes the audit grep-able — you check the mutation against a list, not against a developer's taste.
+
+**Why this finding is reached by the cross-walk, not by the running app (requirement 6).** There is no fingerprint to reproduce. The only way to surface a missing-row defect is to enumerate the mutations and check each against the categories that mandate a row. The finding records the conclusion of that walk explicitly: changing the org owner is an ownership/tenancy event, that category mandates a row, the mutation writes none.
+
+**Why the webhook hit is not a finding (requirement 7).** Grep 1 returns `src/lib/webhooks/stripe.ts` alongside the defect. Reading it shows three `logAudit(tx, …)` calls — `billing.subscription.activated`, `.updated`, `.canceled` — one on every branch of the dispatch, each riding the route's transaction. It co-transacts its audit rows correctly, so it is the calibration sample, not a defect. Naming it in the finding is what separates "I grepped and read every hit" from "I found one thing that looked off."
+
+**Why severity is `high`, not `critical` (requirement 10).** The transfer itself is correct — access is not bypassed here, and finding 1 owns the access-control defect. What is lost is the *record*, not the *gate*. A missing audit row on a correct mutation is serious because the event is so consequential and the log is its only system of record, but it is one notch below a defect that lets an unauthorized actor through. Calibrating severity to the actual blast radius, rather than reflexively stamping everything `critical`, is what keeps a findings report worth reading.
+
+**Why it is written once, here, and not split (requirement 9's framing).** This defect grazes the user-vs-operator message split, because the missing piece is the operator's record. But the split is a different finding's rule; here it is only the angle that explains *who* the missing row hurts. One defect, one finding, in the category whose rule it actually violates.
+
+:::note
+The two seams this finding leans on each have a lesson that owns them. The canonical event set, the transaction discipline, and the `entity.verb-pasttense` naming convention come from [the audit-log policy lesson](/081-the-security-baseline/3-the-audit-log-policy/). The `logAudit(tx, event)` writer and its transaction-first signature come from [the append-only audit-log lesson](/057-roles-action-wrappers-and-the-audit-trail/5-the-append-only-audit-log/). The finding cites them; it does not re-teach them.
+:::
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="OWASP Top 10 — A09: Security Logging and Alerting Failures"
+    href="https://owasp.org/Top10/2025/A09_2025-Security_Logging_and_Alerting_Failures/"
+    icon="simple-icons:owasp"
+    iconColor="#000000"
+    description="The named risk class for this exact defect — a security-relevant change that lands with no audit row. Grounds the Rule and the severity call."
+  />
+  <ExternalResource
+    title="Audit Trails & SOC 1 / SOC 2"
+    href="https://linfordco.com/blog/audit-trail-soc-2/"
+    icon="lucide:clipboard-check"
+    iconColor="#2563EB"
+    description="A CPA/CISA audit firm on what an auditor reads — who did what, when. The compliance lens your Consequence section is written toward."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson gate:
+
+```shell
+pnpm test:lesson 4
+```
+
+A passing run looks like this:
+
+```ansi
+ ✓ tests/lessons/Lesson 4.test.ts (5)
+   ✓ Lesson 4 — Finding 003: the missing audit-log write (5)
+     ✓ Requirement 1 — all four template sections are populated
+     ✓ Requirement 2 — the Rule names the audit-log canonical event set with transaction discipline
+     ✓ Requirement 3 — the Location names a grep command and the defect file
+     ✓ Requirement 4 — the Fix names the in-transaction logAudit write with the canonical slug
+     ✓ Requirement 5 — source-shape probe: the seeded defect is still present
+
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+```
+
+The gate reads the observable shape of your finding — that the four sections are populated, that the Rule names the audit-log event set with transaction discipline and cites the right lesson, that the Location names a grep command and the defect file, and that the Fix names the in-transaction `logAudit` write with the `org.ownership-transferred` slug. The fifth requirement is a source-shape probe in the other direction: it reads `src/lib/billing/transfer-ownership.ts` and asserts that `transferBillingOwnership` *still writes no audit row*. A passing gate therefore proves you **documented** the defect, because the target is read-only — if you "helpfully" added the `logAudit` call to the target, requirement 5 would fail. Documenting, not patching, is the whole posture of the audit.
+
+The gate cannot read for meaning, so confirm the rest by hand.
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">The Location records both grep commands and their hit counts, including the legitimate `src/lib/webhooks/stripe.ts` site, and says in one line why that hit is not a finding (it co-transacts `billing.subscription.*` rows on every branch).</ChecklistItem>
+  <ChecklistItem chip="untested">The finding states the category cross-walk explicitly — changing the org owner is an ownership/tenancy event, which mandates a row — rather than just asserting "a row is missing".</ChecklistItem>
+  <ChecklistItem chip="untested">The Consequence is written for an auditor and the customer-facing Activity page, not as a developer's "we forgot to log this" note, and carries no "could potentially" hedging.</ChecklistItem>
+  <ChecklistItem chip="untested">The Fix names the exact slug `org.ownership-transferred`, says the write rides `tx` not the global `db`, and gives the redacted payload schema `{ previousOwnerId, nextOwnerId }` with no emails, roles, or PII.</ChecklistItem>
+  <ChecklistItem chip="untested">The severity is assigned and its two-line justification holds up when you read it aloud — high, because the loss is the record and not the gate.</ChecklistItem>
+</Checklist>
+
+With finding 3 written, three of the eight categories are covered: the fail-closed bypass, the XSS sink, and now the silent ownership transfer. The next finding leaves the application code entirely and reads the headers the app ships — the cheapest, highest-value pass in the audit.
