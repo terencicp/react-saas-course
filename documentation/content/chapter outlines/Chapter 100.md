@@ -2,7 +2,7 @@
 
 ## Chapter framing
 
-Chapter 100 cashes in Unit 20 as one runnable shipping discipline. chapter 096's small reviewable PRs, chapter 097's four-job CI gate, chapter 098's Vercel + Neon preview-per-PR + instant rollback, and chapter 099's expand-migrate-contract cadence all converge here. The student takes the course's invoices project (the chapter 062 surface — URL-state list, soft-delete, `version` concurrency) and ships it to a real production URL on Vercel against a Neon-branched preview workflow, then executes one cadence-class migration end-to-end across three reviewed PRs: splitting `invoices.total numeric NOT NULL` into separate `invoices.subtotal numeric NOT NULL` + `invoices.tax numeric NOT NULL` columns. Every PR is green-in-CI before merge, every PR is rehearsed against its own copy-on-write Neon branch before merge, and at no point between PRs is the running production app incompatible with the live schema. The chapter closes by rehearsing the production rollback path (instant alias re-point plus `git revert`) against the contract PR — not to undo the migration but to prove the student knows the gesture before they need it at 2 AM.
+Chapter 100 cashes in Unit 20 as one runnable shipping discipline. chapter 096's small reviewable PRs, chapter 097's CI gate, chapter 098's Vercel + Neon preview-per-PR + instant rollback, and chapter 099's expand-migrate-contract cadence all converge here. The student takes the course's invoices project (the chapter 062 surface — URL-state list, soft-delete, `version` concurrency, now sitting behind a Better Auth email+password sign-in / sign-up / org-onboarding flow) and ships it to a real production URL on Vercel against a Neon-branched preview workflow, then executes one cadence-class migration end-to-end across three reviewed PRs: splitting `invoices.total numeric(12,2) NOT NULL` into separate `invoices.subtotal numeric(12,2) NOT NULL` + `invoices.tax numeric(12,2) NOT NULL` columns. The cadence spans four migrations (`0005_expand_subtotal_tax`, `0006_set_subtotal_tax_not_null`, `0007_contract_total`) plus a by-hand backfill script (`pnpm db:backfill`) run between them. Every PR is green-in-CI before merge, every PR is rehearsed against its own copy-on-write Neon branch before merge, and at no point between PRs is the running production app incompatible with the live schema. The chapter closes by rehearsing the production rollback path (instant alias re-point plus `git revert`) against the contract PR — not to undo the migration but to prove the student knows the gesture before they need it at 2 AM.
 
 Threads that run through every lesson. **The git push is the deploy** — every PR's commit produces a preview deployment on a Neon branch off `main`; every merge to `main` produces a production deployment against the production database; no human clicks "deploy." **The preview branch is the rehearsal stage** — `pnpm db:migrate` runs in the build command against the preview branch, the build fails if the migration fails, the preview URL exercises the new code against production-shaped data; merge happens only after the rehearsal checklist is green. **Forward-only migrations, three deploys minimum** for the destructive change — old and new shapes coexist in expand; app-layer dual-write keeps both populated in migrate; contract drops the old shape only when nothing reads it. **Between PRs, production keeps working** — the load-bearing observation of the entire chapter; the verify steps after PRs 1 and 2 explicitly check production traffic against the in-flight schema. **Rollback is the recovery primitive, not the apology** — the student rehearses an instant-rollback-plus-revert on the contract PR as the closing exercise, learning the gesture before an incident demands it.
 
@@ -11,134 +11,147 @@ Threads that run through every lesson. **The git push is the deploy** — every 
 The project is complete when every one of these deployment invariants holds, each confirmable through the Vercel dashboard, the repo history, and the provided inspector:
 
 - A live production `*.vercel.app` URL serves the app, and the inspector's schema-state probe shows `subtotal numeric NOT NULL` and `tax numeric NOT NULL` with no `total` column.
-- The split ran as three merged PRs in order — expand (additive migration only, no app code), migrate (dual-write + dual-read + backfill script + a follow-up `SET NOT NULL` migration), contract (`DROP COLUMN` + app cleanup) — each with its own merge commit on `main`.
-- Every PR was green across all CI checks (typecheck / lint / test / build / vercel-build) before a green-only merge, and each PR's preview deployment ran `pnpm db:migrate && next build` against its own Neon branch with the rehearsal checklist applied.
+- The split ran as three merged PRs in order — expand (`0005_expand_subtotal_tax`, additive migration only, no app code), migrate (dual-write + dual-read + the by-hand `pnpm db:backfill` script + a follow-up `0006_set_subtotal_tax_not_null` migration), contract (`0007_contract_total` `DROP COLUMN` + app cleanup) — each with its own merge commit on `main`.
+- Every PR was green across all CI checks (typecheck / lint / test / build, plus the `audit` and `actionlint` supplementary jobs) and `vercel-build` before a green-only merge, and each PR's preview deployment ran `pnpm db:migrate && next build` against its own Neon branch with the rehearsal checklist applied.
 - The Vercel dashboard shows four production deployments (first deploy plus the three PRs), each prod deployment's commit SHA matching its merge commit, plus the preview deployment that preceded each merge.
 - At no point was the running app incompatible with the live schema: after PR 1 merges, production reads `total` while nullable `subtotal`/`tax` sit unread; after PR 2 merges, production dual-writes all three columns and reads via `coalesce`, the backfill brings split-coverage to 100%, and the data-integrity diff stays at zero rows; after PR 3 merges, production reads the new pair directly. Each transition is verified against live production with Sentry quiet.
-- The contract PR's rollback is documented in `docs/runbooks/rollback.md` and rehearsed: promoting the previous (post-PR-2) deployment, verifying the alias swap via `curl -sI` and `x-vercel-id`, observing that the alias re-point does not undo the forward-only migration, then re-promoting the contract deployment and re-enabling auto-assignment.
-- The launch checklist's eight rows are green at the URL: env validator green in prod build logs, Sentry received the deliberate test error, the sign-in rate limit returns 429 after threshold, the audit log shows recent activity, `curl -sI` shows the security headers, the DB connection uses the pooled `-pooler` endpoint in the matching region, backup retention is set with one test restore done, and an external uptime monitor pages a human against `/api/health`.
+- The contract PR's rollback is documented in `docs/runbooks/rollback.md` (provided as a stub with the bolded caveat and the four section headers; the student fills the gesture) and rehearsed: promoting the previous (post-PR-2) deployment, verifying the alias swap via `curl -sI` and `x-vercel-id`, observing that the alias re-point does not undo the forward-only migration, then re-promoting the contract deployment and re-enabling auto-assignment.
+- The launch checklist's eight rows are filled in `docs/runbooks/launch-checklist.md` and green at the URL: env validator green in prod build logs, `/api/health` returns `{ ok: true, db: 'up' }`, Sentry received the deliberate test error (the inspector's "Trigger test error" button), `main` is branch-protected, the four-job CI gate is green on the PR, the Neon-branch-per-PR rehearsal ran, the production alias is confirmed via `curl -sI` / `x-vercel-id`, and the rollback rehearsal is recorded.
 
 ### Dependency carry-in
 
-- **From chapter 062 (the project starter):** the full chapter 062 surface — `app/(app)/invoices/page.tsx` with URL-state filter/sort/search/cursor through `nuqs`, the `tenantDb(orgId).invoices.active() / .archived() / .includingDeleted()` scoped query helper, the `version`-precondition `updateInvoice` action with 409 Result, the soft-delete / archive / restore actions, the `createInvoice` action with `useOptimistic`, the inspector page (`/inspector`). The schema ships with `invoices.total numeric(12,2) NOT NULL` as a single combined amount column — no `subtotal` or `tax` breakdown — which is the shape the cadence will evolve into separate `subtotal` + `tax` columns so the application can finally compute and display tax distinctly from the line subtotal.
+- **From chapter 062 (the project starter):** the full chapter 062 surface, re-expressed here — `src/app/(protected)/invoices/page.tsx` with URL-state filter/sort/search/cursor through `nuqs`, the `scopedInvoices(orgId).active() / .archived() / .includingDeleted()` SQL-predicate helper, the `version`-precondition `updateInvoice` action with honest-409 Result (and an admin-only `overwrite` escape hatch), the soft-delete / archive / restore actions, the `createInvoice` action with optimistic archive in the table, and the inspector page (`/inspector`). The surface now sits behind a Better Auth email+password sign-in / sign-up / org-onboarding flow (`src/app/(auth)/`, `src/app/onboarding/`) gated by `src/proxy.ts` (a cookie-presence middleware, not a noop). The schema ships with `invoices.total numeric(12,2) NOT NULL` as a single combined amount column — no `subtotal` or `tax` breakdown — which is the shape the cadence will evolve into separate `subtotal` + `tax` columns so the application can finally compute and display tax distinctly from the line subtotal.
 - **From chapter 096:** small reviewable PRs, branch-protected `main` (no direct pushes), `git revert` as the code-side undo.
-- **From chapter 097:** the four-job CI workflow (typecheck, lint, test, build) running on every PR; `pnpm audit` and `markdown-link-check` as supplementary jobs; SHA-pinned actions; `SKIP_ENV_VALIDATION=1` in CI typecheck/lint/test jobs only.
+- **From chapter 097:** the four-job CI workflow (`typecheck`, `lint`, `test`, `build`) running on every PR; `audit` (`pnpm audit --audit-level=high`) and `actionlint` as supplementary jobs; `concurrency` cancel-in-progress; `SKIP_ENV_VALIDATION=1` in the typecheck/lint/test jobs only — the `build` job runs the env validator for real with inline placeholder vars.
 - **From lesson 1 of chapter 098:** the deployment model — every push creates an immutable deployment, production is an alias.
-- **From lesson 2 of chapter 098:** the "Import Git Repository" flow, the first `*.vercel.app` URL, `vercel link` + `vercel env pull`, `packageManager: pnpm@9.x` in `package.json`.
-- **From lesson 3 of chapter 098:** Node.js runtime as the default, single function region matching the Neon region (`iad1` for the course default), Fluid Compute on, `maxConcurrency` left at the default for this project.
-- **From lesson 5 of chapter 098:** the Native Vercel Integration with Neon installed; `DATABASE_URL` injected per preview deployment as a managed var; preview password protection on; the build command overridden to `pnpm db:migrate && next build` so every preview's branch gets the PR's migration before the app boots.
+- **From lesson 2 of chapter 098:** the "Import Git Repository" flow, the first `*.vercel.app` URL, `vercel link` + `vercel env pull`, `packageManager: pnpm@11.x` in `package.json`.
+- **From lesson 3 of chapter 098:** Node.js runtime as the default, single function region matching the Neon region (`iad1` for the course default), Fluid Compute on with its automatic concurrency model (no manual `maxConcurrency` knob) for this project.
+- **From lesson 5 of chapter 098:** the Native Vercel Integration with Neon installed; `DATABASE_URL` injected per preview deployment as a managed var; Vercel Authentication (Deployment Protection) on for previews — free on Pro, no add-on; the build command overridden to `pnpm db:migrate && next build` so every preview's branch gets the PR's migration before the app boots.
 - **From lesson 6 of chapter 098:** three environments (Production / Preview / Development); env validator (`@t3-oss/env-nextjs`) failing builds on missing required vars; `SKIP_ENV_VALIDATION` never set in production; no `NEXT_PUBLIC_*` on a secret.
 - **From lesson 7 of chapter 098:** the two-layer rollback — Vercel alias re-point (instant), `git revert` on `main` (durable); rollback doesn't undo migrations.
-- **From lesson 8 of chapter 098:** the launch checklist's eight rows — env validation green, Sentry wired, rate limits live, audit logs writing, security headers set, pooled DB with matching region, backups on, external uptime monitor pages a human; `/api/health` endpoint shipped.
+- **From lesson 8 of chapter 098:** the launch-checklist discipline applied to this project's eight rows — env validator green, `/api/health` returns `{ ok: true, db: 'up' }`, Sentry wired (the inspector's `triggerTestError` button), branch-protected `main`, the four-job CI gate, Neon-branch-per-PR rehearsal, the production alias confirmed by `curl -sI` / `x-vercel-id`, and the rollback rehearsal. (No rate-limit / security-header / backup / uptime code ships in this project's repo; those rows are out of scope here.)
 - **From lesson 1 of chapter 099:** the expand-migrate-contract cadence as application-layer choreography — dual-write inside the server action, bounded-batched-idempotent backfill, dual-read with `coalesce` fall-through; forward-only.
 - **From lesson 2 of chapter 099:** the trigger map placing "splitting one column into two and dropping the original" squarely in the three-deploy list.
 - **From lesson 3 of chapter 099:** the rehearsal checklist — migration applied, completed in reasonable time, app works against the new schema, old shape still works where it should; the dual-write verification via direct SQL on the preview branch.
 - **From chapter 056 / chapter 057 / chapter 043:** `tenantDb(orgId)`, `authedAction(role, schema, fn)`, `logAudit(tx, event)`, the canonical Result shape.
-- **From chapter 040:** Drizzle Kit `generate` / `migrate`; the `__drizzle_migrations` ledger; statement-breakpoint comments.
+- **From chapter 040:** Drizzle Kit `generate` / `migrate` (via `pnpm db:generate` / `pnpm db:migrate`); the `__drizzle_migrations` ledger; statement-breakpoint comments. The starter ships migrations `0000`–`0004` (auth, app role, audit logs, RLS, invoices baseline); the cadence adds `0005`–`0007`.
 
 ### Starter file tree (stubs marked TODO)
 
 ```
 .github/
-  workflows/
-    ci.yml                        # provided: typecheck/lint/test/build, pnpm audit, markdown-link-check (chapter 097)
+  workflows/ci.yml                # provided: typecheck/lint/test/build + audit + actionlint (chapter 097)
+  dependabot.yml                  # provided
 docker-compose.yml                # provided: local postgres:18 for development env only
-drizzle.config.ts                 # provided: reads DATABASE_URL_UNPOOLED
-next.config.ts                    # provided: cacheComponents: true, security headers from lesson 8 of chapter 098
-.env.example                      # provided: every key present, placeholders only
-package.json                      # provided: packageManager pnpm@9, scripts (db:migrate, db:seed, dev, build, test, db:studio)
+drizzle.config.ts                 # provided: three-file schema array, casing snake_case, reads DATABASE_URL_UNPOOLED
+next.config.ts                    # provided: cacheComponents, typedRoutes, reactCompiler, turbopack
+.env.example                      # provided: every key present, valid local placeholders
+package.json                      # provided: packageManager pnpm@11; scripts db:migrate, db:seed, db:backfill, dev,
+                                  #           build, test, test:lesson, db:studio, auth:generate
                                   #           BUILD command overridden in Vercel UI: pnpm db:migrate && next build
-README.md                         # provided: setup, deploy, the three-PR plan
+README.md                         # provided: setup, deploy, the three-PR migration plan
 src/
-  env.ts                          # provided: @t3-oss/env-nextjs schema; required: DATABASE_URL, DATABASE_URL_UNPOOLED,
-                                  #           BETTER_AUTH_SECRET, RESEND_API_KEY, SENTRY_DSN, APP_URL, NODE_ENV
+  env.ts                          # provided: @t3-oss/env-nextjs; required DATABASE_URL, DATABASE_URL_UNPOOLED,
+                                  #           BETTER_AUTH_SECRET, BETTER_AUTH_URL, RESEND_API_KEY, SENTRY_DSN, APP_URL,
+                                  #           NEXT_PUBLIC_APP_NAME, NEXT_PUBLIC_APP_URL
+  proxy.ts                        # provided: Better Auth cookie-presence guard for /dashboard /invoices /inspector + auth pages
   db/
-    schema.ts                     # provided: chapter 062 schema with invoices.total numeric(12,2) NOT NULL only,
-                                  #           no subtotal/tax columns yet
-    client.ts                     # provided
-    relations.ts                  # provided
-    cursor.ts                     # provided
+    schema.ts                     # FOCUS: invoices.total numeric(12,2) NOT NULL only; TODO(L3/L4/L5) markers
+    schema/auth.ts                # provided: Better Auth generated tables (user/session/account/organization/member/...)
+    index.ts                      # provided: drizzle client; db + dbUnpooled exports; Transaction type
+    audit.ts / audit-log.ts       # provided: audit_logs table + RLS, logAudit(tx, event) helper
+    relations.ts / tenant.ts      # provided: invoices→organization relation; withTenant + tenantDb facade
+    columns.ts                    # provided: timestamps column group
+    queries/members.ts queries/audit.ts  # provided
   lib/
-    tenant-db.ts                  # provided
-    authed-action.ts              # provided
-    audit-log.ts                  # provided
-    env.ts                        # provided
+    auth.ts / auth-client.ts / auth-schema.config.ts  # provided: betterAuth instance + client + CLI mirror
+    result.ts / redirects.ts / utils.ts                # provided
+    auth/authed-action.ts auth/roles.ts auth/error-mapping.ts  # provided
     invoices/
-      schema.ts                   # provided
-      queries.ts                  # provided (reads total); TODO student in PR 2 + PR 3
-      scoped-query.ts             # provided
-      actions.ts                  # provided (writes total); TODO student in PR 2 + PR 3
+      queries.ts                  # FOCUS: reads total; TODO(L4) dual-read coalesce, TODO(L5) drop total
+      actions.ts                  # FOCUS: writes total; TODO(L4) dual-write, TODO(L5) contract
+      money.ts                    # SOLUTION-ONLY: combinedAmount({subtotal,tax}); student creates in PR 2
+      scoped-query.ts             # provided: scopedInvoices(orgId), activeFilter/archivedFilter
+      search-params.ts            # provided: nuqs invoiceListSearchParams(Cache)
   app/
-    (app)/invoices/page.tsx       # provided
-    inspector/page.tsx            # provided: row counts, "Reset and re-seed" button, two custom panels
-                                  #           ('Split coverage', 'Dual-write probe') wired but inert until student fills queries
-    api/health/route.ts           # provided: 200 with db ping (lesson 8 of chapter 098)
-  proxy.ts                        # provided: noop pass-through (next-intl etc. not in this project)
+    layout.tsx page.tsx globals.css _components/   # provided
+    (auth)/sign-in/ (auth)/sign-up/ onboarding/create-org/  # provided: Better Auth flow
+    (protected)/layout.tsx dashboard/ sign-out-action.ts    # provided
+    (protected)/invoices/page.tsx + sub-components          # provided; table.tsx/edit-form.tsx/conflict-banner.tsx FOCUS
+    (protected)/invoices/[id]/edit/                         # provided; edit-form + conflict-banner read the money shape
+    (protected)/inspector/                                  # provided in full: page.tsx, _data.ts, actions.ts, _components/
+    api/health/route.ts api/auth/[...all]/route.ts          # provided: db ping, Better Auth catch-all
+  components/ui/                   # provided: shadcn components
 scripts/
-  seed.ts                         # provided: 2 orgs, ~30 invoices/org, total populated; subtotal/tax not yet split
-  backfill_subtotal_tax.ts        # TODO student in PR 2: bounded-batched-idempotent backfill (subtotal = total, tax = 0)
-drizzle/
-  migrations/                     # provided: every migration up to and including the chapter 062 baseline
-  meta/                           # provided
+  seed.ts                         # provided: 2 orgs, 5 users, ~60 invoices (subtotal/tax populated in solution; total in start)
+  backfill_subtotal_tax.ts        # FOCUS in PR 2: bounded-batched-idempotent backfill (subtotal = total, tax = '0')
+  test-lesson.mjs                 # provided: runs a single tests/lessons/Lesson N.test.ts
+drizzle/                          # provided: migrations 0000–0004 (auth/role/audit/rls/invoices) + meta
+docs/runbooks/                    # provided as stubs: launch-checklist.md, migration-subtotal-tax.md, rollback.md
+tests/lessons/Lesson 2..6.test.ts # provided: describe.todo skeletons
 ```
 
 ### Reference solution signatures lessons display
 
-- **Vercel project config:** GitHub App scoped to the single repo; Production Branch `main`; Function Region matches Neon region; Node.js runtime; Fluid Compute on; Build Command `pnpm db:migrate && next build`; Install Command `pnpm install`; Output Directory `.next`; Preview Password Protection on (Pro feature).
+- **Vercel project config:** GitHub App scoped to the single repo; Production Branch `main`; Function Region matches Neon region; Node.js runtime; Fluid Compute on; Build Command `pnpm db:migrate && next build`; Install Command `pnpm install`; Output Directory `.next`; Vercel Authentication (Deployment Protection) on for previews (free on Pro, no add-on).
 - **Neon integration:** Vercel Marketplace → Neon (Neon-Managed) → Install → select project. Production `DATABASE_URL` and `DATABASE_URL_UNPOOLED` point at the Neon `main` branch's pooled and unpooled endpoints respectively. Preview's `DATABASE_URL` is managed by the integration (one branch per PR, off `main`).
 - **Environment variable scoping:**
   - Production: `DATABASE_URL` (pooled), `DATABASE_URL_UNPOOLED`, `BETTER_AUTH_SECRET`, `RESEND_API_KEY` (live), `SENTRY_DSN`, `APP_URL` (the custom domain or `*.vercel.app`).
   - Preview: same shape, `DATABASE_URL` managed by Neon integration, all other secrets are the *test* / dev versions.
   - Development: `vercel env pull .env.local` syncs Development scope; local docker postgres optional alternative.
-- **Expand PR's migration (`drizzle/migrations/0010_expand_subtotal_tax.sql`):**
+- **Expand PR's migration (`drizzle/0005_expand_subtotal_tax.sql`):**
   ```
-  ALTER TABLE "invoices" ADD COLUMN "subtotal" numeric(12, 2);
-  --> statement-breakpoint
+  ALTER TABLE "invoices" ADD COLUMN "subtotal" numeric(12, 2);--> statement-breakpoint
   ALTER TABLE "invoices" ADD COLUMN "tax" numeric(12, 2);
   ```
-- **Migrate PR's app changes (`src/lib/invoices/actions.ts` excerpt):** `createInvoice` and `updateInvoice` accept `subtotal` and `tax` in their Zod input and write `total = subtotal + tax` (transitional dual-write so older clients still observe the populated `total` column). The Drizzle update statement carries all three columns in the same `set({ subtotal, tax, total })` call.
-- **Migrate PR's backfill (`scripts/backfill_subtotal_tax.ts`):**
+- **Migrate PR's app changes (`src/lib/invoices/actions.ts` excerpt):** `createInvoice` and `updateInvoice` accept `subtotal` and `tax` in their Zod input and write `total = subtotal + tax` (transitional dual-write so older clients still observe the populated `total` column). The Drizzle write carries all three columns in the same `.values({...})` / `.set({...})` call. Money stays a `string` end to end (Drizzle maps `numeric` to `string`); `total` is computed with the integer-cents `combinedAmount` helper, never float `+`.
+- **Migrate PR's money helper (`src/lib/invoices/money.ts`, created in PR 2):** `combinedAmount({ subtotal, tax }: { subtotal: string; tax: string }): string` — integer-cents addition returning a `toFixed(2)` string, no float drift. Replaces the raw `row.total` reads in `table.tsx` and `conflict-banner.tsx`.
+- **Migrate PR's backfill (`scripts/backfill_subtotal_tax.ts`, run via `pnpm db:backfill`):**
   ```
-  // pseudocode shape: while (true) { select 1000 invoices where subtotal is null;
-  //   update set subtotal = total, tax = 0; commit; }
-  // idempotent via WHERE subtotal IS NULL guard
-  // run locally against DATABASE_URL_UNPOOLED of production AFTER PR 2 merges
+  // exports runBackfill(); loops: select up to 1000 ids WHERE subtotal IS NULL;
+  //   update set subtotal = total, tax = '0' where id = any(...) and subtotal is null;
+  //   until a pass touches no rows.
+  // idempotent via the WHERE subtotal IS NULL guard; runs on dbUnpooled.
+  // run against the production unpooled connection AFTER PR 2 merges.
   ```
-- **Migrate PR's query change (`src/lib/invoices/queries.ts` excerpt):** `listInvoices` and `getInvoiceDetail` surface a `subtotal` and `tax` field but resolve each via `coalesce(invoices.subtotal, invoices.total)` and `coalesce(invoices.tax, 0)` — the dual-read fall-through. `total` is still returned for any caller that wants the combined amount.
-- **Migrate PR's validation step:** after backfill completes, a one-shot `ALTER TABLE invoices ALTER COLUMN subtotal SET NOT NULL, ALTER COLUMN tax SET NOT NULL;` migration is shipped (small drizzle migration; statement-breakpoint between the two `ALTER COLUMN` statements). The `SET NOT NULL` scans the table to confirm no remaining nulls — fast because the backfill already populated every row.
-- **Contract PR's migration (`drizzle/migrations/0012_contract_total.sql`):**
+- **Migrate PR's query change (`src/lib/invoices/queries.ts` excerpt):** `listInvoices` and `getInvoiceDetail` surface `subtotal` and `tax` fields resolved via `coalesce(invoices.subtotal, invoices.total)` and `coalesce(invoices.tax, 0)` — the dual-read fall-through — while `total` stays available; the `-total`/`total` sorts order on the combined expression. (In the contracted solution the `total` field is gone and the sort uses `sql\`(${invoices.subtotal} + ${invoices.tax})\``.)
+- **Migrate PR's validation step (`drizzle/0006_set_subtotal_tax_not_null.sql`):**
+  ```
+  ALTER TABLE "invoices" ALTER COLUMN "subtotal" SET NOT NULL;--> statement-breakpoint
+  ALTER TABLE "invoices" ALTER COLUMN "tax" SET NOT NULL;
+  ```
+  Shipped after the backfill completes; the `SET NOT NULL` scan confirms no remaining nulls — fast because the backfill already populated every row.
+- **Contract PR's migration (`drizzle/0007_contract_total.sql`):**
   ```
   ALTER TABLE "invoices" DROP COLUMN "total";
   ```
-- **Contract PR's app changes:** every reference to `total` removed from `actions.ts`, `queries.ts`, `schema.ts`. Drizzle's typed query builder fails the build if any survives. `coalesce` fall-through removed; queries return `subtotal` and `tax` directly, and any caller that wants the combined amount computes `subtotal + tax` at the application layer (or via a Drizzle expression).
-- **Rollback rehearsal artifact:** a `docs/runbooks/rollback.md` documenting the four-step gesture — (1) Vercel dashboard → Deployments → previous green prod → Promote to Production; (2) verify alias swap (`curl -sI https://APP_URL` returns headers from the promoted deployment, check `x-vercel-id`); (3) `git revert <bad-sha>` PR, review, merge; (4) re-enable auto-assignment from the new prod deployment after smoke-testing.
-- **No new env entries beyond the chapter 062 baseline plus lesson 8 of chapter 098's launch-checklist additions (`SENTRY_DSN`, `APP_URL`).**
+- **Contract PR's app changes:** every reference to `total` removed from `actions.ts`, `queries.ts`, `schema.ts` (and the `InvoiceRow.total` field). Drizzle's typed query builder fails the build if any typed reference survives; the inspector's raw-SQL probes are unaffected because they reference columns by SQL literal, not the typed builder. The `coalesce` fall-through is removed; queries return `subtotal` and `tax` directly, and any combined-amount need is computed via `combinedAmount(...)` at the app layer.
+- **Rollback rehearsal artifact:** `docs/runbooks/rollback.md` ships as a stub carrying the bolded "an alias re-point does NOT undo a forward-only migration" caveat plus the four section headers (the four-step alias re-point, the `git revert` follow-up, re-enabling auto-assignment); the student fills the gesture — (1) Vercel dashboard → Deployments → previous green prod → Promote to Production; (2) verify alias swap (`curl -sI https://APP_URL`, check `x-vercel-id`); (3) `git revert <bad-sha>` PR, review, merge; (4) re-enable auto-assignment after smoke-testing.
+- **Env entries:** `src/env.ts` validates `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `RESEND_API_KEY` (validated-not-used), `SENTRY_DSN`, `APP_URL`, plus the client-exposed `NEXT_PUBLIC_APP_NAME` and `NEXT_PUBLIC_APP_URL`. The cadence adds no new env entries.
 
 ### Inspector page spec
 
-A single Server Component at `/inspector` (provided in full). Read-only panels; the student fills no inspector code, only the lib/actions code the panels visualize.
+A single Server Component at `/inspector` (provided in full). Every panel is one `<Suspense>`-wrapped region with a `data-testid`; the student fills no inspector code, only the lib/actions code the panels visualize. Crucially, every probe is a raw `db.execute(sql\`…\`)` against `information_schema` / the `invoices` table by SQL literal — never a typed query referencing `invoices.subtotal/tax/total` — so the same `_data.ts` compiles against both the total-only start schema and the contracted solution schema.
 
-- **Header:** session-user switcher (admin/member from chapter 062's seed), org switcher (two seeded orgs), "Reset and re-seed" form (Server Action, admin only).
-- **Deployment-environment indicator:** reads `process.env.VERCEL_ENV` (`production` / `preview` / `development`) and renders a colored badge. Verifies the student is looking at the right environment when running checks.
-- **Schema-state probe:** runs `SELECT column_name, is_nullable, data_type FROM information_schema.columns WHERE table_name = 'invoices' ORDER BY ordinal_position` and renders the result as a table. The student watches `subtotal` and `tax` appear in PR 1 (nullable), flip to `NOT NULL` after the validation step in PR 2, and `total` disappear in PR 3.
-- **Split-coverage panel:** runs three counts — `total invoices`, `invoices WHERE subtotal IS NOT NULL`, `invoices WHERE subtotal IS NULL`. Green when null count is zero. The migrate PR's backfill is "done" when this panel is green; the contract PR's safety check is this panel being green before merge.
-- **Dual-write probe:** lists the most recent 10 invoices with `id`, `subtotal`, `tax`, `total` side by side. After every mutation in PR 2, all three columns are populated and `subtotal + tax = total` exactly; deviation is a bug.
-- **Data-integrity diff panel:** runs the audit query `SELECT id, subtotal, tax, total FROM invoices WHERE subtotal IS NOT NULL AND subtotal + tax <> total` and lists any rows that diverge. Zero rows is green; non-zero is a dual-write bug.
-- **Audit-log tail:** the last 20 audit_log rows for the current org. Every create/update/archive/restore/delete writes here. The student verifies the migration class doesn't lose audit coverage.
-- **Build-source panel:** displays the current deployment's commit SHA (`process.env.VERCEL_GIT_COMMIT_SHA`), branch, deployment URL, and whether `VERCEL_ENV === 'production'`. Verifies which PR's code is running.
-- **`/api/health` link:** simple link to `/api/health`; expected `{ ok: true, db: 'up' }`. The uptime monitor (lesson 8 of chapter 098) hits the same endpoint.
+- **Identity banner:** active org name + role, org switcher (seeded orgs the acting user belongs to), and a dev-only acting-user switcher (swaps the resolved identity via the `inspector-acting-user` cookie; production reads the real session). The reset / force-version-drift / "Trigger test error" controls live in a dev-only `DevControls` card lower on the page.
+- **Schema-state panel:** runs `SELECT column_name, is_nullable, data_type FROM information_schema.columns WHERE table_name = 'invoices' ORDER BY ordinal_position` and lists each column name + nullable flag. The student watches `subtotal` and `tax` appear in PR 1 (nullable), flip to `NOT NULL` after the validation step in PR 2, and `total` disappear in PR 3.
+- **Split-coverage panel:** counts `count(*)`, `count(subtotal)`, and `count(*) FILTER (WHERE subtotal IS NULL)` for the org and shows the populated percentage + remaining-null count; renders "Pre-expand — no subtotal column yet" before the column exists. The migrate PR's backfill is "done" when this reads 100%; the contract PR's safety check is this being 100% before merge.
+- **Dual-write panel:** lists the most recent 10 invoices with `subtotal`, `tax`, `total` side by side (defensively selecting only the columns that currently exist). After every mutation in PR 2, all three columns are populated and `subtotal + tax = total` exactly; deviation is a bug.
+- **Data-integrity panel:** runs `SELECT id, number FROM invoices WHERE subtotal IS NOT NULL AND tax IS NOT NULL AND (subtotal + tax) <> total` and lists divergent rows. "No divergent rows" is green; once `total` is dropped it renders "n/a — total dropped".
+- **Audit tail:** the last 20 `audit_logs` rows for the current org (newest first). Every create/update/archive/restore/delete writes here. The student verifies the migration class doesn't lose audit coverage.
+- **Deployment panel:** a `VERCEL_ENV` badge (`production`/`preview`/`development`, falling back to `development` off-Vercel), the build-source line (`VERCEL_GIT_COMMIT_SHA` + `vercel`/`local` source), and a link to `/api/health` (expected `{ ok: true, db: 'up' }`). Verifies which environment and which PR's code is running.
 
-The inspector is provided in full and rendered on every environment; preview deployments expose it (password-protected); production exposes it gated by admin role.
+The inspector is provided in full and rendered on every environment; the dev-only controls and acting-user switcher are gated by `NODE_ENV !== 'production'`. In production the page is admin-gated; preview deployments expose it behind Vercel Authentication.
 
 ### Concepts demonstrated → owning lesson
 
 - The deployment model, immutable deployments, alias semantics — lesson 1 of chapter 098.
 - First deploy mechanics (Import Git Repository, build command override, `vercel link` / `vercel env pull`) — lesson 2 of chapter 098.
 - Function region matching Neon region, Node.js runtime default — lesson 3 of chapter 098.
-- Native Vercel + Neon integration, per-PR copy-on-write branch, build-time migration step, preview password protection — lesson 5 of chapter 098.
+- Native Vercel + Neon integration, per-PR copy-on-write branch, build-time migration step, Vercel Authentication on previews — lesson 5 of chapter 098.
 - Three environments + secret scoping + env validator + `SKIP_ENV_VALIDATION` discipline — lesson 6 of chapter 098.
 - Two-layer rollback (Vercel alias + `git revert`), auto-assignment-off after rollback, the data-state caveat — lesson 7 of chapter 098.
-- Launch checklist's eight rows + `/api/health` endpoint + security headers — lesson 8 of chapter 098.
+- Launch checklist's eight rows (env validator, `/api/health`, Sentry test error, branch-protected `main`, the CI gate, Neon-branch-per-PR rehearsal, the production alias, the rollback rehearsal) — lesson 8 of chapter 098.
 - Expand-migrate-contract cadence + dual-write + dual-read + bounded-batched-idempotent backfill — lesson 1 of chapter 099.
 - Trigger map placement of "splitting one column into two and dropping the original" — lesson 2 of chapter 099.
 - Preview-branch rehearsal checklist + split-coverage verification + data-integrity diff — lesson 3 of chapter 099.
@@ -153,8 +166,8 @@ The inspector is provided in full and rendered on every environment; preview dep
 ## Lesson 1 — Project Overview
 
 You are taking the invoices app you built across the course and shipping it to a real production URL on Vercel, then evolving its database schema while it stays live.
-The starter is the chapter 062 surface — the URL-state invoices list, soft-delete, and `version`-concurrency editing — wired to deploy on every git push against a Neon branch-per-PR workflow.
-Its `invoices` table carries a single combined `total` column with no breakdown of subtotal and tax: a real anti-pattern the project exists to fix.
+The starter is the chapter 062 surface — the URL-state invoices list, soft-delete, and `version`-concurrency editing — now behind a Better Auth email+password sign-in / sign-up / org-onboarding flow, wired to deploy on every git push against a Neon branch-per-PR workflow.
+Its `invoices` table carries a single combined `total numeric(12,2) NOT NULL` column with no breakdown of subtotal and tax: a real anti-pattern the project exists to fix.
 By the end you will have a live `*.vercel.app` URL serving the app, the `total` column split into separate `subtotal` and `tax` columns across three reviewed PRs with no moment where the running app and the live schema were incompatible, and a rehearsed rollback runbook.
 
 *(Figure: the finished `/invoices` production surface beside the `/inspector` panel showing `subtotal NOT NULL`, `tax NOT NULL`, no `total`, split-coverage 100%, and the Vercel dashboard listing four production deployments — the first deploy plus three PRs.)*
@@ -179,15 +192,15 @@ By the end you will have a live `*.vercel.app` URL serving the app, the `total` 
 ### Starting file tree
 
 The annotated layout lives in the [Chapter framing](#starter-file-tree-stubs-marked-todo) above.
-The student writes no inspector code; the focus stubs are the three TODO files — `src/lib/invoices/queries.ts`, `src/lib/invoices/actions.ts`, and `scripts/backfill_subtotal_tax.ts` — filled across PRs 2 and 3.
-Everything else, including the chapter 062 surface, CI workflow, env validator, and inspector, ships provided.
+The student writes no inspector code; the focus files are `src/db/schema.ts`, `src/lib/invoices/queries.ts`, `src/lib/invoices/actions.ts`, the new `src/lib/invoices/money.ts`, the edit form / table / conflict-banner that render the money shape, `scripts/backfill_subtotal_tax.ts`, and the three runbooks — filled across PRs 1–3 and the rollback rehearsal.
+Everything else, including the chapter 062 surface, the Better Auth flow, CI workflow, env validator, and inspector, ships provided.
 
 ### Roadmap
 
 <CardGrid>
 
 <Card title="Lesson 2 — From green repo to a live production URL">
-Wires Vercel, Neon, env validation, preview password protection, and the launch checklist on the starter to produce the production URL the rest of the chapter targets.
+Wires Vercel, Neon, env validation, preview deployment protection, and the launch checklist on the starter to produce the production URL the rest of the chapter targets.
 </Card>
 
 <Card title="Lesson 3 — PR 1 (Expand): add the nullable subtotal and tax columns">
@@ -229,8 +242,8 @@ This project provisions real Vercel and Neon free-tier accounts in lesson 2; for
 3. Start local postgres and run the dev server.
 
    ```sh
-   docker compose up -d
-   cp .env.example .env.local   # placeholders are valid for local dev
+   docker compose up -d          # Postgres 18
+   cp .env.example .env          # placeholders are valid for local dev
    pnpm db:migrate && pnpm db:seed
    pnpm dev
    ```
@@ -238,15 +251,15 @@ This project provisions real Vercel and Neon free-tier accounts in lesson 2; for
 </Steps>
 
 Env vars: `.env.example` carries every key with valid local placeholders; the real production and preview values are set in lesson 2.
-The local-dev secrets (`DATABASE_URL` / `DATABASE_URL_UNPOOLED` for docker postgres, plus test-mode `BETTER_AUTH_SECRET`, `RESEND_API_KEY`, `SENTRY_DSN`, `APP_URL`) need no external account to run locally.
+The local-dev secrets (`DATABASE_URL` / `DATABASE_URL_UNPOOLED` for docker postgres, plus dev-mode `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `RESEND_API_KEY`, `SENTRY_DSN`, `APP_URL`, and the `NEXT_PUBLIC_*` pair) need no external account to run locally.
 
-On success `pnpm dev` serves the chapter 062 invoices surface at `http://localhost:3000/invoices` and the inspector at `/inspector`, both reading the seeded `total` column. No feature is built and nothing is deployed yet.
+On success `pnpm dev` serves the app at `http://localhost:3000`. Sign in as a seeded user (the seed creates two orgs and five users — e.g. `alice@acme.test`, an Acme admin — all with password `inspector-password-12`), then the invoices surface lives at `/invoices` and the inspector at `/inspector`, both reading the seeded `total` column. No feature is built and nothing is deployed yet.
 
 ---
 
 ## Lesson 2 — From green repo to a live production URL
 
-This is the heaviest setup of the chapter: a guided, end-to-end wiring of Vercel, Neon, env validation, preview password protection, and the launch checklist on the starter.
+This is the heaviest setup of the chapter: a guided, end-to-end wiring of Vercel, Neon, env validation, preview deployment protection, and the launch checklist on the starter.
 Chapters 096 through 098 taught each of these moves; here you run them once against this repo to produce the production `*.vercel.app` URL the rest of the chapter targets.
 After this lesson every change ships by git push alone.
 Work through the steps in order.
@@ -266,33 +279,33 @@ Work through the steps in order.
 5. In the Vercel dashboard: Add New → Project → Install Vercel for GitHub scoped to this one repo → Import. Next.js is auto-detected.
 6. Before clicking Deploy, override the Build Command to `pnpm db:migrate && next build`. Set this at import time, not after — the migration step must be present on the very first production deploy. This is the build-command migration path from lesson 5 of chapter 098; production migrations run on every deploy, which is safe only under the cadence's discipline (lesson 1 of chapter 099 is the canonical discussion of that trade-off).
 7. Deploy without setting any env vars yet. The build fails on the env validator's missing-`DATABASE_URL` error — this is intentional. Production must boot with the validator on, and seeing the build-time failure once is how the discipline lands. Read the build log and recognize the failure shape.
-8. In the dashboard, add the production env vars: `DATABASE_URL` (pooled), `DATABASE_URL_UNPOOLED`, `BETTER_AUTH_SECRET`, `RESEND_API_KEY` (a test-mode key is fine — no email path runs this chapter, but the validator requires the key), `SENTRY_DSN` (required; the project assumes a real Sentry project from Unit 19), `APP_URL` (set to the `*.vercel.app` URL once known), `NODE_ENV=production`. Redeploy.
-9. Watch the second build succeed: `pnpm install` → `pnpm db:migrate` against the Neon `main` branch (applying every migration up to the chapter 062 baseline) → `next build`. The route summary shows static vs. dynamic routes and function bundle sizes.
+8. In the dashboard, add the production env vars the validator (`src/env.ts`) requires: `DATABASE_URL` (pooled), `DATABASE_URL_UNPOOLED`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL` (the `*.vercel.app` URL once known), `RESEND_API_KEY` (a placeholder key is fine — `RESEND_API_KEY` is validated-not-used; no email path runs this chapter), `SENTRY_DSN` (required; the project assumes a real Sentry project from Unit 19), `APP_URL`, `NEXT_PUBLIC_APP_NAME`, `NEXT_PUBLIC_APP_URL`. (`NODE_ENV` is set by Vercel; never put a secret on a `NEXT_PUBLIC_*` var.) Redeploy.
+9. Watch the second build succeed: `pnpm install` → `pnpm db:migrate` against the Neon `main` branch (applying migrations `0000`–`0004`, the auth/role/audit/RLS/invoices baseline) → `next build`. The route summary shows static vs. dynamic routes and function bundle sizes.
 
 ### Match the function region and wire the Neon integration
 
 10. Set the Function Region to match the Neon region (Project Settings → Functions). This is lesson 3 of chapter 098's load-bearing diff; `iad1` matches `aws-us-east-1`. Verify your region before clicking.
 11. Install the Neon integration: Vercel Marketplace → Neon (Neon-Managed) → Install → select the project. It adds a managed `DATABASE_URL` to the Preview environment. Confirm at Project Settings → Environment Variables → filter to Preview: `DATABASE_URL` shows the integration's lock icon with no editable value.
-12. Turn on Preview Password Protection (Project Settings → Deployment Protection). Open the first preview URL in a private window to confirm the password prompt.
+12. Turn on Vercel Authentication (Project Settings → Deployment Protection) for previews — free on Pro, no add-on. Open the first preview URL in a private window to confirm the sign-in gate.
 13. Locally, run `vercel link` to associate the directory with the project, then `vercel env pull .env.local` to sync the Development scope. Confirm `.env.local` is gitignored (it is in the starter).
 
 ### Confirm the production URL and walk the launch checklist
 
-14. Hit `<project>.vercel.app`. The invoices list renders; `/inspector` shows the production environment indicator, the schema-state probe runs, and the audit log is empty on first deploy.
-15. Walk the launch checklist (lesson 8 of chapter 098) in order, recording the result in `docs/runbooks/launch-checklist.md`:
-    - **Env validation** green in the build log.
-    - **Sentry** — admin → `/inspector` → "Trigger test error" (provided) → the error appears in the Sentry dashboard within seconds.
-    - **Rate limit** — `hey -n 50 -c 5 https://<APP_URL>/api/auth/sign-in` returns 429s past the threshold.
-    - **Audit log** — admin reset-and-reseed updates the audit panel.
-    - **Security headers** — `curl -sI https://<APP_URL>` shows HSTS, CSP, nosniff, Referrer-Policy, Permissions-Policy.
-    - **Pooled DB + region** — Neon region equals the Vercel function region; `DATABASE_URL` contains `-pooler`.
-    - **Backup** — Neon → Branches → create a branch off `main` named `bkp-test`, verify, delete.
-    - **Uptime monitor** — a free Better Stack / UptimeRobot monitor on `/api/health` pages your own email.
+14. Hit `<project>.vercel.app`. Sign in as a seeded admin; the invoices list renders; `/inspector` shows the production environment badge, the schema-state probe runs, and the audit tail shows the seeded baseline rows.
+15. Fill and walk the eight rows of `docs/runbooks/launch-checklist.md` (provided as a stub — table header plus three section headers), recording the gesture and the evidence for each:
+    - **Env validator** — green in the production build log (and the deliberate first-build failure you already saw).
+    - **`/api/health`** — `curl -s https://<APP_URL>/api/health` returns `{ ok: true, db: 'up' }`; the pooled `DATABASE_URL` ends in `-pooler` and its Neon region matches the Vercel function region.
+    - **Sentry test error** — admin → `/inspector` → "Trigger test error" (the provided `triggerTestError` button) → the error appears in the Sentry dashboard within seconds.
+    - **Branch-protected `main`** — direct pushes rejected; a PR with green CI required.
+    - **Four-job CI gate** — typecheck / lint / test / build green on the PR (plus `audit` + `actionlint`).
+    - **Neon-branch-per-PR rehearsal** — the throwaway PR below proves the preview branch + build-time migration path.
+    - **Production alias** — `curl -sI https://<APP_URL>` and the `x-vercel-id` header confirm the alias points at the latest production deployment.
+    - **Rollback rehearsal** — recorded in lesson 6 against the contract deployment.
 
 ### Verify the preview-branch workflow
 
-16. Open a throwaway PR: branch, change a string on the marketing page, push, open the PR. Wait for `vercel-build` to go green; the PR comment includes the preview URL.
-17. Visit the preview URL (password-prompted). The inspector's deployment-environment indicator reads `preview` and the build-source panel's `VERCEL_GIT_COMMIT_SHA` matches the PR's HEAD. In the Neon dashboard, confirm the preview's `DATABASE_URL` points to a branch named `preview/<branch-name>`.
+16. Open a throwaway PR: branch, make a trivial copy change (e.g. a label in the dashboard or sign-in shell), push, open the PR. Wait for the four CI jobs and `vercel-build` to go green; the PR comment includes the preview URL.
+17. Visit the preview URL (Vercel Authentication sign-in prompted). The inspector's deployment-environment badge reads `preview` and the build-source panel's `VERCEL_GIT_COMMIT_SHA` matches the PR's HEAD. In the Neon dashboard, confirm the preview's `DATABASE_URL` points to a branch named `preview/<branch-name>`.
 18. Close the throwaway PR without merging. Neon auto-deletes the branch within seconds.
 
 At the end the production URL is live serving the chapter 062 surface against the Neon `main` branch, the preview-per-PR workflow is verified end-to-end, and the launch checklist is green and recorded.
@@ -329,18 +342,18 @@ Implement the expand PR against the brief above, then rehearse it on the preview
 
 <details>
 
-On branch `expand/subtotal-tax`, add to the `invoices` table in `src/db/schema.ts`:
+On branch `expand/subtotal-tax`, replace the `// TODO(L3)` marker in `src/db/schema.ts` with the two new columns alongside the existing `total`:
 
 ```ts
 subtotal: numeric('subtotal', { precision: 12, scale: 2 }),
 tax: numeric('tax', { precision: 12, scale: 2 }),
 ```
 
-Both omit `.notNull()` — that is the load-bearing choice. Run `pnpm drizzle-kit generate`; Drizzle Kit emits two `ALTER TABLE invoices ADD COLUMN` statements as `0010_expand_subtotal_tax.sql`. Insert a `--> statement-breakpoint` between them. Nullable column adds with no default are metadata-only in Postgres, so the breakpoint is not strictly required here, but it keeps the migration shape consistent with the rest of the cadence. Commit the timestamped migration, push, and open PR 1 titled `expand: add subtotal and tax columns (nullable)`.
+Both omit `.notNull()` — that is the load-bearing choice. Run `pnpm db:generate`; Drizzle Kit emits two `ALTER TABLE "invoices" ADD COLUMN` statements as `0005_expand_subtotal_tax.sql` with a `--> statement-breakpoint` between them. Nullable column adds with no default are metadata-only in Postgres, so the breakpoint is not strictly required here, but it keeps the migration shape consistent with the rest of the cadence. Commit the migration, push, and open PR 1 titled `expand: add subtotal and tax columns (nullable)`.
 
-Self-review before merge: the diff is two column additions plus the migration; nothing else. Merge once green; production rebuilds, `pnpm db:migrate` applies `0010` against the Neon `main` branch, and the new function fleet deploys over a few minutes.
+Self-review before merge: the diff is two column additions plus the migration; nothing else (leave the `total` column and the `TODO(L4)`/`TODO(L5)` markers in place). Merge once green; production rebuilds, `pnpm db:migrate` applies `0005` against the Neon `main` branch, and the new function fleet deploys over a few minutes.
 
-The runbook entry should name the rollback gesture: if PR 2 later misbehaves, revert the dual-write app code; the nullable columns can stay or be dropped in a forward-fix migration, both cheap because nothing reads them.
+Fill the PR 1 section of `docs/runbooks/migration-subtotal-tax.md`: the additive `0005` migration, the two nullable columns, and the "no app touch / no row rewrite" note plus the cheap rollback (revert the migration; nothing reads the columns).
 
 </details>
 
@@ -349,14 +362,14 @@ The runbook entry should name the rollback gesture: if PR 2 later misbehaves, re
 Run the lesson's test suite:
 
 ```sh
-pnpm test invoices/expand
+pnpm test:lesson 3
 ```
 
-Expect the suite to pass, asserting the migration is additive (no destructive statements), both new columns exist and are nullable with matching precision, and the existing read/write paths over `total` behave unchanged.
+The starter ships `tests/lessons/Lesson 3.test.ts` as a `describe.todo` skeleton; the student turns those into real assertions that the expand migration is additive (no destructive statements), both new columns exist and are nullable with matching `numeric(12,2)` precision, and the existing read/write paths over `total` behave unchanged.
 
 Confirm by hand what the tests cannot reach:
 
-- [ ] The preview build log shows `0010_expand_subtotal_tax` applied with a success line and sub-second timing.
+- [ ] The preview build log shows `0005_expand_subtotal_tax` applied with a success line and sub-second timing.
 - [ ] On the preview, the inspector's schema-state probe shows `subtotal` and `tax` as nullable, and `information_schema.columns` reports `is_nullable = YES` for both.
 - [ ] On the preview, create / edit / archive / restore all succeed and the dual-write probe shows `subtotal` and `tax` null for every row (split-coverage 0%).
 - [ ] After merge, production `/invoices` renders, mutations succeed, the inspector shows the two nullable columns, and Sentry reports zero new errors after a two-minute wait.
@@ -377,8 +390,8 @@ Keeping `total` populated as `subtotal + tax` is the transitional bridge that le
 Order is the other load-bearing constraint: the backfill runs only after the dual-write code is live in production, because a backfill that ran first would leave any rows created in the gap with null `subtotal`/`tax` and break the coverage invariant — and the backfill is bounded into batches and made idempotent with a `WHERE subtotal IS NULL` guard so re-running it after a hiccup can never clobber a freshly written value, running over the unpooled connection because long-running scripts do not play well with the pooler's transaction mode.
 The `SET NOT NULL` promotion is held for its own small PR after the backfill so the irreversible-ish tightening is reviewed on its own, and you should know that on a million-row table this promotion would take an `ACCESS EXCLUSIVE` lock and you would reach instead for a validated `CHECK ... NOT VALID` constraint — out of scope at seed size but named so the reflex is there; likewise the modeling choice that legacy `total` rolls into `subtotal` with `tax = 0` is a deliberate simplification over consulting a per-invoice tax-rate history, and a real 200K-row backfill would run on Trigger.dev rather than a local script.
 
-- Every create and edit writes `subtotal`, `tax`, and `total` together in one update statement, with `total` equal to `subtotal + tax`.
-- A form post that still sends only a combined amount is tolerated through a transitional fallback (`subtotal = amount`, `tax = 0`) rather than rejected mid-deploy.
+- Every create and edit writes `subtotal`, `tax`, and `total` together in one `.values({...})` / `.set({...})` call, with `total` equal to `subtotal + tax` computed via the new `combinedAmount` integer-cents helper (money is a `string` end to end — never float `+`).
+- A form post that still sends only a combined amount is tolerated through a transitional fallback (`subtotal = amount`, `tax = '0'`) rather than rejected mid-deploy.
 - The list and detail reads surface `subtotal` and `tax` resolved through `coalesce(subtotal, total)` and `coalesce(tax, 0)`, so un-backfilled rows still read correctly while the combined `total` remains available to callers that want it.
 - The backfill processes legacy rows in bounded batches, is safe to re-run (no row is ever double-written), and on the preview branch brings the inspector's split-coverage to 100% with zero divergent rows in the data-integrity diff.
 - After the dual-write code is live in production, the production backfill completes and the inspector's split-coverage reads 100% against production.
@@ -394,17 +407,19 @@ Implement the dual-write, dual-read, and backfill against the brief, rehearse on
 
 On branch `migrate/subtotal-tax-dual-write`:
 
-- `src/lib/invoices/actions.ts` — `createInvoice` and `updateInvoice` accept `subtotal` and `tax` in their Zod input and write all three columns in one `set({ subtotal, tax, total: subtotal + tax })`. A post that arrives with only the legacy amount falls back to `subtotal = amount, tax = 0` at the action layer so it does not 422 during the deploy window. The form shell changes here too: the single "Amount" input becomes a "Subtotal" + "Tax" pair.
-- `src/lib/invoices/queries.ts` — `listInvoices` and `getInvoiceDetail` return `coalesce(invoices.subtotal, invoices.total) AS subtotal` and `coalesce(invoices.tax, 0) AS tax`, still returning `total` for the combined amount.
-- `scripts/backfill_subtotal_tax.ts` — pseudocode shape: `while (rows remain) { select 1000 invoices WHERE subtotal IS NULL; update set subtotal = total, tax = 0; commit; log progress; }`. Idempotent via the `WHERE subtotal IS NULL` guard; runs against `DATABASE_URL_UNPOOLED`.
+- `src/lib/invoices/money.ts` (new) — export `combinedAmount({ subtotal, tax }: { subtotal: string; tax: string }): string`, integer-cents addition returning a `toFixed(2)` string. Use it everywhere a combined amount is shown — `table.tsx` and `conflict-banner.tsx` switch from `row.total` to `combinedAmount(row)`.
+- `src/lib/invoices/actions.ts` — replace the `TODO(L4)` markers: `createInvoice` and `updateInvoice` accept `subtotal` and `tax` in their Zod input and write all three columns in one `.values({...})` / `.set({...})` with `total: combinedAmount({ subtotal, tax })`. A post that arrives with only the legacy amount falls back to `subtotal = amount, tax = '0'` at the action layer so it does not fail validation during the deploy window.
+- `src/lib/invoices/queries.ts` — replace the `TODO(L4)` markers: `listInvoices` and `getInvoiceDetail` surface `coalesce(invoices.subtotal, invoices.total)` and `coalesce(invoices.tax, 0)` as `subtotal`/`tax`, still returning `total` for the combined amount.
+- `src/app/(protected)/invoices/[id]/edit/edit-form.tsx` — replace the `TODO(L4)` marker: the single `name="total"` input becomes `name="subtotal"` + `name="tax"` inputs.
+- `scripts/backfill_subtotal_tax.ts` — fill `runBackfill()`: loop selecting up to 1000 ids `WHERE subtotal IS NULL`, then `update set subtotal = total, tax = '0' where id = any(...) and subtotal is null`, until a pass touches no rows. Idempotent via the guard; runs on `dbUnpooled`; invoked with `pnpm db:backfill`.
 
-Open PR 2 titled `migrate: dual-write subtotal and tax, backfill, dual-read fall-through` with the actions, queries, backfill script, and form-shell changes — and no schema migration (the `SET NOT NULL` is a separate PR).
+Open PR 2 titled `migrate: dual-write subtotal and tax, backfill, dual-read fall-through` with the money helper, actions, queries, edit-form, and backfill changes — and no schema migration (the `SET NOT NULL` is a separate PR).
 
-Rehearse on the preview before merge: pull the preview's `DATABASE_URL_UNPOOLED`, run the backfill against the preview branch, and confirm split-coverage goes green, new mutations populate all three columns, and the data-integrity diff is empty.
+Rehearse on the preview before merge: point `pnpm db:backfill` at the preview branch's unpooled URL, run it, and confirm split-coverage goes green, new mutations populate all three columns, and the data-integrity diff is empty.
 
-After merge, run the backfill against production from your machine with the production unpooled URL lifted into the script's session only (never committed). Then open `migrate-notnull/subtotal-tax` containing the two `ALTER COLUMN ... SET NOT NULL` statements with a `--> statement-breakpoint` between them, and merge once green. (The alternative of shipping `SET NOT NULL` inside the contract PR is also correct; this project prefers the separate PR for the explicit reviewability of the promotion.)
+After merge, run `pnpm db:backfill` against production with the production unpooled URL lifted into the script's session only (never committed). Then open `migrate-notnull/subtotal-tax`: promote `subtotal`/`tax` to `.notNull()` in `src/db/schema.ts` (replacing the `TODO(L4)` promotion marker), `pnpm db:generate` to emit `0006_set_subtotal_tax_not_null.sql` (two `ALTER COLUMN ... SET NOT NULL` statements with a breakpoint), and merge once green. (Shipping `SET NOT NULL` inside the contract PR is also correct; this project prefers the separate PR for the explicit reviewability of the promotion.)
 
-Watch the inspector during the first ten minutes after the PR-2 merge: a dual-write bug at a single mutation site shows up immediately as a row where `subtotal + tax <> total`.
+Watch the inspector during the first ten minutes after the PR-2 merge: a dual-write bug at a single mutation site shows up immediately as a data-integrity row where `subtotal + tax <> total`. Fill the PR 2 section of `docs/runbooks/migration-subtotal-tax.md`: dual-write, the `coalesce` dual-read, the production `pnpm db:backfill` run, and the `0006` promotion.
 
 </details>
 
@@ -413,10 +428,10 @@ Watch the inspector during the first ten minutes after the PR-2 merge: a dual-wr
 Run the lesson's test suite:
 
 ```sh
-pnpm test invoices/migrate
+pnpm test:lesson 4
 ```
 
-Expect the suite to pass, asserting that create and edit write all three columns with `total = subtotal + tax`, that the legacy-amount fallback populates the pair, that the reads resolve through the `coalesce` fall-through for un-backfilled rows, and that the backfill is idempotent (a second run writes no rows).
+Turn `tests/lessons/Lesson 4.test.ts` from its `describe.todo` skeleton into assertions that create and edit write all three columns with `total = combinedAmount({ subtotal, tax })`, that the legacy-amount fallback populates the pair, that the reads resolve through the `coalesce` fall-through for un-backfilled rows, and that the backfill is idempotent (a second `runBackfill()` writes no rows).
 
 Confirm by hand what the tests cannot reach:
 
@@ -458,10 +473,11 @@ Implement the contract PR against the brief, rehearse on the preview, and merge.
 
 On branch `contract/drop-total`:
 
-- `src/db/schema.ts` — remove the `total` column; `subtotal` and `tax` are already `.notNull()` from PR 2's promotion. Run `pnpm drizzle-kit generate`; Drizzle emits `0012_contract_total.sql` with the single `ALTER TABLE "invoices" DROP COLUMN "total";`. `DROP COLUMN` is metadata-only in Postgres — fast even on large tables, with the space reclaimed by background `VACUUM` — so no breakpoint and no lock concern.
-- `src/lib/invoices/actions.ts` and `src/lib/invoices/queries.ts` — remove every `total` reference per the brief; retire any remaining "Amount" affordance in the form shell.
+- `src/db/schema.ts` — remove the `total` column (and the `TODO(L5)` marker); `subtotal` and `tax` are already `.notNull()` from PR 2's promotion. Run `pnpm db:generate`; Drizzle emits `0007_contract_total.sql` with the single `ALTER TABLE "invoices" DROP COLUMN "total";`. `DROP COLUMN` is metadata-only in Postgres — fast even on large tables, with the space reclaimed by background `VACUUM` — so no breakpoint and no lock concern.
+- `src/lib/invoices/actions.ts` and `src/lib/invoices/queries.ts` — remove every `total` reference per the brief: drop the `total` write + legacy-amount fallback, drop the `InvoiceRow.total` field and the `coalesce` fall-through, and switch the `-total`/`total` sort to order on `sql\`(${invoices.subtotal} + ${invoices.tax})\``.
+- `src/app/(protected)/invoices/[id]/edit/edit-form.tsx` — retire any remaining combined-amount affordance (the `TODO(L5)` marker); the table and conflict banner already read `combinedAmount(...)` from PR 2.
 
-Run `pnpm typecheck` and `pnpm test` locally and fix until green, including any fixture still expecting `total` at the column level. Open PR 3 titled `contract: drop total, finalize subtotal + tax`. Self-review: one scoped grep proves no `total` survives; the migration is the drop only. Merge once green; production rebuilds, `0012` applies against the Neon `main` branch, and the column is gone.
+Run `pnpm verify` (biome + `tsc` + `next build`) and `pnpm test` locally and fix until green. Open PR 3 titled `contract: drop total, finalize subtotal + tax`. Self-review: one scoped grep for `invoices.total` / `invoiceTotal` proves no typed reference survives (the inspector's raw-SQL probes reference columns by literal and stay valid); the migration is the drop only. Merge once green; production rebuilds, `0007` applies against the Neon `main` branch, and the column is gone.
 
 The transitional bridge in PR 2 is what kept this PR small — had PR 2 not written `total` and tolerated legacy posts, PR 3 would also be carrying the form-flow refactor. The bridge was born to die here.
 
@@ -472,10 +488,10 @@ The transitional bridge in PR 2 is what kept this PR small — had PR 2 not writ
 Run the lesson's test suite:
 
 ```sh
-pnpm test invoices/contract
+pnpm test:lesson 5
 ```
 
-Expect the suite to pass, asserting the migration drops the column and contains nothing destructive beyond it, that create / edit accept and persist only `subtotal` and `tax`, that the reads return the pair directly, and that any combined-amount surface is computed rather than read from a column.
+Turn `tests/lessons/Lesson 5.test.ts` from its `describe.todo` skeleton into assertions that the `0007` migration drops the column and contains nothing destructive beyond it, that create / edit accept and persist only `subtotal` and `tax`, that the reads return the pair directly, and that any combined-amount surface is computed (via `combinedAmount`) rather than read from a column.
 
 Confirm by hand what the tests cannot reach:
 
@@ -515,7 +531,7 @@ Run the rehearsal against the brief, then write the runbook and restore producti
 
 Vercel dashboard → Deployments: the current production is the PR-3 merge. Find the previous production deployment (the post-PR-2 merge), open its menu, and Promote to Production. Watch the alias swap in under 30 seconds; confirm `x-vercel-id` and the inspector's commit-SHA panel point at PR-2, then hit `/invoices` and watch the Drizzle query fail as the PR-2 dual-read reaches for the dropped `total`. Confirm Sentry caught it. Confirm auto-assignment flipped off (Settings → Domains).
 
-Write `docs/runbooks/rollback.md` for the future on-call engineer:
+Fill `docs/runbooks/rollback.md` for the future on-call engineer (it ships as a stub already carrying the bolded caveat and the four section headers — "The four-step alias re-point", "The `git revert` follow-up", "Re-enabling auto-assignment", and the caveat block):
 
 1. Identify the previous green production deployment (dashboard or `vercel ls --prod`).
 2. Promote to Production (UI) or `vercel promote <url>` (CLI); the alias flips in seconds.
@@ -533,10 +549,10 @@ Re-promote the PR-3 deployment to restore the target state; confirm the inspecto
 Run the lesson's test suite:
 
 ```sh
-pnpm test runbooks/rollback
+pnpm test:lesson 6
 ```
 
-Expect the suite to pass, asserting `docs/runbooks/rollback.md` exists and carries the load-bearing structure — the promote step, the bolded "does not undo migrations" caveat, the `git revert` follow-up, and the re-enable-auto-assignment step.
+Turn `tests/lessons/Lesson 6.test.ts` from its `describe.todo` skeleton into assertions that `docs/runbooks/rollback.md` carries the load-bearing structure — the four-step alias re-point, the bolded "does not undo migrations" caveat, the `git revert` follow-up, and the re-enable-auto-assignment section.
 
 Confirm by hand what the tests cannot reach:
 
