@@ -32,22 +32,22 @@ import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
 
 <CourseProgressBar value={frontmatter['course-progress']} />
 
-The bytes are in R2 now, sitting under a key like `org/${orgId}/files/${fileId}`. But R2 doesn't know what they are, who they belong to, or whether anyone is allowed to read them — it's a path and a payload, nothing more. So the question this lesson answers is the one the chapter opened on: what does Postgres need to remember *about* those bytes, and how does that record stay in sync with the bucket without ever scanning it? The first lesson promised "Postgres owns identity, R2 owns bytes" as the spine of the whole chapter. This is where you cash that promise as a table. By the end you'll have the `file_metadata` schema written from scratch, the tenant-scoped read helper that fetches a row, the rule that no URL is ever stored, and the soft-delete lifecycle that keeps the two stores from drifting apart.
+The bytes are in R2 now, sitting under a key like `org/${orgId}/files/${fileId}`. But R2 doesn't know what they are, who they belong to, or whether anyone is allowed to read them. To the bucket they're just a path and a payload. This lesson answers the question the chapter opened on: what does Postgres need to remember *about* those bytes, and how does that record stay in sync with the bucket without ever scanning it? The first lesson promised "Postgres owns identity, R2 owns bytes" as the spine of the whole chapter, and this is where that promise becomes a table. By the end you'll have the `file_metadata` schema written from scratch, the tenant-scoped read helper that fetches a row, the rule that no URL is ever stored, and the soft-delete lifecycle that keeps the two stores from drifting apart.
 
 ## The split: identity in Postgres, bytes in R2
 
-Before a single column appears, get the ownership boundary straight, because every design decision in this lesson falls out of it. Two stores, and they own completely different things.
+Before a single column appears, it helps to get the ownership boundary straight, because every design decision in this lesson follows from it. The two stores own completely different things.
 
-Postgres owns *identity*: which file this is, which org it belongs to, who uploaded it, what type it is, how big it actually is, the name a human would recognize, and whether it's been deleted. R2 owns the *bytes*, and nothing else. R2 has no notion of a user, no notion of an org, no notion of "deleted" — hand it a key and it hands you back a blob. The `file_metadata` row is the canonical record of the file; the object in the bucket is the payload that row points at.
+Postgres owns *identity*: which file this is, which org it belongs to, who uploaded it, what type it is, how big it actually is, the name a human would recognize, and whether it's been deleted. R2 owns the *bytes*, and nothing else. R2 has no notion of a user, an org, or "deleted": you hand it a key and it hands you back a blob. The `file_metadata` row is the canonical record of the file, and the object in the bucket is the payload that row points at.
 
-That split gives you one load-bearing rule, and it's worth stating once, plainly: **every read goes through `file_metadata`. Nothing in the app ever lists the bucket to find out which files exist.** When you render an org's files, you query Postgres. When you check whether a file exists, you look for its row. The bucket is never the source of that answer.
+That split gives you one load-bearing rule, worth stating plainly: **every read goes through `file_metadata`. Nothing in the app ever lists the bucket to find out which files exist.** When you render an org's files, you query Postgres. When you check whether a file exists, you look for its row. The bucket is never the source of that answer.
 
-Why so absolute? Because a bucket listing is the wrong tool for every question the app actually asks. Listing objects under a prefix is `O(number of objects)`, it has no concept of tenancy beyond the raw path, and it can't filter or order. "Show me this org's non-deleted files, newest first" is a single indexed Postgres query — tenancy, filtering, and ordering all for free against a table you control. The same question asked of the bucket is a paginated scan with none of those. So you stop thinking of R2 as the file system and start thinking of it as a <Term definition="Storage you reach by a key/path rather than by browsing directories. You hand it a key and get back the bytes; there's no querying, listing, or filtering built in.">content-addressed</Term> blob store that the database indexes. Postgres is the index; R2 is the storage behind it.
+Why so absolute? Because a bucket listing is the wrong tool for every question the app actually asks. Listing objects under a prefix is `O(number of objects)`, it has no concept of tenancy beyond the raw path, and it can't filter or order. "Show me this org's non-deleted files, newest first" is a single indexed Postgres query, with tenancy, filtering, and ordering all handled for free against a table you control. The same question asked of the bucket is a paginated scan with none of those. So you stop thinking of R2 as the file system and start thinking of it as a <Term definition="Storage you reach by a key/path rather than by browsing directories. You hand it a key and get back the bytes; there's no querying, listing, or filtering built in.">content-addressed</Term> blob store that the database indexes. Postgres is the index, and R2 is the storage behind it.
 
-If you want this split framed from the systems-design side before you commit it to a schema, this is the canonical explanation of *why* it's the industry standard.
+If you want this split framed from the systems-design side before you commit it to a schema, the video below is a good explanation of why it became the industry standard.
 
 <VideoCallout videoId="RvaMHMxHjp4" videoTitle="Object Storage in System Design Interviews">
-  Hello Interview's ex-Meta staff engineer walks the exact rule of this lesson — large files in object storage, metadata in the database — in 12 minutes.
+  Hello Interview's ex-Meta staff engineer walks through the exact rule of this lesson, large files in object storage and metadata in the database, in 12 minutes.
 </VideoCallout>
 
 The following figure makes the relationship concrete. On the left is the `file_metadata` row with its key columns; on the right is the bucket holding one object. Notice that the entire connection between them is a single string.
@@ -82,13 +82,13 @@ file_metadata.object_key -> bucket.object: "the only join" {
 }
 ```
   <Fragment slot="caption">
-    Two stores, one key. Everything the app knows *about* a file lives in the Postgres row; the bucket holds only the bytes, reached through the row's `object_key`.
+    Two stores, one key. Everything the app knows *about* a file lives in the Postgres row, and the bucket holds only the bytes, reached through the row's `object_key`.
   </Fragment>
 </Figure>
 
 ## The naive row, and the three problems it hides
 
-The fastest way to understand why the real schema looks the way it does is to start with the schema a beginner reaches for first, and then watch it break. Here's the obvious shape — four columns, each one feeling perfectly reasonable.
+The fastest way to understand why the real schema looks the way it does is to start with the schema a beginner reaches for first, and then watch it break. Here's the obvious shape: four columns, each one feeling perfectly reasonable.
 
 ```ts
 export const fileMetadata = pgTable('file_metadata', {
@@ -99,21 +99,21 @@ export const fileMetadata = pgTable('file_metadata', {
 });
 ```
 
-It looks like it stores everything you need: an id, the org it belongs to, the URL to fetch the file, and its name. And it hides three problems, each of which forces a column the naive version doesn't have. Name them now, because the rest of the lesson is just resolving them one at a time.
+It looks like it stores everything you need: an id, the org it belongs to, the URL to fetch the file, and its name. But it hides three problems, and each one forces a column the naive version doesn't have. The rest of the lesson resolves them one at a time, so it's worth naming all three now.
 
-First, the `url` column. You learned in the previous lesson that the URL you'd put there is a *presigned* URL, and presigned URLs expire. Store one and a day later the column points at a dead link — the row is now lying about how to reach its own bytes. Second, `fileName` doing double duty as both the display name and, implicitly, the thing you'd build the object key from. User filenames are full of spaces, slashes, and unicode, and two users will absolutely upload `report.pdf` — collisions and unsafe paths both. Third, there's no verified size anywhere. If you want to know how big the file is, the only number you have is whatever the client claimed, and you already know not to trust that. Three problems, three fixes coming up.
+The first is the `url` column. You learned in the previous lesson that the URL you'd put there is a *presigned* URL, and presigned URLs expire. Store one, and a day later the column points at a dead link, so the row is now lying about how to reach its own bytes. The second is `fileName` doing double duty as both the display name and, implicitly, the thing you'd build the object key from. User filenames are full of spaces, slashes, and unicode, and two users will absolutely upload `report.pdf`, which gives you both collisions and unsafe paths. The third is that there's no verified size anywhere. If you want to know how big the file is, the only number you have is whatever the client claimed, and you already know not to trust that. Three problems, three fixes coming up.
 
 ## Why `id` is also the object key
 
-The first decision, and it's the one that makes everything downstream simpler than you'd expect. The row's primary key — the UUIDv7 you already generate for every entity — *is* the `${fileId}` segment in the object key. The previous lesson constructed that key as `org/${orgId}/files/${id}.${ext}`, and the `id` in there is exactly this row's `id`, never a freshly minted `nanoid()` or any other identifier.
+This is the first decision, and it makes everything downstream simpler than you'd expect. The row's primary key, the UUIDv7 you already generate for every entity, *is* the `${fileId}` segment in the object key. The previous lesson constructed that key as `org/${orgId}/files/${id}.${ext}`, and the `id` in there is exactly this row's `id`, never a freshly minted `nanoid()` or any other identifier.
 
-Tying the two together this way buys you a chain of wins, and they're worth seeing as a chain because each one leans on the last. Because the key is derived from the id, going from a row to its object is a *pure function* — feed it the org, the id, and the extension and you get the path back, no secondary lookup table required. Because there's no lookup table, listing an org's files is a plain Postgres query against the indexed `organizationId`, never a bucket scan. And because the row's id drives the key, the row's lifecycle drives the object's lifecycle — soft-delete the row, and a sweep can later reconstruct the exact key to delete the object, because the key was always derivable from the row.
+Tying the two together this way buys you a chain of wins, and they're worth seeing as a chain because each one leans on the last. Because the key is derived from the id, going from a row to its object is a *pure function*: feed it the org, the id, and the extension, and you get the path back with no secondary lookup table required. Because there's no lookup table, listing an org's files is a plain Postgres query against the indexed `organizationId`, never a bucket scan. And because the row's id drives the key, the row's lifecycle drives the object's lifecycle: soft-delete the row, and a sweep can later reconstruct the exact key to delete the object, since the key was always derivable from the row.
 
-Picture the alternative for a moment so the choice feels earned. If `objectKey` were a *random* string with no relationship to the row's id, you'd need a lookup in both directions: a row to find its key, and — worse — a key to find its row, which means a sweep that finds an orphaned object in the bucket can no longer ask "is there a row for this?" without an extra index, and recovery after a bad delete becomes guesswork because you can't reconstruct the key from anything stable. Deriving the key from the id closes all of that.
+Picture the alternative for a moment so the choice feels earned. If `objectKey` were a *random* string with no relationship to the row's id, you'd need a lookup in both directions: a row to find its key, and, worse, a key to find its row. A sweep that finds an orphaned object in the bucket could no longer ask "is there a row for this?" without an extra index, and recovery after a bad delete would become guesswork, since you couldn't reconstruct the key from anything stable. Deriving the key from the id closes all of that.
 
-This is also where the UUIDv7 choice quietly pays off twice. v7 ids are time-ordered, so they give you index locality on the one query you run constantly — "this org's files, newest first" — *and* a key prefix that sorts roughly by upload time, which makes prefix-scoped bucket diagnostics readable instead of random. You're not picking v7 here for a new reason; you're collecting two benefits the choice was already making.
+This is also where the UUIDv7 choice quietly pays off twice. v7 ids are time-ordered, so they give you index locality on the one query you run constantly, "this org's files, newest first," *and* a key prefix that sorts roughly by upload time, which makes prefix-scoped bucket diagnostics readable instead of random. You're not picking v7 here for a new reason; you're collecting two benefits the choice was already making.
 
-The construction lives in a small pure helper, exactly the verb-led shape the course uses for everything in `lib`:
+The construction lives in a small pure helper, in exactly the verb-led shape the course uses for everything in `lib`:
 
 ```ts
 export const buildObjectKey = (input: {
@@ -123,17 +123,17 @@ export const buildObjectKey = (input: {
 }): string => `org/${input.orgId}/files/${input.fileId}.${input.ext}`;
 ```
 
-The extension gets sanitized server-side before it reaches this helper — and *why* the original filename still matters even though it never touches the key is the next decision.
+The extension gets sanitized server-side before it reaches this helper. The next decision is why the original filename still matters even though it never touches the key.
 
 ## Why the original filename is a separate column
 
 The user uploaded `Q4 Financials FINAL.pdf`. The object lives at `org/acme/files/0192f…pdf`. Those are two different facts about the same file, and the row stores both, because each one answers a question the other can't.
 
-The object key is the URL-safe, collision-free path — derived from the row id plus a sanitized extension, and never built from anything the user typed. That last part is the rule to internalize: **user-controlled text never goes into the object key.** Spaces break URLs, slashes invent directory structure you didn't intend, unicode and length limits trip up the storage layer, and a crafted filename is a path-confusion attack waiting to happen. The key is yours to construct, deterministically, from values you control.
+The object key is the URL-safe, collision-free path, derived from the row id plus a sanitized extension and never built from anything the user typed. That last part is the rule to internalize: **user-controlled text never goes into the object key.** Spaces break URLs, slashes invent directory structure you didn't intend, unicode and length limits trip up the storage layer, and a crafted filename is a path-confusion attack waiting to happen. The key is yours to construct, deterministically, from values you control.
 
-So why keep the messy original name at all? Because of the moment the user downloads the file back. The presigned GET you mint for a download can set a `Content-Disposition: attachment; filename="${originalFileName}"` header, which tells the browser to save the file under the name the user recognizes — `Q4 Financials FINAL.pdf` — rather than `0192f…pdf`. Without the original name stored, the only thing you could offer the user on download is the UUID, and no one wants a downloads folder full of those. That single download moment is what makes the separate column non-negotiable.
+So why keep the messy original name at all? Because of the moment the user downloads the file back. The presigned GET you mint for a download can set a `Content-Disposition: attachment; filename="${originalFileName}"` header, which tells the browser to save the file under the name the user recognizes, `Q4 Financials FINAL.pdf`, rather than `0192f…pdf`. Without the original name stored, the only thing you could offer the user on download is the UUID, and no one wants a downloads folder full of those. That single download moment is what makes the separate column worth its keep.
 
-The contrast below shows both approaches side by side. The first tab is the trap; the second is the shape that ships.
+The contrast below shows both approaches side by side. The first tab is the trap, and the second is the shape that ships.
 
 <CodeVariants maxLines={10}>
   <CodeVariant label="Filename as key">
@@ -145,7 +145,7 @@ The contrast below shows both approaches side by side. The first tab is the trap
     ```
 
     </div>
-    **Collisions and unsafe paths.** Two users upload `report.pdf` and both rows resolve to the same key, so the second upload silently overwrites the first. A name with a slash invents a path you didn't intend; spaces and unicode break the URL. The key is now whatever the client typed.
+    **Collisions and unsafe paths.** Two users upload `report.pdf` and both rows resolve to the same key, so the second upload silently overwrites the first. A name with a slash invents a path you didn't intend, and spaces and unicode break the URL. The key is now whatever the client typed.
   </CodeVariant>
 
   <CodeVariant label="Id as key, name preserved">
@@ -167,7 +167,7 @@ The contrast below shows both approaches side by side. The first tab is the trap
 
 ## The row that ships
 
-Now assemble the whole thing. Every column below earns its place against a problem you've already seen, so read the walkthrough as a sequence of decisions, not a list of column types — you already know Drizzle, the work here is knowing *why* each line is there. Step through it one column at a time.
+Now assemble the whole thing. Every column below earns its place against a problem you've already seen, so read the walkthrough as a sequence of decisions rather than a list of column types. You already know Drizzle; the work here is knowing *why* each line is there. Step through it one column at a time.
 
 <AnnotatedCode lang="ts" maxLines={18} code={`
 export const fileMetadata = pgTable('file_metadata', {
@@ -190,23 +190,23 @@ export const fileMetadata = pgTable('file_metadata', {
 export type FileMetadata = typeof fileMetadata.$inferSelect;
 `}>
   <AnnotatedStep meta="{2}" color="blue">
-    `id` is the UUIDv7 primary key, and it's also the `${fileId}` segment of the object key. `$defaultFn` runs at insert time to generate it. This one column anchors the whole row-to-object relationship — derive the key from it and you never need a lookup table.
+    `id` is the UUIDv7 primary key, and it's also the `${fileId}` segment of the object key. `$defaultFn` runs at insert time to generate it. This one column anchors the whole row-to-object relationship: derive the key from it and you never need a lookup table.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{3-4}" color="blue">
-    `organizationId` is the tenant anchor — every file belongs to exactly one org. The FK is `onDelete: 'cascade'`: when an org is deleted, its file rows go with it. Naming the `onDelete` explicitly is the rule; the default is too easy to get wrong silently.
+    `organizationId` is the tenant anchor, since every file belongs to exactly one org. The FK is `onDelete: 'cascade'`, so when an org is deleted, its file rows go with it. Naming the `onDelete` explicitly is the rule, because the default is too easy to get wrong silently.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{5-6}" color="blue">
-    `uploadedBy` records who uploaded the file, referencing `users`. Its `onDelete` is `'set null'`, not cascade — removing a user must not erase the file record, only blank out the pointer to them. The file outlives the person who uploaded it.
+    `uploadedBy` records who uploaded the file, referencing `users`. Its `onDelete` is `'set null'` rather than cascade, because removing a user must not erase the file record, only blank out the pointer to them. The file outlives the person who uploaded it.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{7} ".unique()"`} color="green">
-    `objectKey` is the join to the bucket, and the `.unique()` is doing real work — it's the structural guarantee that no two rows ever point at the same blob. Two files cannot share one object key; the database enforces it, not your application code.
+    `objectKey` is the join to the bucket, and the `.unique()` is doing real work: it's the structural guarantee that no two rows ever point at the same blob. Two files cannot share one object key, and the database enforces that, not your application code.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{8}" color="blue">
-    `originalFileName` is the human label — the name the user uploaded — kept solely for display and the download `Content-Disposition` header. It is never the object key, and the key is never built from it.
+    `originalFileName` is the human label, the name the user uploaded, kept solely for display and the download `Content-Disposition` header. It is never the object key, and the key is never built from it.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{9}" color="blue">
@@ -214,7 +214,7 @@ export type FileMetadata = typeof fileMetadata.$inferSelect;
   </AnnotatedStep>
 
   <AnnotatedStep meta="{10}" color="orange">
-    `byteSize` is the file's actual size — and the word that matters is *actual*. This is the number the finalize step read back from R2 with a HEAD, not the size the client claimed. `bigint({ mode: 'number' })` because files can exceed a 32-bit integer.
+    `byteSize` is the file's *actual* size, and that word is the point. This is the number the finalize step read back from R2 with a HEAD, not the size the client claimed. It's `bigint({ mode: 'number' })` because files can exceed a 32-bit integer.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{11}" color="blue">
@@ -222,15 +222,15 @@ export type FileMetadata = typeof fileMetadata.$inferSelect;
   </AnnotatedStep>
 
   <AnnotatedStep meta="{12}" color="violet">
-    `softDeletedAt` is nullable — `null` means live, a timestamp means deleted. Deletion sets it; reads filter it out. This is the soft-delete pattern carried over from the list-and-archive work, and the file lifecycle hangs off it (coming up shortly).
+    `softDeletedAt` is nullable: `null` means live, a timestamp means deleted. Deletion sets it, and reads filter it out. This is the soft-delete pattern carried over from the list-and-archive work, and the file lifecycle hangs off it (coming up shortly).
   </AnnotatedStep>
 
   <AnnotatedStep meta="{14-16}" color="violet">
-    The composite index serves the one query the app runs constantly. Its column order is deliberate — the next section is entirely about why these three columns appear in this order.
+    The composite index serves the one query the app runs constantly. Its column order is deliberate, and the next section is entirely about why these three columns appear in this order.
   </AnnotatedStep>
 </AnnotatedCode>
 
-Notice the last line of that block: the row's TypeScript type is never hand-written — `typeof fileMetadata.$inferSelect` derives it straight from the schema, so the type and the table can't drift apart. Two of the column builders also carry quiet weight worth a one-line reminder.
+Notice the last line of that block. The row's TypeScript type is never hand-written: `typeof fileMetadata.$inferSelect` derives it straight from the schema, so the type and the table can't drift apart. Two of the column builders also carry quiet weight worth a one-line reminder.
 
 <CodeTooltips tooltips={{
   "$defaultFn": "Drizzle hook that runs in JS at insert time to generate a default value.",
@@ -244,24 +244,24 @@ uploadedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 
 ## Indexing the access pattern, not the columns
 
-That index line at the end of the schema deserves its own moment, because the instinct most people have — index the columns that feel important — is the wrong one. You index the *query you actually run*. And the canonical query against this table is exactly one shape: "list this org's non-deleted files, newest first." So the index is built to serve precisely that:
+That index line at the end of the schema deserves its own moment, because the instinct most people have, to index the columns that feel important, is the wrong one. You index the *query you actually run*. The canonical query against this table is exactly one shape: "list this org's non-deleted files, newest first." So the index is built to serve precisely that:
 
 ```ts
 index('idx_file_metadata_org_active')
   .on(t.organizationId, t.softDeletedAt, t.uploadedAt.desc());
 ```
 
-Read the column order left to right, because the order is the whole point. `organizationId` comes first because it narrows the table to a single tenant — the leading column of any index on a tenant-scoped table is always the org. `softDeletedAt` comes second so the planner can skip deleted rows without a separate filter step. And `uploadedAt.desc()` comes last so "newest first" is served straight from the index, with no extra sort. One index, the exact shape of the read. The name is explicit — `idx_<table>_<cols>` — so it stays stable across schema reorderings instead of rotating into noisy diffs.
+Read the column order left to right, because the order is the whole point. `organizationId` comes first because it narrows the table to a single tenant, and the leading column of any index on a tenant-scoped table is always the org. `softDeletedAt` comes second so the planner can skip deleted rows without a separate filter step. And `uploadedAt.desc()` comes last so "newest first" is served straight from the index, with no extra sort. One index, the exact shape of the read. The name is explicit, `idx_<table>_<cols>`, so it stays stable across schema reorderings instead of rotating into noisy diffs.
 
-One thing here might trip you if you're pattern-matching from earlier work, so let me head it off. When you've used soft-delete with a *unique* constraint before — a slug that must be unique only among live rows — the right tool was a *partial* unique: `unique ... where deleted_at is null`. You might reach for that reflex on `objectKey`. Don't. The `objectKey` unique is *global*, a plain `.unique()` with no `where`, and that's deliberate: an object key is unique forever, even after the row is soft-deleted, because the object may still physically exist in the bucket during its cooling-off window. A partial unique would let a soft-deleted row's key be reused while its bytes are still sitting in R2 — and now two rows could resolve to one blob. Global unique is correct precisely *because* the row and the object outlive the soft-delete by different amounts.
+One thing here might trip you if you're pattern-matching from earlier work, so it's worth heading off. When you've used soft-delete with a *unique* constraint before, such as a slug that must be unique only among live rows, the right tool was a *partial* unique: `unique ... where deleted_at is null`. You might reach for that reflex on `objectKey`, but don't. The `objectKey` unique is *global*, a plain `.unique()` with no `where`, and that's deliberate. An object key is unique forever, even after the row is soft-deleted, because the object may still physically exist in the bucket during its cooling-off window. A partial unique would let a soft-deleted row's key be reused while its bytes are still sitting in R2, and now two rows could resolve to one blob. Global unique is correct precisely *because* the row and the object outlive the soft-delete by different amounts.
 
 ## Tenancy lives at the read, never after the load
 
-This is the security spine of the whole table, and it comes down to *where* the tenant check happens. The answer is: in the SQL `where` clause, every time, never as a check you remember to write after the row is already in hand.
+This is the security spine of the whole table, and it comes down to *where* the tenant check happens. The answer is in the SQL `where` clause, every time, never as a check you remember to write after the row is already in hand.
 
-Every read goes through `tenantDb(orgId)` — the factory that bakes `organizationId` into the query's `where` clause before the query ever runs. The payoff is structural rather than disciplinary: a fabricated `fileId` belonging to *another* org simply doesn't resolve, because the row was never in the scoped result set to begin with. You don't load the row and then check `if (row.organizationId !== orgId)` — that branch is one you can forget, and a forgotten branch is a cross-tenant leak. The scope makes the leak impossible to write.
+Every read goes through `tenantDb(orgId)`, the factory that bakes `organizationId` into the query's `where` clause before the query ever runs. The payoff is structural rather than disciplinary: a fabricated `fileId` belonging to *another* org simply doesn't resolve, because the row was never in the scoped result set to begin with. You don't load the row and then check `if (row.organizationId !== orgId)`, which is a branch you can forget, and a forgotten branch is a cross-tenant leak. The scope makes the leak impossible to write.
 
-Here's the read helper. It lives in `db/queries/file-metadata.ts` — the home for tenant-scoped reads, one file per entity, each function verb-led and closing over `tenantDb(orgId)`.
+Here's the read helper. It lives in `db/queries/file-metadata.ts`, the home for tenant-scoped reads, one file per entity, each function verb-led and closing over `tenantDb(orgId)`.
 
 ```ts
 export const getFile = async (
@@ -276,7 +276,7 @@ export const getFile = async (
 };
 ```
 
-The watch-out is the thing you must *not* do: reading `file_metadata` through a bare `db.select().from(fileMetadata)` instead of through `tenantDb`. That's the unqualified-`db` pattern the linter flags, and it's flagged because it's the exact shape of a cross-tenant read — a query with no org in its `where`. The next chapter's `getFile` and `listFiles` call sites all go through this helper for that reason.
+The thing to avoid is reading `file_metadata` through a bare `db.select().from(fileMetadata)` instead of through `tenantDb`. That's the unqualified-`db` pattern the linter flags, and it's flagged because it's the exact shape of a cross-tenant read: a query with no org in its `where`. The next chapter's `getFile` and `listFiles` call sites all go through this helper for that reason.
 
 Test the model on yourself before moving on.
 
@@ -295,7 +295,7 @@ Test the model on yourself before moving on.
 
 Look back at the schema and notice what *isn't* there: a `url` column. That absence is a decision, and it's the one that ties this table directly to the previous lesson's read-back rule.
 
-The row stores only the *permanent* facts about a file — its org, its key, its type, its size, its names, its lifecycle. It never stores a URL, because the only URL it could store is a presigned one, and a presigned URL expires. Store it and the row starts lying the moment the signature goes stale. Instead, every read *mints a fresh* presigned GET on demand, through a helper that sits right next to the metadata layer:
+The row stores only the *permanent* facts about a file: its org, its key, its type, its size, its names, and its lifecycle. It never stores a URL, because the only URL it could store is a presigned one, and a presigned URL expires. Store it and the row starts lying the moment the signature goes stale. Instead, every read *mints a fresh* presigned GET on demand, through a helper that sits right next to the metadata layer:
 
 ```ts
 export const getFileDownloadUrl = async (
@@ -313,9 +313,9 @@ export const getFileDownloadUrl = async (
 };
 ```
 
-It looks the file up in tenant scope, presigns a ten-minute GET against the stored `objectKey`, and returns the URL plus the original filename — everything an `<a href>` or `<img src>` needs, freshly issued for this render and discarded after. This is the same rule the previous lesson stated from the signing side: GET URLs are minted per request, never persisted, never cached past their expiry. Here you see it from the schema side — there is simply no column to persist them *into*. And notice the helper *composes* the R2 SDK rather than hiding it; the SDK call is right there in the open, the same stance as the rest of the storage code.
+It looks the file up in tenant scope, presigns a ten-minute GET against the stored `objectKey`, and returns the URL plus the original filename: everything an `<a href>` or `<img src>` needs, freshly issued for this render and discarded after. This is the same rule the previous lesson stated from the signing side: GET URLs are minted per request, never persisted, never cached past their expiry. Here you see it from the schema side, where there is simply no column to persist them *into*. Notice too that the helper *composes* the R2 SDK rather than hiding it; the SDK call is right there in the open, the same stance as the rest of the storage code.
 
-The contrast below is the canonical wrong-versus-right, and it reuses the exact failure the previous lesson walked: a stored URL that's dead by the time anyone clicks it.
+The contrast below is the canonical wrong-versus-right, and it reuses the exact failure the previous lesson walked through: a stored URL that's dead by the time anyone clicks it.
 
 <CodeVariants maxLines={12}>
   <CodeVariant label="Stored URL (lies)">
@@ -329,7 +329,7 @@ The contrast below is the canonical wrong-versus-right, and it reuses the exact 
     ```
 
     </div>
-    **The column ages into a lie.** The URL was valid for ten minutes; the row keeps it forever. Every render after expiry hands the user a dead link, and nothing in the schema tells you the value is stale — it just is.
+    **The column ages into a lie.** The URL was valid for ten minutes; the row keeps it forever. Every render after expiry hands the user a dead link, and nothing in the schema tells you the value is stale. It just is.
   </CodeVariant>
 
   <CodeVariant label="No URL, minted fresh">
@@ -349,9 +349,9 @@ The contrast below is the canonical wrong-versus-right, and it reuses the exact 
 
 ## Soft delete, and the cooled-off object sweep
 
-Deleting a file is the last lifecycle decision, and it's where the two-store split gets interesting, because you have *two* things to delete — a row and an object — and they shouldn't die at the same instant.
+Deleting a file is the last lifecycle decision, and it's where the two-store split gets interesting, because you have *two* things to delete, a row and an object, and they shouldn't be removed at the same instant.
 
-Start with the row. Deletion sets `softDeletedAt` to the current time; the row itself stays. This is the same soft-delete discipline from the list-and-archive work, and for files it earns its keep two ways. First, audit and recovery: "did this user have access to this contract two weeks ago" stays answerable, and a fat-fingered delete is reversible by clearing the column. Second — and this is the file-specific part — it *decouples the object's cleanup from the user's click*. The soft-delete records the user's *intent* to delete; it does not touch R2 at all.
+Start with the row. Deletion sets `softDeletedAt` to the current time, and the row itself stays. This is the same soft-delete discipline from the list-and-archive work, and for files it earns its keep two ways. The first is audit and recovery: "did this user have access to this contract two weeks ago" stays answerable, and a fat-fingered delete is reversible by clearing the column. The second, which is the file-specific part, is that it *decouples the object's cleanup from the user's click*. The soft-delete records the user's *intent* to delete; it does not touch R2 at all.
 
 The object gets deleted later, by a background sweep, and only after a cooling window:
 
@@ -364,49 +364,49 @@ export const softDeleteFile = async (orgId: string, id: string) => {
 };
 ```
 
-Why a window at all, and why not just delete the object immediately? Because both extremes break something, in opposite directions. If you *hard-delete the row* on the user's click, you orphan the bytes — nothing points at the object anymore, so no sweep can ever find it to clean it up, and it sits in the bucket costing money forever. If instead you *delete the object the instant the row is soft-deleted*, you destroy the recovery window — the user changes their mind thirty seconds later and the bytes are already gone. The cooled-off sweep is the shape that respects both: the row marks intent immediately, and a job deletes the object only once `softDeletedAt < now() - interval '30 days'`, by which point recovery is genuinely off the table.
+Why a window at all, rather than deleting the object immediately? Because both extremes break something, in opposite directions. If you *hard-delete the row* on the user's click, you orphan the bytes: nothing points at the object anymore, so no sweep can ever find it to clean it up, and it sits in the bucket costing money forever. If instead you *delete the object the instant the row is soft-deleted*, you destroy the recovery window: the user changes their mind thirty seconds later and the bytes are already gone. The cooled-off sweep respects both. The row marks intent immediately, and a job deletes the object only once `softDeletedAt < now() - interval '30 days'`, by which point recovery is genuinely off the table.
 
 :::caution
-Deleting the R2 object synchronously, in the same code path as the soft-delete, is the trap. It feels tidy and it quietly throws away your recovery window. Soft-delete the row now; let a cooled-off sweep delete the bytes later.
+Avoid deleting the R2 object synchronously, in the same code path as the soft-delete. It feels tidy, but it quietly throws away your recovery window. Soft-delete the row now, and let a cooled-off sweep delete the bytes later.
 :::
 
-That sweep is a scheduled background job — the Trigger.dev / cron shape from the previous chapters — and you won't build it here. Just hold the lifecycle: soft-delete is instant, object deletion is deferred and reversible until it isn't.
+That sweep is a scheduled background job, the Trigger.dev or cron shape from the previous chapters, and you won't build it here. Just hold the lifecycle in mind: soft-delete is instant, and object deletion is deferred and reversible until it isn't.
 
 ## The orphan problem in both directions
 
-You've now seen, in pieces, that the two stores can drift apart — a row without an object, an object without a row. This is where that theme pays off, because keeping them in sync is not a one-time guarantee you write once; it's a *steady-state reconciliation* you run forever. The previous lesson told you to write the row *last*; this is the picture of what that ordering actually buys, and what cleans up the gaps it leaves.
+You've now seen, in pieces, that the two stores can drift apart: a row without an object, or an object without a row. This is where that theme pays off, because keeping them in sync is not a one-time guarantee you write once. It's a *steady-state reconciliation* you run forever. The previous lesson told you to write the row *last*; this is the picture of what that ordering actually buys, and what cleans up the gaps it leaves.
 
 There are exactly two failure modes, and the whole lesson hinges on the fact that they cost wildly different amounts.
 
-**Orphan bytes** — an object in R2 with no `file_metadata` row. The PUT succeeded but `finalizeUpload` never ran: a network drop, a function timeout, the user closed the tab between the upload and the finalize. Cost: cheap. The object is invisible to the app — nothing lists the bucket, so nothing ever surfaces it to a user — and it costs only storage. Cleanup is a daily sweep that lists the `org/*/files/*` objects, left-joins them against `file_metadata.objectKey`, and deletes the unmatched ones after a short grace period. This is litter, not a bug.
+**Orphan bytes** are an object in R2 with no `file_metadata` row. The PUT succeeded but `finalizeUpload` never ran, because of a network drop, a function timeout, or the user closing the tab between the upload and the finalize. This is cheap. The object is invisible to the app, since nothing lists the bucket and so nothing ever surfaces it to a user, and it costs only storage. Cleanup is a daily sweep that lists the `org/*/files/*` objects, left-joins them against `file_metadata.objectKey`, and deletes the unmatched ones after a short grace period. This is litter, not a bug.
 
-**Orphan rows** — a `file_metadata` row whose object doesn't exist. Cost: expensive. The UI lists a file that 404s the moment anyone tries to download it; the database is asserting something false. This is the failure the two-step write was *built* to prevent — the row is written only after the HEAD confirms the object, so an orphan row should never occur through the normal path. As defense in depth, a sweep can hard-delete rows older than an hour whose R2 HEAD comes back 404.
+**Orphan rows** are a `file_metadata` row whose object doesn't exist. This is expensive. The UI lists a file that 404s the moment anyone tries to download it, so the database is asserting something false. This is the failure the two-step write was *built* to prevent: the row is written only after the HEAD confirms the object, so an orphan row should never occur through the normal path. As defense in depth, a sweep can hard-delete rows older than an hour whose R2 HEAD comes back 404.
 
-Here's the takeaway, stated as flatly as it deserves: **orphan bytes are a cleanup chore; orphan rows are a correctness bug.** That asymmetry is the entire reason the row is written last. You deliberately bias every failure toward the cheap direction. The sequence below walks one upload's timeline and shows which drift each ordering choice prevents — scrub through it and watch *when* each store changes.
+Here's the takeaway, stated as plainly as it deserves: **orphan bytes are a cleanup chore; orphan rows are a correctness bug.** That asymmetry is the entire reason the row is written last. You deliberately bias every failure toward the cheap direction. The sequence below walks one upload's timeline and shows which drift each ordering choice prevents. Scrub through it and watch *when* each store changes.
 
 <DiagramSequence>
   <DiagramStep caption="Sign and PUT: the bytes land in R2 first. The object exists; there's no row yet.">
     <OrphanTimeline step={1} />
   </DiagramStep>
 
-  <DiagramStep caption="`finalizeUpload` HEAD-verifies the object, then inserts the row. Both stores in sync — the row is the assertion that the object exists.">
+  <DiagramStep caption="`finalizeUpload` HEAD-verifies the object, then inserts the row. Both stores in sync: the row is the assertion that the object exists.">
     <OrphanTimeline step={2} />
   </DiagramStep>
 
-  <DiagramStep caption="Branch A — finalize never ran. Object present, row absent: **orphan bytes**. Cheap litter; a daily sweep left-joins the bucket against the table and reclaims it.">
+  <DiagramStep caption="Branch A, finalize never ran. Object present, row absent: **orphan bytes**. Cheap litter; a daily sweep left-joins the bucket against the table and reclaims it.">
     <OrphanTimeline step={3} />
   </DiagramStep>
 
-  <DiagramStep caption="Branch B — a row with no object: an **orphan row**. The row lies and downloads 404. This is the failure the row-written-*last* ordering exists to prevent.">
+  <DiagramStep caption="Branch B, a row with no object: an **orphan row**. The row lies and downloads 404. This is the failure the row-written-*last* ordering exists to prevent.">
     <OrphanTimeline step={4} />
   </DiagramStep>
 </DiagramSequence>
 
 ## Auditing every file event
 
-One more discipline, named rather than re-taught, because file access is one of the surfaces auditors and incident reviewers ask about first — "who downloaded the contract, and when" is a question a B2B SaaS must be able to answer. So every file lifecycle event writes one `audit_logs` row at the action boundary, through the same `logAudit` helper the org and billing work used — the one that takes the transaction handle and an action, and resolves the actor and org for you.
+One more discipline, named rather than re-taught here, because file access is one of the surfaces auditors and incident reviewers ask about first. "Who downloaded the contract, and when" is a question a B2B SaaS must be able to answer. So every file lifecycle event writes one `audit_logs` row at the action boundary, through the same `logAudit` helper the org and billing work used: the one that takes the transaction handle and an action, and resolves the actor and org for you.
 
-Three events cover the lifecycle: `file.uploaded` (payload `{ byteSize, contentType }`), `file.download_url_issued`, and `file.soft_deleted`. One row per event, written inside the same transaction as the change it records, so the audit row and the file change commit together or not at all:
+Three events cover the lifecycle: `file.uploaded` (payload `{ byteSize, contentType }`), `file.download_url_issued`, and `file.soft_deleted`. There's one row per event, written inside the same transaction as the change it records, so the audit row and the file change commit together or not at all:
 
 ```ts
 await logAudit(tx, {
@@ -417,13 +417,13 @@ await logAudit(tx, {
 });
 ```
 
-That's the whole obligation here — the audit table's own schema lives elsewhere; you're just feeding it one row per file event.
+That's the whole obligation here. The audit table's own schema lives elsewhere; you're just feeding it one row per file event.
 
 ## Practice: build the file_metadata row
 
-Time to write the table yourself. The exercise below hands you a partial schema with `id` and `organizationId` already in place; you add the rest to meet the spec, and a probe checks that the `objectKey` unique constraint actually rejects a duplicate — proving the constraint is real enforcement, not decoration.
+Time to write the table yourself. The exercise below hands you a partial schema with `id` and `organizationId` already in place. You add the rest to meet the spec, and a probe checks that the `objectKey` unique constraint actually rejects a duplicate, proving the constraint is real enforcement rather than decoration.
 
-One deliberate simplification: this exercise uses integer ids and a plain `timestamp`, not the UUIDv7 and `timestamptz` of the production table you built above. That's only because the in-browser Postgres the grader runs can't generate UUIDv7 — the real `file_metadata` table uses `uuid().$defaultFn(() => uuidv7())` and `withTimezone: true`, exactly as the schema walkthrough showed.
+One deliberate simplification: this exercise uses integer ids and a plain `timestamp`, not the UUIDv7 and `timestamptz` of the production table you built above. That's only because the in-browser Postgres the grader runs can't generate UUIDv7. The real `file_metadata` table uses `uuid().$defaultFn(() => uuidv7())` and `withTimezone: true`, exactly as the schema walkthrough showed.
 
 <DrizzleSchemaCoding
   instructions="Complete the file_metadata table. Every file needs a tenant, a unique object key, the user's original filename, a content type, a verified byte size, an upload timestamp, and soft-delete support. Declare the object-key uniqueness as a table-level constraint in the callback so the database enforces it."
@@ -482,7 +482,7 @@ export const fileMetadata = pgTable('file_metadata', {
 
 ## Recap drill: which store owns this fact
 
-Close the loop on the mental model the whole lesson hangs on. Sort each fact into the store that owns it — and notice as you go how lopsided the split is. Almost everything is identity, and identity lives in Postgres. R2 owns one thing only: bytes.
+Close the loop on the mental model the whole lesson hangs on. Sort each fact into the store that owns it, and notice as you go how lopsided the split is. Almost everything is identity, and identity lives in Postgres. R2 owns one thing only: bytes.
 
 <Buckets twoCol instructions="Sort each fact into the store that owns it.">
   <Bucket name="pg" label="Postgres (file_metadata)" description="Identity, ownership, lifecycle" />
@@ -502,7 +502,7 @@ If those sorted without hesitation, you've got the chapter's spine: Postgres own
 
 ## External resources
 
-The Drizzle column-type reference is worth a bookmark while you're writing schemas, and the `HeadObjectCommand` page is where the `byteSize` provenance traces back to — that HEAD is the call that turns a *claimed* size into a *verified* one. The other two go deeper on the lesson's two trickiest decisions: *Use the Index, Luke* is the definitive treatment of why the composite index column order is `(org, deleted, time)` and not anything else, and the R2 presigned-URLs page is the storage side of the no-URL-column rule.
+The Drizzle column-type reference is worth a bookmark while you're writing schemas, and the `HeadObjectCommand` page is where the `byteSize` provenance traces back to: that HEAD is the call that turns a *claimed* size into a *verified* one. The other two go deeper on the lesson's two trickiest decisions. *Use the Index, Luke* is the definitive treatment of why the composite index column order is `(org, deleted, time)` and not anything else, and the R2 presigned-URLs page is the storage side of the no-URL-column rule.
 
 <CardGrid>
   <ExternalResource
