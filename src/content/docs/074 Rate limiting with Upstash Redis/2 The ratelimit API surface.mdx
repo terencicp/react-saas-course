@@ -32,17 +32,17 @@ import ResultToResponse from '../../../components/lessons/074/2/result-to-respon
 
 <CourseProgressBar value={frontmatter['course-progress']} />
 
-In the previous lesson you made all the decisions and wrote none of the code. The database is provisioned through the Upstash integration, the two environment variables are validated in `env.ts`, and `@upstash/ratelimit` is sitting in your `package.json`. What you have now is an empty file — `lib/rate-limit.ts` — and a blinking cursor.
+In the previous lesson you made all the decisions and wrote none of the code. The database is provisioned through the Upstash integration, the two environment variables are validated in `env.ts`, and `@upstash/ratelimit` is sitting in your `package.json`. What you have now is an empty file, `lib/rate-limit.ts`, and a blinking cursor.
 
-This lesson fills that file in. There are three questions to answer, and they're small once you've seen them, but each one trips up people who skip straight to copying an example off the docs. What does your app actually *call* — what's the client, what's the limiter, how do they fit together? Which algorithm runs by default, and what would make you reach for a different one? And when you finally call `limit(key)`, what comes back, and how does the route handler turn that return value into an HTTP response?
+This lesson fills that file in. There are three questions to answer. Each one is small once you've seen it, but each one trips up people who skip straight to copying an example off the docs. First, what does your app actually *call*: what's the client, what's the limiter, and how do they fit together? Second, which algorithm runs by default, and what would make you reach for a different one? Third, when you call `limit(key)`, what comes back, and how does the route handler turn that return value into an HTTP response?
 
-Hold onto one sentence as you read, because everything here is a variation on it: **the limiter is a module-scope object you ask one question — `limit(key)` — and it answers with a verdict plus the numbers you put on the wire.** That's the whole API. We're going to build one limiter, read its answer, and map that answer onto a response. The part where you run *two* limiters per sign-in, wrap the call so a Redis outage can't lock anyone out, and shape the 429 body so it leaks nothing — that's the next lesson. Here we establish the shape.
+Hold onto one sentence as you read, because everything here is a variation on it: the limiter is a module-scope object you ask one question, `limit(key)`, and it answers with a verdict plus the numbers you put on the wire. That's the whole API. We're going to build one limiter, read its answer, and map that answer onto a response. Running *two* limiters per sign-in, wrapping the call so a Redis outage can't lock anyone out, and shaping the 429 body so it leaks nothing all belong to the next lesson. Here we establish the shape.
 
 ## The connectionless client: Redis over HTTP
 
-If you've used a database client before — `pg` for Postgres, `ioredis` for Redis — you carry an expectation into this section, and it's wrong here. You expect a connection pool. You expect to size it, to open connections at startup and close them on shutdown, to worry about a "too many connections" ceiling under load. None of that exists with Upstash.
+If you've used a database client before, like `pg` for Postgres or `ioredis` for Redis, you carry an expectation into this section that is wrong here. You expect a connection pool: something you size, that opens connections at startup and closes them on shutdown, and that risks a "too many connections" ceiling under load. None of that exists with Upstash.
 
-The reason is the transport. Upstash Redis is reached over HTTP, not over a long-lived TCP socket. Every operation — every increment, every read — is a separate HTTPS request, the same kind your `fetch` calls make. So the "client" isn't a pool of sockets with a lifecycle; it's a small object that holds a URL and a token and knows how to make those requests. We call this <Term definition="Reached over stateless HTTP requests rather than a long-lived socket. There is no connection to open, pool, or close; each operation is its own request.">connectionless</Term>, and it's the detail that makes everything downstream simpler than you expect.
+The reason is the transport. Upstash Redis is reached over HTTP, not over a long-lived TCP socket. Every operation, every increment and every read, is a separate HTTPS request, the same kind your `fetch` calls make. So the "client" isn't a pool of sockets with a lifecycle. It's a small object that holds a URL and a token and knows how to make those requests. We call this <Term definition="Reached over stateless HTTP requests rather than a long-lived socket. There is no connection to open, pool, or close; each operation is its own request.">connectionless</Term>, and it's the detail that makes everything downstream simpler than you expect.
 
 Here's the entire client setup.
 
@@ -56,37 +56,37 @@ const redis = Redis.fromEnv();
 ```
 </CodeTooltips>
 
-`Redis.fromEnv()` reads the two variables the previous lesson wired in — `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` — straight from the environment. You could write `new Redis({ url, token })` and pass them explicitly, but the project already treats `env.ts` as the single place those two values are validated, so passing them again here would just duplicate that binding. `fromEnv()` is the convention precisely because there's nothing to wire up twice.
+`Redis.fromEnv()` reads the two variables the previous lesson wired in, `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`, straight from the environment. You could write `new Redis({ url, token })` and pass them explicitly, but the project already treats `env.ts` as the single place those two values are validated, so passing them again here would just duplicate that binding. `fromEnv()` is the convention precisely because there's nothing to wire up twice.
 
-Because there's no socket to keep alive, this `redis` object is safe to share across every request the server handles. There's no pool to exhaust, no `connect()` to await, no `end()` to remember on shutdown. And it's *why* the same code runs unchanged in an edge runtime where raw TCP isn't even available — there's no socket to be unavailable. (That runtime-portability point is the previous lesson's; here it's just the payoff of "it's all HTTP.")
+Because there's no socket to keep alive, this `redis` object is safe to share across every request the server handles. There's no pool to exhaust, no `connect()` to await, no `end()` to remember on shutdown. This is also why the same code runs unchanged in an edge runtime where raw TCP isn't even available: there's no socket to be unavailable. The previous lesson made the runtime-portability point; here it's just the payoff of "it's all HTTP."
 
-If you're still reaching for the connection pool, the diagram below is the answer. The left panel is the world you know; the right panel is Upstash. The thing to notice is what's *missing* on the right.
+If you're still reaching for the connection pool, the diagram below should settle it. The left panel is the world you know; the right panel is Upstash. The thing to notice is what's *missing* on the right.
 
-<Figure caption="One HTTPS request per operation. Nothing to keep alive, nothing to pool, nothing to close — the gap where the pool would be is the whole point.">
+<Figure caption="One HTTPS request per operation. Nothing to keep alive, nothing to pool, nothing to close: the gap where the pool would be is the whole point.">
   <ConnectionlessVsPooled />
 </Figure>
 
 ## What @upstash/ratelimit adds on top
 
-You now have a client that can talk to Redis. A client is not a rate limiter, though — it just runs commands. Turning "run commands against Redis" into "tell me whether this key is over its budget" is what the second package does.
+You now have a client that can talk to Redis. A client is not a rate limiter, though; it just runs commands. Turning "run commands against Redis" into "tell me whether this key is over its budget" is what the second package does.
 
-Keep the two packages straight, because they're a layer apart. `@upstash/redis` is the client you just built — the thing that makes the HTTP calls. `@upstash/ratelimit` is a small library that *uses* that client to implement a limiter, and it exposes essentially one method: `limit(key)`.
+Keep the two packages straight, because they're a layer apart. `@upstash/redis` is the client you just built, the thing that makes the HTTP calls. `@upstash/ratelimit` is a small library that *uses* that client to implement a limiter, and it exposes essentially one method: `limit(key)`.
 
 ```ts
 import { Ratelimit } from '@upstash/ratelimit';
 ```
 
-What does the library do for you, so you understand why it's worth a dependency? It owns the counter math — incrementing, expiring, deciding whether you're over the line. It sets the <Term definition="Time To Live — an expiry on a Redis key. When it elapses the key is deleted automatically, which is how a rate-limit window resets without anyone clearing it.">TTL</Term> on each key so a window expires on its own. It keeps a small in-memory cache so a single hot server doesn't hammer Redis on every call (more on that shortly). And it can write per-key analytics for you.
+So what does the library do for you, and why is it worth a dependency? It owns the counter math: incrementing, expiring, and deciding whether you're over the line. It sets the <Term definition="Time To Live — an expiry on a Redis key. When it elapses the key is deleted automatically, which is how a rate-limit window resets without anyone clearing it.">TTL</Term> on each key so a window expires on its own. It keeps a small in-memory cache so a single hot server doesn't hammer Redis on every call, which we'll come back to shortly. And it can write per-key analytics for you.
 
-The part that's easy to undervalue is *how* it does the counting. The check ("are you under your budget?") and the increment ("count this request") have to happen together, as one indivisible step — they have to be <Term definition="A single indivisible operation. No other request can observe an in-between state or interleave with it.">atomic</Term>. If they weren't, two requests arriving at the same instant could both read the same count, both decide they're fine, and both pass — sailing past a limit of one. The library guarantees atomicity by shipping its logic as a <Term definition="The scripting language Redis runs server-side. A script executes as one atomic unit, which is how the library makes check-and-increment a single step.">Lua</Term> script that Redis runs in a single step. You write the configuration; the library writes the Lua.
+The part that's easy to undervalue is *how* it does the counting. The check ("are you under your budget?") and the increment ("count this request") have to happen together, as one indivisible step. They have to be <Term definition="A single indivisible operation. No other request can observe an in-between state or interleave with it.">atomic</Term>. If they weren't, two requests arriving at the same instant could both read the same count, both decide they're fine, and both pass, sailing past a limit of one. The library guarantees atomicity by shipping its logic as a <Term definition="The scripting language Redis runs server-side. A script executes as one atomic unit, which is how the library makes check-and-increment a single step.">Lua</Term> script that Redis runs in a single step. You write the configuration; the library writes the Lua.
 
-That's the division of labor, and it sets up the rest of the lesson: from here on, everything you do is a *configuration decision*. You're not implementing a limiter — you're telling a finished one how to behave.
+That's the division of labor, and it sets up the rest of the lesson. From here on, everything you do is a *configuration decision*. You're not implementing a limiter; you're telling a finished one how to behave.
 
 ## Declaring a limiter in lib/rate-limit.ts
 
-Here's the file you came to write. One limiter, for the sign-in endpoint, declared at the top of the module.
+Here's the file you came to write: one limiter, for the sign-in endpoint, declared at the top of the module.
 
-Don't read it as a config blob to memorize. Every field in that object is the answer to a question — which algorithm, where the keys live, whether to keep analytics on — and the walkthrough below takes them one at a time. Step through it.
+Don't read it as a config blob to memorize. Every field in that object answers a question: which algorithm, where the keys live, whether to keep analytics on. The walkthrough below takes them one at a time.
 
 <AnnotatedCode lang="ts" code={`
 import { Ratelimit } from '@upstash/ratelimit';
@@ -102,45 +102,45 @@ export const signInLimiter = new Ratelimit({
 });
 `}>
   <AnnotatedStep meta="{4}" color="blue">
-    The shared client from the last section, declared once at module scope. Every limiter you add to this file reuses this same `redis` — you build it once, not per limiter.
+    The shared client from the last section, declared once at module scope. Every limiter you add to this file reuses this same `redis`: you build it once, not per limiter.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{6} "signInLimiter"`} color="blue">
-    A named export at module scope (the *why* of module scope is the very next section — it matters more than it looks). The rule of thumb: one limiter per abusable intent. Sign-in gets its own; sign-up and reset will get theirs.
+    A named export at module scope. Why module scope matters is the very next section, and it matters more than it looks. The rule of thumb is one limiter per abusable intent. Sign-in gets its own; sign-up and reset will get theirs.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{7} "redis"`} color="blue">
-    Hand the limiter the shared client. This is the only link between the two packages — the limiter does its Redis work through this.
+    Hand the limiter the shared client. This is the only link between the two packages: the limiter does its Redis work through it.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{8} "Ratelimit.slidingWindow(10, '1 m')"`} color="green">
-    The algorithm and the budget in one call: 10 requests per rolling one-minute window. Which algorithm to pick is the next decision we cover. Note the window is a duration *string* the library parses — `'1 m'`, `'10 s'`, `'1 h'`.
+    The algorithm and the budget in one call: 10 requests per rolling one-minute window. Which algorithm to pick is the next decision we cover. Note that the window is a duration *string* the library parses, like `'1 m'`, `'10 s'`, or `'1 h'`.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{9} "prefix"`} color="orange">
-    Namespaces every Redis key this limiter writes, so `rl:signin` counters never collide with `rl:signup`. Each limiter gets its *own* prefix — share one and two limiters silently corrupt each other's counts. The key you pass to `limit()` does **not** include the prefix; the library prepends it.
+    Namespaces every Redis key this limiter writes, so `rl:signin` counters never collide with `rl:signup`. Each limiter gets its *own* prefix; share one and two limiters silently corrupt each other's counts. The key you pass to `limit()` does **not** include the prefix; the library prepends it.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{10} "analytics: true"`} color="violet">
-    Records a per-key timeline in the Upstash dashboard — rate over time, busiest keys, reject rate. Keep it on for the auth surface so an incident is reviewable after the fact. It costs one extra Redis write per call, but that write is made non-blocking (we'll see how in the return-shape section).
+    Records a per-key timeline in the Upstash dashboard: rate over time, busiest keys, reject rate. Keep it on for the auth surface so an incident is reviewable after the fact. It costs one extra Redis write per call, but that write is made non-blocking, as the return-shape section will show.
   </AnnotatedStep>
 </AnnotatedCode>
 
-One field you won't see in that object but should recognize: `timeout`. The constructor accepts it (it defaults to 5000ms), and it bounds how long `limit()` will wait on Redis before it gives up and resolves. That's the knob behind the fail-mode question the previous lesson raised — what happens when Redis is slow or down — but the *policy* for handling it (the fail-open wrapper) is the next lesson's job. For now, just know the field exists.
+One field you won't see in that object but should recognize is `timeout`. The constructor accepts it, it defaults to 5000ms, and it bounds how long `limit()` will wait on Redis before it gives up and resolves. That's the knob behind the fail-mode question the previous lesson raised, what happens when Redis is slow or down, but the *policy* for handling it (the fail-open wrapper) is the next lesson's job. For now, just know the field exists.
 
-Notice there's no return-type annotation here, and that's deliberate, not an oversight. `signInLimiter` is a `const` value, not an exported function — the convention is to annotate the return types of exported *functions*, and TypeScript infers this one correctly on its own.
+Notice there's no return-type annotation here, and that's deliberate, not an oversight. `signInLimiter` is a `const` value, not an exported function. The convention is to annotate the return types of exported *functions*, and TypeScript infers this one correctly on its own.
 
 ## Why the limiter lives at module scope
 
-I kept saying "module scope" and deferring the reason. Here it is, because it's the one mistake in this whole lesson that passes every test you'll run in development and then quietly costs you in production.
+I've been saying "module scope" and deferring the reason. Here it is. This is the one mistake in this lesson that passes every test you'll run in development and then quietly costs you in production.
 
-The library keeps a small in-process cache of keys it's seen recently — the `ephemeralCache`, on by default. The point of it is this: while a serverless function instance stays hot between requests, a repeat `limit()` call for an *already-blocked* key can be answered straight from that in-memory cache instead of making another round-trip to Redis. A burst of attempts against one hot key gets cheap.
+The library keeps a small in-process cache of keys it's seen recently, the `ephemeralCache`, which is on by default. Its purpose is this: while a serverless function instance stays hot between requests, a repeat `limit()` call for an *already-blocked* key can be answered straight from that in-memory cache instead of making another round-trip to Redis. A burst of attempts against one hot key gets cheap.
 
-That cache only helps if the limiter object survives between requests. So the rule is: declare the limiter **once, at module scope**. On a <Term definition="A serverless instance kept hot from a recent request. Module-level code already ran, so module-scope objects — and their caches — are still in memory and get reused, instead of re-initializing as they would on a cold start.">hot invocation</Term>, the same `signInLimiter` is reused and its cache is still warm. Declare it *inside* the handler instead, and you construct a brand-new limiter — with an empty cache — on every single request. Every call pays a fresh Redis round-trip.
+That cache only helps if the limiter object survives between requests, so the rule is to declare the limiter **once, at module scope**. On a <Term definition="A serverless instance kept hot from a recent request. Module-level code already ran, so module-scope objects — and their caches — are still in memory and get reused, instead of re-initializing as they would on a cold start.">hot invocation</Term>, the same `signInLimiter` is reused and its cache is still warm. Declare it *inside* the handler instead, and you construct a brand-new limiter, with an empty cache, on every single request. Every call then pays a fresh Redis round-trip.
 
-Here's the part that makes it sneaky. The in-handler version isn't *wrong*. The counts in Redis are still correct; the limiter still works. It's just slower and pricier on every call — and in development, where you fire a few requests by hand against a process that's always hot, you'd never notice. It only surfaces under real traffic, as latency and cost. That's the trap: it sails through dev and shows up in the bill.
+Here's the part that makes it sneaky. The in-handler version isn't *wrong*. The counts in Redis are still correct, and the limiter still works. It's just slower and pricier on every call. And in development, where you fire a few requests by hand against a process that's always hot, you'd never notice. It only surfaces under real traffic, as latency and cost. That's the trap: it sails through dev and shows up in the bill.
 
-Compare the two placements. The first is the limiter at module scope, where it belongs; the second buries it inside the handler.
+Compare the two placements. The first puts the limiter at module scope, where it belongs; the second buries it inside the handler.
 
 <CodeVariants>
   <CodeVariant label="Module scope (correct)">
@@ -160,7 +160,7 @@ Compare the two placements. The first is the limiter at module scope, where it b
     ```
 
     </div>
-    **Built once when the module loads.** Every hot invocation of the function reuses this instance and its warm cache — a blocked hot key can be answered from memory, no Redis round-trip.
+    **Built once when the module loads.** Every hot invocation of the function reuses this instance and its warm cache, so a blocked hot key can be answered from memory with no Redis round-trip.
   </CodeVariant>
 
   <CodeVariant label="Inside the handler (wrong)">
@@ -179,35 +179,35 @@ Compare the two placements. The first is the limiter at module scope, where it b
     ```
 
     </div>
-    **A fresh limiter — with a cold, empty cache — on every request.** The counts are still correct, so it passes in dev. Under load it just means a Redis round-trip on every call: slower and pricier, for nothing.
+    **A fresh limiter, with a cold, empty cache, on every request.** The counts are still correct, so it passes in dev. Under load it just means a Redis round-trip on every call: slower and pricier, for nothing.
   </CodeVariant>
 </CodeVariants>
 
-You can turn the cache off with `ephemeralCache: false` if you ever need to, but the auth surface keeps it on. It's a performance optimization for bursty keys, not a correctness lever — your counts are right either way.
+You can turn the cache off with `ephemeralCache: false` if you ever need to, but the auth surface keeps it on. It's a performance optimization for bursty keys, not a correctness lever: your counts are right either way.
 
 ## Three algorithms, sliding window by default
 
-The `limiter` field picks an algorithm. There are three you'd actually choose between, and the honest summary is: use sliding window unless you have a specific reason not to. Let's earn that default by seeing what each one does.
+The `limiter` field picks an algorithm. There are three you'd actually choose between, and the honest summary is to use sliding window unless you have a specific reason not to. Let's earn that default by seeing what each one does.
 
-**Sliding window** — `Ratelimit.slidingWindow(limit, window)`. It weights your count across the current window and the previous one, so the budget *glides* forward in time instead of resetting on a hard clock boundary. Practically, that means the smoothest experience: no moment where the counter snaps back to zero and a flood of requests gets through. This is the chapter's default, and it's what the auth surface uses.
+**Sliding window**, `Ratelimit.slidingWindow(limit, window)`, weights your count across the current window and the previous one, so the budget *glides* forward in time instead of resetting on a hard clock boundary. In practice that means the smoothest experience: there's no moment where the counter snaps back to zero and a flood of requests gets through. This is the chapter's default, and it's what the auth surface uses.
 
-**Token bucket** — `Ratelimit.tokenBucket(refillRate, interval, maxTokens)`. Picture a bucket holding `maxTokens` tokens that refills `refillRate` tokens every `interval`; each request spends one token. When the bucket's full a client can fire a quick burst, then they're throttled down to the steady refill rate. Reach for this when bursting is *legitimate* and you mainly want to cap sustained usage — say an endpoint that calls an LLM, where you'll tolerate a short burst but need to cap ongoing spend.
+**Token bucket**, `Ratelimit.tokenBucket(refillRate, interval, maxTokens)`, works like a bucket holding `maxTokens` tokens that refills `refillRate` tokens every `interval`, where each request spends one token. When the bucket is full a client can fire a quick burst, then gets throttled down to the steady refill rate. Reach for this when bursting is *legitimate* and you mainly want to cap sustained usage, say an endpoint that calls an LLM, where you'll tolerate a short burst but need to cap ongoing spend.
 
-**Fixed window** — `Ratelimit.fixedWindow(limit, window)`. One counter per clock-aligned window, reset on the boundary. It's the cheapest and simplest of the three, but it has a known weakness: a client can spend its full budget at the very end of one window and its full budget again at the start of the next, briefly pushing through nearly twice the limit. That's the "thundering minute" at the boundary. Reach for it when a little boundary slop is acceptable in exchange for fewer Redis operations, or for very coarse limits where exactness doesn't matter.
+**Fixed window**, `Ratelimit.fixedWindow(limit, window)`, keeps one counter per clock-aligned window and resets it on the boundary. It's the cheapest and simplest of the three, but it has a known weakness: a client can spend its full budget at the very end of one window and its full budget again at the start of the next, briefly pushing through nearly twice the limit. That's the "thundering minute" at the boundary. Reach for it when a little boundary slop is acceptable in exchange for fewer Redis operations, or for very coarse limits where exactness doesn't matter.
 
 The picture below makes the sliding-versus-fixed difference visible. Watch what happens at the boundary line.
 
-<Figure caption="Fixed window resets on a hard boundary — a burst can straddle it. Sliding window weights across windows so the limit holds smoothly.">
+<Figure caption="Fixed window resets on a hard boundary, so a burst can straddle it. Sliding window weights across windows so the limit holds smoothly.">
   <WindowBoundaryStrip />
 </Figure>
 
-Two more you should be able to *recognize* without choosing today. `Ratelimit.cachedFixedWindow(...)` is a fixed window that answers from the in-memory cache first and reconciles with Redis afterward — it trades exactness for the lowest possible latency. And per call, `limit(key, { rate: n })` spends `n` tokens instead of one, which is handy when a single request represents `n` units of work, like a batch. Neither is the auth choice — sign-in spends exactly one token per attempt — but you'll see them in the docs.
+Two more are worth recognizing without choosing today. `Ratelimit.cachedFixedWindow(...)` is a fixed window that answers from the in-memory cache first and reconciles with Redis afterward, trading exactness for the lowest possible latency. And per call, `limit(key, { rate: n })` spends `n` tokens instead of one, which is handy when a single request represents `n` units of work, like a batch. Neither is the auth choice, since sign-in spends exactly one token per attempt, but you'll see them in the docs.
 
 <VideoCallout videoId="YXkOdWBwqaA" videoTitle="Rate Limiter System Design: Token Bucket, Leaky Bucket, Scaling">
-  ByteByteGo's 8-minute system-design walkthrough — fixed window and its boundary flaw, token bucket, and why the counter has to live in Redis behind an atomic Lua script.
+  ByteByteGo's 8-minute system-design walkthrough covers fixed window and its boundary flaw, token bucket, and why the counter has to live in Redis behind an atomic Lua script.
 </VideoCallout>
 
-That leaves you with a decision to make, so make it. For each workload below, pick the algorithm an experienced engineer would reach for.
+That leaves you a decision to make. For each workload below, pick the algorithm an experienced engineer would reach for.
 
 <Buckets twoCol instructions="Match each workload to the algorithm an experienced engineer would reach for.">
   <Bucket name="sliding" label="Sliding window" description="Smoothest cap, no boundary spike" />
@@ -228,7 +228,7 @@ This is the payoff. You've configured a limiter; now you ask it the one question
 const { success, limit, remaining, reset, pending } = await signInLimiter.limit(key);
 ```
 
-Five fields come back, and each one has a job. Let's walk them and, crucially, see where each lands in the HTTP response — because the headline is that *nothing here is hand-computed*. The response is just these fields, copied or lightly converted onto the wire.
+Five fields come back, and each one has a job. Let's walk them and, just as important, see where each lands in the HTTP response. The point to take away is that *nothing here is hand-computed*: the response is just these fields, copied or lightly converted onto the wire.
 
 <AnnotatedCode lang="ts" code={`
 const { success, limit, remaining, reset, pending } = await signInLimiter.limit(key);
@@ -240,35 +240,35 @@ const headers = {
 };
 `}>
   <AnnotatedStep meta={`{1} "success"`} color="blue">
-    `success` is the boolean the handler branches on. `true` means the request is under budget; `false` means respond `429 Too Many Requests`. This is the verdict — everything else is the numbers.
+    `success` is the boolean the handler branches on. `true` means the request is under budget; `false` means respond `429 Too Many Requests`. This is the verdict; everything else is the numbers.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{4-5} "limit" "remaining"`} color="green">
-    `limit` is the budget you configured (10). `remaining` is what's left in the current window. They go straight onto the `RateLimit-Limit` and `RateLimit-Remaining` headers — no math, just `String(...)`.
+    `limit` is the budget you configured (10). `remaining` is what's left in the current window. They go straight onto the `RateLimit-Limit` and `RateLimit-Remaining` headers, with no math, just `String(...)`.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{6} "reset"`} color="orange">
-    `reset` is a Unix timestamp in **milliseconds** — the instant the window rolls over. The header wants *seconds from now*, not an absolute timestamp, so you convert: `Math.ceil((reset - Date.now()) / 1000)`. Shipping the raw ms value is a classic bug — it tells the client to wait tens of thousands of years.
+    `reset` is a Unix timestamp in **milliseconds**, the instant the window rolls over. The header wants *seconds from now*, not an absolute timestamp, so you convert it with `Math.ceil((reset - Date.now()) / 1000)`. Shipping the raw ms value is a classic bug: it tells the client to wait tens of thousands of years.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{1} "pending"`} color="violet">
-    `pending` is a Promise the library uses to flush the analytics write. You schedule it with `after()` from `next/server` — the post-response scheduler from the background-work chapter — so that write happens *after* the user's response goes out. It's best-effort by design and shouldn't sit on the request path.
+    `pending` is a Promise the library uses to flush the analytics write. You schedule it with `after()` from `next/server`, the post-response scheduler from the background-work chapter, so that write happens *after* the user's response goes out. It's best-effort by design and shouldn't sit on the request path.
   </AnnotatedStep>
 </AnnotatedCode>
 
-That `reset` conversion deserves a beat on its own, because it's the one place the return shape isn't a straight copy. `reset` is milliseconds-since-epoch — an absolute point in time. The header carries <Term definition="A count of seconds from now until an event — a relative duration, not an absolute timestamp. RateLimit-Reset and Retry-After both carry this form.">delta-seconds</Term>, a relative number. `Math.ceil((reset - Date.now()) / 1000)` is the bridge: subtract now, divide to seconds, round up. Pass the raw `reset` and you've told the client to back off until some date in the far future — the most common rate-limit-header bug there is.
+That `reset` conversion deserves a beat on its own, because it's the one place the return shape isn't a straight copy. `reset` is milliseconds-since-epoch, an absolute point in time. The header carries <Term definition="A count of seconds from now until an event — a relative duration, not an absolute timestamp. RateLimit-Reset and Retry-After both carry this form.">delta-seconds</Term>, a relative number. `Math.ceil((reset - Date.now()) / 1000)` is the bridge: subtract now, divide to seconds, round up. Pass the raw `reset` and you've told the client to back off until some date in the far future, the most common rate-limit-header bug there is.
 
-The `pending` field is the other one worth naming. The analytics write you turned on is a second Redis call, and you don't want the user waiting on it. The seam for this in our stack is `after()` from `next/server` — the post-response scheduler you met in the background-work chapter — which hands the promise to the runtime to flush *after* the response has shipped. (You'll also see the Upstash docs reach for `ctx.waitUntil(result.pending)`; `waitUntil` is the raw serverless primitive `after()` is built on, so recognize it, but reach for `after()`.) The exact wiring lands at the real call site next lesson; here, just know `pending` exists so the analytics write can stay off the user's critical path.
+The `pending` field is the other one worth naming. The analytics write you turned on is a second Redis call, and you don't want the user waiting on it. The seam for this in our stack is `after()` from `next/server`, the post-response scheduler you met in the background-work chapter, which hands the promise to the runtime to flush *after* the response has shipped. You'll also see the Upstash docs reach for `ctx.waitUntil(result.pending)`; `waitUntil` is the raw serverless primitive `after()` is built on, so recognize it but reach for `after()`. The exact wiring lands at the real call site next lesson; here, just know `pending` exists so the analytics write can stay off the user's critical path.
 
-One field for recognition only: a denial also carries a `reason` (`'timeout'`, `'cacheBlock'`, `'denyList'`) explaining *why* it was blocked. The auth surface doesn't branch on it, but it's there for diagnostics.
+One field is there for recognition only: a denial also carries a `reason` (`'timeout'`, `'cacheBlock'`, `'denyList'`) explaining *why* it was blocked. The auth surface doesn't branch on it, but it's there for diagnostics.
 
-The diagram below is the mental model to keep. On the left, the object `limit()` handed back; on the right, the HTTP response. Trace each field to where it goes — and notice `pending` peels off to the side, never touching the response.
+The diagram below is the mental model to keep. On the left is the object `limit()` handed back; on the right is the HTTP response. Trace each field to where it goes, and notice that `pending` peels off to the side, never touching the response.
 
-<Figure expandable={false} caption="Every header is the return value, copied or converted. The only math is reset (ms timestamp → delta-seconds); pending goes to the background, never on the response.">
+<Figure expandable={false} caption="Every header is the return value, copied or converted. The only math is reset (ms timestamp to delta-seconds); pending goes to the background, never on the response.">
   <ResultToResponse />
 </Figure>
 
-Now commit the mapping to memory by filling it in. Each blank is a field from the return value.
+Now fix the mapping in memory by filling it in. Each blank is a field from the return value.
 
 <Dropdowns
   instructions="Fill each blank with the field whose value belongs on that header."
@@ -291,13 +291,13 @@ const headers = {
 
 ## The RateLimit-* response headers
 
-Those headers aren't decoration — they're a contract. A well-behaved HTTP client reads them, and so do load tests. Treat them as part of the limiter's public interface, not as something you tack on at the end.
+Those headers aren't decoration; they're a contract. A well-behaved HTTP client reads them, and so do load tests. Treat them as part of the limiter's public interface, not as something you tack on at the end.
 
-There are four. `RateLimit-Limit` is the budget, `RateLimit-Remaining` is what's left, and `RateLimit-Reset` is the delta-seconds until the window resets. On a `429` you add a fourth, <Term definition="A standard HTTP response header telling the client how many seconds to wait before retrying. When both it and RateLimit-Reset are present, Retry-After wins.">`Retry-After`</Term>, also in delta-seconds — and when both `Retry-After` and `RateLimit-Reset` are present, `Retry-After` takes precedence.
+There are four. `RateLimit-Limit` is the budget, `RateLimit-Remaining` is what's left, and `RateLimit-Reset` is the delta-seconds until the window resets. On a `429` you add a fourth, <Term definition="A standard HTTP response header telling the client how many seconds to wait before retrying. When both it and RateLimit-Reset are present, Retry-After wins.">`Retry-After`</Term>, also in delta-seconds. When both `Retry-After` and `RateLimit-Reset` are present, `Retry-After` takes precedence.
 
-Here's the reflex worth internalizing: write these headers on **every** response, not only on the `429`s. A thoughtful client reads `RateLimit-Remaining` on a successful `200` and slows itself down *before* it ever gets throttled. Headers only on rejections tell clients they've already failed; headers on every response let them avoid failing at all. (The project at the end of this unit verifies the limiter by reading exactly these headers — so they're load-bearing, not optional.)
+One habit is worth building: write these headers on **every** response, not only on the `429`s. A thoughtful client reads `RateLimit-Remaining` on a successful `200` and slows itself down *before* it ever gets throttled. Headers only on rejections tell clients they've already failed; headers on every response let them avoid failing at all. The project at the end of this unit verifies the limiter by reading exactly these headers, so they're load-bearing, not optional.
 
-Build them from the `limit()` result, the way the last diagram showed — never hand-counted. A minimal helper makes the shape concrete.
+Build them from the `limit()` result, the way the last diagram showed, never hand-counted. A minimal helper makes the shape concrete.
 
 ```ts title="lib/rate-limit.ts"
 type LimitResult = Awaited<ReturnType<typeof signInLimiter.limit>>;
@@ -313,19 +313,19 @@ const rateLimitHeaders = ({
 });
 ```
 
-Treat that as a sketch, not the finished contract. The production version also adds `Retry-After` when the request was rejected and pairs the `429` with a body that's safe to show a user — both of which are the next lesson's work. The shape to carry forward is the principle: the headers are a pure function of the limiter's result.
+Treat that as a sketch, not the finished contract. The production version also adds `Retry-After` when the request was rejected and pairs the `429` with a body that's safe to show a user, both of which are the next lesson's work. The principle to carry forward is that the headers are a pure function of the limiter's result.
 
-One honest footnote so the spec doesn't surprise you later.
+One footnote, so the spec doesn't surprise you later.
 
 <Aside type="note" title="The spec is moving">
-These header names come from the IETF's `RateLimit-*` draft, which is the convention the whole ecosystem — `@upstash/ratelimit` included — still ships. Worth knowing: the *current* draft (revision 11, on the Standards Track) has actually moved toward a single structured `RateLimit` header paired with `RateLimit-Policy`, rather than the three separate fields. We teach the three-field form because it's what the stack and the verify recipe use and what virtually every client reads today — but if you go read the spec and find it's changed, that's why.
+These header names come from the IETF's `RateLimit-*` draft, which is the convention the whole ecosystem still ships, `@upstash/ratelimit` included. One thing to know: the *current* draft (revision 11, on the Standards Track) has moved toward a single structured `RateLimit` header paired with `RateLimit-Policy`, rather than the three separate fields. We teach the three-field form because it's what the stack and the verify recipe use, and what virtually every client reads today. If you go read the spec and find it's changed, that's why.
 </Aside>
 
 ## Designing the key you pass to limit()
 
-The `key` argument is the identity the limiter counts under. Get it right and the limit means what you think it means; get it subtly wrong and the limit silently fails to bite. This section is deliberately narrow — it names the shapes the auth surface uses; *applying* them to sign-in is the next lesson.
+The `key` argument is the identity the limiter counts under. Get it right and the limit means what you think it means; get it subtly wrong and the limit silently fails to bite. This section is deliberately narrow: it names the shapes the auth surface uses, and *applying* them to sign-in is the next lesson.
 
-First, a reminder you'll trip on if you forget it: the key does **not** include the prefix. The limiter prepends its own `prefix`, so you pass the bare identity — `user@example.com`, not `rl:signin:user@example.com`.
+First, a reminder you'll trip on if you forget it: the key does **not** include the prefix. The limiter prepends its own `prefix`, so you pass the bare identity, `user@example.com`, not `rl:signin:user@example.com`.
 
 The auth surface counts under three kinds of identity:
 
@@ -339,15 +339,15 @@ const userKey = session.user.id;
 ```
 </CodeTooltips>
 
-Per-IP keys on the client's IP, read from the `x-forwarded-for` header (Vercel sets it; take the first entry, which is the original client). Per-email keys on the user's email. Per-user keys on the authenticated user id. The full IP-parsing helper, with its trust-boundary care, is next lesson — here, notice the *shape*.
+Per-IP keys count on the client's IP, read from the `x-forwarded-for` header (Vercel sets it; take the first entry, which is the original client). Per-email keys count on the user's email. Per-user keys count on the authenticated user id. The full IP-parsing helper, with its trust-boundary care, is next lesson; here, notice the *shape*.
 
-Now the rule that makes per-email keys actually work, and it's the one people get wrong: **normalize the email exactly once, at a boundary helper.** Why this matters is worth feeling concretely. `User@example.com` and `user@example.com` are the same mailbox — but as raw strings they're different keys. If one code path lowercases the email before calling `limit()` and another doesn't, an attacker bypasses your per-email cap just by varying the capitalization: ten attempts as `user@`, ten more as `User@`, ten more as `USER@`, each landing in a separate counter. Normalize in one shared helper (the next lesson introduces `lib/keys.ts` for exactly this) and there's no second code path to disagree.
+Now the rule that makes per-email keys actually work, and it's the one people get wrong: **normalize the email exactly once, at a boundary helper.** It's worth seeing why concretely. `User@example.com` and `user@example.com` are the same mailbox, but as raw strings they're different keys. If one code path lowercases the email before calling `limit()` and another doesn't, an attacker bypasses your per-email cap just by varying the capitalization: ten attempts as `user@`, ten more as `User@`, ten more as `USER@`, each landing in a separate counter. Normalize in one shared helper (the next lesson introduces `lib/keys.ts` for exactly this) and there's no second code path to disagree.
 
-A few more guardrails on keys: keep them lowercased and length-bounded, never embed anything more sensitive than the email, and never put a secret in a key — keys are written to Redis and shown in the analytics dashboard. And the normalization you use for the limiter key has to match the normalization you use for the database lookup, or the limiter is counting a different identifier than the one you actually look up.
+A few more guardrails on keys. Keep them lowercased and length-bounded, never embed anything more sensitive than the email, and never put a secret in a key, since keys are written to Redis and shown in the analytics dashboard. And the normalization you use for the limiter key has to match the normalization you use for the database lookup, or the limiter is counting a different identifier than the one you actually look up.
 
-One teaser for next lesson: you'll pass `'ip:' + ip` and `'email:' + email` to the **same** `signInLimiter`. Two distinct namespaces, one budget configuration — that's how a single limiter gates two dimensions of the same request. We name it now; we wire it next.
+One teaser for next lesson: you'll pass `'ip:' + ip` and `'email:' + email` to the **same** `signInLimiter`. Two distinct namespaces, one budget configuration, is how a single limiter gates two dimensions of the same request. We name it now and wire it next.
 
-Quick gut-check on the normalize-once rule.
+A quick gut-check on the normalize-once rule.
 
 <TrueFalse>
   <Statement answer="true">
@@ -358,13 +358,13 @@ Quick gut-check on the normalize-once rule.
 
 ## What a limiter costs
 
-People hesitate to add limiters because they assume each one is expensive — another network call, another bill line. It isn't, and the way to stop fearing it is to put real numbers next to the cost the endpoint *already* pays. Once you see the proportion, "add a limiter" stops feeling like a decision.
+People hesitate to add limiters because they assume each one is expensive: another network call, another bill line. It isn't, and the way to stop fearing it is to put real numbers next to the cost the endpoint *already* pays. Once you see the proportion, "add a limiter" stops feeling like a decision.
 
-On Redis operations: a `limit()` call is one Upstash request by default — and near zero when the in-memory cache answers it, which it does exactly for the blocked hot keys you most want to be cheap. The analytics write adds one more, but `pending` keeps it off the user's response. So budget roughly one to two operations per limited request.
+Start with Redis operations. A `limit()` call is one Upstash request by default, and near zero when the in-memory cache answers it, which it does exactly for the blocked hot keys you most want to be cheap. The analytics write adds one more, but `pending` keeps it off the user's response. So budget roughly one to two operations per limited request.
 
-On the free tier: it's sized for a small SaaS comfortably — think on the order of tens of thousands of commands per day before you're into a paid tier, which is more than enough to put limiters on sign-in, sign-up, *and* password reset without thinking about it. (Pricing tiers drift, so treat that as an order of magnitude and check Upstash's current limits rather than quoting a number from memory.)
+Then the free tier. It's sized comfortably for a small SaaS: on the order of tens of thousands of commands per day before you're into a paid tier, which is more than enough to put limiters on sign-in, sign-up, *and* password reset without thinking about it. Pricing tiers drift, so treat that as an order of magnitude and check Upstash's current limits rather than quoting a number from memory.
 
-On latency: same-region Upstash adds roughly 5–15ms at the <Term definition="The median (p50) and 99th-percentile (p99) latency. Half of requests are faster than p50; 99% are faster than p99. p99 is the tail your slowest users actually feel.">p50, 25–40ms at the p99</Term>; cross-region pushes that to 50–100ms (which is exactly why the previous lesson said to co-locate the database with your Vercel region). Put it in proportion: an auth endpoint is *already* paying for a database round-trip plus a deliberately slow password hash — that hash is meant to take tens of milliseconds. The limiter is a small slice of a budget you're already spending, and it runs *before* that expensive work, capping how often you have to do it at all. (What to watch in production — these latencies over time — is the observability chapter's job; we name it here, build it there.)
+Finally, latency. Same-region Upstash adds roughly 5–15ms at the <Term definition="The median (p50) and 99th-percentile (p99) latency. Half of requests are faster than p50; 99% are faster than p99. p99 is the tail your slowest users actually feel.">p50 and 25–40ms at the p99</Term>; cross-region pushes that to 50–100ms, which is exactly why the previous lesson said to co-locate the database with your Vercel region. Put it in proportion: an auth endpoint is *already* paying for a database round-trip plus a deliberately slow password hash, and that hash is meant to take tens of milliseconds. The limiter is a small slice of a budget you're already spending, and it runs *before* that expensive work, capping how often you have to do it at all. Watching these latencies over time in production is the observability chapter's job; we name it here and build it there.
 
 Keep the two cost levers in your back pocket: `ephemeralCache` cuts Redis calls on bursty hot keys, and `pending` scheduled with `after()` keeps the analytics write off the user path. You've already met both.
 
@@ -375,22 +375,22 @@ Two more capabilities exist in the library. You won't use either on the auth sur
 <CardGrid>
 
 <Card title="Deny lists" icon="padlock">
-  `Ratelimit.deny()` hard-blocks specific identifiers — a known abuse IP, a sanctioned range — with no Redis round-trip at all. Reach for it when an out-of-band abuse signal needs an immediate, unconditional block. The course's auth surface leans on the limiter plus Better Auth's existing security primitives instead of a hand-rolled deny list, so this is recognition, not a build step.
+  `Ratelimit.deny()` hard-blocks specific identifiers, such as a known abuse IP or a sanctioned range, with no Redis round-trip at all. Reach for it when an out-of-band abuse signal needs an immediate, unconditional block. The course's auth surface leans on the limiter plus Better Auth's existing security primitives instead of a hand-rolled deny list, so this is recognition, not a build step.
 </Card>
 
 <Card title="Multi-region replication" icon="cloud-download">
-  `MultiRegionRatelimit` reads from the nearest replica and syncs counts across regions via <Term definition="Conflict-free Replicated Data Type — a structure whose copies merge automatically without coordination, so multi-region counts converge on their own.">CRDTs</Term>. The trade-off is eventual consistency on the counts: a hot key hit in two regions at once can briefly exceed its budget. Reach for it only when your Vercel deploy is genuinely multi-region — a single-region deploy doesn't need it.
+  `MultiRegionRatelimit` reads from the nearest replica and syncs counts across regions via <Term definition="Conflict-free Replicated Data Type — a structure whose copies merge automatically without coordination, so multi-region counts converge on their own.">CRDTs</Term>. The trade-off is eventual consistency on the counts: a hot key hit in two regions at once can briefly exceed its budget. Reach for it only when your Vercel deploy is genuinely multi-region, since a single-region deploy doesn't need it.
 </Card>
 
 </CardGrid>
 
 ## Putting it together
 
-Step back and look at what you can now do. You can read and write `lib/rate-limit.ts` — a shared connectionless client built once, and a limiter declared at module scope with its algorithm, prefix, and analytics. You can choose an algorithm by workload: sliding window by default, token bucket when bursts are legitimate, fixed window when boundary slop is acceptable. And you can read a `limit()` call end to end — the verdict in `success`, the numbers in `limit`/`remaining`/`reset` flowing onto the `RateLimit-*` headers, and `pending` slipping off to `after()`.
+Step back and look at what you can now do. You can read and write `lib/rate-limit.ts`: a shared connectionless client built once, and a limiter declared at module scope with its algorithm, prefix, and analytics. You can choose an algorithm by workload: sliding window by default, token bucket when bursts are legitimate, fixed window when boundary slop is acceptable. And you can read a `limit()` call end to end: the verdict in `success`, the numbers in `limit`/`remaining`/`reset` flowing onto the `RateLimit-*` headers, and `pending` slipping off to `after()`.
 
-Which brings us back to the sentence: **the limiter is a module-scope object you ask one question — `limit(key)` — and it answers with a verdict plus the numbers you put on the wire.** You've now seen every part of it.
+That brings us back to the sentence: the limiter is a module-scope object you ask one question, `limit(key)`, and it answers with a verdict plus the numbers you put on the wire. You've now seen every part of it.
 
-What's left is the seam. The next lesson takes this single limiter and turns it into the real thing: three limiters for sign-in, sign-up, and reset; the per-IP **and** per-email dual-keying that stops credential stuffing without locking victims out; a `safeLimit` wrapper so a Redis outage fails open instead of taking everyone offline; and a `429` body that leaks nothing. Concretely, the bare `await signInLimiter.limit(key)` you wrote here becomes `await safeLimit(signInLimiter, key)` at the real call site — same question, wrapped for production.
+What's left is the seam. The next lesson takes this single limiter and turns it into the real thing: three limiters for sign-in, sign-up, and reset; the per-IP **and** per-email dual-keying that stops credential stuffing without locking victims out; a `safeLimit` wrapper so a Redis outage fails open instead of taking everyone offline; and a `429` body that leaks nothing. Concretely, the bare `await signInLimiter.limit(key)` you wrote here becomes `await safeLimit(signInLimiter, key)` at the real call site: the same question, wrapped for production.
 
 ## External resources
 
@@ -407,7 +407,7 @@ What's left is the seam. The next lesson takes this single limiter and turns it 
     href="https://smudge.ai/blog/ratelimit-algorithms"
     icon="lucide:activity"
     iconColor="#7C3AED"
-    description="Interactive canvas demos of fixed window, sliding window, and token bucket — click to fire requests and watch the limit bite."
+    description="Interactive canvas demos of fixed window, sliding window, and token bucket. Click to fire requests and watch the limit bite."
   />
   <ExternalResource
     title="RateLimit header fields for HTTP"
